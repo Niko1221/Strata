@@ -3045,6 +3045,18 @@ constexpr IlRows kIlRows_120[] = {
     {14, {{0, 0, 2, 1, 1}, {0, 0, 4, 2, 4}, {0, 2, 2, 2, 2}}},   // Q6_K
     {11, {{0, 1, 2, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q3_K
 };
+// Ada (sm_89): read off mmvq_il_parity --bench --emit-table on an RTX 4080 Laptop (58 SMs, 12 GB), 2026-10-24, the same
+// 3% rule per cell (docs/MMVQ_IL_TABLE.md).  Bitwise equal to native_mmvq; only speed.  sm_89 previously used the shared
+// table (measured on an RTX 3060 + RTX 5070); this card's own cells differ most on Q3_K (no shared row at all) and on
+// Q5_K/Q6_K at the smaller ncols, where the shared table's il rows were slower here.  The full --bench output is the
+// `mmvq_il_89.txt` kept with the measurement.
+constexpr IlRows kIlRows_89[] = {
+    {23, {{0, 0, 0, 0, 0}, {0, 1, 1, 0, 1}, {1, 1, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}}},   // Q4_K
+    {13, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 0}, {0, 0, 1, 1, 1}}},   // Q5_K
+    {14, {{0, 0, 0, 0, 0}, {1, 0, 0, 0, 0}, {0, 0, 1, 1, 1}}},   // Q6_K
+    {11, {{0, 0, 1, 2, 2}, {1, 2, 1, 1, 1}, {1, 2, 1, 1, 1}}},   // Q3_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -3068,11 +3080,18 @@ constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_ro
     {14, {{0, 2, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 4, 4, 4, 2}}},   // Q6_K
     {11, {{0, 2, 4, 2, 4}, {0, 2, 2, 4, 4}, {0, 2, 2, 2, 4}, {0, 4, 2, 2, 2}}},   // Q3_K
 };
+constexpr IlRows58 kIlRows58_89[] = {   // RTX 4080 Laptop, mmvq_il_parity --bench --emit-table, 2026-10-24 (4 = 2 rows a warp).  MEASURED ON THE STANDALONE BENCH ONLY: with STRATA_MMVQ_IL_WIDE on, full decode dropped to ~35-40 tok/s on this card, so kIl58Arch has no 89 entry and 5-8 columns keep the plain kernels here
+    {23, {{4, 2, 2, 2, 4}, {1, 2, 1, 1, 1}, {1, 4, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 1, 2, 2}, {0, 2, 4, 2, 2}, {1, 4, 4, 4, 4}, {1, 4, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 0, 4, 2, 2}, {1, 1, 1, 4, 4}, {1, 4, 2, 2, 2}, {1, 4, 1, 1, 2}}},   // Q5_K
+    {14, {{0, 0, 1, 1, 4}, {0, 0, 4, 4, 4}, {1, 1, 4, 4, 4}, {1, 0, 1, 1, 2}}},   // Q6_K
+    {11, {{1, 4, 4, 2, 2}, {1, 4, 1, 1, 1}, {1, 4, 1, 1, 1}, {1, 4, 4, 2, 4}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
-};
+};   // sm_89: kIlRows58_89 (below) was bench-measured on an RTX 4080 Laptop but regressed in full decode, so it is not registered; 5-8 columns stay on the plain kernels there
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
 constexpr Il1Rows kIl1Rows_86[] = {
@@ -3084,10 +3103,18 @@ constexpr Il1Rows kIl1Rows_61[] = {
     {13, {0, 0, 0, 2, 2}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+constexpr Il1Rows kIl1RowsShared[] = {   // the single-column interleaved row for cards without their own (mmvq_il_parity --emit-table)
+    {23, {1, 0, 0, 0, 0}},   // IQ4_XS
+    {12, {0, 0, 0, 0, 0}},   // Q4_K
+    {13, {0, 0, 0, 0, 0}},   // Q5_K
+    {14, {0, 0, 0, 0, 0}},   // Q6_K
+    {11, {0, 0, 1, 1, 1}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
+    {89, kIl1RowsShared, sizeof(kIl1RowsShared) / sizeof(Il1Rows)},   // Ada: RTX 4080 Laptop, 2026-10-24
 };
 bool il_env_on(const char* name) {
     const char* v = std::getenv(name);
@@ -3105,6 +3132,7 @@ constexpr IlArch kIlArch[] = {
     // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
     // was measured on an RTX 5070 (48 SMs) and stays that card's
     {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
+    {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)},   // Ada: RTX 4080 Laptop, measured 2026-10-24
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
 // type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.

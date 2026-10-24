@@ -266,16 +266,16 @@ int check_tables() {
         for (int nc = 2; nc <= 4; ++nc)
             for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {
                 const int a = native_mmvq_il_rows_for(86, type, nc, n_out);
-                // sm_89 has no table of its own: it answers the shared table (what sm_86 answered before its own
-                // 143-dense table, which differs only in Q3_K, a type the shared table does not use); sm_120 has its own
-                // since 147-verify
-                const int b = native_mmvq_il_rows_for(89, type, nc, n_out);
-                if ((type != 11 && b != a) || (type == 11 && b != 0)) {
-                    ++bad;
-                    std::printf("FAIL table: sm_89 differs from sm_86 at type %d ncols %d n_out %d\n", type, nc, n_out);
-                }
                 if (a != 0 && a != 1 && a != 2 && a != 4) { ++bad; std::printf("FAIL table: rows %d\n", a); }
             }
+    // Ada (sm_89) has its own table since 2026-10-24 (measured on an RTX 4080 Laptop with mmvq_il_parity --bench --emit-table,
+    // docs/MMVQ_IL_TABLE.md).  Signature cells, the same style as the sm_60 / sm_70 checks below.
+    if (native_mmvq_il_rows_for(89, 11, 4, 10240) != 1 || native_mmvq_il_rows_for(89, 11, 3, 2560) != 2 ||
+        native_mmvq_il_rows_for(89, 23, 4, 2560) != 1 || native_mmvq_il_rows_for(89, 14, 3, 512) != 1 ||
+        native_mmvq_il_rows_for(89, 12, 4, 512) != 0) {
+        ++bad;
+        std::printf("FAIL table: the sm_89 table is not the RTX 4080's\n");
+    }
     // Volta has its own table (PR 1401): Q6_K at 2 columns, 2560 rows -> 1 row a warp; the Ampere table says 0 there
     if (native_mmvq_il_rows_for(70, 14, 2, 2560) != 1 || native_mmvq_il_rows_for(86, 14, 2, 2560) != 0) {
         ++bad;
