@@ -185,7 +185,8 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
-- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
+- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`) - with
+  `STRATA_SLOT_CACHE_AFFINITY=1`, by the conversations they hold (below).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
 ## Reading a prompt beside pipelined groups (experimental, opt-in)
@@ -351,6 +352,219 @@ joiners' longest stop 12.2 s on both) and gave the same SHA-256 for six greedy a
 one cold 64K prompt joining four streams: `STRATA_BATCH_DECODE_SHARE=2.0` 2.4 s longest stop and 37.2 s TTFT, `=0` 14.0
 s and 13.8 s. Pieces of one chunk (`PIECE=8192`) cost the long prompt the most. Not measured: other GPU pairs, three or
 more stages, HIP and SYCL (built for CUDA only), sampled decoding, prompts with pictures.
+
+## Keeping conversations in pipelined slots (opt-in)
+
+With a layer split, `--batch` runs the slots in pipeline groups (`--batch-groups`). A group's batch window spans its
+slots up to its last active one, and an idle slot below an active one runs as a pad row that writes its state. So in
+a pipelined group a finished slot is not a reliable conversation cache, and the server places requests by the groups
+alone. Agent clients (Claude Code, Codex) send long conversations - tens of thousands of tokens - in many short turns,
+with short side requests in between, and whatever is lost between two turns is read again.
+
+What that cost on one machine: the engine log of 3 x RTX A4000 16 GB (layer split, `--batch` 3-6 in 3 groups,
+Qwen3.8-Flash-Next IQ3_S, 200K context), two people working with Claude Code and Codex, 2026-10-09 to 2026-10-14.
+Of 3,027 prompts of 8K tokens or more, 538 reused less than half of their previous turn, and 40.7M prompt tokens
+were read again. By prompt lengths (the log has no content, so this is a heuristic):
+
+| Why the previous turn was gone | Prompts | Tokens read again |
+| --- | ---: | ---: |
+| it was in a batch slot that another conversation took | 170 | 16.4M |
+| it ran on the solo path, and the next request (often a short side request) replaced the main session | 244 | 15.0M |
+| the client changed the history (not addressed here) | 63 | 6.1M |
+| no earlier turn (a first turn, or a restart) | 66 | 3.1M |
+
+At this machine's ~2,900 tok/s for long prompts, the first two rows are about three hours of prompt reading in six
+days. What follows addresses them: the engine keeps idle slots and parks the solo path's conversation, the server
+places requests by what the slots hold, and a placement policy (`serve/slot_policy.py`) decides which history to give
+up. Each part is opt-in.
+
+### Engine: only the active slots in a window (`STRATA_PIPELINE_ACTIVE_ROWS=1`)
+
+With `STRATA_PIPELINE_ACTIVE_ROWS=1` (a layer split with `--batch` and more than one group), a group's window lists
+only its active slots (`include/strata/program/pipeline_rows.hpp`, `Verifier::batch_launch_rows`): there is no pad
+row, an idle slot keeps its conversation, and `INFO` says `slot_padding_safe=1`. After restoring a prompt's prefix the
+engine says where it came from: `CACHE_SOURCE <slot> <tokens>` (-1: the main session, a checkpoint or the
+conversation cache).
+
+Measured on the machine above (the same binary with the variable off / on, `tools/serve_load.py`, 6 clients x 2048
+tokens at temperature 0, one run each): 177.4 / 173.5 tok/s in total (-2.2%), first token p50 2.4 / 3.7 s; one client
+67.3 / 66.7 tok/s. With all six slots busy the windows hold the same rows either way; runs of this configuration with
+other builds measured 173.9-178.2 tok/s, so this is close to the spread between runs, but it was not repeated.
+
+### Engine: keep the solo path's conversation (`park=B`)
+
+A request alone runs on the solo path, whose state is the engine's main session, not a slot. When the next request is
+another conversation - an agent's short side request between two turns of a long one - the main session is
+overwritten. With `STRATA_PIPELINE_ACTIVE_ROWS=1` the engine takes `park=B` on `GEN` / `BGEN` (`INFO slot_park=1`):
+when the prompt is another conversation (it does not share what the main session holds up to its last turn - the
+last `<|im_start|>`, where its latest reply begins), it first copies the main session's conversation (and its last
+checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
+`PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
+
+### Engine: more than one checkpoint per slot (`STRATA_SLOT_CHECKPOINTS=N`)
+
+A slot that receives the main session's conversation (`park=B`, an admission that continues in its slot) keeps one
+checkpoint of it: the deepest. A client that rewrites the end of its history every time leaves that one behind:
+Claude Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so
+the next query branches a few dozen tokens before the end, and its whole prompt was read again (42-74K tokens,
+15.6-27.4 s per query on the machine above). The two switches are apart:
+
+- `STRATA_BRANCH_CHECKPOINT` (below) alone decides whether the slot keeps the deepest branch checkpoint of that
+  conversation, where the next query of such a client resumes.
+- `STRATA_SLOT_CHECKPOINTS=N` (unset: 1, as before) alone decides how many it keeps of the others, one per length:
+  the deepest, then the deepest others, the branch one counted in N.
+
+| | without `STRATA_BRANCH_CHECKPOINT` | with it |
+| --- | --- | --- |
+| N = 1 | the deepest (the turn checkpoint), as before | the turn and the branch one (one when there is none yet) |
+| N = 2 | the two deepest (the second the turn before or a periodic one) | two: the turn and the branch one, or else the next deepest |
+
+A restore from a slot checkpoint brings the slot's shallower ones back with it, and the engine logs `slot 2 keeps 2
+checkpoints (at 43340 43372; 227.5 MiB)` (each is a whole running state, about 114 MiB on Qwen3.8-Flash-Next). Without a
+branch checkpoint such a query resumes at the last periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before
+the branch).
+
+N = 2 helps where there is no branch checkpoint: an ordinary chat, and the first query of a classifier transcript
+(nothing to branch from yet), whose next query then resumes at the periodic checkpoint instead of reading the whole
+transcript again when the main session has moved on. It costs one more running state per slot, none with the move
+below (it leaves the main session's chain).
+
+With `STRATA_SLOT_CKPT_MOVE=1` an admission moves them all into the slot instead of copying them (`, all moved` at the
+end of that line), except the chain's root and a pinned prefix, which every new conversation of the client starts
+from. A copy would buy no second chance: the main session keeps only checkpoints of the conversation it holds, so it
+drops them at the next request of another conversation - and a request of another conversation is what takes the slot.
+While the main session still holds their tokens (the conversation's next query comes first) it restores one from the
+slot as from its own chain. A slot that gives back all it holds (the request continues its whole conversation)
+gives back these checkpoints with it, moved, so the admission that follows keeps them again: they are the only ones
+(without this the main session lost them there, and a next turn sent back without its thinking read its prompt
+again: 19,342 tokens in 8.5 s against 154 in 0.66 s). Without the switch they are copied, into dropped checkpoints'
+storage with `STRATA_CKPT_POOL=1`; a slot that gives back all it holds then copies them back only when it keeps more
+than one (N above 1 or `STRATA_BRANCH_CHECKPOINT`), or moves them when the request continues in that slot.
+
+### Engine: a checkpoint where the prompt branches (`STRATA_BRANCH_CHECKPOINT=<margin>`)
+
+Before reading, the engine measures how far the prompt runs along each conversation it holds - the main session's
+and every idle slot's - before leaving it. When the deepest such point is at least `<margin>` tokens past where the
+read starts and before the turn boundary, the read stops there for one more checkpoint (as at the root and turn
+boundaries; on a layer split too, and without `--batch`), logged as `branch checkpoint at 43340: the prompt leaves
+slot 2's conversation there (read from 32768)`. The next query, which leaves this one later, resumes there. Measured
+on the machine above (`--batch 6`; a 43-45K-token classifier transcript growing by about 250 tokens per query, an
+agent conversation taking the main session between the queries), without and with `STRATA_BRANCH_CHECKPOINT=1024`
+(the slot keeping the turn and the branch checkpoint):
+
+| Query | without: reused + read, ms | with: reused + read, ms |
+| --- | ---: | ---: |
+| 1 | 0 + 43,379, 14,146 | 0 + 43,379, 14,255 |
+| 2 | 0 + 43,624, 14,112 | 32,768 + 10,856, 7,577 (checkpoint at 43,340) |
+| 3 | 0 + 43,874, 14,277 | 43,340 + 534, 1,253 |
+| 4 | 0 + 44,134, 14,399 | 43,340 + 794, 1,430 |
+| 5 | 0 + 44,400, 14,535 | 43,340 + 1,060, 1,652 |
+| 6 | 0 + 44,669, 14,596 | 43,340 + 1,329, 1,818 |
+
+The extra part costs 0.8-0.9 s (the same 11,110 tokens from 32,768: 5.9 s straight, 6.8 s with the cut; alone, 6.5 /
+7.3 s). For a transcript growing by g tokens per query, a margin M costs about 0.9 s x g / M per query in cuts and
+M / 2 tokens more per read (0.7 ms each): g = 250-500 puts the best M at 800-1,100. Single user 63.7 / 63.9 tok/s,
+6 concurrent x 2048 tokens 178.7 / 179.3 tok/s without / with both (`tools/serve_load.py`).
+
+The restored state is the one the read had at that point, but the cut changes the chunks of the read after it (as
+`pin=` or a resume from an earlier turn checkpoint does), so a prompt read through a branch checkpoint can round
+differently from one read without it. With the exactness settings below, 160-token greedy answers: 11 of 12 equal;
+the twelfth differed from its first token, and the same way for a read that only stopped there (no restore).
+
+### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
+
+With `"env": {"STRATA_SLOT_CACHE_AFFINITY": "1"}` in the server config and pipelined groups, `pick_slot` asks the
+placement policy in `serve/slot_policy.py` instead of placing by the groups alone. The server side is the same for any
+policy:
+
+- The policy gets each slot's state: busy, the tokens it holds, when it was last used (counted from the request's real
+  end, `BDONE`), whether its state is intact, the spreading order, the group size, the observed prompt rate and
+  whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
+  from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
+- With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (as
+  the engine decides it, with `INFO turn_token`), it asks the policy for a slot and sends `park=B`; `PARKED` updates that slot's state. A claim
+  the engine did not use is released.
+
+The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
+`configure` / `settings` (their docstrings say what they answer). The policy is described below.
+
+`/metrics` shows what happened: `live.cache_events` (the last 96: allocation, admission with the tokens reused and
+read, resume and cache source, park claims and `parked`, expiries), each request's key, client
+address, slot and cache source in `requests[]`, `live.peer_ip` and `live.solo_*` (the request on the solo path and
+where its cache came from), and for slots the client of the conversation each one holds; with
+`STRATA_SLOT_CACHE_AFFINITY=1` also each idle slot's protection and scores and `live.slot_policy`; with
+`STRATA_CACHE_TRACE=1` each request's snapshot of how long a start every slot shared with its prompt (lengths only,
+`serve/cache_trace.py`). The client address is the socket's (behind a reverse proxy, the proxy's); `X-Forwarded-For`
+and request fields are not used. No prompt text or token ids are recorded.
+
+### The placement policy (`serve/slot_policy.py`)
+
+Rules alone cannot tell which history to give up when a new conversation needs a slot and none is free of value: the
+one used longest ago may be a 90K-token conversation whose user is reading the answer, the newest a side request's 300
+tokens. The policy weighs length and age, and every threshold is a parameter:
+
+- **Protection grows with length**: 0.1 s at 500 tokens, 2 s at 2K, 10 s at 8K, 45 s at 32K, 65 s at 50K, 90 s at
+  100K, 120 s at 262144 (piecewise linear; `STRATA_SLOT_TTL_MAX_S`, default 120, scales the whole curve). A side
+  request's history is free again almost at once; a long conversation outlasts the time its user reads and types.
+- **Retention score** = (n / 50000)^0.7 x (n / (n + 2000))^2 x (0.25 + 0.75 x freshness), freshness = 1 - age / TTL,
+  and 0 once expired; overwrite score = 1 / (1 + retention). A fresh 50K history is worth about 1, a 500-token one
+  0.002; a fresh 50K history outweighs a 150K one about to expire.
+- **Blank slots** - empty, known invalid, or a superseded copy (its history is the start of another idle slot's: the
+  conversation went on there) - count as expired and worth nothing.
+- **A continued conversation** (an idle slot's whole history is the start of the prompt; matches within 2% of the
+  longest, one second of the prompt rate and 4096 tokens count too) runs in its slot or in a blank slot of a less
+  loaded group - the engine copies it there, so moving costs nothing - and **never in a slot that holds another
+  conversation**, expired or not. On the machine above an earlier version that put group balance first moved two Claude
+  Code conversations, idle for minutes between turns, into each other's slot on every turn, and each turn read 60-100K
+  tokens from token 0.
+- **An expired history is not deleted**: it still matches until it is overwritten. A new conversation takes a blank
+  expired or blank slot: first one not worth keeping (blank, or its score at freshness 0 below
+  `STRATA_SLOT_EXPIRED_KEEP_SCORE`, default 0.01 - about 2.5K tokens), then by group load, a blank slot before a
+  history, and the lowest score.
+- **An older version of the same conversation** - an idle history that shares at least
+  `STRATA_SLOT_SIBLING_SHARE` (default 98%; 0: off) of its own length with the prompt but is not its start (the client
+  rewrote its end) - is replaced in place, protected or not, when no slot's history continues the prompt. Claude
+  Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so no
+  query continues the previous one; kept side by side, the versions took 4-5 of the 6 slots on the machine above and
+  pushed the other conversations out.
+- **No wait**: when every idle history is still protected, the request overwrites the one that loses least at once
+  (losses within 10% go by group load). An earlier version waited up to 5 s first, once per request; with more
+  requests than slots each wait ran its full 5 s, the slot idle meanwhile, and ended in the same overwrite (7 of 7 in
+  a 15-minute test on the machine above), so it was removed.
+- **Expired value decays**: after its protection an expired history is worth its score at freshness 0 times
+  `1 - x^2`, where x runs from 0 at the end of its protection to 1 at a total idle age of
+  `STRATA_SLOT_IDLE_VALUE_ZERO_S` (default 1800 s; 0 disables decay). Reclaiming and parking use this value; it never
+  changes whether a history can match.
+- **Park** (with `slot_padding_safe=1`): not when the main session's conversation's value at its idle age is below
+  `STRATA_SLOT_PARK_MIN_VALUE` (default 0.01, about 2.6K tokens at expiry; no separate length cut-off), or when a slot
+  holds `STRATA_SLOT_PARK_KEPT_SHARE` (default 98%) of it already. Then its own older copy, else an older version of
+  it (`STRATA_SLOT_SIBLING_SHARE` above, protected or not; the most shared first), else an idle expired slot
+  in the reclaim order above (not worth keeping first, then group load, then the lowest value); a history worth
+  keeping is taken only when the main session's conversation is worth at least `STRATA_SLOT_PARK_VALUE_RATIO` (default
+  2) times more. Never another conversation's protected slot. The parked copy keeps the main session's last-use time.
+- A busy slot is never matched or overwritten. On an engine without `slot_padding_safe=1`, a slot that would pad
+  over a protected idle history below it costs that history's retention too.
+
+Measured on the machine above (0.1.44.1, `--batch 6` in 3 groups, `STRATA_PIPELINE_ACTIVE_ROWS=1`):
+
+- Park: a 37,359-token conversation, a short side request, then its next turn. Without `park=`: 0 tokens reused, the
+  turn took 14 s; with it: 37,352 reused, about 1 s, and the same greedy output (temperature 0) as before the side
+  request.
+- Retention under load: conversation A (37K tokens) parked, two clients generating 1,500-token answers in a loop (so
+  batch mode stays on), conversations B (9K) and C (7.9K) taking turns about every 30 s - past their protection of
+  about 11 and 10 s. Tokens reused on turns 1-3:
+
+| Ordering of expired histories | B | C |
+| --- | --- | --- |
+| by group load first (an earlier version) | 0 every turn | 0 every turn |
+| + one still worth keeping goes last (this policy) | all but the ~20 new | 0 every turn |
+| + wait for a cheaper slot about to leave its protection (removed) | all but the ~20 new | all but the ~20 new |
+
+In the first row a new turn took the other conversation's expired slot for group balance, so B and C overwrote each
+other; in the second, C went to a side request that arrived a second after another one finished, while that one's
+1.5K-token history was about to leave its protection. The third row waited for that protection to end, under the
+same one-per-request wait as above; it went with that wait. The policy accepts this case: a protected history is
+not overwritten while an expired one can be.
 
 ## The VRAM expert tier keeps adapting in batch windows
 
@@ -559,6 +773,11 @@ On top of `GEN` / `GENI`:
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
+| `INFO ... slot_padding_safe=1` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`: a pipelined group's window runs its active slots only; an idle slot keeps its conversation; with it `slot_park=1` and `turn_token=<id>` (the token a turn begins with) |
+| `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
+| `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
+| `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
+| `BCHECKS <slot> <tokens> <lengths>` | out | `STRATA_SLOT_CHECKPOINTS` > 1 or `STRATA_BRANCH_CHECKPOINT`: after `PARKED`, `BADM 1` and `BYIELD`, what the slot holds and the lengths of the checkpoints it keeps (the server's placement hint, `/metrics` `checkpoint_tokens`) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.

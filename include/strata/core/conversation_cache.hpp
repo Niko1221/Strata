@@ -29,6 +29,9 @@ struct ConversationCheckpoint {
     // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
     // mark only: it is not in the session file, a request that pins the same prefix again sets it.
     bool pinned = false;
+    // STRATA_BRANCH_CHECKPOINT: taken where the prompt left a conversation the engine held - the point a client that
+    // rewrites the end of its history continues from next, so a batch slot keeps its deepest one.  Run-time only.
+    bool branch = false;
     // --prefill-pipe on a layer split: the plan a prompt segment [from, to) is read in - its chunk (0: none), the loan
     // its buffers were laid out for (which experts the prompt reads in place and which it streams: that sets bits
     // too), the pipe value it was planned with, whether it is one chunk and whether the plan changed the buffers'
