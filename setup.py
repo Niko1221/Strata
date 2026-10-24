@@ -68,6 +68,7 @@ from strata_control import tls
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
 from strata_control import atomic
 from strata_control import draft_layer
+from strata_control import engine_component
 from strata_control.discovery import in_trash
 from strata_control import user_args
 
@@ -6747,7 +6748,10 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
     --vram-reserve-mib)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
-    missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
+    component = engine_component.is_reference(cfg["exe"])
+    # The server resolves and verifies component engines; the reference itself is not a file.
+    files = ([] if component else [cfg["exe"]]) + [a for a in cfg["args"] if a.endswith(".gguf")]
+    missing = [p for p in files if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
     keep = {k: v for k, v in (keep or {}).items() if v is not None}
@@ -6775,12 +6779,12 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
-        if WIN:
+        if WIN and not component:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
         amd = amd_gpus()
         if isinstance(gpu, list):                      # --gpus: saved, this model runs on these cards from now on
             cards = amd_parse_gpus(",".join(str(i) for i in gpu), amd)
-            built = (engine_archs_hip() or [])
+            built = [] if component else (engine_archs_hip() or [])
             miss = [x for x in cards if built and x["arch"] not in built]
             if miss:
                 fail("the installed engine has no code for " + ", ".join(f"{x['name']} ({x['arch']})" for x in miss),
@@ -7192,6 +7196,8 @@ def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
     card gets the engine compiled for all of them, before the start.  A Pascal / Volta card added to a model on the
     CUDA 13 engine moves the model to the experimental CUDA 12 engine (CUDA 13 has no code for it)."""
+    if engine_component.is_reference(cfg.get("exe")):
+        return cfg                                    # the server checks the installed component, not ROOT/engine
     tk = config_toolkit(cfg)
     if tk == 13 and any(int(g["arch"]) < CUDA13_MIN_ARCH for g in cards):
         return use_cuda12(cards, cfg_path, cfg, yes)
