@@ -13577,13 +13577,17 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 // The carves a save/restore addresses: the main session, then every later stage's own
-                // session in park's order (the shape park's per-stage capture and restore use).  The draft
-                // layer's placement is park's own rule (park_current_body's draft0/draft_of): stage 0's
-                // group when there is no split or the drafter sits on the first card, else the last stage's.
+                // session in park's order (the shape park's per-stage capture and restore use), and each carve's
+                // own device (main is 0, the batch-slot restore's convention).  The draft layer follows park's own
+                // rule (park_current_body's draft0/draft_of): an engine without --mtp has no draft group, and with
+                // one it sits in stage 0's group when there is no split or the drafter sits on the first card,
+                // else in the last stage's.
                 std::vector<strata::core::SessionState*> sessions{&ss};
                 for (const auto& st : stages) sessions.push_back(&st->ss);
+                std::vector<int> devices{0};
+                for (const auto& st : stages) devices.push_back(st->dev);
                 std::vector<bool> draft_of(sessions.size(), false);
-                draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
+                if (use_mtp) draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
                 std::vector<const strata::core::SessionState*> carves(sessions.begin(), sessions.end());
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
@@ -13660,7 +13664,7 @@ int main(int argc, char** argv) {
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
                         if (!strata::core::conversation_snapshot_sources_split(meta, sources, view, carves, draft_of,
-                                                                               mtp.kv_state(), g, err)) {
+                                                                               devices, mtp.kv_state(), g, err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
@@ -13743,7 +13747,7 @@ int main(int argc, char** argv) {
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
                     if (!strata::core::conversation_snapshot_validate_split(image, sessions, draft_of,
-                                                                            &mtp.kv_state(), g, err)) {
+                                                                            use_mtp ? &mtp.kv_state() : nullptr, g, err)) {
                         refuse(err);
                         continue;
                     }
@@ -13756,8 +13760,8 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore_split(image, sessions, draft_of, &mtp.kv_state(),
-                                                                          g, err) !=
+                    if (strata::core::conversation_snapshot_restore_split(image, sessions, draft_of, devices,
+                                                                         use_mtp ? &mtp.kv_state() : nullptr, g, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again

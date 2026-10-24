@@ -1,4 +1,5 @@
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/on_device.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
@@ -515,7 +516,7 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
 }
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,
-                            int64_t upto, bool index, std::string& error) {
+                            int64_t upto, bool index, std::string& error, int device) {
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
     SessionKvSource s;
@@ -525,8 +526,12 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     const auto src = pools(st);
     const auto sizes = s.sizes;
     auto why = std::make_shared<std::string>();
-    s.read = [src, sizes, why](size_t part, size_t offset, void* dst, size_t n) {
+    // `device`: the pool's own card.  A layer split streams each stage's pools while the file write runs on the
+    // command thread - the read makes the owning device current, so the copy rides that device's private stream
+    // (park's per-stage discipline) instead of staging across devices.
+    s.read = [src, sizes, why, device](size_t part, size_t offset, void* dst, size_t n) {
         if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) { *why = "K/V read out of range"; return false; }
+        const OnDevice on(device);
         return transfer(dst, src[part] ? static_cast<const uint8_t*>(src[part]) + offset : nullptr, n, *why);
     };
     s.error = [why] { return *why; };

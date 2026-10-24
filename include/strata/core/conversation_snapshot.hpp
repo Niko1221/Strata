@@ -44,8 +44,10 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, 
                             int64_t upto, bool include_index, uint64_t& fingerprint, std::string& error);
 // Disk save without a host copy: the layer's authoritative K/V as a streamed source (same bytes and metadata as
 // conversation_kv_save).  Caller synchronizes the device first and keeps the state untouched while it is read.
+// `device`: the device owning the pools - the streamed reads run on that device's private stream, the park
+// capture's discipline under a layer split (each stage passes its own card; the single-session callers stay on 0).
 bool conversation_kv_source(SessionKvSource& source, const QsaState& state, const ModelGeometry& g,
-                            int64_t upto, bool include_index, std::string& error);
+                            int64_t upto, bool include_index, std::string& error, int device = 0);
 // The bytes of each K/V part (k, v, k_scale, v_scale, pooled) a snapshot of `upto` tokens holds: no state read.
 bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
                                 std::array<uint64_t, 5>& sizes, std::string& error);
@@ -141,14 +143,16 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
 // The layer-split siblings (a format-v2 session file): the same capture, sizes and read limits for a main session
 // plus its later stages, each owning its own carve.  `sessions[0]` is the main session; `sessions[k]` (k >= 1) is a
-// later stage.  `draft_of` marks - exactly once - which stage's K/V group ends with the draft layer's source; the
-// sources are flat in stage-group order, and `meta.stage_table` records the later stages.
+// later stage.  `draft_of` marks - exactly once - which stage's K/V group ends with the draft layer's source (no
+// drafter: no owner and a nullptr draft); the sources are flat in stage-group order, and `meta.stage_table` records
+// the later stages.  `devices` is parallel to `sessions`: each carve's own device - the capture quiesces and captures
+// each stage on it (park's per-stage capture does the same), and the streamed K/V reads run on that device's stream.
 bool conversation_session_sizes_split(const ModelGeometry& g, const std::vector<const SessionState*>& sessions,
                                       std::vector<ConversationStateSizes>& per_stage, std::string& error);
 bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                          const ConversationView& view, const std::vector<const SessionState*>& sessions,
-                                         const std::vector<bool>& draft_of, const QsaState& draft,
-                                         const ModelGeometry& g, std::string& error);
+                                         const std::vector<bool>& draft_of, const std::vector<int>& devices,
+                                         const QsaState& draft, const ModelGeometry& g, std::string& error);
 bool conversation_session_read_limits_split(SessionReadLimits& limits, const std::vector<const SessionState*>& sessions,
                                             const ModelGeometry& g, const std::vector<bool>& draft_of,
                                             const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
@@ -164,14 +168,15 @@ enum class ConversationRestore { restored, invalid, transfer_failed };
 // groups are sliced by the stage table / draft_of, every stage is validated over its own carve before anything is
 // transferred (the same validate-then-transfer-once envelope as the single-session functions), and the main stage
 // restores first, mirroring the park loop.  A `draft` of nullptr means no stage owns the draft layer; exactly one
-// stage's group ends with it when a draft exists.
+// stage's group ends with it when a draft exists.  `devices` (restore only) is parallel to `sessions`: each transfer
+// quiesces and writes the carve's own device, where the residency refresh kernels launch (park's per-stage rule).
 bool conversation_snapshot_validate_split(const SavedConversation& image, const std::vector<SessionState*>& sessions,
                                           const std::vector<bool>& draft_of, const QsaState* draft,
                                           const ModelGeometry& g, std::string& error);
 ConversationRestore conversation_snapshot_restore_split(const SavedConversation& image,
                                                         const std::vector<SessionState*>& sessions,
-                                                        const std::vector<bool>& draft_of, const QsaState* draft,
-                                                        const ModelGeometry& g, std::string& error);
+                                                        const std::vector<bool>& draft_of, const std::vector<int>& devices,
+                                                        const QsaState* draft, const ModelGeometry& g, std::string& error);
 // Invalid images are rejected before any CUDA call/write. Transfer failure may
 // leave partial state: caller MUST NOT continue inference from that session.
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,

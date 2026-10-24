@@ -1,4 +1,5 @@
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/on_device.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
 #include <chrono>
@@ -712,13 +713,16 @@ bool conversation_session_sizes_split(const ModelGeometry& g, const std::vector<
 // metadata, as the split engine's per-stage checkpoints already do (generate.cpp's on_stage_chunk capture) - while
 // chain checkpoints pass through as given (their host state and parts are already captured).  `sources` holds one
 // streamed source per owned QSA layer, the draft closing the group of the stage that owns it.
+// Park's per-stage device discipline (generate.cpp's stage capture): each stage is captured with its own carve's
+// device current and synchronized first - the copies ride that device's private stream and a pending kernel on the
+// owning card cannot leave a torn stage in the file.
 bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                          const ConversationView& view, const std::vector<const SessionState*>& sessions,
-                                         const std::vector<bool>& draft_of, const QsaState& draft,
-                                         const ModelGeometry& g, std::string& error) {
-    if (sessions.empty() || draft_of.size() != sessions.size())
+                                         const std::vector<bool>& draft_of, const std::vector<int>& devices,
+                                         const QsaState& draft, const ModelGeometry& g, std::string& error) {
+    if (sessions.empty() || draft_of.size() != sessions.size() || devices.size() != sessions.size())
         return fail(error, "invalid layer-split layout");
-    if (!view_validate_split(view, sessions, g, error) || !sync(error)) return false;
+    if (!view_validate_split(view, sessions, g, error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
     captured.layer_lo = sessions[0]->layer_lo; captured.layer_hi = sessions[0]->layer_hi;
@@ -728,24 +732,36 @@ bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<Se
     captured.stage_table.reserve(sessions.size() - 1);
     for (size_t k = 1; k < sessions.size(); ++k)
         captured.stage_table.push_back(SessionStageGeom{sessions[k]->layer_lo, sessions[k]->layer_hi,
-                                                        sessions[k]->qsa_alloc, sessions[k]->gdn_alloc, draft_of[k]});
-    if (!conversation_checkpoint_save(captured.live, *sessions[0], g, error)) return false;
-    for (size_t k = 1; k < sessions.size(); ++k) {
-        ConversationCheckpoint part;
-        part.ids = view.ids; part.imgs = view.images;
-        if (!conversation_checkpoint_save(part, *sessions[k], g, error)) return false;
-        captured.live.stage_parts.push_back(std::move(part));
+                                                        sessions[k]->qsa_alloc, sessions[k]->gdn_alloc,
+                                                        draft_of[k]});
+    // The live state comes off the main device, made current and quiesced first (park's rule, main included).
+    {
+        const OnDevice on_main(devices[0]);
+        if (!sync(error)) return false;
+        if (!conversation_checkpoint_save(captured.live, *sessions[0], g, error)) return false;
     }
     size_t total = 0;
     for (size_t k = 0; k < sessions.size(); ++k) total += owned_qsa(*sessions[k]) + (draft_of[k] ? 1 : 0);
     std::vector<SessionKvSource> out(total);
     const int64_t upto = (int64_t) view.ids.size();
     size_t at = 0;
+    // The later stages' parts, each on its own device: that stage is quiesced before its capture, so its copies
+    // ride the owning device's private stream and a pending kernel cannot leave a torn stage in the file.
+    for (size_t k = 1; k < sessions.size(); ++k) {
+        const OnDevice on(devices[k]);
+        if (!sync(error)) return false;
+        ConversationCheckpoint part;
+        part.ids = view.ids; part.imgs = view.images;
+        if (!conversation_checkpoint_save(part, *sessions[k], g, error)) return false;
+        captured.live.stage_parts.push_back(std::move(part));
+    }
+    // The K/V sources are lazy: their reads happen during the file write and ride each pool's own device
+    // (conversation_kv_source's `device`).  Nothing was enqueued on any stage since its sync above.
     for (size_t k = 0; k < sessions.size(); ++k) {
         const size_t layers = owned_qsa(*sessions[k]);
         for (size_t j = 0; j < layers; ++j)
-            if (!conversation_kv_source(out[at + j], owned(*sessions[k], j), g, upto, true, error)) return false;
-        if (draft_of[k] && !conversation_kv_source(out[at + layers], draft, g, upto, false, error)) return false;
+            if (!conversation_kv_source(out[at + j], owned(*sessions[k], j), g, upto, true, error, devices[k])) return false;
+        if (draft_of[k] && !conversation_kv_source(out[at + layers], draft, g, upto, false, error, devices[k])) return false;
         at += layers + (draft_of[k] ? 1 : 0);
     }
     meta = std::move(captured);
@@ -861,27 +877,31 @@ bool conversation_snapshot_validate_split(const SavedConversation& image, const 
 
 ConversationRestore conversation_snapshot_restore_split(const SavedConversation& image,
                                                         const std::vector<SessionState*>& sessions,
-                                                        const std::vector<bool>& draft_of, const QsaState* draft,
-                                                        const ModelGeometry& g, std::string& error) {
+                                                        const std::vector<bool>& draft_of, const std::vector<int>& devices,
+                                                        const QsaState* draft, const ModelGeometry& g, std::string& error) {
+    if (devices.size() != sessions.size()) { fail(error, "invalid layer-split layout"); return ConversationRestore::invalid; }
     if (!conversation_snapshot_validate_split(image, sessions, draft_of, draft, g, error))
         return ConversationRestore::invalid;   // every stage validated: nothing transfers for a refused image
-    if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
     size_t at = 0;
-    for (size_t k = 0; k < sessions.size(); ++k) {   // main stage first, mirroring the park stage order
+    // The per-stage transfer, main stage first, mirroring the park stage order: each carve's own device is made
+    // current and quiesced before its write (pending kernels must not still read the carve when the host state
+    // overwrites it), and that stage's residency refresh kernels launch on that device (park's per-stage restore
+    // does the same with its OnDevice wraps).
+    for (size_t k = 0; k < sessions.size(); ++k) {
+        const OnDevice on(devices[k]);
+        if (!sync(error)) return ConversationRestore::transfer_failed;
         const size_t layers = owned_qsa(*sessions[k]);
         for (size_t j = 0; j < layers; ++j)
             if (!conversation_kv_restore(image.kv[at + j], owned(*sessions[k], j), g, upto, true, error))
                 return ConversationRestore::transfer_failed;
         if (draft_of[k] && !conversation_kv_restore(image.kv[at + layers], *draft, g, upto, false, error))
             return ConversationRestore::transfer_failed;
+        if (k == 0 ? !conversation_checkpoint_restore(image.live, *sessions[0], g, error)
+                   : !conversation_checkpoint_restore(image.live.stage_parts[k - 1], *sessions[k], g, error))
+            return ConversationRestore::transfer_failed;
         at += layers + (draft_of[k] ? 1 : 0);
     }
-    if (!conversation_checkpoint_restore(image.live, *sessions[0], g, error))
-        return ConversationRestore::transfer_failed;
-    for (size_t k = 1; k < sessions.size(); ++k)
-        if (!conversation_checkpoint_restore(image.live.stage_parts[k - 1], *sessions[k], g, error))
-            return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
 

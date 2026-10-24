@@ -752,7 +752,8 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
 - Format v2 adds the runtime's stage table to the file: one entry per later stage (its own layer range, its session carve's
   QSA and GDN sizes, and whether its K/V group ends with the draft layer), per-stage parts of the live state and of every
-  checkpoint, and stage-ordered K/V groups; a runtime without a split writes an empty table. A file written in format v1 (the
+  checkpoint, and stage-ordered K/V groups (the draft group is present only when the engine has a drafter; an engine without
+  `--mtp` keeps none); a runtime without a split writes an empty table. A file written in format v1 (the
   predecessor without the stage table) is refused with `unsupported version 1` before its RAM admission; save again to replace it.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
