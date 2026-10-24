@@ -4,8 +4,12 @@ windows (BGEN), greedy.  Every slot's tokens must equal its solo tokens; prints 
 
   python3 tools/batch_test.py --exe engine/strata --config strata-<model>.json --batch 4 --n 4 \
       --extra "--layer-split 12,24,36 --trim-stage-weights --pcie-frac 0 --adapt-every 1000000"
+
+With --bias-han every second prompt (0, 2, ...) carries a logit_bias that bans every token holding a Han, Kana or
+Hangul character, and asks for the answer in Chinese; the others carry none.  A slot's tokens must still equal its
+solo tokens, so a bias reaches only its own slot and a slot that was reused does not keep the previous one's.
 """
-import argparse, json, os, subprocess, sys, tempfile, threading, time
+import argparse, json, os, re, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,6 +35,15 @@ QUESTIONS = [
 ]
 # more than 16 slots: the same questions again, asked to answer in German
 QUESTIONS = QUESTIONS + [q + " Answer in German." for q in QUESTIONS]
+
+
+CJK = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]")
+
+
+def han_bias(tok, n_vocab):
+    """logit_bias text banning every token whose text holds a Han, Kana or Hangul character."""
+    ids = [i for i in range(n_vocab) if CJK.search(tok.decode([i]))]
+    return ",".join("%d:-100" % i for i in ids), len(ids)
 
 
 def tokenizer(path):
@@ -89,13 +102,24 @@ def main():
                     help="the LAST prompt is read from about this many tokens of filler text first: its chunks run "
                          "beside the earlier slots' windows (the prompt path lends experts then)")
     ap.add_argument("--mt-min", default="1", help="STRATA_IQ_MT_MIN for the engine (1: exact; empty: the default)")
+    ap.add_argument("--bias-han", action="store_true",
+                    help="every second prompt carries a logit_bias banning all Han/Kana/Hangul tokens and asks for Chinese")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
     tok = tokenizer(cfg["tokenizer"])
+    bias_text, n_banned = "", 0
+    if a.bias_han:
+        vocab_n = len(json.loads((Path(cfg["tokenizer"]) / "vocab.json").read_text(encoding="utf-8")))
+        bias_text, n_banned = han_bias(tok, vocab_n)
+        print(f"logit_bias: {n_banned} tokens banned, on prompts " + ", ".join(str(i) for i in range(0, a.n, 2)))
+    biased = lambda i: bool(bias_text) and i % 2 == 0   # noqa: E731
+    keys_for = lambda i: " ".join(x for x in (a.keys, ("logit_bias=" + bias_text) if biased(i) else "") if x)   # noqa: E731
     prompts = []
-    for q in QUESTIONS[: a.n]:
+    for pi, q in enumerate(QUESTIONS[: a.n]):
+        if biased(pi):
+            q = q + " Answer in Chinese."
         text = f"<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-        if a.long_tokens and q is QUESTIONS[a.n - 1]:
+        if a.long_tokens and pi == a.n - 1:
             para = ("The committee reviewed item %d of the long agenda, noting the budget, the schedule and the open "
                     "risks, and asked the staff to report back next quarter. ")
             per = max(1, len(tok.encode(para % 100)))
@@ -111,7 +135,7 @@ def main():
     solo = []
     if not a.skip_solo:
         for i, ids in enumerate(prompts):
-            eng.send(" ".join(x for x in ("GEN", str(a.max_new), a.keys, ",".join(map(str, ids))) if x))
+            eng.send(" ".join(x for x in ("GEN", str(a.max_new), keys_for(i), ",".join(map(str, ids))) if x))
             got, t0 = [], time.time()
             for line in out:
                 if line.startswith("T "):
@@ -127,7 +151,7 @@ def main():
     t_admit = time.time()
     first_bt = None
     for i, ids in enumerate(prompts):
-        eng.send(" ".join(x for x in ("BGEN", str(i), str(a.max_new), a.keys, ",".join(map(str, ids))) if x))
+        eng.send(" ".join(x for x in ("BGEN", str(i), str(a.max_new), keys_for(i), ",".join(map(str, ids))) if x))
         for line in out:
             if line.startswith("T "):
                 got[i].append(int(line.split()[1]))
@@ -171,6 +195,8 @@ def main():
             ok &= same
             first_diff = next((k for k in range(min(len(b), len(solo[i]))) if b[k] != solo[i][k]), None)
             print(f"slot {i}: {len(b)} tokens, solo {len(solo[i])}: {'IDENTICAL' if same else f'DIFFERS at {first_diff}'}")
+        han = len(CJK.findall(tok.decode(b)))
+        print(f"    {'with the ban' if biased(i) else 'no bias'}: {han} Han/Kana/Hangul characters")
         print("   ", ascii(tok.decode(b)[:160]))
     if a.dump:
         Path(a.dump).write_text(json.dumps({"solo": solo, "batch": [got[i] for i in range(len(prompts))]}), encoding="utf-8")
