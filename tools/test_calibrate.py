@@ -54,10 +54,10 @@ BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None, say=lambda *_: None):
         starts = []
         res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt, read, reads),
-                          say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
+                          say=say, long_prompt=lambda i, n: [1] * n)
         return res, starts
 
     def test_prefill_pipe_on_a_layer_split(self):
@@ -172,10 +172,64 @@ class Calibrate(unittest.TestCase):
             self.assertTrue(all(before[0] <= after[0] and before[1] == after[1]
                                 for before, after in zip(readings, readings[1:])))
 
-    def test_small_gain_is_noise(self):
-        # 2% better at pcie 0.35: below MIN_GAIN, so the default stays
-        res, _ = self.run_with(lambda f, p, w: 51.0 if abs(f - 0.35) < 1e-6 else 50.0)
-        self.assertEqual(res["settings"], {})
+    def test_a_gain_that_beats_the_run_noise_is_kept(self):
+        # the 2026-10 ud-q4_k_xl report: the sweep winner is worth ~+2%, under the old fixed 3% margin,
+        # but every confirmation round repeats it - a gain bigger than the variation is real, keep it
+        said = []
+        res, _ = self.run_with(lambda f, p, w: 50.0 * (1.02 if abs(f - 0.75) < 1e-6 else 1.0), say=said.append)
+        self.assertEqual(res["settings"].get("--pcie-frac"), "0.75")
+        self.assertNotIn("--spec-min-p", res["settings"])     # the flat floor sweep chose nothing
+        self.assertTrue(any(x.endswith("-> kept") for x in said))
+        self.assertEqual(res["report"]["confirm_t"], 99.0)     # a zero-scatter run: no noise to beat
+        self.assertIn("confirm_noise", res["report"])
+
+    def test_a_gain_that_only_scatters_pair_to_pair_is_dropped(self):
+        # +18% on the median of the first three pairs, but the paired rounds scatter from -14% to +20%:
+        # the margin is the run's own variation, and a lucky best-of-eight draw does not beat it
+        calls = {"c": 0}
+        gains = (0.18, -0.14, 0.20, -0.10, 0.06, 0.14, -0.12)
+
+        def speed(f, p, w):
+            if abs(f - 0.75) < 1e-6:
+                calls["c"] += 1
+                return 55.0 if calls["c"] <= 36 else 50.0 * (1.0 + gains[(calls["c"] - 37) // 3 % 7])
+            return 50.0
+        res, _ = self.run_with(speed)
+        self.assertNotIn("--pcie-frac", res["settings"])
+
+    def test_the_measured_noise_floor_drops_a_steady_tiny_gain(self):
+        # sweeps wobble +-1.5% round to round (pooled sigma 0.0173); the confirmation gains a steady +1.0025%
+        # (0.5% x 0.5% from winning both sweeps), so the pairs' own stdev is 0 and the floor sets the scatter.
+        # Over the 7 pairs: t = 0.010025*sqrt(7)/(sqrt(2)*0.017252) = 1.087 < T_KEEP, dropped (reported truncated)
+        # - without the floor s would be 0, t = 99
+        counts = {}
+
+        def speed(f, p, w):
+            n = counts[(f, p)] = counts.get((f, p), 0) + 1   # 3 prompt calls per rate(): wobble flips per rate
+            wob = 1.015 if (n - 1) % 6 < 3 else 0.985
+            return 50.0 * (1.005 if abs(f - 0.75) < 1e-6 else 1.0) * (1.005 if abs(p - 0.7) < 1e-6 else 1.0) * wob
+        res, _ = self.run_with(speed)
+        self.assertNotIn("--pcie-frac", res["settings"])
+        self.assertEqual(res["report"]["confirm_noise"], 0.0173)
+        self.assertEqual(res["report"]["confirm_t"], 1.08)
+        self.assertEqual(len(res["report"]["confirm"]["0.75/0.7"]), 7)   # all 7 pairs, always
+
+    def test_a_gain_that_needs_seven_pairs_to_be_seen_is_kept(self):
+        # the first three pairs only reach t 2.0, but the run always pays for all 7 pairs: no early stop on a
+        # noisy start, and 7 pairs settle this at t ~ 4.7 - kept
+        calls = {"c": 0}
+        gains = (0.03, 0.03, 0.0, 0.03, 0.02, 0.03, 0.01)
+
+        def speed(f, p, w):
+            if abs(f - 0.75) < 1e-6:
+                calls["c"] += 1
+                return 55.0 if calls["c"] <= 36 else 50.0 * (1.0 + gains[(calls["c"] - 37) // 3 % 7])
+            return 50.0
+        res, _ = self.run_with(speed)
+        self.assertEqual(res["settings"].get("--pcie-frac"), "0.75")
+        self.assertEqual(len(res["report"]["confirm"]["0.75/0.5"]), 7)   # all 7 pairs, always;
+        # the floor sweep is flat, so the default floor wins its tie and only the chosen pcie share lands
+        self.assertEqual(res["settings"], {"--pcie-frac": "0.75"})
 
     def test_finds_pcie_and_min_p(self):
         def speed(f, p, w):
@@ -293,6 +347,15 @@ class Calibrate(unittest.TestCase):
         self.assertIsNone(CAL.arg_value(b, "--pool-workers"))
         self.assertEqual(b.count("--spec-min-p"), 1)
 
+    def test_apply_does_not_add_flags_it_did_not_choose(self):
+        # the 2026-10 report: a hand-written config without --spec-min-p got "0.5" added by apply() and it read
+        # as a calibration choice; only a flag the config already carried is reset to the product default
+        hand = ["--pack", "p", "--spec", "4"]
+        self.assertIsNone(CAL.arg_value(CAL.apply(hand, {"--pool-workers": "7"}), "--spec-min-p"))
+        self.assertEqual(CAL.arg_value(CAL.apply(hand, {"--spec-min-p": "0.70"}), "--spec-min-p"), "0.70")
+        self.assertEqual(CAL.apply(hand + ["--spec-min-p", "0.70"], {}),
+                         ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5"])
+
     def test_engine_args_are_the_servers(self):
         # #447: a "gpu" list is a layer split only with two or more cards; "0,2" is one too; split_skip_if_fits counts
         helper = {"args": BASE + ["--expert-cache-device1", "1800"], "gpu": [0], "env": {"CUDA_VISIBLE_DEVICES": "0,1"}}
@@ -355,6 +418,19 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [53, 52, 60]}, "a"), "b")
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [51, 51.5, 51]}, "a"), "a")
         self.assertEqual(CAL.pick({}, "a"), "a")
+
+    def test_a_dead_pair_skips_instead_of_scoring_minus_100(self):
+        # a zero candidate rate (dead engine, short decode) must not score as a -100% pair: 6 of 7 pairs at
+        # +5% still keep (t = 0.05*sqrt(6)/(sqrt(2)*0.01) = 8.66)
+        keep, mean, t = CAL.paired_decision([50.0] * 7, [52.5] * 6 + [0.0], 0.01)
+        self.assertTrue(keep)
+        self.assertAlmostEqual(mean, 0.05)
+        self.assertAlmostEqual(t, 8.66, places=1)
+
+    def test_pooled_sigma(self):
+        # the root-mean-square of the values' CVs: stdev(100,98,102)/100 = 2/100, stdev(50,49,51)/50 = 1/50
+        self.assertAlmostEqual(CAL.pooled_sigma([[100.0, 98.0, 102.0], [50.0, 49.0, 51.0]]), 0.02, places=4)
+        self.assertEqual(CAL.pooled_sigma([[50.0]]), 0.0)               # no repeats: no scatter to measure
 
 
 class SetupIntegration(unittest.TestCase):
