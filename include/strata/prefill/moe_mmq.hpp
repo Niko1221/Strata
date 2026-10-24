@@ -30,6 +30,13 @@ size_t matrix_bytes(int ggml_type, int64_t rows, int64_t cols);
 /// Bytes of `rows` activation rows of `cols` values quantized for MMQ (the row padded to 512 values).
 size_t q8_bytes(int64_t rows, int64_t cols);
 
+/// Lend the MMQ kernels' device scratch (their stream-k fixup tiles, which mmq.cuh allocates lazily through
+/// `ggml_cuda_pool` and this build's pool backs with a cudaMalloc on the card's free VRAM) the part of the borrowed
+/// expert-cache region a chunk's layout did not use, so it costs VRAM the prompt has already taken.  Call per
+/// layout from the prompt path, with the tail its carve left (a null `base` - the loan is gone, or the layout used
+/// all of it - drops the buffers cached from the previous layout).
+void pool_slab(int dev, void* base, size_t bytes);
+
 /// q8_1 activations for MMQ against weights of `ggml_type`: row i of the output is row ids[i] of x (or row i when
 /// ids is null); `x` has `ld` floats per row.
 void quantize(const float* x, const int32_t* ids, void* xq, int ggml_type, int64_t cols, int64_t ld, int64_t rows,

@@ -3,6 +3,7 @@
 #include "strata/core/emulate.hpp"
 #include "common.cuh"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -114,19 +115,86 @@ const ggml_cuda_device_info & ggml_cuda_info() {
 }
 
 namespace {
+// The prompt path's MMQ scratch, where the pool has no business taking VRAM: the part of the borrowed expert-cache
+// region (a request's loan, Prefill::init/relayout) that this chunk's layout did not use.  It is the prompt's memory
+// for as long as the prompt holds the loan, so the fixup tiles cost the card nothing - and on a card whose free VRAM
+// is a handful of MB at prompt time the cudaMalloc below is what used to abort the engine mid-prompt.  Set per
+// layout (mmq::pool_slab, from Prefill::init and Prefill::relayout on the device that will run the chunk), so the
+// buffers cached from the previous one are dropped when it moves.
+struct Slab {
+    uint8_t * base = nullptr;
+    size_t bytes = 0, used = 0;
+};
+Slab g_slab[GGML_CUDA_MAX_DEVICES];
+std::mutex g_slab_mu;
+
+// MMQ's stream-k fixup asks for nsm*J*I floats, and its J search (8..128 by 8) picks a different J per launch, so a
+// cache keyed on the exact size holds one buffer per J: 32 buffers, 31.5 MiB on a 579-token chunk (and the same at
+// 16k, since J does not grow with the chunk - the Maya checkout measured it on its rig).  Rounding a request up to
+// a size class (a power of two, 128 KiB floor - 128 KiB..2 MiB covers the whole J range on a 30-SM card) bounds the
+// pool to a few MiB whatever J wins.  Handing back more than was asked is what every caching allocator does; the
+// kernels only touch the first nsm*J*I floats.
+size_t size_class(size_t n) {
+    size_t c = 128u << 10;
+    while (c < n) c <<= 1;
+    return c;
+}
+
 // Buffers are kept and reused: MMQ asks for the same few sizes every launch (its stream-k fixup tiles).
 struct CachingPool : ggml_cuda_pool {
-    struct Buf { void * p; size_t size; bool used; };
+    struct Buf { void * p; size_t size; bool used; bool slab; };
     std::vector<Buf> bufs;
     std::mutex mu;
+    int dev;
+    void * slab_seen = nullptr;   // the slab base the cached buffers came from; a move makes them stale
+    explicit CachingPool(int device) : dev(device) {}
+    size_t held() const {   // the bytes this pool holds on the card (never given back)
+        size_t n = 0;
+        for (const auto & b : bufs) n += b.size;
+        return n;
+    }
     void * alloc(size_t size, size_t * actual_size) override {
         std::lock_guard<std::mutex> lk(mu);
-        for (auto & b : bufs)
-            if (!b.used && b.size >= size) { b.used = true; *actual_size = b.size; return b.p; }
+        const size_t cls = size_class(size);
+        {
+            std::lock_guard<std::mutex> sl(g_slab_mu);
+            Slab & s = g_slab[dev];
+            if (s.base != slab_seen) {
+                slab_seen = s.base;
+                // the layout moved under the cached buffers: nothing is in flight between chunks, so drop them
+                bufs.erase(std::remove_if(bufs.begin(), bufs.end(),
+                                          [](const Buf & b) { return b.slab; }), bufs.end());
+            }
+            for (auto & b : bufs)
+                if (!b.used && b.size >= cls) { b.used = true; *actual_size = b.size; return b.p; }
+            if (s.base != nullptr && s.bytes >= s.used && s.bytes - s.used >= cls) {
+                void * p = s.base + s.used;
+                s.used += cls;
+                *actual_size = cls;
+                bufs.push_back({p, cls, true, true});
+                return p;
+            }
+        }
+        size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
         void * p = nullptr;
-        CUDA_CHECK(cudaMalloc(&p, size));
-        bufs.push_back({p, size, true});
-        *actual_size = size;
+        const cudaError_t e = cudaMalloc(&p, cls);
+        if (e != cudaSuccess) {
+            // this is the whole reason a prompt used to abort mid-read with "out of memory" and nothing else
+            std::fprintf(stderr,
+                         "ggml-cuda (strata mmq): CUDA%d wanted %.1f MiB of scratch (the prompt path's pool held %.1f "
+                         "MiB in %zu buffers) and only %.1f MiB of %.1f MiB was free: %s\n",
+                         dev, (double) cls / 1048576.0, (double) held() / 1048576.0, bufs.size(),
+                         (double) free_b / 1048576.0, (double) total_b / 1048576.0, cudaGetErrorString(e));
+            CUDA_CHECK(e);
+        }
+        if (cls >= ((size_t) 4 << 20))
+            std::fprintf(stderr, "strata prefill mmq: CUDA%d the scratch pool takes a new %.1f MiB buffer (%.1f MiB free of "
+                                 "%.1f MiB, %.1f MiB held)\n",
+                         dev, (double) cls / 1048576.0, (double) free_b / 1048576.0, (double) total_b / 1048576.0,
+                         (double) held() / 1048576.0);
+        bufs.push_back({p, cls, true, false});
+        *actual_size = cls;
         return p;
     }
     void free(void * ptr, size_t) override {
@@ -135,13 +203,24 @@ struct CachingPool : ggml_cuda_pool {
             if (b.p == ptr) { b.used = false; return; }
     }
     ~CachingPool() override {
-        for (auto & b : bufs) cudaFree(b.p);
+        for (auto & b : bufs)
+            if (!b.slab) cudaFree(b.p);   // slab buffers are the borrowed region's tail, not ours to free
     }
 };
 }  // namespace
 
-std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int, int) {
-    return std::unique_ptr<ggml_cuda_pool>(new CachingPool());
+// Called by the prompt path once per layout, before that layout's MMQ launches: `base`/`bytes` are the tail of the
+// borrowed expert-cache region this chunk's carve left over (prefill.cpp's carve, which knows both).  The bump
+// restarts there; a tail somewhere else invalidates the buffers cached from the old one.  A null `base` (the loan is
+// gone, or the layout used all of it) drops them and the pool allocates on the device again.
+extern "C" void strata_mmq_pool_slab(int dev, void * base, size_t bytes) {
+    std::lock_guard<std::mutex> lk(g_slab_mu);
+    if (dev < 0 || dev >= GGML_CUDA_MAX_DEVICES) return;
+    g_slab[dev] = {(uint8_t *) base, base != nullptr ? bytes : 0, 0};
+}
+
+std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int device, int) {
+    return std::unique_ptr<ggml_cuda_pool>(new CachingPool(device));
 }
 
 ggml_backend_cuda_context::~ggml_backend_cuda_context() {}
