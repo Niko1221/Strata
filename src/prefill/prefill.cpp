@@ -39,6 +39,7 @@
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
+#include "strata/kernels/qsa_pattn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_fused.hpp"
@@ -3503,8 +3504,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // decode kernel, 32 queries at a time (K8V4 runs the tensor kernel's mode 3: INT8 K,
                     // V dequantized from its q4_0 blocks to fp16 at gather)
                     static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+                    // STRATA_PATTN_SM60=1 (qsa_pattn.hpp, sm_6x, int8 K/V): the decode kernels' output bit for bit from a
+                    // score kernel and a value kernel that merges as it folds (no partials, no merge kernel), ~100
+                    // queries a batch in the same scratch
                     if (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
                                                                             m.attn, T, m.cs))
+#if !defined(STRATA_GPU_METAL)   // qsa_pattn.cu is in the CUDA / HIP kernel library only
+                        if (!(strata::kernels::pattn_mode() != 0 &&
+                              strata::kernels::qsa_pattn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.attn_scratch,
+                                                               (uint64_t) m.attn_batch *
+                                                                   strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s),
+                                                               m.attn, T, m.cs)))
+#endif
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
