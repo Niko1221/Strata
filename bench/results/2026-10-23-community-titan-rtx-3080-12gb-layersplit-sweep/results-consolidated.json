@@ -1,0 +1,243 @@
+{
+ "report": "layer_split K=20..32 sweep + 10-min endurance (K=20 vs K=32)",
+ "date_utc": "2026-10-23",
+ "build": {
+  "app": "v0.2.3 (commit 5c8dd322528cc84f68f461ad54a506b9da8fa8d4)",
+  "engine": "0.1.48 local build (mtime 2026-10-23T13:04Z), BUILD.json archs [75], CUDA 13.0.88, driver 580.178.04",
+  "all_runs_same_binary": true
+ },
+ "machine": {
+  "hp_z840": "Xeon E5-2683 v4 16C/32T 2.1G base (turbo firmware-disabled, OS-released via MSR; 15 pool workers)",
+  "ram_gib": 125.7,
+  "storage": "NVMe 953.9 GB (model+pack+profile, expert arena 55.43 GiB loaded at 8.61 GiB/s via file cache); 7.3 TB SAS HDD idle; swap off",
+  "gpus": {
+   "main_titan": "TITAN RTX 24 GB, nvidia-smi idx0, PCIe 03:00.0 Gen3 x16 @8GT/s, power.limit 210 W (operator hard cap; default 250)",
+   "helper_3080": "GeForce RTX 3080 12 GB, idx1, 04:00.0 Gen3 x16 @8GT/s, power.limit 280 W (cap; default 350)",
+   "engine_pcie_probe_gbs": "12.1-12.4 H2D"
+  },
+  "os": "Ubuntu 24.04.5, kernel 6.8.0-147"
+ },
+ "model": {
+  "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "quant": "UD-IQ4_XS",
+  "shards_B": [
+   10946624,
+   49835229856,
+   43836407744
+  ],
+  "total_GB": 93.68,
+  "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf, 907543008 B, vision sidecar on, not exercised by bench",
+  "pack": "native pack built locally by tools/iq_pack.py (dense.bin 1485688320 B, 512 experts/layer; conversions.json shipped)",
+  "profile": "profile-learned.bin, 24576 ranked pairs, self-learned, re-saved on exit; same file across all same-day arms",
+  "mtp_draft": "mtp/rt (q2_0 draft layer on main card, 837 MiB VRAM)",
+  "context": 262144,
+  "kv": "int8, 32768 cells resident, 2.06 GiB pinned RAM"
+ },
+ "protocol": {
+  "type": "custom streaming protocol (NOT the standard-suite; not comparable to strata-bench numbers)",
+  "workload": "3 Korean prompt types cycling 2:2:1 — arithmetic+parity (two varying operands), 3-line summary of a ~1.5K-char pasted document, numbered-extraction over a ~15.6K-char pasted pseudo-log; ~60 / ~900 / ~8,700 prompt tokens; max_tokens 200/350/250; temperature 0.3; thinking ON; verbatim text in prompts.md",
+  "timing": "client-side SSE: TTFT = first non-empty delta (may be reasoning token), keep-alives/empty deltas ignored; decode tok/s = tokens/(t_last - t_first); tokens = non-empty content+reasoning chunks",
+  "engine_cross_check_anchors": {
+   "first_endurance_short_request": {
+    "engine_reported_tps": 120.3,
+    "client_tps": 119.0
+   },
+   "endurance_long_prompt_request": {
+    "engine_reported_tps": 80.4,
+    "client_arm_median_tps": 105.3,
+    "note": "engine 'generated in' line for the 8.6K-token prompt in the K=32 window vs client long-arm median; exact line-to-request attribution beyond boot-window was not preserved"
+   }
+  },
+  "calibration_note": "engine-reported tok/s runs ~0-1% below client on short prompts and ~15% below on 8.6K-prompt requests; absolute decode magnitudes carry that slop, cross-arm deltas share one method on one binary in one afternoon",
+  "arms": "systemd restart per arm then 240 s sequential mixed-size streaming, K=20,24,26,28,30,32 back-to-back 15:02-15:37 UTC; restart between arms, profile file preserved, conversation cache empty, unique per-request tags (no prefix reuse)",
+  "endurance": "600 s sequential + 90 s x 4 concurrent + 1 recovery request; baseline run same protocol at K=20 14:25 UTC",
+  "background": "the agent operating this box shares the server during ALL runs (a few long-context gateway turns); equal across arms; disclosed"
+ },
+ "results": {
+  "baseline_endurance_k20": {
+   "seq_n": 77,
+   "tps_med": 99.8,
+   "tps_last20": 98.8,
+   "ttft_med": 2.37,
+   "errors": 0,
+   "burst_n": 44,
+   "burst_agg_tps": 53.4,
+   "tail_tps": 97.9
+  },
+  "endurance_k32": {
+   "k": 32,
+   "seq_n": 106,
+   "errors": 0,
+   "seq_tps_med": 114.2,
+   "seq_tps_min": 92.5,
+   "seq_tps_last20": 116.8,
+   "ttft_med": 2.75,
+   "hit_med": 95.2,
+   "hit_samples": 150,
+   "burst_agg_tps": 51.8,
+   "tail_tps": 110.6,
+   "tail_ttft": 1.34,
+   "titan": {
+    "power_max_w": 234.1,
+    "power_avg_w": 164.7,
+    "temp_max_c": 76.0,
+    "util_avg": 49.7
+   },
+   "g3080": {
+    "power_max_w": 277.7,
+    "power_avg_w": 231.0,
+    "temp_max_c": 73.0,
+    "util_avg": 81.1
+   },
+   "decision": "KEEP_K32 (live)"
+  },
+  "arms": {
+   "20": {
+    "n": 30,
+    "med": 101.1,
+    "rng": "86.0-115.2",
+    "ttft_med": 2.41,
+    "by_kind": {
+     "short": 104.2,
+     "medium": 100.5,
+     "long": 94.0
+    }
+   },
+   "24": {
+    "n": 31,
+    "med": 103.7,
+    "rng": "89.5-114.6",
+    "ttft_med": 2.44,
+    "by_kind": {
+     "short": 107.1,
+     "medium": 102.6,
+     "long": 94.2
+    }
+   },
+   "26": {
+    "n": 35,
+    "med": 108.6,
+    "rng": "95.3-118.5",
+    "ttft_med": 2.41,
+    "by_kind": {
+     "short": 110.5,
+     "medium": 109.4,
+     "long": 101.2
+    }
+   },
+   "28": {
+    "n": 49,
+    "med": 110.7,
+    "rng": "94.2-129.0",
+    "ttft_med": 2.52,
+    "by_kind": {
+     "short": 112.1,
+     "medium": 113.6,
+     "long": 105.4
+    }
+   },
+   "30": {
+    "n": 46,
+    "med": 112.7,
+    "rng": "92.3-131.0",
+    "ttft_med": 2.62,
+    "by_kind": {
+     "short": 116.7,
+     "medium": 111.0,
+     "long": 102.9
+    }
+   },
+   "32": {
+    "n": 48,
+    "med": 115.7,
+    "rng": "97.4-132.7",
+    "ttft_med": 2.75,
+    "by_kind": {
+     "short": 123.0,
+     "medium": 111.9,
+     "long": 105.3
+    }
+   }
+  },
+  "arm_extras": {
+   "20": {
+    "hit": 97.8,
+    "titan": {
+     "power_max_w": 220.1,
+     "power_avg_w": 176.2,
+     "temp_max_c": 79.0
+    },
+    "g3080": {
+     "power_max_w": 270.4,
+     "power_avg_w": 195.8,
+     "temp_max_c": 73.0
+    }
+   },
+   "24": {
+    "hit": 97.5,
+    "titan": {
+     "power_max_w": 216.2,
+     "power_avg_w": 174.6,
+     "temp_max_c": 80.0
+    },
+    "g3080": {
+     "power_max_w": 264.9,
+     "power_avg_w": 213.5,
+     "temp_max_c": 74.0
+    }
+   },
+   "26": {
+    "hit": 97.0,
+    "titan": {
+     "power_max_w": 230.0,
+     "power_avg_w": 189.3,
+     "temp_max_c": 78.0
+    },
+    "g3080": {
+     "power_max_w": 269.8,
+     "power_avg_w": 216.3,
+     "temp_max_c": 72.0
+    }
+   },
+   "28": {
+    "hit": 96.2,
+    "titan": {
+     "power_max_w": 235.4,
+     "power_avg_w": 158.4,
+     "temp_max_c": 76.0
+    },
+    "g3080": {
+     "power_max_w": 269.5,
+     "power_avg_w": 208.9,
+     "temp_max_c": 74.0
+    }
+   },
+   "30": {
+    "hit": 95.5,
+    "titan": {
+     "power_max_w": 222.7,
+     "power_avg_w": 152.4,
+     "temp_max_c": 76.0
+    },
+    "g3080": {
+     "power_max_w": 275.5,
+     "power_avg_w": 218.9,
+     "temp_max_c": 72.0
+    }
+   },
+   "32": {
+    "hit": 94.7,
+    "titan": {
+     "power_max_w": 218.0,
+     "power_avg_w": 156.7,
+     "temp_max_c": 76.0
+    },
+    "g3080": {
+     "power_max_w": 278.4,
+     "power_avg_w": 229.0,
+     "temp_max_c": 73.0
+    }
+   }
+  }
+ }
+}

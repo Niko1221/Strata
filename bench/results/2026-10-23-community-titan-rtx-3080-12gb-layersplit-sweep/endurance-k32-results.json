@@ -1,0 +1,27 @@
+{
+ "k": 32,
+ "seq_n": 106,
+ "errors": 0,
+ "seq_tps_med": 114.2,
+ "seq_tps_min": 92.5,
+ "seq_tps_last20": 116.8,
+ "ttft_med": 2.75,
+ "hit_med": 95.2,
+ "hit_samples": 150,
+ "burst_agg_tps": 51.8,
+ "tail_tps": 110.6,
+ "tail_ttft": 1.34,
+ "titan": {
+  "power_max_w": 234.1,
+  "power_avg_w": 164.7,
+  "temp_max_c": 76.0,
+  "util_avg": 49.7
+ },
+ "g3080": {
+  "power_max_w": 277.7,
+  "power_avg_w": 231.0,
+  "temp_max_c": 73.0,
+  "util_avg": 81.1
+ },
+ "decision": "KEEP_K32"
+}

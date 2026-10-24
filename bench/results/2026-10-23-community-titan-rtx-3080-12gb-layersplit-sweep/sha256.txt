@@ -1,0 +1,12 @@
+5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4  ~/gguf/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf
+577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7  ~/gguf/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833  ~/gguf/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf
+c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a  ~/Strata-data/mtp/rt/dense.bin
+991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd  ~/Strata-data/mtp/rt/dense.txt
+b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91  ~/Strata-data/mtp/rt/draft_vocab.bin
+09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f  ~/Strata-data/mtp/rt/experts.bin
+4887925bbe286922110d78da5f4fc1f208bb710f1a1e4740c481045be679329f  ~/Strata-data/profile-learned.bin
+b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0  ~/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+f53174059b262ed342b82e143af62056081948ef5e5f1903a1a70eeb73fa4a23  ~/Strata-data/packs/unsloth-ud-iq4_xs/dense.bin
+efeee4836f3fbc6e58f48e7bb2f4e396dba64e730a7285e0f8587b8e762aa6b0  ~/Strata-data/packs/unsloth-ud-iq4_xs/conversions.json
+f9a8bdec38ab634fec9a31807cc3284e6497ef24c1afa0d8853127b0537c68db  ~/Strata-data/packs/unsloth-ud-iq4_xs/native_experts.txt
