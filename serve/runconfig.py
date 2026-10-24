@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 from strata_control import user_args
@@ -173,10 +174,12 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
     return new, changed
 
 
-def save(path: str | Path, cfg: dict) -> Path:
+def save(path: str | Path, cfg: dict, *, preserve_backup=False) -> Path:
     """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak."""
     path = Path(path)
     bak = path.with_name(path.name + ".bak")
+    if preserve_backup and bak.exists():
+        bak = path.with_name(path.name + "." + uuid.uuid4().hex + ".bak")
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")

@@ -1,0 +1,178 @@
+{
+  "schema": 1,
+  "source_revision": "a69684f1f2609da46c82f9719d5159f5f9b307dc",
+  "run": "run-20261023-235518-97b9b7",
+  "passed": true,
+  "model_started": false,
+  "platform": "Windows 11 x64",
+  "compiler": "MSVC 14.44.35207",
+  "windows_sdk": "10.0.26100.0",
+  "cuda": "13.4",
+  "cuda_architecture": 89,
+  "portable": true,
+  "llama_cpp_dependency": "3cf03257",
+  "build_parallelism": 1,
+  "build_steps": 183,
+  "native_sha256": "744205e4e024b5cbba19e4b560678ffe21e6899e59050929f7af51557f3c6198",
+  "plan_sha256": "e3a02024d75c78c18642d8f9e03ef04ca4286192cdbc64f2c2236d76c813c378",
+  "source_files": 661,
+  "dependency_files": 1407,
+  "runner_tool_pins": 11,
+  "steps": [
+    {
+      "name": "configure",
+      "exit_code": 0,
+      "seconds": 17.765,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 46.81023406982422,
+        "commit_gib": 75.34487533569336
+      }
+    },
+    {
+      "name": "build",
+      "exit_code": 0,
+      "seconds": 961.907,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 43.43646240234375,
+        "commit_gib": 72.6655044555664
+      }
+    },
+    {
+      "name": "live_memory_test",
+      "exit_code": 0,
+      "seconds": 2.156,
+      "arguments": "--protocol-only",
+      "minimum_memory": {
+        "ram_gib": 44.559478759765625,
+        "commit_gib": 73.5170783996582
+      }
+    },
+    {
+      "name": "live_prefill_policy_test",
+      "exit_code": 0,
+      "seconds": 2.172,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 44.59373474121094,
+        "commit_gib": 73.54504013061523
+      }
+    },
+    {
+      "name": "background_control_test",
+      "exit_code": 0,
+      "seconds": 2.062,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 44.63731384277344,
+        "commit_gib": 73.5882453918457
+      }
+    },
+    {
+      "name": "request_stop_test",
+      "exit_code": 0,
+      "seconds": 2.157,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 44.61544418334961,
+        "commit_gib": 73.58331298828125
+      }
+    },
+    {
+      "name": "pool_background_test",
+      "exit_code": 0,
+      "seconds": 2.672,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 44.64646530151367,
+        "commit_gib": 73.59210205078125
+      }
+    },
+    {
+      "name": "pool_tasks_test",
+      "exit_code": 0,
+      "seconds": 8.391,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 44.7018928527832,
+        "commit_gib": 73.65631484985352
+      }
+    },
+    {
+      "name": "platform_memory_test",
+      "exit_code": 0,
+      "seconds": 1.844,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.238037109375,
+        "commit_gib": 74.22274017333984
+      }
+    },
+    {
+      "name": "file_expert_source_test",
+      "exit_code": 0,
+      "seconds": 2.047,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.1422233581543,
+        "commit_gib": 74.08353042602539
+      }
+    },
+    {
+      "name": "conversation_validation_test",
+      "exit_code": 0,
+      "seconds": 1.843,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.21961212158203,
+        "commit_gib": 74.17478942871094
+      }
+    },
+    {
+      "name": "iq_avx2_parity",
+      "exit_code": 0,
+      "seconds": 1.953,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.196998596191406,
+        "commit_gib": 74.14908218383789
+      }
+    },
+    {
+      "name": "router_dot_parity",
+      "exit_code": 0,
+      "seconds": 1.844,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.23244857788086,
+        "commit_gib": 74.19903945922852
+      }
+    },
+    {
+      "name": "pool_cores_test",
+      "exit_code": 0,
+      "seconds": 1.859,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.251277923583984,
+        "commit_gib": 74.20271301269531
+      }
+    },
+    {
+      "name": "numa_pool_test",
+      "exit_code": 0,
+      "seconds": 1.938,
+      "arguments": null,
+      "minimum_memory": {
+        "ram_gib": 45.212310791015625,
+        "commit_gib": 74.12457275390625
+      }
+    }
+  ],
+  "retained_process_handles": 1638,
+  "all_retained_handles_exited": true,
+  "cleanup_confirmed": true,
+  "outer_exit_code": 0,
+  "scope": "CUDA compile and native utility/protocol/parity tests; no model, HIP/SYCL/Metal, private checkpoint bank, or newer Python scheduler qualification"
+}

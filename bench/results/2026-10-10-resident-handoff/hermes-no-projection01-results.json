@@ -1,0 +1,132 @@
+{
+  "status": "passed",
+  "experiment": "hermes-no-projection-01",
+  "scope": "One real supervisor and one sequential worker validate a supplied correct C++ fixture with projection disabled. This is not autonomous implementation or general reliability proof.",
+  "revisions": {
+    "strata_base_release": "0.1.42",
+    "strata_runtime_source": "1cb95593f5dd10954ba4ade6c957589ef820267b",
+    "hermes_paired_test_source": "873419f6bfc7c19cd18406d4da91027b4cbcf65e",
+    "native_sha256": "d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9",
+    "server_sha256": "e291fd6b7e5179a6bb212628d1173342e85fa454782bc446aa3f60130e13799a",
+    "broker_sha256": "e7a753d65c436e021bead6a8a92d9c61f09e8fde9dbfa3952423f46e136a576c",
+    "harness_sha256": "8129861e7bbe3b487e89349106c8917789171396fd3ab3fd9cc4221799f12306",
+    "raw_result_sha256": "bf5ab0277e89e1f4f3e1adb921eec242e022bf7172843e39b3ca752fdf38f03e"
+  },
+  "settings": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "context_limit": 65536,
+    "reasoning_effort": "high",
+    "reasoning_budget_tokens": 8192,
+    "vision": "CPU",
+    "max_concurrent_children": 1,
+    "pcie_fraction": 0.37,
+    "ple_io": "direct",
+    "route_tail_skip": 0,
+    "resident_budget_gib": 32,
+    "conversation_cache_mib": 2048,
+    "conversation_cache_slots": 2,
+    "sampled_vram_guard_mib": 250,
+    "sampled_ram_guard_gib": 3,
+    "lease_mode": "auto",
+    "admission_ram_gib": 6,
+    "execution_ram_gib": 3,
+    "resume_additional_vram_mib": 0,
+    "experimental_speed_projection": false
+  },
+  "projection_proof": {
+    "configuration_checks": {
+      "required_off_profile": true,
+      "native_arguments_absent": true,
+      "sampling_explicit_false": true,
+      "shared_explicit_false": true,
+      "fallback_config_explicit_false": true,
+      "hermes_provider_override_false": true,
+      "cpu_vision_unchanged": true,
+      "paired_hermes_revision": true,
+      "bounded_zero_additional_return": true,
+      "case_local_runtime": true,
+      "empty_journal_before_start": true,
+      "empty_driver_cache_before_start": true,
+      "pinned_engine_strata.exe": true,
+      "pinned_serve_server.py": true,
+      "pinned_plugin_broker.py": true
+    },
+    "native_info_before_first_request_was_zero": true,
+    "native_info_after_final_request_was_zero": true,
+    "actual_native_arguments_had_no_projection_options": true,
+    "all_recorded_requests_explicitly_disabled_projection": true,
+    "recorded_requests_checked": 10,
+    "fresh_writable_state": true
+  },
+  "acceptance": {
+    "lifecycle_checks": {
+      "one_plan": true,
+      "one_acquire": true,
+      "one_release": true,
+      "ready_before_tool": true,
+      "renewed_during_foreground_tool": true,
+      "tool_success": true,
+      "same_models_alive_at_tool": true,
+      "owned_compiler_children_dead_before_return": true,
+      "release_after_tool": true,
+      "one_committed_start_before_tool": true,
+      "actual_resident_selection": true,
+      "owner_identity_stable": true,
+      "owner_mode_targets_exact": true,
+      "execution_phase_and_hold": true,
+      "no_unload_transition": true,
+      "real_supervisor_child_lineage": true,
+      "control_credential_absent_from_terminal": true
+    },
+    "workflow_checks": {
+      "normal_root_final": true,
+      "root_closed": true,
+      "root_below_turn_cap": true,
+      "actual_output_quoted": true,
+      "nonce_absent_user_system": true,
+      "supervisor_plan_then_one_delegate": true,
+      "plan_dispatch_linked_success": true,
+      "supervisor_did_not_compile": true,
+      "exactly_one_sequential_child": true,
+      "exactly_one_child_compiler_command": true,
+      "linked_real_compiler_feedback": true,
+      "final_api_corroborated": true
+    },
+    "compiler_fixture_cases": 2096,
+    "compiler_jobs": 4,
+    "independent_cases": 104,
+    "vision": "exact normalized red square",
+    "function_continuation": "real add(17,25), tool result42, final42",
+    "same_native_and_vision_processes_through_final_continuation": true,
+    "selected_action": "none",
+    "root_api_calls": 4,
+    "hermes_high_reasoning_tool_bearing_requests": 6,
+    "immutable_fixture_unchanged": true
+  },
+  "timings_seconds": {
+    "agent": 217.87188601493835,
+    "whole_harness_including_startup_checks_cleanup": 292.98126244544983,
+    "compiler": 2.1358200999966357,
+    "foreground_wrapper": 17.66679334640503,
+    "declared_renewal_hold": 15,
+    "independent_checks": 1.0286050999711733,
+    "post_agent_function_continuation": 12.80660104751587
+  },
+  "resources": {
+    "minimum_available_ram_gib": 9.881580352783203,
+    "minimum_actual_native_free_vram_mib": 328
+  },
+  "cleanup": {
+    "verified_owned_processes_dead": true,
+    "errors": [],
+    "ordinary_hermes_config_unchanged": true
+  },
+  "limits": [
+    "A separate projection-disabled qualification; earlier projection-enabled successes and failures remain unchanged.",
+    "Configured64K is not occupied64K. The fixture was supplied correct.",
+    "Zero additional return VRAM is limited to this known bounded shape and retained workspace; it is not a replacement for the256MiB general planning allowance.",
+    "One successful run does not establish a causal speedup, perfect autonomy or universal no-OOM operation.",
+    "The15second hold tests lease renewal; it is not compiler work.",
+    "Only fixed labels, booleans, counts, aggregate durations, sampled minima and source hashes are exported."
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "status": "passed",
+  "scope": "One real Hermes supervisor and one sequential worker validate a supplied correct C++ fixture on the v0.1.42 adaptive runtime. Not autonomous implementation or general reliability proof.",
+  "revisions": {
+    "strata_base_release": "0.1.42",
+    "strata_runtime_source": "1cb95593f5dd10954ba4ade6c957589ef820267b",
+    "hermes_paired_test_source": "873419f6bfc7c19cd18406d4da91027b4cbcf65e",
+    "hermes_previous_source": "c09e4cacedd04733d94f3d3c7af341367bb6ac26",
+    "harness_sha256": "ca7cf1aa5e55a999d3779bba2bf9e0ecdf82c1181bc2fac328ff7c683e7c233f",
+    "raw_result_sha256": "b6dd8a911b9465af2d282bc955787865b4f134ad9b95135872529d99f648ecb8",
+    "native_sha256": "d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9"
+  },
+  "change": "Clarify that sufficient consistent completed worker check evidence can satisfy supervisor verification; add compact observed terminal outcome/exit/truncation metadata. Preserve required independent checks and missing/failed/conflicting evidence follow-up. verify_on_stop unchanged.",
+  "settings": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "context_limit": 65536,
+    "reasoning_effort": "high",
+    "reasoning_budget_tokens": 8192,
+    "vision": "CPU",
+    "max_concurrent_children": 1,
+    "pcie_fraction": 0.37,
+    "ple_io": "direct",
+    "route_tail_skip": 0,
+    "resident_budget_gib": 32,
+    "conversation_cache_mib": 2048,
+    "conversation_cache_slots": 2,
+    "sampled_vram_guard_mib": 250,
+    "sampled_ram_guard_gib": 3,
+    "lease_mode": "auto",
+    "admission_ram_gib": 6,
+    "execution_ram_gib": 3,
+    "resume_additional_vram_mib": 0,
+    "return_allowance_scope": "Explicit known-shape already-allocated-workspace qualification; the installed default remains256MiB additional return allowance."
+  },
+  "acceptance": {
+    "lifecycle_checks": {
+      "one_plan": true,
+      "one_acquire": true,
+      "one_release": true,
+      "ready_before_tool": true,
+      "renewed_during_foreground_tool": true,
+      "tool_success": true,
+      "same_models_alive_at_tool": true,
+      "owned_compiler_children_dead_before_return": true,
+      "release_after_tool": true,
+      "one_committed_start_before_tool": true,
+      "actual_resident_selection": true,
+      "owner_identity_stable": true,
+      "owner_mode_targets_exact": true,
+      "execution_phase_and_hold": true,
+      "no_unload_transition": true,
+      "real_supervisor_child_lineage": true,
+      "control_credential_absent_from_terminal": true
+    },
+    "workflow_checks": {
+      "normal_root_final": true,
+      "root_closed": true,
+      "root_below_turn_cap": true,
+      "actual_output_quoted": true,
+      "nonce_absent_user_system": true,
+      "supervisor_plan_then_one_delegate": true,
+      "plan_dispatch_linked_success": true,
+      "supervisor_did_not_compile": true,
+      "exactly_one_sequential_child": true,
+      "exactly_one_child_compiler_command": true,
+      "linked_real_compiler_feedback": true,
+      "final_api_corroborated": true
+    },
+    "workflow_gate_name_note": "supervisor_did_not_compile checks no supervisor terminal call; exactly_one_child_compiler_command checks exactly one terminal command overall.",
+    "compiler_fixture_cases": 2096,
+    "compiler_jobs": 4,
+    "independent_cases": 104,
+    "vision": "exact normalized red square",
+    "function_continuation": "real add(17,25), tool result42, final42",
+    "same_native_and_vision_processes_through_final_continuation": true,
+    "root_api_calls": 4,
+    "high_reasoning_tool_bearing_requests": 6,
+    "immutable_fixture_unchanged": true
+  },
+  "timings_seconds": {
+    "agent": 215.3823082447052,
+    "whole_harness_including_startup_checks_cleanup": 287.690954208374,
+    "compiler": 2.1793682999850716,
+    "foreground_wrapper": 17.744938611984253,
+    "declared_renewal_hold": 15,
+    "independent_checks": 1.0466316000092775,
+    "post_agent_function_continuation": 13.205386638641357
+  },
+  "resources": {
+    "minimum_available_ram_gib": 4.572029113769531,
+    "minimum_actual_native_free_vram_mib": 322
+  },
+  "cleanup": {
+    "verified_owned_processes_dead": true,
+    "errors": [],
+    "ordinary_production_unchanged": true
+  },
+  "validation": {
+    "new_hermes_regression_tests": {
+      "passed": 20
+    },
+    "baseline_against_new_regressions": {
+      "failed": 17,
+      "passed": 3
+    },
+    "broader_focused_suite": {
+      "passed": 188,
+      "failed": 3,
+      "skipped": 4
+    },
+    "baseline_limit": "The same3output-schema failures reproduce unchanged on c09 in the minimal optional-dependency test environment.",
+    "scripts_check": "11checks passed; no blocking/advisory findings",
+    "new_harness_checker_tests": 9
+  },
+  "limits": [
+    "Earlier05and05-r2runs remain failed overall and unchanged.",
+    "The new harness preserves strict gates but continues safe independent diagnostics after a workflow-only failure; resource/ownership failures still abort.",
+    "One actual successful candidate run, not repeated matched A/B speedup or perfect autonomous behavior.",
+    "The fixture was supplied correct, and configured64K is not occupied64K.",
+    "The15second foreground hold exercises renewal; it is not compiler work.",
+    "Tests do not establish external API side-effect verification behavior or universal no-OOM operation.",
+    "Read-only upstream research continued; no unrelated compiler, broad suite or model workload overlapped."
+  ]
+}

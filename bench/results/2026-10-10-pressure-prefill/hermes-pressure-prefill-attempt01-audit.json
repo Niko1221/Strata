@@ -1,0 +1,59 @@
+{
+  "schema": "strata.hermes-pressure-prefill-attempt-audit.v1",
+  "overall_status": "failed_strict_workflow_gate",
+  "raw_case_unchanged": true,
+  "diagnosis": "Real model argument error followed by successful repair. The checker correctly rejected two delegation attempts under the original exactly-once instruction.",
+  "strict_workflow": {
+    "passed": false,
+    "passed_checks": 11,
+    "total_checks": 12,
+    "failed_check": "supervisor_plan_then_one_delegate",
+    "delegation_attempts": 2,
+    "first_attempt": "tasks was a string containing invalid JSON escape; validation rejected it before creating a child",
+    "second_attempt": "tasks was a valid one-entry array; exactly one child completed",
+    "actual_children": 1,
+    "actual_child_compiler_commands": 1,
+    "model_api_history_corroborates_argument_types": true,
+    "exact_tool_feedback_and_nonce_transcription_passed": true,
+    "supervisor_did_not_run_redundant_verification": true,
+    "no_prompt_or_gate_changed": true
+  },
+  "separate_successful_gates": {
+    "lifecycle_checks": 17,
+    "lifecycle_all_passed": true,
+    "compiler_jobs": 4,
+    "compiler_peak_jobs": 4,
+    "compiler_cases": 2096,
+    "independent_cases": 104,
+    "vision_exact_answer_passed": true,
+    "function_call_and_result42_passed": true,
+    "original_native_and_vision_preserved": true,
+    "first_return_admission_proof_before_native_request": true,
+    "selected_retained_prefix": 28,
+    "committed_cache_mapping_mib": [
+      672,
+      544,
+      416
+    ],
+    "fresh_available_vram_mib": 584,
+    "required_reserve_mib": 576,
+    "ordinary_additional_return_allowance_mib": 256,
+    "projection_off_actual_requests": 12,
+    "final_native_cvec_zero": true,
+    "owned_cleanup_complete": true
+  },
+  "observations": {
+    "hermes_process_exit_code": 0,
+    "root_api_calls": 6,
+    "agent_wall_s": 264.464342,
+    "minimum_sampled_ram_available_gib": 9.543461,
+    "minimum_sampled_native_vram_available_mib": 328,
+    "nonfatal_auxiliary_session_title_schema_rejections": 1
+  },
+  "limits": [
+    "This remains a failed strict full-workflow qualification; component/lifecycle successes do not overwrite that result.",
+    "Successful recovery created only one worker and one compiler job sequence, but the original instruction explicitly limited delegation to one call.",
+    "No malformed-JSON auto-repair is proposed; invalid escape input cannot safely be treated as a validated task array.",
+    "No full64K prompt, all-workloads reliability, general speedup or universal no-OOM guarantee follows."
+  ]
+}

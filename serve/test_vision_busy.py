@@ -39,6 +39,8 @@ class Busy(unittest.TestCase):
         line = "cudaMalloc failed: CUDA-capable device(s) is/are busy or unavailable\n"
         proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(line), kill=lambda: None, wait=lambda timeout=None: 0,
                                poll=lambda: None)
+        # wait() confirms process death; poll() must agree for retained-handle cleanup.
+        proc.wait = lambda timeout=None: setattr(proc, "poll", lambda: 0) or 0
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.gettempdir())
