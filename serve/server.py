@@ -60,7 +60,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages, assistant_prefix_kw,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -4734,7 +4734,30 @@ class Service:
         """The template rendered.  #458: with `effort_end`, a request with a non-default effort (low, medium or no
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
-        empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn.
+
+        An "assistant_prefix" kwarg (the request's field, frontend.assistant_prefix_kw) renders the conversation with
+        the prefix as its last, unfinished assistant turn: the template writes an empty turn as it writes any turn
+        after the last user query (the header, the turn's empty thinking block), its end-of-turn token comes off and
+        the raw prefix text follows, so generation continues the turn instead of starting a new one.  The prefix is
+        supplied text, not template-rendered content: it goes in exactly as sent - leading and trailing whitespace
+        included - and may itself end in "<|im_end|>\\n" without the terminator removal touching it.  The effort-end
+        trick above does not apply to it."""
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix:
+            kw = {k: v for k, v in kwargs.items() if k != "assistant_prefix"}
+            head = self.template.render(list(messages) + [{"role": "assistant", "content": ""}],
+                                        tools=tools, add_generation_prompt=False, **kw)
+            end = IM_END + "\n"
+            if not head.endswith(end):
+                # a template whose assistant turn does not end the way Strata's does: the prefix goes in as the
+                # turn's rendered text (trimmed, as the template writes every turn) rather than guessing at its
+                # terminator.  Strata's own template (serve/chat_template.jinja, or the pack's copy of it) always
+                # ends a turn with "<|im_end|>\\n", so this is a guard, not a supported shape.
+                rendered = self.template.render(list(messages) + [{"role": "assistant", "content": prefix}],
+                                                tools=tools, add_generation_prompt=False, **kw)
+                return rendered[:-len(end)] if rendered.endswith(end) else rendered
+            return head[:-len(end)] + prefix
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -4753,8 +4776,14 @@ class Service:
         message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
         the control tokens the template writes are control tokens.  `store=False` (a token count) reuses the kept
-        prompts without adding or replacing one."""
+        prompts without adding or replacing one. The assistant prefix is message text too, so its own literals mark
+        the same way."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix and ("<think>" in prefix or "</think>" in prefix):
+            marked_prefix = mark_think_literals([{"role": "assistant", "content": prefix}], None, self.literals)[0][0]["content"]
+            kwargs = {**kwargs, "assistant_prefix": marked_prefix}
+            changed = True
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         plain = ()
         if changed:
@@ -4828,6 +4857,11 @@ class Service:
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix and os.environ.get("STRATA_DEBUG"):
+            base = len(self.encode_prompt(messages, tools, {**kwargs, "assistant_prefix": None}))
+            print(f"[strata] assistant prefill: {len(ids) - base} tokens (prompt {base} -> {len(ids)}, "
+                  f"generation starts at position {len(ids)})", flush=True)
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
@@ -4924,7 +4958,10 @@ class Service:
                 req["strata_prefix"] = {"messages": lead}
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        # a prefix turn's thinking block is already closed in the prompt (the reply has begun), so the output
+        # parser starts on the reply text, as it does for enable_thinking=false
+        thinking = kwargs.get("enable_thinking", True) is not False and not (isinstance(prefix, str) and prefix)
+        return ids, thinking, max_new
 
     @staticmethod
     def deepseek_shared_start(messages) -> int:
@@ -7319,7 +7356,7 @@ def make_handler(svc: Service):
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
-            kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
+            kw = assistant_prefix_kw(req, responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()}))
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
             except ValueError as e:
