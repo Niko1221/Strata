@@ -744,9 +744,16 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   argument, default 4096, `0` = no check).
 - `--session-save-reclaim` (engine argument, off by default) lets a save that fails its RAM check first release reconstructible
   host caches (retained K/V, oldest unpinned parked conversations, unpinned checkpoints), and the server waits up to 30 s for
-  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save.
+  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save. RESTORE uses
+  the same opt-in: when the RAM check that precedes parsing refuses, the same ladder first frees those host caches, logs
+  `restore reclaimed ...` and asks RAM again; if the ladder runs dry the typed `memory` refusal stands and the engine keeps
+  serving. The checkpoint a restore would resume from - the deepest one and every pin - survives the ladder either way.
 - Clients still send their messages and images; the file holds engine state and token identity, not a chat export. A follow-up
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
+- Format v2 adds the runtime's stage table to the file: one entry per later stage (its own layer range, its session carve's
+  QSA and GDN sizes, and whether its K/V group ends with the draft layer), per-stage parts of the live state and of every
+  checkpoint, and stage-ordered K/V groups; a runtime without a split writes an empty table. A file written in format v1 (the
+  predecessor without the stage table) is refused with `unsupported version 1` before its RAM admission; save again to replace it.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
   rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
@@ -757,7 +764,10 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new
   file had replaced the old one. Requests must be `application/json` (else `415`) and come from no browser page, Strata's own
   page or a trusted origin.
-- Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
+- Not supported with `--peer-device`, `--batch` or `--prompt-cache 0`. It works with `--layer-split`: the file records the writing
+  runtime's stage table, and the capture, the RAM limits, the validation and the transfer all run per stage, each against its
+  own carve; a file written by another split - or by a runtime without one, or for a runtime that has one - is refused as
+  invalid before any device write (`saved with a different layer split than this runtime's`). The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
 
