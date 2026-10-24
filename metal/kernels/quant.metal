@@ -27,6 +27,9 @@
 #define T_IQ3_S 21
 #define T_IQ2_S 22
 #define T_IQ4_XS 23
+#ifndef STRATA_NEXP
+#define STRATA_NEXP 512   // the router's experts (Gyro-M); the host compiles a Gyro-Coder-L's 256 in with a prelude define
+#endif
 #define T_Q2_0 42
 #define T_Q2_0R 142   // Q2_0 read with raw activations (codes - 1 in the decoder; no prepared x needed)
 #define T_TQ2T 144    // agentionai's trellis types (Gyro): 128 values a block, 34 / 26 / 30 bytes, Hadamard-folded experts
