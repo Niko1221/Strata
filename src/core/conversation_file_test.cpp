@@ -469,6 +469,27 @@ int main() {
         check(session_model_fingerprint(session_model_inputs(swapped), c, error) && c != b,
               "inputs: the role each expert file plays enters the fingerprint");
     }
+    // R1b: a Metal install has no <rt>/dense.bin - the MTP GGUF beside the rt directory is what the engine loads, so that
+    // is what the fingerprint hashes (one resolver with mtp_load); CUDA/CPU keep the rt directory's files
+    {
+        const fs::path mtp = dir / "mtp-home", rt = mtp / "rt";
+        fs::create_directories(rt);
+        spit(rt / "draft_vocab.bin", std::vector<char>(64, 'v'));
+        spit(mtp / "mtp-q2_0.gguf", std::vector<char>(4096, 'm'));
+        unsetenv("STRATA_METAL_MTP_GGUF");
+        check(metal_mtp_gguf_path(rt.string() + "/") == (mtp / "mtp-q2_0.gguf").string(), "metal mtp: <rt>/../mtp-q2_0.gguf");
+        uint64_t a = 0, b = 0, c = 0;
+        check(session_model_fingerprint(session_mtp_inputs(rt.string(), true), a, error),
+              "metal mtp: fingerprint without dense.bin");
+        auto d = slurp(mtp / "mtp-q2_0.gguf"); d[0] = 'X'; spit(mtp / "mtp-q2_0.gguf", d);
+        check(session_model_fingerprint(session_mtp_inputs(rt.string(), true), b, error) && a != b,
+              "metal mtp: the GGUF enters the fingerprint");
+        check(!session_model_fingerprint(session_mtp_inputs(rt.string(), false), c, error),
+              "cuda mtp: <rt>/dense.bin is still required");
+        setenv("STRATA_METAL_MTP_GGUF", (dir / "other.gguf").string().c_str(), 1);
+        check(metal_mtp_gguf_path(rt.string()) == (dir / "other.gguf").string(), "metal mtp: the environment names the GGUF");
+        unsetenv("STRATA_METAL_MTP_GGUF");
+    }
     // R2: runtime limits bound every array before it is allocated, and the file size follows from them
     {
         auto exact = [&] {
