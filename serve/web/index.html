@@ -167,6 +167,36 @@
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
           (in this page's chat only; switch it off in Sampling).</p>
       </div>
+
+      <div class="st-card usage-card" id="usage-card" hidden>
+        <div class="usage-lifetime" id="usage-lifetime">
+          <div class="usage-k">Tokens generated locally · all time</div>
+          <div class="usage-lifetime-value" id="usage-lifetime-value">0</div>
+          <div class="muted small" id="usage-lifetime-detail"></div>
+          <p class="muted small" id="usage-imported" hidden></p>
+        </div>
+        <p class="usage-warning small" id="usage-warning" role="status" hidden></p>
+        <div class="req-head"><span class="card-title">Usage</span>
+          <span class="usage-ranges" id="usage-ranges">
+            <button class="st-btn st-btn--secondary usage-range" data-range="1d">1 day</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="7d">7 days</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="30d">30 days</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="all">Lifetime</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="custom">Custom</button>
+            <span class="usage-custom" id="usage-custom" hidden>
+              <label class="usage-custom-l">From
+                <input class="usage-custom-d" id="usage-from-d" type="date" aria-label="Custom range start date">
+                <input class="usage-custom-t" id="usage-from-t" type="time" aria-label="Custom range start time, optional, defaults to 00:00">
+              </label>
+              <label class="usage-custom-l">To
+                <input class="usage-custom-d" id="usage-to-d" type="date" aria-label="Custom range end date">
+                <input class="usage-custom-t" id="usage-to-t" type="time" aria-label="Custom range end time, optional, defaults to 00:00">
+              </label>
+            </span>
+          </span></div>
+        <div class="usage-grid" id="usage-grid"></div>
+        <p class="muted small" id="usage-note" hidden></p>
+      </div>
     </div>
   </section>
 

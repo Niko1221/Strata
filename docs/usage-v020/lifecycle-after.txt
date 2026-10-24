@@ -1,0 +1,6 @@
+test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.165s
+
+OK

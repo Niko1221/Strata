@@ -1,0 +1,2033 @@
+[strata] layer split: card order 2,0 (the faster card last; "gpu_order": "as_given" keeps 0,2, #1352)
+[strata] layer split: card order 2,0 (the faster card last; "gpu_order": "as_given" keeps 0,2, #1352)
+[strata] layer split: card order 2,0 (the faster card last; "gpu_order": "as_given" keeps 0,2, #1352)
+[strata] layer split: card order 0,2,1 (the faster card last; "gpu_order": "as_given" keeps 0,1,2, #1352)
+[strata] layer split: keeping card order 0,1 - the faster card has less VRAM than the one the split ends on (12288 vs 22528 MiB, #1576)
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split: keeping card order 0,1,2 - the faster card has less VRAM than the one the split ends on (12288 vs 24576 MiB, #1576)
+<local-path> ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp-path>' mode='r' encoding='UTF-8'>
+  props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<local-path> ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp-path>' mode='r' encoding='UTF-8'>
+  props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<local-path> ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp-path>' mode='r' encoding='UTF-8'>
+  props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<local-path> ResourceWarning: unclosed file <_io.TextIOWrapper name='<temp-path>' mode='r' encoding='UTF-8'>
+  props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+strata serve: AMD: HIP_PATH=Z:\definitely\not\here does not exist: not passed to the engine
+strata serve: AMD: HIP_PATH=<temp-path> does not exist: not passed to the engine
+strata serve: AMD: HIP_DEVICE_LIB_PATH=<temp-path> does not exist: not passed to the engine
+strata serve: AMD: TEMP=<temp-path> is not writable: using /private<temp-path>
+[strata] the config has a "vision" section but no --vision in its args: added --vision and --vram-reserve-mib 700 (run setup again with --vision to write them)
+[strata] the config has a "vision" section but no --vision in its args: added --vision (run setup again with --vision to write them)
+[strata] the config has a "vision" section but no --vision in its args: added --vision (run setup again with --vision to write them)
+[strata] the engine did not start (try 1 of 3); again in 0 s
+[strata] the engine has said nothing for 1 s but is still working; it is not ended (the limit is engine_silence_s). If it is stuck, "engine_silence_s" can be set lower.
+[strata] the engine has said nothing for 1 s but is still working; it is not ended (the limit is engine_silence_s). If it is stuck, "engine_silence_s" can be set lower.
+[strata] invalid usage statistics preserved as u.json.corrupt-1792446507152659000; starting new counters
+[strata] invalid usage statistics preserved as usage.json.corrupt-1792446507336413000; starting new counters
+[strata] usage statistics could not be saved to usage.json; totals are in memory only
+[strata] invalid usage statistics preserved as usage.json.corrupt-1792446507384081000; starting new counters
+======================================================================
+ERROR: test_free_vram_on_hip (serve.test_server.AmdTelemetry.test_free_vram_on_hip)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4827, in test_free_vram_on_hip
+    svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_body_a_handler_read_is_not_waited_for (serve.test_server.AnswerBeforeTheBody.test_a_body_a_handler_read_is_not_waited_for)
+#594: /config and /load read their body themselves: the close must not wait for the drain's 5 s.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_body_that_comes_in_drops_does_not_hold_the_connection (serve.test_server.AnswerBeforeTheBody.test_a_body_that_comes_in_drops_does_not_hold_the_connection)
+A client that announces a body and sends it a byte at a time is let go after DRAIN_SECONDS, with its
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_host_the_server_does_not_answer_to (serve.test_server.AnswerBeforeTheBody.test_a_host_the_server_does_not_answer_to)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_method_with_no_handler (serve.test_server.AnswerBeforeTheBody.test_a_method_with_no_handler)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_wrong_key (serve.test_server.AnswerBeforeTheBody.test_a_wrong_key)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_wrong_key_and_a_body_of_megabytes (serve.test_server.AnswerBeforeTheBody.test_a_wrong_key_and_a_body_of_megabytes)
+An agent client's conversation, or one screenshot, is several MiB, and a rotated key is when the 401 matters.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_load_and_unload (serve.test_server.AnswerBeforeTheBody.test_load_and_unload)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_not_the_apps_own_page (serve.test_server.AnswerBeforeTheBody.test_not_the_apps_own_page)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5485, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_utf8_key_over_http (serve.test_server.ApiKeyForms.test_a_utf8_key_over_http)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1042, in test_a_utf8_key_over_http
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_history_and_totals (serve.test_server.CancelledRead.test_history_and_totals)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2796, in test_history_and_totals
+    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_two_turns_share_the_whole_system_prompt (serve.test_server.ClaudeCodeBillingStamp.test_two_turns_share_the_whole_system_prompt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5850, in test_two_turns_share_the_whole_system_prompt
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.ClientHangUp)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2033, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.ClientShapes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1371, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_key_and_no_key (serve.test_server.ConfigApiKey.test_a_key_and_no_key)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 986, in test_a_key_and_no_key
+    code, key, err = self.run_main({"api_key": "cfg"})
+                     ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 971, in run_main
+    code = S.main()
+  File "<local-path>", line 7827, in main
+    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+                  model_name=default_model_name(cfg), vision=vision,
+                  sampling_defaults=sampling_defaults,
+                  fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_an_empty_key_is_a_warning (serve.test_server.ConfigApiKey.test_an_empty_key_is_a_warning)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 977, in test_an_empty_key_is_a_warning
+    code, key, err = self.run_main({"api_key": ""})
+                     ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 971, in run_main
+    code = S.main()
+  File "<local-path>", line 7827, in main
+    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+                  model_name=default_model_name(cfg), vision=vision,
+                  sampling_defaults=sampling_defaults,
+                  fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_config_level_fills_in_what_a_request_leaves_out (serve.test_server.ConfigReasoningEffort.test_config_level_fills_in_what_a_request_leaves_out)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3070, in test_config_level_fills_in_what_a_request_leaves_out
+    svc = self.svc("low")
+  File "<local-path>", line 3060, in svc
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_default_changes_nothing (serve.test_server.ConfigReasoningEffort.test_default_changes_nothing)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3067, in test_default_changes_nothing
+    self.assertIs(self.svc().with_shared(req, "openai"), req)
+                  ~~~~~~~~^^
+  File "<local-path>", line 3060, in svc
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_shared_settings_win (serve.test_server.ConfigReasoningEffort.test_shared_settings_win)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3077, in test_shared_settings_win
+    svc = self.svc("low", {"reasoning_effort": "high"})
+  File "<local-path>", line 3060, in svc
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.ConnectionClose)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5453, in setUpClass
+    cls.svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_drafts_in_history_and_totals (serve.test_server.DraftCounts.test_drafts_in_history_and_totals)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2151, in test_drafts_in_history_and_totals
+    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_changing_the_effort_keeps_the_conversation (serve.test_server.EffortAtTheEnd.test_changing_the_effort_keeps_the_conversation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 829, in setUp
+    self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_config (serve.test_server.EffortAtTheEnd.test_the_config)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 829, in setUp
+    self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_default_prompt_is_unchanged (serve.test_server.EffortAtTheEnd.test_the_default_prompt_is_unchanged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 829, in setUp
+    self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_next_turn_reuses_the_checkpoint (serve.test_server.EffortAtTheEnd.test_the_next_turn_reuses_the_checkpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 829, in setUp
+    self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_trailing_turn (serve.test_server.EffortAtTheEnd.test_the_trailing_turn)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 829, in setUp
+    self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_engine_err_mid_stream (serve.test_server.EngineDeath.test_engine_err_mid_stream)
+The engine's ERR line after the stream started reaches the client as an error event (it used to be a
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2107, in test_engine_err_mid_stream
+    svc = Service(ErrEngine(tok, ANSWER, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_error_then_restart (serve.test_server.EngineDeath.test_error_then_restart)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2070, in test_error_then_restart
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.FitMaxTokens)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 259, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"), fit_max_tokens=True)
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_call_cut_by_max_tokens_is_not_a_tool_call (serve.test_server.ForcedToolChoice.test_a_call_cut_by_max_tokens_is_not_a_tool_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_thinking_that_ends_right_after_a_quote_opens_the_call (serve.test_server.ForcedToolChoice.test_a_thinking_that_ends_right_after_a_quote_opens_the_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_anthropic_any_tool_none (serve.test_server.ForcedToolChoice.test_anthropic_any_tool_none)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_auto_absent_and_none_leave_the_tools_to_the_model (serve.test_server.ForcedToolChoice.test_auto_absent_and_none_leave_the_tools_to_the_model)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_required_and_named_after_the_thinking (serve.test_server.ForcedToolChoice.test_required_and_named_after_the_thinking)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_budget_wrap_up_opens_the_call (serve.test_server.ForcedToolChoice.test_the_budget_wrap_up_opens_the_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_flat_shape_names_a_function (serve.test_server.ForcedToolChoice.test_the_flat_shape_names_a_function)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_values_it_cannot_honour_act_as_auto (serve.test_server.ForcedToolChoice.test_values_it_cannot_honour_act_as_auto)
+Not a 400: an odd tool_choice is logged and the model decides.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_without_thinking_the_prompt_ends_with_the_opening (serve.test_server.ForcedToolChoice.test_without_thinking_the_prompt_ends_with_the_opening)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4287, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_held_back_call_still_pings (serve.test_server.HeldBackArgKeepalive.test_a_held_back_call_still_pings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2839, in test_a_held_back_call_still_pings
+    svc = Service(HeldEngine(tok, "<tool_call><function=f>" + "x" * 30, max_context=CTX), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_an_ordinary_answer_does_not_ping (serve.test_server.HeldBackArgKeepalive.test_an_ordinary_answer_does_not_ping)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2848, in test_an_ordinary_answer_does_not_ping
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_anthropic_tool_result_image (serve.test_server.ImageMarkers.test_anthropic_tool_result_image)
+Claude Code's Read of a picture returns it inside a tool_result: it reaches the encoder, in place.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 430, in test_anthropic_tool_result_image
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                  vision=self.FakeVision(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_literal_marker_with_an_image (serve.test_server.ImageMarkers.test_literal_marker_with_an_image)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 385, in test_literal_marker_with_an_image
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                  vision=self.FakeVision(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_pictures_are_keyed_by_their_bytes_for_the_engine (serve.test_server.ImageMarkers.test_pictures_are_keyed_by_their_bytes_for_the_engine)
+#2228: each picture's key (its normalized bytes' hash: the encoder's file name) goes to the engine as
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 409, in test_pictures_are_keyed_by_their_bytes_for_the_engine
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                  vision=Keyed(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_whole_marker_in_text_before_images (serve.test_server.ImageMarkers.test_the_whole_marker_in_text_before_images)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 514, in test_the_whole_marker_in_text_before_images
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                  vision=TwoPictures(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_page_of_another_site_cannot_name_a_file (serve.test_server.ImageSources.test_a_page_of_another_site_cannot_name_a_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5269, in test_a_page_of_another_site_cannot_name_a_file
+    svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_url_is_downloaded_outside_the_fifo (serve.test_server.ImageSources.test_a_url_is_downloaded_outside_the_fifo)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5249, in test_a_url_is_downloaded_outside_the_fifo
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                  vision=vision)
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.IncrementalPrompts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1858, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.LiteralControlTokens)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 745, in setUpClass
+    cls.svc = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.LiteralThinkTags)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 673, in setUpClass
+    cls.svc = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_request_without_a_done_keeps_no_engine_counters (serve.test_server.LiveRate.test_a_request_without_a_done_keeps_no_engine_counters)
+An engine that dies mid-answer: the previous request's `last` must not become this row's decode rate.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2869, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_prefill_rate_excludes_cached_tokens (serve.test_server.LiveRate.test_prefill_rate_excludes_cached_tokens)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2869, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_live_number_is_a_rate (serve.test_server.LiveRate.test_the_live_number_is_a_rate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2869, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_silent_mid_answer (serve.test_server.LostStep.test_silent_mid_answer)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5153, in test_silent_mid_answer
+    self.run_mode("silent", stream=False)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 5120, in run_mode
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_silent_mid_stream (serve.test_server.LostStep.test_silent_mid_stream)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5156, in test_silent_mid_stream
+    self.run_mode("silent", stream=True)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 5120, in run_mode
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_stop_never_acknowledged (serve.test_server.LostStep.test_stop_never_acknowledged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5159, in test_stop_never_acknowledged
+    self.run_mode("stop", stream=False)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 5120, in run_mode
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.MaxTokens)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 49, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.ModelAliases)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4672, in setUpClass
+    cls.svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"), model_name="qwen3.8-flash-next-iq3_xxs")
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_mid_reply_ends_without_retry (serve.test_server.NonFiniteLogits.test_mid_reply_ends_without_retry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2422, in test_mid_reply_ends_without_retry
+    eng, svc, ids, done, error, text, log = self.run_reply([3])    # "hel"
+                                            ~~~~~~~~~~~~~~^^^^^
+  File "<local-path>", line 2396, in run_reply
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_nothing_emitted_is_retried_once (serve.test_server.NonFiniteLogits.test_nothing_emitted_is_retried_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2412, in test_nothing_emitted_is_retried_once
+    eng, svc, ids, done, error, text, log = self.run_reply([0])
+                                            ~~~~~~~~~~~~~~^^^^^
+  File "<local-path>", line 2396, in run_reply
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_twice_is_an_error (serve.test_server.NonFiniteLogits.test_twice_is_an_error)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2430, in test_twice_is_an_error
+    eng, svc, ids, done, error, text, log = self.run_reply([0, 0, 0])
+                                            ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "<local-path>", line 2396, in run_reply
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_twice_over_http (serve.test_server.NonFiniteLogits.test_twice_over_http)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2440, in test_twice_over_http
+    svc = Service(NonFiniteEngine(tok, "ok", max_context=CTX, plan=[0, 0]), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_history (serve.test_server.PcieShare.test_history)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2251, in test_history
+    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_cancel_before_the_encode_runs_none (serve.test_server.PrepareCancelled.test_cancel_before_the_encode_runs_none)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 6006, in test_cancel_before_the_encode_runs_none
+    svc = self.make(d, V)
+  File "<local-path>", line 5989, in make
+    return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                   vision=vision(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_cancel_while_waiting_for_the_turn (serve.test_server.PrepareCancelled.test_cancel_while_waiting_for_the_turn)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 6020, in test_cancel_while_waiting_for_the_turn
+    svc = self.make(d, ImageMarkers.FakeVision)
+  File "<local-path>", line 5989, in make
+    return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                   vision=vision(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_without_cancel_nothing_changes (serve.test_server.PrepareCancelled.test_without_cancel_nothing_changes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 6047, in test_without_cancel_nothing_changes
+    svc = self.make(d, ImageMarkers.FakeVision)
+  File "<local-path>", line 5989, in make
+    return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                   vision=vision(d))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_throughput_gauges_cover_the_window_between_scrapes (serve.test_server.PrometheusMetrics.test_throughput_gauges_cover_the_window_between_scrapes)
+#2341: llama.cpp reads these two from a bucket it resets on every scrape, so a scrape that saw no
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2213, in test_throughput_gauges_cover_the_window_between_scrapes
+    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_totals (serve.test_server.PrometheusMetrics.test_totals)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2180, in test_totals
+    svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_client_that_asks_gets_one_progress_per_chunk (serve.test_server.PromptProgress.test_a_client_that_asks_gets_one_progress_per_chunk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3005, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_client_that_does_not_ask_gets_nothing (serve.test_server.PromptProgress.test_a_client_that_does_not_ask_gets_nothing)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3005, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_nothing_before_the_first_chunk (serve.test_server.PromptProgress.test_nothing_before_the_first_chunk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3005, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_line_that_says_the_prompt_is_read_is_dropped (serve.test_server.PromptProgress.test_the_line_that_says_the_prompt_is_read_is_dropped)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3005, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_reply_that_answered_is_not_touched (serve.test_server.ReasoningCloseRetry.test_a_reply_that_answered_is_not_touched)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3973, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_reply_that_closed_its_thinking_right_after_a_quote_is_not_touched (serve.test_server.ReasoningCloseRetry.test_a_reply_that_closed_its_thinking_right_after_a_quote_is_not_touched)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3973, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_off_by_default_the_reply_stays_empty (serve.test_server.ReasoningCloseRetry.test_off_by_default_the_reply_stays_empty)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3973, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_on_it_closes_the_thinking_once_and_answers (serve.test_server.ReasoningCloseRetry.test_on_it_closes_the_thinking_once_and_answers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3973, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_long_run_is_ended (serve.test_server.RepeatStop.test_a_long_run_is_ended)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2348, in test_a_long_run_is_ended
+    done, log = self.run_reply("ok " + "!" * 1000 + " never")
+                ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 2339, in run_reply
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_short_runs_and_off (serve.test_server.RepeatStop.test_short_runs_and_off)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 2354, in test_short_runs_and_off
+    done, _ = self.run_reply("=" * 255 + " fine")
+              ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 2339, in run_reply
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_context_zero_is_503 (serve.test_server.RestartWindow.test_context_zero_is_503)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4643, in test_context_zero_is_503
+    svc = Service(MockEngine(tok, "</think>\n\nok", max_context=0), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_failed_restart_keeps_the_known_context (serve.test_server.RestartWindow.test_failed_restart_keeps_the_known_context)
+After a restart that failed, max_context is 0 but the engine is not starting: a request is checked against
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4628, in test_failed_restart_keeps_the_known_context
+    svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.SharedPrefix)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1653, in setUpClass
+    cls.svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.SharedSettings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3151, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_before_load_failure_can_be_ignored_by_config (serve.test_server.SharingTheGpu.test_before_load_failure_can_be_ignored_by_config)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_before_load_runs_first (serve.test_server.SharingTheGpu.test_before_load_runs_first)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_before_load_strict_refuses_even_with_free_vram (serve.test_server.SharingTheGpu.test_before_load_strict_refuses_even_with_free_vram)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_before_load_timeout_is_configurable_and_a_timeout_refuses (serve.test_server.SharingTheGpu.test_before_load_timeout_is_configurable_and_a_timeout_refuses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_failing_before_load_with_free_vram_still_loads (serve.test_server.SharingTheGpu.test_failing_before_load_with_free_vram_still_loads)
+#1997: a peer that is not running makes `curl` exit 7; the card has room, so the model loads.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after (serve.test_server.SharingTheGpu.test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_failing_before_load_without_a_vram_limit_loads (serve.test_server.SharingTheGpu.test_failing_before_load_without_a_vram_limit_loads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_idle_unload (serve.test_server.SharingTheGpu.test_idle_unload)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_load_endpoint (serve.test_server.SharingTheGpu.test_load_endpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_min_free_vram_refuses_to_load (serve.test_server.SharingTheGpu.test_min_free_vram_refuses_to_load)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_min_free_vram_unreadable_loads (serve.test_server.SharingTheGpu.test_min_free_vram_unreadable_loads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_off_by_default (serve.test_server.SharingTheGpu.test_off_by_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_unload_refused_while_a_request_runs (serve.test_server.SharingTheGpu.test_unload_refused_while_a_request_runs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_unload_then_the_next_request_loads (serve.test_server.SharingTheGpu.test_unload_then_the_next_request_loads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_unload_wait_gives_up_after_the_given_seconds (serve.test_server.SharingTheGpu.test_unload_wait_gives_up_after_the_given_seconds)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_unload_wait_waits_for_the_running_turn (serve.test_server.SharingTheGpu.test_unload_wait_waits_for_the_running_turn)
+#1997: POST /unload answers busy at once (409); with ?wait=1 it waits for the turn and then unloads.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_vision_encoder_unloads_and_starts_first (serve.test_server.SharingTheGpu.test_vision_encoder_unloads_and_starts_first)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3728, in setUp
+    self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_abort_then_the_next_request (serve.test_server.StatusHandover.test_abort_then_the_next_request)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4486, in test_abort_then_the_next_request
+    svc = Service(Engine(tok, "</think>\n\n" + "y" * 40, max_context=CTX), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_status (serve.test_server.StatusNeedsTheKey.test_status)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 929, in test_status
+    svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.StopStrings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5338, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_bad_value_is_a_400 (serve.test_server.ThinkingBudget.test_a_bad_value_is_a_400)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_budget_above_max_tokens_is_capped_to_leave_room_for_the_answer (serve.test_server.ThinkingBudget.test_a_budget_above_max_tokens_is_capped_to_leave_room_for_the_answer)
+#984: max_tokens 300 and a budget of 5000 never fired: the reply ended while still thinking.  The thinking
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_budget_the_thinking_stays_under (serve.test_server.ThinkingBudget.test_a_budget_the_thinking_stays_under)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_budget_well_below_max_tokens_is_not_capped (serve.test_server.ThinkingBudget.test_a_budget_well_below_max_tokens_is_not_capped)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_cap_that_the_thinking_would_eat_leaves_room_to_answer (serve.test_server.ThinkingBudget.test_a_cap_that_the_thinking_would_eat_leaves_room_to_answer)
+0.1.45: max_tokens counts the thinking; a thinking that would fill it gets closed with a quarter left (the
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_reply_cut_while_thinking_is_named_in_the_log (serve.test_server.ThinkingBudget.test_a_reply_cut_while_thinking_is_named_in_the_log)
+#530: max tokens reached inside the thinking gives an empty answer; the server log says what helps.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_shared_budget_must_be_a_whole_number_of_tokens (serve.test_server.ThinkingBudget.test_a_shared_budget_must_be_a_whole_number_of_tokens)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_shared_budget_reaches_a_request_that_sets_none (serve.test_server.ThinkingBudget.test_a_shared_budget_reaches_a_request_that_sets_none)
+The Chat settings shared with other apps may carry a thinking budget too, like max_tokens and the effort.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_stop_string_is_found_in_the_answer_after_the_wrap_up (serve.test_server.ThinkingBudget.test_a_stop_string_is_found_in_the_answer_after_the_wrap_up)
+#454: the continuation after the thinking budget is cut at a stop string too.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_anthropic_stream (serve.test_server.ThinkingBudget.test_anthropic_stream)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_anthropic_thinking_budget_tokens_is_a_budget (serve.test_server.ThinkingBudget.test_anthropic_thinking_budget_tokens_is_a_budget)
+0.1.45: thinking {type: enabled, budget_tokens: N} closes the thinking after N tokens (it was only a level).
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_no_room_left_to_answer (serve.test_server.ThinkingBudget.test_no_room_left_to_answer)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_off_by_default (serve.test_server.ThinkingBudget.test_off_by_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_answer_room_has_its_limits (serve.test_server.ThinkingBudget.test_the_answer_room_has_its_limits)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_budget_wraps_up_the_thinking (serve.test_server.ThinkingBudget.test_the_budget_wraps_up_the_thinking)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_config_budget_reaches_the_anthropic_and_effort_requests (serve.test_server.ThinkingBudget.test_the_config_budget_reaches_the_anthropic_and_effort_requests)
+#984: a config budget applies to a request that sets no budget of its own, whatever its max_tokens and
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_config_default_and_a_request_that_turns_it_off (serve.test_server.ThinkingBudget.test_the_config_default_and_a_request_that_turns_it_off)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_thinking_progress_line_shows_the_budget_not_max_tokens (serve.test_server.ThinkingBudget.test_the_thinking_progress_line_shows_the_budget_not_max_tokens)
+#984: 'thinking: x of max 6400' read as if the budget was ignored; while a budget applies the line shows it.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_without_thinking_there_is_nothing_to_limit (serve.test_server.ThinkingBudget.test_without_thinking_there_is_nothing_to_limit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 4026, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_switch (serve.test_server.ToolCallRecoverySwitch.test_switch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1250, in test_switch
+    self.assertEqual(self.run_reply(False), [])
+                     ~~~~~~~~~~~~~~^^^^^^^
+  File "<local-path>", line 1242, in run_reply
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_call_cut_at_the_token_limit (serve.test_server.UnfinishedToolCall.test_a_call_cut_at_the_token_limit)
+The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1334, in test_a_call_cut_at_the_token_limit
+    a = self.answers(self.CUT + "rest of the file, never reached" * 40, max_tokens=len(self.CUT))
+  File "<local-path>", line 1286, in answers
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_cut_call (serve.test_server.UnfinishedToolCall.test_a_cut_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1326, in test_a_cut_call
+    self.assertEqual(self.answers(self.CUT), {
+                     ~~~~~~~~~~~~^^^^^^^^^^
+  File "<local-path>", line 1286, in answers
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_whole_call (serve.test_server.UnfinishedToolCall.test_a_whole_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 1356, in test_a_whole_call
+    a = self.answers(self.WHOLE)
+  File "<local-path>", line 1286, in answers
+    svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.UsageAndStatus)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3561, in setUpClass
+    cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_min_tokens_is_passed_only_when_set (serve.test_server.VisionArgs.test_min_tokens_is_passed_only_when_set)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5610, in test_min_tokens_is_passed_only_when_set
+    base = self.args_for({"max_tokens": 300})
+  File "<local-path>", line 5606, in args_for
+    server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 2522, in __init__
+    self._start()
+    ~~~~~~~~~~~^^
+  File "<local-path>", line 2543, in _start
+    self._start_reader()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "<local-path>", line 2556, in _start_reader
+    self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      cwd=self.dir)
+                      ^^^^^^^^^^^^^
+  File "<local-path>", line 90, in popen
+    return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (serve/lifeline.py)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 260, in popen
+    _watch(child)
+    ~~~~~~^^^^^^^
+  File "<local-path>", line 147, in _watch
+    watcher = subprocess.Popen([sys.executable, "-S", "-c", _WATCHER, str(child.pid), _start_token(child.pid)],
+                                                                          ^^^^^^^^^
+AttributeError: 'Proc' object has no attribute 'pid'
+
+======================================================================
+ERROR: setUpClass (serve.test_server.WebApp)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 3285, in setUpClass
+    cls.svc = Service(RecordingEngine(tok, "</think>\n\nhello", max_context=CTX), tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_disabled_path_does_not_add_a_metrics_field (serve.test_usage_durability.Serving.test_disabled_path_does_not_add_a_metrics_field)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 126, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_disconnected_generation_is_settled_once_then_can_resume (serve.test_usage_durability.Serving.test_disconnected_generation_is_settled_once_then_can_resume)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 126, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_settled_usage_matches_session_totals_after_multisession_work (serve.test_usage_durability.Serving.test_settled_usage_matches_session_totals_after_multisession_work)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 126, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_tool_call_tokens_are_counted_without_saving_the_arguments (serve.test_usage_durability.Serving.test_tool_call_tokens_are_counted_without_saving_the_arguments)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 126, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_metrics (serve.test_monitor.ConversationCacheCard.test_metrics)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 233, in test_metrics
+    svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_capture_is_bounded_and_eviction_returns_404 (serve.test_monitor.Monitor.test_capture_is_bounded_and_eviction_returns_404)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_error_and_engine_death_are_not_successes (serve.test_monitor.Monitor.test_error_and_engine_death_are_not_successes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_history_is_authorized_and_does_not_capture_headers (serve.test_monitor.Monitor.test_history_is_authorized_and_does_not_capture_headers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_output_and_reasoning_for_both_dialects_and_stream_modes (serve.test_monitor.Monitor.test_output_and_reasoning_for_both_dialects_and_stream_modes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_page_and_relative_assets_are_served (serve.test_monitor.Monitor.test_page_and_relative_assets_are_served)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_queue_wait_and_loading_are_attributed_separately (serve.test_monitor.Monitor.test_queue_wait_and_loading_are_attributed_separately)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 60, in setUp
+    self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_off_by_default (serve.test_monitor.MonitorOff.test_off_by_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 36, in test_off_by_default
+    svc = Service(MockEngine(tok, "Hello.", max_context=4096), tok,
+                  ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_every_concurrent_request_is_counted (serve.test_prometheus.Batched.test_every_concurrent_request_is_counted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 146, in test_every_concurrent_request_is_counted
+    svc = Service(BatchEngine(tok, "</think>\n\n" + "y" * 40, max_context=4096, delay_s=0.02), tok,
+                  ChatTemplate(ROOT / "serve/chat_template.jinja"))
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: setUpClass (serve.test_prometheus.Endpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 104, in setUpClass
+    cls.svc = Service(MockEngine(tok, "</think>\n\nhello there", max_context=4096), tok,
+              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_only_from_strata_s_own_page (serve.test_runconfig.Http.test_only_from_strata_s_own_page)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 86, in setUp
+    self.svc = Service(MockEngine(tok, "ok", max_context=4096), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_read_and_write_from_the_page (serve.test_runconfig.Http.test_read_and_write_from_the_page)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 86, in setUp
+    self.svc = Service(MockEngine(tok, "ok", max_context=4096), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_api_key (serve.test_runconfig.Http.test_the_api_key)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 86, in setUp
+    self.svc = Service(MockEngine(tok, "ok", max_context=4096), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_the_page_has_the_view (serve.test_runconfig.Http.test_the_page_has_the_view)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 86, in setUp
+    self.svc = Service(MockEngine(tok, "ok", max_context=4096), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_without_a_run_config (serve.test_runconfig.Http.test_without_a_run_config)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 86, in setUp
+    self.svc = Service(MockEngine(tok, "ok", max_context=4096), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+               ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 3455, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<local-path>", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+----------------------------------------------------------------------
+Ran 296 tests in 42.906s
+
+FAILED (errors=146)

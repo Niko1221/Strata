@@ -123,6 +123,23 @@ main { flex: 1; min-height: 0; display: flex; }
 .req-totals { margin: 0; font-size: var(--st-fs-sm); }
 .req-totals:empty { display: none; }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+/* the Usage panel: lifetime figures plus 1 day / 7 day / 30 day views (opt-in, --usage-stats) */
+.usage-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.usage-card[hidden] { display: none; }
+.usage-lifetime { padding-bottom: var(--st-s-3); border-bottom: 1px solid var(--st-line); }
+.usage-lifetime-value { font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; margin: .25rem 0; }
+.usage-warning { color: var(--st-ink); border-left: 3px solid var(--st-warn); padding-left: .75rem; }
+.usage-ranges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }   /* wraps on a phone: a nowrap row is 410px wide and scrolls the whole monitor pane sideways */
+.usage-range[aria-pressed="true"] { background: var(--st-surface-2); border-color: var(--st-accent); color: var(--st-ink); }
+.usage-custom { display: inline-flex; gap: var(--st-s-2); align-items: center; flex-wrap: wrap; }
+.usage-custom[hidden] { display: none; }
+.usage-custom-l { display: inline-flex; gap: var(--st-s-1); align-items: center; color: var(--st-ink-dim); font-size: var(--st-text-xs); }
+.usage-custom-d, .usage-custom-t { padding: 2px var(--st-s-2); background: var(--st-surface-1); color: var(--st-ink); border: 1px solid var(--st-line); border-radius: var(--st-r-2); font: inherit; font-variant-numeric: tabular-nums; color-scheme: var(--st-scheme, light); }
+.usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--st-s-3); }
+.usage-cell { border: 1px solid var(--st-line); border-radius: var(--st-r-2); padding: var(--st-s-3) var(--st-s-4); }
+.usage-cell .usage-k { font-size: var(--st-fs-sm); color: var(--st-ink-muted); text-transform: uppercase; letter-spacing: .5px; }
+.usage-cell .usage-v { font-size: var(--st-fs-xl); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.usage-cell .usage-sub { font-size: var(--st-fs-sm); color: var(--st-ink-muted); margin-top: 2px; min-height: 1em; }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
