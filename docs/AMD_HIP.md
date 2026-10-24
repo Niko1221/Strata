@@ -798,6 +798,29 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the
   experts stream from disk with 31 GB of RAM). The ready-made Windows zip has no gfx1031 code unless it is built with it: `STRATA_HIP_ARCHS=gfx1031`
   in `tools\hip\build_windows.bat` (the default list has it from 0.1.40.2 on).
+- **RX 6000 package (`rx6000`, 0.2.2) on an RX 6700 XT 12 GB (gfx1031), against a source build on ROCm 10.1.0** (engine 0.1.47, IQ2_XS,
+  `--max-context 196608`, `--kv int8`, one request at a time): fresh prompts of 35.5k and 90.3k tokens from a replay of a local agent session,
+  128 tokens out, greedy. The source build (`Dockerfile.hip-rocm101`, ROCm 10.1.0, `--pcie-frac 0.2 --spec-min-p 0.7`, `STRATA_HIP_PROMPT_F16=1`,
+  `STRATA_PREFILL_CPU_SHARE=auto`) read 579.5 and 575.8 tok/s and decoded 36.5 and 41.7 tok/s. The package as the Docker launcher sets it up
+  (`--spec-min-p 0.5`, no `--pcie-frac`, neither variable) read 320.0 and 319.1 tok/s and decoded 36.0 and 32.2 tok/s. The same package with the
+  source build's four settings through `STRATA_SET` read 589.6 and 590.9 tok/s and decoded 34.1 and 34.5 tok/s.
+  **Community benchmark after reset (2026-10-22):** the aligned package (`--pcie-frac 0.2 --spec-min-p 0.7`,
+  `STRATA_HIP_PROMPT_F16=1`, `STRATA_PREFILL_CPU_SHARE=auto`) ran `tools/strata_bench.py --long`, three runs per test.
+  Medians: chat decode 32.9 tok/s; fresh 4K / 16K / 32K prompts 567.8 / 684.2 / 674.4 tok/s. In 387 busy samples,
+  93.3% had a 1,000 MHz memory clock. For comparison, the round-one source build measured 40.7 tok/s chat decode and
+  579 / 693 / 660 tok/s at those prompt lengths, with 89% of busy samples at 1,000 MHz. The package and source runs
+  differed in learned expert profile and vision setup, so these measurements do not isolate a package-versus-source
+  effect. The aligned package result is not a fresh measurement of the launcher's default settings.
+
+  Round one tried the settings one at a time: with `STRATA_HIP_PROMPT_F16=1` alone the package read 4K / 16K / 32K
+  prompts at 461 / 530 / 555 tok/s; with `STRATA_PREFILL_CPU_SHARE=auto` alone it measured 296 / 319 / 320 tok/s.
+  The first variable tracks the faster prompt results on this card; the second did not. The standalone runs occurred
+  after the memory clock had fallen to 456 MHz, so this is evidence from one machine, not a measured default penalty
+  that should be assumed across gfx103x. The settings reach the engine at launch and are not written into the model
+  JSON. The source build had a learned expert profile and CPU image encoder; the package used its shipped profile and
+  no vision. Neither engine printed the low-VRAM warning during the replay runs. One run per replay row; the replay is
+  a private session, not `bench/prompts/standard-v1`. Full benchmark report, raw results and samples:
+  [bench/results/2026-10-22-community-rx-6700-xt-rx6000-package](../bench/results/2026-10-22-community-rx-6700-xt-rx6000-package/README.md).
 - **gfx1150** (Radeon 890M, Ryzen AI 9 HX PRO 370, Strix Point, #1217): builds and runs from 0.1.40.2 as an unvalidated target (CMake warns; the
   device code already covers it: the WMMA guards and `gfx_arch_is_gfx11_wmma()` include it). One community machine: MINISFORUM N5 PRO, 96 GB DDR5-5600, GTT
   raised to 64 GiB (`ttm.pages_limit=16777216 ttm.page_pool_size=16777216`), TheRock ROCm 7.14.1 for gfx1150, an unprivileged LXC container, IQ3_XXS: chat and

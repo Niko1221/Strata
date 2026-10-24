@@ -1,0 +1,11 @@
+== as shipped: decode test (200 tokens, x2)
+{'prompt_n': 66, 'prompt_per_second': 50.2, 'predicted_n': 200, 'predicted_per_second': 37.0} drafts 103 / 138
+{'prompt_n': 5, 'prompt_per_second': 56.3, 'predicted_n': 200, 'predicted_per_second': 43.2} drafts 108 / 134
+== as shipped bfe8ff1d-35k
+wall 114.7 s | prompt_n 35541 cache_n 0 prefill 320.0 tok/s | decode 128 tok at 36.0 tok/s | drafts 77 / 101
+  hardware: busy>50 samples 113 | mclk mean 658 min 96 | min free VRAM 61 MiB
+== as shipped bfe8ff1d-90k
+wall 287.5 s | prompt_n 90305 cache_n 0 prefill 319.1 tok/s | decode 128 tok at 32.2 tok/s | drafts 68 / 115
+  hardware: busy>50 samples 279 | mclk mean 675 min 675 | min free VRAM 78 MiB
+
+[exited with code 0]

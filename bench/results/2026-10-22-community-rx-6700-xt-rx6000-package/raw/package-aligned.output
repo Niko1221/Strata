@@ -1,0 +1,14 @@
+strata-pkg-gfx1031 started on image strata-hip:v0.2.2-pkg-rx6000; loading (watch: strata-pkg-docker logs) ...
+ready: http://127.0.0.1:8081/v1  (needs the key: strata-pkg-docker key)
+pcie-frac NOT SET | spec-min-p 0.5 | env None
+== aligned: decode test (200 tokens, x2)
+{'prompt_n': 66, 'prompt_per_second': 46.2, 'predicted_n': 200, 'predicted_per_second': 32.9} drafts 90 / 105
+{'prompt_n': 5, 'prompt_per_second': 63.3, 'predicted_n': 200, 'predicted_per_second': 36.6} drafts 86 / 111
+== aligned bfe8ff1d-35k
+wall 64.1 s | prompt_n 35542 cache_n 0 prefill 589.6 tok/s | decode 128 tok at 34.1 tok/s | drafts 73 / 92
+  hardware: busy>50 samples 60 | mclk mean 675 min 675 | min free VRAM 164 MiB
+== aligned bfe8ff1d-90k
+wall 156.6 s | prompt_n 90305 cache_n 0 prefill 590.9 tok/s | decode 128 tok at 34.5 tok/s | drafts 61 / 72
+  hardware: busy>50 samples 153 | mclk mean 675 min 675 | min free VRAM 168 MiB
+
+[exited with code 0]

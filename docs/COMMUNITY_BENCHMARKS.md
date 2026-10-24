@@ -74,6 +74,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-22: RX 6700 XT 12 GB (gfx1031), Ryzen 7 5700G, 62 GiB RAM](../bench/results/2026-10-22-community-rx-6700-xt-rx6000-package/README.md):
+  Strata 0.2.2 RX 6000 package, aligned settings, IQ2_XS; three-run community suite after a GPU reset, 4K / 16K / 32K prompts at 567.8 / 684.2 / 674.4 tok/s, with 93.3% of busy samples at 1,000 MHz memory clock.
+
 ## Run the standard benchmark
 
 ```sh

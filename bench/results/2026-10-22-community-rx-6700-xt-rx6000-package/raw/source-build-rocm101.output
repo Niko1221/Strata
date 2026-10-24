@@ -1,0 +1,12 @@
+"loaded": true
+== decode test (200 tokens, x2)
+{'prompt_n': 66, 'prompt_per_second': 19.1, 'predicted_n': 200, 'predicted_per_second': 36.5} drafts 85 / 108
+{'prompt_n': 5, 'prompt_per_second': 16.5, 'predicted_n': 200, 'predicted_per_second': 41.2} drafts 82 / 108
+== Strata v0.2.2 bfe8ff1d-35k
+wall 64.5 s | prompt_n 35541 cache_n 0 prefill 579.5 tok/s | decode 128 tok at 36.5 tok/s | drafts 59 / 81
+  hardware: busy>50 samples 59 | mclk mean 952 min 456 | min free VRAM 49 MiB
+== Strata v0.2.2 bfe8ff1d-90k
+wall 159.7 s | prompt_n 90304 cache_n 0 prefill 575.8 tok/s | decode 128 tok at 41.7 tok/s | drafts 70 / 89
+  hardware: busy>50 samples 149 | mclk mean 924 min 456 | min free VRAM 54 MiB
+
+[exited with code 0]

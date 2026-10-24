@@ -1,0 +1,63 @@
+Using the Strata server already running at http://127.0.0.1:8081.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 40.1 tok/s, first token 0.942 s, 100 tokens
+  run 1 q2: decode 30.3 tok/s, first token 1.289 s, 100 tokens
+  run 1 q3: decode 29.4 tok/s, first token 1.129 s, 100 tokens
+  run 2 q1: decode 38.4 tok/s, first token 1.211 s, 100 tokens
+  run 2 q2: decode 32.9 tok/s, first token 1.06 s, 100 tokens
+  run 2 q3: decode 27.6 tok/s, first token 1.081 s, 100 tokens
+  run 3 q1: decode 34.2 tok/s, first token 1.189 s, 100 tokens
+  run 3 q2: decode 36.6 tok/s, first token 0.88 s, 100 tokens
+  run 3 q3: decode 31.6 tok/s, first token 1.044 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 541.2 tok/s (0 reused), first token 7.469 s
+  run 2: 4019 tokens, prompt 568.1 tok/s (0 reused), first token 7.114 s
+  run 3: 4019 tokens, prompt 567.8 tok/s (0 reused), first token 7.116 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 683.8 tok/s (0 reused), first token 23.53 s
+  run 2: 16058 tokens, prompt 688.9 tok/s (0 reused), first token 23.353 s
+  run 3: 16058 tokens, prompt 684.2 tok/s (0 reused), first token 23.516 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 2.676 s
+  run 1 turn 1: prompt 4095, reused 627, read 3468, first token 6.799 s
+  run 1 turn 2: prompt 5628, reused 4088, read 1540, first token 3.994 s
+  run 1 turn 3: prompt 9061, reused 5621, read 3440, first token 6.973 s
+  run 1 turn 4: prompt 11814, reused 9106, read 2708, first token 5.624 s
+  run 1 turn 5: prompt 14588, reused 11871, read 2717, first token 5.628 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 2.782 s
+  run 2 turn 1: prompt 4089, reused 621, read 3468, first token 6.547 s
+  run 2 turn 2: prompt 5622, reused 4082, read 1540, first token 3.653 s
+  run 2 turn 3: prompt 9055, reused 5686, read 3369, first token 6.556 s
+  run 2 turn 4: prompt 11796, reused 9088, read 2708, first token 5.487 s
+  run 2 turn 5: prompt 14553, reused 11836, read 2717, first token 5.588 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 3.654 s
+  run 3 turn 1: prompt 4099, reused 628, read 3471, first token 6.804 s
+  run 3 turn 2: prompt 5632, reused 4162, read 1470, first token 3.757 s
+  run 3 turn 3: prompt 9065, reused 5696, read 3369, first token 6.769 s
+  run 3 turn 4: prompt 11789, reused 9081, read 2708, first token 5.556 s
+  run 3 turn 5: prompt 14508, reused 11791, read 2717, first token 5.589 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 672.8 tok/s (0 reused), first token 47.692 s
+  run 2: 32049 tokens, prompt 675.1 tok/s (0 reused), first token 47.53 s
+  run 3: 32049 tokens, prompt 674.4 tok/s (0 reused), first token 47.575 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     32.90   (27.60 - 40.10, n=9)
+  chat first token (s)                   1.08   (0.88 - 1.29, n=9)
+  4K prompt tok/s                      567.80   (541.20 - 568.10, n=3)
+  4K first token (s)                     7.12   (7.11 - 7.47, n=3)
+  16K prompt tok/s                     684.20   (683.80 - 688.90, n=3)
+  16K first token (s)                   23.52   (23.35 - 23.53, n=3)
+  32K prompt tok/s                     674.40   (672.80 - 675.10, n=3)
+  32K first token (s)                   47.58   (47.53 - 47.69, n=3)
+  agent cache hit %                     69.41   (69.30 - 69.54, n=3)
+  agent re-read tokens/session          73.00   (4.00 - 144.00, n=3)
+  agent turn first token (s)             5.62   (3.65 - 6.97, n=15)
+  agent decode tok/s                    40.60   (23.60 - 45.40, n=15)
+
+Report: <RUN_DIR>/bench/2026-10-22-community-unknown-qwen3-8-flash-next-iq2-xs/README.md
+Share it: open a pull request that adds the folder <RUN_DIR>/bench/2026-10-22-community-unknown-qwen3-8-flash-next-iq2-xs (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).
