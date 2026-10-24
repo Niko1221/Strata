@@ -95,6 +95,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaMemGetInfo hipMemGetInfo
 #endif
 #define cudaMemcpy hipMemcpy
+#define cudaMemcpy2D hipMemcpy2D
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemcpyAsync hipMemcpyAsync
 #define cudaMemcpyPeerAsync hipMemcpyPeerAsync
@@ -134,6 +135,11 @@ inline hipError_t malloc_host(T** pointer, size_t bytes) {
 template <typename Kernel>
 inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute, int value) {
     return hipFuncSetAttribute(reinterpret_cast<const void*>(kernel), attribute, value);
+}
+template <typename Kernel>
+inline hipError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* num_blocks, Kernel kernel, int threads,
+                                                                size_t shared_bytes) {
+    return hipOccupancyMaxActiveBlocksPerMultiprocessor(num_blocks, kernel, threads, shared_bytes);
 }
 inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, unsigned long long flags) {
     return hipGraphInstantiateWithFlags(exec, graph, flags);
