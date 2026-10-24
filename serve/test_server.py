@@ -4950,6 +4950,12 @@ class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
 
+    def setUp(self):
+        from serve import telemetry
+        p = mock.patch.object(telemetry, "WINDOWS", False)      # the sysfs reader, also when the tests run on Windows
+        p.start()
+        self.addCleanup(p.stop)
+
     def tree(self, d):
         nodes = Path(d) / "class/kfd/kfd/topology/nodes"
         for n, props in ((0, "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\ndrm_render_minor 0\n"),
@@ -5027,6 +5033,8 @@ class AmdTelemetry(unittest.TestCase):
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())
                 self.assertIsNone(telemetry.free_vram_mib(0, amd=True))
+                note = telemetry.Telemetry(gpu_index=0, amd=True).static["gpu_note"]     # #1380: says why
+                self.assertTrue(note.startswith("no GPU readings: the amdgpu driver's sysfs files"), note)
 
     def test_free_vram_on_hip(self):
         from serve import telemetry
@@ -5140,6 +5148,142 @@ class TelemetryNoDisks(unittest.TestCase):
                 self.assertIsNone(t.sample()["disk_write_mb"])
             finally:
                 t.close()
+
+
+class AmdWindowsTelemetry(unittest.TestCase):
+    """The AMD backend's readings on Windows: ADL's PMLog sensors (first supported id wins), the GPU memory
+    counter's instance name for an adapter LUID, and the choice between the OS PCIe link properties and the
+    PMLog link channels."""
+
+    def test_sensor_choice(self):
+        from serve.telemetry import ADL_POWER, ADL_TEMP, ADL_UTIL, adl_pick
+        strix = {1: 600, 19: 12, 23: 84, 28: 49, 29: 51, 30: 2, 33: 4}      # a Radeon 8060S's supported sensors
+        self.assertEqual((adl_pick(strix, ADL_UTIL), adl_pick(strix, ADL_TEMP), adl_pick(strix, ADL_POWER)),
+                         (12, 49, 84))
+        self.assertEqual((adl_pick({8: 55, 29: 60}, ADL_TEMP), adl_pick({30: 40}, ADL_POWER)), (55, 40))
+        # an RX 7900 XTX reports board power (73) and neither 23 nor 30 (#1434's review); 73 wins where both exist
+        self.assertEqual(adl_pick({19: 79, 28: 51, 73: 287}, ADL_POWER), 287)
+        self.assertEqual(adl_pick({23: 84, 30: 2, 73: 120}, ADL_POWER), 120)
+        self.assertIsNone(adl_pick({}, ADL_UTIL))
+
+    def test_link_choice(self):
+        # the Windows device property leads; PMLog 40/41 fill gaps; the narrower width wins; a current speed
+        # above the card's own capability is clamped to it (#2614's two findings and our RDNA4 PC, from
+        # telemetry._AmdWindows._link)
+        from serve import telemetry
+        g = telemetry._AmdWindows.__new__(telemetry._AmdWindows)
+        cases = [
+            # our R9700s: Windows says Gen5 x16; ADL's PMLog read an old Gen4 x8
+            ({"gen": 5, "width": 16, "speed_max": 5}, {40: 4, 41: 8},
+             {"pcie_gen": 5, "pcie_gen_max": 5, "pcie_width": 8}),
+            # #2614's XTX: PMLog speed stuck at Gen3; its lanes beat a wired-x16 property down to the real x4
+            ({"gen": 4, "width": 16, "speed_max": 4}, {40: 3, 41: 4},
+             {"pcie_gen": 4, "pcie_gen_max": 4, "pcie_width": 4}),
+            # no cfgmgr32 answer at all: the PMLog channels carry the tile, maximum = negotiated as on Linux
+            ({}, {40: 4, 41: 16}, {"pcie_gen": 4, "pcie_gen_max": 4, "pcie_width": 16}),
+            # a current speed above its own maximum is a stale reading: clamp
+            ({"gen": 5, "width": 16, "speed_max": 4}, {}, {"pcie_gen": 4, "pcie_gen_max": 4, "pcie_width": 16}),
+            # out-of-range values from either side are dropped, not shown
+            ({"gen": 0, "width": 0, "speed_max": 7}, {40: 9, 41: 0},
+             {"pcie_gen": None, "pcie_gen_max": None, "pcie_width": None}),
+            # nothing anywhere: unavailable, never 0
+            ({}, {}, {"pcie_gen": None, "pcie_gen_max": None, "pcie_width": None}),
+        ]
+        for props, sensors, want in cases:
+            with mock.patch.object(g, "_pci_props", return_value=props):
+                self.assertEqual(g._link(sensors), want)
+
+    def test_read_carries_the_link(self):
+        # PMLog sensors plus the OS link values leave read() as the tile's gpu_pcie_* keys
+        from serve import telemetry
+        g = telemetry._AmdWindows.__new__(telemetry._AmdWindows)
+
+        class Adl:
+            def ADL2_New_QueryPMLogData_Get(self, ctx, adapter, buf):
+                for sid, value in ((19, 57), (28, 63), (73, 44), (40, 4), (41, 8)):
+                    buf[1 + 2 * sid], buf[2 + 2 * sid] = 1, value
+                return 0
+
+        g.adl, g.ctx, g.adapter, g.pdh, g.counter, g.total = Adl(), None, 0, None, None, None
+        with mock.patch.object(g, "_pci_props", return_value={"gen": 5, "width": 16, "speed_max": 5}):
+            got = g.read()
+        self.assertEqual((got["util"], got["temp"], got["power"]), (57, 63.0, 44.0))
+        self.assertEqual((got["pcie_gen"], got["pcie_gen_max"], got["pcie_width"]), (5, 5, 8))
+        self.assertIsNone(got["mem_used"])
+
+    def test_close_gives_the_handles_back_once(self):
+        from serve import telemetry
+        calls = []
+
+        class Lib:
+            def ADL2_Main_Control_Destroy(self, ctx):
+                calls.append(("adl", ctx))
+
+        class Pdh:
+            def PdhCloseQuery(self, q):
+                calls.append(("pdh", q))
+
+        g = telemetry._AmdWindows.__new__(telemetry._AmdWindows)
+        g.adl = g._lib = Lib()
+        g.pdh, g.query, g.counter, g.ctx, g.adapter = Pdh(), "q", "c", "ctx", 0
+        self.assertTrue(g.ok())
+        g.close()
+        g.close()                                                          # again: nothing more to give back
+        self.assertEqual(calls, [("pdh", "q"), ("adl", "ctx")])
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+        g.adl, g.adapter, g.ctx = Lib(), 0, "ctx2"                         # free_vram_mib closes its one-off reader
+        with mock.patch.object(telemetry, "gpu_reader", lambda i, amd: g), \
+                mock.patch.object(g, "read", lambda: {"mem_used": 1 << 30, "mem_total": 3 << 30}):
+            self.assertEqual(telemetry.free_vram_mib(0, amd=True), 2048)
+        self.assertEqual(calls[-1], ("adl", "ctx2"))
+
+    def test_luid_instance(self):
+        from serve.telemetry import luid_instance
+        self.assertEqual(luid_instance(0, 0x179E6), "luid_0x00000000_0x000179e6_phys_0")
+        self.assertEqual(luid_instance(-1, 0xFFFFFFFF), "luid_0xffffffff_0xffffffff_phys_0")
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_one_off_readers_leak_no_handles(self):
+        # #1434's review: 40 free_vram_mib calls grew the process's handles by 80 before readers were closed
+        from serve import telemetry
+        try:
+            import psutil
+        except ImportError:
+            self.skipTest("psutil is not installed")
+        g = telemetry._AmdWindows(0)
+        if not g.ok():
+            self.skipTest("no AMD card with ADL here")
+        g.close()
+        for _ in range(3):
+            telemetry.free_vram_mib(0, amd=True)
+        before = psutil.Process().num_handles()
+        for _ in range(40):
+            telemetry.free_vram_mib(0, amd=True)
+        self.assertLessEqual(psutil.Process().num_handles() - before, 4)
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_no_card_breaks_nothing(self):
+        from serve import telemetry
+        g = telemetry._AmdWindows(99)                                       # no such AMD card (or no ADL at all)
+        self.assertFalse(g.ok())
+        card = {"name": "AMD Radeon RX 7900 XTX", "provider": "Advanced Micro Devices, Inc.", "driver": "32.0",
+                "vram_bytes": 24 << 30}
+        with mock.patch.object(telemetry, "WINDOWS", True):
+            self.assertIsNone(telemetry.free_vram_mib(99, amd=True))
+            with mock.patch.object(telemetry, "windows_amd_cards", return_value=[]):
+                t = telemetry.Telemetry(gpu_index=99, amd=True)
+            self.assertIsNone(t.static["gpu_name"])
+            self.assertIn("atiadlxx.dll", t.static["gpu_note"])                 # #1380: says why
+            self.assertFalse(any(k.startswith("gpu_") for k in t.sample()))
+            if os.name != "nt":                                              # the registry fallback is Windows-only
+                return
+            # #1587: without readings the registry still names the card and its VRAM; the note still says why
+            with mock.patch.object(telemetry, "windows_amd_cards", return_value=[card]):
+                t = telemetry.Telemetry(gpu_index=99, amd=True)
+            self.assertEqual((t.static["gpu_name"], t.static["gpu_vram_total_mib"]), (card["name"], 24 << 10))
+            self.assertIn("atiadlxx.dll", t.static["gpu_note"])
+            self.assertFalse(any(k.startswith("gpu_") for k in t.sample()))
 
 
 class SilentEngine(unittest.TestCase):
