@@ -1,0 +1,995 @@
+{
+ "what": "Deterministic screening runs behind the tuned config (mybench.py). Each arm starts from setup's own run config with only the listed overrides, the server restarted per arm (sweeps) or once (soak, 8 consecutive rounds on the final config).",
+ "notes": [
+  "sweep2 arm s1 (vram only) was lost: the engine stopped with 'verify: timed out at layer 17' (the #2065 pattern) after a stall that started on a 38-token prompt; it is not in this file.",
+  "decode samples include the first request after each restart (cold, lowest value)."
+ ],
+ "runs": [
+  {
+   "sweep": "sweep1",
+   "arm": "m0-setup",
+   "reps": 2,
+   "args_over_setup": {},
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 25.5,
+    "accept": 0.8334999999999999,
+    "prefill4k_tps": 558.9000000000001,
+    "prefill16k_tps": 266.29999999999995,
+    "followup_ttft_s": 0.985
+   },
+   "samples": {
+    "decode_tps": [
+     6.0,
+     22.1,
+     29.5,
+     24.2,
+     22.2,
+     26.8,
+     31.8,
+     31.6
+    ],
+    "accept": [
+     0.803,
+     0.847,
+     0.828,
+     0.852,
+     0.825,
+     0.839,
+     0.824,
+     0.848
+    ],
+    "prefill4k_tps": [
+     574.1,
+     543.7
+    ],
+    "prefill16k_tps": [
+     230.2,
+     302.4
+    ],
+    "followup_ttft_s": [
+     0.75,
+     1.22
+    ]
+   }
+  },
+  {
+   "sweep": "sweep1",
+   "arm": "m1-vram1024",
+   "reps": 2,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 32.3,
+    "accept": 0.8394999999999999,
+    "prefill4k_tps": 386.0,
+    "prefill16k_tps": 661.2,
+    "followup_ttft_s": 0.62
+   },
+   "samples": {
+    "decode_tps": [
+     13.4,
+     24.9,
+     33.0,
+     22.9,
+     31.6,
+     37.8,
+     35.7,
+     36.0
+    ],
+    "accept": [
+     0.798,
+     0.841,
+     0.841,
+     0.843,
+     0.83,
+     0.838,
+     0.855,
+     0.836
+    ],
+    "prefill4k_tps": [
+     230.2,
+     541.8
+    ],
+    "prefill16k_tps": [
+     489.6,
+     832.8
+    ],
+    "followup_ttft_s": [
+     0.62,
+     0.62
+    ]
+   }
+  },
+  {
+   "sweep": "sweep1",
+   "arm": "m2-mmq",
+   "reps": 2,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 31.15,
+    "accept": 0.8434999999999999,
+    "prefill4k_tps": 341.95,
+    "prefill16k_tps": 547.1,
+    "followup_ttft_s": 0.75
+   },
+   "samples": {
+    "decode_tps": [
+     11.3,
+     20.5,
+     36.9,
+     35.9,
+     26.4,
+     38.9,
+     43.9,
+     4.3
+    ],
+    "accept": [
+     0.821,
+     0.846,
+     0.846,
+     0.848,
+     0.773,
+     0.856,
+     0.841,
+     0.823
+    ],
+    "prefill4k_tps": [
+     243.5,
+     440.4
+    ],
+    "prefill16k_tps": [
+     596.0,
+     498.2
+    ],
+    "followup_ttft_s": [
+     0.65,
+     0.85
+    ]
+   }
+  },
+  {
+   "sweep": "sweep1",
+   "arm": "m3-prefill32k",
+   "reps": 2,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 34.7,
+    "accept": 0.854,
+    "prefill4k_tps": 421.6,
+    "prefill16k_tps": 825.35,
+    "followup_ttft_s": 2.88
+   },
+   "samples": {
+    "decode_tps": [
+     15.5,
+     34.7,
+     35.3,
+     30.1,
+     32.0,
+     37.3,
+     36.3,
+     34.7
+    ],
+    "accept": [
+     0.791,
+     0.843,
+     0.866,
+     0.856,
+     0.826,
+     0.858,
+     0.862,
+     0.852
+    ],
+    "prefill4k_tps": [
+     310.5,
+     532.7
+    ],
+    "prefill16k_tps": [
+     599.2,
+     1051.5
+    ],
+    "followup_ttft_s": [
+     0.73,
+     5.03
+    ]
+   }
+  },
+  {
+   "sweep": "sweep1",
+   "arm": "m4-pool47",
+   "reps": 2,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768",
+    "--pool-workers": "47"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 31.65,
+    "accept": 0.8354999999999999,
+    "prefill4k_tps": 252.64999999999998,
+    "prefill16k_tps": 492.79999999999995,
+    "followup_ttft_s": 0.75
+   },
+   "samples": {
+    "decode_tps": [
+     16.4,
+     20.1,
+     37.5,
+     32.6,
+     27.8,
+     32.8,
+     40.7,
+     30.7
+    ],
+    "accept": [
+     0.759,
+     0.856,
+     0.815,
+     0.839,
+     0.751,
+     0.868,
+     0.832,
+     0.839
+    ],
+    "prefill4k_tps": [
+     279.9,
+     225.4
+    ],
+    "prefill16k_tps": [
+     632.4,
+     353.2
+    ],
+    "followup_ttft_s": [
+     0.7,
+     0.8
+    ]
+   }
+  },
+  {
+   "sweep": "sweep1",
+   "arm": "m5-adapt0",
+   "reps": 2,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768",
+    "--adapt-every": "0"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 20.799999999999997,
+    "accept": 0.844,
+    "prefill4k_tps": 383.8,
+    "prefill16k_tps": 494.15000000000003,
+    "followup_ttft_s": 2.14
+   },
+   "samples": {
+    "decode_tps": [
+     21.7,
+     19.2,
+     22.7,
+     24.8,
+     19.9,
+     21.7,
+     19.3,
+     9.2
+    ],
+    "accept": [
+     0.777,
+     0.842,
+     0.846,
+     0.847,
+     0.75,
+     0.842,
+     0.859,
+     0.856
+    ],
+    "prefill4k_tps": [
+     572.0,
+     195.6
+    ],
+    "prefill16k_tps": [
+     361.6,
+     626.7
+    ],
+    "followup_ttft_s": [
+     3.36,
+     0.92
+    ]
+   }
+  },
+  {
+   "sweep": "sweep2",
+   "arm": "s2-vram-mmq",
+   "reps": 4,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 26.4,
+    "accept": 0.839,
+    "prefill4k_tps": 267.45000000000005,
+    "prefill16k_tps": 528.3,
+    "followup_ttft_s": 0.8999999999999999,
+    "tool2k_ttft_s": 5.595
+   },
+   "samples": {
+    "decode_tps": [
+     9.7,
+     26.7,
+     33.1,
+     24.8,
+     28.9,
+     25.8,
+     6.7,
+     26.1,
+     28.3,
+     36.7,
+     38.5,
+     16.0,
+     21.0,
+     31.1,
+     31.9,
+     22.5
+    ],
+    "accept": [
+     0.793,
+     0.812,
+     0.841,
+     0.84,
+     0.829,
+     0.871,
+     0.808,
+     0.843,
+     0.788,
+     0.842,
+     0.864,
+     0.839,
+     0.798,
+     0.839,
+     0.828,
+     0.842
+    ],
+    "prefill4k_tps": [
+     236.8,
+     526.8,
+     298.1,
+     224.7
+    ],
+    "prefill16k_tps": [
+     449.3,
+     680.4,
+     607.3,
+     314.7
+    ],
+    "followup_ttft_s": [
+     0.96,
+     0.8,
+     0.98,
+     0.84
+    ],
+    "tool2k_ttft_s": [
+     6.38,
+     5.22,
+     5.21,
+     5.97
+    ]
+   }
+  },
+  {
+   "sweep": "sweep2",
+   "arm": "s3-vram-pf32k",
+   "reps": 4,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 34.8,
+    "accept": 0.834,
+    "prefill4k_tps": 433.70000000000005,
+    "prefill16k_tps": 829.0999999999999,
+    "followup_ttft_s": 1.17,
+    "tool2k_ttft_s": 4.62
+   },
+   "samples": {
+    "decode_tps": [
+     16.2,
+     23.8,
+     40.9,
+     35.0,
+     31.4,
+     39.9,
+     40.8,
+     23.9,
+     39.0,
+     39.2,
+     40.4,
+     18.9,
+     17.3,
+     16.5,
+     34.8,
+     34.8
+    ],
+    "accept": [
+     0.769,
+     0.824,
+     0.836,
+     0.843,
+     0.8,
+     0.868,
+     0.805,
+     0.842,
+     0.825,
+     0.85,
+     0.862,
+     0.861,
+     0.825,
+     0.832,
+     0.827,
+     0.843
+    ],
+    "prefill4k_tps": [
+     355.9,
+     437.8,
+     429.6,
+     560.4
+    ],
+    "prefill16k_tps": [
+     611.4,
+     1062.0,
+     688.3,
+     969.9
+    ],
+    "followup_ttft_s": [
+     1.1,
+     1.09,
+     1.34,
+     1.24
+    ],
+    "tool2k_ttft_s": [
+     4.34,
+     4.33,
+     9.25,
+     4.9
+    ]
+   }
+  },
+  {
+   "sweep": "sweep2",
+   "arm": "s4-vram-mmq-pf32k",
+   "reps": 4,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {
+    "STRATA_PREFILL_MMQ": "1"
+   },
+   "median": {
+    "decode_tps": 33.400000000000006,
+    "accept": 0.8274999999999999,
+    "prefill4k_tps": 437.1,
+    "prefill16k_tps": 619.8,
+    "followup_ttft_s": 1.52,
+    "tool2k_ttft_s": 6.785
+   },
+   "samples": {
+    "decode_tps": [
+     21.9,
+     21.6,
+     36.6,
+     35.2,
+     38.2,
+     37.9,
+     40.6,
+     38.4,
+     34.2,
+     30.7,
+     36.5,
+     28.9,
+     22.3,
+     25.0,
+     32.6,
+     29.8
+    ],
+    "accept": [
+     0.797,
+     0.84,
+     0.846,
+     0.842,
+     0.805,
+     0.825,
+     0.776,
+     0.835,
+     0.804,
+     0.804,
+     0.841,
+     0.854,
+     0.83,
+     0.796,
+     0.798,
+     0.843
+    ],
+    "prefill4k_tps": [
+     325.8,
+     484.1,
+     470.0,
+     404.2
+    ],
+    "prefill16k_tps": [
+     674.5,
+     533.4,
+     760.6,
+     565.1
+    ],
+    "followup_ttft_s": [
+     1.44,
+     1.6,
+     2.03,
+     1.32
+    ],
+    "tool2k_ttft_s": [
+     5.3,
+     8.32,
+     7.12,
+     6.45
+    ]
+   }
+  },
+  {
+   "sweep": "sweep2",
+   "arm": "s5-vram-pf16k",
+   "reps": 4,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:16384"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 26.75,
+    "accept": 0.82,
+    "prefill4k_tps": 405.25,
+    "prefill16k_tps": 881.8,
+    "followup_ttft_s": 1.03,
+    "tool2k_ttft_s": 5.38
+   },
+   "samples": {
+    "decode_tps": [
+     12.6,
+     32.4,
+     26.9,
+     27.8,
+     26.3,
+     26.8,
+     22.6,
+     28.1,
+     23.8,
+     26.7,
+     45.0,
+     40.2,
+     9.9,
+     15.5,
+     29.4,
+     26.6
+    ],
+    "accept": [
+     0.797,
+     0.82,
+     0.764,
+     0.82,
+     0.784,
+     0.845,
+     0.823,
+     0.847,
+     0.794,
+     0.829,
+     0.832,
+     0.839,
+     0.781,
+     0.804,
+     0.811,
+     0.851
+    ],
+    "prefill4k_tps": [
+     319.5,
+     77.9,
+     543.5,
+     491.0
+    ],
+    "prefill16k_tps": [
+     888.1,
+     568.1,
+     999.3,
+     875.5
+    ],
+    "followup_ttft_s": [
+     7.47,
+     0.79,
+     0.61,
+     1.27
+    ],
+    "tool2k_ttft_s": [
+     23.47,
+     5.81,
+     4.8,
+     4.95
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-1",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 33.599999999999994,
+    "accept": 0.84,
+    "prefill4k_tps": 399.3,
+    "prefill16k_tps": 701.5,
+    "followup_ttft_s": 1.18,
+    "tool2k_ttft_s": 6.42
+   },
+   "samples": {
+    "decode_tps": [
+     32.1,
+     32.9,
+     40.0,
+     34.3
+    ],
+    "accept": [
+     0.795,
+     0.861,
+     0.837,
+     0.843
+    ],
+    "prefill4k_tps": [
+     399.3
+    ],
+    "prefill16k_tps": [
+     701.5
+    ],
+    "followup_ttft_s": [
+     1.18
+    ],
+    "tool2k_ttft_s": [
+     6.42
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-2",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 37.6,
+    "accept": 0.8374999999999999,
+    "prefill4k_tps": 642.4,
+    "prefill16k_tps": 649.4,
+    "followup_ttft_s": 0.89,
+    "tool2k_ttft_s": 6.02
+   },
+   "samples": {
+    "decode_tps": [
+     36.6,
+     37.1,
+     42.9,
+     38.1
+    ],
+    "accept": [
+     0.799,
+     0.854,
+     0.832,
+     0.843
+    ],
+    "prefill4k_tps": [
+     642.4
+    ],
+    "prefill16k_tps": [
+     649.4
+    ],
+    "followup_ttft_s": [
+     0.89
+    ],
+    "tool2k_ttft_s": [
+     6.02
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-3",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 28.5,
+    "accept": 0.819,
+    "prefill4k_tps": 443.5,
+    "prefill16k_tps": 729.7,
+    "followup_ttft_s": 1.09,
+    "tool2k_ttft_s": 5.84
+   },
+   "samples": {
+    "decode_tps": [
+     27.4,
+     29.6,
+     30.9,
+     26.0
+    ],
+    "accept": [
+     0.819,
+     0.833,
+     0.79,
+     0.819
+    ],
+    "prefill4k_tps": [
+     443.5
+    ],
+    "prefill16k_tps": [
+     729.7
+    ],
+    "followup_ttft_s": [
+     1.09
+    ],
+    "tool2k_ttft_s": [
+     5.84
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-4",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 33.2,
+    "accept": 0.84,
+    "prefill4k_tps": 649.6,
+    "prefill16k_tps": 1016.1,
+    "followup_ttft_s": 0.69,
+    "tool2k_ttft_s": 4.74
+   },
+   "samples": {
+    "decode_tps": [
+     24.4,
+     35.6,
+     33.1,
+     33.3
+    ],
+    "accept": [
+     0.781,
+     0.863,
+     0.837,
+     0.843
+    ],
+    "prefill4k_tps": [
+     649.6
+    ],
+    "prefill16k_tps": [
+     1016.1
+    ],
+    "followup_ttft_s": [
+     0.69
+    ],
+    "tool2k_ttft_s": [
+     4.74
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-5",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 35.3,
+    "accept": 0.865,
+    "prefill4k_tps": 566.8,
+    "prefill16k_tps": 975.3,
+    "followup_ttft_s": 0.65,
+    "tool2k_ttft_s": 4.63
+   },
+   "samples": {
+    "decode_tps": [
+     31.2,
+     34.7,
+     35.9,
+     36.0
+    ],
+    "accept": [
+     0.793,
+     0.871,
+     0.866,
+     0.864
+    ],
+    "prefill4k_tps": [
+     566.8
+    ],
+    "prefill16k_tps": [
+     975.3
+    ],
+    "followup_ttft_s": [
+     0.65
+    ],
+    "tool2k_ttft_s": [
+     4.63
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-6",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 35.3,
+    "accept": 0.848,
+    "prefill4k_tps": 577.8,
+    "prefill16k_tps": 974.1,
+    "followup_ttft_s": 0.7,
+    "tool2k_ttft_s": 4.65
+   },
+   "samples": {
+    "decode_tps": [
+     34.0,
+     36.6,
+     38.8,
+     33.9
+    ],
+    "accept": [
+     0.833,
+     0.858,
+     0.849,
+     0.847
+    ],
+    "prefill4k_tps": [
+     577.8
+    ],
+    "prefill16k_tps": [
+     974.1
+    ],
+    "followup_ttft_s": [
+     0.7
+    ],
+    "tool2k_ttft_s": [
+     4.65
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-7",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 35.05,
+    "accept": 0.8315,
+    "prefill4k_tps": 609.2,
+    "prefill16k_tps": 1027.8,
+    "followup_ttft_s": 1.09,
+    "tool2k_ttft_s": 4.31
+   },
+   "samples": {
+    "decode_tps": [
+     33.4,
+     34.9,
+     37.5,
+     35.2
+    ],
+    "accept": [
+     0.807,
+     0.858,
+     0.812,
+     0.851
+    ],
+    "prefill4k_tps": [
+     609.2
+    ],
+    "prefill16k_tps": [
+     1027.8
+    ],
+    "followup_ttft_s": [
+     1.09
+    ],
+    "tool2k_ttft_s": [
+     4.31
+    ]
+   }
+  },
+  {
+   "sweep": "soak",
+   "arm": "soak-8",
+   "reps": 1,
+   "args_over_setup": {
+    "--vram-reserve-mib": "1024",
+    "--prefill": "auto:32768"
+   },
+   "env_over_setup": {},
+   "median": {
+    "decode_tps": 39.400000000000006,
+    "accept": 0.8305,
+    "prefill4k_tps": 650.6,
+    "prefill16k_tps": 1045.5,
+    "followup_ttft_s": 0.63,
+    "tool2k_ttft_s": 4.44
+   },
+   "samples": {
+    "decode_tps": [
+     37.3,
+     39.2,
+     40.6,
+     39.6
+    ],
+    "accept": [
+     0.806,
+     0.885,
+     0.826,
+     0.835
+    ],
+    "prefill4k_tps": [
+     650.6
+    ],
+    "prefill16k_tps": [
+     1045.5
+    ],
+    "followup_ttft_s": [
+     0.63
+    ],
+    "tool2k_ttft_s": [
+     4.44
+    ]
+   }
+  }
+ ]
+}
