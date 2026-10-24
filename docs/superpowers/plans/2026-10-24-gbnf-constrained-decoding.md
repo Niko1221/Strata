@@ -1,6 +1,9 @@
 # GBNF 约束解码 实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **状态（2026-10-24 晚）：Task 0-13 全部完成**，验收 green（JSON 50/50、工具 30/30），PR #3922 已按用户要求关闭。
+> 新会话接力与 Phase 2（MTP/DFlash2 兼容约束解码）见 **[2026-10-24-gbnf-phase2-mtp-dflash2.md](2026-10-24-gbnf-phase2-mtp-dflash2.md)**。
 
 **Goal:** 在引擎内实现 llama.cpp 同源 GBNF 语法约束解码，使工具调用与 JSON 结构化输出由解码器保证（schema 通过率 100%、解析失败 0），默认路径逐字节不变。
 
