@@ -12856,6 +12856,11 @@ int main(int argc, char **argv) try {
                         ver.ms_commit / rounds,
                         (double) (drive.d.multi_misses - misses0) / (double) (rounds * g.n_layers),
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
+        // STRATA_VERIFY_TRACE=1: the device's breadcrumbs for the last layers of the last window.  trace_dump() only
+        // ran on the stall paths (verify.cpp:2246/2268), so a healthy decode never showed where a window's device time
+        // went: the ring wait, VRAM hits, the explicit waits and the per-segment times are in this dump.
+        if (const char* tr = std::getenv("STRATA_VERIFY_TRACE"); tr != nullptr && tr[0] != '0')
+            ver.trace_dump(stdout);
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
                         "CPU pool call %.3f ms/round\n", "pool multi", pool.ms_multi_gu / rounds,

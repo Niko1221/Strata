@@ -1,6 +1,10 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#ifdef STRATA_XMX_SG16   // the joint_matrix block scorer (block_scores_xmx)
+#include <sycl/ext/oneapi/matrix/matrix.hpp>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#endif
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
@@ -640,6 +644,169 @@ __dpct_inline__ void block_scores_tail_kernel(const float *__restrict__ dead,
         out[qi * max_blocks + n_bid] = score;
     }
 }
+
+
+// ---- SYCL / XMX (Xe2: bmg-g31, lnl; sub-group 16): the block scores of many queries as one GEMM, the CUDA
+// tensor-core kernel's tiling (16 queries x 16 blocks per C tile, K = 128, the four indexer heads relu'd and summed
+// in head order) in joint_matrix.  A = 16 queries x 128 of one head (the indexer's queries are FP32, so they are
+// staged once per work-group as FP16; rows past nq are zero), B = 16 key blocks x 128 packed for the XMX B operand,
+// C = A . B^T (fp32).  Both operands are split into an FP16 hi and lo part and multiplied three ways (lo*hi, hi*lo,
+// hi*hi - the CUDA TF32 kernel's order), so hi + lo's ~22 mantissa bits keep FP32-level scores: the scores and the
+// selections match the warp kernel's (score max err 1e-7 of scale, 256/256 selections at 131k).
+// A sub-group runs TWO 16-block tiles (32 blocks, 8 accumulators): one A fragment then feeds two mad triples, which
+// is what a single 16-block tile cannot do.  The tail block n_bid (the `dead` key, +1e9) stays the warp kernel's
+// arithmetic (block_scores_tail_kernel, launched after this).  STRATA_SELECT_XMX=0 keeps the warp kernel.
+#ifdef STRATA_XMX_SG16
+namespace jm = sycl::ext::oneapi::experimental::matrix;
+constexpr int XQ = 16;                     // queries per work-group (one m16 tile, every head)
+constexpr int XNB = 16;                    // key blocks per C tile (one XMX B tile)
+constexpr int XNT = 1;                     // C tiles (x XNB blocks) per sub-group: 2 measured slower in the
+                                           // engine (half the work-groups, and its reach is causal/small)
+constexpr int XSG = 16;                    // XMX sub-group size
+constexpr int XNSG = 8;                    // sub-groups per work-group
+constexpr int XWG = XSG * XNSG;
+constexpr int XSLAB = 32;                  // K per pass (the B packing's unit; a multiple of the 16 of one mad)
+constexpr int XPK = XNB * 2;               // a packed row: 16 blocks x (even k, odd k) halves
+constexpr int XHEADS_S = IDX_HEADS;        // the indexer heads, summed after their relu
+constexpr int XQROW = XHEADS_S * IDX_DIM;  // q_idx's row stride: 4 heads x 128 (floats)
+constexpr int XAROW = XHEADS_S * XSLAB;    // a staged A row: 4 heads x 32 of K (halves)
+
+// SYCL's matrix API wants an address-space-qualified pointer: `auto` keeps address_space_cast's type
+template <class T> inline auto xg(T* p) {
+    return sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(p);
+}
+template <class T> inline auto xl(T* p) {
+    return sycl::address_space_cast<sycl::access::address_space::local_space, sycl::access::decorated::no>(p);
+}
+
+void block_scores_xmx(const float* pooled, const float* q_idx, const int32_t* steps, int64_t nq, int64_t max_blocks,
+                      int64_t reach, float* out, sycl::queue& q) {
+    const int64_t nqt = (nq + XQ - 1) / XQ;
+    const int64_t span = (int64_t) XNB * XNT * XNSG;   // blocks one work-group covers
+    const int64_t nbg = (reach + span - 1) / span;
+    if (nqt <= 0 || nbg <= 0) return;
+    // one slab of shared memory, carved by hand: the B packing (per sub-group), the A tile (per work-group), the C tiles
+    const size_t packed_h = (size_t) XNSG * XNT * (XSLAB / 2) * XPK;
+    const size_t a_h = (size_t) XQ * XAROW;
+    const size_t bytes = packed_h * 4 + a_h * 4 + (size_t) XNSG * XNT * 256 * 4;   // the lo parts double each
+    q.submit([&](sycl::handler& cgh) {
+        sycl::local_accessor<uint8_t, 1> slm(sycl::range<1>(bytes), cgh);
+        cgh.parallel_for(sycl::nd_range<1>((size_t) nqt * nbg * XWG, XWG),
+                         [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(XSG)]] {
+            auto sg = it.get_sub_group();
+            const int lid = (int) it.get_local_id(0);
+            const int sgid = (int) sg.get_group_id()[0], lane = (int) sg.get_local_id()[0];
+            const int64_t g = (int64_t) it.get_group(0);
+            const int64_t q0 = (g / nbg) * XQ;
+            const int64_t b0 = (g % nbg) * span + (int64_t) sgid * (XNB * XNT);
+            uint8_t* base = slm.get_multi_ptr<sycl::access::decorated::no>().get();
+            sycl::half* pk = (sycl::half*) base + (size_t) sgid * XNT * (XSLAB / 2) * XPK;
+            sycl::half* pkl = (sycl::half*) (base + packed_h * 2) + (size_t) sgid * XNT * (XSLAB / 2) * XPK;
+            sycl::half* sa = (sycl::half*) (base + packed_h * 4);   // the work-group's A tile (hi)
+            sycl::half* sal = (sycl::half*) (base + packed_h * 4 + a_h * 2);   // and its lo part
+            float* ct = (float*) (base + packed_h * 4 + a_h * 4) + (size_t) sgid * XNT * 256;
+            const bool alive = b0 < reach;   // this sub-group's blocks are past every query's: skip the work
+            jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 16, 16> acc[XHEADS_S][XNT];
+#pragma unroll
+            for (int h = 0; h < XHEADS_S; ++h)
+#pragma unroll
+                for (int t = 0; t < XNT; ++t) jm::joint_matrix_fill(sg, acc[h][t], 0.0f);
+            for (int ks = 0; ks < IDX_DIM; ks += XSLAB) {
+                // A: the 16 queries' 4 heads x 32 of K split into an FP16 hi and lo part (the indexer keeps FP32);
+                // rows past nq zero.  hi + lo carries ~22 mantissa bits: the products below match the warp kernel
+                // to FP32-level precision rather than FP16's.
+                for (int i = lid; i < XQ * XAROW; i += XWG) {
+                    const int r = i / XAROW, c = i - r * XAROW;
+                    const int h = c / XSLAB, j = c - h * XSLAB;
+                    const int64_t qi = q0 + r;
+                    const float v = (qi < nq) ? q_idx[qi * XQROW + h * IDX_DIM + ks + j] : 0.0f;
+                    const sycl::half hi = sycl::half(v);
+                    sa[r * XAROW + c] = hi;
+                    sal[r * XAROW + c] = sycl::half(v - (float) hi);
+                }
+                // B: the 32 blocks' 32 of K, packed for the XMX B operand: (k, n) at [(k/2) * 32 + n * 2 + (k & 1)]
+                if (alive) {
+                    for (int i = lane; i < XNB * XNT * XSLAB; i += XSG) {
+                        const int n = i / XSLAB, k = i - n * XSLAB;
+                        const int64_t b = b0 + n;
+                        const float v = (b < reach) ? pooled[b * IDX_DIM + ks + k] : 0.0f;
+                        const sycl::half hi = sycl::half(v);
+                        const size_t o = (size_t) (n / XNB) * (size_t) (XSLAB / 2) * XPK +
+                                         (size_t) (k >> 1) * XPK + (n % XNB) * 2 + (k & 1);
+                        pk[o] = hi;
+                        pkl[o] = sycl::half(v - (float) hi);
+                    }
+                }
+                sycl::group_barrier(it.get_group());   // the A tile: every thread of the work-group reaches this
+                if (alive) {
+                    for (int kk = 0; kk < XSLAB; kk += 16) {
+                        jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::ext_intel_packed>
+                            B[XNT], Bl[XNT];
+#pragma unroll
+                        for (int t = 0; t < XNT; ++t) {
+                            jm::joint_matrix_load(sg, B[t], xl(pk + (size_t) t * (XSLAB / 2) * XPK +
+                                                                  (size_t) (kk >> 1) * XPK), (size_t) XPK);
+                            jm::joint_matrix_load(sg, Bl[t], xl(pkl + (size_t) t * (XSLAB / 2) * XPK +
+                                                                     (size_t) (kk >> 1) * XPK), (size_t) XPK);
+                        }
+#pragma unroll
+                        for (int h = 0; h < XHEADS_S; ++h) {
+                            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 16, 16, jm::layout::row_major>
+                                A, Al;
+                            jm::joint_matrix_load(sg, A, xl(sa + h * XSLAB + kk), (size_t) XAROW);
+                            jm::joint_matrix_load(sg, Al, xl(sal + h * XSLAB + kk), (size_t) XAROW);
+#pragma unroll
+                            for (int t = 0; t < XNT; ++t) {
+                                // lo*hi, hi*lo, hi*hi: the CUDA kernel's TF32 order, the smallest term first
+                                jm::joint_matrix_mad(sg, acc[h][t], Al, B[t], acc[h][t]);
+                                jm::joint_matrix_mad(sg, acc[h][t], A, Bl[t], acc[h][t]);
+                                jm::joint_matrix_mad(sg, acc[h][t], A, B[t], acc[h][t]);
+                            }
+                        }
+                    }
+                    sycl::group_barrier(sg);   // the B packing's buffers are reused by the next slab
+                }
+                sycl::group_barrier(it.get_group());
+            }
+            if (!alive) return;
+            // relu per head, heads added in head order; a lane owns one block column of each tile
+            float csum[XNT][XQ];
+#pragma unroll
+            for (int t = 0; t < XNT; ++t)
+#pragma unroll
+                for (int k = 0; k < XQ; ++k) csum[t][k] = 0.0f;
+#pragma unroll
+            for (int h = 0; h < XHEADS_S; ++h) {
+#pragma unroll
+                for (int t = 0; t < XNT; ++t)
+                    jm::joint_matrix_store(sg, acc[h][t], xl(ct + t * 256), (size_t) 16, jm::layout::row_major);
+                sycl::group_barrier(sg);
+#pragma unroll
+                for (int t = 0; t < XNT; ++t)
+#pragma unroll
+                    for (int k = 0; k < XQ; ++k) {
+                        const float d = ct[t * 256 + k * 16 + lane];
+                        csum[t][k] += d > 0.0f ? d : 0.0f;
+                    }
+                sycl::group_barrier(sg);
+            }
+#pragma unroll
+            for (int t = 0; t < XNT; ++t) {
+                const int64_t b = b0 + t * XNB + lane;   // lane == this tile's block column
+                if (b >= reach || b >= max_blocks) continue;
+#pragma unroll
+                for (int k = 0; k < XQ; ++k) {
+                    const int64_t qi = q0 + k;
+                    if (qi >= nq) break;
+                    // each query has its own n_bid: past it (and the tail block) is the warp kernel's
+                    const int64_t nb = steps[qi * kStepCount + kStepNBid];
+                    if (b < nb) out[qi * max_blocks + b] = csum[t][k];
+                }
+            }
+        });
+    });
+}
+#endif  // STRATA_XMX_SG16
 
 // ---- the same top-k with each query's keys read once: 1,024 threads hold up to TK_PER consecutive blocks' keys in
 // registers (contexts up to 4 * 1024 * TK_PER cells), per-warp histograms, block-wide scans. The selection rule is
@@ -1697,7 +1864,30 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
             cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
         }
         (void) cc_major[dev];
-        return false;   // SYCL: the tensor-core kernel is not ported yet; the caller takes the older kernel
+#ifdef STRATA_XMX_SG16
+        static const bool xmx_off = [] {
+            const char* v = std::getenv("STRATA_SELECT_XMX");
+            return v != nullptr && v[0] == '0';
+        }();
+        static const bool warp_only = [] {
+            const char* v = std::getenv("STRATA_QSA_WARP");
+            return v != nullptr && (v[0] == '1' || !std::strcmp(v, "select"));
+        }();
+        if (!xmx_off && !warp_only) {   // the joint_matrix scorer; the tail block stays the warp kernel's arithmetic
+            const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+            block_scores_xmx(pooled, q_idx, steps, nq, max_blocks, reach, scores, *strata::q_of(stream));
+            strata::q_of(stream)->parallel_for<class qsa_scores_tail_sycl>(
+                sycl::nd_range<3>(sycl::range<3>(1, 1, (size_t) nq) * sycl::range<3>(1, 1, 32),
+                                  sycl::range<3>(1, 1, 32)),
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                    block_scores_tail_kernel(dead, q_idx, steps, max_blocks, scores);
+                });
+            return true;
+        }
+        return false;   // STRATA_SELECT_XMX=0 / STRATA_QSA_WARP: the warp kernel
+#else
+        return false;   // a build without the XMX kernels (the JIT build): the caller takes the warp kernel
+#endif
     }
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;
