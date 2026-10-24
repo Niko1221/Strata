@@ -600,6 +600,9 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         }
         if (k > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), k, ranges, 0);
 #else
+        // A locked table (--ple-io ram) is resident: nothing to fetch.  The hint would still cost a system call a row,
+        // and on ZFS an ARC prefetch of the row's record (zpl_fadvise -> dmu_prefetch), cached page or not (#2281).
+        if (impl_->locked) return;
         for (size_t i = a; i < b; ++i) {
             if (rows[i] >= impl_->n_rows) continue;
             const uintptr_t r0 = (uintptr_t) (impl_->data + (size_t) rows[i] * impl_->rb);
