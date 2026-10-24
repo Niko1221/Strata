@@ -1,0 +1,5 @@
+taskkill for process 15600 failed (exit 128): ���~: PID �� 22660 (PID �� 15600 ���l�B�z�{��) ���B�z�{�ǵL�k�פ�C
+��]: �s���Q�ڡC
+���~: PID �� 20584 (PID �� 15600 ���l�B�z�{��) ���B�z�{�ǵL�k�פ�C
+��]: �s���Q�ڡC
+���~: PID �� 15600 (PID �� 25652 �; process 15600 is still running 30 s after it was told to stop
