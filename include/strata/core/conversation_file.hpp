@@ -163,6 +163,15 @@ bool session_file_write(const std::string& path, const SavedConversation& image,
                         size_t& bytes, std::string& error, const SessionWriteOptions& options = {},
                         SessionStatus* status = nullptr);
 
+// STRATA_PARK_RAMLIKE (Windows only): a path "mem:<name>" names a pagefile-backed section instead of a
+// file, for session_file_write / session_file_read.  A write creates the section (refused when one of that name
+// exists, or when the free commit is below the file plus options.min_free_bytes), never flushes anything, and HOLDS
+// it - handle and view open - until this process exits, so another process (a keeper) can open it by name and keep
+// it after this one has gone.  A read opens one by name, read-only.  The bytes are those of the session file.
+bool session_is_section(const std::string& path);
+// Whether a section of that name ("mem:<name>" or just <name>) exists now (Windows; elsewhere false)
+bool session_section_exists(const std::string& path);
+
 // One K/V layer read straight from where it lives (device or pinned host pool) into the file's staging buffer,
 // without a full host copy first.  `read(part, offset, dst, n)` copies bytes [offset, offset+n) of part
 // 0..4 = k, v, k_scale, v_scale, pooled; after a failed read `error()` (optional) says why.  The file bytes are
