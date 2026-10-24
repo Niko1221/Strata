@@ -1,0 +1,318 @@
+diff --git a/carrier/client_sync.py b/carrier/client_sync.py
+index 4d266c3..fe89aa2 100644
+--- a/carrier/client_sync.py
++++ b/carrier/client_sync.py
+@@ -10,10 +10,97 @@ import subprocess
+ from context_policy import CONTEXTS as CAPACITIES, capacity_limits
+ CATALOG_URL = 'http://127.0.0.1:10100/v1/catalog'
+ 
++# Startup/catalog freshness only: this is not a live per-model context RPC.
++CATALOG_RELOAD_SCRIPT = r'''
++const reloadMethod = 'desktop_bound_startup_catalog_freshness';
++async function observeClientReload(io) {
++  const unknown = {client_reload_state:'unknown', client_reload_evidence_method:reloadMethod};
++  try {
++    if (!io) {
++      if (process.platform !== 'win32') return unknown;
++      const {collectCodexAppServerCatalogState, isCodexAppServerCommandLine} =
++        await load('src/codex/app-server-processes.ts');
++      const {windowsDesktopAppAdapter:adapter, windowsDefaultExec:exec} =
++        await load('src/codex/desktop-app/windows.ts');
++      const {resolveTrustedWindowsPowerShellExe} = await load('src/lib/windows-elevation.ts');
++      const snapshot = () => {
++        const install = adapter.discover(exec);
++        if (!install) throw Error('Desktop owner unavailable');
++        const desktops = adapter.listProcesses(exec, install);
++        if (!desktops) throw Error('Desktop identity unavailable');
++        // Deliberately narrow: unsupported launchers cannot clear reload-needed.
++        const ps = `
++$ErrorActionPreference='Stop'
++$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
++$rows = @(Get-CimInstance Win32_Process -Filter "Name='codex.exe'" | ForEach-Object {
++  $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
++  if ($o.ReturnValue -ne 0) { throw 'Process owner unavailable' }
++  if ($o.Sid -eq $me) {
++    if (-not $_.ExecutablePath -or -not $_.CreationDate -or -not $_.CommandLine) { throw 'Process identity unavailable' }
++    [pscustomobject]@{pid=[int]$_.ProcessId; parentPid=[int]$_.ParentProcessId;
++      executable=$_.ExecutablePath; commandLine=$_.CommandLine;
++      startedAtMs=([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}
++  }
++})
++ConvertTo-Json -InputObject $rows -Compress
++`;
++        const servers = JSON.parse(exec(resolveTrustedWindowsPowerShellExe(),
++          ['-NoProfile','-NonInteractive','-Command',ps], {windowsHide:true,timeout:15000}))
++          .filter(p => isCodexAppServerCommandLine(p.commandLine, p.executable));
++        return {install, desktops, servers};
++      };
++      io = {snapshot, collect:collectCodexAppServerCatalogState};
++    }
++    const generation = () => {
++      const path = readCodexCatalogPathForHome(home);
++      const bytes = readFileSync(path);
++      const stat = statSync(path, {bigint:true});
++      const row = ownedRow(parse(bytes));
++      if (row.context_window !== capacity || row.max_context_window !== capacity ||
++          row.auto_compact_token_limit !== compact) throw Error('Selected capacity mismatch');
++      return {path:resolve(path), hash:createHash('sha256').update(bytes).digest('hex'),
++        mtime:String(stat.mtimeNs), size:String(stat.size), ino:String(stat.ino),
++        mtimeMs:Number(stat.mtimeNs)/1e6,
++        config:createHash('sha256').update(readFileSync(join(home,'config.toml'))).digest('hex')};
++    };
++    const before = generation();
++    const first = io.snapshot();
++    // The acknowledgement covers the installed desktop's children. A separate
++    // CLI/stdio server is outside this client's evidence and may use another home.
++    const desktopServers = first.servers.filter(server =>
++      first.desktops.some(desktop => desktop.pid === server.parentPid));
++    const status = io.collect({platform:'win32', listSnapshots:() => desktopServers,
++      readStartMs:pid => desktopServers.find(p => p.pid === pid)?.startedAtMs ?? null,
++      catalogMtimeMs:() => before.mtimeMs});
++    const second = io.snapshot();
++    const after = generation();
++    const identity = value => JSON.stringify({install:value.install,
++      desktops:[...value.desktops].sort((a,b) => a.pid-b.pid),
++      servers:[...value.servers].sort((a,b) => a.pid-b.pid)});
++    if (JSON.stringify(before) !== JSON.stringify(after) || identity(first) !== identity(second)) return unknown;
++    if (!['fresh','stale','not_running','unknown'].includes(status.state)) return unknown;
++    const bound = desktopServers.length > 0 && desktopServers.every(server => {
++      const desktop = first.desktops.find(p => p.pid === server.parentPid);
++      const start = desktop && Date.parse(desktop.createdAt);
++      return Number.isFinite(start) && start < server.startedAtMs &&
++        Number.isFinite(server.startedAtMs) && server.executable &&
++        !/model_catalog_json|--profile|(?:^|\s)-p(?:\s|=)/i.test(server.commandLine) &&
++        /[\\/]ChatGPT[.]exe$/i.test(desktop.executable);
++    });
++    if (status.state === 'fresh' && (!bound || status.catalogMtimeMs !== before.mtimeMs ||
++        status.processes.length !== desktopServers.length || status.processes.some(p =>
++          !desktopServers.some(s => s.pid === p.pid && s.startedAtMs === p.startedAtMs &&
++            s.startedAtMs > before.mtimeMs)))) return unknown;
++    return {client_reload_state:status.state, client_reload_evidence_method:reloadMethod};
++  } catch { return unknown; }
++}
++'''
++
+ # Run against the bound, unmodified official dependency. Keep acquisition outside
+ # its catalog permit and read/merge current picker metadata only inside that permit.
+ CATALOG_CAPACITY_SCRIPT = r'''
+-import {readFileSync, existsSync, rmSync} from 'node:fs';
++import {readFileSync, existsSync, rmSync, statSync} from 'node:fs';
++import {createHash} from 'node:crypto';
+ import {join, resolve} from 'node:path';
+ const load = path => import(new URL(path, owner).href);
+ const {fetchRemoteCatalog, validateRemoteCatalogDocument} = await load('src/codex/catalog/remote.ts');
+@@ -86,7 +173,8 @@ const outcome = withCatalogWriteSerialization(home, permit => {
+   }
+ }, {intent:'pull', writer:'catalog-pull'});
+ if (outcome.kind !== 'completed') throw Error('Catalog serialization unavailable');
+-console.log(JSON.stringify(outcome.value));
++const reload = await observeClientReload();
++console.log(JSON.stringify({...outcome.value, ...reload}));
+ '''
+ 
+ 
+@@ -166,7 +254,7 @@ def pull_catalog(home, opencodex_home, capacity, bindings):
+               'const home=' + json.dumps(str(home)) + ';'
+               'const capacity=' + json.dumps(capacity) + ';'
+               'const compact=' + json.dumps(capacity_limits(capacity)[1]) + ';'
+-              'const url=' + json.dumps(CATALOG_URL) + ';' + CATALOG_CAPACITY_SCRIPT)
++              'const url=' + json.dumps(CATALOG_URL) + ';' + CATALOG_RELOAD_SCRIPT + CATALOG_CAPACITY_SCRIPT)
+     pulled = _run([str(root/'runtime/bun.exe'), '--no-install', '-e', script], env=env, cwd=root)
+     # The bound official owner still owns catalog/cache serialization and writes.
+     document = json.loads((home/'opencodex-catalog.json').read_text(encoding='utf-8-sig'))
+@@ -184,7 +272,9 @@ def sync(home, capacity, opencodex_home, binding_path, *, remote=sync_remote, pu
+     bindings = owner_bindings(binding_path)
+     result = {'state': 'pending', 'context': capacity, 'auto_compact_token_limit': capacity_limits(capacity)[1],
+               'max_input_tokens': capacity_limits(capacity)[0], 'reload_required': True,
+-              'remote_synced': False, 'catalog_synced': False}
++              'remote_synced': False, 'catalog_synced': False,
++              'client_reload_state': 'unknown',
++              'client_reload_evidence_method': 'desktop_bound_startup_catalog_freshness'}
+     try:
+         remote_result = remote(capacity, bindings)
+     except Exception:
+@@ -203,6 +293,10 @@ def sync(home, capacity, opencodex_home, binding_path, *, remote=sync_remote, pu
+         pulled = pull(home, opencodex_home, capacity, bindings)
+     except Exception:
+         return {**result, 'reason': 'catalog_pull_failed'}
++    if isinstance(pulled, dict) and pulled.get('client_reload_evidence_method') == result['client_reload_evidence_method']:
++        state = pulled.get('client_reload_state')
++        if state in ('fresh', 'stale', 'not_running', 'unknown'):
++            result.update(client_reload_state=state, reload_required=state != 'fresh')
+     return {**result, 'state': 'synced', 'catalog_synced': True,
+             'changed': bool(remote_result.get('changed') or (isinstance(pulled, dict) and
+                             (pulled.get('catalogWritten') or pulled.get('cacheSynced') or pulled.get('rawWritten'))))}
+diff --git a/carrier/tests/test_client_sync.py b/carrier/tests/test_client_sync.py
+index b1f81a1..32d5256 100644
+--- a/carrier/tests/test_client_sync.py
++++ b/carrier/tests/test_client_sync.py
+@@ -40,6 +40,28 @@ class ClientSyncTests(unittest.TestCase):
+         self.assertNotIn('credential', json.dumps(result))
+         self.pull.assert_not_called()
+ 
++    def test_only_explicit_owner_freshness_clears_reload(self):
++        method = 'desktop_bound_startup_catalog_freshness'
++        for state in ('fresh', 'unknown', 'stale', 'not_running'):
++            self.pull.return_value = {'client_reload_state': state,
++                                      'client_reload_evidence_method': method}
++            result = self.sync(65536)
++            self.assertEqual(result['reload_required'], state != 'fresh')
++            self.assertEqual(result['client_reload_state'], state)
++        for missing in ({}, {'client_reload_state':'fresh'},
++                        {'client_reload_state':'fresh','client_reload_evidence_method':'live_context_verified'}):
++            self.pull.return_value = missing
++            self.assertTrue(self.sync(65536)['reload_required'])
++
++    def test_no_op_retains_explicit_freshness(self):
++        self.pull.return_value = {'catalogWritten':False,'rawWritten':False,'cacheSynced':False,
++            'client_reload_state':'fresh',
++            'client_reload_evidence_method':'desktop_bound_startup_catalog_freshness'}
++        for _ in range(2):
++            result = self.sync(65536)
++            self.assertFalse(result['changed'])
++            self.assertFalse(result['reload_required'])
++
+     def test_wrong_remote_capacity_never_claims_synced(self):
+         self.remote.side_effect = None
+         self.remote.return_value = {'state':'synced','context':262144}
+@@ -123,6 +145,140 @@ class ClientSyncTests(unittest.TestCase):
+             self.assertEqual(actual['max_input_tokens'],capacity-4096)
+ 
+ 
++class CatalogReloadEvidenceTests(unittest.TestCase):
++    """Execute the observer with process fixtures only; no Windows/live probes."""
++
++    def observe(self, scenario):
++        with tempfile.TemporaryDirectory() as folder:
++            home = Path(folder)
++            config = b'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "max"\nservice_tier = "priority"\napproval_policy = "never"\n'
++            capacity = 65536
++            if scenario == 'current_200k':
++                capacity = 204800
++                config = b'model = "strata/strata-active"\nmodel_reasoning_effort = "high"\nservice_tier = "priority"\napproval_policy = "never"\n'
++            (home/'config.toml').write_bytes(config)
++            catalog = {'models':[{'slug':'strata/strata-active','context_window':capacity,
++                                 'max_context_window':capacity,
++                                 'auto_compact_token_limit':capacity_limits(capacity)[1]}]}
++            original = json.dumps(catalog).encode()
++            (home/'curated.json').write_bytes(original)
++            prefix = r'''
++import {readFileSync, writeFileSync, statSync, utimesSync} from 'node:fs';
++import {join, resolve} from 'node:path';
++import {createHash} from 'node:crypto';
++let selected='curated.json';
++const readCodexCatalogPathForHome = home => join(home,selected);
++const parse = bytes => JSON.parse(bytes.toString('utf8'));
++const ownedRow = doc => {
++  const rows=doc.models.filter(r => r.slug==='strata/strata-active');
++  if(rows.length!==1) throw Error('Invalid row');
++  return rows[0];
++};
++'''
++            fixture = r'''
++const snapshot = {install:{id:'OpenAI.Codex_fixture',root:'C:/WindowsApps/OpenAI.Codex_fixture'},
++  desktops:[{pid:10,parentPid:1,createdAt:'2026-10-22T00:00:00Z',
++    executable:'C:/WindowsApps/OpenAI.Codex_fixture/app/ChatGPT.exe'}],
++  servers:[{pid:20,parentPid:10,startedAtMs:Date.parse('2026-10-22T00:01:00Z'),
++    executable:'C:/Runtime/codex.exe',commandLine:'C:/Runtime/codex.exe app-server'}]};
++const file=join(home,'curated.json');
++utimesSync(file,new Date('2026-10-21T00:00:00Z'),new Date('2026-10-21T00:00:00Z'));
++if(scenario==='current_200k') {
++  // Anonymous fixture identities and timing; never queried from the desktop.
++  snapshot.desktops[0].pid=100;
++  snapshot.desktops[0].createdAt='2026-01-02T00:00:00Z';
++  snapshot.servers[0].pid=101;
++  snapshot.servers[0].parentPid=100;
++  snapshot.servers[0].startedAtMs=Date.parse('2026-01-02T00:01:00Z');
++  const catalogTime=Date.parse('2026-01-01T00:00:00Z')/1000;
++  utimesSync(file,catalogTime,catalogTime);
++}
++if(scenario==='detached') snapshot.servers[0].parentPid=99;
++if(scenario==='desktop_with_detached') snapshot.servers.push({pid:30,parentPid:99,
++  startedAtMs:Date.parse('2026-10-20T00:02:00Z'),executable:'C:/Runtime/codex.exe',
++  commandLine:'C:/Runtime/codex.exe app-server --listen stdio://'});
++if(scenario==='desktop_child_override') snapshot.servers.push({pid:30,parentPid:10,
++  startedAtMs:Date.parse('2026-10-22T00:02:00Z'),executable:'C:/Runtime/codex.exe',
++  commandLine:'C:/Runtime/codex.exe app-server --profile other'});
++if(scenario==='missing_owner') snapshot.desktops=[];
++if(scenario==='missing_start') snapshot.servers[0].startedAtMs=null;
++if(scenario==='catalog_override') snapshot.servers[0].commandLine+=' -c model_catalog_json=other.json';
++if(scenario==='capacity_mismatch') {
++  const doc=parse(readFileSync(file)); doc.models[0].context_window=131072;
++  writeFileSync(file,JSON.stringify(doc));
++}
++let snapshots=0, collects=0;
++const io={snapshot:() => {
++  snapshots++;
++  const copy=structuredClone(snapshot);
++  if(scenario==='process_drift' && snapshots===2) copy.servers[0].startedAtMs++;
++  if(scenario==='desktop_drift' && snapshots===2) copy.desktops[0].createdAt='2026-10-22T00:00:01Z';
++  return copy;
++}, collect:options => {
++  collects++;
++  if(scenario==='probe_failure') throw Error('Private fixture diagnostic');
++  const processes=options.listSnapshots().map(p => ({pid:p.pid,startedAtMs:options.readStartMs(p.pid)}));
++  if(scenario==='desktop_with_detached' && (processes.length!==1 || processes[0].pid!==20))
++    throw Error('Desktop evidence included a separate CLI server');
++  const catalogMtimeMs=options.catalogMtimeMs();
++  if(scenario==='catalog_drift') writeFileSync(file,readFileSync(file)+' ');
++  if(scenario==='selection_drift') selected='other.json';
++  if(scenario==='config_drift') writeFileSync(join(home,'config.toml'),'fixture changed');
++  let state=['stale','unknown','not_running'].includes(scenario)?scenario:'fresh';
++  if(scenario==='not_running') processes.length=0;
++  return {state,processes,catalogMtimeMs};
++}};
++const first=await observeClientReload(io);
++const second=['fresh','current_200k'].includes(scenario)?await observeClientReload(io):null;
++console.log(JSON.stringify({first,second,collects}));
++'''
++            script = (prefix + f'\nconst capacity={capacity}, compact={capacity_limits(capacity)[1]};' +
++                      '\nconst home=' + json.dumps(str(home)) + ';\nconst scenario=' +
++                      json.dumps(scenario) + ';\n' + client_sync.CATALOG_RELOAD_SCRIPT + fixture)
++            result = client_sync._run(['C:/Program Files/nodejs/node.exe','--input-type=module','-e',script])
++            if scenario != 'config_drift':
++                self.assertEqual((home/'config.toml').read_bytes(),config)
++            if scenario not in ('catalog_drift','capacity_mismatch'):
++                self.assertEqual((home/'curated.json').read_bytes(),original)
++            return result
++
++    def test_fresh_desktop_bound_observation_and_no_op_retention(self):
++        result = self.observe('fresh')
++        self.assertEqual(result['first']['client_reload_state'],'fresh')
++        self.assertEqual(result['second'],result['first'])
++        self.assertEqual(result['first']['client_reload_evidence_method'],
++                         'desktop_bound_startup_catalog_freshness')
++
++    def test_reported_200k_timestamps_preserve_current_strata_high_default(self):
++        result = self.observe('current_200k')
++        self.assertEqual(result['first']['client_reload_state'],'fresh')
++        self.assertEqual(result['second'],result['first'])
++        self.assertNotIn('live_context_verified',json.dumps(result))
++
++    def test_unrelated_stdio_server_does_not_mask_confirmed_desktop(self):
++        result = self.observe('desktop_with_detached')
++        self.assertEqual(result['first']['client_reload_state'],'fresh')
++
++    def test_detached_missing_or_changed_identity_never_acknowledges(self):
++        for scenario in ('detached','missing_owner','missing_start','process_drift','desktop_drift',
++                         'catalog_override','desktop_child_override','probe_failure'):
++            with self.subTest(scenario=scenario):
++                self.assertEqual(self.observe(scenario)['first']['client_reload_state'],'unknown')
++
++    def test_catalog_capacity_selection_and_config_drift_never_acknowledge(self):
++        for scenario in ('catalog_drift','selection_drift','capacity_mismatch','config_drift'):
++            with self.subTest(scenario=scenario):
++                result=self.observe(scenario)
++                self.assertEqual(result['first']['client_reload_state'],'unknown')
++                if scenario=='capacity_mismatch':
++                    self.assertEqual(result['collects'],0)
++
++    def test_official_nonfresh_states_remain_explicit(self):
++        for state in ('unknown','stale','not_running'):
++            with self.subTest(state=state):
++                self.assertEqual(self.observe(state)['first']['client_reload_state'],state)
++
++
+ class CatalogPreservationTests(unittest.TestCase):
+     def test_real_owner_preserves_curated_metadata_and_refreshes_raw_capacity(self):
+         # Exercise the installed immutable owner in isolated homes, never live config.

@@ -1,0 +1,2 @@
+# A blank unified-diff context line contains one meaningful space.
+integration-fix.patch whitespace=-blank-at-eol

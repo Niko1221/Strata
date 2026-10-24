@@ -1,0 +1,42 @@
+{
+  "evidenceBasis": "existing_actual_acceptance_and_publication_revalidation",
+  "date": "2026-10-22",
+  "environment": {
+    "platform": "Windows x64",
+    "appVersion": "0.2.2",
+    "engineVersion": "0.1.47",
+    "pythonVersion": "3.12",
+    "officialCatalogOwnerVersion": "2.84.0"
+  },
+  "runtimeImplementationSha256": "21d47b0ef14200eecc7cb457756a182ce2155dc049ca0ded0da963c6071e25d8",
+  "testModuleSha256": "1bd0d2a2a0c2db915faa48d5f0fe045871e5d80def8101a2fb40f2f2179f601a",
+  "integrationPatchSha256": "48350265a73935e381ce2e8b12b83e755e459d3e95e8945f9ed3cd1ea5f0e362",
+  "codexSync": {
+    "state": "synced",
+    "reload_required": false,
+    "remote_synced": true,
+    "catalog_synced": true,
+    "client_reload_state": "fresh",
+    "client_reload_evidence_method": "desktop_bound_startup_catalog_freshness"
+  },
+  "runtimeObservation": {
+    "source": "recorded_user_initiated_post_restart_request",
+    "rawCatalogContextTokens": 204800,
+    "effectiveContextWindowTokens": 194560,
+    "effectivePercent": 95,
+    "autoCompactTokenLimit": 163840,
+    "fullContextWindowStressTested": false
+  },
+  "localChecksPassed": {
+    "syncObserver": 21,
+    "affectedRegression": 66,
+    "total": 87
+  },
+  "upstreamCiAtEvidenceCapture": "not_run",
+  "screenshot": {
+    "file": "current-model.jpg",
+    "sha256": "ae8c3fc3cf63b8f3dca17904baf33cccbc1f6bef458ddba737705fdb367b17d4",
+    "kind": "actual_model_dialog_capture",
+    "backgroundChatsExcluded": true
+  }
+}
