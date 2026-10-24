@@ -994,12 +994,14 @@ print(r.choices[0].message.content)
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
   15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
-- **Which tool calls come back as calls.** A call counts only when it names a tool the request declared. A call for
-  another name, or any call in a Chat Completions or Anthropic request that declared no tools, is returned as the
-  text it was written as, so a client never runs a tool it did not offer (the Responses route keeps its own rule
-  for Codex's compaction requests). A call whose envelope drifted by a token, `<=NAME>`, `<function:NAME>` or `<NAME>`
-  instead of `<function=NAME>`, is read as the call when NAME is a declared tool. A `<tool_call>` block that still
-  does not read as a call is counted in the server window.
+- **Which tool calls come back as calls.** A call counts only when it names a tool the request declared. A namespaced
+  tool (`mcp__filesystem.write_file`) is that call when the model writes `mcp__filesystem__write_file`,
+  `mcp__filesystem=write_file`, `mcp__filesystem_write_file`, or the bare member (`write_file`) and exactly one declared
+  tool has that member. A call for another name, or any call in a Chat Completions or Anthropic request that declared
+  no tools, is returned as the text it was written as, so a client never runs a tool it did not offer (the Responses
+  route keeps its own rule for Codex's compaction requests). A call whose envelope drifted by a token, `<=NAME>`,
+  `<function:NAME>` or `<NAME>` instead of `<function=NAME>`, is read as the call when NAME is a declared tool. A
+  `<tool_call>` block that still does not read as a call is counted in the server window.
 - **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
   (`{"name": ..., "arguments": ...}`) inside `<tool_call>`, as a `<function=NAME>` block at the start of a line
