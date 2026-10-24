@@ -386,6 +386,12 @@ struct GpuPlanSink {
     /// kernel reads the mapped arena directly; 2 = a copy kernel stages it inside the graph.  For 1 and 2 `ptr2`
     /// holds the arena's device alias.
     int pcie_mode = 0;
+    /// STRATA_VERIFY_DEFER_CPU_BELOW (verify.cpp): the group's routing weights as the doorbell published them (entry
+    /// token * k + j).  With `partial` set and heavy > 0 the pool computes the experts of the CPU entries whose weight is
+    /// >= heavy first and calls partial(ctx) before the others.  Null / 0: one pass, as always.
+    const float* weights = nullptr;
+    float heavy = 0.0f;
+    void (*partial)(void* ctx) = nullptr;
     int32_t cpu_jobs = 0;   ///< host only: the distinct experts the pool computes for the layer just published
 };
 
