@@ -1,0 +1,1757 @@
+{
+  "source_commit": "f7ce3c9823fd234423a0a97b21d4a31eb278ff2a",
+  "source_base": "7dd5cf18e68c639a8773e096c5c79f971ea2a9f5",
+  "original_pr_head": "7737f71a0f3a78616fa99eb58d929f0f17fae732",
+  "requests": 25,
+  "correct": 25,
+  "completed": 25,
+  "aer_changes": {},
+  "new_kernel_errors": [],
+  "file_sha256": {
+    "<HOME>/stacks/strata/strata-iq3_xxs.json": "aa726700214de941ed3b765b3d72b196859ed536098e1ff5e790cc311322bb03",
+    "<HOME>/stacks/strata-vram-elastic-20261024/build/strata": "426cbfcf9fcccb5dba16f17d2ee2bead97db55874e80e434c36ae1c30f6314c6",
+    "<HOME>/models/strata/experiments/strata-v034-tuning3/profile.bin": "34173b9bd347358bcc2e7601700ae10688340e3db7cf812a3de85264d502139c",
+    "<HOME>/models/strata/control-vectors/Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf": "59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38"
+  },
+  "responses": [
+    {
+      "label": "both-3g",
+      "case": "long32k",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 32263,
+        "completion_tokens": 2970,
+        "total_tokens": 35233,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "b994dc7f5a7a",
+        "projection": true,
+        "time": 1792847285.9919672,
+        "duration_s": 37.3,
+        "finish": "stop",
+        "prompt_tokens": 32263,
+        "reused": 0,
+        "output_tokens": 2970,
+        "first_engine_token_s": 14.696,
+        "prompt_total": 32263,
+        "prompt_read": 32263,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2970,
+        "prompt_ms": 14673.7,
+        "decode_ms": 22619.8,
+        "decode_tok_s": 131.3,
+        "hit_rate": 0.957,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1730,
+        "drafts_accepted": 1612
+      },
+      "wall_s": 37.332763618964236,
+      "gpu_memory": "0, 12460, 3391\n1, 12606, 3245",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "both-restore",
+      "case": "qa_injection",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 160,
+        "completion_tokens": 141,
+        "total_tokens": 301,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "8733a8ae0a63",
+        "projection": true,
+        "time": 1792847324.0992265,
+        "duration_s": 2.4,
+        "finish": "stop",
+        "prompt_tokens": 160,
+        "reused": 0,
+        "output_tokens": 141,
+        "first_engine_token_s": 1.045,
+        "prompt_total": 160,
+        "prompt_read": 160,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 141,
+        "prompt_ms": 1026.2,
+        "decode_ms": 1369.3,
+        "decode_tok_s": 103.0,
+        "hit_rate": 0.857,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 85,
+        "drafts_accepted": 73
+      },
+      "wall_s": 2.4005754080135375,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "elastic-full",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2502,
+        "completion_tokens": 1954,
+        "total_tokens": 4456,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "ec0aef4e4892",
+        "projection": true,
+        "time": 1792847116.7095559,
+        "duration_s": 13.9,
+        "finish": "stop",
+        "prompt_tokens": 2502,
+        "reused": 0,
+        "output_tokens": 1954,
+        "first_engine_token_s": 2.882,
+        "prompt_total": 2502,
+        "prompt_read": 2502,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 1954,
+        "prompt_ms": 2862.6,
+        "decode_ms": 11060.4,
+        "decode_tok_s": 176.7,
+        "hit_rate": 0.975,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1287,
+        "drafts_accepted": 1236
+      },
+      "wall_s": 13.935746798000764,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "elastic-full",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 180,
+        "completion_tokens": 167,
+        "total_tokens": 347,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "d0fe671a3727",
+        "projection": true,
+        "time": 1792847130.6876879,
+        "duration_s": 2.3,
+        "finish": "stop",
+        "prompt_tokens": 180,
+        "reused": 0,
+        "output_tokens": 167,
+        "first_engine_token_s": 0.865,
+        "prompt_total": 180,
+        "prompt_read": 180,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 167,
+        "prompt_ms": 846.5,
+        "decode_ms": 1466.2,
+        "decode_tok_s": 113.9,
+        "hit_rate": 0.896,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 104,
+        "drafts_accepted": 92
+      },
+      "wall_s": 2.318322804989293,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "external-4g-held",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 183,
+        "completion_tokens": 190,
+        "total_tokens": 373,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "7182bf8aa997",
+        "projection": true,
+        "time": 1792847327.2989645,
+        "duration_s": 2.8,
+        "finish": "stop",
+        "prompt_tokens": 183,
+        "reused": 0,
+        "output_tokens": 190,
+        "first_engine_token_s": 0.912,
+        "prompt_total": 183,
+        "prompt_read": 183,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 190,
+        "prompt_ms": 890.4,
+        "decode_ms": 1883.9,
+        "decode_tok_s": 100.9,
+        "hit_rate": 0.885,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 118,
+        "drafts_accepted": 99
+      },
+      "wall_s": 2.783155243960209,
+      "gpu_memory": "0, 15456, 395\n1, 14275, 1576",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata\n903315, /bench/hold-vram"
+    },
+    {
+      "label": "final-restored",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2503,
+        "completion_tokens": 1691,
+        "total_tokens": 4194,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "47b69dbe4a9a",
+        "projection": true,
+        "time": 1792847348.5673254,
+        "duration_s": 12.8,
+        "finish": "stop",
+        "prompt_tokens": 2503,
+        "reused": 0,
+        "output_tokens": 1691,
+        "first_engine_token_s": 2.669,
+        "prompt_total": 2503,
+        "prompt_read": 2503,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 1691,
+        "prompt_ms": 2651.5,
+        "decode_ms": 10173.0,
+        "decode_tok_s": 166.2,
+        "hit_rate": 0.976,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1125,
+        "drafts_accepted": 1053
+      },
+      "wall_s": 12.830503638018854,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "final-restored",
+      "case": "long32k",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 32262,
+        "completion_tokens": 2313,
+        "total_tokens": 34575,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "d947abf8b2b6",
+        "projection": true,
+        "time": 1792847361.4590716,
+        "duration_s": 30.3,
+        "finish": "stop",
+        "prompt_tokens": 32262,
+        "reused": 0,
+        "output_tokens": 2313,
+        "first_engine_token_s": 14.611,
+        "prompt_total": 32262,
+        "prompt_read": 32262,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2313,
+        "prompt_ms": 14588.6,
+        "decode_ms": 15695.3,
+        "decode_tok_s": 147.4,
+        "hit_rate": 0.973,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1462,
+        "drafts_accepted": 1365
+      },
+      "wall_s": 30.3071235169773,
+      "gpu_memory": "0, 15456, 395\n1, 15446, 405",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-3g",
+      "case": "qa_arithmetic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 168,
+        "completion_tokens": 514,
+        "total_tokens": 682,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "ef069bb932d1",
+        "projection": true,
+        "time": 1792847133.1887274,
+        "duration_s": 4.4,
+        "finish": "stop",
+        "prompt_tokens": 168,
+        "reused": 0,
+        "output_tokens": 514,
+        "first_engine_token_s": 0.831,
+        "prompt_total": 168,
+        "prompt_read": 168,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 514,
+        "prompt_ms": 812.1,
+        "decode_ms": 3552.2,
+        "decode_tok_s": 144.7,
+        "hit_rate": 0.912,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 325,
+        "drafts_accepted": 310
+      },
+      "wall_s": 4.3738082720083185,
+      "gpu_memory": "0, 12460, 3391\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-5g",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 2251,
+        "total_tokens": 4756,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "0ab46b1a0c04",
+        "projection": true,
+        "time": 1792847137.7815716,
+        "duration_s": 16.0,
+        "finish": "stop",
+        "prompt_tokens": 2505,
+        "reused": 0,
+        "output_tokens": 2251,
+        "first_engine_token_s": 2.973,
+        "prompt_total": 2505,
+        "prompt_read": 2505,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2251,
+        "prompt_ms": 2951.9,
+        "decode_ms": 13086.6,
+        "decode_tok_s": 172.0,
+        "hit_rate": 0.941,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1483,
+        "drafts_accepted": 1444
+      },
+      "wall_s": 16.052431475021876,
+      "gpu_memory": "0, 10412, 5439\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-5g",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 183,
+        "completion_tokens": 273,
+        "total_tokens": 456,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "742975a48c82",
+        "projection": true,
+        "time": 1792847153.8741333,
+        "duration_s": 3.5,
+        "finish": "stop",
+        "prompt_tokens": 183,
+        "reused": 0,
+        "output_tokens": 273,
+        "first_engine_token_s": 0.997,
+        "prompt_total": 183,
+        "prompt_read": 183,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 273,
+        "prompt_ms": 973.8,
+        "decode_ms": 2543.5,
+        "decode_tok_s": 107.3,
+        "hit_rate": 0.802,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 183,
+        "drafts_accepted": 165
+      },
+      "wall_s": 3.5216691679670475,
+      "gpu_memory": "0, 10412, 5439\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-restore",
+      "case": "qa_logic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 127,
+        "completion_tokens": 323,
+        "total_tokens": 450,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "abfb3620a68e",
+        "projection": true,
+        "time": 1792847253.9994125,
+        "duration_s": 3.3,
+        "finish": "stop",
+        "prompt_tokens": 127,
+        "reused": 0,
+        "output_tokens": 323,
+        "first_engine_token_s": 0.691,
+        "prompt_total": 127,
+        "prompt_read": 127,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 323,
+        "prompt_ms": 673.6,
+        "decode_ms": 2639.7,
+        "decode_tok_s": 122.4,
+        "hit_rate": 0.957,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 201,
+        "drafts_accepted": 166
+      },
+      "wall_s": 3.3176680479664356,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-3g",
+      "case": "qa_arithmetic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 168,
+        "completion_tokens": 508,
+        "total_tokens": 676,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "a1128b2c1a48",
+        "projection": true,
+        "time": 1792847257.5090916,
+        "duration_s": 4.1,
+        "finish": "stop",
+        "prompt_tokens": 168,
+        "reused": 0,
+        "output_tokens": 508,
+        "first_engine_token_s": 0.78,
+        "prompt_total": 168,
+        "prompt_read": 168,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 508,
+        "prompt_ms": 762.8,
+        "decode_ms": 3373.9,
+        "decode_tok_s": 150.6,
+        "hit_rate": 0.945,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 326,
+        "drafts_accepted": 304
+      },
+      "wall_s": 4.140814322978258,
+      "gpu_memory": "0, 15456, 395\n1, 12606, 3245",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-5g",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 2087,
+        "total_tokens": 4592,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "be1c940bf6ea",
+        "projection": true,
+        "time": 1792847261.85429,
+        "duration_s": 16.2,
+        "finish": "stop",
+        "prompt_tokens": 2505,
+        "reused": 0,
+        "output_tokens": 2087,
+        "first_engine_token_s": 3.203,
+        "prompt_total": 2505,
+        "prompt_read": 2505,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2087,
+        "prompt_ms": 3183.4,
+        "decode_ms": 12985.5,
+        "decode_tok_s": 160.7,
+        "hit_rate": 0.958,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1340,
+        "drafts_accepted": 1289
+      },
+      "wall_s": 16.18107015202986,
+      "gpu_memory": "0, 15456, 395\n1, 10558, 5293",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-5g",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 183,
+        "completion_tokens": 263,
+        "total_tokens": 446,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "4470f5fff889",
+        "projection": true,
+        "time": 1792847278.0789483,
+        "duration_s": 3.2,
+        "finish": "stop",
+        "prompt_tokens": 183,
+        "reused": 0,
+        "output_tokens": 263,
+        "first_engine_token_s": 1.039,
+        "prompt_total": 183,
+        "prompt_read": 183,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 263,
+        "prompt_ms": 1015.0,
+        "decode_ms": 2216.7,
+        "decode_tok_s": 118.6,
+        "hit_rate": 0.824,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 166,
+        "drafts_accepted": 158
+      },
+      "wall_s": 3.235912529984489,
+      "gpu_memory": "0, 15456, 395\n1, 10558, 5293",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-restore",
+      "case": "qa_logic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 127,
+        "completion_tokens": 308,
+        "total_tokens": 435,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "40c34282f4aa",
+        "projection": true,
+        "time": 1792847282.3653772,
+        "duration_s": 3.4,
+        "finish": "stop",
+        "prompt_tokens": 127,
+        "reused": 0,
+        "output_tokens": 308,
+        "first_engine_token_s": 0.943,
+        "prompt_total": 127,
+        "prompt_read": 127,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 308,
+        "prompt_ms": 925.6,
+        "decode_ms": 2450.4,
+        "decode_tok_s": 125.7,
+        "hit_rate": 0.959,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 197,
+        "drafts_accepted": 170
+      },
+      "wall_s": 3.383394591975957,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "grow-while-occupied",
+      "case": "qa_logic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 128,
+        "completion_tokens": 300,
+        "total_tokens": 428,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "fdfd3fa2bc60",
+        "projection": true,
+        "time": 1792847330.2311568,
+        "duration_s": 3.3,
+        "finish": "stop",
+        "prompt_tokens": 128,
+        "reused": 0,
+        "output_tokens": 300,
+        "first_engine_token_s": 0.754,
+        "prompt_total": 128,
+        "prompt_read": 128,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 300,
+        "prompt_ms": 736.1,
+        "decode_ms": 2551.0,
+        "decode_tok_s": 117.6,
+        "hit_rate": 0.944,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 179,
+        "drafts_accepted": 152
+      },
+      "wall_s": 3.2924528759904206,
+      "gpu_memory": "0, 15456, 395\n1, 14787, 1064",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata\n903315, /bench/hold-vram"
+    },
+    {
+      "label": "pr-off",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2502,
+        "completion_tokens": 2622,
+        "total_tokens": 5124,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "42e419fd1799",
+        "projection": true,
+        "time": 1792846599.2197278,
+        "duration_s": 18.7,
+        "finish": "stop",
+        "prompt_tokens": 2502,
+        "reused": 0,
+        "output_tokens": 2622,
+        "first_engine_token_s": 2.891,
+        "prompt_total": 2502,
+        "prompt_read": 2502,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2622,
+        "prompt_ms": 2871.5,
+        "decode_ms": 15855.9,
+        "decode_tok_s": 165.4,
+        "hit_rate": 0.975,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1662,
+        "drafts_accepted": 1595
+      },
+      "wall_s": 18.74131909897551,
+      "gpu_memory": "0, 15456, 395\n1, 15442, 409",
+      "gpu_processes": "844984, /app/strata/build/strata\n844984, /app/strata/build/strata"
+    },
+    {
+      "label": "pr-off",
+      "case": "qa_logic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 125,
+        "completion_tokens": 346,
+        "total_tokens": 471,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "bd9ed0d0d2ae",
+        "projection": true,
+        "time": 1792846620.8189168,
+        "duration_s": 3.5,
+        "finish": "stop",
+        "prompt_tokens": 125,
+        "reused": 0,
+        "output_tokens": 346,
+        "first_engine_token_s": 0.69,
+        "prompt_total": 125,
+        "prompt_read": 125,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 346,
+        "prompt_ms": 672.2,
+        "decode_ms": 2820.9,
+        "decode_tok_s": 122.7,
+        "hit_rate": 0.959,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 210,
+        "drafts_accepted": 178
+      },
+      "wall_s": 3.497532740002498,
+      "gpu_memory": "0, 15456, 395\n1, 15442, 409",
+      "gpu_processes": "844984, /app/strata/build/strata\n844984, /app/strata/build/strata"
+    },
+    {
+      "label": "pr-off",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 180,
+        "completion_tokens": 263,
+        "total_tokens": 443,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "45a87a2d62d0",
+        "projection": true,
+        "time": 1792846618.0026464,
+        "duration_s": 2.8,
+        "finish": "stop",
+        "prompt_tokens": 180,
+        "reused": 0,
+        "output_tokens": 263,
+        "first_engine_token_s": 0.873,
+        "prompt_total": 180,
+        "prompt_read": 180,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 263,
+        "prompt_ms": 853.5,
+        "decode_ms": 1908.6,
+        "decode_tok_s": 137.8,
+        "hit_rate": 0.909,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 165,
+        "drafts_accepted": 156
+      },
+      "wall_s": 2.7682847850373946,
+      "gpu_memory": "0, 15456, 395\n1, 15442, 409",
+      "gpu_processes": "844984, /app/strata/build/strata\n844984, /app/strata/build/strata"
+    },
+    {
+      "label": "release-baseline",
+      "case": "leads28_en",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 2503,
+        "completion_tokens": 2931,
+        "total_tokens": 5434,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "50ff3d102f71",
+        "projection": true,
+        "time": 1792846108.3973713,
+        "duration_s": 21.3,
+        "finish": "stop",
+        "prompt_tokens": 2503,
+        "reused": 0,
+        "output_tokens": 2931,
+        "first_engine_token_s": 2.911,
+        "prompt_total": 2503,
+        "prompt_read": 2503,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 2931,
+        "prompt_ms": 2892.0,
+        "decode_ms": 18370.4,
+        "decode_tok_s": 159.6,
+        "hit_rate": 0.976,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 1809,
+        "drafts_accepted": 1739
+      },
+      "wall_s": 21.27420613000868,
+      "gpu_memory": "0, 15454, 397\n1, 15444, 407",
+      "gpu_processes": "266195, /app/strata/engine/strata-v0.1.48-5060ti, 15356\n266195, /app/strata/engine/strata-v0.1.48-5060ti, 15346"
+    },
+    {
+      "label": "release-baseline",
+      "case": "qa_logic",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 126,
+        "completion_tokens": 298,
+        "total_tokens": 424,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "5cba0158eef4",
+        "projection": true,
+        "time": 1792846132.6011872,
+        "duration_s": 3.2,
+        "finish": "stop",
+        "prompt_tokens": 126,
+        "reused": 0,
+        "output_tokens": 298,
+        "first_engine_token_s": 0.728,
+        "prompt_total": 126,
+        "prompt_read": 126,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 298,
+        "prompt_ms": 710.3,
+        "decode_ms": 2530.3,
+        "decode_tok_s": 117.8,
+        "hit_rate": 0.956,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 190,
+        "drafts_accepted": 156
+      },
+      "wall_s": 3.2450627019861713,
+      "gpu_memory": "0, 15454, 397\n1, 15444, 407",
+      "gpu_processes": "266195, /app/strata/engine/strata-v0.1.48-5060ti, 15356\n266195, /app/strata/engine/strata-v0.1.48-5060ti, 15346"
+    },
+    {
+      "label": "release-baseline",
+      "case": "qa_plan",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 181,
+        "completion_tokens": 259,
+        "total_tokens": 440,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "c630103510d0",
+        "projection": true,
+        "time": 1792846129.7208166,
+        "duration_s": 2.8,
+        "finish": "stop",
+        "prompt_tokens": 181,
+        "reused": 0,
+        "output_tokens": 259,
+        "first_engine_token_s": 0.896,
+        "prompt_total": 181,
+        "prompt_read": 181,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 259,
+        "prompt_ms": 876.5,
+        "decode_ms": 1947.4,
+        "decode_tok_s": 133.0,
+        "hit_rate": 0.899,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 167,
+        "drafts_accepted": 156
+      },
+      "wall_s": 2.8291753860539757,
+      "gpu_memory": "0, 15454, 397\n1, 15444, 407",
+      "gpu_processes": "266195, /app/strata/engine/strata-v0.1.48-5060ti, 15356\n266195, /app/strata/engine/strata-v0.1.48-5060ti, 15346"
+    },
+    {
+      "label": "repeat0",
+      "case": "qa_negation",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 148,
+        "completion_tokens": 434,
+        "total_tokens": 582,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "e3f5c63b4212",
+        "projection": true,
+        "time": 1792847335.3892977,
+        "duration_s": 4.2,
+        "finish": "stop",
+        "prompt_tokens": 148,
+        "reused": 0,
+        "output_tokens": 434,
+        "first_engine_token_s": 0.696,
+        "prompt_total": 148,
+        "prompt_read": 148,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 434,
+        "prompt_ms": 678.0,
+        "decode_ms": 3558.6,
+        "decode_tok_s": 122.0,
+        "hit_rate": 0.972,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 273,
+        "drafts_accepted": 232
+      },
+      "wall_s": 4.244635219045449,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat1",
+      "case": "qa_negation",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 148,
+        "completion_tokens": 357,
+        "total_tokens": 505,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "2280b1ca50f1",
+        "projection": true,
+        "time": 1792847340.7207959,
+        "duration_s": 3.3,
+        "finish": "stop",
+        "prompt_tokens": 148,
+        "reused": 0,
+        "output_tokens": 357,
+        "first_engine_token_s": 0.707,
+        "prompt_total": 148,
+        "prompt_read": 148,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 357,
+        "prompt_ms": 689.1,
+        "decode_ms": 2617.9,
+        "decode_tok_s": 136.4,
+        "hit_rate": 0.99,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 236,
+        "drafts_accepted": 205
+      },
+      "wall_s": 3.3149875439703465,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat2",
+      "case": "qa_negation",
+      "finish": "stop",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 148,
+        "completion_tokens": 402,
+        "total_tokens": 550,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "metrics": {
+        "id": "ca84593e9116",
+        "projection": true,
+        "time": 1792847344.723884,
+        "duration_s": 3.8,
+        "finish": "stop",
+        "prompt_tokens": 148,
+        "reused": 0,
+        "output_tokens": 402,
+        "first_engine_token_s": 0.657,
+        "prompt_total": 148,
+        "prompt_read": 148,
+        "reasoning_recoveries": 0,
+        "reasoning_repeat_coverage": 0.0,
+        "engine_generated": 402,
+        "prompt_ms": 639.8,
+        "decode_ms": 3151.7,
+        "decode_tok_s": 127.6,
+        "hit_rate": 0.991,
+        "pcie_share": 0.0,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0,
+        "drafts_offered": 269,
+        "drafts_accepted": 218
+      },
+      "wall_s": 3.7994341530138627,
+      "gpu_memory": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    }
+  ],
+  "resize_events": [
+    {
+      "label": "gpu0-3g",
+      "request": {
+        "reserve_mib": 3072,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 3072,
+        "gpu": 0,
+        "expert_slots": 6244,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 9216,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 3390,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 3072,
+            "gpu": 0,
+            "expert_slots": 6244,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 9216,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 3390,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.01110633701318875,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 12460, 3391\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-5g",
+      "request": {
+        "reserve_mib": 5120,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5120,
+        "gpu": 0,
+        "expert_slots": 4863,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 7168,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 5438,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 5120,
+            "gpu": 0,
+            "expert_slots": 4863,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 7168,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 5438,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.012591839011292905,
+      "before": "0, 12460, 3391\n1, 15444, 407",
+      "after": "0, 10412, 5439\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-restore",
+      "request": {
+        "reserve_mib": null,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 700,
+        "gpu": 0,
+        "expert_slots": 7971,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 11776,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 830,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 700,
+            "gpu": 0,
+            "expert_slots": 7971,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 11776,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 830,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.34198625502176583,
+      "before": "0, 10412, 5439\n1, 15444, 407",
+      "after": "0, 15020, 831\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu0-full-restore",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 0,
+        "expert_slots": 8263,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 12212,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 394,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 0,
+            "expert_slots": 8263,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 12212,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 394,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.06007438100641593,
+      "before": "0, 15020, 831\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-3g",
+      "request": {
+        "reserve_mib": 3072,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 3072,
+        "gpu": 1,
+        "expert_slots": 4481,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 8704,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 3244,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 3072,
+            "gpu": 1,
+            "expert_slots": 4481,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 8704,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 3244,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.017601555970031768,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 12606, 3245",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-5g",
+      "request": {
+        "reserve_mib": 5120,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5120,
+        "gpu": 1,
+        "expert_slots": 3430,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 6656,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 5292,
+        "prompt_chunk": 8192,
+        "gpus": [
+          {
+            "reserve_mib": 5120,
+            "gpu": 1,
+            "expert_slots": 3430,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 6656,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 5292,
+            "prompt_chunk": 8192
+          }
+        ]
+      },
+      "elapsed_s": 0.010618241969496012,
+      "before": "0, 15456, 395\n1, 12606, 3245",
+      "after": "0, 15456, 395\n1, 10558, 5293",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-restore",
+      "request": {
+        "reserve_mib": null,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 700,
+        "gpu": 1,
+        "expert_slots": 5530,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 10752,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 1196,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 700,
+            "gpu": 1,
+            "expert_slots": 5530,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 10752,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 1196,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.6231168990489095,
+      "before": "0, 15456, 395\n1, 10558, 5293",
+      "after": "0, 15456, 395\n1, 14654, 1197",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "gpu1-full-restore",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 1,
+        "expert_slots": 5937,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 11542,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 406,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 1,
+            "expert_slots": 5937,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 11542,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 406,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.1234618829912506,
+      "before": "0, 15456, 395\n1, 14654, 1197",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "both-3g",
+      "request": {
+        "reserve_mib": 3072
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 3072,
+        "gpu": 0,
+        "expert_slots": 10725,
+        "expert_slots_full": 14200,
+        "expert_cache_mib": 17920,
+        "expert_cache_full_mib": 23751,
+        "vram_free_mib": 3244,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 3072,
+            "gpu": 0,
+            "expert_slots": 6244,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 9216,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 3390,
+            "prompt_chunk": 16384
+          },
+          {
+            "reserve_mib": 3072,
+            "gpu": 1,
+            "expert_slots": 4481,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 8704,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 3244,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.02412171196192503,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 12460, 3391\n1, 12606, 3245",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "both-restore",
+      "request": {
+        "reserve_mib": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 0,
+        "expert_slots": 14200,
+        "expert_slots_full": 14200,
+        "expert_cache_mib": 23754,
+        "expert_cache_full_mib": 23751,
+        "vram_free_mib": 394,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 0,
+            "expert_slots": 8263,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 12212,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 394,
+            "prompt_chunk": 16384
+          },
+          {
+            "reserve_mib": 0,
+            "gpu": 1,
+            "expert_slots": 5937,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 11542,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 406,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.6580397870275192,
+      "before": "0, 12460, 3391\n1, 12606, 3245",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "shared-5g",
+      "request": {
+        "reserve_mib": 5632,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5632,
+        "gpu": 1,
+        "expert_slots": 3161,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 6144,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 5804,
+        "prompt_chunk": 8192,
+        "gpus": [
+          {
+            "reserve_mib": 5632,
+            "gpu": 1,
+            "expert_slots": 3161,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 6144,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 5804,
+            "prompt_chunk": 8192
+          }
+        ]
+      },
+      "elapsed_s": 0.01715476904064417,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 10046, 5805",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "external-4g-held",
+      "after": "0, 15456, 395\n1, 14275, 1576",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata\n903315, /bench/hold-vram"
+    },
+    {
+      "label": "grow-while-occupied",
+      "response": {
+        "status": "ok",
+        "reserve_mib": 700,
+        "gpu": 1,
+        "expert_slots": 3430,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 6656,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 1063,
+        "prompt_chunk": 8192,
+        "gpus": [
+          {
+            "reserve_mib": 700,
+            "gpu": 1,
+            "expert_slots": 3430,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 6656,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 1063,
+            "prompt_chunk": 8192
+          }
+        ]
+      },
+      "after": "0, 15456, 395\n1, 14787, 1064"
+    },
+    {
+      "label": "external-released",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 1,
+        "expert_slots": 5937,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 11542,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 406,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 1,
+            "expert_slots": 5937,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 11542,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 406,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.7452756949933246,
+      "before": "0, 15456, 395\n1, 10558, 5293",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat0-shrink",
+      "request": {
+        "reserve_mib": 5120,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5120,
+        "gpu": 0,
+        "expert_slots": 4863,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 7168,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 5438,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 5120,
+            "gpu": 0,
+            "expert_slots": 4863,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 7168,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 5438,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.02461782598402351,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 10412, 5439\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat0-grow",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 0,
+        "expert_slots": 8263,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 12212,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 394,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 0,
+            "expert_slots": 8263,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 12212,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 394,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.37746641103876755,
+      "before": "0, 10412, 5439\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat1-shrink",
+      "request": {
+        "reserve_mib": 5120,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5120,
+        "gpu": 1,
+        "expert_slots": 3430,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 6656,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 5292,
+        "prompt_chunk": 8192,
+        "gpus": [
+          {
+            "reserve_mib": 5120,
+            "gpu": 1,
+            "expert_slots": 3430,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 6656,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 5292,
+            "prompt_chunk": 8192
+          }
+        ]
+      },
+      "elapsed_s": 0.023268546035978943,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 10558, 5293",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat1-grow",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 1
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 1,
+        "expert_slots": 5937,
+        "expert_slots_full": 5937,
+        "expert_cache_mib": 11542,
+        "expert_cache_full_mib": 11540,
+        "vram_free_mib": 406,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 1,
+            "expert_slots": 5937,
+            "expert_slots_full": 5937,
+            "expert_cache_mib": 11542,
+            "expert_cache_full_mib": 11540,
+            "vram_free_mib": 406,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.7448120490298606,
+      "before": "0, 15456, 395\n1, 10558, 5293",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat2-shrink",
+      "request": {
+        "reserve_mib": 5120,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 5120,
+        "gpu": 0,
+        "expert_slots": 4863,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 7168,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 5438,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 5120,
+            "gpu": 0,
+            "expert_slots": 4863,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 7168,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 5438,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.019518357992637902,
+      "before": "0, 15456, 395\n1, 15444, 407",
+      "after": "0, 10412, 5439\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    },
+    {
+      "label": "repeat2-grow",
+      "request": {
+        "reserve_mib": 0,
+        "gpu": 0
+      },
+      "response": {
+        "status": "ok",
+        "reserve_mib": 0,
+        "gpu": 0,
+        "expert_slots": 8263,
+        "expert_slots_full": 8263,
+        "expert_cache_mib": 12212,
+        "expert_cache_full_mib": 12211,
+        "vram_free_mib": 394,
+        "prompt_chunk": 16384,
+        "gpus": [
+          {
+            "reserve_mib": 0,
+            "gpu": 0,
+            "expert_slots": 8263,
+            "expert_slots_full": 8263,
+            "expert_cache_mib": 12212,
+            "expert_cache_full_mib": 12211,
+            "vram_free_mib": 394,
+            "prompt_chunk": 16384
+          }
+        ]
+      },
+      "elapsed_s": 0.38013165997108445,
+      "before": "0, 10412, 5439\n1, 15444, 407",
+      "after": "0, 15456, 395\n1, 15444, 407",
+      "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"
+    }
+  ]
+}

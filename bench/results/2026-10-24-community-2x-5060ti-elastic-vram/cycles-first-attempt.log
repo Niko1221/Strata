@@ -1,0 +1,21 @@
+START elastic-full leads28_en
+RESULT elastic-full leads28_en True stop 176.7
+START elastic-full qa_plan
+RESULT elastic-full qa_plan True stop 113.9
+RESERVE {"label": "gpu0-3g", "request": {"reserve_mib": 3072, "gpu": 0}, "response": {"status": "ok", "reserve_mib": 3072, "gpu": 0, "expert_slots": 6244, "expert_slots_full": 8263, "expert_cache_mib": 9216, "expert_cache_full_mib": 12211, "vram_free_mib": 3390, "prompt_chunk": 16384, "gpus": [{"reserve_mib": 3072, "gpu": 0, "expert_slots": 6244, "expert_slots_full": 8263, "expert_cache_mib": 9216, "expert_cache_full_mib": 12211, "vram_free_mib": 3390, "prompt_chunk": 16384}]}, "elapsed_s": 0.01110633701318875, "before": "0, 15456, 395\n1, 15444, 407", "after": "0, 12460, 3391\n1, 15444, 407", "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"}
+START gpu0-3g qa_arithmetic
+RESULT gpu0-3g qa_arithmetic True stop 144.7
+RESERVE {"label": "gpu0-5g", "request": {"reserve_mib": 5120, "gpu": 0}, "response": {"status": "ok", "reserve_mib": 5120, "gpu": 0, "expert_slots": 4863, "expert_slots_full": 8263, "expert_cache_mib": 7168, "expert_cache_full_mib": 12211, "vram_free_mib": 5438, "prompt_chunk": 16384, "gpus": [{"reserve_mib": 5120, "gpu": 0, "expert_slots": 4863, "expert_slots_full": 8263, "expert_cache_mib": 7168, "expert_cache_full_mib": 12211, "vram_free_mib": 5438, "prompt_chunk": 16384}]}, "elapsed_s": 0.012591839011292905, "before": "0, 12460, 3391\n1, 15444, 407", "after": "0, 10412, 5439\n1, 15444, 407", "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"}
+START gpu0-5g leads28_en
+RESULT gpu0-5g leads28_en True stop 172.0
+START gpu0-5g qa_plan
+RESULT gpu0-5g qa_plan True stop 107.3
+RESERVE {"label": "gpu0-restore", "request": {"reserve_mib": null, "gpu": 0}, "response": {"status": "ok", "reserve_mib": 700, "gpu": 0, "expert_slots": 7971, "expert_slots_full": 8263, "expert_cache_mib": 11776, "expert_cache_full_mib": 12211, "vram_free_mib": 830, "prompt_chunk": 16384, "gpus": [{"reserve_mib": 700, "gpu": 0, "expert_slots": 7971, "expert_slots_full": 8263, "expert_cache_mib": 11776, "expert_cache_full_mib": 12211, "vram_free_mib": 830, "prompt_chunk": 16384}]}, "elapsed_s": 0.34198625502176583, "before": "0, 10412, 5439\n1, 15444, 407", "after": "0, 15020, 831\n1, 15444, 407", "gpu_processes": "882626, /app/strata/build/strata\n882626, /app/strata/build/strata"}
+Traceback (most recent call last):
+  File "<HOME>/models/strata/experiments/strata-vram-elastic-2026-10-24/cycles.py", line 78, in <module>
+    run()
+    ~~~^^
+  File "<HOME>/models/strata/experiments/strata-vram-elastic-2026-10-24/cycles.py", line 42, in run
+    assert part["expert_slots"] == part["expert_slots_full"], part
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'reserve_mib': 700, 'gpu': 0, 'expert_slots': 7971, 'expert_slots_full': 8263, 'expert_cache_mib': 11776, 'expert_cache_full_mib': 12211, 'vram_free_mib': 830, 'prompt_chunk': 16384}
