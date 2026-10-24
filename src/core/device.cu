@@ -6,6 +6,13 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_device_count();
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+extern "C" const char* strata_hybrid_arch(int ordinal);
+extern "C" int strata_hybrid_hip_overflow();
+#endif
+
 namespace strata::core {
 
 namespace {
@@ -76,12 +83,18 @@ const char* compiled_gpu_archs() {
 }
 
 int device_count() {
+#if defined(STRATA_HYBRID)
+    // cudaGetDeviceCount stays the CUDA devices. MMQ walks that list, and a HIP
+    // ordinal in it aborts the load. Listing and the helper path use this count.
+    return strata_hybrid_device_count();
+#else
     int count = 0;
     if (cudaGetDeviceCount(&count) != cudaSuccess) {   // HIP without a usable device reports an error, not 0
         cudaGetLastError();
         return 0;
     }
     return count < 0 ? 0 : count;
+#endif
 }
 
 // STRATA_PRIMARY_DEVICE: see the declaration in device.hpp.  0 = upstream's behavior (the runtime's first
@@ -101,6 +114,13 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
 #if defined(STRATA_USE_HIP)
     std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
                   (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
+#elif defined(STRATA_HYBRID)
+    if (strata_hybrid_is_hip_device(ordinal))
+        std::snprintf(buf, sizeof(buf), "HIP %s, %.1f GiB, wave%d", strata_hybrid_arch(ordinal),
+                      (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
+    else
+        std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.major, p.minor,
+                      (double) p.totalGlobalMem / (1024.0 * 1024 * 1024));
 #else
     std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.major, p.minor,
                   (double) p.totalGlobalMem / (1024.0 * 1024 * 1024));
@@ -221,8 +241,32 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
 
 namespace strata::core {
 
+#if defined(STRATA_HYBRID) && defined(STRATA_HIP_ARCHS)
+bool hybrid_compiled_for(const std::string& arch);
+#endif
+
 std::string gpu_arch_problem(int ordinal) {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HYBRID)
+    // Both objects define STRATA_HYBRID. The HIP recompile's device count is
+    // only the HIP cards, so a hybrid ordinal past the NVIDIA devices would
+    // skip these checks on the STRATA_USE_HIP branch.
+    if (!strata_hybrid_is_hip_device(ordinal)) return "";
+    cudaDeviceProp p{};
+    if (cudaGetDeviceProperties(&p, ordinal) != cudaSuccess) {
+        cudaGetLastError();
+        return "";
+    }
+    const char* arch_c = strata_hybrid_arch(ordinal);
+    const std::string arch = arch_c != nullptr ? arch_c : "";
+    const std::string card = "GPU " + std::to_string(ordinal) + " (" + p.name + ", " + arch + ")";
+#if defined(STRATA_HIP_ARCHS)
+    if (!hybrid_compiled_for(arch))
+        return card + " is not an architecture this Strata engine was compiled for (" + STRATA_HIP_ARCHS + ")";
+#endif
+    if (p.warpSize != 32)
+        return card + " runs wave" + std::to_string(p.warpSize) + "; Strata's HIP kernels need wave32";
+    return "";
+#elif defined(STRATA_USE_HIP)
     int count = 0;
     if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
         cudaGetLastError();
@@ -253,9 +297,31 @@ std::string device_code_error() {
 #endif
 }
 
+#if defined(STRATA_HYBRID) && defined(STRATA_HIP_ARCHS)
+bool hybrid_compiled_for(const std::string& arch) {
+    const std::string list = STRATA_HIP_ARCHS;
+    size_t a = 0;
+    while (a <= list.size()) {
+        size_t b = list.find(',', a);
+        if (b == std::string::npos) b = list.size();
+        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size()) return true;
+        a = b + 1;
+    }
+    return false;
+}
+#endif
+
 DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "cudaGetDeviceCount");
+#if defined(STRATA_HYBRID)
+    if (const int extra = strata_hybrid_hip_overflow(); extra > 8)
+        throw CudaError("this build supports at most 8 HIP devices (" + std::to_string(extra) + " present)", -1);
+    const int visible = strata_hybrid_device_count();
+    if (count == 0 && visible <= 0)
+        throw CudaError("no CUDA or HIP device is present", -1);
+#else
+    const int visible = count;
     if (count == 0) {
 #if defined(STRATA_USE_HIP)
         throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
@@ -263,9 +329,10 @@ DeviceInfo device_info(int ordinal) {
         throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
     }
-    if (ordinal < 0 || ordinal >= count) {
+#endif
+    if (ordinal < 0 || ordinal >= visible) {
         throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
-                            std::to_string(count) + ")",
+                            std::to_string(visible) + ")",
                         -1);
     }
     DeviceInfo d;
@@ -306,6 +373,24 @@ DeviceInfo device_info(int ordinal) {
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
+#if defined(STRATA_HYBRID)
+    if (strata_hybrid_is_hip_device(ordinal)) {
+        d.arch = strata_hybrid_arch(ordinal);
+#if defined(STRATA_HIP_ARCHS)
+        if (!hybrid_compiled_for(d.arch))
+            throw CudaError("GPU " + std::to_string(ordinal) + " (" + d.name + ", " + d.arch +
+                                ") is not an architecture this Strata engine was compiled for (" + STRATA_HIP_ARCHS + ")",
+                            -1);
+#endif
+        if (p.warpSize != 32)
+            throw CudaError("GPU " + std::to_string(ordinal) + " (" + d.name + ") runs wave" + std::to_string(p.warpSize) +
+                                "; Strata's HIP kernels need wave32",
+                            -1);
+        d.cc_major = 0;
+        d.cc_minor = 0;
+        return d;
+    }
+#endif
     // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
     // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
 #if defined(STRATA_EXPERIMENTAL_SM60)
