@@ -338,8 +338,6 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // materialised).  The pair kernel is bit-exact vs the three-kernel sequence (shared row math, shared
     // SwiGLU expression).  The ready-made engine's path below is untouched.
     bool paired = false;
-    if (native_gate || native_up)
-        native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
     if (!native_gate && !native_up) {
         paired = s_gemv_pair_silu(x_q8_0, x_q8k, gate_form, gate_codes, gate_scales, gate_off,
                                   up_form, up_codes, up_scales, up_off, gate, n_embd, n_ff, 32,
@@ -348,12 +346,17 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     if (paired) {
         // `gate` already holds the products
     } else {
+        const void* x_q8_1 = (native && native->x_q8_1) ? native->x_q8_1 : nullptr;
+        if ((native_gate || native_up) && !x_q8_1) {
+            native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
+            x_q8_1 = native->q8_1;
+        }
         if (native_gate)
-            native_mmvq(native->gate_type, native->gate_data, native->q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
+            native_mmvq(native->gate_type, native->gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
         else
             gemv(gate_form, gate_codes, gate_scales, gate_off, x_q8_0, x_q8k, gate, n_embd, n_ff);
         if (native_up)
-            native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
+            native_mmvq(native->up_type, native->up_data, x_q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
         else
             gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
     }
@@ -416,14 +419,17 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
 #endif
         {
     // gate and up projections, then silu(gate) * up in place in `gate`
-    if (native_gate || native_up)
+    const void* x_q8_1 = (native && native->x_q8_1) ? native->x_q8_1 : nullptr;
+    if ((native_gate || native_up) && !x_q8_1) {
         native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
+        x_q8_1 = native->q8_1;
+    }
     if (native_gate)
-        native_mmvq(native->gate_type, native->gate_data, native->q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
+        native_mmvq(native->gate_type, native->gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
     else
         gemv(gate_form, gate_codes, gate_scales, gate_off, x_q8_0, x_q8k, gate, n_embd, n_ff);
     if (native_up)
-        native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
+        native_mmvq(native->up_type, native->up_data, x_q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
     else
         gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
     if (native_projection && native_down && fused_swiglu_q81_enabled()) {
