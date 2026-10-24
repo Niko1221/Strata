@@ -15038,25 +15038,40 @@ int main(int argc, char** argv) {
                 if (ram_adapt_n > 0 && !first_window && !drive.d.usage.empty() && pending.empty() &&
                     (!ajob || astate == AState::Idle) && src.complement_ready() && !multi_gpu && !peer.valid() &&
                     !remote_opt && o.batch == 0) {
+                    // up to kRamAdaptPerLayer pairs a layer: the layer's most routed experts outside the copy against its least
+                    // routed ones in it, paired in that order while the outgoing one is still unused
                     constexpr float kRamAdaptRouted = 2.0f, kRamAdaptUnused = 0.5f;
+                    constexpr size_t kRamAdaptPerLayer = 4;
                     struct RamSwap { float gain; int32_t layer, in, out; };
                     std::vector<RamSwap> swaps;
+                    std::vector<int32_t> ins, outs;
                     for (int64_t l = 0; l < g.n_layers; ++l) {
                         const float* u = drive.d.usage.data() + l * g.n_expert;
                         const int32_t* r = host_res.data() + l * g.n_expert;
-                        int32_t in = -1, out = -1;
+                        ins.clear();
+                        outs.clear();
                         for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                             if (r[e] >= 0) continue;   // in VRAM: the RAM copy does not hold it
-                            if (src.has_resident(l, e)) { if (out < 0 || u[e] < u[out]) out = e; }
-                            else if (u[e] >= kRamAdaptRouted && (in < 0 || u[e] > u[in])) in = e;
+                            if (src.has_resident(l, e)) outs.push_back(e);
+                            else if (u[e] >= kRamAdaptRouted) ins.push_back(e);
                         }
-                        if (in >= 0 && out >= 0 && u[out] < kRamAdaptUnused)
-                            swaps.push_back({u[in] - u[out], (int32_t) l, in, out});
+                        const size_t ni = std::min(ins.size(), kRamAdaptPerLayer), no = std::min(outs.size(), kRamAdaptPerLayer);
+                        std::partial_sort(ins.begin(), ins.begin() + (std::ptrdiff_t) ni, ins.end(),
+                                          [&](int32_t a, int32_t b) { return u[a] > u[b]; });
+                        std::partial_sort(outs.begin(), outs.begin() + (std::ptrdiff_t) no, outs.end(),
+                                          [&](int32_t a, int32_t b) { return u[a] < u[b]; });
+                        for (size_t i = 0; i < ni && i < no && u[outs[i]] < kRamAdaptUnused; ++i)
+                            swaps.push_back({u[ins[i]] - u[outs[i]], (int32_t) l, ins[i], outs[i]});
                     }
                     std::sort(swaps.begin(), swaps.end(),
                               [](const RamSwap& a, const RamSwap& b) { return a.gain > b.gain; });
-                    if ((int) swaps.size() > ram_adapt_n) swaps.resize((size_t) ram_adapt_n);
-                    for (const RamSwap& x : swaps) src.replace_resident(x.layer, x.in, x.out);
+                    // the incoming expert was usually just read for the window before: a pair whose `in` still sits in that
+                    // read's stage buffer moves with a copy out of it (no file read); n caps only the pairs that need the file read
+                    int file_left = ram_adapt_n;
+                    for (const RamSwap& x : swaps) {
+                        if (src.replace_resident_staged(x.layer, x.in, x.out)) continue;
+                        if (file_left > 0) { --file_left; src.replace_resident(x.layer, x.in, x.out); }
+                    }
                 }
                 if (!adapt_tick(false)) {   // --adapt-async: the round in flight moves on a step when it can
                     std::printf("ERR an adaptive refill failed\n");
@@ -15532,8 +15547,9 @@ int main(int argc, char** argv) {
                              (long long) src.ram_staged_reads(),
                              (long long) ram_adapt2.installed, (long long) (src.ram_install_skips() + src.ram_install_gpu()), (long long) src.ram_install_gpu());
             if (src.ram_adapts() > 0)   // STRATA_RAM_ADAPT, cumulative
-                std::fprintf(stderr, "strata serve: resident RAM: %lld experts moved in from the file in place of "
-                                     "unused ones (STRATA_RAM_ADAPT)\n", (long long) src.ram_adapts());
+                std::fprintf(stderr, "strata serve: resident RAM: %lld experts moved in in place of unused ones, %lld of "
+                                     "them out of a stage buffer (STRATA_RAM_ADAPT)\n", (long long) src.ram_adapts(),
+                                     (long long) src.ram_staged());
             if (ajob)   // --adapt-async, cumulative (a round may still be in flight: it lands before the next request)
                 std::fprintf(stderr, "strata serve: asynchronous adaptive tier: %lld rounds, %lld experts swapped in, "
                                      "%.1f ms per round (start to flip, between windows)",
