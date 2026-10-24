@@ -3042,13 +3042,55 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             ~IssuerJoin() { if (t->joinable()) { stop->store(true); t->join(); } }
         } issuer_join{&a_stop, &issuer};
         const bool threaded_issue = stream_all && issuer_on;
+        // Opt-in, the threaded issuer only: under WDDM every cudaEventRecord and cross-stream wait is a
+        // submission of its own (~80 / ~45 us each on a 6900 XT under Windows 11, ~3 / ~0 us on Linux), and the
+        // streamed walk paid one record and one wait per expert although a group gathers after ONE wait on its last
+        // copy and is released by ONE event.  STRATA_PREFILL_COPY_EVENT_EVERY=N records the copied event every N-th
+        // entry (and before the issuer waits, and on the last), and the consumer waits on the first recorded entry at or
+        // after the one it needs (the copy stream is in order).  STRATA_PREFILL_COPY_WAIT_DEDUPE=1 skips the copy
+        // stream's wait on a slot's release event when the previous slot was released by the same event (one flush).
+        // The same copies into the same slots: the same bytes.
+        static const int copy_event_every = [] {
+            const char* v = std::getenv("STRATA_PREFILL_COPY_EVENT_EVERY");
+            const int n = v ? std::atoi(v) : 1;
+            return n > 1 ? std::min(n, 64) : 1;
+        }();
+        static const bool copy_wait_dedupe = [] {
+            const char* v = std::getenv("STRATA_PREFILL_COPY_WAIT_DEDUPE");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
+        const bool sparse_copied = threaded_issue && copy_event_every > 1;
+        if (threaded_issue && (sparse_copied || copy_wait_dedupe)) {
+            static bool said = false;
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata: prompt copies: a copied event every %d streamed experts "
+                                     "(STRATA_PREFILL_COPY_EVENT_EVERY), %s (STRATA_PREFILL_COPY_WAIT_DEDUPE)\n",
+                             copy_event_every, copy_wait_dedupe ? "one wait per release event" : "a wait per slot");
+            }
+        }
+        std::vector<std::atomic<int64_t>> rec_of(sparse_copied ? (size_t) m.ring : 0);   // the entry a slot's event marks
+        for (auto& r : rec_of) r.store(-1, std::memory_order_relaxed);
+        std::atomic<size_t> a_rec{0};   // 1 + the last entry whose copied event is recorded
+        int64_t iss_waits = 0, iss_dedup = 0;
         if (threaded_issue) {
             issuer = std::thread([&] {
                 strata::platform::name_this_thread("strata-issue");
                 strata::aux_cpus::pin_current_thread();
                 const core::OnDevice od(m.device);
+                int64_t last_rec = -1;   // sparse_copied: the last entry whose copied event is recorded
+                int prev_rel = -1;       // dedupe: the release event the copy stream waited on for the previous entry
+                auto record = [&](size_t i) {
+                    cudaEventRecord(m.copied[i % (size_t) m.ring], m.copy);
+                    rec_of[i % (size_t) m.ring].store((int64_t) i, std::memory_order_release);
+                    a_rec.store(i + 1, std::memory_order_release);
+                    last_rec = (int64_t) i;
+                };
+                // before the issuer waits: what it issued is covered, so no consumer waits on an entry with no event
+                auto cover = [&](size_t idx) { if (sparse_copied && idx > 0 && last_rec < (int64_t) idx - 1) record(idx - 1); };
                 for (size_t idx = 0; idx < seq.size(); ++idx) {
                     while (idx >= a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
+                        cover(idx);
                         if (a_stop.load(std::memory_order_acquire)) return;
                         std::this_thread::yield();
                     }
@@ -3056,16 +3098,31 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
-                    if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
+                    if (m.stage_live[sl]) {
+                        // from the second round on, both slots were released in this walk: the same event means the same
+                        // flush, and the wait for the previous slot already covers this one
+                        const int rel = m.used_of[sl];
+                        if (copy_wait_dedupe && idx >= (size_t) m.ring && rel == prev_rel) {
+                            ++iss_dedup;
+                        } else {
+                            cudaStreamWaitEvent(m.copy, m.used[rel], 0);
+                            ++iss_waits;
+                        }
+                        prev_rel = rel;
+                    } else {
+                        prev_rel = -1;
+                    }
                     if (en.job < 0) {
                         cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
                         ++iss_dma;
                     } else {
+                        cover(idx);   // the stager may make the issuer wait
                         const uint8_t* hb = m.stager->wait(en.job);
                         cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
                         m.stager->issued_one(en.job, m.copy);
                     }
-                    cudaEventRecord(m.copied[sl], m.copy);
+                    if (!sparse_copied) cudaEventRecord(m.copied[sl], m.copy);
+                    else if ((idx + 1) % (size_t) copy_event_every == 0 || idx + 1 == seq.size()) record(idx);
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
@@ -3079,6 +3136,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         auto wait_issued = [&](size_t k) {
             if (!threaded_issue) return;
             while (a_issued.load(std::memory_order_acquire) <= k) std::this_thread::yield();
+        };
+        // the compute stream waits for entry k's copy: on its own event, or (sparse_copied) on the first recorded entry
+        // at or after it.  That event's slot cannot be re-recorded before k is given back (the issuer stays a ring ahead).
+        auto wait_copied = [&](size_t k) {
+            if (!sparse_copied) {
+                cudaStreamWaitEvent(m.cs, m.copied[k % (size_t) m.ring], 0);
+                return;
+            }
+            while (a_rec.load(std::memory_order_acquire) <= k) std::this_thread::yield();
+            const size_t hi = a_rec.load(std::memory_order_acquire);
+            for (size_t r = k; r < hi; ++r) {
+                if (rec_of[r % (size_t) m.ring].load(std::memory_order_acquire) == (int64_t) r) {
+                    cudaStreamWaitEvent(m.cs, m.copied[r % (size_t) m.ring], 0);
+                    return;
+                }
+            }
+            // not reached (hi - 1 is always recorded); the last recorded entry covers k all the same
+            cudaStreamWaitEvent(m.cs, m.copied[(hi - 1) % (size_t) m.ring], 0);
         };
         auto give_back = [&](size_t upto) {
             if (threaded_issue) a_consumed.store(upto, std::memory_order_release);
@@ -3693,7 +3768,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // one copy stream, in order: the batch's last blob covers the others
                                 pt.mark(kPfWaitCopy, cs);
                                 wait_issued(k - 1);
-                                cudaStreamWaitEvent(m.cs, m.copied[(k - 1) % (size_t) m.ring], 0);
+                                wait_copied(k - 1);
                             }
                             pt.mark(kPfGemmGU, cs);
                             if (fused_nat) {
@@ -4479,7 +4554,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
                         mmq::GatherGroup gg;
                         int gg_slots[MMQ_GROUP];
+                        size_t gg_ents[MMQ_GROUP];   // the streamed walk: their entries (wait_copied)
                         int gg_nslots = 0;   // ring slots gathered by the next flush
+                        size_t cur_entry = 0;   // the streamed walk: the entry compute() is given
                         // STRATA_MMQ_DIRECT=1: a resident expert with guard room in its slot is not gathered - the
                         // group's pointer tables give MMQ each expert's own address (group position q), the others are
                         // gathered at compact positions c = 0..ns-1 of the group buffers, as before (same bytes)
@@ -4494,7 +4571,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const auto& f = lay.fmt[(size_t) l];
                             if (gg_nslots > 0) {   // the copies land in order: the last one covers the others
                                 pt.mark(kPfWaitCopy, cs);
-                                cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
+                                if (stream_all) wait_copied(gg_ents[gg_nslots - 1]);
+                                else cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
                                 pt.mark(kPfDequant, cs);
                             }
                             // NVFP4: each expert's scales go next to its group slot in the same launch
@@ -4545,7 +4623,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         if (gg_now) {
                                             gg.blob[c] = blob_dev;
                                             gg.n = c + 1;
-                                            if (slot >= 0) gg_slots[gg_nslots++] = slot;
+                                            if (slot >= 0) { gg_ents[gg_nslots] = cur_entry; gg_slots[gg_nslots++] = slot; }
                                         } else {
                                             mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
                                                                mmq_db, m.grp_gu + (size_t) c * mmq_gub,
@@ -4562,7 +4640,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (gg_now) {
                                     gg.blob[q] = blob_dev;
                                     gg.n = (int) q + 1;
-                                    if (slot >= 0) gg_slots[gg_nslots++] = slot;
+                                    if (slot >= 0) { gg_ents[gg_nslots] = cur_entry; gg_slots[gg_nslots++] = slot; }
                                     if (!last_of_group) return true;
                                     flush(MMQ_TAIL);
                                     gg = mmq::GatherGroup{};
@@ -4726,8 +4804,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     wait_issued(k);
                                     if (!group_gather) {
                                         pt.mark(kPfWaitCopy, cs);
-                                        cudaStreamWaitEvent(m.cs, m.copied[sl], 0);
+                                        wait_copied(k);
                                     }
+                                    cur_entry = k;
                                     if (!compute(j, m.stage_dev[sl], sl, -1)) return false;
                                     consumed = ++k;
                                     if (!group_gather || gg_nslots == 0) give_back(consumed);   // its group was gathered
@@ -4886,6 +4965,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             stats_.ms_experts_host += iss_ms;
             stats_.experts_streamed += iss_streamed;
             stats_.experts_dma += iss_dma;
+            if (copy_wait_dedupe && pt.on)
+                std::fprintf(stderr, "strata prefill copies: %lld slot waits, %lld skipped as the same release event\n",
+                             (long long) iss_waits, (long long) iss_dedup);
         }
         stats_.tokens += T;
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
