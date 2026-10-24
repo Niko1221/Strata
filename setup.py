@@ -2833,12 +2833,14 @@ def download(url, dst: Path, what=None):
             time.sleep(5)
     if not total:
         total = range_total(url)
+    meta = ms_meta(*ms) if ms is not None else None
+    if not total:                                  # published size also governs partial-file completion
+        total = pin[0] if pin else (meta[0] if meta else 0)
     if pin and total and total != pin[0]:              # not the pinned file: stop before the download, not after
         fail(f"{what or dst.name} is {total:,} bytes on {url.split('/')[2]}, not the pinned {pin[0]:,}",
              "update Strata (the file there has changed since this version pinned it)")
     label = what or dst.name
     conns = dl_connections()
-    meta = ms_meta(*ms) if ms is not None else None
     fixed = pin if pin else (meta if meta is not None and meta[1] else None)
     again = (lambda: repair_download(url, dst, total, label, conns)) if total >= DL_MIN_PARALLEL and conns > 1 else None
     if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet), or stopped before the check
