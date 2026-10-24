@@ -1,10 +1,3 @@
-- [2026-10-24: RTX 5070 Ti Laptop 12 GB, Ryzen 9 9955HX, 64 GB DDR5](../bench/results/2026-10-24-community-rtx-5070-ti-laptop-12g/README.md):
-  Strata 0.1.46 release (commit a7bdbfdabc9a), Flash-Next IQ3_XXS abliterated (orcarouter Uncensored GGUF), 262,144-token context,
-  --kv int8, expert cache 1745 slots at --vram-reserve-mib 1000 (4.94 GiB), STRATA_ROUTE_RESIDENT=1;
-  3 clean runs each at 396 / 4,187 / 32,857 prompt tokens with a 256-token cap; prompt 376-427 / 893-901 / 978 tok/s,
-  decode medians 92.5 / 90.2 / 97.2 tok/s, draft acceptance 92-100%; documents the 12 GB VRAM-headroom ladder
-  (reserve 1536: 1123 MiB free and 1197 slots; reserve 1000: 455 MiB free at request start, engine warns, #2065)
-  as the binding constraint on a 12 GB card; needle check not measured at submission.
 # Community bench results, index
 
 One row per community folder in this directory (ported for 0.1.40.2 and 0.1.41 from the community bench PRs, authors credited in the commits). Raw dumps, logs and binaries were trimmed from the folders; each trimmed folder has a `TRIMMED.md` listing what was left out. The README in each folder has the full method.
