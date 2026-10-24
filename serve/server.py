@@ -83,6 +83,7 @@ from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve import park_keeper  # noqa: E402
 from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -1290,16 +1291,32 @@ class StrataEngine:
     # STRATA_PARK_MAX_AGE_H (48 h), and all but 2 checkpoints each), so mind an SSD's write endurance.  Unset: nothing
     # is written or read, as before.  Any failure is said and the stop / start goes on.
     PARK_DIR = os.environ.get("STRATA_PARK_DIR", "").strip()
+    # STRATA_PARK_RAMLIKE=1 (Windows, with STRATA_PARK_DIR): the engine writes the parked conversations to named
+    # pagefile-backed sections instead of files, and a keeper process (serve/park_keeper.py) holds them in RAM from the
+    # stop to the next start.  Nothing goes to a disk but the folder's small park-mem.manifest and keeper.json (the
+    # pagefile only if memory runs short).  The RAM and commit stay taken until the next start or STRATA_PARK_MAX_AGE_H;
+    # a reboot loses them.
+    PARK_RAMLIKE = os.environ.get("STRATA_PARK_RAMLIKE", "").strip() == "1" and os.name == "nt"
+
+    def _park_max_age_s(self) -> float:
+        try:
+            return max(0.0, float(os.environ.get("STRATA_PARK_MAX_AGE_H", "48") or 48)) * 3600
+        except ValueError:
+            return 48 * 3600.0
 
     def park_known(self) -> bool:
-        """This engine takes PARKSAVE / PARKLOAD (its INFO line says park_files=1; an older engine would answer ERR,
-        which the session exchange treats as out of step and ends the engine)."""
-        if self.info.get("park_files") == 1:
+        """This engine takes PARKSAVE / PARKLOAD (its INFO line says park_files=1, or 2 when it can also write named
+        sections; an older engine would answer ERR, which the session exchange treats as out of step and ends the
+        engine).  With STRATA_PARK_RAMLIKE an engine without sections is not asked: it would write files instead."""
+        level = self.info.get("park_files")
+        need = 2 if self.PARK_RAMLIKE else 1
+        if isinstance(level, int) and level >= need:
             return True
         if self.PARK_DIR and not self.__dict__.get("_park_said"):
             self.__dict__["_park_said"] = True
-            print("[strata] STRATA_PARK_DIR is set but this engine does not save parked conversations: they are not "
-                  "kept over a restart", flush=True)
+            print("[strata] STRATA_PARK_DIR is set but this engine does not save parked conversations"
+                  f"{' in RAM (STRATA_PARK_RAMLIKE)' if self.PARK_RAMLIKE else ''}: they are not kept over a restart",
+                  flush=True)
         return False
 
     def park_to_disk(self):
@@ -1309,23 +1326,60 @@ class StrataEngine:
             return
         try:
             r = self.session_file("parksave", self.PARK_DIR)
+            where = "RAM (named sections)" if self.PARK_RAMLIKE else self.PARK_DIR
             print(f"[strata] parked conversations saved: {r['tokens']} kept ({r['bytes'] / 1e9:.2f} GB written now) "
-                  f"in {self.PARK_DIR}, {r['ms'] / 1000:.1f} s", flush=True)
+                  f"in {where}, {r['ms'] / 1000:.1f} s", flush=True)
         except Exception as e:                          # never let it block the stop
             print(f"[strata] parked conversations not saved: {e}", flush=True)
+            return
+        if self.PARK_RAMLIKE:
+            self._park_keep(r["tokens"])
+
+    def _park_keep(self, conversations: int) -> None:
+        """STRATA_PARK_RAMLIKE: a keeper process takes the sections the engine still holds, before the engine is
+        closed.  A keeper that is not ready in time only means the conversations are read again after the restart."""
+        if not conversations:
+            park_keeper.release(self.PARK_DIR)          # nothing kept: an older keeper ends too
+            return
+        try:
+            t0 = time.monotonic()
+            doc = park_keeper.spawn(self.PARK_DIR, self._park_max_age_s())
+            missing = doc.get("missing") or []
+            print(f"[strata] parked conversations kept in RAM by keeper PID {doc['pid']}: {doc['sections']} sections, "
+                  f"{doc['bytes'] / 1e9:.2f} GB ({time.monotonic() - t0:.1f} s; released at the next start or after "
+                  f"{self._park_max_age_s() / 3600:.0f} h){'; MISSING ' + ', '.join(missing) if missing else ''}",
+                  flush=True)
+        except Exception as e:
+            print(f"[strata] parked conversations not kept in RAM: {e}", flush=True)
 
     def park_from_disk(self):
         """PARKLOAD: the conversations the last stop saved, back in the engine's parked list."""
         if not self.PARK_DIR or self.batch or not self.alive() or not self.park_known():
             return
-        if not os.path.exists(os.path.join(self.PARK_DIR, "park.manifest")):
+        keeper = None
+        if self.PARK_RAMLIKE:
+            keeper = park_keeper.status(self.PARK_DIR)
+            if keeper is None:
+                manifest = os.path.join(self.PARK_DIR, park_keeper.MANIFEST)
+                if os.path.exists(manifest):
+                    print("[strata] parked conversations: no keeper holds them any more (a reboot, or aged out); "
+                          "nothing to load", flush=True)
+                    try:
+                        os.remove(manifest)
+                    except OSError:
+                        pass
+                return
+        elif not os.path.exists(os.path.join(self.PARK_DIR, "park.manifest")):
             return
         try:
             r = self.session_file("parkload", self.PARK_DIR)
+            where = f"RAM (keeper PID {keeper['pid']})" if keeper else self.PARK_DIR
             print(f"[strata] parked conversations loaded: {r['tokens']} ({r['bytes'] / 1e9:.2f} GB) from "
-                  f"{self.PARK_DIR}, {r['ms'] / 1000:.1f} s", flush=True)
+                  f"{where}, {r['ms'] / 1000:.1f} s", flush=True)
         except Exception as e:
             print(f"[strata] parked conversations not loaded: {e}", flush=True)
+        if keeper is not None:
+            park_keeper.release(self.PARK_DIR)          # loaded (or not loadable): the keeper and its sections end
 
     RESTART_RETRY_S = 15.0   # between the tries of restart(): a dying engine's VRAM may take a while to come back
 

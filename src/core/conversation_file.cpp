@@ -161,9 +161,86 @@ std::string last_error(DWORD code = GetLastError()) {
     return s.empty() ? "error " + std::to_string(code) : s;
 }
 
+// STRATA_PARK_RAMLIKE: a "mem:<name>" session is a named, pagefile-backed section in place of a file -
+// its pages stay in RAM while some process maps them, and nothing goes to a disk unless memory runs short (then the
+// pagefile).  Layout: [u64 length][the session file's bytes].  A section written here is HELD (handle and view open)
+// until this process exits, so a keeper process can open it by name and keep it alive after the engine is gone.
+constexpr uint64_t kSectionHead = 64;
+struct HeldSection { HANDLE map; void* view; };
+std::vector<HeldSection>& held_sections() {
+    static std::vector<HeldSection> v;   // never released: the OS unmaps and closes them at exit
+    return v;
+}
+
 class RawFile {
 public:
-    ~RawFile() { close(); }
+    ~RawFile() { close(); release_section(); }
+    // a new named section of `bytes` (CreateFileMappingW over the pagefile, SEC_COMMIT: the commit is
+    // charged now, the pages are demand-zero); an existing section of that name is refused, never written into
+    bool create_section(const std::string& name, uint64_t bytes) {
+        std::wstring w;
+        if (!wide(name, w)) { refused_ = true; error_ = "the section name is not valid UTF-8"; return false; }
+        const uint64_t cap = kSectionHead + bytes;
+        map_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE | SEC_COMMIT, (DWORD) (cap >> 32),
+                                  (DWORD) (cap & 0xffffffffu), w.c_str());
+        if (map_ == nullptr) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); return false; }
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            CloseHandle(map_);
+            map_ = nullptr;
+            refused_ = true;
+            error_ = "a section of that name exists already";
+            return false;
+        }
+        view_ = static_cast<uint8_t*>(MapViewOfFile(map_, FILE_MAP_WRITE, 0, 0, 0));
+        if (view_ == nullptr) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); release_section(); return false; }
+        mem_ = writing_ = true;
+        cap_ = bytes;
+        pos_ = len_ = 0;
+        return true;
+    }
+    // a section another process holds, read-only; its length from the first 8 bytes, bounded by the
+    // mapped region
+    bool open_section(const std::string& name, uint64_t& size) {
+        std::wstring w;
+        if (!wide(name, w)) { refused_ = true; error_ = "the section name is not valid UTF-8"; return false; }
+        map_ = OpenFileMappingW(FILE_MAP_READ, FALSE, w.c_str());
+        if (map_ == nullptr) {
+            const DWORD c_ = GetLastError();
+            missing_ = c_ == ERROR_FILE_NOT_FOUND;
+            kind_ = win_kind(c_);
+            error_ = c_ == ERROR_FILE_NOT_FOUND ? std::string("no such section (its keeper is gone)") : last_error(c_);
+            return false;
+        }
+        view_ = static_cast<uint8_t*>(MapViewOfFile(map_, FILE_MAP_READ, 0, 0, 0));
+        if (view_ == nullptr) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); release_section(); return false; }
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(view_, &mbi, sizeof mbi) == 0) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); return false; }
+        uint64_t len = 0;
+        std::memcpy(&len, view_, 8);
+        if (mbi.RegionSize < kSectionHead || len > (uint64_t) mbi.RegionSize - kSectionHead) {
+            refused_ = true;
+            error_ = "the section's length field is past its end";
+            return false;
+        }
+        mem_ = true;
+        writing_ = false;
+        cap_ = len_ = size = len;
+        pos_ = 0;
+        return true;
+    }
+    // the written section stays open until this process exits (see held_sections)
+    void hold_section() {
+        if (!mem_ || map_ == nullptr) return;
+        held_sections().push_back({map_, view_});
+        map_ = nullptr;
+        view_ = nullptr;
+    }
+    void release_section() {
+        if (view_ != nullptr) UnmapViewOfFile(view_);
+        if (map_ != nullptr) CloseHandle(map_);
+        view_ = nullptr;
+        map_ = nullptr;
+    }
     // a new file that did not exist (CREATE_NEW: never an existing file or link)
     bool create_new(const std::wstring& path) {
         h_ = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
@@ -208,9 +285,15 @@ public:
         size = (uint64_t) s.QuadPart;
         return true;
     }
-    bool is_open() const { return h_ != INVALID_HANDLE_VALUE; }
+    bool is_open() const { return mem_ ? view_ != nullptr : h_ != INVALID_HANDLE_VALUE; }
     bool direct() const { return false; }
     bool write_all(const uint8_t* p, size_t n) {
+        if (mem_) {
+            if (!writing_ || view_ == nullptr || n > cap_ - pos_) { kind_ = SessionError::storage; error_ = "the section is full"; return false; }
+            std::memcpy(view_ + kSectionHead + pos_, p, n);
+            pos_ += n;
+            return true;
+        }
         while (n) {
             DWORD w = 0;
             const DWORD want = (DWORD) std::min<size_t>(n, size_t(1) << 30);
@@ -221,6 +304,12 @@ public:
     }
     // bytes read, 0 at the end of the file, -1 on error
     long long read_some(uint8_t* p, size_t n) {
+        if (mem_) {
+            const size_t c = (size_t) std::min<uint64_t>(n, len_ - pos_);
+            if (c) std::memcpy(p, view_ + kSectionHead + pos_, c);
+            pos_ += c;
+            return (long long) c;
+        }
         DWORD r = 0;
         if (!ReadFile(h_, p, (DWORD) std::min<size_t>(n, size_t(1) << 30), &r, nullptr)) {
             { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
@@ -229,6 +318,11 @@ public:
         return (long long) r;
     }
     bool read_at(uint64_t offset, uint8_t* p, size_t n) {
+        if (mem_) {
+            if (offset > len_ || n > len_ - offset) { error_ = "file ends early"; return false; }
+            std::memcpy(p, view_ + kSectionHead + offset, n);
+            return true;
+        }
         LARGE_INTEGER at{};
         at.QuadPart = (LONGLONG) offset;
         if (!SetFilePointerEx(h_, at, nullptr, FILE_BEGIN)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
@@ -240,6 +334,11 @@ public:
         return true;
     }
     bool truncate(uint64_t n) {
+        if (mem_) {
+            if (n > cap_) { error_ = "truncate past the section"; return false; }
+            pos_ = n;
+            return true;
+        }
         LARGE_INTEGER at{};
         at.QuadPart = (LONGLONG) n;
         if (SetFilePointerEx(h_, at, nullptr, FILE_BEGIN) && SetEndOfFile(h_)) return true;
@@ -247,11 +346,18 @@ public:
         return false;
     }
     bool sync() {
+        if (mem_) return true;   // RAM: nothing to flush (and nothing is ever FlushFileBuffers'd in this mode)
         if (FlushFileBuffers(h_)) return true;
         { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
         return false;
     }
     bool close() {
+        if (mem_) {
+            // the length goes in last; the section itself stays (released by the destructor unless held)
+            if (writing_ && view_ != nullptr) std::memcpy(view_, &pos_, 8);
+            writing_ = false;
+            return true;
+        }
         if (h_ == INVALID_HANDLE_VALUE) return true;
         const bool ok = CloseHandle(h_) != 0;
         if (!ok) { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); }
@@ -269,6 +375,11 @@ private:
     bool refused_ = false;
     bool missing_ = false;
     std::string error_;
+    // the section mode ("mem:<name>")
+    HANDLE map_ = nullptr;
+    uint8_t* view_ = nullptr;
+    bool mem_ = false, writing_ = false;
+    uint64_t cap_ = 0, pos_ = 0, len_ = 0;
 };
 
 // Where the file is published.  MoveFileExW replaces an existing destination (std::rename does not on Windows); the
@@ -1040,6 +1151,63 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     }
     const uint64_t payload = sizing.n, total = kHeader + payload + kTrailer;
     st.error = SessionError::io;
+    // STRATA_PARK_RAMLIKE: "mem:<name>" is a named section in RAM, not a file - no temporary file, no
+    // rename, no flush; the preflight is the free commit (the section charges it all at creation), not disk space
+    const bool mem = session_is_section(path);
+    if (mem) {
+#ifdef _WIN32
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (!GlobalMemoryStatusEx(&ms)) { error = "session section: cannot read the free commit"; return false; }
+        if (ms.ullAvailPageFile < total || ms.ullAvailPageFile - total < opt.min_free_bytes) {
+            st.error = SessionError::memory;
+            error = "session section: not enough free commit (" + std::to_string(total >> 20) + " MiB plus a reserve of " +
+                    std::to_string(opt.min_free_bytes >> 20) + " MiB needed, " + std::to_string(ms.ullAvailPageFile >> 20) +
+                    " MiB free)";
+            return false;
+        }
+        RawFile raw;
+        if (!raw.create_section(path.substr(4), total)) {
+            st.error = raw.refused() ? SessionError::invalid : raw.kind();
+            error = "session section: cannot create " + path.substr(4) + ": " + raw.error();
+            return false;
+        }
+        FileSink f(raw);
+        if (!f.ok()) { st.error = SessionError::memory; error = "session section: " + f.error(); return false; }
+        if (opt.progress) f.progress.emplace(opt.progress);
+        f.expected = total;
+        if (f.progress) (*f.progress)(0, total);
+        uint8_t h[kHeader];
+        header_bytes(h, id, payload);
+        bool ok = f.write(h, kHeader);
+        SessionHasher hash(0);
+        Out out;
+        out.f = &f;
+        out.hash = &hash;
+        if (ok) put_payload(out, image, sources);
+        ok = ok && out.ok && out.n == payload;
+        if (ok) {
+            const uint64_t ph = hash.digest();
+            ok = f.write(&ph, 8) && f.write(kEnd, 8);
+        }
+        ok = f.finish(false) && ok;   // never flushed: there is no file
+        if (!ok) {
+            st.error = out.read_failed ? SessionError::io : f.kind();
+            error = "session section: writing " + path.substr(4) + " failed: " +
+                    (out.read_failed ? "K/V source read" + (out.read_error.empty() ? std::string() : ": " + out.read_error)
+                                     : f.error());
+            return false;             // the section goes with `raw`
+        }
+        raw.hold_section();           // stays until this process exits; a keeper opens it by name meanwhile
+        st.published = true;
+        st.error = SessionError::none;
+        bytes = (size_t) total;
+        return true;
+#else
+        error = "session section: mem: sessions exist on Windows only";
+        return false;
+#endif
+    }
     if (opt.min_free_bytes) {
         uint64_t avail = 0;
         if (!free_space(path, avail)) { error = "session file: cannot read the free disk space for " + path; return false; }
@@ -1159,6 +1327,22 @@ int64_t session_phase_limit_s(uint64_t bytes) {
     return std::min<int64_t>(3600, 60 + (int64_t) std::min<uint64_t>(bytes >> 22, 3600));
 }
 
+bool session_is_section(const std::string& path) { return path.rfind("mem:", 0) == 0; }
+
+bool session_section_exists(const std::string& path) {
+#ifdef _WIN32
+    std::wstring w;
+    if (!wide(session_is_section(path) ? path.substr(4) : path, w)) return false;
+    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, w.c_str());
+    if (h == nullptr) return false;
+    CloseHandle(h);
+    return true;
+#else
+    (void) path;
+    return false;
+#endif
+}
+
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options, SessionStatus* status) {
@@ -1178,7 +1362,13 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
     RawFile raw;
     uint64_t size = 0;
-    if (!raw.open_session(path, size)) {
+#ifdef _WIN32
+    const bool opened = session_is_section(path) ? raw.open_section(path.substr(4), size) : raw.open_session(path, size);
+#else
+    if (session_is_section(path)) { error = "session section: mem: sessions exist on Windows only"; return false; }
+    const bool opened = raw.open_session(path, size);
+#endif
+    if (!opened) {
         st.error = raw.refused() ? SessionError::invalid : raw.kind();
         error = "session file: " + path + ": " + raw.error();
         return false;
