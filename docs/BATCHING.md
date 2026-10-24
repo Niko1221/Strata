@@ -363,7 +363,32 @@ between decoding windows (the prompt may hold a loan of cache slots). The `strat
 GPU-reach wait and pool time, and how many routed entries the VRAM tier, the PCIe share and the CPU served per window.
 Swaps move experts between the GPU and the CPU, which round differently, so greedy outputs can differ from run to run;
 `--adapt-every 1000000` keeps the tier fixed (as in the exactness settings below). The pipelined `--batch-groups` path
-does not adapt.
+does not adapt by default: its windows count the routing, but no round starts while groups are in flight, so the tier
+moves only when the slots go back to the solo path.
+
+`STRATA_PIPE_ADAPT_EVERY=N` (opt-in; unset or 0 keeps the old behaviour) lets the pipelined path adapt: after N group
+windows it starts no new group, lets the groups in flight finish, runs one round as the serial batch loop does (nothing
+in flight reads a cache slot, and the swapped-in experts land before the next launch), and goes on. It stands still while
+a prompt is read beside the slots, and does nothing with `--adapt-async 1`. The engine says so at start, and the
+`strata batch (pipelined ...)` line adds the rounds, the experts swapped in and the time spent. Measured on 2x RTX 5090
+(layer split 25, Swift-Qwen3.8-Flash-Next IQ3_S, `--batch 6 --batch-groups 2`, resident experts, a profile-filled cache,
+`--adapt-every 16`), six streams of 1,024 greedy tokens from `tools/serve_load.py`, the engine's rows/s of eight bursts
+right after start, two fresh engines per setting:
+
+| `STRATA_PIPE_ADAPT_EVERY` | bursts 1-8, rows/s | mean | experts swapped before burst 8 |
+| --- | --- | ---: | ---: |
+| unset (stock 0.2.4.1) | 246, 257, 291, 292, 335, 338, 356, 355 | 309 | 287 |
+| unset (this branch) | 249, 242, 297, 296, 333, 336, 372, 362 | 311 | 288 |
+| 128 | 363, 415, 414, 420, 420, 411, 415, 420 | 410 | 6,181 |
+| 128 | 359, 407, 416, 422, 419, 417, 404, 411 | 407 | 6,294 |
+| 32 | 375, 405, 408, 405, 409, 390, 405, 409 | 402 | 5,957 |
+| 32 | 384, 414, 404, 402, 401, 412, 406, 401 | 403 | 5,678 |
+
+Without it the tier swaps 96 experts every burst or two (only when a burst ends) and the engine was still speeding up
+after eight bursts; with 128 it reached about 415 rows/s from the second burst, the speed an engine without the switch
+showed only after thousands of swaps had come from other traffic. 32 empties the pipeline four times as often and ends a
+little lower. One machine, one model and one configuration; not measured on one GPU (no pipelined path there) or with
+more than two stages.
 
 With `--adapt-async 1` (needs the resident RAM mode) the round does not hold a window up: each batch window moves the
 round on one step (table changes and uploads on the main thread, the copies on a helper thread and the cards' refill
@@ -430,6 +455,7 @@ counter-based draw (Philox(seed, position)).
   boundary, and not for pictures.
 - Admissions are one at a time: two new long prompts are read one after the other.
 - `--batch-groups` needs every stage on its own GPU. A pipelined slot is a conversation cache again (0.1.41): a request left alone in its slot goes back to the solo path with its drafts, as on one GPU.
+- The pipelined `--batch-groups` path adapts the VRAM tier only with `STRATA_PIPE_ADAPT_EVERY` (above).
 - The slot sessions take VRAM (above) and, with KV streaming, pinned RAM.
 
 ## Measured
