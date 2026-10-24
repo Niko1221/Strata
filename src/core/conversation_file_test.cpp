@@ -57,8 +57,7 @@ std::vector<uint8_t> bytes_of(size_t n, uint8_t seed) {
     return v;
 }
 
-ConversationCheckpoint checkpoint(size_t tokens, uint8_t seed) {
-    ConversationCheckpoint c;
+ConversationCheckpoint checkpoint(size_t tokens, uint8_t seed) {    ConversationCheckpoint c;
     for (size_t i = 0; i < tokens; ++i) c.ids.push_back(int32_t(1000 + i));
     c.imgs = {{3, 0x1234567890abcdefull ^ seed}};
     c.gdn = bytes_of(4099, seed);
@@ -68,6 +67,28 @@ ConversationCheckpoint checkpoint(size_t tokens, uint8_t seed) {
     c.block_pos = bytes_of(8, seed + 4);
     c.used = 42 + seed;
     return c;
+}
+
+// v2 fixtures: attach exactly one stage part per stage-table entry (identity follows the parent, the
+// split/merge rule), and compare a checkpoint including its parts (parts carry no parts of their own)
+void attach_parts(ConversationCheckpoint& c, size_t stages) {
+    for (size_t k = 0; k < stages; ++k) {
+        ConversationCheckpoint part;
+        part.ids = c.ids; part.imgs = c.imgs; part.used = c.used + uint64_t(k);
+        part.gdn = bytes_of(999, uint8_t(21 + k)); part.ple = bytes_of(7, uint8_t(31 + k));
+        part.tails = bytes_of(11, uint8_t(41 + k)); part.dead = bytes_of(3, uint8_t(51 + k));
+        part.block_pos = bytes_of(2, uint8_t(61 + k));
+        c.stage_parts.push_back(std::move(part));
+    }
+}
+bool same_deep(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+    if (a.ids != b.ids || a.imgs != b.imgs || a.gdn != b.gdn || a.ple != b.ple || a.tails != b.tails ||
+        a.dead != b.dead || a.block_pos != b.block_pos || a.used != b.used ||
+        a.stage_parts.size() != b.stage_parts.size())
+        return false;
+    for (size_t i = 0; i < a.stage_parts.size(); ++i)
+        if (!same_deep(a.stage_parts[i], b.stage_parts[i])) return false;
+    return true;
 }
 
 SavedConversation sample() {
@@ -97,11 +118,10 @@ SavedConversation sample() {
 // golden below is this sample plus its stage-table fields, pinned by the same test.
 constexpr size_t kGoldenSize = 17878535;
 constexpr uint64_t kGoldenHash = 0x70f812b350360d09ull;
-constexpr uint64_t kGoldenV2Hash = 0x945fb826e640580eull;
+constexpr uint64_t kGoldenV2Hash = 0xf80ccf8cf1b579f2ull;
 
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
-    return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
-           a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used && b.stage_parts.empty();
+    return same_deep(a, b);
 }
 
 bool same(const SavedConversation& a, const SavedConversation& b) {
@@ -181,8 +201,8 @@ int main() {
         const uint64_t h = session_hash64(g.data(), g.size(), 0);
         const char* golden = std::getenv("STRATA_SESSION_GOLDEN_PRINT");
         if (golden) std::printf("golden size %zu hash %016llx\n", g.size(), (unsigned long long)h);
-        check(g.size() == kGoldenSize + 8 && h == kGoldenV2Hash,
-              "golden: the fixed sample's v2 bytes are the v1 bytes plus the empty stage-table count");
+        check(g.size() == kGoldenSize + 8 + 3 * 8 && h == kGoldenV2Hash,
+              "golden: the fixed sample's v2 bytes are the v1 bytes plus the stage-table count and one parts-count per checkpoint");
     }
     check(written == fs::file_size(good), "write reports the file size");
     check(no_temp(dir), "no temporary left behind");
@@ -433,12 +453,14 @@ int main() {
     {
         SavedConversation with_table = original;
         with_table.stage_table = {{12, 47, 9, 2, false}, {48, 60, 3, 1, true}};
+        attach_parts(with_table.live, with_table.stage_table.size());
+        for (auto& c : with_table.checkpoints) attach_parts(c, with_table.stage_table.size());
         const fs::path p = dir / "table.bin";
         check(session_file_write(p.string(), with_table, id, written, error), "stage table: written");
         SavedConversation back;
         size_t n = 0;
         check(session_file_read(p.string(), id, back, n, error) && back.stage_table == with_table.stage_table &&
-              same(back, original), "stage table: round trip keeps the geometry and the state");
+              same(back, with_table), "stage table: round trip keeps the geometry and the state");
         SessionReadLimits l;
         l.stages = with_table.stage_table;                        // a live engine with the same split
         check(session_file_read(p.string(), id, back, n, error, l) && back.stage_table == with_table.stage_table,
@@ -455,6 +477,78 @@ int main() {
         l = {};
         l.max_stages = 1;                                         // fewer stages than the engine will allow
         check(rejects(p, id, "limit", l), "stage table: more stages than the runtime limit refused");
+    }
+    // format v2: every checkpoint carries exactly one stage part per table entry; the count and nesting are
+    // checked on both sides, and parts' state arrays are bounded per stage
+    {
+        SavedConversation split = original;
+        split.stage_table = {{12, 47, 9, 2, false}, {48, 60, 3, 1, true}};
+        attach_parts(split.live, split.stage_table.size());
+        for (auto& c : split.checkpoints) attach_parts(c, split.stage_table.size());
+        const fs::path sp = dir / "parts.bin";
+        check(session_file_write(sp.string(), split, id, written, error), "stage parts: written with a matching table");
+        SavedConversation back;
+        size_t n = 0;
+        SessionReadLimits l;
+        l.stages = split.stage_table;
+        check(session_file_read(sp.string(), id, back, n, error, l) && back.stage_table == split.stage_table &&
+              same_deep(back.live, split.live) && back.checkpoints.size() == split.checkpoints.size() &&
+              same_deep(back.checkpoints[0], split.checkpoints[0]) &&
+              same_deep(back.checkpoints[1], split.checkpoints[1]),
+              "stage parts: round trip keeps every part");
+
+        auto bad = split; bad.live.stage_parts.pop_back();
+        check(!session_file_write((dir / "bad.bin").string(), bad, id, written, error) &&
+              error.find("stage parts") != std::string::npos && !fs::exists(dir / "bad.bin") && no_temp(dir),
+              "stage parts: a checkpoint disagreeing with the table is refused at the write, no file left");
+        auto bad2 = split; bad2.stage_table.pop_back();
+        check(!session_file_write((dir / "bad2.bin").string(), bad2, id, written, error) &&
+              !fs::exists(dir / "bad2.bin") && no_temp(dir), "stage parts: an extra table entry refused too");
+        auto nested = split; nested.live.stage_parts[0].stage_parts.push_back(checkpoint(1, 77));
+        check(!session_file_write((dir / "nest.bin").string(), nested, id, written, error) &&
+              error.find("nested") != std::string::npos && !fs::exists(dir / "nest.bin") && no_temp(dir),
+              "stage parts: nesting is refused at the write");
+
+        // reader: the live checkpoint's parts count tampered down, payload hash recomputed
+        {
+            auto d = slurp(sp);
+            const size_t live_cp = 64 + 22 * 8 + 2 * 40;         // header, 22 u64s, the two stage-table entries
+            const size_t at = live_cp + 8 + 1000 * 4 + 8 + 1 * 16 + (8 + 4099) + (8 + 77) + (8 + 301) + (8 + 64) +
+                              (8 + 8) + 8;                        // ...used, then the stage-parts count field
+            uint64_t was = 0; std::memcpy(&was, d.data() + at, 8);
+            check(was == 2, "stage parts: test offset finds the parts count");
+            was = 1; std::memcpy(d.data() + at, &was, 8);
+            uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
+            const uint64_t h = session_hash64(d.data() + 64, payload, 0); std::memcpy(d.data() + 64 + payload, &h, 8);
+            const fs::path tp = dir / "tamper.bin"; spit(tp, d);
+            check(rejects(tp, id, "stage parts", l), "stage parts: a count disagreeing with the table is refused");
+        }
+        // reader: a part's own parts count field set to 1 is refused as nesting
+        {
+            auto d = slurp(sp);
+            const size_t live_cp = 64 + 22 * 8 + 2 * 40;
+            const size_t parent_count = live_cp + 8 + 1000 * 4 + 8 + 1 * 16 + (8 + 4099) + (8 + 77) + (8 + 301) +
+                                        (8 + 64) + (8 + 8) + 8;  // the parent's stage-parts count field
+            const size_t at = parent_count + 8 + 8 + 1000 * 4 + 8 + 1 * 16 + (8 + 999) + (8 + 7) + (8 + 11) +
+                              (8 + 3) + (8 + 2) + 8;             // first part: record, then its own count field
+            uint64_t was = 0; std::memcpy(&was, d.data() + at, 8);
+            check(was == 0, "stage parts: test offset finds the part's own count");
+            was = 1; std::memcpy(d.data() + at, &was, 8);
+            uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
+            const uint64_t h = session_hash64(d.data() + 64, payload, 0); std::memcpy(d.data() + 64 + payload, &h, 8);
+            const fs::path tp = dir / "nesttamper.bin"; spit(tp, d);
+            check(rejects(tp, id, "nested", l), "stage parts: a tampered part nesting is refused");
+        }
+        // per-stage bounds: exact limits read, one byte less refuses, before any allocation
+        {
+            SessionReadLimits l2;
+            l2.stages = split.stage_table;
+            l2.max_stage_state_bytes = {{999, 7, 11, 3, 2}, {999, 7, 11, 3, 2}};
+            check(session_file_read(sp.string(), id, back, n, error, l2) && same_deep(back.live, split.live),
+                  "stage parts: exact per-stage limits read");
+            l2.max_stage_state_bytes[1][0] = 998;
+            check(rejects(sp, id, "limit", l2), "stage parts: a part state array over its stage limit refused");
+        }
     }
     // free-space reserve: an impossible reserve refuses the write and leaves the existing file untouched
     {
