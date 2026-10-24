@@ -1,0 +1,41 @@
+{
+  "engine_options": {
+    "--pack": "pack",
+    "--native": "qwen-nvidia-nvfp4-dense.gguf",
+    "--native-dense-gguf": "qwen-nvidia-nvfp4-dense.gguf",
+    "--ple-gguf": "ple-fp8.gguf",
+    "--embd-gguf": "token-embd-bf16.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--mtp": "rt",
+    "--max-context": "131072",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--vision": true,
+    "--pool-workers": "6",
+    "--resident-budget-gib": "63",
+    "--vram-reserve-mib": "2048"
+  },
+  "other_engine_options": {
+    "--pack": "pack",
+    "--native": "qwen-nvidia-nvfp4-dense.gguf",
+    "--native-dense-gguf": "qwen-nvidia-nvfp4-dense.gguf",
+    "--ple-gguf": "ple-fp8.gguf",
+    "--embd-gguf": "token-embd-bf16.gguf",
+    "--max-context": "131072",
+    "--vision": true,
+    "--resident-budget-gib": "63"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 131072,
+  "source": "effective engine arguments of the profile"
+}
