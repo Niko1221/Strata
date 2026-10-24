@@ -1,0 +1,55 @@
+{
+  "protocol_id": "strata-qwen38-thinking-v1-draft.1",
+  "run_id": "20261024T195536Z-8bf1361c",
+  "submission_status": "draft protocol pilot; no approved or official ranking",
+  "source": "Existing saved strata bench run artifacts; no benchmark started or rerun during submission preparation.",
+  "validator": {
+    "module": "strata_cli.bench_standard",
+    "install_commit": "dfa3f4025c9f1bc4af8cee201b20a2d223061813",
+    "errors": []
+  },
+  "checks": {
+    "source_artifact_hashes": "all six match",
+    "required_request_records": 22,
+    "raw_output_records": 22,
+    "frozen_request_payloads": "all match the manifest-verified fixture bundle",
+    "request_ids_order_counts_and_summary_reconstruction": "passed",
+    "raw_usage_and_client_timing_agreement": "passed",
+    "sanity_recomputed_from_saved_final_answers_and_tool_calls": {
+      "passed": 12,
+      "total": 12
+    },
+    "model_weights_or_generated_packs_in_submission": false
+  },
+  "redactions": {
+    "engine.log": {
+      "operation": "Replace absolute local directory prefixes with placeholders; retain filenames, options, timings and all log lines.",
+      "replacement_counts": {
+        "<model-dir>": 8,
+        "<profile-data-dir>": 2,
+        "<mtp-dir>": 1
+      }
+    },
+    "results.json": "Update engine.log hash and register this provenance file. Measurement fields, status, run ID, timestamp and existing missing reasons are unchanged.",
+    "README.md": "Add submission context, missing revision caveats and evidence links; clarify that the short-prompt rate is not displayed in the prose table."
+  },
+  "original_sha256": {
+    "README.md": "3060e6dd2237654b7773ebbedd06f18b6b4ca972e810fe61f0d140d1c73a97a4",
+    "results.json": "e77b526d5a9681450262fd9b647c1003cf86a0025648ebb7ec43f2b2fffdcc2d",
+    "engine.log": "9811de6e08cf0fe86dcaa79a3f2dd726744b054cfed5a4344e1310832830b95c"
+  },
+  "unchanged_evidence": [
+    "outputs.jsonl",
+    "config.json",
+    "provenance/chat_template.jinja",
+    "provenance/corpus-manifest.sha256",
+    "provenance/corpus-build.json"
+  ],
+  "limitations": [
+    "Draft protocol; complete records do not imply approval, independent reproduction or an official rank.",
+    "Model quantization revision, source revision, tokenizer revision and model-card revision are not available in this saved run. Values remain null with reasons; no revision is inferred.",
+    "The saved operator declaration for custom_pack is null. An expert-profile.bin is listed with its recorded SHA-256; its preparation provenance was not declared.",
+    "The runner cannot verify server repeat-stop and loop-recovery settings. Optional concurrency was not selected.",
+    "Sanity scoring was recomputed with the protocol evaluator on saved output; no inference requests were made."
+  ]
+}
