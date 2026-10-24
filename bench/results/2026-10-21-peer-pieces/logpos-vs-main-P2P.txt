@@ -1,0 +1,10 @@
+REF main011_p2p-1-lp.logpos: 5 cases, rows [506, 452, 578, 475, 482]
+
+== fin_on_p2p-1-lp.logpos against REF
+case           n  argmax   KL mean   KL p99    ppl ref/run bit for bit
+docs 34k     506  100.0%    0.0000   0.0000   77.19/ 77.19  yes
+docs 24k     452  100.0%    0.0000   0.0000   14.18/ 14.18  yes
+code 16k     578  100.0%    0.0000   0.0000   10.96/ 10.96  yes
+docs 8k      475  100.0%    0.0000   0.0000  194.84/194.84  yes
+code 3k      482  100.0%    0.0000   0.0000   10.55/ 10.55  yes
+all         2493  100.0%    0.0000   0.0000   29.31/ 29.31  yes
