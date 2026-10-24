@@ -201,3 +201,4 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
   `GENI` / `BGENI` (solo, in a batch, the conversation cache); `q36_vision_serve.py` and `q36_serve_par.py` / `q36_serve_handoff.py`:
   the same through the server.
 - `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
+- `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.
