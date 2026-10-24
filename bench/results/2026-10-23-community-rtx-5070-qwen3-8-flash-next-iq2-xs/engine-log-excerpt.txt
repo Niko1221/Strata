@@ -1,0 +1,80 @@
+[strata] 2026-10-23 17:55:24 engine started: <engine>\strata.exe --serve --pack <models>\packs\iq2_xs --native <models>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf <models>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile <strata-0.1.45>\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp <models>\mtp\rt --max-context 32768 --kv int8 --mmap-experts --pcie-frac 0.55 --spec-min-p 0.70
+strata generate: profile <strata-0.1.45>\data\expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata mtp: draft layer loaded, 839 MiB of VRAM (experts 675, dense 111), files read in 0.24 s (3307 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 5070, compute capability 12.0
+strata generate: expert cache auto: 6.03 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 3701 slots
+strata generate: only 635 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache
+strata generate: expert cache 3780 slots, 5.08 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+strata generate: pre-filled 3780 of 3780 slots from the profile in 1.4 s (3951 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 3780 resident experts, decided on the device
+strata: the CPU prefill share is not armed by default: the experts it would read are 27.9 GiB of file pages and only 19.7 GiB of RAM is free to keep them. STRATA_PREFILL_CPU_SHARE=auto turns it on anyway
+strata: prefill plan: chunk 8192, ring 96 kept: file set 32.1 GiB does not fit the page cache 12.4 GiB -> about 137.7 GB read from the drive per 32768-token prompt (4 chunks); no option does better (the set cannot fit: fewest passes win)
+strata: prefill plan inputs: 33.0 GiB experts, 5.1 GiB in the GPU caches, 0.0 GiB RAM copy (0 lend slots kept), file tier 27.9 GiB; 12.4 GiB available for the page cache; PCIe 12.0 GB/s; drive 1.50 GB/s (assumed); a 32768-token prompt
+strata serve: the prompt path borrows 2816 CUDA0 cache slots (3.77 GiB)
+strata mtp: draft head over 106299 tokens (137.9 MiB)
+strata serve: 337 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+strata serve: WARNING: only 337 MiB of VRAM free at the start of this request (below 1024 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 1408 to the config's args, or lower --max-context / --batch
+strata verify: capturing the 6-token window (337 MiB of VRAM free)
+strata verify: capturing the 3-token window (327 MiB of VRAM free)
+strata verify: capturing the 1-token window (311 MiB of VRAM free)
+strata verify: capturing the 4-token window (293 MiB of VRAM free)
+strata verify: capturing the 2-token window (277 MiB of VRAM free)
+strata serve: decode expert cache hit rate: 37.7% (4035 hits / 10716 lookups)
+strata serve: expert tiers: GPU 4035 hits this request; since the start RAM 0 blobs, files 0 blobs 18633.4 MB read
+strata serve: decode expert cache hit rate: 60.1% (235 hits / 391 lookups)
+strata serve: expert tiers: GPU 235 hits this request; since the start RAM 0 blobs, files 0 blobs 30085.1 MB read
+strata serve: decode expert cache hit rate: 60.6% (238 hits / 393 lookups)
+strata serve: expert tiers: GPU 238 hits this request; since the start RAM 0 blobs, files 0 blobs 44342.5 MB read
+strata serve: decode expert cache hit rate: 57.8% (1882 hits / 3257 lookups)
+strata serve: expert tiers: GPU 1882 hits this request; since the start RAM 0 blobs, files 0 blobs 60129.2 MB read
+strata serve: decode expert cache hit rate: 58.8% (26220 hits / 44590 lookups)
+strata serve: expert tiers: GPU 26220 hits this request; since the start RAM 0 blobs, files 0 blobs 88506.5 MB read
+strata serve: decode expert cache hit rate: 69.4% (35483 hits / 51145 lookups)
+strata serve: expert tiers: GPU 35483 hits this request; since the start RAM 0 blobs, files 0 blobs 115436.9 MB read
+strata serve: decode expert cache hit rate: 61.5% (30476 hits / 49527 lookups)
+strata serve: expert tiers: GPU 30476 hits this request; since the start RAM 0 blobs, files 0 blobs 145735.1 MB read
+strata serve: decode expert cache hit rate: 52.9% (22663 hits / 42805 lookups)
+strata serve: expert tiers: GPU 22663 hits this request; since the start RAM 0 blobs, files 0 blobs 175808.6 MB read
+strata serve: decode expert cache hit rate: 73.6% (37309 hits / 50680 lookups)
+strata serve: expert tiers: GPU 37309 hits this request; since the start RAM 0 blobs, files 0 blobs 199174.6 MB read
+strata serve: decode expert cache hit rate: 69.1% (34363 hits / 49740 lookups)
+strata serve: expert tiers: GPU 34363 hits this request; since the start RAM 0 blobs, files 0 blobs 226448.7 MB read
+strata serve: decode expert cache hit rate: 52.1% (22955 hits / 44057 lookups)
+strata serve: expert tiers: GPU 22955 hits this request; since the start RAM 0 blobs, files 0 blobs 257122.2 MB read
+strata serve: decode expert cache hit rate: 74.6% (39320 hits / 52689 lookups)
+strata serve: expert tiers: GPU 39320 hits this request; since the start RAM 0 blobs, files 0 blobs 280624.7 MB read
+strata serve: decode expert cache hit rate: 67.5% (35337 hits / 52346 lookups)
+strata serve: expert tiers: GPU 35337 hits this request; since the start RAM 0 blobs, files 0 blobs 308138.4 MB read
+strata serve: decode expert cache hit rate: 59.5% (8574 hits / 14402 lookups)
+strata serve: expert tiers: GPU 8574 hits this request; since the start RAM 0 blobs, files 0 blobs 350392.2 MB read
+strata serve: decode expert cache hit rate: 74.7% (9243 hits / 12366 lookups)
+strata serve: expert tiers: GPU 9243 hits this request; since the start RAM 0 blobs, files 0 blobs 389506.3 MB read
+strata serve: decode expert cache hit rate: 83.4% (10581 hits / 12694 lookups)
+strata serve: expert tiers: GPU 10581 hits this request; since the start RAM 0 blobs, files 0 blobs 427433.9 MB read
+strata serve: decode expert cache hit rate: 87.5% (13598 hits / 15545 lookups)
+strata serve: expert tiers: GPU 13598 hits this request; since the start RAM 0 blobs, files 0 blobs 503008.3 MB read
+strata serve: decode expert cache hit rate: 83.9% (10014 hits / 11939 lookups)
+strata serve: expert tiers: GPU 10014 hits this request; since the start RAM 0 blobs, files 0 blobs 578166.6 MB read
+strata serve: decode expert cache hit rate: 91.4% (14442 hits / 15796 lookups)
+strata serve: expert tiers: GPU 14442 hits this request; since the start RAM 0 blobs, files 0 blobs 652834.5 MB read
+strata serve: decode expert cache hit rate: 61.0% (12640 hits / 20733 lookups)
+strata serve: expert tiers: GPU 12640 hits this request; since the start RAM 0 blobs, files 0 blobs 685675.3 MB read
+strata serve: decode expert cache hit rate: 56.0% (19786 hits / 35363 lookups)
+strata serve: expert tiers: GPU 19786 hits this request; since the start RAM 0 blobs, files 0 blobs 735612.3 MB read
+strata serve: decode expert cache hit rate: 66.6% (21043 hits / 31618 lookups)
+strata serve: expert tiers: GPU 21043 hits this request; since the start RAM 0 blobs, files 0 blobs 780461.3 MB read
+strata serve: decode expert cache hit rate: 80.8% (23560 hits / 29150 lookups)
+strata serve: expert tiers: GPU 23560 hits this request; since the start RAM 0 blobs, files 0 blobs 822446.0 MB read
+strata serve: decode expert cache hit rate: 82.8% (31203 hits / 37703 lookups)
+strata serve: expert tiers: GPU 31203 hits this request; since the start RAM 0 blobs, files 0 blobs 864264.7 MB read
+strata serve: decode expert cache hit rate: 79.7% (30497 hits / 38246 lookups)
+strata serve: expert tiers: GPU 30497 hits this request; since the start RAM 0 blobs, files 0 blobs 908571.6 MB read
+strata serve: decode expert cache hit rate: 59.5% (9262 hits / 15572 lookups)
+strata serve: expert tiers: GPU 9262 hits this request; since the start RAM 0 blobs, files 0 blobs 939876.7 MB read
+strata serve: decode expert cache hit rate: 75.7% (26768 hits / 35346 lookups)
+strata serve: expert tiers: GPU 26768 hits this request; since the start RAM 0 blobs, files 0 blobs 984763.0 MB read
+strata serve: decode expert cache hit rate: 71.2% (23485 hits / 32986 lookups)
+strata serve: expert tiers: GPU 23485 hits this request; since the start RAM 0 blobs, files 0 blobs 1029102.6 MB read
