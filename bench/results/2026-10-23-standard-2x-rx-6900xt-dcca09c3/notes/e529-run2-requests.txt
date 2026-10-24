@@ -1,0 +1,5 @@
+0 C-proto-sampled      12.4 s  completion 512 finish=length
+1 C-stream             12.3 s  stream chunks 514 usage 512
+2 A-greedy-nothink     10.4 s  completion 512 finish=length
+3 A-stream             10.1 s  stream chunks 476 usage 512
+4 C-stream             12.5 s  stream chunks 514 usage 512
