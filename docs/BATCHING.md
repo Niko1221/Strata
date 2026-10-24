@@ -188,6 +188,40 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
+### Long prompts that move from solo to a batch slot
+
+The handoff above needs prompt-cache state. With `--prompt-cache 0`, moving a long request from the solo path into
+a slot can read the whole prompt again. This minimal example enables handoff reuse without parking completed
+conversations. Set these options in the model config's `args`, keeping the other arguments unchanged:
+
+```
+"args": [ ..., "--prompt-cache", "1", "--prompt-cache-every", "0",
+          "--prompt-cache-root", "0", "--conversation-cache-mib", "0" ]
+```
+
+`--prompt-cache 1` keeps the latest turn-boundary checkpoint so the `GEN` to `BGEN` handoff can reuse the live
+prefix. `--prompt-cache-every 0` disables periodic checkpoints and `--prompt-cache-root 0` disables an extra root
+checkpoint. The limit is per cache set: a slot can keep its own live state, so it is not one checkpoint shared by
+every slot. `--conversation-cache-mib 0` still disables parking independent completed conversations in RAM; it does
+not remove the prompt checkpoint or the state held by an active slot.
+If conversation parking is already enabled, keep its existing budget instead of setting it to zero: that budget is
+independent of the handoff configuration.
+
+This setting has RAM costs. The checkpoint and every slot's normal context state still consume memory, even with the
+conversation cache off. Check the engine's free-memory report and the slot count that it actually accepts before
+raising the context length or `"parallel"` value.
+
+It does not make independent cold prompts prefill in parallel. The server admits them one at a time; a running value
+of four can mean four requests are in flight, not four slots decoding together. A slot already decoding may make
+progress while the next prompt is read, but long independent prompts can finish before enough admissions overlap to
+fill every configured slot.
+
+After changing the setting, send a long request alone and add a second request while it is decoding. In the engine
+log, the first request's `GEN` to `BGEN` transfer should report a large reused prefix and only the new token(s) read.
+Then check `/metrics` for the slots that were actually reading or decoding, and `/v1/status` for the effective
+serving count. Treat this as handoff evidence only: it does not prove that every configured slot can stay resident or
+that cold prompts have concurrent prefill.
+
 ## Reading a prompt beside pipelined groups (experimental, opt-in)
 
 With a layer split and `--batch-groups` above 1 a prompt is read in one run: every decoding slot stops until it is
