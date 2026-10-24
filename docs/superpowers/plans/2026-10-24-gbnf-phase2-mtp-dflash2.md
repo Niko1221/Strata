@@ -10,7 +10,13 @@
 > DFlash2 在本 build 是 CLI 专属起草器（serve 无此路径，无 grammar 交集）；SYCL 镜像 sampler 本就逐行、
 > program 级接线是 Phase 1 既定边界，未改动；batch_mtp 链落在 P2（行级交接，非 P1 顺手）。顺手修了两个
 > Phase 1 缺口：greedy+grammar 的图 argmax 绕掩码（run/pl_finish/sample_rows 补重采样）、层拆分 pipelined
-> 窗不推进 grammar（约束请求改串行，与 penalties 同门）。细节见 git log 与 DETAILS Limits。）
+> 窗不推进 grammar（约束请求改串行，与 penalties 同门）。细节见 git log 与 DETAILS Limits。**
+>
+> **回归（全部 2026-10-24，本机）**：ctest 150 过 / 1 失败（ple_parity，环境性夹具）/ 7 跳过，与 merge 后
+> 基线一致；serve 全量 1058 例 0 失败（修了 winjob 测试在本机 GBK 控制台下的 tasklist 解码）；pytest
+> tests/terminal 1586 过，余 4 失败为环境类（2 个仓库目录被识别为安装根、2 个 Windows PID 句柄存活时序，
+> 与本分支改动无关）；apps/host npm test 4 失败均为 Windows 符号链接权限（EPERM）与本机限制。分支较 fork
+> 领先 5 个提交，**未推送、未开 PR（等用户指示）**。）
 
 ## 接力状态（2026-10-24 晚）
 
