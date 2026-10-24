@@ -1,0 +1,17 @@
+{
+  "model_repo": "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF",
+  "model_repo_commit": "not recorded; downloaded 2026-10-18 via https://hf-mirror.com (China mirror, same content as huggingface.co)",
+  "quantization": "IQ3_XXS (abliterated)",
+  "files": [
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf (41.57 GB, native)",
+    "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf (37.x GB, PLE)"
+  ],
+  "file_hashes": "not computed (111 GB read cost); repo + filenames above identify the download",
+  "vision_encoder": "mmproj-Qwen3.8-Flash-Next-BF16.gguf (release default, strata-vision gpu-cuda13)",
+  "derived_artifacts": {
+    "expert_pack": "packs/sc117_iq3_xxs generated with tools/iq_pack.py --gguf <shard1.gguf> --out packs/sc117_iq3_xxs; dense.bin identical to the stock pack",
+    "expert_profile": "data/expert-profile.bin carried over from the earlier stock IQ3_XXS pack; engine loads it and reports 24576 ranked pairs",
+    "mtp": "mtp/rt from the engine release (default draft directory)"
+  },
+  "abliteration_evidence": "refusal-probe set on this machine: 66.7% refusals with the original upstream GGUF vs 1.7% with this one; capability spot-check 40/40/40 both"
+}
