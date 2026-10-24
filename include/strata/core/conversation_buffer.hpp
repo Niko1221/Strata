@@ -10,6 +10,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#endif
+
 namespace strata::core {
 
 // Snapshot-owned host storage. Appending never relocates existing payloads;
@@ -78,6 +82,22 @@ public:
                 const size_t previous = segments_.empty() ? 0 : segments_.back().capacity();
                 Segment segment;
                 segment.reserve(segment_capacity(count, previous, growing, held));
+#if !defined(_WIN32)
+                // (2026-10-20, the copy-bandwidth case) A fresh segment is a fresh mmap: on THP=madvise hosts
+                // glibc's segments never get 2 MiB pages on their own, so every page faults as 4 KiB - and a
+                // device copy INTO the fresh segment pays a page fault plus a per-page driver pin for pages it
+                // drops right after (measured on the 4x4090 box: 2.3 GB/s fresh vs 26 pinned; huge pages give
+                // back ~5x).  Advise the 2 MiB-aligned middle of the reservation; the ragged head/tail stay
+                // 4 KiB.  Eviction is untouched: THP pages are ordinary anonymous pages, munmap returns them.
+                {
+                    const uintptr_t raw = reinterpret_cast<uintptr_t>(segment.data());
+                    const uintptr_t step = uintptr_t(2) << 20;
+                    const uintptr_t lo = (raw + step - 1) & ~(step - 1);
+                    const uintptr_t hi = raw + segment.capacity();
+                    if (hi > lo && hi - lo >= step)
+                        ::madvise(reinterpret_cast<void*>(lo), (hi - lo) & ~(step - 1), MADV_HUGEPAGE);
+                }
+#endif
                 segment.resize(count, value);
                 segments_.push_back(std::move(segment));
                 size_ += count;
