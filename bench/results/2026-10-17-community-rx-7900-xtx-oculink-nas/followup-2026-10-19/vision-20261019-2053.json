@@ -1,0 +1,209 @@
+{
+ "zeit": "20261019-2053",
+ "konfig": {
+  "exe": "/strata/src/engine/strata",
+  "args": [
+   "--pack",
+   "/strata/data/packs/iq3_xxs",
+   "--native",
+   "/strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+   "--ple-gguf",
+   "/strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+   "--expert-profile",
+   "/strata/src/data/expert-profile.bin",
+   "--expert-cache",
+   "auto",
+   "--prefill",
+   "auto",
+   "--spec",
+   "4",
+   "--spec-min-p",
+   "0.5",
+   "--mtp",
+   "/strata/data/mtp/rt",
+   "--max-context",
+   "262144",
+   "--kv",
+   "int8",
+   "--vram-reserve-mib",
+   "832",
+   "--pool-workers",
+   "9",
+   "--pcie-frac",
+   "0",
+   "--conversation-cache-slots",
+   "2",
+   "--conversation-cache-min-tokens",
+   "8192",
+   "--conversation-cache-mib",
+   "4608",
+   "--vision"
+  ],
+  "cwd": "/strata/src",
+  "tokenizer": "/strata/data/packs/iq3_xxs/tokenizer",
+  "model_name": "arbeit-vision",
+  "log": "/strata/vision/ls-arbeit-vision.log",
+  "lib_dirs": [
+   "/strata/src/.venv/lib/python3.12/site-packages/_rocm_sdk_devel/lib",
+   "/strata/src/.venv/lib/python3.12/site-packages/_rocm_sdk_libraries_gfx110X_dgpu/lib"
+  ],
+  "backend": "hip",
+  "env": {
+   "STRATA_HIPBLASLT_TUNING": "/strata/src/tools/hip/gfx1100-hipblaslt-100200.txt"
+  },
+  "open_browser": false,
+  "reasoning_effort": "high",
+  "allowed_hosts": [
+   "idx",
+   "localhost"
+  ],
+  "vision": {
+   "exe": "/strata/vision/bin/strata-vision",
+   "mmproj": "/strata/vision/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+   "model": "/strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+   "gpu": false,
+   "max_tokens": 300,
+   "threads": 8
+  }
+ },
+ "vorher": {
+  "vram_frei_mib": 24534,
+  "ram_verfuegbar_gib": 51.3
+ },
+ "arbeit_vision": {
+  "laden_und_erste_antwort_s": 19.79,
+  "antwort": "Ein NAS (Network Attached Storage) ist ein spezialisiertes Computersystem, das über ein Netzwerk verbunden ist und primär der zentralen Speicherung und Bereitstellung von Daten für mehrere Nutzer oder",
+  "vram_frei_mib": 456,
+  "ram_verfuegbar_gib": 9.8,
+  "raid_s": 2.3,
+  "raid_ts_gesamt": 46.5,
+  "werkzeug": "wetter_abrufen {\"ort\":\"Detmold\"}",
+  "bilder": [
+   {
+    "bild": "quadrat",
+    "s": 1.2,
+    "antwort": "Rot",
+    "richtig": true,
+    "prompt_tokens": 39
+   },
+   {
+    "bild": "zahl",
+    "s": 1.53,
+    "antwort": "4728",
+    "richtig": true,
+    "prompt_tokens": 49
+   },
+   {
+    "bild": "drei",
+    "s": 1.35,
+    "antwort": "rot, grün, blau",
+    "richtig": true,
+    "prompt_tokens": 47
+   },
+   {
+    "bild": "zahl-gross",
+    "s": 5.0,
+    "antwort": "8274",
+    "richtig": true,
+    "prompt_tokens": 325
+   },
+   {
+    "bild": "verlauf",
+    "s": 1.64,
+    "antwort": "4728",
+    "richtig": true
+   }
+  ],
+  "nach_bildern": {
+   "vram_frei_mib": 26,
+   "ram_verfuegbar_gib": 9.6
+  },
+  "log": [
+   "load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks",
+   "load_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024",
+   "strata-vision: model files loaded in 0.4 s",
+   "strata-vision: on the CPU, 8 threads, no warm-up",
+   "[strata] 2026-10-19 18:53:27 engine started: /strata/src/engine/strata --serve --pack /strata/data/packs/iq3_xxs --native /strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf /strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --expert-profile /strata/src/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /strata/data/mtp/rt --max-context 262144 --kv int8 --vram-reserve-mib 832 --pool-workers 9 --pcie-frac 0 --conversation-cache-slots 2 --conversation-cache-min-tokens 8192 --conversation-cache-mib 4608 --vision",
+   "strata generate: profile /strata/src/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots",
+   "strata mtp: draft layer loaded, 1098 MiB of VRAM (experts 675, dense 111), files read in 0.35 s (2269 MiB/s)",
+   "strata generate: expert cache auto: 15.30 GiB free, 832 MiB reserved (+184 MiB for the draft head) -> 6593 slots",
+   "strata generate: expert cache 8834 slots, 14.30 GiB of VRAM; policy is",
+   "strata generate: pre-filled 8834 of 8834 slots from the profile in 3.5 s (4413 MB/s); slot 0 verified",
+   "strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring",
+   "strata serve: the prompt path borrows 2461 CUDA0 cache slots (4.00 GiB)",
+   "strata serve: 726 MiB of VRAM free with everything loaded",
+   "strata verify: capturing the 6-token window (726 MiB of VRAM free)",
+   "strata verify: captured the 6-token window (upload no error, sync no error)",
+   "strata verify: capturing the 1-token window (680 MiB of VRAM free)",
+   "strata verify: captured the 1-token window (upload no error, sync no error)",
+   "strata verify: capturing the 4-token window (668 MiB of VRAM free)",
+   "strata verify: captured the 4-token window (upload no error, sync no error)",
+   "strata verify: capturing the 3-token window (662 MiB of VRAM free)",
+   "strata verify: captured the 3-token window (upload no error, sync no error)",
+   "strata verify: capturing the 2-token window (658 MiB of VRAM free)",
+   "strata verify: captured the 2-token window (upload no error, sync no error)"
+  ]
+ },
+ "arbeit": {
+  "laden_und_erste_antwort_s": 23.33,
+  "antwort": "Ein NAS (Network Attached Storage) ist ein spezialisiertes Computersystem, das über ein Netzwerk verbunden ist und primär der zentralen Speicherung und Bereitstellung von Daten für mehrere Nutzer oder",
+  "vram_frei_mib": 458,
+  "ram_verfuegbar_gib": 10.9,
+  "raid_s": 2.49,
+  "raid_ts_gesamt": 43.0,
+  "werkzeug": "wetter_abrufen {\"ort\":\"Detmold\"}",
+  "log": [
+   "strata generate: expert cache 8837 slots, 14.31 GiB of VRAM; policy is",
+   "strata generate: pre-filled 8837 of 8837 slots from the profile in 4.9 s (3135 MB/s); slot 0 verified",
+   "strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring",
+   "strata serve: the prompt path borrows 2462 CUDA0 cache slots (4.00 GiB)",
+   "strata serve: 726 MiB of VRAM free with everything loaded",
+   "strata verify: capturing the 6-token window (726 MiB of VRAM free)",
+   "strata verify: captured the 6-token window (upload no error, sync no error)",
+   "strata verify: capturing the 1-token window (680 MiB of VRAM free)",
+   "strata verify: captured the 1-token window (upload no error, sync no error)",
+   "strata verify: capturing the 4-token window (668 MiB of VRAM free)",
+   "strata verify: captured the 4-token window (upload no error, sync no error)",
+   "strata verify: capturing the 3-token window (662 MiB of VRAM free)",
+   "strata verify: captured the 3-token window (upload no error, sync no error)",
+   "strata verify: capturing the 2-token window (658 MiB of VRAM free)",
+   "strata verify: captured the 2-token window (upload no error, sync no error)"
+  ]
+ },
+ "qwen27b_bilder": [
+  {
+   "bild": "quadrat",
+   "s": 13.79,
+   "antwort": "Rot",
+   "richtig": true,
+   "prompt_tokens": 39
+  },
+  {
+   "bild": "zahl",
+   "s": 0.69,
+   "antwort": "4728",
+   "richtig": true,
+   "prompt_tokens": 49
+  },
+  {
+   "bild": "drei",
+   "s": 0.64,
+   "antwort": "Rot, Grün, Blau",
+   "richtig": true,
+   "prompt_tokens": 47
+  },
+  {
+   "bild": "zahl-gross",
+   "s": 1.52,
+   "antwort": "8274",
+   "richtig": true,
+   "prompt_tokens": 504
+  },
+  {
+   "bild": "verlauf",
+   "s": 1.18,
+   "antwort": "4728",
+   "richtig": true
+  }
+ ]
+}

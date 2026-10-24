@@ -1,0 +1,25 @@
+[strata] 2026-10-19 19:30:48 engine started: /opt/engine/strata --serve --pack /strata/data/packs/iq3_xxs --native /strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf /strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --expert-profile /opt/strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /strata/data/mtp/rt --max-context 262144 --kv int8 --vram-reserve-mib 832 --pool-workers 9 --pcie-frac 0 --conversation-cache-slots 2 --conversation-cache-min-tokens 8192 --conversation-cache-mib 4608
+strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+prefill gemm: hipBLASLt tuning enabled (26 rows, gfx1100, version 100200)
+strata generate: CPU pool tasks/phase: 30 (automatic), participating threads: 10
+strata generate: 9 pool workers on logical processors 1,2,3,4,5,14,15,6,7, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 8,9,10,11,12,13 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache auto: 15.29 GiB free, 832 MiB reserved (+184 MiB for the draft head) -> 6592 slots
+strata generate: expert cache 8832 slots, 14.30 GiB of VRAM; policy is
+strata generate: pre-filled 8832 of 8832 slots from the profile in 3.5 s (4442 MB/s); slot 0 verified
+strata generate: 9 expert-pool workers + the host thread
+strata serve: the prompt path borrows 2461 CUDA0 cache slots (4.00 GiB)
+prefill gemm: hipBLASLt tuning enabled (26 rows, gfx1100, version 100200)
+strata serve: 728 MiB of VRAM free with everything loaded
+strata verify: capturing the 6-token window (728 MiB of VRAM free)
+strata verify: captured the 6-token window (upload no error, sync no error)
+strata verify: capturing the 3-token window (674 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata verify: capturing the 1-token window (670 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: capturing the 4-token window (660 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: capturing the 2-token window (530 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata verify: capturing the 5-token window (524 MiB of VRAM free)
+strata verify: captured the 5-token window (upload no error, sync no error)

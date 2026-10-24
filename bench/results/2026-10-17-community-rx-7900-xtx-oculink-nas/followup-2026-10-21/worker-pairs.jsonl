@@ -1,0 +1,12 @@
+{"test": "worker", "variante": "b021-auto", "paar": 1, "messung": 1, "prompt_token": 63, "neu_token": 900, "prompt_tps": 96.8, "decode_tps": 60.7, "draft_n": 702, "draft_ok": 308, "sekunden": 15.5}
+{"test": "worker", "variante": "b021-auto", "paar": 1, "messung": 2, "prompt_token": 63, "neu_token": 900, "prompt_tps": 91.8, "decode_tps": 61.6, "draft_n": 706, "draft_ok": 321, "sekunden": 15.3}
+{"test": "worker", "variante": "b021", "paar": 1, "messung": 1, "prompt_token": 63, "neu_token": 860, "prompt_tps": 87.4, "decode_tps": 61.1, "draft_n": 666, "draft_ok": 297, "sekunden": 14.8}
+{"test": "worker", "variante": "b021", "paar": 1, "messung": 2, "prompt_token": 63, "neu_token": 900, "prompt_tps": 88.6, "decode_tps": 59.9, "draft_n": 725, "draft_ok": 319, "sekunden": 15.7}
+{"test": "worker", "variante": "b021-auto", "paar": 2, "messung": 1, "prompt_token": 63, "neu_token": 900, "prompt_tps": 98.3, "decode_tps": 58.6, "draft_n": 698, "draft_ok": 313, "sekunden": 16.0}
+{"test": "worker", "variante": "b021-auto", "paar": 2, "messung": 2, "prompt_token": 63, "neu_token": 900, "prompt_tps": 92.6, "decode_tps": 60.4, "draft_n": 722, "draft_ok": 303, "sekunden": 15.6}
+{"test": "worker", "variante": "b021", "paar": 2, "messung": 1, "prompt_token": 63, "neu_token": 877, "prompt_tps": 87.1, "decode_tps": 64.3, "draft_n": 703, "draft_ok": 331, "sekunden": 14.4}
+{"test": "worker", "variante": "b021", "paar": 2, "messung": 2, "prompt_token": 63, "neu_token": 888, "prompt_tps": 86.2, "decode_tps": 61.8, "draft_n": 728, "draft_ok": 316, "sekunden": 15.1}
+{"test": "worker", "variante": "b021-auto", "paar": 3, "messung": 1, "prompt_token": 63, "neu_token": 900, "prompt_tps": 99.3, "decode_tps": 62.3, "draft_n": 741, "draft_ok": 327, "sekunden": 15.1}
+{"test": "worker", "variante": "b021-auto", "paar": 3, "messung": 2, "prompt_token": 63, "neu_token": 900, "prompt_tps": 99.0, "decode_tps": 61.5, "draft_n": 690, "draft_ok": 309, "sekunden": 15.3}
+{"test": "worker", "variante": "b021", "paar": 3, "messung": 1, "prompt_token": 63, "neu_token": 900, "prompt_tps": 89.2, "decode_tps": 61.1, "draft_n": 705, "draft_ok": 315, "sekunden": 15.5}
+{"test": "worker", "variante": "b021", "paar": 3, "messung": 2, "prompt_token": 63, "neu_token": 900, "prompt_tps": 90.3, "decode_tps": 64.0, "draft_n": 695, "draft_ok": 331, "sekunden": 14.8}

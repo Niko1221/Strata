@@ -1,0 +1,4 @@
+== 020-auto: schreiben
+  schreiben kurz: 39.76 T/s
+  schreiben lang: 41.2 T/s
+geschrieben: /volume1/docker/ki-messung/ergebnisse/t020-20261019-2130/020-auto.json

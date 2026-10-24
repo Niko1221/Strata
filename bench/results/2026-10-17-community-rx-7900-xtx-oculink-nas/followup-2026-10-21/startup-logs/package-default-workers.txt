@@ -1,0 +1,18 @@
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 33 (automatic), participating threads: 11
+strata generate: CPU pool: 10 workers by default (16 physical cores, 16 logical processors; bounded by the performance cores and half of the efficiency cores)
+strata generate: 10 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 11,12,13,14,15 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: 10 expert-pool workers + the host thread
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 33 (automatic), participating threads: 11
+strata generate: CPU pool: 10 workers by default (16 physical cores, 16 logical processors; bounded by the performance cores and half of the efficiency cores)
+strata generate: 10 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 11,12,13,14,15 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: 10 expert-pool workers + the host thread
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 33 (automatic), participating threads: 11
+strata generate: CPU pool: 10 workers by default (16 physical cores, 16 logical processors; bounded by the performance cores and half of the efficiency cores)
+strata generate: 10 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 11,12,13,14,15 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: 10 expert-pool workers + the host thread

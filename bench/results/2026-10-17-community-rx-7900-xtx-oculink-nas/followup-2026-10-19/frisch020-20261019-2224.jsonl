@@ -1,0 +1,16 @@
+{"test": "frisch", "engine": 1, "prompt": 1, "prompt_token": 3793, "neu_token": 2, "prompt_tps": 683.8, "decode_tps": 21.9, "draft_n": 3, "draft_ok": 3, "sekunden": 5.6}
+{"test": "frisch", "engine": 1, "prompt": 2, "prompt_token": 3771, "neu_token": 2, "prompt_tps": 695.2, "decode_tps": 24.9, "draft_n": 3, "draft_ok": 3, "sekunden": 5.5}
+{"test": "frisch", "engine": 2, "prompt": 1, "prompt_token": 3781, "neu_token": 2, "prompt_tps": 667.8, "decode_tps": 21.0, "draft_n": 3, "draft_ok": 3, "sekunden": 5.8}
+{"test": "frisch", "engine": 2, "prompt": 2, "prompt_token": 3803, "neu_token": 2, "prompt_tps": 696.7, "decode_tps": 24.8, "draft_n": 3, "draft_ok": 3, "sekunden": 5.6}
+{"test": "frisch", "engine": 3, "prompt": 1, "prompt_token": 3764, "neu_token": 2, "prompt_tps": 419.8, "decode_tps": 21.7, "draft_n": 3, "draft_ok": 3, "sekunden": 9.1}
+{"test": "frisch", "engine": 3, "prompt": 2, "prompt_token": 3773, "neu_token": 2, "prompt_tps": 427.1, "decode_tps": 25.2, "draft_n": 3, "draft_ok": 3, "sekunden": 8.9}
+{"test": "frisch", "engine": 4, "prompt": 1, "prompt_token": 3782, "neu_token": 2, "prompt_tps": 676.9, "decode_tps": 21.7, "draft_n": 3, "draft_ok": 3, "sekunden": 5.7}
+{"test": "frisch", "engine": 4, "prompt": 2, "prompt_token": 3783, "neu_token": 2, "prompt_tps": 699.4, "decode_tps": 25.6, "draft_n": 3, "draft_ok": 3, "sekunden": 5.5}
+{"test": "frisch", "engine": 5, "prompt": 1, "prompt_token": 3767, "neu_token": 2, "prompt_tps": 677.1, "decode_tps": 22.0, "draft_n": 3, "draft_ok": 3, "sekunden": 5.7}
+{"test": "frisch", "engine": 5, "prompt": 2, "prompt_token": 3787, "neu_token": 2, "prompt_tps": 700.8, "decode_tps": 24.5, "draft_n": 3, "draft_ok": 3, "sekunden": 5.5}
+{"test": "frisch", "engine": 6, "prompt": 1, "prompt_token": 3745, "neu_token": 2, "prompt_tps": 676.2, "decode_tps": 21.9, "draft_n": 3, "draft_ok": 3, "sekunden": 5.7}
+{"test": "frisch", "engine": 6, "prompt": 2, "prompt_token": 3766, "neu_token": 2, "prompt_tps": 697.0, "decode_tps": 25.2, "draft_n": 3, "draft_ok": 3, "sekunden": 5.5}
+{"test": "frisch", "engine": 7, "prompt": 1, "prompt_token": 3783, "neu_token": 2, "prompt_tps": 681.5, "decode_tps": 21.5, "draft_n": 3, "draft_ok": 3, "sekunden": 5.7}
+{"test": "frisch", "engine": 7, "prompt": 2, "prompt_token": 3762, "neu_token": 2, "prompt_tps": 697.8, "decode_tps": 25.3, "draft_n": 3, "draft_ok": 3, "sekunden": 5.5}
+{"test": "frisch", "engine": 8, "prompt": 1, "prompt_token": 3772, "neu_token": 2, "prompt_tps": 667.7, "decode_tps": 21.1, "draft_n": 3, "draft_ok": 3, "sekunden": 5.8}
+{"test": "frisch", "engine": 8, "prompt": 2, "prompt_token": 3738, "neu_token": 2, "prompt_tps": 684.8, "decode_tps": 24.8, "draft_n": 3, "draft_ok": 3, "sekunden": 5.6}

@@ -1,0 +1,62 @@
+Using the Strata server already running at http://127.0.0.1:18100.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 62.0 tok/s, first token 0.577 s, 100 tokens
+  run 1 q2: decode 47.3 tok/s, first token 0.567 s, 100 tokens
+  run 1 q3: decode 50.8 tok/s, first token 0.568 s, 100 tokens
+  run 2 q1: decode 72.1 tok/s, first token 0.481 s, 100 tokens
+  run 2 q2: decode 64.9 tok/s, first token 0.403 s, 100 tokens
+  run 2 q3: decode 60.5 tok/s, first token 0.443 s, 100 tokens
+  run 3 q1: decode 64.6 tok/s, first token 0.484 s, 100 tokens
+  run 3 q2: decode 61.3 tok/s, first token 0.387 s, 100 tokens
+  run 3 q3: decode 56.8 tok/s, first token 0.433 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 739.7 tok/s (0 reused), first token 5.458 s
+  run 2: 4019 tokens, prompt 740.5 tok/s (0 reused), first token 5.452 s
+  run 3: 4019 tokens, prompt 740.5 tok/s (0 reused), first token 5.455 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 1238.1 tok/s (0 reused), first token 12.999 s
+  run 2: 16058 tokens, prompt 1207.0 tok/s (0 reused), first token 13.333 s
+  run 3: 16058 tokens, prompt 1205.6 tok/s (0 reused), first token 13.349 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 3.907 s
+  run 1 turn 1: prompt 3741, reused 620, read 3121, first token 5.479 s
+  run 1 turn 2: prompt 5274, reused 3804, read 1470, first token 5.102 s
+  run 1 turn 3: prompt 8718, reused 5338, read 3380, first token 5.397 s
+  run 1 turn 4: prompt 11644, reused 8711, read 2933, first token 5.609 s
+  run 1 turn 5: prompt 14602, reused 11703, read 2899, first token 5.285 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 4.164 s
+  run 2 turn 1: prompt 3744, reused 624, read 3120, first token 5.324 s
+  run 2 turn 2: prompt 5277, reused 3808, read 1469, first token 5.096 s
+  run 2 turn 3: prompt 8721, reused 5341, read 3380, first token 5.377 s
+  run 2 turn 4: prompt 11647, reused 8784, read 2863, first token 5.302 s
+  run 2 turn 5: prompt 14585, reused 11686, read 2899, first token 5.307 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 4.131 s
+  run 3 turn 1: prompt 3741, reused 620, read 3121, first token 5.331 s
+  run 3 turn 2: prompt 5274, reused 3734, read 1540, first token 5.131 s
+  run 3 turn 3: prompt 8718, reused 5337, read 3381, first token 5.364 s
+  run 3 turn 4: prompt 11644, reused 8711, read 2933, first token 5.499 s
+  run 3 turn 5: prompt 14557, reused 11658, read 2899, first token 5.316 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 1232.1 tok/s (0 reused), first token 26.048 s
+  run 2: 32049 tokens, prompt 1222.7 tok/s (0 reused), first token 26.248 s
+  run 3: 32049 tokens, prompt 1208.6 tok/s (0 reused), first token 26.554 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     61.30   (47.30 - 72.10, n=9)
+  chat first token (s)                   0.48   (0.39 - 0.58, n=9)
+  4K prompt tok/s                      740.50   (739.70 - 740.50, n=3)
+  4K first token (s)                     5.46   (5.45 - 5.46, n=3)
+  16K prompt tok/s                    1207.00   (1205.60 - 1238.10, n=3)
+  16K first token (s)                   13.33   (13.00 - 13.35, n=3)
+  32K prompt tok/s                    1222.70   (1208.60 - 1232.10, n=3)
+  32K first token (s)                   26.25   (26.05 - 26.55, n=3)
+  agent cache hit %                     68.61   (68.42 - 68.78, n=3)
+  agent re-read tokens/session          73.00   (2.00 - 144.00, n=3)
+  agent turn first token (s)             5.32   (5.10 - 5.61, n=15)
+  agent decode tok/s                    73.20   (44.00 - 88.10, n=15)
+
+Report: /volume1/docker/ki-messung/ergebnisse/t020-20261019-2130/strata-bench/2026-10-19-community-unknown-a020/README.md
+Share it: open a pull request that adds the folder /volume1/docker/ki-messung/ergebnisse/t020-20261019-2130/strata-bench/2026-10-19-community-unknown-a020 (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.

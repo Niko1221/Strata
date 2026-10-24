@@ -1,0 +1,3 @@
+              ok  terminal_cli  
+              ok  monitor_tui  version 8.2.8
+info: PROFILE_NOT_SELECTED: select a run config or saved profile for model-specific checks
