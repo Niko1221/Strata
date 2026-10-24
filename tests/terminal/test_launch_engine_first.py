@@ -201,7 +201,7 @@ class EngineBeforeModel(unittest.TestCase):
     def test_a_failed_update_still_reports_the_old_message(self):
         spawns, err = self.run_ensure([UNUSABLE], [{"event": "error", "error": {"message": "cannot reach the feed"}}], code=6)
         self.assertEqual(err.code, 6)
-        self.assertIn("cannot reach the feed", err.text)
+        self.assertIn("Cannot reach the feed", err.text)      # (the reason is capitalised where it joins the sentence)
 
 
 class SetupControlStep(unittest.TestCase):

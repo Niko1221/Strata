@@ -33,12 +33,12 @@ Two separate private keys, both kept by the owner, neither in git, neither the s
     "version": "0.2.0", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
     "platforms": {"windows-x86_64": {"url": "app/Strata_0.2.0_x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
-  "control": {"version": "0.1.47", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
+  "control": {"version": "0.1.48", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
   "engine": {"packages": [{
-    "version": "0.1.47", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
+    "version": "0.1.48", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
     "archs": ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"], "min_driver": {"nvidia": "580.65"}, "min_runtime": null,
-    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.47-linux-x86_64-cuda-cuda13.tar.gz",
+    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.48-linux-x86_64-cuda-cuda13.tar.gz",
     "size": 505568970,                      // bytes of the archive
     "sha256": "...",                        // of the archive
     "manifest_sha256": "...",               // of the package's engine-component.json (it holds every file's hash)
@@ -121,8 +121,8 @@ All signing happens on the release PC, on the finished files.
 * *Full installers* (the first download, engine inside): Windows `cuda13`, `cuda12`, `rx9070`; Linux `nvidia-cuda13`, `nvidia-cuda12`, `amd-rx9070`,
   `amd-rx7900`; Mac `dmg`. Each carries ONE signed engine package in `engine-bundle/` (the Mac one unsigned, see below).
 * *Update installers* (the only files `latest.json` names): built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`.
-  Windows: `Strata-0.2.2-windows-update.exe`; Linux: the base AppImage before the engines are repacked into it
-  (`Strata-0.2.2-linux-update.AppImage`); Mac: `Strata.app.tar.gz` (the Metal engine is 2 MB and there is one Mac variant, so it stays inside).
+  Windows: `Strata-0.2.3-windows-update.exe`; Linux: the base AppImage before the engines are repacked into it
+  (`Strata-0.2.3-linux-update.AppImage`); Mac: `Strata.app.tar.gz` (the Metal engine is 2 MB and there is one Mac variant, so it stays inside).
   Why: an app update must not carry an engine. One `latest.json` entry per OS goes to every variant, and a CUDA installer on an AMD PC
   would copy a useless CUDA engine beside the AMD one (`bundled-engine.test.mjs`). Engines come per card from the signed feed
   (`feed.select_engine`: platform, backend, CUDA `archs` and `min_driver`, HIP `archs`; `tests/terminal/test_release_matrix.py`).
@@ -131,18 +131,18 @@ All signing happens on the release PC, on the finished files.
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
-    python packaging/feed_tool.py pack-control <control folder> --version 0.1.47 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
+    python packaging/feed_tool.py pack-control <control folder> --version 0.1.48 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
-    # (0.1.47), not the app version: a Control package newer than the installed one is installed by `strata update`.
+    # (0.1.48), not the app version: a Control package newer than the installed one is installed by `strata update`.
     # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
     cd apps/desktop && npx tauri build --bundles nsis                                               # Windows full installers: engine-bundle holds the one signed package
     cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows update installer
     # Linux: tauri build --bundles appimage (no engine) is the update AppImage; repack-appimage.sh puts an engine package into a copy for each full AppImage
     # on the release PC, per updater artifact (Windows update .exe, Linux update .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.2 --archive <update .exe> --sig <update .exe.sig> --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.2 --archive <update .AppImage> --sig <update .AppImage.sig>
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.2 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.3 --archive <update .exe> --sig <update .exe.sig> --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.3 --archive <update .AppImage> --sig <update .AppImage.sig>
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.3 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 

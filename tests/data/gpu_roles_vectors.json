@@ -9,6 +9,8 @@
     "igpu_only": [{"index": 0, "name": "AMD Radeon 780M", "vram_gb": 0, "integrated": true, "speed": 12}],
     "bigger_slower": [{"index": 0, "name": "NVIDIA GeForce RTX 3090", "vram_gb": 24, "speed": 90}, {"index": 1, "name": "NVIDIA GeForce RTX 4070", "vram_gb": 12, "speed": 100}],
     "small_second": [{"index": 0, "name": "NVIDIA GeForce RTX 4070 Ti", "vram_gb": 12, "speed": 100}, {"index": 1, "name": "NVIDIA GeForce RTX 3070", "vram_gb": 8, "speed": 70}],
+    "two_8gb": [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8, "speed": 50}, {"index": 1, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8, "speed": 50}],
+    "tiny_second": [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8, "speed": 50}, {"index": 1, "name": "NVIDIA GeForce GT 1030", "vram_gb": 2, "speed": 10}],
     "cannot": [{"index": 0, "name": "NVIDIA GeForce GTX 1060", "vram_gb": 6, "usable": false, "problem": "too old"}, {"index": 1, "name": "NVIDIA GeForce RTX 4070 Ti", "vram_gb": 12, "speed": 100}],
     "nospeed": [{"index": 0, "name": "NVIDIA GeForce RTX 3060", "vram_gb": 12}, {"index": 1, "name": "NVIDIA GeForce RTX 3090", "vram_gb": 24}]
   },
@@ -21,6 +23,8 @@
     {"hw": "igpu_only", "roles": {"0": "main"}, "main": 0, "why": "only"},
     {"hw": "bigger_slower", "roles": {"0": "main", "1": "helper"}, "main": 0, "why": "memory"},
     {"hw": "small_second", "roles": {"0": "main", "1": "off"}, "main": 0, "why": "faster"},
+    {"hw": "two_8gb", "roles": {"0": "helper", "1": "main"}, "main": 1, "why": "same"},
+    {"hw": "tiny_second", "roles": {"0": "main", "1": "off"}, "main": 0, "why": "only"},
     {"hw": "cannot", "roles": {"0": "off", "1": "main"}, "main": 1, "why": "only"},
     {"hw": "nospeed", "roles": {"0": "helper", "1": "main"}, "main": 1, "why": "memory"}
   ],

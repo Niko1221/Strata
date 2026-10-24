@@ -2,9 +2,9 @@
 # Build a Strata image from an engine component package. Run it on a Linux x86_64 machine with Docker (it needs the internet
 # for the base image and for the Terminal's pinned Python and locked wheels; the engine package is local).
 #
-#   docker/build.sh --flavor cuda --engine ~/pkgs/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.2-cuda13
-#   docker/build.sh --flavor hip  --engine ~/pkgs/0.1.45.3-linux-x86_64-hip-gfx120X  --tag strata:0.2.2-rocm-gfx120x
-#   docker/build.sh --flavor sycl --engine ~/pkgs/0.1.45.3-linux-x86_64-sycl         --tag strata:0.2.2-sycl
+#   docker/build.sh --flavor cuda --engine ~/pkgs/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.3-cuda13
+#   docker/build.sh --flavor hip  --engine ~/pkgs/0.1.45.3-linux-x86_64-hip-gfx120X  --tag strata:0.2.3-rocm-gfx120x
+#   docker/build.sh --flavor sycl --engine ~/pkgs/0.1.45.3-linux-x86_64-sycl         --tag strata:0.2.3-sycl
 #
 # --engine is the package FOLDER that packaging/package_engine.py wrote (engine-component.json inside). It can be given more than
 # once to put several packages in one image (the Terminal picks the one that fits the card).

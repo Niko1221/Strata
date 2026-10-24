@@ -122,6 +122,11 @@ test('the Settings update check maps the feed to the existing result shape', asy
   assert.equal(result.engine.status, 'unavailable');
   assert.doesNotMatch(result.engine.message, /windows-x86_64/);
   assert.match(result.engine.details, /windows-x86_64/, 'the technical reason is kept for the Details disclosure');
+  result = await checkComponentUpdates({ control: make(report({ engine: { installed: { version: '0.1.46', backend: 'hip' }, offered: null, status: 'wrong-make', note: 'The engine installed here is for AMD cards, but this update would give your PC NVIDIA one. Nothing was changed.', reasons: ['x'] } })) });
+  assert.equal(result.engine.status, 'unavailable');
+  assert.equal(result.engine.canInstall, false);
+  assert.match(result.engine.message, /Nothing was changed/, 'the app says why in plain words, not that no engine exists for the card');
+  assert.doesNotMatch(result.engine.message, /isn't an engine for this PC/);
   result = await checkComponentUpdates({ control: make(new Error('this build trusts no update key')) });
   assert.equal(result.strata.status, 'error');
   assert.equal(result.engine.status, 'error');

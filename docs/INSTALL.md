@@ -87,7 +87,7 @@ way for scripts, servers and AI agents. Linux (x86-64), Mac (Apple Silicon) and 
 Linux and Mac:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows (PowerShell):

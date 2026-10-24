@@ -100,7 +100,7 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 
 ## 5. What is not on by default (it changes bits)
 
-**Five of the switches below (`STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`) are one opt-in on an integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"). It was measured on a Radeon 780M only, where it is the default.** `STRATA_PF_FUSED`, `STRATA_HC_Q8`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
+**Five of the switches below (`STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`) are one opt-in on an integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"). It was measured on a Radeon 780M only, where it is the default.** `STRATA_PF_FUSED`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well. `STRATA_HC_Q8` is on by default on gfx1151 (below); `STRATA_HC_Q8=0` turns it off.
 
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
 intermediate), so they are opt-in and the maintainers gate them with KL against the default (`STRATA_PF_SWITCH_MIN_T=4096` keeps
@@ -114,10 +114,14 @@ export STRATA_HC_UPMIX=1        # the hyper-connection up projection with its ep
 export STRATA_PA_FAST=1         # the prompt attention with single FP16 q and p
 export STRATA_HIP_WMMA=1        # the prompt attention on matrix cores
 export STRATA_SELECT_WMMA=1     # the block scorer on matrix cores
-export STRATA_HC_Q8=1           # the hyper-connection read from the GGUF's own Q8_0 projections
 export STRATA_PF_SWITCH_MIN_T=4096
 export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the fused experts too (below)
 ```
+
+`STRATA_HC_Q8` (on by default on gfx1151 since 0.2.2; `STRATA_HC_Q8=0` restores the bf16 read) measured on the Strix Halo (IQ3_S, gfx1151, 2026-10-21, MTP 4 drafts / min-p 0.5): **+8.4%**
+on `json_extract` at fixed windows (53.55 -> 58.03 tok/s), at the cost of **94 of 250 output tokens differing** from
+the BF16 read (first at 60). It halves the hyper-connection weight bytes (13.29 -> 7.15 MB per read; cold read
+93.8 -> 20.3 us, 142 -> 352 GB/s). The answers are not bit-identical to the bf16 read; how far they move is in docs/AMD_HIP.md ("Strix Halo: 8-bit hyper-connection weights").
 
 `STRATA_PF_FUSED=1` reaches only chunks of `STRATA_PREFILL_STREAM_MIN` tokens or more (1,024 by default, the floor measured on
 a discrete card, where a smaller chunk does not pay for streaming every expert); a smaller read runs its experts through MMQ.

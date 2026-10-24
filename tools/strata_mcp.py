@@ -546,11 +546,25 @@ class Strata:
         for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", True)), "own_path": True}
+        for f, d in (getattr(s, "MULTI_FILE_FAMILIES", None) or {}).items():     # DeepSeek-V4.1-Flash: nine shards, its own engine
+            out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
+                      "vision": bool(d.get("vision", False)), "own_path": True, "multi_file": True}
         return out
+
+    def multi_family(self, family) -> dict | None:
+        """setup.py's MULTI_FILE_FAMILIES entry (DeepSeek-V4.1-Flash), else None."""
+        return (getattr(self.setup_module(), "MULTI_FILE_FAMILIES", None) or {}).get(family)
 
     def own_size(self, family, model) -> dict | None:
         """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
         The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
+        big = self.multi_family(family)
+        if big and model in big["models"]:
+            # nine shards; the memory the weights need is VRAM + RAM together WITHOUT the n-gram table (it stays on the SSD)
+            gb = sum(big["sha256"][n][0] for n in [*big["models"][model]["shards"], *big["models"][model].get("shared", [])]) / 1e9
+            return {"about": big["models"][model]["about"], "download_gb": round(gb, 1), "ram_gb": big["models"][model]["ram_gb"],
+                    "arena_gb": round(float(big["models"][model]["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": False,
+                    "engine": None, "families": (family,), "multi_file": True}
         d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
         if not d or model not in d["models"]:
             return None
@@ -562,7 +576,7 @@ class Strata:
 
     def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
-        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family) or self.multi_family(family)
         if own:
             return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
@@ -922,6 +936,16 @@ class Strata:
             amd = []
         if not WIN and not amd and shutil.which("rocm-smi"):
             amd = rocm_smi_gpus()
+        # A PC whose only NVIDIA cards are Pascal / Volta (two GTX 1080s) and that has no AMD card Strata can use: setup runs them with the
+        # CUDA 12 engine (old_gpus_opt_in), so the app must not call it "no supported graphics card" and start both cards Off (#3655).
+        # A PC with a newer card keeps recommending that one; naming an old card is still the opt-in.
+        try:
+            if S and nv and S.old_gpus_opt_in(nv, (), None, any(g.get("usable") for g in amd)):
+                for g in nv:
+                    if S.sm60_card(g["arch"]) and g.get("problem") and "older than the RTX 20" in str(g["problem"]):
+                        g["problem"], g["usable"], g["engine_variant"] = None, True, "cuda12"
+        except Exception:                               # noqa: BLE001 - the hardware page never breaks over this
+            pass
         if any(g.get("usable") for g in nv):
             for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
                 if g.get("uma") and g.get("usable"):
@@ -1196,7 +1220,9 @@ class Strata:
                     have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
                     verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
-                        if own:                         # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
+                        if own and own.get("multi_file"):       # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (cards + RAM, the n-gram table on the SSD)
+                            verdict = self.dsv41_words(hw, m, installed=tag in have)
+                        elif own:                       # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
                             pass
                         elif d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
                             verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
@@ -1219,7 +1245,7 @@ class Strata:
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
                               # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
-                              "mem_total": bool(d.get("mem_total")),
+                              "mem_total": bool(d.get("mem_total")), "multi_file": bool(own and own.get("multi_file")),
                               # the first engine that reads this size's files (setup.py "engine"); the app says "needs a newer engine"
                               # with the update step when the installed one is older. None: any engine that setup accepts.
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
@@ -1227,12 +1253,99 @@ class Strata:
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
                               # only with two or more cards that count; "recommended" names the pre-selected option
-                              "gpu_options": None if own else self.gpu_options(d, ram, hw)})   # Qwen3.6 runs on one card so far
+                              "gpu_options": (self.dsv41_options(hw, m) if own and own.get("multi_file")
+                                              else None if own else self.gpu_options(d, ram, hw))})   # Qwen3.6 runs on one card so far
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
         return out
+
+    def dsv41_plan(self, hw, disk_free=None, only=None, model=None) -> dict:
+        """strata_control/dsv41_fit.plan for this computer; `only`: the card numbers a launch names (else every card that counts)."""
+        from strata_control import dsv41_fit
+        cards = list((hw or {}).get("gpus", []))
+        if only:
+            cards = [c for c in cards if int(c.get("index", -1)) in {int(i) for i in only}]
+        return dsv41_fit.plan(cards, (hw or {}).get("ram_gb"), disk_free, vendor=(hw or {}).get("engine_vendor"), model=model)
+
+    def dsv41_words(self, hw, model=None, installed: bool = False) -> str:
+        """The catalog's `on_this_pc` text for DeepSeek-V4.1-Flash, with the disk it needs (download and preparation) beside the memory: a set that
+        fits in memory but not on the disk is "tight", never refused (strata_cli/launch/catalog.verdict reads its first words)."""
+        words = self._dsv41_memory_words(hw, model)
+        free = (hw or {}).get("disk_free_gb")
+        if installed or free is None or words.startswith("does not fit"):
+            return words
+        pl = self.dsv41_plan(hw, free, model=model)
+        from strata_control import dsv41_fit
+        left = self.dsv41_left_gb(model, pl["download_gb"])                   # only what still has to be downloaded (files already here count as done)
+        need = left + dsv41_fit.DISK_HEADROOM_GB                             # + the pack (MBs) and room to work
+        if left > 0.05 and free < need:
+            return (f"tight: it needs about {need:.0f} GB of free disk space (the rest of the download and its preparation) and this computer has "
+                    f"{free:.0f} GB free; free some space or choose another drive when you install it ({words})")
+        return words
+
+    def dsv41_left_gb(self, model, default: float) -> float:
+        """GB of this DeepSeek set's files still to be downloaded: the files already in Strata's models folder (the right size; the first release's
+        names count too) are done, so the disk check asks only for the rest.  Files the person keeps elsewhere (--model-path) are handled by the plan.
+        `default`: what to answer when the tables cannot be read (the whole download)."""
+        S = self.setup_module()
+        try:
+            fam = S.MULTI_FILE_FAMILIES["deepseek41"]
+            md = fam["models"][model]
+            models = self.data_dir() / "models"
+            folder, shared = models / (fam["tag"] + model), models / (fam["tag"] + "shared")
+            left = 0
+            for where, names in ((folder, md["shards"]), (shared, md.get("shared", []))):
+                for n in names:
+                    for cand in (n, getattr(S, "DSV41_LEGACY_NAMES", {}).get(n)):
+                        if cand and (where / cand).is_file() and (where / cand).stat().st_size == S.DSV41_ALL_FILES[cand][0]:
+                            break
+                    else:
+                        left += S.DSV41_ALL_FILES[n][0]
+            return left / 1e9
+        except Exception:                                    # noqa: BLE001 - a hint for the menu: when unsure, count the whole download
+            return default
+
+    def _dsv41_memory_words(self, hw, model=None) -> str:
+        pl = self.dsv41_plan(hw, model=model)
+        v = pl["verdict"]
+        if v == "no_card":
+            return "does not fit: it needs one or more graphics cards"
+        if pl.get("variant"):                   # an official IST-DAS set (strata_control/dsv41_fit.py): measured on 46-64 GB, never a refusal
+            if v == "spills":
+                return (f"slow here: this computer has {pl['ram_gb']:.0f} GB of RAM and the set was measured with 46-64 GB, so most of its "
+                        "experts are read from the SSD; it can still be installed"
+                        + ("" if pl["variant"] == "IST-DAS-1.75bpw" else " (the smaller 1.75 bpw version suits this computer better)"))
+            if v == "tight":
+                return ("tight: runs, with the experts RAM cannot hold read from the SSD (about 5-7 tokens a second measured on 46-64 GB "
+                        "of RAM and a 12 GB card)")
+            if v == "fits":
+                return (f"fits: {pl['experts_in_vram']:,} of {pl['experts_total']:,} experts in graphics memory, the rest cached in RAM "
+                        f"({pl['ram_needed_gb']:.0f} GB)")
+            return "not checked (this computer's memory could not be read)"
+        if v == "spills" and pl["spill_gb"] >= 100:       # most of the CPU's experts would come from the disk every word
+            return (f"does not fit: about {pl['spill_gb']:.0f} GB of its experts would be read from the SSD while it answers "
+                    f"(slow: it needs ~{pl['ram_needed_gb']:.0f} GB of RAM beside {pl['vram_experts_gb']:.0f} GB of graphics memory; "
+                    "it can still be installed)")
+        if v == "spills":
+            return (f"part of its experts are read from the SSD (slow here: needs ~{pl['ram_needed_gb']:.0f} GB of RAM beside "
+                    f"{pl['vram_experts_gb']:.0f} GB of graphics memory; it can still be installed)")
+        if v == "tight":
+            return f"tight: RAM is close to the {pl['ram_needed_gb']:.0f} GB the CPU's share of the experts needs"
+        if v == "fits":
+            return (f"fits: {pl['experts_in_vram']:,} of {pl['experts_total']:,} experts in graphics memory, the rest on the CPU "
+                    f"({pl['ram_needed_gb']:.0f} GB of RAM)")
+        return "not checked (this computer's memory could not be read)"
+
+    def dsv41_options(self, hw, model=None) -> dict | None:
+        """gpu_fit-shaped card choices for DeepSeek-V4.1-Flash: every card (recommended: the model is bigger than any one card), or the
+        largest alone; each with the placement words."""
+        from strata_control import dsv41_fit
+        try:
+            return dsv41_fit.options(list((hw or {}).get("gpus", [])), (hw or {}).get("ram_gb"), (hw or {}).get("engine_vendor"), model=model)
+        except Exception:                                  # noqa: BLE001 - the choice is a convenience: never break the model list
+            return None
 
     @staticmethod
     def images_reader(vram) -> str:
@@ -1385,6 +1498,12 @@ def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -
     Empty when the setup module cannot say (the caller then falls back to the folder scan)."""
     out = []
     try:
+        big = (getattr(S, "MULTI_FILE_FAMILIES", None) or {}).get(family)
+        if big:                                         # DeepSeek-V4.1-Flash: its nine shards in the model's folder
+            folder = Path(models_dir) / (big["tag"] + model)
+            shared = Path(models_dir) / (big["tag"] + "shared")        # the Engram, the drafter and the metadata shard of the official sets
+            return ([{"path": str(folder / n), "bytes": big["sha256"][n][0], "role": "model"} for n in big["models"][model]["shards"]]
+                    + [{"path": str(shared / n), "bytes": big["sha256"][n][0], "role": "model"} for n in big["models"][model].get("shared", [])])
         own = (getattr(S, "OWN_PATH_FAMILIES", None) or {}).get(family)
         if own:                                         # Qwen3.6: the GGUF and the picture reader in the model's folder
             folder = Path(models_dir) / (own["tag"] + model)
@@ -2045,6 +2164,8 @@ class Tools:
                 raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
             gpu = gpus = kv = low_ram = None
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
+        if context is None and md.get("multi_file"):
+            context = getattr(s.setup_module(), "DSV41_CONTEXT", 8192)      # the context the engine was checked at
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
@@ -2089,7 +2210,9 @@ class Tools:
             args += ["--backend", backend]
         fit = None
         ram = hw.get("ram_gb")
-        if ram is not None:
+        if ram is not None and md.get("multi_file"):
+            fit = s.dsv41_words(hw, model)
+        elif ram is not None:
             need_ram = md["ram_gb"]
             fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
