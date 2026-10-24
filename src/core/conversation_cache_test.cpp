@@ -48,6 +48,22 @@ int main() {
         check(bytes.allocation_peak(SIZE_MAX) == SIZE_MAX, "allocation estimate rejects overflow");
     }
     {
+        ConversationBuffer shuttle;
+        const size_t size = ConversationBuffer::segment_bytes + 128;
+        shuttle.resize(size, 7);
+        const size_t allocated = shuttle.bytes();
+        shuttle.resize(size);
+        check(shuttle.bytes() == allocated, "same-layout shuttle resize keeps its host segments");
+        std::vector<uint8_t> replacement(size, 11);
+        check(shuttle.visit(0, size, [&](uint8_t* p, size_t n, size_t at) {
+            std::copy(replacement.begin() + at, replacement.begin() + at + n, p);
+            return true;
+        }), "shuttle accepts a complete replacement image");
+        std::vector<uint8_t> actual(size);
+        check(shuttle.read(actual.data(), 0, size), "replacement image is readable");
+        check(actual == replacement, "reuse copies every byte instead of retaining the previous image");
+    }
+    {
         ConversationBuffer bytes;
         for (size_t n=1;n<=4096;++n) {
             const size_t peak = bytes.allocation_peak(n*17);
