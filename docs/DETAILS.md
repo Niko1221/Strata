@@ -1199,13 +1199,19 @@ every layer's K/V including the draft - to a new file in `--conversation-cache-d
 folder next to the pack), after which RAM keeps only the token and checkpoint index; the budget counts the file. A
 parked write needs disk room for the whole file plus `--session-min-free-mib`, with an 8 GiB floor, and the host RAM
 admission gate can refuse the write's peak too - then the park is skipped like the other skip-park paths and the
-conversation is simply not parked. The request switch
-restores through the same bounded read and RAM admission as `RESTORE`: reading a conversation back costs a transient
-host-RAM spike of roughly the file's size, and a read that fails in the file itself (parse, checksum, read errors)
+conversation is simply not parked. The request switch restores the same way in reverse: it parses only the running
+state and the deepest checkpoint into RAM (a few hundred MiB, the same transient a park costs) and streams the K/V
+through one 16 MiB block straight into the pools that hold them, so the restore allocates no host memory of the
+conversation's size - only the running state, the deepest checkpoint and the staging block. The same bounds and
+checks as `RESTORE` run first, but the RAM gate costs only that transient: in disk mode a park and a restore each
+keep the smaller of `--conversation-cache-min-free-mib` and 512 MiB free, and the full flag still sizes the RAM
+cache and gates `RESTORE` (below). A read that fails in the file itself (parse, checksum, read errors)
 drops the entry and its file and reads the prompt from scratch; a RAM refusal (the admission gate inside the read,
 or a failed allocation) and a limits preflight refusal drop the entry and keep the file for the next start's scan, and
-a snapshot bigger than the whole budget skips the park without writing it. The files carry the same model and
-configuration identity as the session files below. At startup
+a snapshot bigger than the whole budget skips the park without writing it. The K/V lands in the session before the
+final integrity check, so a file that turns out corrupt mid-stream costs this request its current resume point too:
+the prompt is read again from scratch (the parked copies of other conversations are not lost). The files carry the
+same model and configuration identity as the session files below. At startup
 the folder is scanned: matching files are indexed oldest-first, so a returning client resumes from its file; files
 from another model or configuration, or unused for `--conversation-cache-days` (default 7), are removed, and `0`
 empties the folder at start (the scan runs only when the disk cache is on). Survivors over the budget are
@@ -1261,7 +1267,9 @@ to N tokens again (#2265).
 RAM headroom remain available: the engine checks before allocation (against the
 snapshot's estimated size, less the K/V it already retains) and again after capture.
 Unknown telemetry or insufficient RAM skips parking, and the same figure and floor
-decide whether a session file may be saved or restored (below). An 8 GiB budget
+decide whether a session file may be saved or restored (below). With the disk conversation cache on (above), a park
+and a restore there keep only the smaller of this value and 512 MiB free - the transient their streaming transfer
+needs; the full value still sizes the RAM cache and gates `RESTORE`. An 8 GiB budget
 is a cap, not a recommendation for every machine.
 
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three

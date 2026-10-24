@@ -116,7 +116,9 @@ std::vector<SessionModelFile> session_model_inputs(const SessionInputs& inputs);
 //   storage   no room on the disk: the free-space preflight, or ENOSPC / EDQUOT / EFBIG (507)
 //   memory    the RAM preflight refused it, or an allocation failed (503)
 //   io        any other failure: permissions, read/write/flush/rename errors, a missing folder (500)
-enum class SessionError { none, invalid, storage, memory, io };
+//   device    a copy into the engine's own device buffers failed during a streamed K/V restore: fatal for the
+//             engine (a session file itself is never at fault); never produced by a save or a plain read
+enum class SessionError { none, invalid, storage, memory, io, device };
 const char* session_error_name(SessionError e);
 struct SessionStatus {
     SessionError error = SessionError::none;
@@ -175,6 +177,19 @@ struct SessionKvSource {
     std::function<bool(size_t part, size_t offset, void* dst, size_t n)> read;
     std::function<std::string()> error;
 };
+
+// One K/V layer written straight into where it lives (device or pinned host pool), the mirror of
+// SessionKvSource: `write(part, offset, src, n)` receives part 0..4 = k, v, k_scale, v_scale, pooled
+// in offset order; `done()` runs after every part of the layer landed (the residency refresh);
+// after a failure `error()` says why.  A write failure is a device fault: the caller treats it as fatal.
+struct SessionKvSink {
+    int format = 0;
+    int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
+    std::array<size_t, 5> sizes{};
+    std::function<bool(size_t part, size_t offset, const void* src, size_t n)> write;
+    std::function<bool()> done;
+    std::function<std::string()> error;
+};
 // `meta` carries everything but the K/V (meta.kv must be empty); `kv` supplies the layers in order.
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
@@ -229,12 +244,37 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
 // What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read
 // buffer, and the per-allocation overhead of its arrays (a page per 16 MiB segment plus the small vectors).
 uint64_t session_read_peak_bytes(uint64_t file_bytes);
+// What the RAM preflight of a streaming restore is asked for: the parsed meta (the live running
+// state plus at most max_checkpoints checkpoints, at the limits' exact sizes and token bounds),
+// the 16 MiB staging block and the small vectors - no new host allocation of the conversation's size.  Open limits
+// saturate: the preflight then refuses rather than guesses.
+uint64_t session_restore_peak_bytes(const SessionReadLimits& limits);
 // Full validation (a regular file with one link, size, header, identity, bounded parse, payload hash) before `image`
 // is replaced.  The file is opened without following a symbolic link (or a reparse point) at its name, and the checks
 // are made on the opened handle.  On failure `image` is unchanged and `status->error` says what kind of failure.
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
+
+// Streaming restore, step 1: everything but the K/V parsed into RAM (state arrays included), the RAM
+// preflight asked for session_restore_peak_bytes(limits) — not for the file size.  No device, no K/V,
+// the payload checksum NOT verified (restore_kv streams it and verifies at the trailer).  On failure
+// `meta` is untouched and status->error says what kind (invalid / memory / io).
+bool session_file_restore_meta(const std::string& path, const SessionFileIdentity& id, SavedConversation& meta,
+                               size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                               SessionStatus* status = nullptr);
+// Streaming restore, step 2: re-open and stream the K/V section into the sinks — per layer the declared
+// header is checked before the layer's parts move, and each part's declared length is checked against
+// the sink BEFORE that PART's bytes move; earlier parts of the same layer may already have landed (the
+// caller must discard its resume point), then file -> one 16 MiB staging block -> hash -> sink.write,
+// sink.done() per layer.  At the trailer the payload
+// hash and the end marker are verified.  A sink write or done failure is SessionError::device (fatal
+// for the engine), or a host allocation failure is SessionError::memory (which the caller treats like
+// the preflight refusal); anything else is file-side (invalid / io).  The meta bytes are streamed past
+// and hashed (they are part of the payload); they are never kept.
+bool session_file_restore_kv(const std::string& path, const SessionFileIdentity& id,
+                             const std::vector<SessionKvSink>& sinks, std::string& error,
+                             const SessionReadLimits& limits, SessionStatus* status = nullptr);
 
 struct SessionFileMeta {
     std::array<int64_t, 18> geometry{};

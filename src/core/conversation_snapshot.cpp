@@ -312,6 +312,27 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     return true;
 }
 
+bool conversation_kv_sink(SessionKvSink& out, const QsaState& st, const ModelGeometry& g,
+                          int64_t upto, bool index, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    SessionKvSink s;
+    s.format = l.format; s.cells = l.cells; s.heads = g.n_head_kv; s.head_dim = g.head_dim;
+    s.page_size = l.page_size; s.pooled_rows = l.pooled_rows; s.idx_dim = g.idx_key_dim;
+    s.sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    const auto dst = pools(st);
+    const auto sizes = s.sizes;
+    auto why = std::make_shared<std::string>();
+    s.write = [dst, sizes, why](size_t part, size_t offset, const void* src, size_t n) {
+        if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) { *why = "K/V write out of range"; return false; }
+        return transfer(dst[part] ? static_cast<uint8_t*>(dst[part]) + offset : nullptr, src, n, *why);
+    };
+    s.done = [st, g, upto, why] { return refresh_residency(st, g, upto, *why); };
+    s.error = [why] { return *why; };
+    out = std::move(s);
+    return true;
+}
+
 bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                             int64_t upto, bool index, uint64_t& fingerprint, std::string& error) {
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
