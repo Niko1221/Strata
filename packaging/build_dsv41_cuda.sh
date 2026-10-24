@@ -14,7 +14,7 @@ SRC=${SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 B=${B:?B=<build dir>}
 CUDA=${CUDA:?CUDA=<toolkit root>}
 GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
-ARCH=${ARCH:-86-real;120}
+ARCH=${ARCH:-86-real;89-real;120}
 JOBS=${JOBS:-6}
 export PATH=$CUDA/bin:$PATH
 cmake -G Ninja -S "$SRC" -B "$B" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON \
