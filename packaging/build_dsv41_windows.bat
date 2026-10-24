@@ -11,7 +11,7 @@ set "SRCD=%~2"
 if "%BD%"=="" ( echo usage: build_dsv41_windows.bat ^<build dir^> [source dir] & exit /b 2 )
 if "%SRCD%"=="" set "SRCD=%~dp0.."
 if "%CUDA_ROOT%"=="" set "CUDA_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0"
-if "%DSV41_ARCH%"=="" set "DSV41_ARCH=86-real;120"
+if "%DSV41_ARCH%"=="" set "DSV41_ARCH=86-real;89-real;120"
 if "%BUILD_JOBS%"=="" set "BUILD_JOBS=4"
 if "%STRATA_GGML_DIR%"=="" ( echo set STRATA_GGML_DIR to the llama.cpp checkout & exit /b 2 )
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
