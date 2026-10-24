@@ -1,0 +1,802 @@
+{
+  "kind": "ascend-a2-s2-quantized-activation-projection",
+  "seed": 20261021,
+  "machine": "aarch64",
+  "device": "Ascend910B3",
+  "torch": "2.7.1+cpu",
+  "torch_npu": "2.7.1.post4",
+  "matmul_allow_hf32": false,
+  "source_sha256": {
+    "probe.py": "9a842829279dfe7b3b897736ecd76947fed7f61bdee4d67f41f99e72af639ef1",
+    "projection.cpp": "4d0b705a40787521e1360680cee82133a759b98193913f2039ec8768466e7612",
+    "CMakeLists.txt": "af1aa5f9db85944d02f19aee530a614dab8f00b4b397f650e269b3acfdaef54f"
+  },
+  "binary_sha256": {
+    "libstrata_s2_projection.so": "3cfd7dee4355d32e0e0bfbaf2cbc11142f24da5979a9fa3cbe0217449fd47686",
+    "libstrata_s2.so": "dd7d88325c8fb2382a30a68bea71cc17305b0d9b41eea77371e4adfb6cf3fb1d",
+    "libstrata_s2_reference.so": "09d29b956c3e3efa8b8e952d024bea71110827ed4ff38b8e22ee23256cadde63"
+  },
+  "scope": "synthetic single projection; legacy activation fixture; block-order reduction differs from default AVX CPU",
+  "cases": [
+    {
+      "shape": [
+        0,
+        64,
+        1
+      ],
+      "max_abs_error": 0.0,
+      "rms_error": 0.0,
+      "max_error_over_bound": 0.0,
+      "bound_operations": 8,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        1,
+        64,
+        1
+      ],
+      "max_abs_error": 1.1641532182693481e-10,
+      "rms_error": 1.1641532182693481e-10,
+      "max_error_over_bound": 0.0021393410682184473,
+      "bound_operations": 8,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        7,
+        64,
+        2
+      ],
+      "max_abs_error": 2.7939677238464355e-09,
+      "rms_error": 1.0609951793406028e-09,
+      "max_error_over_bound": 0.07719952822661247,
+      "bound_operations": 8,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        8,
+        640,
+        4
+      ],
+      "max_abs_error": 0.09973408875521272,
+      "rms_error": 0.028894001559261726,
+      "max_error_over_bound": 0.009555359541265214,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        9,
+        2560,
+        8
+      ],
+      "max_abs_error": 0.5282009488437325,
+      "rms_error": 0.13411521602975546,
+      "max_error_over_bound": 0.004054610256175049,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        31,
+        640,
+        1
+      ],
+      "max_abs_error": 0.0962568725226447,
+      "rms_error": 0.04232953692713991,
+      "max_error_over_bound": 0.018277940363289995,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        32,
+        2560,
+        2
+      ],
+      "max_abs_error": 0.42908620461821556,
+      "rms_error": 0.13638982403092226,
+      "max_error_over_bound": 0.0031842204704560758,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        33,
+        2560,
+        4
+      ],
+      "max_abs_error": 0.46772885881364346,
+      "rms_error": 0.12295562842625661,
+      "max_error_over_bound": 0.003107318378828331,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        257,
+        640,
+        8
+      ],
+      "max_abs_error": 0.14965230831876397,
+      "rms_error": 0.030993641951720784,
+      "max_error_over_bound": 0.019655995536524497,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        1
+      ],
+      "max_abs_error": 5.0618073146324605e-06,
+      "rms_error": 7.845979046777422e-07,
+      "max_error_over_bound": 0.0038459307590375785,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        2
+      ],
+      "max_abs_error": 5.629362021863926e-06,
+      "rms_error": 7.758230807669272e-07,
+      "max_error_over_bound": 0.004129671923893301,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        4
+      ],
+      "max_abs_error": 6.033475074218586e-06,
+      "rms_error": 8.232247025802063e-07,
+      "max_error_over_bound": 0.00440351983121025,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        8
+      ],
+      "max_abs_error": 4.784887096320745e-06,
+      "rms_error": 8.034105758038877e-07,
+      "max_error_over_bound": 0.004185524755603074,
+      "bound_operations": 164,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        1
+      ],
+      "max_abs_error": 1.256812538485974e-06,
+      "rms_error": 2.0660437742076283e-07,
+      "max_error_over_bound": 0.016720485802188045,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        2
+      ],
+      "max_abs_error": 1.4381503206095658e-06,
+      "rms_error": 2.0757637745014983e-07,
+      "max_error_over_bound": 0.0224375480032888,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        4
+      ],
+      "max_abs_error": 1.7027105059241876e-06,
+      "rms_error": 2.107045357671993e-07,
+      "max_error_over_bound": 0.018245542944541834,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        8
+      ],
+      "max_abs_error": 2.163593308068812e-06,
+      "rms_error": 2.1623264242771696e-07,
+      "max_error_over_bound": 0.025906776606885867,
+      "bound_operations": 44,
+      "within_bound": true,
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    }
+  ],
+  "timings": [
+    {
+      "shape": [
+        640,
+        2560,
+        1
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 99.77009066642495,
+          "fused_ms": 1.3554239994846284
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 1.350503666496176,
+          "split_ms": 0.9856923328091701
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9792086663461911,
+          "fused_ms": 1.3514306671519687
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 1.351114000499365,
+          "split_ms": 0.9760320002290731
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9745590001936458,
+          "fused_ms": 1.3508170001538626
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 1.3517470003231817,
+          "split_ms": 0.9760986667970428
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9721653338298589,
+          "fused_ms": 1.3515706668840721
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 1.6055912965384778e-05,
+        "rms_error": 2.9916116532116004e-06,
+        "max_error_over_bound": 0.0007523987833942464,
+        "bound_operations": 2564,
+        "within_bound": true
+      },
+      "median_fused_ms": 1.3514306671519687,
+      "median_split_ms": 0.9760320002290731
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        2
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0473736668548856,
+          "fused_ms": 1.929723666762584
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 1.9288270001804146,
+          "split_ms": 0.9763420002855128
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9743519998058522,
+          "fused_ms": 1.9277903332598119
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 1.9300203330203658,
+          "split_ms": 0.9777553332241951
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9740290000384751,
+          "fused_ms": 1.9293336669458465
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 1.926320333344241,
+          "split_ms": 0.9714920003413378
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.974128666712204,
+          "fused_ms": 1.9278336664380429
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 1.7711859982227907e-05,
+        "rms_error": 2.9589918860501456e-06,
+        "max_error_over_bound": 0.0008062096261693652,
+        "bound_operations": 2564,
+        "within_bound": true
+      },
+      "median_fused_ms": 1.9278336664380429,
+      "median_split_ms": 0.974128666712204
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        4
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.050213666530908,
+          "fused_ms": 3.2036556664631157
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 3.20140566691407,
+          "split_ms": 0.9739090000948636
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9719953335055228,
+          "fused_ms": 3.207428999909704
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 3.2044356667029206,
+          "split_ms": 0.9790620000179237
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9777023333299439,
+          "fused_ms": 3.198002332889397
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 3.2025290001911344,
+          "split_ms": 0.9769653333933093
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9792523336121425,
+          "fused_ms": 3.2011056664487114
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 1.9138491552439518e-05,
+        "rms_error": 3.0599277443918853e-06,
+        "max_error_over_bound": 0.00082329729573345,
+        "bound_operations": 2564,
+        "within_bound": true
+      },
+      "median_fused_ms": 3.2025290001911344,
+      "median_split_ms": 0.9777023333299439
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        8
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0494403328872675,
+          "fused_ms": 6.149362666595455
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 6.160892666836541,
+          "split_ms": 0.9748386661764622
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9737753334775334,
+          "fused_ms": 6.149385999985195
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 6.147142333550922,
+          "split_ms": 0.9748486669802029
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9716486668670162,
+          "fused_ms": 6.156142666441156
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 6.15082933351611,
+          "split_ms": 0.9779053331537094
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9707286662887782,
+          "fused_ms": 6.142778999977357
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 2.2510896087624133e-05,
+        "rms_error": 2.9400793081174944e-06,
+        "max_error_over_bound": 0.0010338462084147865,
+        "bound_operations": 2564,
+        "within_bound": true
+      },
+      "median_fused_ms": 6.149385999985195,
+      "median_split_ms": 0.9737753334775334
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        1
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0578006670887892,
+          "fused_ms": 1.1304253330308711
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 1.1271153331714838,
+          "split_ms": 0.9754420001020966
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9752853335764181,
+          "fused_ms": 1.1279619999792583
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 1.1311856663572446,
+          "split_ms": 0.9741623331744146
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9846553336198364,
+          "fused_ms": 1.1261786664060007
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 1.1262623332489359,
+          "split_ms": 0.9793120001025576
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9749686669238145,
+          "fused_ms": 1.1269586666458054
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 4.42195960204117e-06,
+        "rms_error": 6.642889335930034e-07,
+        "max_error_over_bound": 0.0031069674118583968,
+        "bound_operations": 644,
+        "within_bound": true
+      },
+      "median_fused_ms": 1.1269586666458054,
+      "median_split_ms": 0.9752853335764181
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        2
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0603439999006998,
+          "fused_ms": 1.6089029995782766
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 1.601536333206847,
+          "split_ms": 0.9789190001659639
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9760820000034679,
+          "fused_ms": 1.6011030002118787
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 1.6004463335169323,
+          "split_ms": 0.9752553335905153
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9735286669941464,
+          "fused_ms": 1.6031426669845434
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 1.6023530000287185,
+          "split_ms": 0.9926756665663561
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9775023330197049,
+          "fused_ms": 1.602076000078038
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 4.549778168438934e-06,
+        "rms_error": 6.543645474564728e-07,
+        "max_error_over_bound": 0.0037727350597358887,
+        "bound_operations": 644,
+        "within_bound": true
+      },
+      "median_fused_ms": 1.602076000078038,
+      "median_split_ms": 0.9760820000034679
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        4
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0457836669957032,
+          "fused_ms": 2.6413096669178535
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 2.643676332809264,
+          "split_ms": 0.9763589999541485
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9753053333649101,
+          "fused_ms": 2.6412996667204425
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 2.6434763331053546,
+          "split_ms": 0.9802889999264153
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9773420000177188,
+          "fused_ms": 2.6419233333096295
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 2.641496333429435,
+          "split_ms": 0.9707849997842762
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9687283333429756,
+          "fused_ms": 2.6410133335351325
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 5.827938366564922e-06,
+        "rms_error": 6.906573176930235e-07,
+        "max_error_over_bound": 0.004315322280360653,
+        "bound_operations": 644,
+        "within_bound": true
+      },
+      "median_fused_ms": 2.641496333429435,
+      "median_split_ms": 0.9753053333649101
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        8
+      ],
+      "extra_dense_weight_bytes": 6553600,
+      "warmups": 2,
+      "repeats": 5,
+      "calls_per_repeat": 3,
+      "rounds": [
+        {
+          "index": -2,
+          "warmup": true,
+          "split_ms": 1.0497203329578042,
+          "fused_ms": 4.608377666348436
+        },
+        {
+          "index": -1,
+          "warmup": true,
+          "fused_ms": 4.610317666447372,
+          "split_ms": 0.9827753334927062
+        },
+        {
+          "index": 0,
+          "warmup": false,
+          "split_ms": 0.9725419998479387,
+          "fused_ms": 4.608547333191382
+        },
+        {
+          "index": 1,
+          "warmup": false,
+          "fused_ms": 4.609981000006276,
+          "split_ms": 0.9745153335340243
+        },
+        {
+          "index": 2,
+          "warmup": false,
+          "split_ms": 0.9787719997499759,
+          "fused_ms": 4.609730667046581
+        },
+        {
+          "index": 3,
+          "warmup": false,
+          "fused_ms": 4.615254333354339,
+          "split_ms": 1.0103026664486
+        },
+        {
+          "index": 4,
+          "warmup": false,
+          "split_ms": 0.9803989996726159,
+          "fused_ms": 4.606664332944395
+        }
+      ],
+      "timing": "host wall time, allocated buffers, resident inputs, final sync; split includes interop sync",
+      "split_correctness": {
+        "max_abs_error": 5.907870217924938e-06,
+        "rms_error": 6.927178567524311e-07,
+        "max_error_over_bound": 0.004450582304473866,
+        "bound_operations": 644,
+        "within_bound": true
+      },
+      "median_fused_ms": 4.609730667046581,
+      "median_split_ms": 0.9787719997499759
+    }
+  ],
+  "activation_fixture_ties_passed": true,
+  "invalid_shapes_rejected": true,
+  "passed": true
+}

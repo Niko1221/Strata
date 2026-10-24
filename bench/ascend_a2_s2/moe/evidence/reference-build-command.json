@@ -1,0 +1,14 @@
+{
+  "command_recorded_from_original_tool_invocation": [
+    "g++",
+    "-std=c++17",
+    "-O2",
+    "-shared",
+    "-fPIC",
+    "-I<POC_ROOT>/include",
+    "<POC_ROOT>/bench/ascend_a2_s2/moe/decode_reference.cpp",
+    "-o",
+    "<POC_ROOT>/bench/ascend_a2_s2/moe/libstrata_moe_reference.so"
+  ],
+  "compiler_version": "g++ (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0"
+}

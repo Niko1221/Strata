@@ -1,0 +1,28 @@
+{
+  "sanitization": "Workspace, CANN and Python installation paths replaced in public logs. Computational source and report hashes are unchanged.",
+  "original_export_sha256": "f1cf4693854db62ace797d7da94e5374efbce6c77119ca8bb5f73a26e3c817ee",
+  "sha256": {
+    "fused-build-1.log": "1245e486dc5de43ab23126b49470ac6a5df1053ddd4e27bd81a3ddbc1920e140",
+    "fused-cache-build-1.log": "1ba6194390e23a011f494da90f8e6f1175049e01bd92c1029ac3c15a7a3eee9f",
+    "fused-cache-run-1.json": "5170a6dd3a874dcd6a726dcce3abc8006832add72385c9d20bb386bad3560707",
+    "fused-cache-run-1.log": "0628f5d8fdd545a26aac7aa88a4fb3cbc675d3cdc3ef7d5ee26765b5f02c0e55",
+    "fused-configure-1.log": "628c472f816ddcca9ba79c97eb97be6ff8fe8a127bc7331e5aaa225540206903",
+    "fused-run-1.json": "da9eb6cb97d49576cedfb1877a08945804dec36e17a82c3ecc0be52f35042334",
+    "fused-run-1.log": "dbaac4b8e4e087cc4c17ecc1b00b836afd7e3af2cc87ec3e7ac7835fe22ee7dd",
+    "fused-SOURCE-MANIFEST.json": "7ab1192dcdfebca8b72ecdcab5888e92dc5c4aaa592a39d84ffccc27022815a0",
+    "fused-vector-build-1.log": "4f8aa8c5b5f0961ff4815055c403bf97394e6a87215abe47596e48b50538a9e8",
+    "fused-vector-run-1.json": "b41a545ac8d76a0aa9e8fd90ee882c708588c08671977bd5cbb5d54132907138",
+    "fused-vector-run-1.log": "f7d5abc720fe29cec445c6e41392fa993db43cb2a23bba5b94880db66c872bf5",
+    "fused-vector-run-2.json": "9bbbf406f38f43d687daf0a1d7a86989720e261b9f6a6dc85eac2911c610ed85",
+    "fused-vector-run-2.log": "628f2be10d9d682050de43c9c7ef4f5a4cacdde4945cc15b73032bf2bae2af41",
+    "fused-vector-run-3.json": "d157cd43ffeed6c52be9defafd9167787dc0a0398b3bd341899d69944059966b",
+    "fused-vector-run-3.log": "0d960316da9d849f60acaa624df5ab39b93950a1a06cf7acb9de2d38f710ab53",
+    "SUMMARY.json": "b05bd2abdfffdcd997b0fe0b02aafc33deda3a2e97936d895786fed77fa9a38b",
+    "scalar-source/CMakeLists.txt": "af1aa5f9db85944d02f19aee530a614dab8f00b4b397f650e269b3acfdaef54f",
+    "scalar-source/probe.py": "9a842829279dfe7b3b897736ecd76947fed7f61bdee4d67f41f99e72af639ef1",
+    "scalar-source/projection.cpp": "4d0b705a40787521e1360680cee82133a759b98193913f2039ec8768466e7612",
+    "cached-scalar-source/CMakeLists.txt": "af1aa5f9db85944d02f19aee530a614dab8f00b4b397f650e269b3acfdaef54f",
+    "cached-scalar-source/probe.py": "64621574410434958a7c3ec66a70f7c05346d5e1f66938b49588613a901b06a2",
+    "cached-scalar-source/projection.cpp": "cf447c9f48ae6c9c159abb9039dd037db09e990794f8051746dab72e40499c5f"
+  }
+}

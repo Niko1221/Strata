@@ -1,0 +1,48 @@
+<PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/utils/_path_manager.py:66: UserWarning: Permission mismatch: The owner of <PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/lib/libop_plugin_atb.so does not match.
+  warnings.warn(f"Permission mismatch: The owner of {path} does not match.")
+{"blocks": 0, "elements": 0, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 1, "elements": 64, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 2, "elements": 128, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 3, "elements": 192, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 7, "elements": 448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 8, "elements": 512, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 31, "elements": 1984, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 32, "elements": 2048, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 33, "elements": 2112, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 256, "elements": 16384, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 257, "elements": 16448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 4096, "elements": 262144, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+ASCEND_S2_PASS
+PARITY_RUN_1_EXIT=0
+<PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/utils/_path_manager.py:66: UserWarning: Permission mismatch: The owner of <PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/lib/libop_plugin_atb.so does not match.
+  warnings.warn(f"Permission mismatch: The owner of {path} does not match.")
+{"blocks": 0, "elements": 0, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 1, "elements": 64, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 2, "elements": 128, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 3, "elements": 192, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 7, "elements": 448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 8, "elements": 512, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 31, "elements": 1984, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 32, "elements": 2048, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 33, "elements": 2112, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 256, "elements": 16384, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 257, "elements": 16448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 4096, "elements": 262144, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+ASCEND_S2_PASS
+PARITY_RUN_2_EXIT=0
+<PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/utils/_path_manager.py:66: UserWarning: Permission mismatch: The owner of <PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/lib/libop_plugin_atb.so does not match.
+  warnings.warn(f"Permission mismatch: The owner of {path} does not match.")
+{"blocks": 0, "elements": 0, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 1, "elements": 64, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 2, "elements": 128, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 3, "elements": 192, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 7, "elements": 448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 8, "elements": 512, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 31, "elements": 1984, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 32, "elements": 2048, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 33, "elements": 2112, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 256, "elements": 16384, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 257, "elements": 16448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 4096, "elements": 262144, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+ASCEND_S2_PASS
+PARITY_RUN_3_EXIT=0

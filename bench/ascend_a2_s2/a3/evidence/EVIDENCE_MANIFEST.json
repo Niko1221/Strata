@@ -1,0 +1,29 @@
+{
+  "original_export_sha256": "4de0b15d94580e30a061c21f385df9f4cb61a15b1310e7135f697a3e4a2f5867",
+  "sanitization": "Workspace, CANN and Python installation paths replaced in public logs and facts; reports and measured source hashes are unchanged. smoke.log is the original bounded terminal output with SDK path sanitization.",
+  "sha256": {
+    "build-settings.a3.json": "514dc4ddb06945e52c36b83d813ac0bc170ef321265cc8ada83f44d347717745",
+    "decode-build.log": "1f381ad4ca31e3f77356e80957734ddf3abd716951fe06d87da0fb13b93a2d65",
+    "decode-configure.log": "daed428835c5de0b5879f9ac6be80562c7df10c3632749232b889ad41d52464c",
+    "decode-run-1.json": "32dc23ff6cb3deb7c4083375cd32d156882d1d5c6738c1eaf17acddeeaa074bb",
+    "decode-run-1.log": "2507e02f469c701423a86f1a62c395c9011ff5d4e00871abea8154063c7d6415",
+    "decode-run-2.json": "400d36d5c4a4a7385923b62ef4775cd6550e9a0d815df2105a6aef7bb4c93ee6",
+    "decode-run-2.log": "3293be5171b1eeea88515335090e1c5df0e52e16430ab1a553012346365242d9",
+    "decode-run-3.json": "8da196bd6b2da112863c612c8c167688d76edf37c24e8db67804adcf6e425cc9",
+    "decode-run-3.log": "8f70d68318e5a934e5d69729b99a0dc2f2b6dcd2672df6bb9709ec1498832de7",
+    "host-facts.a3.json": "23a4a85dd724592196231a433dc4be339a5ad79d15cf71007175b2c9f76907bd",
+    "npu-smi-after.txt": "350c8cab911bea68430423175dc9a3d9ced1ee860e7fececee6f12256b53fc42",
+    "npu-smi-before.txt": "69142d5cafa73c642281ad9e6785a323fdcb8827501fd27393b92ab677a8e0e5",
+    "projection-build.log": "3c2b8eeaffe8c15e3b01fddca94ad9e315c0b6f7c0549f593d3acecda146f79d",
+    "projection-configure.log": "4073df2384653093ebd191cb99a0e1c58f1752bcf3afec312e3977d25507e5c0",
+    "projection-run-1.json": "7398c4a4ae0c96167c1b21bd0871adb224f07046e983cce5766cc41f38793738",
+    "projection-run-1.log": "ff159b4a0dd8f454ba654df93289cdceb5378010d27f5b999f562a4b5faf0ab2",
+    "projection-run-2.json": "02614d2a56e1f45fac2822c7f0440f7f24aa3d44dd7f2836679f0c610fe11655",
+    "projection-run-2.log": "56f04fc910b817546ac748b6bd554fe92eef0ece2509bd801edacf5618901b63",
+    "projection-run-3.json": "d065e80cfa90d0991f030c01d668f78788b1b7b2cdfdaa343e7752b11de17198",
+    "projection-run-3.log": "4f7939e763f62b98c401fd35c63affca0ac83c0986f8ee181896a6de2ef32168",
+    "smoke.log": "0f50b40483509caa74e4770ddc788179c098904356ad18a4442f775573ae36e4",
+    "SOURCE_MANIFEST.a3.json": "4745bc5b11bcef3b1374273ce5852312844bab623e1c1aef98f01bfa1e84df33",
+    "SUMMARY.json": "aa9d790d4a8805309f4d6e2fb4502b9e8bf6d794d87295512e11d32ee68fdc1e"
+  }
+}
