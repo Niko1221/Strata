@@ -1108,8 +1108,12 @@ print(r.choices[0].message.content)
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
   `cors_origins` belongs to the engine's own server (`strata serve`, `./setup.sh`, port 8080 by default). The desktop
-  app answers browser pages on its own API address (the one under Serving, port 47831 or the next free one) and already allows pages of
-  any site there, so its "Allow browser origins" switch in the Expert parameters does nothing.
+  app needs no such setting: its own API address (the one under Serving, port 47831 or the next free one) and, when you
+  share with other devices or run a tunnel, the address shown there too, answer browser pages of any site - the API key
+  decides, not the site. The browser's preflight (`OPTIONS`) is answered without a key, since a browser never sends one
+  with it; the request that follows still needs the key. Without an API key the shared address sends no CORS headers, so
+  a page of another site cannot read your model through it - only devices on your network can, as the warning says. So
+  the "Allow browser origins" switch in the Expert parameters does nothing in the app.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
