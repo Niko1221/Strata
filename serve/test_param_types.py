@@ -140,10 +140,10 @@ class EveryPathTests(unittest.TestCase):
         self.assertEqual(got, [{"file_path": "/a", "limit": 200}])
         self.assertIs(type(got[0]["limit"]), int)
 
-    def test_coerce_args_leaves_non_strings_and_undeclared(self):
+    def test_coerce_args_leaves_non_strings_and_decodes_undeclared(self):
         schema = TOOLS[0]
         self.assertEqual(coerce_args({"-n": "true", "head_limit": 3, "zzz": "1", "pattern": "1"}, schema),
-                         {"-n": True, "head_limit": 3, "zzz": "1", "pattern": "1"})
+                         {"-n": True, "head_limit": 3, "zzz": 1, "pattern": "1"})
 
     def test_name_fused_with_first_parameter(self):
         text = CS + "\n" + FS + "Read " + PS + "file_path>\n/a\n" + PE + "\n" + FE + "\n" + CE
