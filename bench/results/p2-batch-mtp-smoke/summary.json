@@ -1,0 +1,12 @@
+{
+ "what": "--batch 2 --batch-mtp with grammar slots: 6 concurrent requests (4 constrained json_schema, 2 plain) over 2 batch slots; the constrained replies validated client-side and a constrained slot's batch windows accepted drafts",
+ "rig": "RTX 4090 48GiB, 96GiB RAM",
+ "model": "swift-qwen3.8-flash-next-iq3-s",
+ "engine_args": ["--pack", "F:/Strata-data/packs/swift-iq3_s", "--native", ".../swift-IQ3_S/...gguf", "--resident-budget-gib", "40", "--expert-profile", "...", "--expert-cache", "auto", "--prefill", "auto", "--spec", "2", "--max-context", "8192", "--kv", "int8", "--batch", "2", "--batch-mtp", "--mtp", "F:/Strata-data/mtp/rt"],
+ "date": "2026-10-24",
+ "requests": 6,
+ "schema_or_nonempty_ok": 6,
+ "failures": [],
+ "drafts_accepted_of_offered_one_constrained_slot": "52 of 70",
+ "note": "tok/s not comparable here: 6 requests queue over 2 slots, so the per-request speed reflects the queue, not the cost. The solo costs are in p1-mtp-grammar-4090 (plain 121.9 vs constrained 123.1 tok/s median)."
+}

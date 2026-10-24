@@ -1,0 +1,57 @@
+{
+ "plain_args": [
+  "--pack",
+  "F:/Strata-data/packs/swift-iq3_s",
+  "--native",
+  "F:/Strata-data/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--resident-budget-gib",
+  "40",
+  "--expert-profile",
+  "F:/Strata/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "2",
+  "--max-context",
+  "16384",
+  "--kv",
+  "int8"
+ ],
+ "mtp_args": [
+  "--mtp",
+  "F:/Strata-data/mtp/rt"
+ ],
+ "runs": 3,
+ "plain": {
+  "runs": 3,
+  "all_tok_s": [
+   78.18,
+   94.08,
+   96.74
+  ],
+  "median_tok_s": 94.08,
+  "tokens": [
+   148,
+   160,
+   154
+  ]
+ },
+ "mtp_info": "0.1.49.1",
+ "mtp": {
+  "runs": 3,
+  "all_tok_s": [
+   105.16,
+   123.34,
+   121.07
+  ],
+  "median_tok_s": 121.07,
+  "tokens": [
+   154,
+   160,
+   189
+  ]
+ },
+ "mtp_gain_pct": 28.7
+}

@@ -3,6 +3,14 @@
 > 新会话从这里接力。Phase 1（13 个任务）已全部完成；本文记录当前状态、已修缺陷、以及让投机解码（MTP、
 > DFlash2）与约束解码共存的实施方案。Phase 1 的 spec 与计划：`../specs/2026-10-23-gbnf-constrained-decoding-design.md`、
 > `2026-10-24-gbnf-constrained-decoding.md`（冲突处以 spec 为准）。
+>
+> **（2026-10-24 晚：Phase 2 已完成**——P0 合并 `8183c6b6`（merge `032ef6c7`）、P1 solo 掩码链（`2eb4ec2f`）、
+> P2 batch_mtp 链（行级掩码交接）。4090 复测：JSON 50/50、工具 30/30、constrained+MTP 123.1 vs plain+MTP
+> 121.9 tok/s 中位（草稿吃掉掩码开销）；MTP 收益基线 plain 94.1 → 121.1 tok/s（+28.7%）。与计划的偏差：
+> DFlash2 在本 build 是 CLI 专属起草器（serve 无此路径，无 grammar 交集）；SYCL 镜像 sampler 本就逐行、
+> program 级接线是 Phase 1 既定边界，未改动；batch_mtp 链落在 P2（行级交接，非 P1 顺手）。顺手修了两个
+> Phase 1 缺口：greedy+grammar 的图 argmax 绕掩码（run/pl_finish/sample_rows 补重采样）、层拆分 pipelined
+> 窗不推进 grammar（约束请求改串行，与 penalties 同门）。细节见 git log 与 DETAILS Limits。）
 
 ## 接力状态（2026-10-24 晚）
 

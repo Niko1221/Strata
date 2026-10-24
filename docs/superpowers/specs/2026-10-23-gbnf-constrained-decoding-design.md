@@ -31,7 +31,7 @@
 |---|---|---|
 | v1 交付面 | GBNF 底座 + JSON Schema 硬约束 + 工具调用 grammar | 用户拍板；工具调用稳定是首要目标 |
 | 语法状态机位置 | 引擎内 C++（移植 vendored llama-grammar） | 解码只在引擎发生；主机每步已在 token 循环里；llama.cpp 测试可移植当验收。否决：服务器逐步驱动（每 token 一次 IPC，逆批处理架构）；xgrammar/outlines（新依赖，且题面是借鉴 llama.cpp） |
-| 投机解码 | 受约束请求 v1 关闭投机（plain decode）；引擎侧 grammar+spec 共现直接拒绝请求，绝不静默降级 | 用户拍板；verify 窗口/耦合草稿/概率接受三条路径与 grammar 的交互测试矩阵翻倍，留后续 PR |
+| 投机解码 | 受约束请求 v1 关闭投机（plain decode）；引擎侧 grammar+spec 共现直接拒绝请求，绝不静默降级 | 用户拍板；verify 窗口/耦合草稿/概率接受三条路径与 grammar 的交互测试矩阵翻倍，留后续 PR。**（2026-10-24 phase 2 修订：MTP/--batch-mtp 已逐行掩码共存——窗第 t 行采样自"其草稿前缀推进后的状态"的掩码，链在拒绝草稿处截断；起草器不掩码；named `spec_min_p` 与 grammar 仍硬拒；pipelined 窗对约束请求串行。见 DETAILS Limits 与 `2026-10-24-gbnf-phase2-mtp-dflash2.md`）** |
 | 后端 | CUDA 直用、HIP 经 hip_compat 同编译、SYCL 移植树跟进；Mac（`metal/` 独立引擎树）与 CPU 缓做 | 用户拍板；Mac 引擎需各实现一遍接法，parity 矩阵翻倍 |
 | mask 应用位点 | 采样链最前（与 logit_bias 同位点，penalties/filters 之前） | 与 llama.cpp 语义一致：-inf 硬禁 |
 
@@ -98,6 +98,7 @@ NVIDIA/AMD：`json_object` = 仅对象语法；`json_schema` = schema→GBNF 硬
 
 - 默认路径逐字节同今：mask 指针默认 null，不分配不上传；新参数全部 per-request opt-in。
 - 已知限制：受约束请求无投机加速；每步 mask 开销（附实测）；Mac/CPU 不覆盖；grammar+MCP 回落；GBNF 语法支持面 = vendored 版本原样。
+  **（2026-10-24 phase 2 修订：MTP/--batch-mtp 加速已接入（逐行掩码链，4090 实测 plain 121.9 vs constrained 123.1 tok/s 中位，草稿吃掉掩码开销）；无投机加速一条仅余 suffix/n-gram 查找（per-request 关闭）与 named `spec_min_p` 硬拒；pipelined 窗串行、DFlash2 仅 CLI 不入 serve，见 DETAILS Limits。）**
 - 流程（CONTRIBUTING.md）：先开 scope issue（本文档为素材），PR 标题 `[Engine] …`；测量数字注明测量硬件。
 
 ## 9. 开放问题（留实施计划）
