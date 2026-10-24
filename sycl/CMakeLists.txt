@@ -386,6 +386,11 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(kv_hybrid_parity PRIVATE strata_kernels)
   add_executable(dequant_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dequant_bench.cpp)   # prompt-path expert dequant timing + output hash
   target_link_libraries(dequant_bench PRIVATE strata_kernels)
+  # prompt QSA selection per stage (block scores: the warp kernel and the tensor-core one, then top-k) and the two
+  # scorers compared.  On SYCL qsa_block_scores_tc refuses the device, so this is the warp kernel's baseline:
+  #   qsa_select_bench [ctx=131072] [queries=256] [reps=10] [capacity_cells]
+  add_executable(qsa_select_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/qsa_select_bench.cpp)
+  target_link_libraries(qsa_select_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
   add_executable(dense_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dense_bench.cpp)   # the decode window's dense GEMVs, graph, hash
