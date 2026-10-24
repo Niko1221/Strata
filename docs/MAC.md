@@ -29,17 +29,17 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 
 | Pack | The file the GPU maps | Needs about (with the prompt buffers, KV cache, draft layer) | Recommended from |
 |---|---|---|---|
-| Q2_0 | 37.6 GB | 46 GB | 64 GB |
-| IQ3_XXS | 47.0 GB | 55 GB | 74 GB (where IQ3_S does not fit) |
-| IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
-| UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
+| Q2_0 | 37.6 GB | 50 GB | 96 GB; streams below that |
+| IQ3_XXS | 47.0 GB | 60 GB | 80 GB (where IQ3_S does not fit) |
+| IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 68 GB | 96 GB |
+| UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 95 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
-| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that (measured on 32 GB) |
-| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that (not measured on a Mac) |
+| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 43 GB | 64 GB; streams below that (measured on 32 and 48 GB) |
+| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 76 GB | 128 GB; streams below that (not measured on a Mac) |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
-- **A Mac whose memory cannot hold the pack (32-48 GB):** the engine streams the experts from the SSD instead. It decides this by itself when the experts are more than 60% of Metal's share.
+- **A Mac whose memory cannot hold the pack (32-64 GB):** the engine streams the experts from the SSD instead. It decides this by itself when the mapped weights and 12 GiB beside them (the prompt buffers, the KV cache, the draft layer, macOS) do not fit Metal's share. Setup uses the same rule (`strata_control/mac_fit.py`). With the 8 GB it used before, setup kept Gyro-S resident on a 48 GB M4 Pro; the weights were paged in and out and a 53-token prompt did not finish in 60 s. Streamed on the same Mac (engine 0.1.48, no draft layer) it answered a short question in 4 s.
   - It keeps the most-used experts in an arena: Metal's share, or the memory macOS reports as available less what it keeps for macOS, whichever is smaller. It keeps 7 GB, or 15% of the RAM when that is more, and it also keeps the n-gram table's share. It counts as free only what macOS can give without swapping (free and purgeable memory and the clean file cache, not other programs' idle memory). It checks again just before it takes the arena, and fills the arena in 1.5 GB steps, checking again before each one; it stops early rather than push macOS below what it keeps. On a Mac with 64 GB or more the arena, the Metal buffers and the host memory together also stay under 60% of the RAM (see "The engine's whole anonymous footprint" below).
   - It reads the rest as each token needs them, and reads ahead the experts the next layer will probably use.
   - Setup writes a second copy of the experts for such a Mac (`<model>.experts`, 40 GB for IQ3_XXS). In it each expert's three matrices sit together, so the SSD reads an expert with one request instead of three. On the 32 GB M4 that is about 17% faster decoding and 30% faster prompts, with the same tokens. Setup writes it only when the disk has room for it plus 10 GB; otherwise it warns, and the engine reads the model file as before.
@@ -178,7 +178,7 @@ Hadamard-rotated basis, read from the published file unchanged. The kernels are 
 `moe_mm.metal`); the codebook and the decoder are the CPU engine's, the rotation is applied to the gate/up and down inputs as on CUDA.
 Setup offers Gyro-S and Gyro-M next to the other sizes (`./setup.sh --family gyro --model Gyro-S`), never as the default, and says
 what the choice risks on your Mac's memory. The 28.8 GB n-gram table is inside the file and is read from the SSD like every other
-pack's, so Gyro-S needs 58.5 GB of disk and about 38 GB of memory to stay resident (29.7 GB of weights).
+pack's, so Gyro-S needs 58.5 GB of disk and about 43 GB of memory to stay resident (29.7 GB of weights).
 
 **Measured on the M4 Mac mini, 32 GB** (the experts stream from the SSD; no experts' copy, because the copy would need 26 GB more
 disk than this Mac had; one token per step, no draft layer; the arena was 11-12 GB of the 25.8 GB of experts):
