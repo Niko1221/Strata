@@ -1,0 +1,116 @@
+{
+  "note": "Add to the parent README six-switch baseline. MMQ arms use the separate STRATA_MMQ_TAB=ON build. STAGE_PIN=0 reflects the effective safety override, not the originally queued value. Batch1 changes --batch-groups to 1; stability uses the refined stack and two groups.",
+  "arms": {
+    "history-base1": {},
+    "history-sm70": {
+      "STRATA_SM70_TABLE": "1"
+    },
+    "history-fuse": {
+      "STRATA_FUSE_DECODE": "1",
+      "STRATA_FUSE_WAIT": "2"
+    },
+    "history-normpick": {
+      "STRATA_GR_NORM_FAST": "1",
+      "STRATA_ARGMAX_ROWS_SM70": "1"
+    },
+    "history-gather": {
+      "STRATA_Q8_GATHER_WIDE": "0"
+    },
+    "history-expdec": {
+      "STRATA_EXPDEC": "1"
+    },
+    "history-down": {
+      "STRATA_GR_DOWN_TG": "1"
+    },
+    "history-scores": {
+      "STRATA_SCORES_THREAD": "1"
+    },
+    "history-wmma": {
+      "STRATA_PF_WMMA": "1",
+      "STRATA_PF_WMMA2": "1"
+    },
+    "history-base2": {},
+    "history2-base1": {},
+    "history2-wide": {
+      "STRATA_DEQUANT_WIDE": "1"
+    },
+    "history2-select": {
+      "STRATA_SCORES_HALVE": "1",
+      "STRATA_TOPK_SPLIT": "1",
+      "STRATA_TOPK_SAMPLE": "1"
+    },
+    "history2-qil": {
+      "STRATA_SM70_TABLE": "1",
+      "STRATA_QIL": "1"
+    },
+    "history2-gdnexact": {
+      "STRATA_GDN_REC_WARP": "1"
+    },
+    "history2-gdnfast": {
+      "STRATA_GDN_REC_WARP": "2"
+    },
+    "history2-emb": {
+      "STRATA_EMB_REUSE_ACCOUNT": "1"
+    },
+    "history2-host": {
+      "STRATA_STAGE_PIN": "0",
+      "STRATA_AUX_CPUS": "auto"
+    },
+    "history2-combined": {
+      "STRATA_SM70_TABLE": "1",
+      "STRATA_GR_NORM_FAST": "1",
+      "STRATA_ARGMAX_ROWS_SM70": "1"
+    },
+    "history2-all-exact": {
+      "STRATA_SM70_TABLE": "1",
+      "STRATA_GR_NORM_FAST": "1",
+      "STRATA_ARGMAX_ROWS_SM70": "1",
+      "STRATA_FUSE_DECODE": "1",
+      "STRATA_FUSE_WAIT": "2",
+      "STRATA_Q8_GATHER_WIDE": "0",
+      "STRATA_EXPDEC": "1",
+      "STRATA_GR_DOWN_TG": "1",
+      "STRATA_SCORES_THREAD": "1",
+      "STRATA_DEQUANT_WIDE": "1",
+      "STRATA_SCORES_HALVE": "1",
+      "STRATA_TOPK_SPLIT": "1",
+      "STRATA_TOPK_SAMPLE": "1",
+      "STRATA_QIL": "1",
+      "STRATA_GDN_REC_WARP": "1",
+      "STRATA_STAGE_PIN": "0",
+      "STRATA_AUX_CPUS": "auto"
+    },
+    "history2-base2": {},
+    "history3-refined": {
+      "STRATA_SM70_TABLE": "1",
+      "STRATA_GR_NORM_FAST": "1",
+      "STRATA_ARGMAX_ROWS_SM70": "1",
+      "STRATA_QIL": "1",
+      "STRATA_EXPDEC": "1",
+      "STRATA_GR_DOWN_TG": "1",
+      "STRATA_DEQUANT_WIDE": "1"
+    },
+    "history3-base": {},
+    "mmq-base1": {
+      "STRATA_MMQ_DIRECT": "0"
+    },
+    "mmq-copy": {
+      "STRATA_MMQ_DIRECT": "2"
+    },
+    "mmq-direct": {
+      "STRATA_MMQ_DIRECT": "1"
+    },
+    "mmq-base2": {
+      "STRATA_MMQ_DIRECT": "0"
+    },
+    "history-final": {
+      "STRATA_SM70_TABLE": "1",
+      "STRATA_GR_NORM_FAST": "1",
+      "STRATA_ARGMAX_ROWS_SM70": "1",
+      "STRATA_QIL": "1",
+      "STRATA_EXPDEC": "1",
+      "STRATA_GR_DOWN_TG": "1",
+      "STRATA_DEQUANT_WIDE": "1"
+    }
+  }
+}

@@ -1,0 +1,275 @@
+{
+  "label": "history2-host",
+  "rows": [
+    {
+      "ttft_ms": 280.83,
+      "wall_s": 3.558,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "262",
+          "156.2",
+          "256",
+          "3293",
+          "77.7"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 0,
+      "output_utf8_sha256": "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+    },
+    {
+      "ttft_ms": 278.96,
+      "wall_s": 3.382,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "261",
+          "157.1",
+          "256",
+          "3119",
+          "82.1"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 1,
+      "output_utf8_sha256": "5ddaa59637ace2789e2ba7c0a497325b150392cdd36ba7548c40496f410ff904"
+    },
+    {
+      "ttft_ms": 279.58,
+      "wall_s": 3.645,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "262",
+          "156.7",
+          "256",
+          "3381",
+          "75.7"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 2,
+      "output_utf8_sha256": "85de2f18f3c5dedb5b5d675cf61944049e9b74bb7756b00e8ebfed6a04c43c69"
+    },
+    {
+      "ttft_ms": 381.47,
+      "wall_s": 2.565,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "363",
+          "162.5",
+          "256",
+          "2199",
+          "116.4"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 0,
+      "output_utf8_sha256": "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+    },
+    {
+      "ttft_ms": 381.86,
+      "wall_s": 2.546,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "364",
+          "162.1",
+          "256",
+          "2180",
+          "117.4"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 1,
+      "output_utf8_sha256": "70020e0688fa8230d5c513b55c342f36d975bf83f45cca021fd871153589025a"
+    },
+    {
+      "ttft_ms": 381.93,
+      "wall_s": 2.569,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "364",
+          "162.1",
+          "256",
+          "2203",
+          "116.2"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 2,
+      "output_utf8_sha256": "7003adf89c47f3d2a760de8e970cbdc5169bb0911a70e2c02d5530463ca054e4"
+    },
+    {
+      "ttft_ms": 2219.99,
+      "wall_s": 3.013,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2201",
+          "704.7",
+          "64",
+          "809",
+          "79.1"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 0,
+      "output_utf8_sha256": "50c88cd4980d5053451c91ab2e19897da511bafa29f5e8c940faabfccaecaeb9"
+    },
+    {
+      "ttft_ms": 2198.29,
+      "wall_s": 2.883,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2180",
+          "711.5",
+          "64",
+          "701",
+          "91.3"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 1,
+      "output_utf8_sha256": "e65a56393b34e4e338e6585e9dd25f0da938030ca1089836cab5275dbb357e66"
+    },
+    {
+      "ttft_ms": 2201.11,
+      "wall_s": 2.905,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2183",
+          "710.6",
+          "64",
+          "720",
+          "88.9"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 2,
+      "output_utf8_sha256": "4c14b66c91323138f411809c1470aa8aaafd599a4f1a0010d8cea698a7957332"
+    },
+    {
+      "ttft_ms": 10186.22,
+      "wall_s": 10.912,
+      "usage": {
+        "prompt_tokens": 15352,
+        "completion_tokens": 64,
+        "total_tokens": 15416,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "15352",
+          "0",
+          "15352",
+          "10165",
+          "1510.3",
+          "64",
+          "743",
+          "86.2"
+        ]
+      ],
+      "kind": "prefill16k",
+      "repeat": 0,
+      "output_utf8_sha256": "429e2e5cd91cdef31c9f2fb098d49235033c751deb413e8bc08e22d073043ab0"
+    }
+  ]
+}
