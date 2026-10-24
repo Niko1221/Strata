@@ -1023,3 +1023,21 @@ medians, output tokens identical in every arm):
 
 The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
 G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
+
+## Arc Pro B70: the `--stream-experts` mirror and the page cache (2026-10-22, #3681)
+
+The pinned host mirror (`STRATA_MIRROR_MIB`, above) is 2 GiB `sycl::malloc_host` chunks, each one system-memory BO that
+the `xe` driver backs as it likes. Chunks it hands out while the kernel reclaims page cache are slower for the GPU:
+13 x 2 GiB chunks allocated with 11 GB free read at 14-20 GB/s (kernel zero-copy) from the fourth chunk on, against 24 GB/s
+for the first three and for every chunk allocated with 60 GB free; CPU reads of the same chunks were 30.5 GB/s in both
+cases. The engine's own start-up reads leave its GGUFs in the page cache, so on a 64 GB host MemFree at the mirror's
+allocation was often under 1 GiB (the mirror needs 25.7 GiB for Flash-Next IQ3_S here), and decode after a restart
+depended on what the page cache held: 37.5-41.4 tok/s against 42.5-43.0 from a clean start.
+
+`STRATA_MIRROR_DROP_CACHE=before` (opt-in, Linux) drops the GGUF files' page cache right before the chunks are allocated
+and prints MemFree before and after. Same box, PCIe 4.0 x16, 2K/32K needle prompts, 512 tokens, 4 engine starts per block
+with a 22 GB unrelated file read between starts, blocks off/before/before/off (32 runs, outputs byte-identical across
+the arms): restarts with `before` decoded at 42.4-44.5 tok/s, restarts without it at 37.5-41.4 (first starts 44.1-44.5
+and 42.5-43.0); the mirror fill took 14.2-14.4 s instead of 13.2-13.4 s (it reads the disk).
+It cannot free page cache other processes hold. Dropping the mirrored ranges *after* the fill instead was slower than
+off on restarts (27.6-30.3 tok/s), so the variable takes `before` only.
