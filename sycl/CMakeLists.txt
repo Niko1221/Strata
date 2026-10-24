@@ -355,6 +355,8 @@ if(STRATA_SYCL_PARITY)
   add_executable(native_grouped_parity ${_src})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels)
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  # STRATA_IQ_DECODE_FAST: the cheaper IQ decodes in the grouped expert kernels against the current ones, bitwise
+  add_test(NAME native_grouped_parity_iq_decode COMMAND native_grouped_parity --iq)
   # 0.1.40 (#783): the batched verify-window kernels against the ones they replace, bitwise (synthetic, no model)
   foreach(p IN ITEMS verify native_multi kv_steps resident_plan gr_multi)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
