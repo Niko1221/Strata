@@ -175,7 +175,7 @@ app does not offer it yet.
 | Set | Download | Quality | Writes code at |
 | --- | ---: | --- | --- |
 | **IQ1_M** (1.75 bits) | 239 GB | The smallest; weaker on plain prose | not measured on a PC yet |
-| **IQ2_XXS** (2.00 bits) | 257 GB | Good balance | 10 tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XXS** (2.00 bits) | 257 GB | Good balance | 10 tokens/s (RTX 3060), 5 (RTX 5070), 18-29 (RTX 4080 SUPER), 48 (4x R9700) |
 | **IQ2_XS** (2.25 bits) | 274 GB | Closest to the original | 15 tokens/s (one R9700), 80 (4x R9700) |
 | **IQ4_NL** (Engram table) | in every download above | The lookup table all three sets share | |
 

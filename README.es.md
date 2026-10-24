@@ -180,7 +180,7 @@ hizo los conjuntos. Funciona en tarjetas NVIDIA RTX de las series 30 a 50 y en l
 | Conjunto | Descarga | Calidad | Escribe código a |
 | --- | ---: | --- | --- |
 | **IQ1_M** (1,75 bits) | 239 GB | El más pequeño, más débil con prosa sencilla | aún sin medir en un PC |
-| **IQ2_XXS** (2.00 bits) | 257 GB | Buen equilibrio | 10 tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XXS** (2.00 bits) | 257 GB | Buen equilibrio | 10 tokens/s (RTX 3060), 5 (RTX 5070), 18-29 (RTX 4080 SUPER), 48 (4x R9700) |
 | **IQ2_XS** (2.25 bits) | 274 GB | Lo más cerca del original | 15 tokens/s (una R9700), 80 (4x R9700) |
 | **IQ4_NL** (tabla Engram) | incluida en cada descarga de arriba | La tabla de consulta que comparten los tres conjuntos | |
 
