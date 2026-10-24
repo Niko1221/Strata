@@ -1,0 +1,352 @@
+{
+  "records32_ru": {
+    "name": "records32_ru",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Рассуждай и отвечай по-русски. Обработай вымышленные тестовые источники ниже. Нужны только организаторы компаний Event 01–Event 32, а не одноимённые спикеры других компаний. Используй только опубликованные в официальном источнике рабочие email; если адрес отсутствует, поставь null. Не угадывай адреса. Верни ровно JSON-массив 32 объектов с полями name, email, source, в порядке номеров.\n[S01] Official team page: Organizer 01; company=Event 01; role=organizer; public_work_email=person01@example.org.\n[D01] Speaker directory: Organizer 01; company=Different Event; role=speaker; email=wrong01@example.net.\n[S02] Official team page: Organizer 02; company=Event 02; role=organizer; public_work_email=person02@example.org.\n[D02] Speaker directory: Organizer 02; company=Different Event; role=speaker; email=wrong02@example.net.\n[S03] Official team page: Organizer 03; company=Event 03; role=organizer; public_work_email=person03@example.org.\n[D03] Speaker directory: Organizer 03; company=Different Event; role=speaker; email=wrong03@example.net.\n[S04] Official team page: Organizer 04; company=Event 04; role=organizer; public_work_email=not published.\n[D04] Speaker directory: Organizer 04; company=Different Event; role=speaker; email=wrong04@example.net.\n[S05] Official team page: Organizer 05; company=Event 05; role=organizer; public_work_email=person05@example.org.\n[D05] Speaker directory: Organizer 05; company=Different Event; role=speaker; email=wrong05@example.net.\n[S06] Official team page: Organizer 06; company=Event 06; role=organizer; public_work_email=person06@example.org.\n[D06] Speaker directory: Organizer 06; company=Different Event; role=speaker; email=wrong06@example.net.\n[S07] Official team page: Organizer 07; company=Event 07; role=organizer; public_work_email=person07@example.org.\n[D07] Speaker directory: Organizer 07; company=Different Event; role=speaker; email=wrong07@example.net.\n[S08] Official team page: Organizer 08; company=Event 08; role=organizer; public_work_email=not published.\n[D08] Speaker directory: Organizer 08; company=Different Event; role=speaker; email=wrong08@example.net.\n[S09] Official team page: Organizer 09; company=Event 09; role=organizer; public_work_email=person09@example.org.\n[D09] Speaker directory: Organizer 09; company=Different Event; role=speaker; email=wrong09@example.net.\n[S10] Official team page: Organizer 10; company=Event 10; role=organizer; public_work_email=person10@example.org.\n[D10] Speaker directory: Organizer 10; company=Different Event; role=speaker; email=wrong10@example.net.\n[S11] Official team page: Organizer 11; company=Event 11; role=organizer; public_work_email=person11@example.org.\n[D11] Speaker directory: Organizer 11; company=Different Event; role=speaker; email=wrong11@example.net.\n[S12] Official team page: Organizer 12; company=Event 12; role=organizer; public_work_email=not published.\n[D12] Speaker directory: Organizer 12; company=Different Event; role=speaker; email=wrong12@example.net.\n[S13] Official team page: Organizer 13; company=Event 13; role=organizer; public_work_email=person13@example.org.\n[D13] Speaker directory: Organizer 13; company=Different Event; role=speaker; email=wrong13@example.net.\n[S14] Official team page: Organizer 14; company=Event 14; role=organizer; public_work_email=person14@example.org.\n[D14] Speaker directory: Organizer 14; company=Different Event; role=speaker; email=wrong14@example.net.\n[S15] Official team page: Organizer 15; company=Event 15; role=organizer; public_work_email=person15@example.org.\n[D15] Speaker directory: Organizer 15; company=Different Event; role=speaker; email=wrong15@example.net.\n[S16] Official team page: Organizer 16; company=Event 16; role=organizer; public_work_email=not published.\n[D16] Speaker directory: Organizer 16; company=Different Event; role=speaker; email=wrong16@example.net.\n[S17] Official team page: Organizer 17; company=Event 17; role=organizer; public_work_email=person17@example.org.\n[D17] Speaker directory: Organizer 17; company=Different Event; role=speaker; email=wrong17@example.net.\n[S18] Official team page: Organizer 18; company=Event 18; role=organizer; public_work_email=person18@example.org.\n[D18] Speaker directory: Organizer 18; company=Different Event; role=speaker; email=wrong18@example.net.\n[S19] Official team page: Organizer 19; company=Event 19; role=organizer; public_work_email=person19@example.org.\n[D19] Speaker directory: Organizer 19; company=Different Event; role=speaker; email=wrong19@example.net.\n[S20] Official team page: Organizer 20; company=Event 20; role=organizer; public_work_email=not published.\n[D20] Speaker directory: Organizer 20; company=Different Event; role=speaker; email=wrong20@example.net.\n[S21] Official team page: Organizer 21; company=Event 21; role=organizer; public_work_email=person21@example.org.\n[D21] Speaker directory: Organizer 21; company=Different Event; role=speaker; email=wrong21@example.net.\n[S22] Official team page: Organizer 22; company=Event 22; role=organizer; public_work_email=person22@example.org.\n[D22] Speaker directory: Organizer 22; company=Different Event; role=speaker; email=wrong22@example.net.\n[S23] Official team page: Organizer 23; company=Event 23; role=organizer; public_work_email=person23@example.org.\n[D23] Speaker directory: Organizer 23; company=Different Event; role=speaker; email=wrong23@example.net.\n[S24] Official team page: Organizer 24; company=Event 24; role=organizer; public_work_email=not published.\n[D24] Speaker directory: Organizer 24; company=Different Event; role=speaker; email=wrong24@example.net.\n[S25] Official team page: Organizer 25; company=Event 25; role=organizer; public_work_email=person25@example.org.\n[D25] Speaker directory: Organizer 25; company=Different Event; role=speaker; email=wrong25@example.net.\n[S26] Official team page: Organizer 26; company=Event 26; role=organizer; public_work_email=person26@example.org.\n[D26] Speaker directory: Organizer 26; company=Different Event; role=speaker; email=wrong26@example.net.\n[S27] Official team page: Organizer 27; company=Event 27; role=organizer; public_work_email=person27@example.org.\n[D27] Speaker directory: Organizer 27; company=Different Event; role=speaker; email=wrong27@example.net.\n[S28] Official team page: Organizer 28; company=Event 28; role=organizer; public_work_email=not published.\n[D28] Speaker directory: Organizer 28; company=Different Event; role=speaker; email=wrong28@example.net.\n[S29] Official team page: Organizer 29; company=Event 29; role=organizer; public_work_email=person29@example.org.\n[D29] Speaker directory: Organizer 29; company=Different Event; role=speaker; email=wrong29@example.net.\n[S30] Official team page: Organizer 30; company=Event 30; role=organizer; public_work_email=person30@example.org.\n[D30] Speaker directory: Organizer 30; company=Different Event; role=speaker; email=wrong30@example.net.\n[S31] Official team page: Organizer 31; company=Event 31; role=organizer; public_work_email=person31@example.org.\n[D31] Speaker directory: Organizer 31; company=Different Event; role=speaker; email=wrong31@example.net.\n[S32] Official team page: Organizer 32; company=Event 32; role=organizer; public_work_email=not published.\n[D32] Speaker directory: Organizer 32; company=Different Event; role=speaker; email=wrong32@example.net."
+      }
+    ],
+    "expected": [
+      {
+        "name": "Organizer 01",
+        "email": "person01@example.org",
+        "source": "S01"
+      },
+      {
+        "name": "Organizer 02",
+        "email": "person02@example.org",
+        "source": "S02"
+      },
+      {
+        "name": "Organizer 03",
+        "email": "person03@example.org",
+        "source": "S03"
+      },
+      {
+        "name": "Organizer 04",
+        "email": null,
+        "source": "S04"
+      },
+      {
+        "name": "Organizer 05",
+        "email": "person05@example.org",
+        "source": "S05"
+      },
+      {
+        "name": "Organizer 06",
+        "email": "person06@example.org",
+        "source": "S06"
+      },
+      {
+        "name": "Organizer 07",
+        "email": "person07@example.org",
+        "source": "S07"
+      },
+      {
+        "name": "Organizer 08",
+        "email": null,
+        "source": "S08"
+      },
+      {
+        "name": "Organizer 09",
+        "email": "person09@example.org",
+        "source": "S09"
+      },
+      {
+        "name": "Organizer 10",
+        "email": "person10@example.org",
+        "source": "S10"
+      },
+      {
+        "name": "Organizer 11",
+        "email": "person11@example.org",
+        "source": "S11"
+      },
+      {
+        "name": "Organizer 12",
+        "email": null,
+        "source": "S12"
+      },
+      {
+        "name": "Organizer 13",
+        "email": "person13@example.org",
+        "source": "S13"
+      },
+      {
+        "name": "Organizer 14",
+        "email": "person14@example.org",
+        "source": "S14"
+      },
+      {
+        "name": "Organizer 15",
+        "email": "person15@example.org",
+        "source": "S15"
+      },
+      {
+        "name": "Organizer 16",
+        "email": null,
+        "source": "S16"
+      },
+      {
+        "name": "Organizer 17",
+        "email": "person17@example.org",
+        "source": "S17"
+      },
+      {
+        "name": "Organizer 18",
+        "email": "person18@example.org",
+        "source": "S18"
+      },
+      {
+        "name": "Organizer 19",
+        "email": "person19@example.org",
+        "source": "S19"
+      },
+      {
+        "name": "Organizer 20",
+        "email": null,
+        "source": "S20"
+      },
+      {
+        "name": "Organizer 21",
+        "email": "person21@example.org",
+        "source": "S21"
+      },
+      {
+        "name": "Organizer 22",
+        "email": "person22@example.org",
+        "source": "S22"
+      },
+      {
+        "name": "Organizer 23",
+        "email": "person23@example.org",
+        "source": "S23"
+      },
+      {
+        "name": "Organizer 24",
+        "email": null,
+        "source": "S24"
+      },
+      {
+        "name": "Organizer 25",
+        "email": "person25@example.org",
+        "source": "S25"
+      },
+      {
+        "name": "Organizer 26",
+        "email": "person26@example.org",
+        "source": "S26"
+      },
+      {
+        "name": "Organizer 27",
+        "email": "person27@example.org",
+        "source": "S27"
+      },
+      {
+        "name": "Organizer 28",
+        "email": null,
+        "source": "S28"
+      },
+      {
+        "name": "Organizer 29",
+        "email": "person29@example.org",
+        "source": "S29"
+      },
+      {
+        "name": "Organizer 30",
+        "email": "person30@example.org",
+        "source": "S30"
+      },
+      {
+        "name": "Organizer 31",
+        "email": "person31@example.org",
+        "source": "S31"
+      },
+      {
+        "name": "Organizer 32",
+        "email": null,
+        "source": "S32"
+      }
+    ]
+  },
+  "leads28_en": {
+    "name": "leads28_en",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Audit these 28 synthetic leads against the supplied official source records. Return only a JSON array in id order, with exactly the fields id, status, email, source. Follow this decision order: if target name or company differs from the source, status is identity_mismatch; otherwise if source_updated is before 2026-01-01, status is stale; otherwise if published_work_email is null, status is not_published; otherwise status is verified. Copy the published email only for verified records, and use null in every other case. The source field must always contain source_id, including rejected records. Do not invent data.\n[{\"id\": 1, \"target_name\": \"Person 01\", \"target_company\": \"Team 01\", \"source_id\": \"O01\", \"source_name\": \"Person 01\", \"source_company\": \"Team 01\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead01@example.org\"}, {\"id\": 2, \"target_name\": \"Person 02\", \"target_company\": \"Team 02\", \"source_id\": \"O02\", \"source_name\": \"Person 02\", \"source_company\": \"Team 02\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead02@example.org\"}, {\"id\": 3, \"target_name\": \"Person 03\", \"target_company\": \"Team 03\", \"source_id\": \"O03\", \"source_name\": \"Person 03\", \"source_company\": \"Team 03\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 4, \"target_name\": \"Person 04\", \"target_company\": \"Team 04\", \"source_id\": \"O04\", \"source_name\": \"Person 04\", \"source_company\": \"Team 04\", \"source_updated\": \"2025-02-01\", \"published_work_email\": \"lead04@example.org\"}, {\"id\": 5, \"target_name\": \"Person 05\", \"target_company\": \"Team 05\", \"source_id\": \"O05\", \"source_name\": \"Different Person 05\", \"source_company\": \"Team 05\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead05@example.org\"}, {\"id\": 6, \"target_name\": \"Person 06\", \"target_company\": \"Team 06\", \"source_id\": \"O06\", \"source_name\": \"Person 06\", \"source_company\": \"Team 06\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 7, \"target_name\": \"Person 07\", \"target_company\": \"Team 07\", \"source_id\": \"O07\", \"source_name\": \"Person 07\", \"source_company\": \"Team 07\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead07@example.org\"}, {\"id\": 8, \"target_name\": \"Person 08\", \"target_company\": \"Team 08\", \"source_id\": \"O08\", \"source_name\": \"Person 08\", \"source_company\": \"Team 08\", \"source_updated\": \"2025-02-01\", \"published_work_email\": \"lead08@example.org\"}, {\"id\": 9, \"target_name\": \"Person 09\", \"target_company\": \"Team 09\", \"source_id\": \"O09\", \"source_name\": \"Person 09\", \"source_company\": \"Team 09\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 10, \"target_name\": \"Person 10\", \"target_company\": \"Team 10\", \"source_id\": \"O10\", \"source_name\": \"Different Person 10\", \"source_company\": \"Team 10\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead10@example.org\"}, {\"id\": 11, \"target_name\": \"Person 11\", \"target_company\": \"Team 11\", \"source_id\": \"O11\", \"source_name\": \"Person 11\", \"source_company\": \"Team 11\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead11@example.org\"}, {\"id\": 12, \"target_name\": \"Person 12\", \"target_company\": \"Team 12\", \"source_id\": \"O12\", \"source_name\": \"Person 12\", \"source_company\": \"Team 12\", \"source_updated\": \"2025-02-01\", \"published_work_email\": null}, {\"id\": 13, \"target_name\": \"Person 13\", \"target_company\": \"Team 13\", \"source_id\": \"O13\", \"source_name\": \"Person 13\", \"source_company\": \"Team 13\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead13@example.org\"}, {\"id\": 14, \"target_name\": \"Person 14\", \"target_company\": \"Team 14\", \"source_id\": \"O14\", \"source_name\": \"Person 14\", \"source_company\": \"Team 14\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead14@example.org\"}, {\"id\": 15, \"target_name\": \"Person 15\", \"target_company\": \"Team 15\", \"source_id\": \"O15\", \"source_name\": \"Different Person 15\", \"source_company\": \"Team 15\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 16, \"target_name\": \"Person 16\", \"target_company\": \"Team 16\", \"source_id\": \"O16\", \"source_name\": \"Person 16\", \"source_company\": \"Team 16\", \"source_updated\": \"2025-02-01\", \"published_work_email\": \"lead16@example.org\"}, {\"id\": 17, \"target_name\": \"Person 17\", \"target_company\": \"Team 17\", \"source_id\": \"O17\", \"source_name\": \"Person 17\", \"source_company\": \"Team 17\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead17@example.org\"}, {\"id\": 18, \"target_name\": \"Person 18\", \"target_company\": \"Team 18\", \"source_id\": \"O18\", \"source_name\": \"Person 18\", \"source_company\": \"Team 18\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 19, \"target_name\": \"Person 19\", \"target_company\": \"Team 19\", \"source_id\": \"O19\", \"source_name\": \"Person 19\", \"source_company\": \"Team 19\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead19@example.org\"}, {\"id\": 20, \"target_name\": \"Person 20\", \"target_company\": \"Team 20\", \"source_id\": \"O20\", \"source_name\": \"Different Person 20\", \"source_company\": \"Team 20\", \"source_updated\": \"2025-02-01\", \"published_work_email\": \"lead20@example.org\"}, {\"id\": 21, \"target_name\": \"Person 21\", \"target_company\": \"Team 21\", \"source_id\": \"O21\", \"source_name\": \"Person 21\", \"source_company\": \"Team 21\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 22, \"target_name\": \"Person 22\", \"target_company\": \"Team 22\", \"source_id\": \"O22\", \"source_name\": \"Person 22\", \"source_company\": \"Team 22\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead22@example.org\"}, {\"id\": 23, \"target_name\": \"Person 23\", \"target_company\": \"Team 23\", \"source_id\": \"O23\", \"source_name\": \"Person 23\", \"source_company\": \"Team 23\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead23@example.org\"}, {\"id\": 24, \"target_name\": \"Person 24\", \"target_company\": \"Team 24\", \"source_id\": \"O24\", \"source_name\": \"Person 24\", \"source_company\": \"Team 24\", \"source_updated\": \"2025-02-01\", \"published_work_email\": null}, {\"id\": 25, \"target_name\": \"Person 25\", \"target_company\": \"Team 25\", \"source_id\": \"O25\", \"source_name\": \"Different Person 25\", \"source_company\": \"Team 25\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead25@example.org\"}, {\"id\": 26, \"target_name\": \"Person 26\", \"target_company\": \"Team 26\", \"source_id\": \"O26\", \"source_name\": \"Person 26\", \"source_company\": \"Team 26\", \"source_updated\": \"2026-09-01\", \"published_work_email\": \"lead26@example.org\"}, {\"id\": 27, \"target_name\": \"Person 27\", \"target_company\": \"Team 27\", \"source_id\": \"O27\", \"source_name\": \"Person 27\", \"source_company\": \"Team 27\", \"source_updated\": \"2026-09-01\", \"published_work_email\": null}, {\"id\": 28, \"target_name\": \"Person 28\", \"target_company\": \"Team 28\", \"source_id\": \"O28\", \"source_name\": \"Person 28\", \"source_company\": \"Team 28\", \"source_updated\": \"2025-02-01\", \"published_work_email\": \"lead28@example.org\"}]"
+      }
+    ],
+    "expected": [
+      {
+        "id": 1,
+        "status": "verified",
+        "email": "lead01@example.org",
+        "source": "O01"
+      },
+      {
+        "id": 2,
+        "status": "verified",
+        "email": "lead02@example.org",
+        "source": "O02"
+      },
+      {
+        "id": 3,
+        "status": "not_published",
+        "email": null,
+        "source": "O03"
+      },
+      {
+        "id": 4,
+        "status": "stale",
+        "email": null,
+        "source": "O04"
+      },
+      {
+        "id": 5,
+        "status": "identity_mismatch",
+        "email": null,
+        "source": "O05"
+      },
+      {
+        "id": 6,
+        "status": "not_published",
+        "email": null,
+        "source": "O06"
+      },
+      {
+        "id": 7,
+        "status": "verified",
+        "email": "lead07@example.org",
+        "source": "O07"
+      },
+      {
+        "id": 8,
+        "status": "stale",
+        "email": null,
+        "source": "O08"
+      },
+      {
+        "id": 9,
+        "status": "not_published",
+        "email": null,
+        "source": "O09"
+      },
+      {
+        "id": 10,
+        "status": "identity_mismatch",
+        "email": null,
+        "source": "O10"
+      },
+      {
+        "id": 11,
+        "status": "verified",
+        "email": "lead11@example.org",
+        "source": "O11"
+      },
+      {
+        "id": 12,
+        "status": "stale",
+        "email": null,
+        "source": "O12"
+      },
+      {
+        "id": 13,
+        "status": "verified",
+        "email": "lead13@example.org",
+        "source": "O13"
+      },
+      {
+        "id": 14,
+        "status": "verified",
+        "email": "lead14@example.org",
+        "source": "O14"
+      },
+      {
+        "id": 15,
+        "status": "identity_mismatch",
+        "email": null,
+        "source": "O15"
+      },
+      {
+        "id": 16,
+        "status": "stale",
+        "email": null,
+        "source": "O16"
+      },
+      {
+        "id": 17,
+        "status": "verified",
+        "email": "lead17@example.org",
+        "source": "O17"
+      },
+      {
+        "id": 18,
+        "status": "not_published",
+        "email": null,
+        "source": "O18"
+      },
+      {
+        "id": 19,
+        "status": "verified",
+        "email": "lead19@example.org",
+        "source": "O19"
+      },
+      {
+        "id": 20,
+        "status": "identity_mismatch",
+        "email": null,
+        "source": "O20"
+      },
+      {
+        "id": 21,
+        "status": "not_published",
+        "email": null,
+        "source": "O21"
+      },
+      {
+        "id": 22,
+        "status": "verified",
+        "email": "lead22@example.org",
+        "source": "O22"
+      },
+      {
+        "id": 23,
+        "status": "verified",
+        "email": "lead23@example.org",
+        "source": "O23"
+      },
+      {
+        "id": 24,
+        "status": "stale",
+        "email": null,
+        "source": "O24"
+      },
+      {
+        "id": 25,
+        "status": "identity_mismatch",
+        "email": null,
+        "source": "O25"
+      },
+      {
+        "id": 26,
+        "status": "verified",
+        "email": "lead26@example.org",
+        "source": "O26"
+      },
+      {
+        "id": 27,
+        "status": "not_published",
+        "email": null,
+        "source": "O27"
+      },
+      {
+        "id": 28,
+        "status": "stale",
+        "email": null,
+        "source": "O28"
+      }
+    ]
+  }
+}

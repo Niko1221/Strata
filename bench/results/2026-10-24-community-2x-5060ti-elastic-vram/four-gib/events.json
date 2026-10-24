@@ -1,0 +1,434 @@
+[
+  {
+    "repeat": 0,
+    "phase": "full-before",
+    "gpu": null,
+    "before": "0, 15360, 491\n1, 15372, 479",
+    "after": "0, 15360, 491\n1, 15372, 479",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 478,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 490,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 478,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 0,
+    "phase": "gpu0-4g",
+    "gpu": 0,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 10922, 4929\n1, 15446, 405",
+    "resize_s": 0.01772360102040693,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4493,
+      "gpu": 0,
+      "expert_slots": 5204,
+      "expert_slots_full": 8263,
+      "expert_cache_mib": 7680,
+      "expert_cache_full_mib": 12211,
+      "vram_free_mib": 4928,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4493,
+          "gpu": 0,
+          "expert_slots": 5204,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 7680,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 4928,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 0,
+    "phase": "gpu1-4g",
+    "gpu": 1,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 11072, 4779",
+    "resize_s": 0.014760999009013176,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4501,
+      "gpu": 1,
+      "expert_slots": 3693,
+      "expert_slots_full": 5937,
+      "expert_cache_mib": 7168,
+      "expert_cache_full_mib": 11540,
+      "vram_free_mib": 4778,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4501,
+          "gpu": 1,
+          "expert_slots": 3693,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 7168,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 4778,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 0,
+    "phase": "full-after",
+    "gpu": null,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 15446, 405",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 396,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 396,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 404,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 1,
+    "phase": "full-before",
+    "gpu": null,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 15446, 405",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 396,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 396,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 404,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 1,
+    "phase": "gpu0-4g",
+    "gpu": 0,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 10922, 4929\n1, 15446, 405",
+    "resize_s": 0.01610346301458776,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4493,
+      "gpu": 0,
+      "expert_slots": 5204,
+      "expert_slots_full": 8263,
+      "expert_cache_mib": 7680,
+      "expert_cache_full_mib": 12211,
+      "vram_free_mib": 4928,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4493,
+          "gpu": 0,
+          "expert_slots": 5204,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 7680,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 4928,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 1,
+    "phase": "gpu1-4g",
+    "gpu": 1,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 11072, 4779",
+    "resize_s": 0.014147515001241118,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4501,
+      "gpu": 1,
+      "expert_slots": 3693,
+      "expert_slots_full": 5937,
+      "expert_cache_mib": 7168,
+      "expert_cache_full_mib": 11540,
+      "vram_free_mib": 4778,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4501,
+          "gpu": 1,
+          "expert_slots": 3693,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 7168,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 4778,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 1,
+    "phase": "full-after",
+    "gpu": null,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 15446, 405",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 396,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 396,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 404,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 2,
+    "phase": "full-before",
+    "gpu": null,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 15446, 405",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 396,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 396,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 404,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 2,
+    "phase": "gpu0-4g",
+    "gpu": 0,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 10922, 4929\n1, 15446, 405",
+    "resize_s": 0.022821740014478564,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4493,
+      "gpu": 0,
+      "expert_slots": 5204,
+      "expert_slots_full": 8263,
+      "expert_cache_mib": 7680,
+      "expert_cache_full_mib": 12211,
+      "vram_free_mib": 4928,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4493,
+          "gpu": 0,
+          "expert_slots": 5204,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 7680,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 4928,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 2,
+    "phase": "gpu1-4g",
+    "gpu": 1,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 11072, 4779",
+    "resize_s": 0.014952931029256433,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 4501,
+      "gpu": 1,
+      "expert_slots": 3693,
+      "expert_slots_full": 5937,
+      "expert_cache_mib": 7168,
+      "expert_cache_full_mib": 11540,
+      "vram_free_mib": 4778,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 4501,
+          "gpu": 1,
+          "expert_slots": 3693,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 7168,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 4778,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  },
+  {
+    "repeat": 2,
+    "phase": "full-after",
+    "gpu": null,
+    "before": "0, 15454, 397\n1, 15446, 405",
+    "after": "0, 15454, 397\n1, 15446, 405",
+    "resize_s": null,
+    "response": {
+      "status": "ok",
+      "reserve_mib": 0,
+      "gpu": 0,
+      "expert_slots": 14200,
+      "expert_slots_full": 14200,
+      "expert_cache_mib": 23754,
+      "expert_cache_full_mib": 23751,
+      "vram_free_mib": 396,
+      "prompt_chunk": 16384,
+      "gpus": [
+        {
+          "reserve_mib": 0,
+          "gpu": 0,
+          "expert_slots": 8263,
+          "expert_slots_full": 8263,
+          "expert_cache_mib": 12212,
+          "expert_cache_full_mib": 12211,
+          "vram_free_mib": 396,
+          "prompt_chunk": 16384
+        },
+        {
+          "reserve_mib": 0,
+          "gpu": 1,
+          "expert_slots": 5937,
+          "expert_slots_full": 5937,
+          "expert_cache_mib": 11542,
+          "expert_cache_full_mib": 11540,
+          "vram_free_mib": 404,
+          "prompt_chunk": 16384
+        }
+      ]
+    }
+  }
+]

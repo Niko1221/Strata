@@ -1,0 +1,73 @@
+PHASE 0 full-before 0, 15360, 491
+1, 15372, 479
+START r0-full-before records32_ru
+RESULT r0-full-before records32_ru True stop 154.7
+START r0-full-before leads28_en
+RESULT r0-full-before leads28_en True stop 178.5
+PHASE 0 gpu0-4g 0, 10922, 4929
+1, 15446, 405
+START r0-gpu0-4g records32_ru
+RESULT r0-gpu0-4g records32_ru True stop 121.5
+START r0-gpu0-4g leads28_en
+RESULT r0-gpu0-4g leads28_en True stop 158.6
+PHASE 0 gpu1-4g 0, 15454, 397
+1, 11072, 4779
+START r0-gpu1-4g records32_ru
+RESULT r0-gpu1-4g records32_ru True stop 119.6
+START r0-gpu1-4g leads28_en
+RESULT r0-gpu1-4g leads28_en True stop 171.2
+PHASE 0 full-after 0, 15454, 397
+1, 15446, 405
+START r0-full-after records32_ru
+RESULT r0-full-after records32_ru True stop 142.1
+START r0-full-after leads28_en
+RESULT r0-full-after leads28_en True stop 168.4
+PHASE 1 full-before 0, 15454, 397
+1, 15446, 405
+START r1-full-before records32_ru
+RESULT r1-full-before records32_ru True stop 144.8
+START r1-full-before leads28_en
+RESULT r1-full-before leads28_en True stop 178.0
+PHASE 1 gpu0-4g 0, 10922, 4929
+1, 15446, 405
+START r1-gpu0-4g records32_ru
+RESULT r1-gpu0-4g records32_ru True stop 139.0
+START r1-gpu0-4g leads28_en
+RESULT r1-gpu0-4g leads28_en True stop 159.3
+PHASE 1 gpu1-4g 0, 15454, 397
+1, 11072, 4779
+START r1-gpu1-4g records32_ru
+RESULT r1-gpu1-4g records32_ru True stop 132.6
+START r1-gpu1-4g leads28_en
+RESULT r1-gpu1-4g leads28_en True stop 159.3
+PHASE 1 full-after 0, 15454, 397
+1, 15446, 405
+START r1-full-after records32_ru
+RESULT r1-full-after records32_ru True stop 153.9
+START r1-full-after leads28_en
+RESULT r1-full-after leads28_en True stop 173.4
+PHASE 2 full-before 0, 15454, 397
+1, 15446, 405
+START r2-full-before records32_ru
+RESULT r2-full-before records32_ru True stop 138.2
+START r2-full-before leads28_en
+RESULT r2-full-before leads28_en True stop 173.4
+PHASE 2 gpu0-4g 0, 10922, 4929
+1, 15446, 405
+START r2-gpu0-4g records32_ru
+RESULT r2-gpu0-4g records32_ru True stop 152.0
+START r2-gpu0-4g leads28_en
+RESULT r2-gpu0-4g leads28_en True stop 149.9
+PHASE 2 gpu1-4g 0, 15454, 397
+1, 11072, 4779
+START r2-gpu1-4g records32_ru
+RESULT r2-gpu1-4g records32_ru True stop 135.1
+START r2-gpu1-4g leads28_en
+RESULT r2-gpu1-4g leads28_en True stop 163.8
+PHASE 2 full-after 0, 15454, 397
+1, 15446, 405
+START r2-full-after records32_ru
+RESULT r2-full-after records32_ru True stop 146.7
+START r2-full-after leads28_en
+RESULT r2-full-after leads28_en True stop 173.1
+DONE: 24 complete, matched-input measurements

@@ -108,3 +108,29 @@ The harness uses Docker tag `strata-local:cuda13` for that executable, exposes
 physical GPU 1 to it, and requires host `nvidia-smi`. Override `STRATA_TEST_URL`
 for another server address. Save a first attempt before using `python cycles.py
 resume`; that option resumes the recorded run after GPU 0's null-reserve check.
+
+## Follow-up: release about 4 GiB on either card
+
+Another 24 requests used two extraction tasks (Russian and English), three rounds
+of full → GPU 0 reduced → GPU 1 reduced → full, on one engine process. Inputs were
+byte-identical within each round/task across the four phases. High reasoning,
+temperature 0, no output cap, and the same 131072 context and other settings.
+Both caches were restored before each phase. Prefill is excluded from decode speed.
+
+| Cache state | Responses | All output tokens / decode time | Range of two-task round rates |
+|---|---:|---:|---:|
+| Full, before and after the reduced arms | 12 | 157.4 tok/s | 150.2–165.3 tok/s |
+| GPU 0 releases 4532 MiB (4.43 GiB) | 6 | 139.6 tok/s | 129.4–151.0 tok/s |
+| GPU 1 releases 4374 MiB (4.27 GiB) | 6 | 139.1 tok/s | 132.8–148.7 tok/s |
+
+The weighted totals are 11.3% and 11.6% below the full-cache total. Each cut targets
+4096 MiB beyond the card's current free memory; whole segments make the actual
+release larger. Per-round paired ratios range from 0.817 to 0.981 for GPU 0 and
+0.838 to 0.966 for GPU 1. Replies complete naturally and reasoning lengths vary,
+so this estimates these workloads rather than a fixed percentage for other tasks.
+
+All 24 answers matched expected JSON and ended normally; the process stayed up,
+full slots were restored, and no new Xid/AER/PCIe or kernel OOM was observed. This
+follow-up measures cache reduction only, without a second GPU compute workload.
+Raw responses, inputs, events, summary and scripts are in `four-gib/`. The normal
+server was restored after the run.
