@@ -55,6 +55,12 @@ foreach(_f IN LISTS _src_files)
   endif()
   file(RELATIVE_PATH _rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_f}")
   set(_compile FALSE)
+  # src/dsv41 is its own engine path (strata-dsv41, STRATA_BUILD_DSV41, OFF by default). The CUDA
+  # lane never compiles it into strata, so its HIP copies must not be globbed into strata_hip_objs
+  # either - their host-side helpers are not linked there and the engine link would fail.
+  if(NOT STRATA_BUILD_DSV41 AND _rel MATCHES "^src/dsv41/")
+    continue()
+  endif()
   if(_rel MATCHES "\\.cu$")
     # Keep the .cu name so a sibling #include "foo.cu" still resolves, and
     # compile a .hip link of the same file. Tests, benches, and the NVFP4
