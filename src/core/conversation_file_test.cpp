@@ -301,12 +301,13 @@ int main() {
         check(!session_file_read((dir / "absent.bin").string(), id, keep, b, error), "missing read fails");
         check(same(keep, original), "failed read does not modify the destination");
     }
-    // layer-split images are not written; no file appears
+    // v2 stage consistency, checked before any disk access: a live checkpoint's stage parts must match the
+    // stage table - this sample's table is empty, so a stray part is refused and no file appears
     {
         SavedConversation split = sample();
         split.live.stage_parts.push_back(checkpoint(1, 9));
         const fs::path p = dir / "split.bin";
-        check(!session_file_write(p.string(), split, id, written, error), "layer-split image refused");
+        check(!session_file_write(p.string(), split, id, written, error), "stage parts outside the stage table are refused");
         check(!fs::exists(p) && no_temp(dir), "refused write leaves no file");
     }
     // a write into a missing directory fails cleanly

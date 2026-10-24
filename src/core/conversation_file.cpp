@@ -35,11 +35,11 @@
 #include <unistd.h>
 #endif
 
-// Format v1 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
+// Format v2 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
 // IEEE-754 floats, so a build where that is not the memory layout is refused rather than writing another format.
-static_assert(std::endian::native == std::endian::little, "session files (format v1) are little-endian only");
+static_assert(std::endian::native == std::endian::little, "session files (format v2) are little-endian only");
 static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<double>::is_iec559,
-              "session files (format v1) need IEEE-754 floats");
+              "session files (format v2) need IEEE-754 floats");
 
 namespace strata::core {
 namespace {
@@ -854,7 +854,7 @@ bool stage_parts_consistent(const SavedConversation& s, std::string& why) {
     return true;
 }
 
-// header v1, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
+// header v2, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
 // header_hash:u64 (session_hash64 of bytes 0..55, seed 0)
 void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload) {
     std::memset(h, 0, kHeader);
@@ -1059,7 +1059,7 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     // one checkpoint: ids (8 + 4 per token), images (8 + 16 per image), five state arrays (8 + bytes), used (8)
     uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
     for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
-    cp = sat_add(cp, 8);                                         // used + the checkpoint's own stage-parts count field
+    cp = sat_add(cp, 16);                                        // v2: used and the checkpoint's own stage-parts count
     cp = sat_add(cp, sat_mul(l.max_stages, cp));                 // v2: one part per admitted stage, same record shape
     uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
     n = sat_add(n, sat_add(8, sat_mul(l.max_stages, 40)));        // stage table (v2): count + 40 bytes per entry
