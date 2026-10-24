@@ -26,7 +26,7 @@ struct ConversationCheckpoint {
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
     // A shared-prefix pin (the request key pin=N): this checkpoint is the read-only prefix many suffix queries branch
-    // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
+    // from, so retention never evicts it (conv_cache.hpp) and the parked cache keeps at least one holder.  A run-time
     // mark only: it is not in the session file, a request that pins the same prefix again sets it.
     bool pinned = false;
     // --prefill-pipe on a layer split: the plan a prompt segment [from, to) is read in - its chunk (0: none), the loan
@@ -314,19 +314,19 @@ public:
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
-            // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
-            // shared prefix)?  If not, evict nothing
-            size_t kept = 0, kept_bytes = 0;
-            for (size_t i = 0; i < entries_.size(); ++i)
-                if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
+            // with everything evict_oldest() can remove gone, would it fit beside the entries that stay (the guarded
+            // donor and the last holder of each pinned shared prefix)?  If not, evict nothing
+            size_t kept = entries_.size(), kept_bytes = 0;
+            for (const auto& e : entries_) kept_bytes += e.bytes();
+            each_evictable([&](size_t i) { --kept; kept_bytes -= entries_[i].bytes(); });
             if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
         }
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            // the oldest entry without a pinned shared prefix leaves, then the oldest pinned one whose prefixes another
+            // entry still holds; when each entry left is the last holder of a prefix the new image does not fit (the
+            // caller skips parking it - the pinned prefix is what the queries come back to)
             if (!evict_oldest()) return false;
         }
         return true;
@@ -335,19 +335,35 @@ public:
     // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
     // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
     // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
-    // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
+    // own allocation. Whether freeing it reduces RSS depends on the allocator and platform;
+    // the admission caller must resample available memory after eviction.
+    // A pin keeps its shared prefix parked, not every conversation that branched from it (#2255): the oldest entry
+    // without a pin goes first; with only pinned ones left, the oldest whose every pinned prefix another entry
+    // still holds goes, so every prefix keeps at least one holder.  A client that pins its system prompt on every
+    // request fills every slot with holders of that one prefix, and refusing them all refused every later park.
+    // False when none can go (empty, or each entry left is the last holder of a pinned prefix).
     bool evict_oldest() {
-        // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
-            erase(i);
-            ++evictions_;
-            return true;
-        }
-        return false;
+        // the oldest entry that holds no pinned shared prefix, then the oldest pinned one whose every prefix another
+        // entry still holds; the guarded (borrowed) donor never goes, though it counts as a holder (it stays parked)
+        size_t victim = SIZE_MAX;
+        for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
+            if (!guarded(i) && !entries_[i].pinned()) victim = i;
+        for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
+            if (!guarded(i) && pins_held_elsewhere(i)) victim = i;
+        if (victim == SIZE_MAX) return false;
+        bytes_ -= entries_[victim].bytes();
+        erase(victim);
+        ++evictions_;
+        return true;
+    }
+
+    // Bytes released by repeated evict_oldest(), excluding retained K/V, the guarded donor and every pin's final holder.
+    // This is logical snapshot storage, not a guarantee of RSS reduction: admission must still resample memory.
+    // Simulate removals using metadata only; neither the cache nor snapshot payloads are copied/modified.
+    size_t evictable_bytes() const {
+        size_t total = 0;
+        each_evictable([&](size_t i) { total += entries_[i].bytes(); });
+        return total;
     }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
@@ -434,6 +450,40 @@ private:
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
+    }
+    bool guarded(size_t i) const { return guarded_ != 0 && serials_[i] == guarded_; }
+    // Every pinned prefix entries_[i] holds is held (same tokens, images and steering mode, pinned) by another parked
+    // entry that `removed` does not mark.  The guarded donor counts: it stays parked.
+    bool pins_held_elsewhere(size_t i, const uint8_t* removed = nullptr) const {
+        const SavedConversation& e = entries_[i];
+        for (const auto& c : e.checkpoints) {
+            if (!c.pinned) continue;
+            bool held = false;
+            for (size_t j = 0; j < entries_.size() && !held; ++j) {
+                if (j == i || (removed != nullptr && removed[j]) || entries_[j].cvec != e.cvec) continue;
+                for (const auto& k : entries_[j].checkpoints)
+                    if (k.pinned && k.ids == c.ids && k.imgs == c.imgs) { held = true; break; }
+            }
+            if (!held) return false;
+        }
+        return true;
+    }
+    // f(i) for every entry repeated evict_oldest() would remove, using metadata only (nothing is copied or changed).
+    // Removing an entry can only take a holder away, never make another entry evictable, so one pass in age order
+    // marks the same set as the repeated calls (which take unpinned entries first; those hold no pins).
+    template <class F> void each_evictable(F&& f) const {
+        std::array<uint8_t, 64> local{};
+        std::vector<uint8_t> overflow;
+        uint8_t* removed = local.data();
+        if (entries_.size() > local.size()) {
+            overflow.assign(entries_.size(), 0);
+            removed = overflow.data();
+        }
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (!guarded(i) && (!entries_[i].pinned() || pins_held_elsewhere(i, removed))) {
+                removed[i] = 1;
+                f(i);
+            }
     }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size

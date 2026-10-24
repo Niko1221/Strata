@@ -1,0 +1,666 @@
+{
+  "base": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "candidate": "af1e09ddc32e0415641a7976237451d9e092679a",
+  "args": [
+    "--pack",
+    "<PACK>",
+    "--native",
+    "<MODEL_SHARD_1>",
+    "--ple-gguf",
+    "<MODEL_SHARD_2>",
+    "--expert-profile",
+    "<EXPERT_PROFILE>",
+    "--expert-cache",
+    "4416",
+    "--prefill",
+    "auto",
+    "--spec",
+    "6",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<MTP_DIR>",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--resident-experts",
+    "--mtp-max-t",
+    "4",
+    "--suffix-draft",
+    "3",
+    "--lookup-chain",
+    "0",
+    "--conversation-cache-mib",
+    "4096",
+    "--conversation-cache-slots",
+    "3",
+    "--prompt-cache",
+    "6",
+    "--prompt-cache-every",
+    "16384",
+    "--pcie-frac",
+    "0",
+    "--adapt-swaps",
+    "0",
+    "--resident-budget-gib",
+    "8"
+  ],
+  "arms": [
+    {
+      "label": "baseline",
+      "requests": [
+        {
+          "name": "control-0",
+          "input_tokens": 213,
+          "output_ids": [
+            588,
+            248046
+          ],
+          "output_text": "one<|im_end|>",
+          "ttft_s": 3.2659999999996217,
+          "wall_s": 3.4219999999986612,
+          "done": "DONE 2 213 3225.6 193.1 stop 2 3 0 1265 2400 646 120 109.2 213 0 chunk=196 experts_streamed=3476",
+          "prompt_ms": 3225.6,
+          "decode_ms": 193.1,
+          "reused": 0,
+          "prompt_read": 213,
+          "cache_log": []
+        },
+        {
+          "name": "control-1",
+          "input_tokens": 213,
+          "output_ids": [
+            19186,
+            248046
+          ],
+          "output_text": "two<|im_end|>",
+          "ttft_s": 0.31199999999807915,
+          "wall_s": 0.4059999999990396,
+          "done": "DONE 2 213 280.2 128.6 stop 2 3 196 1287 2400 652 121 31.7 17 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 280.2,
+          "decode_ms": 128.6,
+          "reused": 196,
+          "prompt_read": 17,
+          "cache_log": []
+        },
+        {
+          "name": "common-history",
+          "input_tokens": 1581,
+          "output_ids": [
+            44061,
+            248046
+          ],
+          "output_text": "READY<|im_end|>",
+          "ttft_s": 4.172000000002299,
+          "wall_s": 4.28099999999904,
+          "done": "DONE 2 1581 4136.9 140.9 stop 2 3 196 1335 2400 597 108 83.5 1385 0 chunk=1378 experts_streamed=7012",
+          "prompt_ms": 4136.9,
+          "decode_ms": 140.9,
+          "reused": 196,
+          "prompt_read": 1385,
+          "cache_log": []
+        },
+        {
+          "name": "seed-0",
+          "input_tokens": 1836,
+          "output_ids": [
+            85,
+            29899,
+            248046
+          ],
+          "output_text": "violet<|im_end|>",
+          "ttft_s": 3.0940000000009604,
+          "wall_s": 3.297000000002299,
+          "done": "DONE 3 1836 3055.0 232.1 stop 3 3 1584 1211 2400 700 185 199.4 252 0 chunk=245 experts_streamed=3690",
+          "prompt_ms": 3055.0,
+          "decode_ms": 232.1,
+          "reused": 1584,
+          "prompt_read": 252,
+          "cache_log": []
+        },
+        {
+          "name": "seed-1",
+          "input_tokens": 1836,
+          "output_ids": [
+            14778,
+            248046
+          ],
+          "output_text": "amber<|im_end|>",
+          "ttft_s": 3.2969999999986612,
+          "wall_s": 3.485000000000582,
+          "done": "DONE 2 1836 3269.0 209.4 stop 2 3 1574 1212 2400 709 143 132.4 262 0 chunk=255 experts_streamed=3810",
+          "prompt_ms": 3269.0,
+          "decode_ms": 209.4,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 143.0 ms; parked=1 bytes=500371380 evictions=0 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-2",
+          "input_tokens": 1836,
+          "output_ids": [
+            1931,
+            277,
+            248046
+          ],
+          "output_text": "cedar<|im_end|>",
+          "ttft_s": 3.311999999998079,
+          "wall_s": 3.514999999999418,
+          "done": "DONE 3 1836 3268.1 245.3 stop 3 3 1574 1169 2400 710 206 232.1 262 0 chunk=255 experts_streamed=3819",
+          "prompt_ms": 3268.1,
+          "decode_ms": 245.3,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1839 tokens in 142.0 ms; parked=2 bytes=1000736612 evictions=0 snapshot_bytes=500365232 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-3",
+          "input_tokens": 1836,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 3.4219999999986612,
+          "wall_s": 3.610000000000582,
+          "done": "DONE 3 1836 3372.6 236.4 stop 3 3 1574 1156 2400 706 199 232.1 262 0 chunk=255 experts_streamed=3789",
+          "prompt_ms": 3372.6,
+          "decode_ms": 236.4,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 138.7 ms; parked=3 bytes=1501107992 evictions=0 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-4",
+          "input_tokens": 1836,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 3.125,
+          "wall_s": 3.3429999999971187,
+          "done": "DONE 3 1836 3083.8 258.0 stop 3 3 1574 1161 2400 707 191 237.4 262 0 chunk=255 experts_streamed=3783",
+          "prompt_ms": 3083.8,
+          "decode_ms": 258.0,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "seed-5",
+          "input_tokens": 1858,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 3.3290000000015425,
+          "wall_s": 3.5320000000028813,
+          "done": "DONE 3 1858 3281.8 247.0 stop 3 3 1574 1157 2400 701 200 247.1 284 0 chunk=277 experts_streamed=3901",
+          "prompt_ms": 3281.8,
+          "decode_ms": 247.0,
+          "reused": 1574,
+          "prompt_read": 284,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-0",
+          "input_tokens": 1863,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 3.389999999999418,
+          "wall_s": 3.577999999997701,
+          "done": "DONE 3 1863 3322.8 256.9 stop 3 3 1574 1138 2400 677 241 241.4 289 0 chunk=282 experts_streamed=3960",
+          "prompt_ms": 3322.8,
+          "decode_ms": 256.9,
+          "reused": 1574,
+          "prompt_read": 289,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-1",
+          "input_tokens": 1863,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 3.4060000000026776,
+          "wall_s": 3.625,
+          "done": "DONE 3 1863 3325.3 296.3 stop 3 3 1574 1140 2400 694 234 247.4 289 0 chunk=282 experts_streamed=3917",
+          "prompt_ms": 3325.3,
+          "decode_ms": 296.3,
+          "reused": 1574,
+          "prompt_read": 289,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-2",
+          "input_tokens": 1885,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 3.4530000000013388,
+          "wall_s": 3.6560000000026776,
+          "done": "DONE 3 1885 3396.1 247.4 stop 3 3 1574 1146 2400 693 224 237.0 311 0 chunk=304 experts_streamed=3998",
+          "prompt_ms": 3396.1,
+          "decode_ms": 247.4,
+          "reused": 1574,
+          "prompt_read": 311,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-3",
+          "input_tokens": 1863,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 3.4059999999990396,
+          "wall_s": 3.6089999999967404,
+          "done": "DONE 3 1863 3345.4 262.9 stop 3 3 1574 1138 2400 677 241 241.4 289 0 chunk=282 experts_streamed=3960",
+          "prompt_ms": 3345.4,
+          "decode_ms": 262.9,
+          "reused": 1574,
+          "prompt_read": 289,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-4",
+          "input_tokens": 1863,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 3.422000000002299,
+          "wall_s": 3.6570000000028813,
+          "done": "DONE 3 1863 3357.9 293.3 stop 3 3 1574 1140 2400 694 234 247.4 289 0 chunk=282 experts_streamed=3917",
+          "prompt_ms": 3357.9,
+          "decode_ms": 293.3,
+          "reused": 1574,
+          "prompt_read": 289,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        },
+        {
+          "name": "revisit-5",
+          "input_tokens": 1885,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 3.4840000000003783,
+          "wall_s": 3.686999999998079,
+          "done": "DONE 3 1885 3442.3 252.9 stop 3 3 1574 1146 2400 693 224 237.0 311 0 chunk=304 experts_streamed=3998",
+          "prompt_ms": 3442.3,
+          "decode_ms": 252.9,
+          "reused": 1574,
+          "prompt_read": 311,
+          "cache_log": [
+            "strata serve: conversation cache: skip parking (snapshot 477 MiB exceeds available budget)"
+          ]
+        }
+      ],
+      "parking_refused": 8,
+      "restored_messages": 0,
+      "prompt_read_total": 4977
+    },
+    {
+      "label": "candidate",
+      "requests": [
+        {
+          "name": "control-0",
+          "input_tokens": 213,
+          "output_ids": [
+            588,
+            248046
+          ],
+          "output_text": "one<|im_end|>",
+          "ttft_s": 3.1559999999990396,
+          "wall_s": 3.2969999999986612,
+          "done": "DONE 2 213 3106.1 185.3 stop 2 3 0 1265 2400 646 120 109.2 213 0 chunk=196 experts_streamed=3476",
+          "prompt_ms": 3106.1,
+          "decode_ms": 185.3,
+          "reused": 0,
+          "prompt_read": 213,
+          "cache_log": []
+        },
+        {
+          "name": "control-1",
+          "input_tokens": 213,
+          "output_ids": [
+            19186,
+            248046
+          ],
+          "output_text": "two<|im_end|>",
+          "ttft_s": 0.2970000000022992,
+          "wall_s": 0.40600000000267755,
+          "done": "DONE 2 213 269.7 138.0 stop 2 3 196 1287 2400 652 121 31.7 17 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 269.7,
+          "decode_ms": 138.0,
+          "reused": 196,
+          "prompt_read": 17,
+          "cache_log": []
+        },
+        {
+          "name": "common-history",
+          "input_tokens": 1581,
+          "output_ids": [
+            44061,
+            248046
+          ],
+          "output_text": "READY<|im_end|>",
+          "ttft_s": 4.23399999999674,
+          "wall_s": 4.35899999999674,
+          "done": "DONE 2 1581 4198.1 148.6 stop 2 3 196 1335 2400 597 108 83.5 1385 0 chunk=1378 experts_streamed=7012",
+          "prompt_ms": 4198.1,
+          "decode_ms": 148.6,
+          "reused": 196,
+          "prompt_read": 1385,
+          "cache_log": []
+        },
+        {
+          "name": "seed-0",
+          "input_tokens": 1836,
+          "output_ids": [
+            85,
+            29899,
+            248046
+          ],
+          "output_text": "violet<|im_end|>",
+          "ttft_s": 3.063000000001921,
+          "wall_s": 3.25,
+          "done": "DONE 3 1836 3030.7 222.9 stop 3 3 1584 1211 2400 700 185 199.4 252 0 chunk=245 experts_streamed=3690",
+          "prompt_ms": 3030.7,
+          "decode_ms": 222.9,
+          "reused": 1584,
+          "prompt_read": 252,
+          "cache_log": []
+        },
+        {
+          "name": "seed-1",
+          "input_tokens": 1836,
+          "output_ids": [
+            14778,
+            248046
+          ],
+          "output_text": "amber<|im_end|>",
+          "ttft_s": 3.2820000000028813,
+          "wall_s": 3.422000000002299,
+          "done": "DONE 2 1836 3237.9 183.2 stop 2 3 1574 1212 2400 709 143 132.4 262 0 chunk=255 experts_streamed=3810",
+          "prompt_ms": 3237.9,
+          "decode_ms": 183.2,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 90.7 ms; parked=1 bytes=500371380 evictions=0 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-2",
+          "input_tokens": 1836,
+          "output_ids": [
+            1931,
+            277,
+            248046
+          ],
+          "output_text": "cedar<|im_end|>",
+          "ttft_s": 3.2969999999986612,
+          "wall_s": 3.5159999999996217,
+          "done": "DONE 3 1836 3250.5 257.6 stop 3 3 1574 1169 2400 710 206 232.1 262 0 chunk=255 experts_streamed=3819",
+          "prompt_ms": 3250.5,
+          "decode_ms": 257.6,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1839 tokens in 97.5 ms; parked=2 bytes=1000736612 evictions=0 snapshot_bytes=500365232 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-3",
+          "input_tokens": 1836,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 3.2659999999996217,
+          "wall_s": 3.5,
+          "done": "DONE 3 1836 3211.6 285.6 stop 3 3 1574 1156 2400 706 199 232.1 262 0 chunk=255 experts_streamed=3789",
+          "prompt_ms": 3211.6,
+          "decode_ms": 285.6,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 149.6 ms; parked=3 bytes=1501107992 evictions=0 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-4",
+          "input_tokens": 1836,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 3.2809999999990396,
+          "wall_s": 3.5,
+          "done": "DONE 3 1836 3235.3 255.0 stop 3 3 1574 1161 2400 707 191 237.4 262 0 chunk=255 experts_streamed=3783",
+          "prompt_ms": 3235.3,
+          "decode_ms": 255.0,
+          "reused": 1574,
+          "prompt_read": 262,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 90.0 ms; parked=3 bytes=1501107992 evictions=1 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "seed-5",
+          "input_tokens": 1858,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 3.3909999999996217,
+          "wall_s": 3.6090000000003783,
+          "done": "DONE 3 1858 3339.0 266.5 stop 3 3 1574 1157 2400 701 200 247.1 284 0 chunk=277 experts_streamed=3901",
+          "prompt_ms": 3339.0,
+          "decode_ms": 266.5,
+          "reused": 1574,
+          "prompt_read": 284,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1840 tokens in 102.5 ms; parked=3 bytes=1501114140 evictions=2 snapshot_bytes=500371380 reused_kv_bytes=0"
+          ]
+        },
+        {
+          "name": "revisit-0",
+          "input_tokens": 1863,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 0.7659999999996217,
+          "wall_s": 0.9690000000009604,
+          "done": "DONE 3 1863 711.3 257.0 stop 3 3 1840 1144 2400 670 238 232.6 23 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 711.3,
+          "decode_ms": 257.0,
+          "reused": 1840,
+          "prompt_read": 23,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1862 tokens in 142.5 ms; parked=3 bytes=1501474508 evictions=2 snapshot_bytes=500731748 reused_kv_bytes=0",
+            "strata serve: SNAPSHOT_VERIFY draft=4648e63ede62a8e6 cells=1840 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1840 tokens (live) in 39.6 ms; parked=3 bytes=1529570756"
+          ]
+        },
+        {
+          "name": "revisit-1",
+          "input_tokens": 1863,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 0.7659999999996217,
+          "wall_s": 0.9689999999973224,
+          "done": "DONE 3 1863 695.7 264.8 stop 3 3 1840 1145 2400 693 227 225.6 23 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 695.7,
+          "decode_ms": 264.8,
+          "reused": 1840,
+          "prompt_read": 23,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1867 tokens in 133.6 ms; parked=3 bytes=1625099112 evictions=2 snapshot_bytes=623995984 reused_kv_bytes=28081536",
+            "strata serve: SNAPSHOT_VERIFY draft=aa8ec6091d84f271 cells=1840 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1840 tokens (live) in 51.0 ms; parked=3 bytes=1653195360"
+          ]
+        },
+        {
+          "name": "revisit-2",
+          "input_tokens": 1885,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 0.7340000000003783,
+          "wall_s": 0.9370000000017171,
+          "done": "DONE 3 1885 689.8 243.1 stop 3 3 1862 1148 2400 689 220 218.9 23 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 689.8,
+          "decode_ms": 243.1,
+          "reused": 1862,
+          "prompt_read": 23,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1867 tokens in 118.7 ms; parked=3 bytes=1748363348 evictions=2 snapshot_bytes=623995984 reused_kv_bytes=28081536",
+            "strata serve: SNAPSHOT_VERIFY draft=02c2464abf936c4a cells=1864 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1862 tokens (live) in 49.1 ms; parked=3 bytes=1776819788"
+          ]
+        },
+        {
+          "name": "revisit-3",
+          "input_tokens": 1863,
+          "output_ids": [
+            273,
+            1588,
+            248046
+          ],
+          "output_text": "lemon<|im_end|>",
+          "ttft_s": 0.5,
+          "wall_s": 0.75,
+          "done": "DONE 3 1863 442.5 315.0 stop 3 3 1856 1144 2400 670 238 239.4 7 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 442.5,
+          "decode_ms": 315.0,
+          "reused": 1856,
+          "prompt_read": 7,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1889 tokens in 129.4 ms; parked=3 bytes=1748763740 evictions=2 snapshot_bytes=624396376 reused_kv_bytes=28391040",
+            "strata serve: SNAPSHOT_VERIFY draft=2a69f34b3be6ef61 cells=1868 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1856 tokens (checkpoint) in 53.1 ms; parked=3 bytes=1782413652"
+          ]
+        },
+        {
+          "name": "revisit-4",
+          "input_tokens": 1863,
+          "output_ids": [
+            5816,
+            278,
+            248046
+          ],
+          "output_text": "coral<|im_end|>",
+          "ttft_s": 0.5159999999996217,
+          "wall_s": 0.75,
+          "done": "DONE 3 1863 447.3 290.3 stop 3 3 1856 1145 2400 693 227 227.8 7 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 447.3,
+          "decode_ms": 290.3,
+          "reused": 1856,
+          "prompt_read": 7,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1867 tokens in 142.7 ms; parked=3 bytes=1748763740 evictions=2 snapshot_bytes=623995984 reused_kv_bytes=28325760",
+            "strata serve: SNAPSHOT_VERIFY draft=c043c57cb9a53fbf cells=1868 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1856 tokens (checkpoint) in 64.8 ms; parked=3 bytes=1782413652"
+          ]
+        },
+        {
+          "name": "revisit-5",
+          "input_tokens": 1885,
+          "output_ids": [
+            474,
+            7588,
+            248046
+          ],
+          "output_text": "indigo<|im_end|>",
+          "ttft_s": 0.4690000000009604,
+          "wall_s": 0.6879999999982829,
+          "done": "DONE 3 1885 415.3 271.7 stop 3 3 1878 1148 2400 689 220 226.7 7 0 chunk=0 experts_streamed=0",
+          "prompt_ms": 415.3,
+          "decode_ms": 271.7,
+          "reused": 1878,
+          "prompt_read": 7,
+          "cache_log": [
+            "strata serve: conversation cache: parked 1867 tokens in 121.5 ms; parked=3 bytes=1748363348 evictions=2 snapshot_bytes=623995984 reused_kv_bytes=28325760",
+            "strata serve: SNAPSHOT_VERIFY draft=f79898543e6f7317 cells=1892 mode=0 source=ram resident=131072",
+            "strata serve: conversation cache: restored 1878 tokens (checkpoint) in 54.8 ms; parked=3 bytes=1782413388"
+          ]
+        }
+      ],
+      "parking_refused": 0,
+      "restored_messages": 6,
+      "prompt_read_total": 3289
+    }
+  ],
+  "completed": true,
+  "binary_sha256": {
+    "baseline": "44a0262945df7291048e341d146a14fc85d41c913680dbeade807f7cd40429d4",
+    "candidate": "7d207a60a28ff587a78d6c2e53cd0061fe9da47b544beb444671dea4e90088eb"
+  },
+  "recovery": {
+    "original_service": "absent",
+    "restored": true
+  },
+  "token_mismatches": [],
+  "elapsed": 120.5
+}

@@ -1,0 +1,18 @@
+{
+  "engine_env": {
+    "HIP_VISIBLE_DEVICES": "1",
+    "STRATA_HIPBLASLT_TUNING": "<HIPBLASLT_TUNING_FILE>",
+    "STRATA_RESIDENT_PIN": "0",
+    "STRATA_SPEC_PROB": "1",
+    "STRATA_SPEC_PROB_GATE": "pick",
+    "STRATA_IQ_MT_MIN": "1",
+    "STRATA_SNAPSHOT_VERIFY": "1"
+  },
+  "hardware": {
+    "gpu": "AMD Radeon RX 7900 XTX",
+    "cpu": "AMD Ryzen 5 7600X 6-Core Processor",
+    "build": "26300",
+    "os": "Microsoft Windows 11 \u4e13\u4e1a\u7248",
+    "memory_bytes": 33455521792
+  }
+}

@@ -1,0 +1,20 @@
+
+[163/168] Linking CXX static library libstrata_qwen35.a
+[164/168] Linking CXX static library libstrata_spec.a
+[165/168] Linking CXX executable conversation_cache_test
+[166/168] Linking CXX executable session_save_reclaim_test
+[167/168] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+<RUN>/source/src/program/generate.cpp: In lambda function:
+<RUN>/source/src/program/generate.cpp:11769:30: warning: unused variable 'w' [-Wunused-variable]
+11769 |                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+      |                              ^
+[168/168] Linking CXX executable strata
+Test project <RUN>/build-cuda
+    Start 1: conversation_cache_test
+1/2 Test #1: conversation_cache_test ..........   Passed    0.25 sec
+    Start 5: session_save_reclaim_test
+2/2 Test #5: session_save_reclaim_test ........   Passed    0.00 sec
+
+100% tests passed out of 2
+
+Total Test time (real) =   0.26 sec

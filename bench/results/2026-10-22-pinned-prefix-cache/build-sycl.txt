@@ -1,0 +1,12 @@
+#!/bin/bash
+set -eo pipefail
+ROOT=<RUN>
+TOOLS=<TOOLCHAINS>
+cd "$ROOT"
+export PATH="$TOOLS/cuda-env/bin:$PATH"
+export ONEAPI_ROOT="$TOOLS/oneapi-root/opt/intel/oneapi"
+source "$ONEAPI_ROOT/compiler/2026.1/env/vars.sh"
+source "$ONEAPI_ROOT/mkl/2026.1/env/vars.sh"
+source "$ONEAPI_ROOT/tbb/2023.1/env/vars.sh"
+cmake -S source/sycl -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_BUILD_TESTS=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_GGML_DIR="$TOOLS/llama-src" -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-sycl --target strata --parallel 2

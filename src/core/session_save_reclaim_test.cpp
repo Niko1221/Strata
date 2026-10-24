@@ -111,5 +111,46 @@ int main() {
         auto r = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
         check(!r.bytes && !r.checkpoints && !r.parked, "empty chain and disabled cache");
     }
+    // Session SAVE uses the same eviction policy as parking. Reclaim redundant
+    // holders before touching the active chain; a borrowed donor remains usable.
+    for (bool guard_oldest : {false, true}) for (bool enough_after_one : {false, true}) {
+        std::vector<ConversationCheckpoint> chain{checkpoint(100), checkpoint(300, true)};
+        const auto selected = chain[1];
+        const auto* storage = chain[1].gdn.data();
+        ConversationCache cache(1u << 20, 3);
+        for (int branch = 0; branch < 3; ++branch) {
+            SavedConversation c;
+            c.live = checkpoint(20); c.live.ids[19] = branch;
+            c.checkpoints = {checkpoint(2), checkpoint(5, true), checkpoint(15)};
+            c.checkpoints[2].ids[14] = branch;
+            check(cache.put(std::move(c)), "shared pin with distinct branch parked");
+        }
+        const auto donor = cache.best(std::vector<int32_t>(3, 42), {{1, 99}}, true);
+        check(cache.borrows(donor), "the donor is borrowed before its pinned boundary");
+        if (guard_oldest) cache.guard(donor.serial);
+        const auto* donor_storage = cache.find(donor.serial)->checkpoints[0].gdn.data();
+        const auto before = cache.bytes();
+        const auto need = session_save_peak_bytes(session_deepest_checkpoint(chain), live);
+        int probes = 0;
+        deny_alloc = true;
+        const auto r = session_save_reclaim(chain, cache, live, floor, [&]() -> std::optional<uint64_t> {
+            return probes++ > 0 && enough_after_one ? need + floor : 0;
+        });
+        deny_alloc = false;
+        check(r.parked == (enough_after_one ? 1u : 2u), "SAVE releases redundant pin holders one at a time");
+        check(cache.size() == (enough_after_one ? 2u : 1u), "SAVE retains a holder of the shared prefix");
+        check(r.checkpoints == (enough_after_one ? 0u : 1u), "active chain reclaimed only after parked duplicates");
+        const auto* after = session_deepest_checkpoint(chain);
+        check(same(*after, selected) && after->gdn.data() == storage, "SAVE selection and running state unchanged");
+        check(r.bytes == before - cache.bytes() + (enough_after_one ? 0 : checkpoint(100).bytes()),
+              "SAVE accounts for redundant holder and active checkpoint storage");
+        check(cache.best(std::vector<int32_t>(6, 42), {{1, 99}}, true).tokens == 5,
+              "shared pin remains recoverable after SAVE reclamation");
+        if (guard_oldest) {
+            const auto* held = cache.find(donor.serial);
+            check(held && held->checkpoints[0].gdn.data() == donor_storage, "borrowed donor storage survives SAVE");
+            cache.unguard();
+        }
+    }
     std::printf("session_save_reclaim: %d checks passed\n", checks_run);
 }

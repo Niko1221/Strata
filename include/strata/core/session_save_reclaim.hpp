@@ -32,7 +32,7 @@ SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& c
     }
     while (true) {
         const size_t before = cache.bytes();
-        if (!cache.evict_oldest()) break; // pinned conversations stay parked
+        if (!cache.evict_oldest()) break; // every pinned prefix retains a holder
         ++out.parked;
         out.bytes += before - cache.bytes();
         room = available();

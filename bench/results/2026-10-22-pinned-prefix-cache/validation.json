@@ -1,0 +1,38 @@
+{
+  "production_revision": "af1e09ddc32e0415641a7976237451d9e092679a",
+  "base": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "production_files": {
+    "include/strata/core/conversation_cache.hpp": "61ce7ce8129f734d0e7335a325f3340a57266799e42efb32d014a9714aac6f92",
+    "include/strata/core/session_save_reclaim.hpp": "0bc9daddd7e530d5295a2e574ad30502f4b91a406fab8ed8ed67c976f27f9934"
+  },
+  "session_test_sha256": "2354acc5d5508e3a77c6095edbf877615518cc52fc3d1c8eed5f8d82a11fa3c6",
+  "checks": {
+    "cache_asan_ubsan": 45153,
+    "session_asan_ubsan": 161,
+    "session_windows_hip_clang": 161,
+    "session_intel_icpx": 161,
+    "session_cuda_host": 161
+  },
+  "source_note": "Production headers equal af1e09dd; subsequent changes contain tests, docs and recorded evidence.",
+  "builds": {
+    "CUDA": {
+      "passed": true,
+      "architecture": "sm_120",
+      "binary_sha256": "8b9be0b5851c9c751ea828d9df77b23a685f0141a89bd15e83f9cae6808149d2",
+      "tests_passed": 2
+    },
+    "SYCL": {
+      "passed": true,
+      "binary_sha256": "712aca6e49236276a982908d15c2a44839d394cef73d777dc15932d4fa7a4d7a"
+    },
+    "HIP": {
+      "passed": true,
+      "architecture": "gfx1100",
+      "model_execution": true
+    },
+    "Metal": {
+      "passed": true,
+      "model_execution": false
+    }
+  }
+}

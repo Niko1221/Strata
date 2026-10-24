@@ -1167,7 +1167,8 @@ greedy answer was the same text as the full read. Without the flag nothing chang
 A request can say where the document ends: `"strata_prefix": {"messages": 1}` (the first message is the document),
 `{"message": 0, "chars": 210000}` (the first 210,000 characters of message 0, for a client that sends the document and
 the question in one message) or `{"tokens": 12345}`. The engine reads the prompt in two parts there, keeps the checkpoint
-at the boundary pinned (retention never evicts it, a parked conversation holding it stays parked, `SAVE` keeps it) and,
+at the boundary pinned (retention never evicts it, the conversation cache keeps at least one holder of each pinned
+prefix, and `SAVE` keeps it) and,
 when a later question resumes from it, does not park the question it leaves. So the next question starts at the end of
 the document, and 20 questions cost one read of it. Without the field the server's checkpoints are where they were: the
 last turn's start, the system prompt's end and every `--prompt-cache-every` tokens, so a question that follows a long
@@ -1206,7 +1207,10 @@ buffer (and at most 16 MiB), which the budget counts like the rest of the snapsh
 Rewinds refresh the affected pages, and running state and
 checkpoints are captured again. Retained active K/V counts against the same byte
 budget and is discarded before evicting parked entries under memory pressure.
-Oldest parked entries are evicted first. A new conversation that starts with a
+Unpinned parked entries are evicted oldest first. If no unpinned entry can leave,
+the oldest entry whose pinned prefixes all have another holder can leave. The
+last holder of each prefix and any conversation currently being borrowed stay.
+A new conversation that starts with a
 checkpoint inside a parked one (subagents that share a system prompt and tool
 list, a compacted history) restores that prefix and leaves the parked
 conversation where it is, so its next turn still resumes in full; the engine

@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+ROOT=<RUN>
+TOOLS=<TOOLCHAINS>
+cd "$ROOT"
+exec 9> "$ROOT/cuda-build.lock"
+flock -x 9
+export PATH="$TOOLS/cuda-env/bin:$PATH"
+export LD_LIBRARY_PATH="$TOOLS/cuda-env/lib:${LD_LIBRARY_PATH:-}"
+CC="$TOOLS/cuda-env/bin/x86_64-conda-linux-gnu-cc"
+CXX="$TOOLS/cuda-env/bin/x86_64-conda-linux-gnu-c++"
+cmake -S source -B build-cuda -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=ON -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_NATIVE_EXPERTS=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CUDA_HOST_COMPILER="$CXX" -DCMAKE_CUDA_COMPILER="$TOOLS/cuda-env/bin/nvcc" -DSTRATA_GGML_DIR="$TOOLS/llama-src" -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-cuda --target strata conversation_cache_test session_save_reclaim_test --parallel 2
+ctest --test-dir build-cuda --output-on-failure -R "conversation_cache|session_save_reclaim|resident_decode_prefetch"

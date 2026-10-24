@@ -1,0 +1,33 @@
+{
+  "output_mismatches": [],
+  "arms": [
+    {
+      "label": "baseline",
+      "parking_refused": 8,
+      "restores": 0,
+      "revisit_prompt_read": [
+        289,
+        289,
+        311,
+        289,
+        289,
+        311
+      ],
+      "revisit_prompt_read_total": 1778
+    },
+    {
+      "label": "candidate",
+      "parking_refused": 0,
+      "restores": 6,
+      "revisit_prompt_read": [
+        23,
+        23,
+        23,
+        7,
+        7,
+        7
+      ],
+      "revisit_prompt_read_total": 90
+    }
+  ]
+}
