@@ -62,7 +62,7 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 | IQ3_S, 31K | 31,446 | **73.7** | **691** | 2 |
 | IQ4_XS, short chat | 80 | 58.6 | 53 | 5 |
 | IQ4_XS, 1.6K | 726 | 62.8 | 149 | 5 |
-| IQ4_XS, 31K | 31,446 | 57.5 | 533 | 2 |
+| IQ4_XS, 31K | 31,446 | **73.5** (57.5 before `--ple-io ram`) | 532 | 5 |
 | IQ4_XS, 140K | 140,908 | 59.0 | 546 | 1 |
 
 - Expert cache: IQ3_S 12,245 slots / 23.9 GiB, 98.0-99.7% hit; IQ4_XS 9,876 slots / 22.8 GiB, 90.4-94.0% hit
@@ -78,3 +78,29 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 - Vision answered correctly on a two-shape image (10-11 s per image, 320 prompt tokens).
 - Not measured: 262K prefill beyond 140K, two clients at once, power at 262K, `--kv fp16` (other gfx906 owners use
   it at 262K), and any GPU-encoder path (the encoder runs on the CPU here).
+
+## The PLE table is the real cost here: `--ple-io ram`
+
+This model carries a per-layer-embedding table of **320,001,536 rows at 90 bytes = 28.8 GB** inside the
+`-00002-of-00003.gguf` shard. With the default `--ple-io direct` the engine reads those rows from the SSD with
+unbuffered reads and a 90 MB row cache (`--ple-row-cache` default 1,048,576 rows), so every token puts a few SSD
+reads on the decode path. On this box that showed up as 4-11 MB/s of disk reads during generation and a decode of
+**57.5 tok/s** at a 31K prompt.
+
+With 128 GB of RAM there is room for the whole table, so `--ple-io ram` locks it in memory:
+
+```text
+strata generate: PLE table locked in RAM (--ple-io ram) in 14.3 s
+```
+
+| | `--ple-io direct` (default) | `--ple-io ram` |
+| --- | ---: | ---: |
+| 31K prompt, decode | 57.5 tok/s (49.0-65.9) | **73.5 tok/s** (64.1-73.6, 5 runs) |
+| 31K prompt, prompt rate | 533 tok/s | 532 tok/s |
+| disk reads during generation | 4-11 MB/s | 0.02 MB/s |
+| RAM | 55.4 GiB of experts | 55.4 + 28.8 GiB, 92 of 125 GB used |
+| time to ready | 48 s | 63 s |
+
+That is **+28% decode** and it puts IQ4_XS at the same speed as IQ3_S had on this machine (73.5 vs 73.7 tok/s)
+while keeping the 262,144-token window and the 4.25-bit weights. The alternative for a smaller box is a larger
+`--ple-row-cache` (90 B per row), which is a bounded compromise between the two.
