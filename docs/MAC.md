@@ -34,7 +34,7 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 | IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 68 GB | 96 GB |
 | UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 95 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
-| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 43 GB | 64 GB; streams below that (measured on 32 and 48 GB) |
+| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 43 GB | 64 GB by the rule, but the resident start runs out of Metal memory there (#3784: the whole 58.5 GB file is wrapped), so set `STRATA_METAL_STREAM=1` until that is fixed; streams below that (measured on 32 and 48 GB) |
 | Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 76 GB | 128 GB; streams below that (not measured on a Mac) |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
