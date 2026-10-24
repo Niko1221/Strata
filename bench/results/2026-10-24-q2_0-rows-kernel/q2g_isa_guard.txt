@@ -1,0 +1,4 @@
+# python tools/check_isa_guard.py q2g_bench_msvc.exe --map q2g_bench_msvc.map
+# q2g_bench_msvc.exe: MSVC 19.51.36260; bench/micro/q2g_rows_bench.cpp at baseline flags, src/kernels/cpu/expert.cpp
+# with /arch:AVX512, linked with /MAP (the command lines are in the README of this directory)
+check_isa_guard: C:\Users\andre\AppData\Local\Temp\strata-q2g-port-msvc\q2g_bench_msvc.exe: 550 functions, 23 hold wide-ISA instructions, 0 not allowed

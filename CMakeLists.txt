@@ -1783,6 +1783,18 @@ if(STRATA_NATIVE_EXPERTS)
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+  # the Q2_0 GGUF row kernels (expert.cpp, AVX-512 flags above) against the original, bit for bit and timed warm
+  # and cold; --validate-only is the CTest entry, and it exits 77 where the CPU cannot run the kernels
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/q2g_rows_bench.cpp" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|x64|X86")
+    add_executable(q2g_rows_bench bench/micro/q2g_rows_bench.cpp src/kernels/cpu/expert.cpp)
+    target_include_directories(q2g_rows_bench PRIVATE include)
+    target_link_libraries(q2g_rows_bench PRIVATE Threads::Threads)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME q2g_rows_bench_validate COMMAND q2g_rows_bench --validate-only)
+      set_tests_properties(q2g_rows_bench_validate PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    endif()
+  endif()
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)

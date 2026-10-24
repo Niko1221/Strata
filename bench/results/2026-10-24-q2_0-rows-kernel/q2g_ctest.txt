@@ -1,0 +1,24 @@
+# AMD clang 24.0.0 (ROCm SDK), Ninja, Release; build directory build-hip-sym
+# cmake -S . -B build-hip-sym -DSTRATA_BUILD_TESTS=ON
+# cmake --build build-hip-sym --target q2g_rows_bench
+$ ctest --test-dir build-hip-sym -R q2g_rows_bench_validate --output-on-failure
+Test project D:/Projects/strata/build-hip-sym
+    Start 117: q2g_rows_bench_validate
+1/1 Test #117: q2g_rows_bench_validate ..........   Passed    0.10 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =   0.10 sec
+
+# the same test where the harness reports the CPU cannot run the kernels
+$ STRATA_FORCE_AVX2=1 ctest --test-dir build-hip-sym -R q2g_rows_bench_validate --output-on-failure
+Test project D:/Projects/strata/build-hip-sym
+    Start 117: q2g_rows_bench_validate
+1/1 Test #117: q2g_rows_bench_validate ..........***Skipped   0.03 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =   0.03 sec
+
+The following tests did not run:
+	117 - q2g_rows_bench_validate (Skipped)

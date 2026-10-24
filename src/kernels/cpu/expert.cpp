@@ -542,6 +542,198 @@ void q2g_rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const
         for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
+
+// ---- v2: the same row dot with the eight-block group body at a compile-time trip count ----
+//
+// The original's `for (i < nb)` has a runtime trip count and its scale gather is an eight-trip memcpy loop,
+// so nothing across the group can be unrolled, scheduled together or folded to a constant index.  Here a full
+// group has nb == 8, all masks are gone, and the block loop is a literal 0..7: the per-block scale select
+// becomes one `vpermps` with an index from a constant table.
+//
+// The accumulation order is unchanged: acc[t] takes the blocks in ascending order and corr[t] the groups in
+// ascending order, both with the same per-lane FMAs, so the output is bitwise the original's.
+inline uint16_t gguf_ld16(const uint8_t* p) {
+    uint16_t v;
+    std::memcpy(&v, p, 2);
+    return v;
+}
+
+/// The eight fp16 scales of one full group: block b at row + 18*b.  Packed in GPRs rather than through an
+/// eight-trip loop and a stack array, which is what the original's `sc[8]` becomes.
+inline __m128i gguf_scales8(const uint8_t* row) {
+    const uint32_t w0 = (uint32_t) gguf_ld16(row) | (uint32_t) gguf_ld16(row + 18) << 16;
+    const uint32_t w1 = (uint32_t) gguf_ld16(row + 36) | (uint32_t) gguf_ld16(row + 54) << 16;
+    const uint32_t w2 = (uint32_t) gguf_ld16(row + 72) | (uint32_t) gguf_ld16(row + 90) << 16;
+    const uint32_t w3 = (uint32_t) gguf_ld16(row + 108) | (uint32_t) gguf_ld16(row + 126) << 16;
+    // The lane is a bit pattern, not a number; the intrinsic's parameter type is signed.
+    return _mm_setr_epi32(static_cast<int32_t>(w0), static_cast<int32_t>(w1), static_cast<int32_t>(w2),
+                          static_cast<int32_t>(w3));
+}
+
+/// kScaleIdx[i][j] selects p[2i] in the low half and p[2i+1] in the high half.
+alignas(64) static const int32_t kScaleIdx[8][16] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+    {2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3},
+    {4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5},
+    {6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7},
+    {8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9},
+    {10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11},
+    {12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 13, 13},
+    {14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15},
+};
+
+/// One eight-block group against NT activations, block-major: each unpacked block is used by every token
+/// before the next one is unpacked.  Five tokens and more take this path.
+template<int NT>
+inline void q2g_group8_blk(const uint8_t* row, const ActQ* const* a, int b0, __m512 (&acc)[NT], __m512 (&corr)[NT]) {
+    const __m512i dup = _mm512_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7);
+    const uint8_t* blk = row + (size_t) b0 * BB;
+    const __m512 d8 = _mm512_castps256_ps512(_mm256_cvtph_ps(gguf_scales8(blk)));
+    const __m512 dd = _mm512_permutexvar_ps(dup, d8);
+    __m512 p[NT];
+    const int8_t* xq[NT];
+    for (int t = 0; t < NT; ++t) {
+        p[t] = _mm512_mul_ps(dd, _mm512_loadu_ps(a[t]->scale + 2 * b0));
+        corr[t] = _mm512_fmadd_ps(dd, _mm512_loadu_ps(a[t]->hx + 2 * b0), corr[t]);
+        xq[t] = a[t]->q + (size_t) b0 * QK;
+    }
+    // Eight written-out steps.  MSVC ignores `#pragma clang loop unroll(full)` (C4068) and does not inline a
+    // helper that carries the body, so the expansion is explicit: the group stays straight-line and the
+    // scales' indexes stay constants, which is what the faster clang build gets from the pragma.
+#define Q2G_BLOCK8_STEP(I)                                                                                    \
+    do {                                                                                                      \
+        const __m512i w = unpack64_q2_0(blk + (size_t) (I) * BB + 2);                                          \
+        const __m512i idx = _mm512_load_si512((const void*) kScaleIdx[I]);                                     \
+        for (int t = 0; t < NT; ++t) {                                                                        \
+            const __m512i dot = _mm512_dpbusd_epi32(                                                          \
+                _mm512_setzero_si512(), w, _mm512_load_si512((const void*) (xq[t] + (size_t) (I) * QK)));      \
+            acc[t] = _mm512_fmadd_ps(_mm512_permutexvar_ps(idx, p[t]), _mm512_cvtepi32_ps(dot), acc[t]);       \
+        }                                                                                                     \
+    } while (0)
+    Q2G_BLOCK8_STEP(0);
+    Q2G_BLOCK8_STEP(1);
+    Q2G_BLOCK8_STEP(2);
+    Q2G_BLOCK8_STEP(3);
+    Q2G_BLOCK8_STEP(4);
+    Q2G_BLOCK8_STEP(5);
+    Q2G_BLOCK8_STEP(6);
+    Q2G_BLOCK8_STEP(7);
+#undef Q2G_BLOCK8_STEP
+}
+
+/// The same group, token-major: all eight blocks are unpacked once and stay in registers, then one token's
+/// eight dots run from them.  Up to four tokens take this path.
+template<int NT>
+inline void q2g_group8_tok(const uint8_t* row, const ActQ* const* a, int b0, __m512 (&acc)[NT], __m512 (&corr)[NT]) {
+    const __m512i dup = _mm512_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7);
+    const uint8_t* blk = row + (size_t) b0 * BB;
+    __m512i w[8];
+#define Q2G_UNPACK8_STEP(I) (w[I] = unpack64_q2_0(blk + (size_t) (I) * BB + 2))
+    Q2G_UNPACK8_STEP(0);
+    Q2G_UNPACK8_STEP(1);
+    Q2G_UNPACK8_STEP(2);
+    Q2G_UNPACK8_STEP(3);
+    Q2G_UNPACK8_STEP(4);
+    Q2G_UNPACK8_STEP(5);
+    Q2G_UNPACK8_STEP(6);
+    Q2G_UNPACK8_STEP(7);
+#undef Q2G_UNPACK8_STEP
+    const __m512 d8 = _mm512_castps256_ps512(_mm256_cvtph_ps(gguf_scales8(blk)));
+    const __m512 dd = _mm512_permutexvar_ps(dup, d8);
+    for (int t = 0; t < NT; ++t) {
+        const __m512 p = _mm512_mul_ps(dd, _mm512_loadu_ps(a[t]->scale + 2 * b0));
+        corr[t] = _mm512_fmadd_ps(dd, _mm512_loadu_ps(a[t]->hx + 2 * b0), corr[t]);
+        const int8_t* xq = a[t]->q + (size_t) b0 * QK;
+        // Written out for the same reason as the block-major group above.
+#define Q2G_DOT8_STEP(I)                                                                                      \
+    do {                                                                                                      \
+        const __m512i dot = _mm512_dpbusd_epi32(                                                              \
+            _mm512_setzero_si512(), w[I], _mm512_load_si512((const void*) (xq + (size_t) (I) * QK)));          \
+        const __m512i idx = _mm512_load_si512((const void*) kScaleIdx[I]);                                     \
+        acc[t] = _mm512_fmadd_ps(_mm512_permutexvar_ps(idx, p), _mm512_cvtepi32_ps(dot), acc[t]);               \
+    } while (0)
+        Q2G_DOT8_STEP(0);
+        Q2G_DOT8_STEP(1);
+        Q2G_DOT8_STEP(2);
+        Q2G_DOT8_STEP(3);
+        Q2G_DOT8_STEP(4);
+        Q2G_DOT8_STEP(5);
+        Q2G_DOT8_STEP(6);
+        Q2G_DOT8_STEP(7);
+#undef Q2G_DOT8_STEP
+    }
+}
+
+template<int NT, bool kTokMajor>
+inline void q2g_row_groups(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
+    __m512 acc[NT], corr[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = _mm512_setzero_ps(); corr[t] = _mm512_setzero_ps(); }
+    int b0 = 0;
+    for (; b0 + 8 <= nblocks; b0 += 8) {
+        if (kTokMajor) {
+            q2g_group8_tok<NT>(row, a, b0, acc, corr);
+        } else {
+            q2g_group8_blk<NT>(row, a, b0, acc, corr);
+        }
+    }
+    // Blocks b0..nblocks-1, fewer than eight: the mask, the memcpy scale gather and the runtime block loop
+    // are entered at most once per row, so they keep the original's shape instead of the group's.  The body
+    // stays in this function because MSVC compiles a separate template instantiation as an out-of-line call.
+    if (b0 < nblocks) {
+        const int nb = nblocks - b0;
+        const __mmask16 m16 = (__mmask16) ((1u << (2 * nb)) - 1u);   // 1 <= nb < 8, so 2..14 mask bits
+        alignas(16) uint16_t sc[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < nb; ++i) std::memcpy(&sc[i], row + (size_t) (b0 + i) * 18, 2);
+        const __m512 d8 = _mm512_castps256_ps512(_mm256_cvtph_ps(_mm_load_si128((const __m128i*) sc)));
+        const __m512i dup = _mm512_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7);
+        const __m512 dd = _mm512_maskz_mov_ps(m16, _mm512_permutexvar_ps(dup, d8));
+        const __m512i base = _mm512_setr_epi32(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1);
+        __m512 p[NT];
+        for (int t = 0; t < NT; ++t) {
+            p[t] = _mm512_mul_ps(dd, _mm512_maskz_loadu_ps(m16, a[t]->scale + 2 * b0));
+            corr[t] = _mm512_fmadd_ps(dd, _mm512_maskz_loadu_ps(m16, a[t]->hx + 2 * b0), corr[t]);
+        }
+        for (int i = 0; i < nb; ++i) {
+            const __m512i w = unpack64_q2_0(row + (size_t) (b0 + i) * 18 + 2);
+            const __m512i idx = _mm512_add_epi32(base, _mm512_set1_epi32(2 * i));
+            for (int t = 0; t < NT; ++t) {
+                const __m512i dot = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w,
+                                                        _mm512_load_si512((const void*) (a[t]->q + (b0 + i) * QK)));
+                acc[t] = _mm512_fmadd_ps(_mm512_permutexvar_ps(idx, p[t]), _mm512_cvtepi32_ps(dot), acc[t]);
+            }
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(acc[t]) - _mm512_reduce_add_ps(corr[t]);
+}
+
+template<int NT, bool kTokMajor>
+void q2g_rows_groups(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0,
+                     int r1) {
+    float res[NT];
+    for (int r = r0; r < r1; ++r) {
+        q2g_row_groups<NT, kTokMajor>(w + (size_t) r * row_bytes, a, nblocks, res);
+        for (int t = 0; t < NT; ++t) out[t][r] = res[t];
+    }
+}
+
+// Two group bodies with the same arithmetic, chosen by token count: up to four tokens unpack the eight blocks of
+// a group once and keep them in registers, then run one token at a time; from five tokens each block is used by
+// every token before the next one is unpacked (block-major).  The split point was chosen on one machine (Ryzen 7
+// 9800X3D); bench/micro/q2g_rows_bench.cpp times v2 as a whole against the original per token count, not these
+// two bodies against each other.
+void q2g_rows_v2(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
+                 int r0, int r1) {
+    switch (nt) {
+        case 1: q2g_rows_groups<1, true>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 2: q2g_rows_groups<2, true>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 3: q2g_rows_groups<3, true>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 4: q2g_rows_groups<4, true>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 5: q2g_rows_groups<5, false>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 6: q2g_rows_groups<6, false>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        case 7: q2g_rows_groups<7, false>(w, row_bytes, nblocks, a, out, r0, r1); break;
+        default: q2g_rows_groups<8, false>(w, row_bytes, nblocks, a, out, r0, r1); break;
+    }
+}
 }  // namespace
 
 void q2_0_gguf_rows_multi(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
@@ -556,6 +748,18 @@ void q2_0_gguf_rows_multi(const uint8_t* w, size_t row_bytes, int nblocks, const
         case 7: q2g_rows<7>(w, row_bytes, nblocks, a, out, r0, r1); break;
         default: q2g_rows<8>(w, row_bytes, nblocks, a, out, r0, r1); break;
     }
+}
+
+void q2_0_gguf_rows_multi_v2(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                             float* const* out, int r0, int r1) {
+    // A row shorter than one full group has no group body to run, and the tail code next to the expanded
+    // groups measured up to 11% (clang) and 20% (MSVC) slower than the original's single loop, so those
+    // calls take the original.
+    if (nblocks < 8) {
+        q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+        return;
+    }
+    q2g_rows_v2(w, row_bytes, nblocks, a, nt, out, r0, r1);
 }
 
 void s2_expert_vnni_multi(const uint8_t* blob, const ActQ* const* a1, int n_tokens, float* const* out,
