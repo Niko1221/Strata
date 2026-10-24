@@ -268,7 +268,9 @@ See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert 
 **"verify: timed out at layer N" or "no progress for 60 s" on AMD (Linux), mostly with `--mmap-experts`.**
 Two reports fixed it with `"GPU_PINNED_MIN_XFER_SIZE": "1048576"` (RX 6800) or `"HSA_USERPTR_FOR_PAGED_MEM": "0"` (two
 R9700) in the `env` block of the server JSON, then a restart. Experimental, one machine each; on a systemd unit use
-`MemoryMax`, not `MemoryHigh`. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory-experimental-workarounds).
+`MemoryMax`, not `MemoryHigh`. The HIP engine on Linux also mlocks the memory it maps for the GPU: give it an unlimited
+memlock limit (`ulimit -l unlimited`, `LimitMEMLOCK=infinity`, `docker --ulimit memlock=-1`) and set
+`vm.compact_unevictable_allowed=0`. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory-experimental-workarounds).
 
 ## Still stuck?
 
