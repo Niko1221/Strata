@@ -42,6 +42,15 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
   `"api_monitor": true` is set. Apart from it, the server keeps in its process memory the text and tokens of its
   last few prompts, whatever `"api_monitor"` says, to encode the next turn faster; no endpoint shows them, and they
   are gone when the server stops.
+- **Tracing** (`--trace-otlp`, `"trace_otlp"`, `$STRATA_TRACE_OTLP`) sends OpenTelemetry spans of each `/v1` request -
+  timings and token counts - to an OTLP endpoint you name. It is off by default; with no endpoint nothing runs. With
+  the request monitor off, the spans carry timings and token counts, not the prompt and not the answer - with one
+  exception: a request that ends in an error carries its server-authored error text (up to 2000 characters) as the
+  span's `exception.message`, and on a structured-output validation failure that text quotes the model's answer. A
+  completed request's trace carries no conversation text; treat the collector as a place that can see answer text on
+  a failed request. The endpoint
+  is yours to set; the value `default` points at this PC (`http://localhost:4318/v1/traces`). Details:
+  [docs/DETAILS.md](docs/DETAILS.md#opentelemetry-traces-of-every-request).
 
 ## The desktop app and the Terminal
 

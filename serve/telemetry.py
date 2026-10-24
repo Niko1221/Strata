@@ -473,9 +473,10 @@ def _cpu_name():
         except OSError:
             pass
     elif os.path.exists("/proc/cpuinfo"):
-        for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
-            if line.startswith("model name"):
-                return line.split(":", 1)[1].strip()
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
     return platform.processor() or None
 
 
@@ -492,7 +493,8 @@ class _CpuRamFallback:
                 return idle.value, kern.value + user.value           # kernel time includes idle
             return None
         try:
-            f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+            with open("/proc/stat", encoding="utf-8") as fh:
+                f = [int(x) for x in fh.readline().split()[1:]]
             return f[3] + f[4], sum(f)
         except (OSError, ValueError):
             return None
@@ -519,7 +521,8 @@ class _CpuRamFallback:
                 return m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys
             return None, None
         try:
-            info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                info = dict(line.split(":", 1) for line in fh)
             total = int(info["MemTotal"].split()[0]) * 1024
             avail = int(info["MemAvailable"].split()[0]) * 1024
             return total - avail, total

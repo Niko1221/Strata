@@ -59,12 +59,24 @@ build-vision-cuda12.bat
 .vscode/
 .idea/
 .cursor/
+# Local History extension snapshots (per-file editor history, incl. copies of
+# *.local.md notes) -- local session state, never project source
+.history/
+# Personal Copilot/agent sidecar files (per-machine agent personas) -- local
+# session state, not project source
+.github/agents/
 
 /.ccache/
 /.rocm-win/
 
 # local Windows HIP packaging output
 dist-hip/
+
+# local notes written by scheduled scans (kept out of version control)
+security-findings.local.md
+bug-hunter-state.local.md
+proposed-fixes.local.md
+change-digest-state.local.md
 
 # Terminal / Desktop split: local venvs, build output and archives never enter git
 .terminal-venv/

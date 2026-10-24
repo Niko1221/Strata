@@ -12,12 +12,19 @@ engine process tree (psutil RSS, which counts mmap'd file pages) and the system'
     python bench_vs_llama.py quality  --machine CFG.json --out DIR [--configs a,b]
     python bench_vs_llama.py summary  --out DIR
 
+--trace-otlp URL (run/quality) is opt-in tracing through the repo's own exporter (serve/tracing.py, no new package;
+"default" is http://localhost:4318/v1/traces, where Foundry Toolkit's collector listens).  One trace per config-round:
+bench.round with bench.start / bench.warmup / bench.chat / bench.stop under it, and every request carries a W3C
+traceparent, so the server's own span nests inside its bench.chat span and the row records the server's answer header
+as "trace" - the rows line up with the server's traces, as evals/run_eval.py --trace does.  Without the flag nothing
+here touches tracing and the rows are unchanged.
+
 CFG.json: {"gguf": ..., "strata_cfg": ..., "llama_server": ..., "configs": [{"name","kind":"llama|strata","args":[...]}]}
 Interleaving: engines cannot be loaded together (12 GB card, 64 GB RAM), so one ROUND runs every config once
 (start, warm-up, cells, stop), and rounds alternate the config order.  Medians are taken over rounds.
 The caller holds the machine's GPU lock.  Processes are stopped by PID only.
 """
-import argparse, json, os, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, io, json, os, statistics, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 
 import psutil
@@ -28,11 +35,14 @@ GEN = 256
 PORT = 8190
 
 
-def http(url, body=None, timeout=3600):
+def http(url, body=None, timeout=3600, headers=None, want_header=None):
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+        reply = json.loads(r.read())
+    if want_header:                       # --trace-otlp: the server's span header rides along in the reply
+        reply["_" + want_header] = r.headers.get(want_header)
+    return reply
 
 
 def vram_used_mib():
@@ -42,6 +52,50 @@ def vram_used_mib():
         return int(out[0])
     except Exception:
         return -1
+
+
+class Tracer:
+    """--trace-otlp: the bench's own OTLP spans, exported by serve/tracing.py - the repo's exporter, so tracing
+    adds no package.  Off by default: with no endpoint no header is sent, no span is built, and the rows are
+    byte-identical to a run without the flag.
+
+    One trace per config-round: bench.round with bench.start / bench.warmup / bench.chat / bench.stop under it.
+    Every chat carries a W3C traceparent whose span id is the chat span's own, so the server's request span (a
+    server started with tracing on) nests inside it, and the server's answer header is recorded in the row."""
+
+    def __init__(self, value):
+        root = str(Path(__file__).resolve().parents[1])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from serve import tracing as T
+        self.T = T
+        self.endpoint = T.endpoint_of(value)
+        self.tr = T.Tracing(self.endpoint, model="strata-bench") if self.endpoint else None
+
+    @property
+    def on(self) -> bool:
+        return self.tr is not None
+
+    def new_trace(self):
+        """This round's trace id and its root span id, so every phase hangs under one trace."""
+        return (os.urandom(16).hex(), os.urandom(8).hex()) if self.on else (None, None)
+
+    def traceparent(self, trace_id, span_id):
+        return f"00-{trace_id}-{span_id}-01" if self.on else None
+
+    def span(self, name, start_s, end_s, kind=1, attrs=(), trace_id=None, span_id=None, parent_id=None):
+        if self.tr is None:
+            return None
+        return self.T.make_span(name, start_s, end_s, kind, attrs, trace_id=trace_id, span_id=span_id,
+                                parent_id=parent_id)
+
+    def emit(self, spans) -> None:
+        if self.tr is not None:
+            self.tr.emit([s for s in spans if s])
+
+    def close(self) -> None:
+        if self.tr is not None:
+            self.tr.close()
 
 
 class Sampler(threading.Thread):
@@ -63,7 +117,10 @@ class Sampler(threading.Thread):
 
 class Engine:
     def __init__(self, machine, cfg):
-        self.m, self.cfg, self.proc, self.log = machine, cfg, None, None
+        self.m, self.cfg = machine, cfg
+        self.proc: subprocess.Popen | None = None
+        self.log: io.TextIOWrapper | None = None
+        self.start_end = self.stop_t0 = self.stop_end = None      # --trace-otlp: the phases' wall times
 
     def command(self):
         c = self.cfg
@@ -113,8 +170,10 @@ class Engine:
         else:
             raise RuntimeError("server not ready in 1500 s")
         self.load_s = time.time() - self.t0
+        self.start_end = time.time()
 
     def stop(self):
+        self.stop_t0 = time.time()
         if self.proc:
             self.sampler.stop = True
             try:
@@ -134,18 +193,24 @@ class Engine:
                         pass
             except psutil.Error:
                 pass
-            self.log.close()
+            if self.log is not None:
+                self.log.close()
+                self.log = None
             self.proc = None
             time.sleep(5)
+        self.stop_end = time.time()
 
-    def chat(self, prompt, temp, max_tokens=GEN, seed=1):
+    def chat(self, prompt, temp, max_tokens=GEN, seed=1, traceparent=None):
         body = {"model": "x", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
                 "temperature": temp, "top_k": 20, "top_p": 0.95, "seed": seed, "stream": False,
                 "cache_prompt": False, "chat_template_kwargs": {"enable_thinking": False}}
         if temp == 0:
-            body.pop("top_p"), body.pop("top_k")
+            body.pop("top_p")
+            body.pop("top_k")
         t = time.time()
-        r = http("http://127.0.0.1:%d/v1/chat/completions" % PORT, body)
+        r = http("http://127.0.0.1:%d/v1/chat/completions" % PORT, body,
+                 headers={"traceparent": traceparent} if traceparent else None,
+                 want_header="traceparent" if traceparent else None)
         wall = time.time() - t
         tm = r.get("timings") or {}
         u = r.get("usage") or {}
@@ -153,6 +218,7 @@ class Engine:
                 "prompt_ms": tm.get("prompt_ms"), "prompt_tps": tm.get("prompt_per_second"),
                 "pred_n": tm.get("predicted_n", u.get("completion_tokens")), "pred_tps": tm.get("predicted_per_second"),
                 "draft_n": tm.get("draft_n"), "draft_acc": tm.get("draft_n_accepted"),
+                "server_traceparent": r.get("_traceparent"),
                 "text": (r["choices"][0]["message"].get("content") or "")}
 
 
@@ -161,9 +227,8 @@ def cmd_prompts(a):
     import strata_tokenizer as ST
     tp = Path(a.tokenizer)
     vocab = json.loads((tp / "vocab.json").read_text(encoding="utf-8"))
-    toks = [None] * len(vocab)
-    for t, i in vocab.items():
-        toks[i] = t
+    inv = {i: t for t, i in vocab.items()}
+    toks: list[str] = [inv[i] for i in range(len(vocab))]
     tok = ST.Tokenizer(toks, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tp / "token_type.json").read_text()))
     corpus = "\n\n".join(Path(f).read_text(encoding="utf-8", errors="replace") for f in a.corpus)
@@ -190,39 +255,81 @@ def cmd_run(a):
     cfgs = [c for c in m["configs"] if not a.configs or c["name"] in a.configs.split(",")]
     cells = [c for c in CELLS if not a.cells or c[0] in a.cells.split(",")]
     prompts = {c[0]: load_prompt(out, c[0]) for c in cells}
-    for rnd in range(a.start_round, a.start_round + a.rounds):
-        order = cfgs if rnd % 2 == 0 else cfgs[::-1]
-        for cfg in order:
-            eng = Engine(m, cfg)
-            rec_path = out / "raw" / ("%s.jsonl" % cfg["name"])
-            try:
-                eng.start(str(out))
-                eng.chat("Say hello.", 0.0, 16)                              # warm-up, discarded
-                eng.chat(prompts["4k"][:6000] if "4k" in prompts else "hi", 0.0, 32)
-                for cname, n, reps in cells:
-                    for t in TEMPS:
-                        for k in range(reps):
-                            nonce = "[bench %s r%d %s t%.1f k%d %d]\n" % (cfg["name"], rnd, cname, t, k, time.time())
-                            r = eng.chat(nonce + prompts[cname] + "\n\nSummarize the text above in three sentences.", t)
-                            r.update(config=cfg["name"], round=rnd, cell=cname, temp=t, rep=k,
-                                     vram_peak_mib=eng.sampler.vram, vram_base_mib=eng.base_vram,
-                                     rss_peak_gib=round(eng.sampler.rss / 2**30, 2),
-                                     sys_used_delta_gib=round((eng.sampler.sysused - eng.base_used) / 2**30, 2),
-                                     load_s=round(eng.load_s, 1), cmd=eng.cmdline if (rnd == a.start_round and k == 0) else None)
-                            r["text"] = r["text"][:300]
-                            with open(rec_path, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(r) + "\n")
-                            print(cfg["name"], rnd, cname, t, "pp %s tg %s draft %s/%s ttft %s" % (
-                                r["prompt_tps"], r["pred_tps"], r["draft_acc"], r["draft_n"], r["prompt_ms"]), flush=True)
-            except Exception as e:
-                print("ERROR", cfg["name"], rnd, repr(e), flush=True)
-                with open(out / "raw" / "errors.log", "a") as f:
-                    f.write("%s r%d %r\n" % (cfg["name"], rnd, e))
-            finally:
-                eng.stop()
+    tracer = Tracer(a.trace_otlp)
+    if tracer.on:
+        print("[bench] tracing to", tracer.endpoint, "- one trace per config-round, each request carries a "
+              "traceparent (start the server with tracing on to nest its spans)", flush=True)
+    try:
+        for rnd in range(a.start_round, a.start_round + a.rounds):
+            order = cfgs if rnd % 2 == 0 else cfgs[::-1]
+            for cfg in order:
+                eng = Engine(m, cfg)
+                rec_path = out / "raw" / ("%s.jsonl" % cfg["name"])
+                trace_id, root_id = tracer.new_trace()
+                spans = []
+                round_t0 = time.time()
+                try:
+                    eng.start(str(out))
+                    spans.append(tracer.span("bench.start", eng.t0, eng.start_end, trace_id=trace_id, parent_id=root_id))
+                    warm_t0 = time.time()
+                    for warm, mx in (("Say hello.", 16), (prompts["4k"][:6000] if "4k" in prompts else "hi", 32)):
+                        tp = tracer.traceparent(trace_id, os.urandom(8).hex())
+                        spans.append(_bench_chat(eng, warm, 0.0, mx, tracer, trace_id, root_id, tp))
+                    spans.append(tracer.span("bench.warmup", warm_t0, time.time(), trace_id=trace_id, parent_id=root_id))
+                    for cname, n, reps in cells:
+                        for t in TEMPS:
+                            for k in range(reps):
+                                nonce = "[bench %s r%d %s t%.1f k%d %d]\n" % (cfg["name"], rnd, cname, t, k, time.time())
+                                span_id = os.urandom(8).hex()
+                                tp = tracer.traceparent(trace_id, span_id)
+                                t0 = time.time()
+                                r = eng.chat(nonce + prompts[cname] + "\n\nSummarize the text above in three sentences.",
+                                             t, traceparent=tp)
+                                spans.append(tracer.span("bench.chat", t0, time.time(),
+                                                         trace_id=trace_id, parent_id=root_id, span_id=span_id,
+                                                         attrs=[("bench.cell", cname), ("bench.temp", t),
+                                                                ("bench.rep", k),
+                                                                ("gen_ai.usage.input_tokens", r["prompt_n"]),
+                                                                ("gen_ai.usage.output_tokens", r["pred_n"]),
+                                                                ("gen_ai.server.time_per_output_token_ms", r["pred_tps"]),
+                                                                ("strata.prefill_tok_s", r["prompt_tps"])]))
+                                if tp:
+                                    r["trace"] = {"traceparent": tp, "server_traceparent": r.pop("server_traceparent", None)}
+                                r.pop("server_traceparent", None)
+                                r.update(config=cfg["name"], round=rnd, cell=cname, temp=t, rep=k,
+                                         vram_peak_mib=eng.sampler.vram, vram_base_mib=eng.base_vram,
+                                         rss_peak_gib=round(eng.sampler.rss / 2**30, 2),
+                                         sys_used_delta_gib=round((eng.sampler.sysused - eng.base_used) / 2**30, 2),
+                                         load_s=round(eng.load_s, 1), cmd=eng.cmdline if (rnd == a.start_round and k == 0) else None)
+                                r["text"] = r["text"][:300]
+                                with open(rec_path, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps(r) + "\n")
+                                print(cfg["name"], rnd, cname, t, "pp %s tg %s draft %s/%s ttft %s" % (
+                                    r["prompt_tps"], r["pred_tps"], r["draft_acc"], r["draft_n"], r["prompt_ms"]), flush=True)
+                except Exception as e:
+                    print("ERROR", cfg["name"], rnd, repr(e), flush=True)
+                    with open(out / "raw" / "errors.log", "a") as f:
+                        f.write("%s r%d %r\n" % (cfg["name"], rnd, e))
+                finally:
+                    eng.stop()
+                    spans.append(tracer.span("bench.stop", eng.stop_t0, eng.stop_end, trace_id=trace_id, parent_id=root_id))
+                    spans.append(tracer.span("bench.round", round_t0, time.time(), 2, trace_id=trace_id, span_id=root_id,
+                                             attrs=[("bench.config", cfg["name"]), ("bench.round", rnd),
+                                                    ("bench.kind", cfg["kind"]), ("bench.load_s", round(eng.load_s, 1))]))
+                    tracer.emit(spans)
+    finally:
+        tracer.close()
 
 
 QPROMPT = "Write a short story about a lighthouse keeper."
+
+
+def _bench_chat(eng, prompt, temp, max_tokens, tracer, trace_id, parent_id, tp):
+    """One warm-up chat as its own bench.chat span (the scored chats build their span in the loop)."""
+    t0 = time.time()
+    eng.chat(prompt, temp, max_tokens, traceparent=tp)
+    return tracer.span("bench.chat", t0, time.time(), trace_id=trace_id, parent_id=parent_id,
+                       span_id=tp.split("-")[2] if tp else None)
 
 
 def cmd_quality(a):
@@ -231,16 +338,37 @@ def cmd_quality(a):
     (out / "raw").mkdir(parents=True, exist_ok=True)
     cfgs = [c for c in m["configs"] if not a.configs or c["name"] in a.configs.split(",")]
     res = {}
-    for cfg in cfgs:
-        eng = Engine(m, cfg)
-        try:
-            eng.start(str(out))
-            eng.chat("Say hello.", 0.0, 16)
-            for q in (QPROMPT, "Write a Python function that parses a CSV file into a list of dicts, with tests."):
-                r = eng.chat(q, 0.0, 200)
-                res.setdefault(cfg["name"], []).append(r["text"])
-        finally:
-            eng.stop()
+    tracer = Tracer(a.trace_otlp)
+    try:
+        for cfg in cfgs:
+            eng = Engine(m, cfg)
+            trace_id, root_id = tracer.new_trace()
+            spans = []
+            round_t0 = time.time()
+            try:
+                eng.start(str(out))
+                spans.append(tracer.span("bench.start", eng.t0, eng.start_end, trace_id=trace_id, parent_id=root_id))
+                warm_t0 = time.time()
+                spans.append(_bench_chat(eng, "Say hello.", 0.0, 16, tracer, trace_id, root_id,
+                                         tracer.traceparent(trace_id, os.urandom(8).hex())))
+                spans.append(tracer.span("bench.warmup", warm_t0, time.time(), trace_id=trace_id, parent_id=root_id))
+                for q in (QPROMPT, "Write a Python function that parses a CSV file into a list of dicts, with tests."):
+                    span_id = os.urandom(8).hex()
+                    tp = tracer.traceparent(trace_id, span_id)
+                    t0 = time.time()
+                    r = eng.chat(q, 0.0, 200, traceparent=tp)
+                    spans.append(tracer.span("bench.chat", t0, time.time(), trace_id=trace_id, parent_id=root_id,
+                                             span_id=span_id, attrs=[("bench.quality", True)]))
+                    res.setdefault(cfg["name"], []).append(r["text"])
+            finally:
+                eng.stop()
+                spans.append(tracer.span("bench.stop", eng.stop_t0, eng.stop_end, trace_id=trace_id, parent_id=root_id))
+                spans.append(tracer.span("bench.round", round_t0, time.time(), 2, trace_id=trace_id, span_id=root_id,
+                                         attrs=[("bench.config", cfg["name"]), ("bench.kind", cfg["kind"]),
+                                                ("bench.quality", True)]))
+                tracer.emit(spans)
+    finally:
+        tracer.close()
     (out / "raw" / "quality.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
 
 
@@ -277,5 +405,7 @@ if __name__ == "__main__":
     ap.add_argument("--tokenizer")
     ap.add_argument("--repo")
     ap.add_argument("--corpus", nargs="*")
+    ap.add_argument("--trace-otlp", default="", help="run/quality: OTLP endpoint for the bench's own spans "
+                                                    "('default' = http://localhost:4318/v1/traces); off when empty")
     a = ap.parse_args()
     {"prompts": cmd_prompts, "run": cmd_run, "quality": cmd_quality, "summary": cmd_summary}[a.mode](a)
