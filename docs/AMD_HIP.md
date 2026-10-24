@@ -354,6 +354,25 @@ both ways on different PCs, `./setup.sh --calibrate` measures it on yours (off a
 `STRATA_SH_STREAM=1` into the config's `"env"` only when it wins by more than 3%; a later calibration that finds it no
 longer faster removes it again.
 
+Why the same card goes both ways: the fork has to hide something. With experts on the CPU in the window, the shared
+expert forks off only after the doorbell is published (`STRATA_SH_FORK_LATE`, `src/core/verify.cpp`), so it runs while
+the GPU would otherwise wait for the CPU pool; on a 16 GB card whose cache holds only part of the experts that wait is
+about half of a verify window (2026-10-23, one RX 6900 XT under Linux, 4,859 slots, `STRATA_DECODE_TIMING=1`: GPU-reach wait 20.7 of 39.1 ms per window),
+which is where #1272's gain comes from. When every routed expert is on the GPU there is no wait to fill and the fork is
+two cross-stream event dependencies per layer and nothing else: 7fd67dd measured it on an R9700 with
+`--resident-experts` and the KV stream path running (48,067-token prompt), 43.4 tok/s with the fork against 62.9
+without; a 256-token prompt barely moved (65.4 / 62.7). Windows adds its own cost to every cross-stream dependency
+(#816).
+
+**Windows: leave it off.** On one RX 6900 XT under Windows 11 (the 0.2.3 `rdna2` package, engine 0.1.48) the fork
+together with KV streaming (`--kv-resident 32768` under a 64K context) stopped the engine on its first request
+("verify: unspecified launch failure", reported first by the MTP draft step that synchronises next; exit code
+0xC0000409); with the fork off, or with KV streaming off, the same configuration answered normally. Bisected switch by
+switch with `STRATA_HIP_PROMPT_F16`, `STRATA_HC_PERSIST`, `STRATA_HIP_ADAPT_KERNEL_COPY`, `STRATA_PREFILL_CPU_SHARE`,
+`STRATA_PIPED_CONCURRENT`, `STRATA_PREFILL_STREAM_MIN` and `STRATA_IO_THREADS` set beside it: only removing
+`STRATA_SH_STREAM` cleared it. Two of the same card under Linux (layer split, the same model, `STRATA_SH_STREAM=1`,
+`--kv-resident 32768`) have served without this fault since 0.1.40. The faulting kernel was not isolated.
+
 **The draft's side stream (`STRATA_MTP_SIDE_STREAM`):** HIP does not use the MTP drafter's branch stream, and since
 0.1.40.2 it does not create it (#1240: an R9700 lost prompt speed with it). gfx103x is the exception and creates it: on
 an RX 6800 under Windows (`STRATA_HIP_PROMPT_F16=1`, IQ3_XXS, two runs each) a 7.9K-token prompt reads at 798-808 tok/s
