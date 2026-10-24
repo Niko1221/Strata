@@ -1,0 +1,9 @@
+[real:noul-pope] WARNING served probabilities are calibrated by ['platt_v1']: the 'cal' column compounds that transform and the fitted params are NOT installable as-is - rerun with the calibrators removed (jevport-arm.sh <arm> --calib identity)
+[real:noul-pope] raw acc=0.8833 cal acc=0.8833 fit={'a': 1.0, 'c': 0.0, 'nll': 0.26696143099258257, 'nll_identity': 0.26696143099258257, 'improvement': 0.0, 'flat': True, 'boundary': False, 'candidate': {'a': 1.065751, 'c': -0.002993}}
+[real:choice-cvb] WARNING served probabilities are calibrated by ['T_choice_v1']: the 'cal' column compounds that transform and the fitted params are NOT installable as-is - rerun with the calibrators removed (jevport-arm.sh <arm> --calib identity)
+[real:choice-cvb] raw acc=0.65 cal acc=0.65 fit={'T': 1.0, 'nll': 0.881184665904019, 'nll_identity': 0.881184665904019, 'improvement': 0.0, 'flat': True, 'boundary': False, 'candidate': 0.984527}
+[real:score-countbench] WARNING served probabilities are calibrated by ['T_score_v1']: the 'cal' column compounds that transform and the fitted params are NOT installable as-is - rerun with the calibrators removed (jevport-arm.sh <arm> --calib identity)
+[real:score-countbench] raw acc=1.0 cal acc=1.0 fit={'T': 1.0, 'nll': 0.3584870188384191, 'nll_identity': 0.3584870188384191, 'improvement': 0.0, 'flat': True, 'boundary': False, 'candidate': 0.983811}
+WROTE /opt/data/eval/suite-real-C-calibD-20261023/real-suite.md
+ITEM LOG: 200 rows -> /opt/data/eval/suite-real-C-calibD-20261023/real-item-log.jsonl
+exit=0

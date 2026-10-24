@@ -1,0 +1,53 @@
+{
+ "idle": {
+  "load": {
+   "chat_n": 0,
+   "chat_err": 0,
+   "dec_n": 0
+  },
+  "p99_abs_dp": {
+   "noul": 0.070498,
+   "choice": 0.039415
+  },
+  "max_abs_dp": {
+   "noul": 0.0949,
+   "choice": 0.050858
+  },
+  "argmax_flips": 0,
+  "n_items": 48
+ },
+ "dec8": {
+  "load": {
+   "chat_n": 0,
+   "chat_err": 0,
+   "dec_n": 2408
+  },
+  "p99_abs_dp": {
+   "noul": 0.043262,
+   "choice": 0.043681
+  },
+  "max_abs_dp": {
+   "noul": 0.049609,
+   "choice": 0.04633
+  },
+  "argmax_flips": 0,
+  "n_items": 48
+ },
+ "chat4dec4": {
+  "load": {
+   "chat_n": 1203,
+   "chat_err": 0,
+   "dec_n": 1204
+  },
+  "p99_abs_dp": {
+   "noul": 0.039351,
+   "choice": 0.022318
+  },
+  "max_abs_dp": {
+   "noul": 0.059423,
+   "choice": 0.035898
+  },
+  "argmax_flips": 0,
+  "n_items": 48
+ }
+}

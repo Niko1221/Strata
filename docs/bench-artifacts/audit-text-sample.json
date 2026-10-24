@@ -1,0 +1,562 @@
+[
+ [
+  "noul",
+  4,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0051",
+   "gold": 1,
+   "pr": [
+    0.0042,
+    0.9958
+   ],
+   "argmax": 1,
+   "state_head": "Passage: Dragon Ball -- The Dragon Ball manga has been adapted into two anime series produced by Toei Animation: Dragon Ball and Dragon Ball Z, which together w",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  6,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0155",
+   "gold": 0,
+   "pr": [
+    0.9634,
+    0.0366
+   ],
+   "argmax": 0,
+   "state_head": "Passage: FIFA World Cup Trophy -- The trophy has the engraving ``FIFA World Cup'' on its base. After the 1994 FIFA World Cup a plate was added to the bottom sid",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  11,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0175",
+   "gold": 1,
+   "pr": [
+    0.0005,
+    0.9995
+   ],
+   "argmax": 1,
+   "state_head": "Passage: Final Space -- The second season is scheduled to air sometime in 2019.\nQuestion researched: Is there going to be a final space season 2",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  13,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0084",
+   "gold": 0,
+   "pr": [
+    0.9653,
+    0.0347
+   ],
+   "argmax": 0,
+   "state_head": "Passage: Izzie Stevens -- Heigl garnered critical acclaim for her performance as Izzie and received numerous awards and nominations for her role, winning the ``",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  34,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0162",
+   "gold": 1,
+   "pr": [
+    0.0003,
+    0.9997
+   ],
+   "argmax": 1,
+   "state_head": "Passage: UNLV School of Medicine -- University of Nevada, Las Vegas (UNLV) School of Medicine, is an academic division of the University of Nevada, Las Vegas (U",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  48,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0071",
+   "gold": 0,
+   "pr": [
+    0.0931,
+    0.9069
+   ],
+   "argmax": 1,
+   "state_head": "Passage: Brown sugar -- Natural brown sugar, raw sugar or whole cane sugar are sugars that retain a small to large amount of the molasses from the mother liquor",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  52,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0005",
+   "gold": 0,
+   "pr": [
+    0.0243,
+    0.9757
+   ],
+   "argmax": 1,
+   "state_head": "Passage: Dairy cattle -- The production of milk requires that the cow be in lactation, which is a result of the cow having given birth to a calf. The cycle of i",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  68,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0126",
+   "gold": 0,
+   "pr": [
+    0.9951,
+    0.0049
+   ],
+   "argmax": 0,
+   "state_head": "Passage: Border Collie -- In general, Border Collies are medium-sized dogs with a moderate amount of coat, which is most often thick and sheds often. They have ",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  71,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0062",
+   "gold": 0,
+   "pr": [
+    0.9871,
+    0.0129
+   ],
+   "argmax": 0,
+   "state_head": "Passage: Snellen chart -- A Snellen chart is an eye chart that can be used to measure visual acuity. Snellen charts are named after the Dutch ophthalmologist He",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "noul",
+  98,
+  {
+   "suite": "text",
+   "qid": "boolq_test_0138",
+   "gold": 1,
+   "pr": [
+    0.0052,
+    0.9948
+   ],
+   "argmax": 1,
+   "state_head": "Passage: Great Lakes Waterway -- The waterway allows passage from the Atlantic Ocean to the inland port of Duluth on Lake Superior, a distance of 2,340 miles (3",
+   "instructions": "Based on the passage, is the answer to the question yes?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  0,
+  {
+   "suite": "text",
+   "qid": "arc_test_0163",
+   "gold": 1,
+   "pr": [
+    0.0026,
+    0.9921,
+    0.0009,
+    0.0044
+   ],
+   "argmax": 1,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "If its food supply in a field decreases, the mouse population in that field will probably",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  6,
+  {
+   "suite": "text",
+   "qid": "arc_test_0155",
+   "gold": 0,
+   "pr": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "argmax": 0,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "Which unit of measurement can be used to describe the length of a desk?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  17,
+  {
+   "suite": "text",
+   "qid": "arc_test_0189",
+   "gold": 3,
+   "pr": [
+    0.0008,
+    0.0003,
+    0.0021,
+    0.9968
+   ],
+   "argmax": 3,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "The water contained in a geyser system gains energy from the underground material surrounding it. The water molecules gain kinetic energy and this results in an",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  20,
+  {
+   "suite": "text",
+   "qid": "arc_test_0059",
+   "gold": 1,
+   "pr": [
+    0.0016,
+    0.9978,
+    0.0002,
+    0.0004
+   ],
+   "argmax": 1,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "Which of the following allows the planets to stay in orbit?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  31,
+  {
+   "suite": "text",
+   "qid": "arc_test_0184",
+   "gold": 1,
+   "pr": [
+    0.0009,
+    0.9989,
+    0.0001,
+    0.0001
+   ],
+   "argmax": 1,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "Most hormones are produced by which human organ system?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  42,
+  {
+   "suite": "text",
+   "qid": "arc_test_0088",
+   "gold": 2,
+   "pr": [
+    0.0013,
+    0.0004,
+    0.998,
+    0.0003
+   ],
+   "argmax": 2,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "The students in an engineering class built a robot that stacks wooden blocks. A built-in computer controls the movement of the robot. The computer in the robot ",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  43,
+  {
+   "suite": "text",
+   "qid": "arc_test_0150",
+   "gold": 0,
+   "pr": [
+    0.9996,
+    0.0004,
+    0.0,
+    0.0
+   ],
+   "argmax": 0,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "One student wrote a report about an investigation in which fertilizer was added to tomato plants. Which information from that student's report would most help a",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  55,
+  {
+   "suite": "text",
+   "qid": "arc_test_0019",
+   "gold": 2,
+   "pr": [
+    0.0025,
+    0.0002,
+    0.997,
+    0.0003
+   ],
+   "argmax": 2,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "What is the source of the organic matter needed for most fertile soils?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  71,
+  {
+   "suite": "text",
+   "qid": "arc_test_0062",
+   "gold": 0,
+   "pr": [
+    0.9996,
+    0.0002,
+    0.0001,
+    0.0001
+   ],
+   "argmax": 0,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "Neutrons are particles of an atom that",
+   "calib": "identity"
+  }
+ ],
+ [
+  "choice",
+  89,
+  {
+   "suite": "text",
+   "qid": "arc_test_0048",
+   "gold": 1,
+   "pr": [
+    0.003,
+    0.9965,
+    0.0002,
+    0.0003
+   ],
+   "argmax": 1,
+   "state_head": "Multiple-choice science exam question.",
+   "instructions": "Which characteristic can an amoeba change that a paramecium cannot change?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  0,
+  {
+   "suite": "text",
+   "qid": "sst5_01606",
+   "gold": 3,
+   "pr": [
+    0.0011,
+    0.010501,
+    0.167217,
+    0.818182,
+    0.003
+   ],
+   "argmax": 3,
+   "state_head": "Customer review: \"white oleander may leave you rolling your eyes in the dark , but that does n't mean you wo n't like looking at it .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  8,
+  {
+   "suite": "text",
+   "qid": "sst5_01930",
+   "gold": 1,
+   "pr": [
+    0.247975,
+    0.750225,
+    0.0016,
+    0.0001,
+    0.0001
+   ],
+   "argmax": 1,
+   "state_head": "Customer review: \"` butterfingered ' is the word for the big-fisted direction of jez butterworth , who manages to blast even the smallest sensitivities from the",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  11,
+  {
+   "suite": "text",
+   "qid": "sst5_11331",
+   "gold": 3,
+   "pr": [
+    0.001,
+    0.0009,
+    0.0006,
+    0.1765,
+    0.821
+   ],
+   "argmax": 4,
+   "state_head": "Customer review: \"it 's absolutely spooky how lillard channels the shagster right down to the original casey kasem-furnished voice .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  13,
+  {
+   "suite": "text",
+   "qid": "sst5_10457",
+   "gold": 3,
+   "pr": [
+    0.0007,
+    0.0005,
+    0.0001,
+    0.221,
+    0.7777
+   ],
+   "argmax": 4,
+   "state_head": "Customer review: \"an unbelievably fun film just a leading man away from perfection .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  40,
+  {
+   "suite": "text",
+   "qid": "sst5_06697",
+   "gold": 2,
+   "pr": [
+    0.0008,
+    0.0042,
+    0.1152,
+    0.8787,
+    0.0011
+   ],
+   "argmax": 3,
+   "state_head": "Customer review: \"the film may not hit as hard as some of the better drug-related pictures , but it still manages to get a few punches in .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  48,
+  {
+   "suite": "text",
+   "qid": "sst5_11077",
+   "gold": 3,
+   "pr": [
+    0.0004,
+    0.0003,
+    0.0001,
+    0.1173,
+    0.8819
+   ],
+   "argmax": 4,
+   "state_head": "Customer review: \"the movie 's ripe , enrapturing beauty will tempt those willing to probe its inscrutable mysteries .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  57,
+  {
+   "suite": "text",
+   "qid": "sst5_06775",
+   "gold": 3,
+   "pr": [
+    0.0023,
+    0.0125,
+    0.0841,
+    0.882,
+    0.0191
+   ],
+   "argmax": 3,
+   "state_head": "Customer review: \"if you love him , you 'll like it .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  76,
+  {
+   "suite": "text",
+   "qid": "sst5_10549",
+   "gold": 3,
+   "pr": [
+    0.0011,
+    0.0015,
+    0.0023,
+    0.617938,
+    0.377162
+   ],
+   "argmax": 3,
+   "state_head": "Customer review: \"it is not a mass-market entertainment but an uncompromising attempt by one artist to think about another .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  93,
+  {
+   "suite": "text",
+   "qid": "sst5_01083",
+   "gold": 3,
+   "pr": [
+    0.0003,
+    0.0003,
+    0.0001,
+    0.156,
+    0.8433
+   ],
+   "argmax": 4,
+   "state_head": "Customer review: \"its sheer dynamism is infectious .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ],
+ [
+  "score",
+  99,
+  {
+   "suite": "text",
+   "qid": "sst5_11004",
+   "gold": 3,
+   "pr": [
+    0.0003,
+    0.0016,
+    0.008301,
+    0.983198,
+    0.006601
+   ],
+   "argmax": 3,
+   "state_head": "Customer review: \"in its ragged , cheap and unassuming way , the movie works .\"",
+   "instructions": "How positive is this review?",
+   "calib": "identity"
+  }
+ ]
+]

@@ -1,0 +1,8 @@
+{
+ "tuple": "qfn-iq3_xxs|jev-port|none|v1|S|image-summary",
+ "a": 0.4892,
+ "c": 0.8313,
+ "T_choice": 0.05,
+ "T_score": 1.8702,
+ "provenance": "fit 2026-10-15 blockers_gpu phase C (summary-mode real dev)"
+}

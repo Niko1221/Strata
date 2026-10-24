@@ -1,0 +1,87 @@
+{
+ "noul": {
+  "dataset": "BoolQ",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 0.89,
+   "nll": 0.3046,
+   "ece15": 0.0694,
+   "flips": 0,
+   "n": 100
+  },
+  "cal": {
+   "acc": 0.91,
+   "nll": 0.2663,
+   "ece15": 0.0224,
+   "flips": 4,
+   "n": 100
+  },
+  "fit": {
+   "a": 0.619611,
+   "c": 0.670748,
+   "nll": 0.25523627399607507,
+   "nll_identity": 0.32379603234038595,
+   "improvement": 0.211737,
+   "flat": false,
+   "boundary": false
+  }
+ },
+ "choice": {
+  "dataset": "ARC",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 1.0,
+   "nll": 0.005,
+   "ece15": 0.0049,
+   "flips": 0,
+   "n": 100
+  },
+  "cal": {
+   "acc": 1.0,
+   "nll": 0.0075,
+   "ece15": 0.0072,
+   "flips": 0,
+   "n": 100
+  },
+  "fit": {
+   "T": 1.096725,
+   "nll": 0.049309671676715364,
+   "nll_identity": 0.05005937676148297,
+   "improvement": 0.014976,
+   "flat": false,
+   "boundary": false
+  }
+ },
+ "score": {
+  "dataset": "SST-5",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 0.5,
+   "nll": 1.4544,
+   "ece15": 0.3102,
+   "flips": 0,
+   "n": 100
+  },
+  "cal": {
+   "acc": 0.5,
+   "nll": 1.0381,
+   "ece15": 0.174,
+   "flips": 0,
+   "n": 100
+  },
+  "fit": {
+   "T": 2.335485,
+   "nll": 1.0090151710288084,
+   "nll_identity": 1.3101826808498847,
+   "improvement": 0.229867,
+   "flat": false,
+   "boundary": false
+  }
+ }
+}

@@ -304,6 +304,13 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(split_rules_test PRIVATE include)
   add_test(NAME split_rules_test COMMAND split_rules_test)
 
+  # the jevpos request key's parser (jev fix B): header-only rule, no model, no GPU.  The cap counts ENTRIES, not
+  # digits, and a malformed list is refused whole - the round-2 review (2026-10-23) found this had no test on
+  # either side of the wire, which is how a dangling else survived three reviews.
+  add_executable(jevpos_test tests/program/jevpos_test.cpp)
+  target_include_directories(jevpos_test PRIVATE include)
+  add_test(NAME jevpos_test COMMAND jevpos_test)
+
   # the prompt planner's host-memory model (#2824): header-only, no GPU
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)
@@ -1586,6 +1593,16 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
+  if(STRATA_ENABLE_CUDA)   # verify.hpp pulls cuda_runtime.h and verify.cpp pulls the kernels: CUDA builds only
+    add_executable(verify_brow_test src/core/verify_brow_test.cpp)
+    target_link_libraries(verify_brow_test PRIVATE strata_engine)
+    add_test(NAME verify_brow_test COMMAND verify_brow_test)
+    # M3.1: row t of the last window (BROWAT).  The row bound must refuse a row the window never
+    # computed, by name - never answer it with the final row (synthetic: no model, no GPU)
+    add_executable(verify_brow_at_test src/core/verify_brow_at_test.cpp)
+    target_link_libraries(verify_brow_at_test PRIVATE strata_engine)
+    add_test(NAME verify_brow_at_test COMMAND verify_brow_at_test)
+  endif()
   # the batch window's row layout (a slot's group of proposed rows, the layer split's hand-off capacity; header-only, CPU)
   add_executable(batch_rows_test tests/core/batch_rows_test.cpp)
   target_include_directories(batch_rows_test PRIVATE include)
