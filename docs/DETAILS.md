@@ -927,6 +927,13 @@ print(r.choices[0].message.content)
   end-of-turn token with no `</think>`: the content is empty and an agent stops. `"reasoning_close_retry": true` in
   `strata-<model>.json` closes the thinking once (as the thinking budget does) and continues, once per request, only for
   a reply that ended that way with no answer and no tool call. Off by default.
+- **A reply sent back as the ids the model wrote (opt-in).** `"splice_turns": true` (or `STRATA_SPLICE_TURNS=1`): when the
+  next prompt carries the previous reply as the same text, its ids are the ones generated, not a new encode of the text, so a
+  reply the model wrote in another split than the tokenizer's (".\n" as "." and "\n") no longer makes the engine read the
+  whole conversation again. `"parsed"` also takes a reply that reads back as the same reasoning, answer and calls
+  (serve/turn_splice.py; `"text"` is the same as `true`). A reply with a control token the model wrote in it is never sent as its
+  ids. Off by default. The Qwen3.6 engine's own opt-ins (`--kv`, `--snapshots`, `--mtp-sampled`, the hybrid mode's
+  `--expert-prefetch`, ...) are in [QWEN36.md](QWEN36.md#opt-ins-of-this-engine-path).
 - **A reply stuck on one token is ended (0.1.39, #606).** When a reply repeats the same token 256 times in a row, the
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in

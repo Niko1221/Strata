@@ -192,13 +192,61 @@ __global__ void __launch_bounds__(1024) k_sh_gu(const uint8_t* __restrict__ wg, 
     }
 }
 
+/// The 256-wide sum of k_add_rms_q / k_moe_out_s8 after the per-thread sums sit in sh[0..255]: the halving tree
+/// (stages 128, 64, 32 by index, then lanes 16 .. 1) as ONE barrier plus a register tree.  Each warp forms, for its
+/// lane l, C_l = ((s_l + s_{l+128}) + (s_{l+64} + s_{l+192})) + ((s_{l+32} + s_{l+160}) + (s_{l+96} + s_{l+224})) - the
+/// tree's value at index l after stage 32 - and the lanes then add l + 16, 8, 4, 2, 1 (shfl_down = stages 16 .. 1).
+/// Every add pairs the same two values as before (float + is commutative), so lane 0's sum has the tree's bits; the
+/// sum goes to every lane.  Needs a __syncthreads() between the sh[] stores and this call, and blockDim.x == 256 (sh[]
+/// holds one value per thread; the 256-thread kernels below are launched that way).
+__device__ __forceinline__ float sum256(const float* sh) {
+    const int l = threadIdx.x & 31;
+    const float a0 = sh[l] + sh[l + 128], a1 = sh[l + 64] + sh[l + 192];
+    const float a2 = sh[l + 32] + sh[l + 160], a3 = sh[l + 96] + sh[l + 224];
+    float c = (a0 + a1) + (a2 + a3);
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) c += __shfl_down_sync(0xffffffffu, c, o, 32);
+    return __shfl_sync(0xffffffffu, c, 0, 32);
+}
+
 /// k_add_rms (x += y; h = rms(x) * w, one block of 256 per row) and the q8_1 image of h in the same launch.
+/// n == 2048 (8 elements per thread, i = t + 256 k): the loads of x, y and w are all issued first, v and hv stay in
+/// registers (the old code re-read h through a volatile load: a float store / load keeps every bit, and __fmul_rn is
+/// never contracted into the quantizer's sums), and the sum is sum256's single-barrier tree.  Other n: the old loops.
 __global__ void __launch_bounds__(256) k_add_rms_q(float* x, const float* y, const float* w, float* h, QB* hq, int n, float eps) {
     __shared__ float sh[256];
     float* xr = x + (size_t) blockIdx.x * n;
     const float* yr = y + (size_t) blockIdx.x * n;
     float* hr = h + (size_t) blockIdx.x * n;
     QB* qr = hq + (size_t) blockIdx.x * (n >> 5);
+    if (n == 2048) {
+        float xv[8], yv[8], wv[8];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            xv[k] = xr[threadIdx.x + 256 * k];
+            yv[k] = yr[threadIdx.x + 256 * k];
+            wv[k] = w[threadIdx.x + 256 * k];
+        }
+        float s = 0.f;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const float v = xv[k] + yv[k];
+            xr[threadIdx.x + 256 * k] = v;
+            xv[k] = v;
+            s += v * v;
+        }
+        sh[threadIdx.x] = s;
+        __syncthreads();
+        const float r = rsqrtf(sum256(sh) / (float) n + eps);
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const int i = threadIdx.x + 256 * k;
+            const float hv = __fmul_rn(__fmul_rn(xv[k], r), wv[k]);   // no FMA with the quantizer's sums: the old h was stored first
+            hr[i] = hv;
+            q8_store(qr, i, hv, threadIdx.x & 31);
+        }
+        return;
+    }
     float s = 0.f;
     for (int i = threadIdx.x; i < n; i += 256) {
         const float v = xr[i] + yr[i];
@@ -263,13 +311,73 @@ __global__ void __launch_bounds__(1024) k_moe_out_small(float* x, const float* p
     }
 }
 
+/// A hybrid slot's blob: slots below n_reg are in blobs, the lent ones (--lend-staging: extra slots in the prompt staging
+/// buffers) follow in lent (the default arguments: no lent slots)
+__device__ __forceinline__ const uint8_t* slot_blob(const uint8_t* blobs, const uint8_t* lent, int n_reg, int slot, size_t blob) {
+    return slot < n_reg ? blobs + (size_t) slot * blob : lent + (size_t) (slot - n_reg) * blob;
+}
+
+/// k_moe_out_small for K_ == 8 and n == 2048 with 256 threads per row (launch it <<<T, 256>>>): thread t owns the 8
+/// elements t + 256 j, which is exactly what the old squares loop summed per thread (in order j = 0 .. 7), so the
+/// squares need no shared-memory exchange; v and hv stay in registers (no vv[], no volatile read-back); the sum is
+/// sum256's single-barrier tree.  Same bits as k_moe_out_small.  The inputs are const __restrict__: with them the
+/// compiler keeps the thread's loads (8 parts, the shared row, x), which the source puts before the first fma, ahead of
+/// the stores to x; without it they stayed behind the stores and the kernel was slower than the old one (5.5 vs 5.2 us,
+/// 3.5 with it).
+__global__ void __launch_bounds__(256) k_moe_out_s8(float* __restrict__ x, const float* __restrict__ parts,
+                                                    const int32_t* __restrict__ prow, const float* __restrict__ wts,
+                                                    const float* __restrict__ shared, const float* __restrict__ sgate,
+                                                    int sg_stride, const float* __restrict__ wn, float* __restrict__ h, int n,
+                                                    float eps, QB* hq = nullptr) {
+    __shared__ float sh[256];
+    const int t = blockIdx.x;
+    float* xr = x + (size_t) t * n;
+    int pr[8];
+#pragma unroll
+    for (int k = 0; k < 8; ++k) pr[k] = prow ? prow[t * 8 + k] : t * 8 + k;
+    float pv[8][8], sv[8], xv[8], w8[8];
+#pragma unroll
+    for (int k = 0; k < 8; ++k) w8[k] = wts[(size_t) t * 8 + k];
+    const float gs = sigm(sgate[(size_t) t * sg_stride]);
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        sv[j] = shared[(size_t) t * n + threadIdx.x + 256 * j];
+        xv[j] = xr[threadIdx.x + 256 * j];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) pv[j][k] = parts[(size_t) pr[k] * n + threadIdx.x + 256 * j];
+    }
+    float s = 0.f, vv[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        float acc = w8[0] * pv[j][0];
+#pragma unroll
+        for (int k = 1; k < 8; ++k) acc = fmaf(w8[k], pv[j][k], acc);
+        acc += gs * sv[j];
+        const float v = xv[j] + acc;
+        xr[threadIdx.x + 256 * j] = v;
+        vv[j] = v;
+        s += v * v;
+    }
+    if (wn == nullptr) return;
+    sh[threadIdx.x] = s;
+    __syncthreads();
+    const float r = rsqrtf(sum256(sh) / (float) n + eps);
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int i = threadIdx.x + 256 * j;
+        const float hv = __fmul_rn(__fmul_rn(vv[j], r), wn[i]);
+        h[(size_t) t * n + i] = hv;
+        if (hq) q8_store(hq + (size_t) t * (n >> 5), i, hv, threadIdx.x & 31);
+    }
+}
+
 /// k_group / k_group_hy for n_ent <= 64 entries: one block of 64 threads ranks each entry by (expert id, entry) in
 /// parallel instead of one thread walking all the experts; the same group / entry arrays.  HY: only the entries whose
 /// expert has a VRAM slot (slot_of >= 0), the group's blob at blobs + slot * blob.
 template <bool HY>
 __global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32_t* slot_of, const uint8_t* blobs,
                               unsigned long long blob, unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups,
-                              int32_t* ent_dst, int32_t* ent_tok) {
+                              int32_t* ent_dst, int32_t* ent_tok, const uint8_t* lent = nullptr, int n_reg = 0x7fffffff) {
     __shared__ int sid[64];
     const int e = threadIdx.x;
     const int id = e < n_ent ? ids[e] : 0;
@@ -292,7 +400,7 @@ __global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32
         int g = 0;
         for (int q = 1; q < rank; ++q) g += sid[q - 1] != sid[q] ? 1 : 0;
         g += rank > 0 ? 1 : 0;
-        grp_ptr[g] = (unsigned long long) (blobs + (size_t) (HY ? slot_of[id] : id) * blob);
+        grp_ptr[g] = (unsigned long long) (HY ? slot_blob(blobs, lent, n_reg, slot_of[id], blob) : blobs + (size_t) id * blob);
         grp_start[g] = rank;
     }
     if (e == 0) {
@@ -310,7 +418,8 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
                                                      float* __restrict__ weights, int n_tok, int ld, const int32_t* slot_of,
                                                      const uint8_t* blobs, unsigned long long blob,
                                                      unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups,
-                                                     int32_t* ent_dst, int32_t* ent_tok) {
+                                                     int32_t* ent_dst, int32_t* ent_tok, const uint8_t* lent = nullptr,
+                                                     int n_reg = 0x7fffffff) {
     constexpr int NE = 256, K = 8, V = NE / 32;
     __shared__ int sids[64], sid[64];
     const int tk = threadIdx.y;
@@ -385,7 +494,7 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
         int g = 0;
         for (int q = 1; q < rank; ++q) g += sid[q - 1] != sid[q] ? 1 : 0;
         g += rank > 0 ? 1 : 0;
-        grp_ptr[g] = (unsigned long long) (blobs + (size_t) (HY ? slot_of[id] : id) * blob);
+        grp_ptr[g] = (unsigned long long) (HY ? slot_blob(blobs, lent, n_reg, slot_of[id], blob) : blobs + (size_t) id * blob);
         grp_start[g] = rank;
     }
     if (e == 0) {
