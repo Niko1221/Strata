@@ -1,0 +1,40 @@
+{
+  "task": "fullstack",
+  "tool_calls": 15,
+  "tool_results": 15,
+  "tool_errors": 0,
+  "tool_names": [
+    "Bash",
+    "Edit",
+    "Read",
+    "Write"
+  ],
+  "original_tests_intact": true,
+  "changed_files": [
+    "api.js",
+    "app.regression.test.js",
+    "client.js"
+  ],
+  "agent_usage": {
+    "input_tokens": 11005,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 201466,
+    "output_tokens": 8631,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [],
+    "speed": "standard"
+  },
+  "agent_reported_turns": 16
+}

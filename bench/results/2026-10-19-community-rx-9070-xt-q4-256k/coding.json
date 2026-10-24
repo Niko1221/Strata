@@ -1,0 +1,395 @@
+{
+  "label": "q4-coding-220k",
+  "target_input": 225280,
+  "count_endpoint_tokens": 225271,
+  "server_health": {
+    "status": "ok",
+    "max_context": 262144,
+    "model": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "images": false,
+    "api_key": false,
+    "image_generation": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "engine_configuration": {
+    "model": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "max_context": 262144,
+    "images": false,
+    "version": "0.1.45",
+    "logit_bias": 1,
+    "context": 262144,
+    "kv": "int8",
+    "kv_resident": 32768,
+    "expert_slots": 1097,
+    "expert_cache_mib": 3269,
+    "expert_slots_primary": 1097,
+    "expert_cache_primary_mib": 3269,
+    "spec": 6,
+    "mtp_max": 4,
+    "lookup": 3,
+    "vram_free_mib": 1563,
+    "cvec": 0,
+    "arena_mib": 19060,
+    "pool_workers": 7,
+    "pcie_frac": "0.55",
+    "spec_min_p": "0.50",
+    "conversation_cache_mib": 0,
+    "conversation_cache_slots": 4,
+    "conversation_cache_min_free_mib": 2560,
+    "conversation_cache_min_tokens": 0,
+    "tail_role_token": -1,
+    "vram_elastic": 0,
+    "prefill_cap": 5376,
+    "prefill_stages": 1,
+    "stream_all_min": 1024,
+    "prefill_pipe": 0,
+    "engine": "0.1.45"
+  },
+  "limitation": "Synthetic distractor bundle; controlled tool loop, not Claude Code or a production repository.",
+  "prompt_sha256": "8206624846bdf9d96d44b8defdc42a3c0d9509b22cf033ea831074c4a3fe3010",
+  "turns": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "I'll start by examining the key files and the test expectations.",
+        "tool_calls": [
+          {
+            "id": "call_af163d66380e49b2a5218af6",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"api.js\"}"
+            }
+          },
+          {
+            "id": "call_549374b74dae4a2a824adc59",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"db.js\"}"
+            }
+          },
+          {
+            "id": "call_df5d253c1bef463fbe9f82d6",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"client.js\"}"
+            }
+          },
+          {
+            "id": "call_78832940b5b144469d453bfa",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"app.test.js\"}"
+            }
+          }
+        ]
+      },
+      "wall_seconds": 447.7150582999966,
+      "ttft_or_first_tool_seconds": 428.8524250999981,
+      "usage": {
+        "prompt_tokens": 225601,
+        "completion_tokens": 119,
+        "total_tokens": 225720,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 225601,
+        "prompt_ms": 428631.8,
+        "prompt_per_token_ms": 1.9,
+        "prompt_per_second": 526.3,
+        "predicted_n": 119,
+        "predicted_ms": 18944.0,
+        "predicted_per_token_ms": 159.193,
+        "predicted_per_second": 6.3,
+        "draft_n": 100,
+        "draft_n_accepted": 81
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Now let me run the existing tests to see the current failures.",
+        "tool_calls": [
+          {
+            "id": "call_1131cf24aac94b178f7bf11c",
+            "type": "function",
+            "function": {
+              "name": "run_tests",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "wall_seconds": 11.102055099996505,
+      "ttft_or_first_tool_seconds": 8.404800099997374,
+      "usage": {
+        "prompt_tokens": 226378,
+        "completion_tokens": 29,
+        "total_tokens": 226407,
+        "prompt_tokens_details": {
+          "cached_tokens": 225719
+        }
+      },
+      "timings": {
+        "cache_n": 225719,
+        "prompt_n": 659,
+        "prompt_ms": 8241.3,
+        "prompt_per_token_ms": 12.506,
+        "prompt_per_second": 80.0,
+        "predicted_n": 29,
+        "predicted_ms": 2802.4,
+        "predicted_per_token_ms": 96.634,
+        "predicted_per_second": 10.3,
+        "draft_n": 21,
+        "draft_n_accepted": 21
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_cb1b5a54c1d240febfcbf6c9",
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "arguments": "{\"path\":\"api.js\",\"content\":\"export function createApi(db){\\n  // Serialize order processing so the stock check and reservation are atomic\\n  // across concurrent async requests (prevents overselling).\\n  let queue = Promise.resolve();\\n\\n  async function processOrder(user, input){\\n    if(!user) throw Error('unauthorized');\\n    const quantity = input ? input.quantity : undefined;\\n    if(typeof quantity !== 'number' || !Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity <= 0){\\n      throw Error('invalid quantity');\\n    }\\n    if(db.stock < quantity) throw Error('out of stock');\\n    // Reserve stock before the async insert so concurrent requests see it.\\n    db.stock -= quantity;\\n    try {\\n      // Orders are scoped to the authenticated user's tenant, never to the\\n      // (possibly spoofed) tenant supplied in the input payload.\\n      return await db.insert({tenant: user.tenant, quantity});\\n    } catch(e){\\n      // Insert failed: roll the reservation back so stock is unchanged.\\n      db.stock += quantity;\\n      throw e;\\n    }\\n  }\\n\\n  return {\\n    order(user, input){\\n      const result = queue.then(() => processOrder(user, input));\\n      // Keep the chain alive even when this order rejects.\\n      queue = result.catch(() => {});\\n      return result;\\n    },\\n    async list(user){\\n      if(!user) throw Error('unauthorized');\\n      // Tenant isolation: only return orders belonging to the caller's tenant.\\n      return db.orders.filter(o => o.tenant === user.tenant);\\n    }\\n  };\\n}\\n\"}"
+            }
+          },
+          {
+            "id": "call_199d02dbe0274fabb31b559f",
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "arguments": "{\"path\":\"client.js\",\"content\":\"export function createClient(fetchOrders){\\n  const state = {orders: [], loading: false, error: null};\\n  let requestId = 0;\\n\\n  return {\\n    state,\\n    async refresh(){\\n      const id = ++requestId;\\n      state.loading = true;\\n      try {\\n        const orders = await fetchOrders();\\n        // Ignore stale responses: a newer refresh has already started.\\n        if(id !== requestId) return;\\n        state.orders = orders;\\n        state.error = null;\\n        state.loading = false;\\n      } catch(e){\\n        if(id !== requestId) return;\\n        state.error = e.message;\\n        state.loading = false;\\n      }\\n    }\\n  };\\n}\\n\"}"
+            }
+          }
+        ]
+      },
+      "wall_seconds": 92.21474589999707,
+      "ttft_or_first_tool_seconds": 10.051556999998866,
+      "usage": {
+        "prompt_tokens": 227686,
+        "completion_tokens": 591,
+        "total_tokens": 228277,
+        "prompt_tokens_details": {
+          "cached_tokens": 226406
+        }
+      },
+      "timings": {
+        "cache_n": 226406,
+        "prompt_n": 1280,
+        "prompt_ms": 9041.6,
+        "prompt_per_token_ms": 7.064,
+        "prompt_per_second": 141.6,
+        "predicted_n": 591,
+        "predicted_ms": 83122.8,
+        "predicted_per_token_ms": 140.648,
+        "predicted_per_second": 7.1,
+        "draft_n": 509,
+        "draft_n_accepted": 406
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Now let me add regression tests covering these fixes:",
+        "tool_calls": [
+          {
+            "id": "call_26cae8327439438dbd44c854",
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "arguments": "{\"path\":\"regression.test.js\",\"content\":\"import test from 'node:test';\\nimport assert from 'node:assert/strict';\\nimport {Database} from './db.js';\\nimport {createApi} from './api.js';\\nimport {createClient} from './client.js';\\n\\ntest('regression: order records the authenticated tenant, not the input tenant', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await api.order({tenant:'a'}, {tenant:'evil', quantity:1});\\n  assert.equal(db.orders.length, 1);\\n  assert.equal(db.orders[0].tenant, 'a');\\n  assert.equal(db.orders[0].quantity, 1);\\n});\\n\\ntest('regression: list is scoped per tenant and requires authentication', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await api.order({tenant:'a'}, {quantity:1});\\n  await api.order({tenant:'b'}, {quantity:1});\\n  const aOrders = await api.list({tenant:'a'});\\n  const bOrders = await api.list({tenant:'b'});\\n  assert.equal(aOrders.length, 1);\\n  assert.equal(aOrders[0].tenant, 'a');\\n  assert.equal(bOrders.length, 1);\\n  assert.equal(bOrders[0].tenant, 'b');\\n  await assert.rejects(() => api.list(null));\\n  await assert.rejects(() => api.list(undefined));\\n});\\n\\ntest('regression: concurrent orders never oversell shared stock', async () => {\\n  const db = new Database(), api = createApi(db); // stock = 3\\n  const results = await Promise.allSettled(\\n    Array.from({length: 10}, () => api.order({tenant:'a'}, {quantity:1}))\\n  );\\n  const fulfilled = results.filter(x => x.status === 'fulfilled');\\n  assert.equal(fulfilled.length, 3);\\n  assert.equal(db.stock, 0);\\n  assert.equal(db.orders.length, 3);\\n});\\n\\ntest('regression: rejects invalid quantities without touching stock', async () => {\\n  const db = new Database(), api = createApi(db);\\n  for (const bad of [-2, -0.5, 0, 0.5, 1.5, NaN, Infinity, '2', null, undefined]) {\\n    await assert.rejects(() => api.order({tenant:'a'}, {quantity: bad}));\\n  }\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: unauthorized order is rejected and leaves state untouched', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await assert.rejects(() => api.order(null, {quantity:1}));\\n  await assert.rejects(() => api.order(undefined, {quantity:1}));\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: failed insert rolls back stock and later orders still work', async () => {\\n  const db = new Database(), api = createApi(db);\\n  db.fail = true;\\n  await assert.rejects(() => api.order({tenant:'a'}, {quantity:2}));\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n  // Recovery after the database comes back online.\\n  db.fail = false;\\n  await api.order({tenant:'a'}, {quantity:2});\\n  assert.equal(db.stock, 1);\\n  assert.equal(db.orders.length, 1);\\n});\\n\\ntest('regression: concurrent orders with a failing database keep stock intact', async () => {\\n  const db = new Database(), api = createApi(db); // stock = 3\\n  db.fail = true;\\n  const results = await Promise.allSettled(\\n    Array.from({length: 5}, () => api.order({tenant:'a'}, {quantity:1}))\\n  );\\n  assert.equal(results.filter(x => x.status === 'fulfilled').length, 0);\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: stale refresh cannot overwrite newer orders or clear loading early', async () => {\\n  let resolveOld;\\n  let calls = 0;\\n  const c = createClient(() => ++calls === 1\\n    ? new Promise(r => resolveOld = r)\\n    : Promise.resolve(['new']));\\n  const old = c.refresh();\\n  await c.refresh();\\n  assert.deepEqual(c.state.orders, ['new']);\\n  assert.equal(c.state.loading, false); // newest request already finished\\n  resolveOld(['old']);\\n  await old;\\n  assert.deepEqual(c.state.orders, ['new']); // stale response ignored\\n  assert.equal(c.state.loading, false);\\n});\\n\\ntest('regression: error from the latest request is preserved and cleared on success', async () => {\\n  let mode = 'fail';\\n  const c = createClient(async () => {\\n    if (mode === 'fail') throw Error('offline');\\n    return ['ok'];\\n  });\\n  await c.refresh();\\n  assert.equal(c.state.error, 'offline');\\n  assert.deepEqual(c.state.orders, []);\\n  assert.equal(c.state.loading, false);\\n  mode = 'ok';\\n  await c.refresh();\\n  assert.equal(c.state.error, null);\\n  assert.deepEqual(c.state.orders, ['ok']);\\n  assert.equal(c.state.loading, false);\\n  mode = 'fail';\\n  await c.refresh();\\n  assert.equal(c.state.error, 'offline'); // latest error preserved\\n});\\n\\ntest('regression: stale failing refresh does not clobber newer state', async () => {\\n  let rejectOld;\\n  let calls = 0;\\n  const c = createClient(() => ++calls === 1\\n    ? new Promise((_, rej) => rejectOld = rej)\\n    : Promise.resolve(['new']));\\n  const old = c.refresh();\\n  await c.refresh();\\n  rejectOld(Error('stale failure'));\\n  await old; // must resolve quietly, stale result ignored\\n  assert.deepEqual(c.state.orders, ['new']);\\n  assert.equal(c.state.error, null);\\n  assert.equal(c.state.loading, false);\\n});\\n\"}"
+            }
+          }
+        ]
+      },
+      "wall_seconds": 204.28196580000076,
+      "ttft_or_first_tool_seconds": 11.912135099999432,
+      "usage": {
+        "prompt_tokens": 228330,
+        "completion_tokens": 1434,
+        "total_tokens": 229764,
+        "prompt_tokens_details": {
+          "cached_tokens": 228278
+        }
+      },
+      "timings": {
+        "cache_n": 228278,
+        "prompt_n": 52,
+        "prompt_ms": 11648.3,
+        "prompt_per_token_ms": 224.006,
+        "prompt_per_second": 4.5,
+        "predicted_n": 1434,
+        "predicted_ms": 192563.5,
+        "predicted_per_token_ms": 134.284,
+        "predicted_per_second": 7.4,
+        "draft_n": 1181,
+        "draft_n_accepted": 1004
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_5d8529b7bb774a3f942c9407",
+            "type": "function",
+            "function": {
+              "name": "run_tests",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "wall_seconds": 11.137070600001607,
+      "ttft_or_first_tool_seconds": 10.086193000002822,
+      "usage": {
+        "prompt_tokens": 229799,
+        "completion_tokens": 15,
+        "total_tokens": 229814,
+        "prompt_tokens_details": {
+          "cached_tokens": 229763
+        }
+      },
+      "timings": {
+        "cache_n": 229763,
+        "prompt_n": 36,
+        "prompt_ms": 8371.5,
+        "prompt_per_token_ms": 232.542,
+        "prompt_per_second": 4.3,
+        "predicted_n": 15,
+        "predicted_ms": 2709.7,
+        "predicted_per_token_ms": 180.647,
+        "predicted_per_second": 5.5,
+        "draft_n": 12,
+        "draft_n_accepted": 10
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "All 15 tests pass (5 original + 10 new regression tests). Here's a summary of the multi-file repair:\n\n## Root causes & fixes\n\n**`api.js`** (4 bugs):\n1. **Tenant spoofing on write** \u2014 `order()` stored `input.tenant`, letting any caller write to another tenant. Now it always records `user.tenant` from the authenticated user.\n2. **No tenant scoping / auth on read** \u2014 `list()` returned all orders and accepted a null user. Now it rejects unauthorized callers and filters `db.orders` by `user.tenant`.\n3. **Overselling under concurrency** \u2014 the stock check happened before an `await`, so 8 concurrent requests all passed the check against `stock=3`. Fixed with two mechanisms: stock is reserved *before* the async insert, and orders are processed through a serialized promise queue making check+reserve atomic (this also guarantees exactly 3 fulfillments even if quantities > 1 race).\n4. **No quantity validation** \u2014 added rejection of non-integer, \u22640, NaN/Infinity, and non-numeric quantities.\n5. **No rollback on failed insert** \u2014 `db.stock -= quantity` ran before `db.insert`, so a DB failure lost stock permanently. Now the reservation is refunded in a `catch` block, leaving stock unchanged.\n\n**`client.js`** (3 bugs):\n1. **Stale responses win** \u2014 an older pending `refresh()` could overwrite newer orders. Added a monotonically increasing request id; only the latest request may mutate state.\n2. **Error never cleared** \u2014 a successful refresh now sets `state.error = null`.\n3. **Loading state clobbering** \u2014 stale requests return early without touching `state.loading`, so it's only cleared by the newest request.\n\n**`regression.test.js`** (new, 10 tests): covers tenant attribution on writes, per-tenant list scoping + auth, oversell prevention under concurrency, invalid quantity rejection (without stock mutation), unauthorized orders, rollback with recovery after DB comes back, concurrent failures keeping stock intact, stale-response handling for both success and failure paths, and error preservation/clearing.\n\nThe existing `app.test.js` was not modified."
+      },
+      "wall_seconds": 68.58051160000468,
+      "ttft_or_first_tool_seconds": 9.367983000003733,
+      "usage": {
+        "prompt_tokens": 230602,
+        "completion_tokens": 479,
+        "total_tokens": 231081,
+        "prompt_tokens_details": {
+          "cached_tokens": 229814
+        }
+      },
+      "timings": {
+        "cache_n": 229814,
+        "prompt_n": 788,
+        "prompt_ms": 9158.6,
+        "prompt_per_token_ms": 11.623,
+        "prompt_per_second": 86.0,
+        "predicted_n": 479,
+        "predicted_ms": 59368.7,
+        "predicted_per_token_ms": 123.943,
+        "predicted_per_second": 8.1,
+        "draft_n": 477,
+        "draft_n_accepted": 296
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "read_file",
+      "arguments": "{\"path\":\"api.js\"}",
+      "result": {
+        "content": "export function createApi(db){return {async order(user,input){if(!user)throw Error('unauthorized');if(db.stock<input.quantity)throw Error('out of stock');await Promise.resolve();db.stock-=input.quantity;return db.insert({tenant:input.tenant,quantity:input.quantity});},async list(user){return db.orders;}};}\n"
+      }
+    },
+    {
+      "name": "read_file",
+      "arguments": "{\"path\":\"db.js\"}",
+      "result": {
+        "content": "export class Database { stock=3; orders=[]; fail=false;\n async insert(order){await new Promise(r=>setTimeout(r,2));if(this.fail)throw Error('database unavailable');this.orders.push(order);return order;}\n}\n"
+      }
+    },
+    {
+      "name": "read_file",
+      "arguments": "{\"path\":\"client.js\"}",
+      "result": {
+        "content": "export function createClient(fetchOrders){const state={orders:[],loading:false,error:null};return {state,async refresh(){state.loading=true;try{state.orders=await fetchOrders();}catch(e){state.error=e.message;}state.loading=false;}};}\n"
+      }
+    },
+    {
+      "name": "read_file",
+      "arguments": "{\"path\":\"app.test.js\"}",
+      "result": {
+        "content": "import test from 'node:test';import assert from 'node:assert/strict';import {Database} from './db.js';import {createApi} from './api.js';import {createClient} from './client.js';\ntest('tenant isolation',async()=>{const db=new Database(),api=createApi(db);await api.order({tenant:'a'},{tenant:'b',quantity:1});assert.equal(db.orders[0].tenant,'a');assert.deepEqual(await api.list({tenant:'b'}),[]);await assert.rejects(()=>api.list(null));});\ntest('concurrency and validation',async()=>{const db=new Database(),api=createApi(db);const results=await Promise.allSettled(Array.from({length:8},()=>api.order({tenant:'a'},{quantity:1})));assert.equal(results.filter(x=>x.status==='fulfilled').length,3);assert.equal(db.stock,0);await assert.rejects(()=>api.order({tenant:'a'},{quantity:-2}));await assert.rejects(()=>api.order({tenant:'a'},{quantity:0.5}));});\ntest('failed persistence rolls back',async()=>{const db=new Database(),api=createApi(db);db.fail=true;await assert.rejects(()=>api.order({tenant:'a'},{quantity:2}));assert.equal(db.stock,3);});\ntest('latest refresh wins',async()=>{let resolveOld;let calls=0;const c=createClient(()=>++calls===1?new Promise(r=>resolveOld=r):Promise.resolve(['new']));const old=c.refresh();await c.refresh();resolveOld(['old']);await old;assert.deepEqual(c.state.orders,['new']);assert.equal(c.state.loading,false);});\ntest('latest error is cleared on successful refresh',async()=>{let fail=true;const c=createClient(async()=>{if(fail)throw Error('offline');return [];});await c.refresh();assert.equal(c.state.error,'offline');fail=false;await c.refresh();assert.equal(c.state.error,null);});\n"
+      }
+    },
+    {
+      "name": "run_tests",
+      "arguments": "{}",
+      "result": {
+        "exit_code": 1,
+        "output": "TAP version 13\n# Subtest: tenant isolation\nnot ok 1 - tenant isolation\n  ---\n  duration_ms: 16.0745\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:2:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    'b' !== 'a'\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 'a'\n  actual: 'b'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:2:138)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: concurrency and validation\nnot ok 2 - concurrency and validation\n  ---\n  duration_ms: 13.6504\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:3:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    8 !== 3\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 3\n  actual: 8\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:3:198)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: failed persistence rolls back\nnot ok 3 - failed persistence rolls back\n  ---\n  duration_ms: 15.8707\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:4:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    1 !== 3\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 3\n  actual: 1\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:4:173)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: latest refresh wins\nnot ok 4 - latest refresh wins\n  ---\n  duration_ms: 0.8412\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:5:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly deep-equal:\n    + actual - expected\n    \n      [\n    +   'old'\n    -   'new'\n      ]\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected:\n    0: 'new'\n  actual:\n    0: 'old'\n  operator: 'deepStrictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:5:234)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: latest error is cleared on successful refresh\nnot ok 5 - latest error is cleared on successful refresh\n  ---\n  duration_ms: 0.2497\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:6:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    'offline' !== null\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: ~\n  actual: 'offline'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:6:245)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n1..5\n# tests 5\n# suites 0\n# pass 0\n# fail 5\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 113.1066\n"
+      }
+    },
+    {
+      "name": "write_file",
+      "arguments": "{\"path\":\"api.js\",\"content\":\"export function createApi(db){\\n  // Serialize order processing so the stock check and reservation are atomic\\n  // across concurrent async requests (prevents overselling).\\n  let queue = Promise.resolve();\\n\\n  async function processOrder(user, input){\\n    if(!user) throw Error('unauthorized');\\n    const quantity = input ? input.quantity : undefined;\\n    if(typeof quantity !== 'number' || !Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity <= 0){\\n      throw Error('invalid quantity');\\n    }\\n    if(db.stock < quantity) throw Error('out of stock');\\n    // Reserve stock before the async insert so concurrent requests see it.\\n    db.stock -= quantity;\\n    try {\\n      // Orders are scoped to the authenticated user's tenant, never to the\\n      // (possibly spoofed) tenant supplied in the input payload.\\n      return await db.insert({tenant: user.tenant, quantity});\\n    } catch(e){\\n      // Insert failed: roll the reservation back so stock is unchanged.\\n      db.stock += quantity;\\n      throw e;\\n    }\\n  }\\n\\n  return {\\n    order(user, input){\\n      const result = queue.then(() => processOrder(user, input));\\n      // Keep the chain alive even when this order rejects.\\n      queue = result.catch(() => {});\\n      return result;\\n    },\\n    async list(user){\\n      if(!user) throw Error('unauthorized');\\n      // Tenant isolation: only return orders belonging to the caller's tenant.\\n      return db.orders.filter(o => o.tenant === user.tenant);\\n    }\\n  };\\n}\\n\"}",
+      "result": {
+        "written": "api.js",
+        "bytes": 1515
+      }
+    },
+    {
+      "name": "write_file",
+      "arguments": "{\"path\":\"client.js\",\"content\":\"export function createClient(fetchOrders){\\n  const state = {orders: [], loading: false, error: null};\\n  let requestId = 0;\\n\\n  return {\\n    state,\\n    async refresh(){\\n      const id = ++requestId;\\n      state.loading = true;\\n      try {\\n        const orders = await fetchOrders();\\n        // Ignore stale responses: a newer refresh has already started.\\n        if(id !== requestId) return;\\n        state.orders = orders;\\n        state.error = null;\\n        state.loading = false;\\n      } catch(e){\\n        if(id !== requestId) return;\\n        state.error = e.message;\\n        state.loading = false;\\n      }\\n    }\\n  };\\n}\\n\"}",
+      "result": {
+        "written": "client.js",
+        "bytes": 644
+      }
+    },
+    {
+      "name": "write_file",
+      "arguments": "{\"path\":\"regression.test.js\",\"content\":\"import test from 'node:test';\\nimport assert from 'node:assert/strict';\\nimport {Database} from './db.js';\\nimport {createApi} from './api.js';\\nimport {createClient} from './client.js';\\n\\ntest('regression: order records the authenticated tenant, not the input tenant', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await api.order({tenant:'a'}, {tenant:'evil', quantity:1});\\n  assert.equal(db.orders.length, 1);\\n  assert.equal(db.orders[0].tenant, 'a');\\n  assert.equal(db.orders[0].quantity, 1);\\n});\\n\\ntest('regression: list is scoped per tenant and requires authentication', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await api.order({tenant:'a'}, {quantity:1});\\n  await api.order({tenant:'b'}, {quantity:1});\\n  const aOrders = await api.list({tenant:'a'});\\n  const bOrders = await api.list({tenant:'b'});\\n  assert.equal(aOrders.length, 1);\\n  assert.equal(aOrders[0].tenant, 'a');\\n  assert.equal(bOrders.length, 1);\\n  assert.equal(bOrders[0].tenant, 'b');\\n  await assert.rejects(() => api.list(null));\\n  await assert.rejects(() => api.list(undefined));\\n});\\n\\ntest('regression: concurrent orders never oversell shared stock', async () => {\\n  const db = new Database(), api = createApi(db); // stock = 3\\n  const results = await Promise.allSettled(\\n    Array.from({length: 10}, () => api.order({tenant:'a'}, {quantity:1}))\\n  );\\n  const fulfilled = results.filter(x => x.status === 'fulfilled');\\n  assert.equal(fulfilled.length, 3);\\n  assert.equal(db.stock, 0);\\n  assert.equal(db.orders.length, 3);\\n});\\n\\ntest('regression: rejects invalid quantities without touching stock', async () => {\\n  const db = new Database(), api = createApi(db);\\n  for (const bad of [-2, -0.5, 0, 0.5, 1.5, NaN, Infinity, '2', null, undefined]) {\\n    await assert.rejects(() => api.order({tenant:'a'}, {quantity: bad}));\\n  }\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: unauthorized order is rejected and leaves state untouched', async () => {\\n  const db = new Database(), api = createApi(db);\\n  await assert.rejects(() => api.order(null, {quantity:1}));\\n  await assert.rejects(() => api.order(undefined, {quantity:1}));\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: failed insert rolls back stock and later orders still work', async () => {\\n  const db = new Database(), api = createApi(db);\\n  db.fail = true;\\n  await assert.rejects(() => api.order({tenant:'a'}, {quantity:2}));\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n  // Recovery after the database comes back online.\\n  db.fail = false;\\n  await api.order({tenant:'a'}, {quantity:2});\\n  assert.equal(db.stock, 1);\\n  assert.equal(db.orders.length, 1);\\n});\\n\\ntest('regression: concurrent orders with a failing database keep stock intact', async () => {\\n  const db = new Database(), api = createApi(db); // stock = 3\\n  db.fail = true;\\n  const results = await Promise.allSettled(\\n    Array.from({length: 5}, () => api.order({tenant:'a'}, {quantity:1}))\\n  );\\n  assert.equal(results.filter(x => x.status === 'fulfilled').length, 0);\\n  assert.equal(db.stock, 3);\\n  assert.equal(db.orders.length, 0);\\n});\\n\\ntest('regression: stale refresh cannot overwrite newer orders or clear loading early', async () => {\\n  let resolveOld;\\n  let calls = 0;\\n  const c = createClient(() => ++calls === 1\\n    ? new Promise(r => resolveOld = r)\\n    : Promise.resolve(['new']));\\n  const old = c.refresh();\\n  await c.refresh();\\n  assert.deepEqual(c.state.orders, ['new']);\\n  assert.equal(c.state.loading, false); // newest request already finished\\n  resolveOld(['old']);\\n  await old;\\n  assert.deepEqual(c.state.orders, ['new']); // stale response ignored\\n  assert.equal(c.state.loading, false);\\n});\\n\\ntest('regression: error from the latest request is preserved and cleared on success', async () => {\\n  let mode = 'fail';\\n  const c = createClient(async () => {\\n    if (mode === 'fail') throw Error('offline');\\n    return ['ok'];\\n  });\\n  await c.refresh();\\n  assert.equal(c.state.error, 'offline');\\n  assert.deepEqual(c.state.orders, []);\\n  assert.equal(c.state.loading, false);\\n  mode = 'ok';\\n  await c.refresh();\\n  assert.equal(c.state.error, null);\\n  assert.deepEqual(c.state.orders, ['ok']);\\n  assert.equal(c.state.loading, false);\\n  mode = 'fail';\\n  await c.refresh();\\n  assert.equal(c.state.error, 'offline'); // latest error preserved\\n});\\n\\ntest('regression: stale failing refresh does not clobber newer state', async () => {\\n  let rejectOld;\\n  let calls = 0;\\n  const c = createClient(() => ++calls === 1\\n    ? new Promise((_, rej) => rejectOld = rej)\\n    : Promise.resolve(['new']));\\n  const old = c.refresh();\\n  await c.refresh();\\n  rejectOld(Error('stale failure'));\\n  await old; // must resolve quietly, stale result ignored\\n  assert.deepEqual(c.state.orders, ['new']);\\n  assert.equal(c.state.error, null);\\n  assert.equal(c.state.loading, false);\\n});\\n\"}",
+      "result": {
+        "written": "regression.test.js",
+        "bytes": 5033
+      }
+    },
+    {
+      "name": "run_tests",
+      "arguments": "{}",
+      "result": {
+        "exit_code": 0,
+        "output": "TAP version 13\n# Subtest: tenant isolation\nok 1 - tenant isolation\n  ---\n  duration_ms: 3.8114\n  ...\n# Subtest: concurrency and validation\nok 2 - concurrency and validation\n  ---\n  duration_ms: 46.3546\n  ...\n# Subtest: failed persistence rolls back\nok 3 - failed persistence rolls back\n  ---\n  duration_ms: 15.3333\n  ...\n# Subtest: latest refresh wins\nok 4 - latest refresh wins\n  ---\n  duration_ms: 0.503\n  ...\n# Subtest: latest error is cleared on successful refresh\nok 5 - latest error is cleared on successful refresh\n  ---\n  duration_ms: 0.1774\n  ...\n# Subtest: regression: order records the authenticated tenant, not the input tenant\nok 6 - regression: order records the authenticated tenant, not the input tenant\n  ---\n  duration_ms: 2.9581\n  ...\n# Subtest: regression: list is scoped per tenant and requires authentication\nok 7 - regression: list is scoped per tenant and requires authentication\n  ---\n  duration_ms: 29.2836\n  ...\n# Subtest: regression: concurrent orders never oversell shared stock\nok 8 - regression: concurrent orders never oversell shared stock\n  ---\n  duration_ms: 46.9418\n  ...\n# Subtest: regression: rejects invalid quantities without touching stock\nok 9 - regression: rejects invalid quantities without touching stock\n  ---\n  duration_ms: 0.3645\n  ...\n# Subtest: regression: unauthorized order is rejected and leaves state untouched\nok 10 - regression: unauthorized order is rejected and leaves state untouched\n  ---\n  duration_ms: 0.1668\n  ...\n# Subtest: regression: failed insert rolls back stock and later orders still work\nok 11 - regression: failed insert rolls back stock and later orders still work\n  ---\n  duration_ms: 30.3388\n  ...\n# Subtest: regression: concurrent orders with a failing database keep stock intact\nok 12 - regression: concurrent orders with a failing database keep stock intact\n  ---\n  duration_ms: 78.3938\n  ...\n# Subtest: regression: stale refresh cannot overwrite newer orders or clear loading early\nok 13 - regression: stale refresh cannot overwrite newer orders or clear loading early\n  ---\n  duration_ms: 0.8723\n  ...\n# Subtest: regression: error from the latest request is preserved and cleared on success\nok 14 - regression: error from the latest request is preserved and cleared on success\n  ---\n  duration_ms: 0.2625\n  ...\n# Subtest: regression: stale failing refresh does not clobber newer state\nok 15 - regression: stale failing refresh does not clobber newer state\n  ---\n  duration_ms: 0.4044\n  ...\n1..15\n# tests 15\n# suites 0\n# pass 15\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 262.6\n"
+      }
+    }
+  ],
+  "baseline_tests": {
+    "exit_code": 1,
+    "output": "TAP version 13\n# Subtest: tenant isolation\nnot ok 1 - tenant isolation\n  ---\n  duration_ms: 8.4712\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:2:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    'b' !== 'a'\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 'a'\n  actual: 'b'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:2:138)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)\n  ...\n# Subtest: concurrency and validation\nnot ok 2 - concurrency and validation\n  ---\n  duration_ms: 1.7638\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:3:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    8 !== 3\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 3\n  actual: 8\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:3:198)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: failed persistence rolls back\nnot ok 3 - failed persistence rolls back\n  ---\n  duration_ms: 13.3344\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:4:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    1 !== 3\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 3\n  actual: 1\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:4:173)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: latest refresh wins\nnot ok 4 - latest refresh wins\n  ---\n  duration_ms: 1.1755\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:5:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly deep-equal:\n    + actual - expected\n    \n      [\n    +   'old'\n    -   'new'\n      ]\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected:\n    0: 'new'\n  actual:\n    0: 'old'\n  operator: 'deepStrictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:5:234)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n# Subtest: latest error is cleared on successful refresh\nnot ok 5 - latest error is cleared on successful refresh\n  ---\n  duration_ms: 0.3112\n  location: 'C:\\\\Strata-benchmark\\\\coding\\\\q4-coding-220k\\\\app.test.js:6:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    \n    'offline' !== null\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: ~\n  actual: 'offline'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///S:/Strata-evaluation/coding/q4-coding-220k/app.test.js:6:245)\n    async Test.run (node:internal/test_runner/test:980:9)\n    async Test.processPendingSubtests (node:internal/test_runner/test:677:7)\n  ...\n1..5\n# tests 5\n# suites 0\n# pass 0\n# fail 5\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 99.5438\n"
+  },
+  "wall_seconds": 835.6058305999977,
+  "final_tests": {
+    "exit_code": 0,
+    "output": "TAP version 13\n# Subtest: tenant isolation\nok 1 - tenant isolation\n  ---\n  duration_ms: 14.3852\n  ...\n# Subtest: concurrency and validation\nok 2 - concurrency and validation\n  ---\n  duration_ms: 45.2832\n  ...\n# Subtest: failed persistence rolls back\nok 3 - failed persistence rolls back\n  ---\n  duration_ms: 14.8856\n  ...\n# Subtest: latest refresh wins\nok 4 - latest refresh wins\n  ---\n  duration_ms: 0.276\n  ...\n# Subtest: latest error is cleared on successful refresh\nok 5 - latest error is cleared on successful refresh\n  ---\n  duration_ms: 0.1514\n  ...\n# Subtest: regression: order records the authenticated tenant, not the input tenant\nok 6 - regression: order records the authenticated tenant, not the input tenant\n  ---\n  duration_ms: 2.2478\n  ...\n# Subtest: regression: list is scoped per tenant and requires authentication\nok 7 - regression: list is scoped per tenant and requires authentication\n  ---\n  duration_ms: 24.1755\n  ...\n# Subtest: regression: concurrent orders never oversell shared stock\nok 8 - regression: concurrent orders never oversell shared stock\n  ---\n  duration_ms: 46.4942\n  ...\n# Subtest: regression: rejects invalid quantities without touching stock\nok 9 - regression: rejects invalid quantities without touching stock\n  ---\n  duration_ms: 0.3799\n  ...\n# Subtest: regression: unauthorized order is rejected and leaves state untouched\nok 10 - regression: unauthorized order is rejected and leaves state untouched\n  ---\n  duration_ms: 0.1724\n  ...\n# Subtest: regression: failed insert rolls back stock and later orders still work\nok 11 - regression: failed insert rolls back stock and later orders still work\n  ---\n  duration_ms: 30.3725\n  ...\n# Subtest: regression: concurrent orders with a failing database keep stock intact\nok 12 - regression: concurrent orders with a failing database keep stock intact\n  ---\n  duration_ms: 78.1731\n  ...\n# Subtest: regression: stale refresh cannot overwrite newer orders or clear loading early\nok 13 - regression: stale refresh cannot overwrite newer orders or clear loading early\n  ---\n  duration_ms: 0.9414\n  ...\n# Subtest: regression: error from the latest request is preserved and cleared on success\nok 14 - regression: error from the latest request is preserved and cleared on success\n  ---\n  duration_ms: 0.277\n  ...\n# Subtest: regression: stale failing refresh does not clobber newer state\nok 15 - regression: stale failing refresh does not clobber newer state\n  ---\n  duration_ms: 0.3506\n  ...\n1..15\n# tests 15\n# suites 0\n# pass 15\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 255.1398\n"
+  },
+  "original_tests_intact": true,
+  "regression_tests_added": true,
+  "changed_source": [
+    "api.js",
+    "client.js"
+  ],
+  "passed": true
+}

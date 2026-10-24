@@ -1,0 +1,172 @@
+--- baseline/idempotency.test.ts
++++ agent/idempotency.test.ts
+@@ -0,0 +1,63 @@
++import test from 'node:test'; import assert from 'node:assert/strict';
++import {Repository} from './repository.ts'; import {OrderService} from './service.ts'; import {ValidationError} from './validation.ts'; import {app} from './server.ts';
++
++function svc(){return new OrderService(new Repository());}
++
++test('validation rejects bad payloads',async()=>{
++ const s=svc();
++ await assert.rejects(()=>s.create('k',{items:[]}),ValidationError);
++ await assert.rejects(()=>s.create('k',{items:'x'}),ValidationError);
++ await assert.rejects(()=>s.create('k',{items:[{sku:'a',quantity:0,unitPrice:1}]}),ValidationError);
++ await assert.rejects(()=>s.create('k',{items:[{sku:'a',quantity:1.5,unitPrice:1}]}),ValidationError);
++ await assert.rejects(()=>s.create('k',{items:[{sku:'a',quantity:1,unitPrice:-1}]}),ValidationError);
++ await assert.rejects(()=>s.create('k',{items:[{sku:'a',quantity:1,unitPrice:1.5}]}),ValidationError);
++ await assert.rejects(()=>s.create('k',{}),ValidationError);
++});
++
++test('totals persist for multi-item and zero-price orders',async()=>{
++ const repo=new Repository(); const s=new OrderService(repo);
++ const r=await s.create('k',{items:[{sku:'a',quantity:2,unitPrice:750},{sku:'b',quantity:3,unitPrice:0}]});
++ assert.equal(r.status,201); assert.equal(r.order.total,1500); assert.equal(repo.orders[0].total,1500);
++});
++
++test('different keys create separate orders, replay matches original',async()=>{
++ const repo=new Repository(); const s=new OrderService(repo);
++ const body={items:[{sku:'book',quantity:2,unitPrice:750}]};
++ const a=await s.create('one',body); const b=await s.create('two',body);
++ assert.equal(a.status,201); assert.equal(b.status,201); assert.notEqual(a.order.id,b.order.id); assert.equal(repo.orders.length,2);
++ const replay=await s.create('one',body);
++ assert.equal(replay.status,200); assert.deepEqual(replay.order,a.order); assert.equal(repo.orders.length,2);
++});
++
++test('replay ignores extra item fields via normalization but conflicts on changed values',async()=>{
++ const repo=new Repository(); const s=new OrderService(repo);
++ const clean={items:[{sku:'book',quantity:2,unitPrice:750}]};
++ const extra={items:[{sku:'book',quantity:2,unitPrice:750,note:'gift'}]};
++ const changed={items:[{sku:'book',quantity:2,unitPrice:800}]};
++ const a=await s.create('k',clean);
++ const same=await s.create('k',extra); assert.equal(same.status,200); assert.deepEqual(same.order,a.order);
++ const conflict=await s.create('k',changed); assert.equal(conflict.status,409); assert.deepEqual(conflict.order,a.order);
++ assert.equal(repo.orders.length,1);
++});
++
++test('concurrency across distinct keys yields distinct orders',async()=>{
++ const repo=new Repository(); const s=new OrderService(repo);
++ const body={items:[{sku:'book',quantity:2,unitPrice:750}]};
++ const results=await Promise.all(['x','y','z','z','x'].map(k=>s.create(k,body)));
++ assert.equal(repo.orders.length,3);
++ assert.equal(new Set(results.filter(r=>r.status===201).map(r=>r.order.id)).size,3);
++});
++
++test('HTTP creates, replays, conflicts, and rejects missing key',async()=>{
++ const server=app(); await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
++ const port=(server.address() as any).port; const url=`http://127.0.0.1:${port}/orders`;
++ const send=(b:any,key?:string)=>fetch(url,{method:'POST',headers:key?{'idempotency-key':key}:{},body:JSON.stringify(b)});
++ try{
++  const body={items:[{sku:'book',quantity:2,unitPrice:750}]};
++  assert.equal((await send(body)).status,400);
++  const created=await send(body,'dup'); assert.equal(created.status,201);
++  const createdJson=await created.json();
++  const replay=await send(body,'dup'); assert.equal(replay.status,200); assert.deepEqual(await replay.json(),createdJson);
++  const conflict=await send({items:[{sku:'other',quantity:1,unitPrice:2}]},'dup'); assert.equal(conflict.status,409);
++ }finally{ server.closeAllConnections(); await new Promise<void>(r=>server.close(()=>r())); }
++});
+--- baseline/repository.ts
++++ agent/repository.ts
+@@ -1,5 +1,12 @@
+-export type Order = {id:number; items:unknown[]; total:number};
++import type {Item} from './validation.ts';
++
++export type Order = {id:number; items:Item[]; total:number};
++export type IdempotencyRecord = {payload:string; order:Order};
++
+ export class Repository {
+   orders:Order[]=[];
+-  async insert(items:unknown[],total:number) { await Promise.resolve(); const order={id:this.orders.length+1,items,total}; this.orders.push(order); return order; }
++  idempotency=new Map<string,IdempotencyRecord>();
++  async insert(items:Item[],total:number) { await Promise.resolve(); const order={id:this.orders.length+1,items,total}; this.orders.push(order); return order; }
++  find(key:string) { return this.idempotency.get(key); }
++  save(key:string,payload:string,order:Order) { this.idempotency.set(key,{payload,order}); }
+ }
+--- baseline/server.ts
++++ agent/server.ts
+@@ -2,13 +2,26 @@
+ import express from 'express';
+ import {Repository} from './repository.ts';
+ import {OrderService} from './service.ts';
++import {ValidationError} from './validation.ts';
+ export function app() {
+  const api=express();
+  const service=new OrderService(new Repository());
+- api.use(express.json());
++ api.use(express.json({type:'*/*'}));
+  api.post('/orders',async(req,res)=>{
+-  try { const result=await service.create(String(req.headers['idempotency-key']||''),req.body); res.status(result.status).json(result.order); }
+-  catch(error) { res.status(500).json({error:'failed'}); }
++  try {
++   const key=typeof req.headers['idempotency-key']==='string'?req.headers['idempotency-key']:'';
++   if(!key) { res.status(400).json({error:'idempotency-key is required'}); return; }
++   const result=await service.create(key,req.body);
++   res.status(result.status).json(result.order);
++  }
++  catch(error) {
++   if(error instanceof ValidationError) { res.status(400).json({error:error.message}); return; }
++   res.status(500).json({error:'failed'});
++  }
++ });
++ api.use((error:any,req:any,res,next)=>{
++  if(error instanceof SyntaxError||error.type==='entity.parse.failed') { res.status(400).json({error:'invalid JSON'}); return; }
++  res.status(500).json({error:'failed'});
+  });
+  return http.createServer(api);
+ }
+--- baseline/service.ts
++++ agent/service.ts
+@@ -1,6 +1,28 @@
+-import {Repository} from './repository.ts';
+-import {parseItems} from './validation.ts';
++import {Repository, type Order} from './repository.ts';
++import {parseItems, normalizePayload} from './validation.ts';
++
++export type CreateResult = {status:number; order:Order};
++
+ export class OrderService {
+-  repo:Repository; constructor(repo:Repository) { this.repo=repo; }
+-  async create(key:string, body:any) { const items=parseItems(body.items); return {status:201,order:await this.repo.insert(items,0)}; }
++  repo:Repository;
++  inflight=new Map<string,Promise<Order>>();
++  constructor(repo:Repository) { this.repo=repo; }
++  async create(key:string, body:unknown):Promise<CreateResult> {
++    const rawItems=(body!==null&&typeof body==='object')?(body as {items?:unknown}).items:undefined;
++    const payload=normalizePayload(rawItems);
++    const items=parseItems(rawItems);
++    const existing=this.repo.find(key);
++    if(existing) return existing.payload===payload ? {status:200,order:existing.order} : {status:409,order:existing.order};
++    const pending=this.inflight.get(key);
++    if(pending) return {status:200,order:await pending};
++    const running=(async()=>{
++      const total=items.reduce((sum,item)=>sum+item.quantity*item.unitPrice,0);
++      const order=await this.repo.insert(items,total);
++      this.repo.save(key,payload,order);
++      return order;
++    })();
++    this.inflight.set(key,running);
++    try { return {status:201,order:await running}; }
++    finally { this.inflight.delete(key); }
++  }
+ }
+--- baseline/validation.ts
++++ agent/validation.ts
+@@ -1,2 +1,18 @@
+ export type Item = {sku:string; quantity:number; unitPrice:number};
+-export function parseItems(value: unknown): Item[] { return value as Item[]; }
++
++export class ValidationError extends Error {}
++
++function toItems(value:unknown):Item[]{
++  if(!Array.isArray(value)||value.length===0) throw new ValidationError('items must be a nonempty array');
++  return value.map((raw)=>{
++    if(typeof raw!=='object'||raw===null) throw new ValidationError('item must be an object');
++    const {sku,quantity,unitPrice}=raw as Record<string,unknown>;
++    if(!Number.isInteger(quantity)||quantity<=0) throw new ValidationError('quantity must be a positive integer');
++    if(!Number.isInteger(unitPrice)||unitPrice<0) throw new ValidationError('unitPrice must be an integer >= 0');
++    return {sku:sku as string,quantity:quantity as number,unitPrice:unitPrice as number};
++  });
++}
++
++export function parseItems(value:unknown):Item[]{ return toItems(value); }
++
++export function normalizePayload(value:unknown):string{ return JSON.stringify(toItems(value)); }

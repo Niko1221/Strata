@@ -1,0 +1,44 @@
+{
+  "task": "typescript-express-tail0",
+  "tool_calls": 17,
+  "tool_results": 17,
+  "tool_errors": 1,
+  "tool_names": [
+    "Bash",
+    "Edit",
+    "Glob",
+    "Read",
+    "Write"
+  ],
+  "original_tests_intact": true,
+  "changed_files": [
+    "idempotency.test.ts",
+    "package-lock.json",
+    "repository.ts",
+    "server.ts",
+    "service.ts",
+    "validation.ts"
+  ],
+  "agent_usage": {
+    "input_tokens": 12309,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 242550,
+    "output_tokens": 10368,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [],
+    "speed": "standard"
+  },
+  "agent_reported_turns": 18
+}
