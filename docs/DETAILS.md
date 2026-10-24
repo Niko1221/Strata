@@ -405,6 +405,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | Request totals in llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 | API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests` |
+| Check for or install an update, then restart ([below](#using-it)) | `GET /update`, `POST /update` |
 
 ```python
 from openai import OpenAI
@@ -428,6 +429,17 @@ print(r.choices[0].message.content)
   feature is `false`. `supports_tools`, `supports_tool_calls`, `supports_parallel_tool_calls`, `supports_system_role` and
   `supports_preserve_reasoning` are hints for clients, not a promise that the model follows a request. Zed's llama.cpp provider
   reads this object to offer tools.
+- **Updates from the web page.** The About tab's Updates card runs `strata update` for the server
+  (`serve/self_update.py`). **Check for updates** reads the signed feed and changes nothing. **Update and restart**
+  stops taking new requests (they get 503; running ones finish first, for up to 5 minutes), unloads the model so the
+  update's test start has the GPU, and runs `strata update --model-config <this server's run config>`. If something
+  was updated, the server stops the usual way and starts again in place: the same command line, environment and
+  folder, and the same process ID, so a script such as `run-<model>.sh` keeps running. The page reloads when the new
+  start answers. If nothing changed or the update failed, the server takes requests again and the old version stays
+  in use. It works only for a server started directly on Linux or a Mac whose run config names
+  `"exe": "component:strata-engine"` (the engine package `strata update` installs), with the `strata` command
+  installed. For a server started by `strata serve`, `strata launch` or the app, and on Windows, stop it, run
+  `strata update` in a terminal and start it again. Only Strata's own page can start it (JSON, the API key when one is set).
 
 ### Thinking levels: none, low, medium, high
 

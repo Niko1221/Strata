@@ -80,7 +80,7 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
-  if (tab === "about") loadConfig();
+  if (tab === "about") { loadConfig(); loadUpdate(); }
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -501,6 +501,82 @@ $("cfg-save").addEventListener("click", async () => {
     toast("error", "Not saved", String(e.message || e), 6000);
   }
 });
+
+// ------------------------------------------------------------------ Updates (GET / POST /update, serve/self_update.py)
+// `strata update` run by the server; after an update it starts again with the same settings (a new instance id), and
+// the page reloads once that new start answers.  Nothing is checked until the button is pressed.
+let upd = null, updTimer = null;
+const UPD_BUSY = ["checking", "updating", "restarting"];
+const mib = (b) => `${fmt((b || 0) / 1048576)} MiB`;
+function updPoll() { clearTimeout(updTimer); updTimer = setTimeout(loadUpdate, 1500); }
+async function loadUpdate() {
+  let r = null;
+  try { r = await fetch("update", {headers: headers()}); } catch (e) { /* down: restarting, or gone */ }
+  const going = upd && (upd.state === "updating" || upd.state === "restarting");   // the restart can be over in a second
+  if (!r || !r.ok) {
+    if (going) { updPoll(); return; }
+    if (r && r.status === 401) {                    // the card says what is missing instead of vanishing
+      upd = {supported: false, reason: "Enter this server's API key in Settings above, then open About again.",
+             state: "idle", log: [], results: []};
+      renderUpdate();
+      upd = null;
+    } else if (!upd) $("upd-card").hidden = true;   // an older server
+    return;
+  }
+  const u = await r.json();
+  if (going && u.instance !== upd.instance) {
+    try { sessionStorage.setItem("strata.updated", "1"); } catch (e) { /* the toast is a nicety */ }
+    location.reload();
+    return;
+  }
+  upd = u;
+  renderUpdate();
+  if (UPD_BUSY.includes(u.state)) updPoll();
+}
+function updLine(name, x) {
+  if (!x || !x.status || x.status === "not-in-feed") return null;
+  if (x.status === "available" || x.status === "install")
+    return `${name}: ${x.installed || "none"} → ${x.offered} (${mib(x.download_bytes)} download)`;
+  if (x.status === "current") return `${name}: ${x.installed}, up to date`;
+  return `${name}: ${x.note || x.status}`;
+}
+function renderUpdate() {
+  const u = upd, c = u.check, busy = UPD_BUSY.includes(u.state);
+  $("upd-card").hidden = false;
+  $("upd-check").hidden = !u.supported;
+  $("upd-go").hidden = !(u.supported && c && c.available);
+  $("upd-check").disabled = $("upd-go").disabled = busy;
+  $("upd-msg").textContent = u.supported ? u.message || "" : u.reason;
+  $("upd-msg").hidden = !$("upd-msg").textContent;
+  $("upd-msg").className = u.state === "failed" ? "small msg-error" : "small";
+  $("upd-ver").textContent = c && c.engine.installed ? `engine ${c.engine.installed}` : "";
+  const rows = busy && u.state !== "checking" ? u.log.slice(-6, -1)
+    : (u.results || []).length ? u.results.map((x) => `${x.component}: ${x.status === "updated" ? `${x.before || "none"} → ${x.after}` : x.status}`)
+    : c ? [updLine("Engine", c.engine), updLine("Terminal", c.control),
+           c.serving.length ? `Serving elsewhere: ${c.serving.join(", ")} (the update waits for it)` : null].filter(Boolean) : [];
+  $("upd-list").innerHTML = rows.map((t) => `<li>${esc(t)}</li>`).join("");
+  $("upd-list").hidden = !rows.length;
+}
+async function updateAction(action) {
+  try {
+    const r = await fetch("update", {method: "POST", headers: headers(true), body: JSON.stringify({action})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    upd = b;
+    renderUpdate();
+    updPoll();
+  } catch (e) {
+    toast("error", action === "check" ? "Not checked" : "Not updated", String(e.message || e), 6000);
+  }
+}
+try {
+  if (sessionStorage.getItem("strata.updated")) {
+    sessionStorage.removeItem("strata.updated");
+    toast("success", "Updated", "The server started again with the same settings.", 6000);
+  }
+} catch (e) { /* private mode */ }
+$("upd-check").addEventListener("click", () => updateAction("check"));
+$("upd-go").addEventListener("click", () => updateAction("install"));
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {

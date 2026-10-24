@@ -197,6 +197,18 @@
         <p class="muted small">Chats, settings and the key are kept in this browser only.
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
       </div>
+      <div class="st-card" id="upd-card" hidden>
+        <div class="req-head"><span class="card-title">Updates</span><span class="muted small" id="upd-ver"></span></div>
+        <p class="muted small" id="upd-about">Checks the signed update feed for a newer engine and Terminal (<code>strata update</code>).
+          Updating stops new requests (running ones finish first), installs and tests the new version, then starts this
+          server again with the same settings. It takes a few minutes; if nothing changes, the server just goes on.</p>
+        <p class="small" id="upd-msg" role="status"></p>
+        <ul class="muted small" id="upd-list" hidden></ul>
+        <div class="cfg-actions">
+          <button class="st-btn st-btn--secondary" id="upd-check" type="button">Check for updates</button>
+          <button class="st-btn st-btn--primary" id="upd-go" type="button" hidden>Update and restart</button>
+        </div>
+      </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
         <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
         <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They

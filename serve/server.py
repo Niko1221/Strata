@@ -3846,6 +3846,7 @@ class Service:
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.config_lock = threading.Lock()
+        self.updater = None                             # the About tab's Updates card (serve/self_update.py)
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
         self.cors_origins: list[str] = []
@@ -4034,6 +4035,12 @@ class Service:
             self.draining = True
             self.admission_changed.notify_all()
             return self.admission_reserved
+
+    def end_drain(self) -> None:
+        """Admit inference again (an update from the web page that changed nothing)."""
+        with self.admission_changed:
+            self.draining = False
+            self.admission_changed.notify_all()
 
     def wait_for_drain(self, timeout: float) -> int:
         """Wait for reserved inference calls; return the number still in flight."""
@@ -6621,6 +6628,11 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._config_get()
                 return
+            if path == "/update":                            # the About tab's Updates card
+                if self._authorized():
+                    self._json(200, svc.updater.view() if svc.updater else
+                               {"supported": False, "reason": "this server cannot update itself", "state": "idle"})
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -6729,6 +6741,9 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/update":
+                self._update_post()
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
@@ -7016,6 +7031,22 @@ def make_handler(svc: Service):
                 self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be read: {e}"}})
                 return
             self._json(200, runconfig.view(cfg, svc.config_path))
+
+        def _update_post(self):
+            """`strata update` from the web page: JSON from Strata's own page only, as /config (it stops the model
+            and may restart the server)."""
+            body = self._body()
+            if not self._own_page("updates can be started"):
+                return
+            if svc.updater is None:
+                self._json(404, {"error": {"message": "this server cannot update itself"}})
+                return
+            try:
+                req = json.loads(body or b"{}")
+            except ValueError:
+                req = None
+            status, out = svc.updater.begin(req.get("action") if isinstance(req, dict) else None)
+            self._json(status, out)
 
         def _config_post(self):
             """#564: change a few documented keys of the run config - JSON from Strata's own page only, as
@@ -8126,6 +8157,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     except Exception:
         pass
     event_sink = lifecycle_event
+    start_env, start_cwd = dict(os.environ), os.getcwd()   # an update from the web page starts the same server again
 
     def notify_lifecycle(kind: str, payload: dict) -> None:
         nonlocal event_sink
@@ -8344,6 +8376,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
+        configured_exe = cfg.get("exe")                 # "component:strata-engine" before it names a folder (Updates card)
         cfg = with_component_engine(cfg)
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
@@ -8597,6 +8630,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+    from serve import self_update
+    strata_cmd = self_update.find_strata()
+    svc.updater = self_update.SelfUpdate(
+        svc, strata=strata_cmd, config=a.config if a.engine == "strata" else None,
+        reason=self_update.unsupported_reason(
+            supervised=argv is not None or lifecycle_event is not None or a.owner_fd is not None or bool(a.ready_file),
+            engine_kind=a.engine, exe=configured_exe if a.engine == "strata" else None, strata=strata_cmd))
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
@@ -8664,7 +8704,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     interrupted = False
     drained = True
     try:
-        while True:
+        # an update from the web page that wants a restart ends the loop too: a flag, since a server started in the
+        # background ignores SIGINT and interrupt_main() would then do nothing
+        while not svc.updater.restart_wanted:
             time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
         interrupted = True
@@ -8711,6 +8753,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     notify_lifecycle("stopped", {"instance_id": svc.instance_id, "reason": termination if interrupted else "normal",
                                  "drained": drained, "cancelled_requests": cancelled,
                                  "exit_code": exit_code})
+    if svc.updater.restart_wanted:
+        print("[strata] starting again after the update ...", flush=True)
+        self_update.restart(start_env, start_cwd)
     return exit_code
 
 
