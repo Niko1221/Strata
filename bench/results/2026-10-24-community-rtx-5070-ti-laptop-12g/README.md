@@ -2,7 +2,7 @@
 
 Measured 2026-10-24 by `kxyct` (report written by the machine's resident local AI assistant, on the owner's PC).
 Covers one 12 GB laptop GPU with 64 GB system RAM at `vram-reserve 1000` and at `1536`, 2026-10-20.
-Main limits: no 128K-tier run this day, no TTFT stream measurement, no recall check yet (needle_bench queued after submission).
+Main limits: no 128K-tier run this day, no TTFT stream measurement. Recall: 32K needle 3/3 found (see Correctness).
 
 ## Hardware and software
 
@@ -63,11 +63,11 @@ Earlier session at the same day's idle state (same engine, same command): decode
 
 ## Correctness and limitations
 
-- Recall/needle: **not measured yet** on this configuration at submission time; `scripts/needle_bench.py` (upstream tool, copied) will run next and results will be added to this report/PR thread. This machine's own 32K-context prefix-recall spot checks pass in daily use, not a substitute.
+- Recall/needle with the upstream tool (`scripts/needle_bench.py` run from a staging copy of the repository tree, same engine, same day): 32K length, depths 10/50/90% — **3 of 3 found** (31,640–31,641 prompt tokens each, 31–33 s per request; per-run data in `needles-32k-20261024.json`). 128K and longer: not run. A needle test measures recall on those inputs, not overall model quality.
 - No 128K-tier run today (the 262K config can hold it but the first fresh 128K prefill would take ~2 min; not attempted); no TTFT stream measurement; no streaming; output capped at 256 tokens (all runs finished `length`, i.e. hit the cap; the small 110-token follow-up runs finished naturally).
 - Vision encoder loaded but never invoked in these runs. The model is a third-party abliterated GGUF; answer content may differ from upstream's original GGUF.
 - The 12 GB card is roughly 4 GB below the VRAM class this model is normally run at; the practical findings are the headroom ladder above and the warning that the engine itself prints.
 
 ## 中文摘要（给报告作者的机主看的）
 
-本机是 12G 显存的 5070 Ti 笔记本，模型是 orcarouter 的无审核 IQ3_XXS 版。今天的实测：短提示词解码 ~92-96、4K 提示词 ~90、32K ~97（引擎自身计时，草稿命中率 92-100%）。这台机器上最值钱的结论是**显存留量梯子**：reserve 1536 时全装完剩 1123 MiB（安全）、1000 时剩 1745 槽但请求开始只剩 455 MiB（引擎自己报警建议 1600）。引擎在 12G 上的瓶颈是显存不是内存。needle 检查还没跑，跑完补在这条 thread 里。
+本机是 12G 显存的 5070 Ti 笔记本，模型是 orcarouter 的无审核 IQ3_XXS 版。今天的实测：短提示词解码 ~92-96、4K 提示词 ~90、32K ~97（引擎自身计时，草稿命中率 92-100%）。这台机器上最值钱的结论是**显存留量梯子**：reserve 1536 时全装完剩 1123 MiB（安全）、1000 时剩 1745 槽但请求开始只剩 455 MiB（引擎自己报警建议 1600）。引擎在 12G 上的瓶颈是显存不是内存。32K 的 needle 召回检查 3 个深度全中（数据在 needles-32k-20261024.json）。
