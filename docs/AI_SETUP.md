@@ -65,7 +65,7 @@ its SHA-256, unpacks it into the user's home folder, checks the release's signed
 PATH.
 
 ```
-Linux, Mac:           curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+Linux, Mac:           curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 Windows (PowerShell): irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 

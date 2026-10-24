@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fetch the engine packages for the Docker images from a release, checked against the signed update feed.
 
-    python3 docker/fetch-engines.py --release-tag v0.2.2 --flavors cuda13,cuda12,rocm-gfx120x --out ./pkgs
+    python3 docker/fetch-engines.py --release-tag v0.2.3 --flavors cuda13,cuda12,rocm-gfx120x --out ./pkgs
     python3 docker/fetch-engines.py --source /path/to/release-folder --flavors cuda13 --out ./pkgs
-    python3 docker/fetch-engines.py --release-tag v0.2.2 --list
+    python3 docker/fetch-engines.py --release-tag v0.2.3 --list
 
 What it does, in the same order and with the same code as `strata update`:
 
@@ -98,7 +98,7 @@ def fetch_one(feed: feedmod.Feed, pkg: feedmod.EnginePackage, out: Path, trusted
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--release-tag", help="the GitHub release tag, for example v0.2.2")
+    ap.add_argument("--release-tag", help="the GitHub release tag, for example v0.2.3")
     ap.add_argument("--repo", default="Niko1221/Strata", help="owner/name of the GitHub repository (default %(default)s)")
     ap.add_argument("--source", help="a release folder or base URL holding strata-feed.json(.sig) and the archives (instead of --release-tag)")
     ap.add_argument("--flavors", default=",".join(FLAVORS), help="comma separated; default: all (%s)" % ", ".join(FLAVORS))

@@ -67,13 +67,29 @@ export function nvidiaDriverVersion() {
 /** Where the builds are published; the wrong-make sentence points here. */
 export const RELEASES_URL = 'https://github.com/Niko1221/Strata/releases';
 
+/** The PCI vendor ids (`10de`, `1002`, `8086`) of the Windows display adapters; empty off Windows or when the registry cannot be read. */
+export function windowsDisplayVendors({ platform = process.platform, run = execFileSync } = {}) {
+  const found = new Set();
+  if (platform !== 'win32') return found;
+  try {
+    const out = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}', '/s', '/v', 'MatchingDeviceId'], { encoding: 'utf8', timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const match of String(out).matchAll(/VEN_([0-9A-F]{4})/gi)) found.add(match[1].toLowerCase());
+  } catch { /* no registry access: the tools decide */ }
+  return found;
+}
+
 /**
  * The engine family this PC's graphics card needs ('cuda', 'hip', 'sycl'), or null when it cannot be told. The same order as Control
  * (NVIDIA first, then AMD, then Intel); STRATA_ENGINE_BACKEND wins. Reads only the driver and (Linux) the PCI vendor of the display adapters.
  */
-export function gpuBackendHere(env = process.env) {
+export function gpuBackendHere(env = process.env, { vendors = windowsDisplayVendors() } = {}) {
   const forced = String(env.STRATA_ENGINE_BACKEND ?? '').trim().toLowerCase();
   if (forced) return ['cuda', 'hip', 'sycl'].includes(forced) ? forced : null;
+  // Windows: the display adapters are the machine's own statement of which cards it has; a leftover nvidia-smi from a card that was
+  // taken out must not outvote them (#3688). Same order as Control: NVIDIA, then AMD, then Intel.
+  if (vendors.size) {
+    for (const [vendor, backend] of [['10de', 'cuda'], ['1002', 'hip'], ['8086', 'sycl']]) if (vendors.has(vendor)) return backend;
+  }
   if (nvidiaDriverVersion()) return 'cuda';
   try {
     const base = '/sys/class/drm';

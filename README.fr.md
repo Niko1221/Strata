@@ -12,104 +12,99 @@
 <p align="center">Compatible avec NVIDIA, AMD, Intel · Windows, Linux, Mac · gratuit et open source</p>
 
 <p align="center">
-  <a href="https://github.com/Niko1221/Strata/releases"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?include_prereleases&label=release" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT license"></a>
-  <a href="https://github.com/Niko1221/Strata/stargazers"><img src="https://img.shields.io/github/stars/Niko1221/Strata?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?include_prereleases&label=release" alt="Dernière version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="Licence MIT"></a>
+  <a href="https://github.com/Niko1221/Strata/stargazers"><img src="https://img.shields.io/github/stars/Niko1221/Strata?style=flat" alt="Étoiles GitHub"></a>
+  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Offrez-moi un café"></a>
 </p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
+<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="Un jardin de pagode en voxels écrit par le modèle de Strata, qui tourne dans le navigateur"></a><br>
 <sub>Un jardin de pagode en voxels, généré en une seule requête sur une RTX 5070 avec Strata (IQ3_S, contexte de 128K) ·
 <a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">vidéo complète (49 s)</a></sub></p>
 
-Strata fait tourner **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)**, un modèle de 125 milliards
-de paramètres qui demande normalement un serveur, sur un PC ordinaire. Il discute, écrit du code, lit des images et
-fonctionne avec vos applications et vos agents de code. Vos conversations et vos fichiers restent sur votre PC.
+<p align="center">
+  <a href="#installation"><b>Installation</b></a> ·
+  <a href="#modèles">Modèles</a> ·
+  <a href="#quelle-est-sa-vitesse-">Vitesse</a> ·
+  <a href="#utilisation">Utilisation</a> ·
+  <a href="#comment-ça-marche-">Comment ça marche</a> ·
+  <a href="#un-problème-">Aide</a> ·
+  <a href="#soutenir-strata">Soutenir</a>
+</p>
 
-**Nouveau ici ?** Regardez [ce qu'il vous faut](#ce-quil-vous-faut), puis [installez l'application](#option-a--lapplication-strata).
+Strata fait tourner **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)**, un modèle de 125 milliards
+de paramètres qui demande normalement un serveur, sur un PC ordinaire. Depuis la 0.2.4, il fait aussi tourner **DeepSeek
+V4.1-Flash** dans le Terminal. Il discute, écrit du code, lit des images et fonctionne avec vos applications et vos agents
+de code. Vos conversations et vos fichiers restent sur votre PC.
 
 - **Tourne sur un PC de jeu.** 32 Go de RAM et de mémoire graphique réunis suffisent pour commencer.
-- **Fonctionne avec vos outils.** Il parle les API d'OpenAI et d'Anthropic, donc Claude Code, Codex CLI, OpenCode et d'autres agents peuvent s'y connecter.
-- **Lit les images.** C'est activé par défaut.
-- **Gratuit.** Licence MIT, pas de compte, pas de cloud.
-- **Privé.** Aucune télémétrie. Ce que Strata télécharge, quand il utilise internet et comment il vérifie les téléchargements est expliqué dans [docs/SAFETY.md](docs/SAFETY.md).
-
-Version 0.2.2 · moteur 0.1.47
+- **Fonctionne avec vos outils.** Claude Code, Codex CLI, OpenCode et d'autres agents se connectent par les API d'OpenAI et d'Anthropic.
+- **Lit les images**, activé par défaut.
+- **Gratuit et privé.** Licence MIT, pas de compte, pas de cloud, aucune télémétrie ([ce qu'il télécharge et quand](docs/SAFETY.md)).
 
 ## Ce qu'il vous faut
 
-**Il vous faut au moins 32 Go de RAM et de mémoire graphique (VRAM) réunis.** Sur un Mac ou un Ryzen AI Max, c'est la
-mémoire unifiée. Plus de mémoire permet un modèle plus gros ou plus rapide.
+**Il vous faut au moins 32 Go de mémoire : RAM et mémoire graphique (VRAM) réunis.** Sur un Mac ou un Ryzen AI Max, c'est
+la mémoire unifiée. Un PC de 32 Go avec une carte de 12 à 16 Go fait tourner les petites tailles, et 64 Go font tourner
+toutes les tailles.
 
-- Un PC de 32 Go avec une carte de 12 à 16 Go fait tourner le Coder.
-- Avec 64 Go de RAM, toutes les tailles fonctionnent.
-
-| Votre ordinateur | Détails |
+| Fonctionne sur | Guide |
 | --- | --- |
-| **NVIDIA** GeForce RTX série 20, 30, 40, 50 (12 Go ou plus) | Installez l'application ou le Terminal. |
-| **AMD** Radeon RX 6800 et plus récent, Radeon AI PRO R9700 (12 Go ou plus) | [Cartes AMD](docs/AMD_HIP.md) |
-| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md), [moteur Intel](docs/INTEL.md) |
-| **Mac Apple Silicon** (M1 ou plus récent, macOS 15 ou plus récent) | [Mac](docs/MAC.md) |
-| **AMD Ryzen AI Max (Strix Halo)** et autres systèmes à mémoire unifiée | [Strix Halo](docs/STRIX_HALO.md) |
-| Cartes et processeurs plus anciens | [GPU anciens](docs/OLDER_GPUS.md), [CPU anciens](docs/INSTALL.md#older-cpus-experimental) |
+| **NVIDIA** GeForce RTX série 20, 30, 40 et 50, 12 Go ou plus | [Installation](#installation) |
+| **AMD** Radeon RX 6800 et plus récent, Radeon AI PRO R9700 | [Cartes AMD](docs/AMD_HIP.md) |
+| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md) |
+| **Mac Apple Silicon**, M1 ou plus récent, macOS 15 ou plus récent | [Mac](docs/MAC.md) |
+| **AMD Ryzen AI Max (Strix Halo)** et autres PC à mémoire unifiée | [Strix Halo](docs/STRIX_HALO.md) |
+| Cartes et processeurs plus anciens | [GPU anciens](docs/OLDER_GPUS.md) |
 
-Il faut aussi :
-
-- environ 80 Go d'espace disque libre (un SSD accélère beaucoup le premier démarrage)
-- Windows 10 / 11, Linux ou macOS
-- un pilote graphique récent
-
-Deux ou trois cartes de la même marque peuvent se partager un modèle ([multi-GPU](docs/MULTI_GPU.md)). Strata ne répartit
-jamais un modèle entre des cartes NVIDIA et AMD. Liste complète : [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+Il vous faut aussi environ 80 Go d'espace disque libre (un SSD), Windows 10 / 11, Linux ou macOS, et un pilote graphique
+récent. Deux ou trois cartes de la même marque peuvent se partager un modèle ([multi-GPU](docs/MULTI_GPU.md)).
 
 ## Installation
 
-Choisissez une option. Elles lancent toutes le même moteur et utilisent les mêmes modèles.
+### 1. L'application Strata (le plus simple)
 
-### Option A : l'application Strata
+Téléchargez le fichier pour votre ordinateur, ouvrez-le et appuyez sur Installer pour le modèle qu'elle recommande.
 
-Le plus simple. L'application contient le moteur : installez-la, choisissez un modèle, discutez. Téléchargez le fichier
-correspondant à votre système et à votre carte graphique depuis la [page des versions](https://github.com/Niko1221/Strata/releases/latest).
-Vous ne savez pas lequel prendre ? Lisez le paragraphe sous le tableau.
+**Windows 10 / 11**
 
-| Système | Votre carte graphique | Fichier à télécharger |
-| --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX, pilote 580 ou plus récent | [`Strata-0.2.2-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda13.exe) |
-| | NVIDIA, carte plus ancienne ou pilote antérieur à 580 | [`Strata-0.2.2-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda12.exe) |
-| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.2-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip.exe) |
-| | AMD Radeon série RX 7000 ou Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX, pilote 580 ou plus récent | [`Strata-0.2.2-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA, carte plus ancienne ou pilote antérieur à 580 | [`Strata-0.2.2-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.2-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx9070.AppImage) |
-| | AMD Radeon série RX 7000 | [`Strata-0.2.2-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-strixhalo.AppImage) |
-| **Mac** (Apple Silicon, macOS 15 ou plus récent) | intégrée | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
+[![Windows, NVIDIA, pilote 580 ou plus récent](https://img.shields.io/badge/Windows-NVIDIA%20%C2%B7%20driver%20580%2B-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda13.exe)
+[![Windows, NVIDIA, ancien pilote](https://img.shields.io/badge/Windows-NVIDIA%20%C2%B7%20older%20driver-4C7A00?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda12.exe)
+[![Windows, AMD RX 9000 ou R9700](https://img.shields.io/badge/Windows-AMD%20RX%209000%20%C2%B7%20R9700-ED1C24?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip.exe)
+[![Windows, AMD RX 7000 ou Ryzen AI Max](https://img.shields.io/badge/Windows-AMD%20RX%207000%20%C2%B7%20Ryzen%20AI%20Max-B3131B?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip-rdna3.exe)
 
-**Si vous hésitez :** pour NVIDIA, prenez `cuda13` si la version de votre pilote est 580 ou plus récente, sinon `cuda12`.
-`cuda12` convient aux cartes plus anciennes et aux pilotes plus anciens. Les fichiers `hip` et `amd` sont pour les cartes
-AMD. Les autres cartes AMD (RX 6000) n'ont pas encore d'application prête à l'emploi : voir
-[Cartes AMD](docs/AMD_HIP.md).
+**Linux**
 
-Ensuite :
+[![Linux, NVIDIA, pilote 580 ou plus récent](https://img.shields.io/badge/Linux-NVIDIA%20%C2%B7%20driver%20580%2B-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda13.AppImage)
+[![Linux, NVIDIA, ancien pilote](https://img.shields.io/badge/Linux-NVIDIA%20%C2%B7%20older%20driver-4C7A00?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda12.AppImage)
+[![Linux, AMD RX 9000 ou R9700](https://img.shields.io/badge/Linux-AMD%20RX%209000%20%C2%B7%20R9700-ED1C24?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx9070.AppImage)
+[![Linux, AMD RX 7000](https://img.shields.io/badge/Linux-AMD%20RX%207000-B3131B?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx7900.AppImage)
+[![Linux, AMD Ryzen AI Max](https://img.shields.io/badge/Linux-Ryzen%20AI%20Max-8A0E15?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-strixhalo.AppImage)
 
-- **Windows :** lancez le `.exe`. Il s'installe pour votre utilisateur et ne demande pas de droits d'administrateur. Si
-  Windows affiche « Windows a protégé votre ordinateur », choisissez **Informations complémentaires**, puis **Exécuter
-  quand même** (l'installateur n'est pas encore signé).
-- **Linux :** rendez le fichier exécutable (`chmod +x`) et lancez-le. Il a besoin de FUSE 2 : `sudo apt install libfuse2`
-  (Ubuntu 22.04) ou `libfuse2t64` (Ubuntu 24.04 et plus récent).
-- **Mac :** ouvrez le `.dmg` et faites glisser Strata dans Applications.
+**Mac** (Apple Silicon, macOS 15 ou plus récent)
 
-Sur le premier écran, l'application analyse votre PC et recommande un modèle adapté. Appuyez sur Installer. Le modèle est un
-gros téléchargement (environ 40 à 70 Go) qui reprend là où il s'est arrêté en cas d'interruption. Quand vous fermez la
-fenêtre, Strata et le moteur s'arrêtent.
+[![Mac, Apple Silicon](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-mac.dmg)
 
-### Option B : le Terminal (une ligne)
+Votre pilote NVIDIA est antérieur à 580 (`nvidia-smi` l'affiche) ? Prenez le fichier pour ancien pilote. Une carte AMD RX 6000
+prend le fichier RX 7000, qui récupère tout seul le bon moteur. Tous les fichiers sont sur la
+[page des versions](https://github.com/Niko1221/Strata/releases/latest).
 
-Le Terminal est la commande `strata`, pensée pour les scripts, les serveurs et les agents d'IA.
+| Premier démarrage | Ce qu'il faut faire |
+| --- | --- |
+| **Windows** | Lancez le `.exe`. Pas besoin de droits d'administrateur. Si Windows affiche « Windows a protégé votre ordinateur », choisissez **Informations complémentaires**, puis **Exécuter quand même**. |
+| **Linux** | Rendez le fichier exécutable (`chmod +x`) et lancez-le. Il a besoin de FUSE 2 : `sudo apt install libfuse2t64` (Ubuntu 24.04 et plus récent) ou `libfuse2` (22.04). |
+| **Mac** | Ouvrez le `.dmg` et faites glisser Strata dans Applications. |
+
+Le téléchargement du modèle est gros (40 à 70 Go). S'il s'arrête, il reprend là où il s'était arrêté.
+
+### 2. Le Terminal (une ligne)
+
+La commande `strata`, pour les scripts, les serveurs et les agents d'IA. C'est aussi le moyen de faire tourner DeepSeek.
 
 Linux et Mac :
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows (PowerShell) :
@@ -118,26 +113,17 @@ Windows (PowerShell) :
 irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-Le script analyse votre PC, télécharge le Terminal, vérifie son empreinte SHA-256 et le décompresse dans votre dossier
-personnel. Il ne demande pas de droits d'administrateur. Sous Windows, ouvrez ensuite une nouvelle fenêtre de terminal.
-Puis lancez Strata :
+Puis lancez-le. Il pose une question à la fois (modèle, contexte, images, qui peut se connecter), télécharge ce dont il a
+besoin et commence à servir :
 
 ```sh
 strata launch
 ```
 
-Il pose une question à la fois : modèle, contexte, images, qui peut se connecter. Ensuite il télécharge le moteur pour votre
-carte graphique (signé, et lancé à titre d'essai avant usage) ainsi que le modèle, puis commence à servir. Pour les scripts
-et les agents d'IA, utilisez des options :
+Pas besoin de droits d'administrateur. L'installation vérifie l'empreinte SHA-256 de tout ce qu'elle télécharge. Sous
+Windows, ouvrez une nouvelle fenêtre de terminal après l'installation. Tous les écrans et toutes les options : [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md).
 
-```sh
-strata launch --model q2_0 --yes --no-tui
-```
-
-Pour lire le script d'installation avant de l'exécuter, téléchargez-le d'abord avec `curl -fsSL <address> -o install.sh`,
-lisez-le, puis lancez `sh install.sh`. Tous les écrans et toutes les options : [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md).
-
-### Option C : laissez votre IA l'installer
+### 3. Laissez votre IA l'installer
 
 Collez ceci dans Claude Code, Cursor, Codex, GitHub Copilot ou un autre assistant de programmation :
 
@@ -153,48 +139,58 @@ Vous préférez le compiler vous-même ? Voir [Compiler depuis les sources](#com
 
 ## Modèles
 
-L'application et `strata launch` recommandent un modèle selon votre mémoire. C'est un seul modèle en plusieurs tailles,
-plus ou moins compressé. Les petites tailles sont plus rapides. Les grandes sont un peu plus intelligentes.
+L'application et `strata launch` recommandent une taille selon votre mémoire. Les petites tailles sont plus rapides. Les
+grandes sont un peu plus intelligentes.
 
 ### Peu de mémoire ? Essayez Gyro
 
-[Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF) (par agentionai) est la façon la plus légère de faire tourner ce modèle.
+[Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF) d'agentionai est la façon la plus légère de faire tourner
+Qwen3.8-Flash-Next. Il fonctionne sur NVIDIA, AMD, Intel Arc et Apple Silicon.
 
-| Taille | Mémoire nécessaire (RAM + VRAM) | Téléchargement | Ce que c'est |
+| Taille | Mémoire nécessaire (RAM + VRAM) | Téléchargement | Pour quoi |
 | --- | ---: | ---: | --- |
-| **Gyro-S** | 27,6 Go | 58,5 Go | Pour les PC où rien d'autre ne tient. La qualité est inférieure à celle d'IQ2_XS. |
-| **Gyro-M** | 35 Go | 92,0 Go | À peu près la qualité d'IQ3_XXS avec environ 20 % de mémoire GPU en moins. Il écrit les réponses 16 % plus lentement que Q2_0 sur une RTX 3060 de 12 Go et 21 % plus lentement sur une R9700. |
+| **Gyro-S** | 27,6 Go | 58,5 Go | Les PC où rien d'autre ne tient. 9 tokens/s sur un Mac mini de 32 Go. |
+| **Gyro-M** | 35 Go | 92,0 Go | À peu près la qualité d'IQ3_XXS avec 20 % de mémoire GPU en moins. |
 
-Gyro fonctionne sur les cartes NVIDIA et AMD (expérimental sur AMD) sur les cartes Intel Arc sous Linux (testé sur une Arc A750) et, depuis la 0.2.2, sur les Mac Apple Silicon (Gyro-S sur un Mac mini de 32 Go : 9 tokens/s, experts lus sur le SSD). Détails et mesures :
-[docs/GYRO.md](docs/GYRO.md). Lancez-le avec `strata launch --model gyro-s`.
+Lancez-le avec `strata launch --model gyro-s`. Détails : [docs/GYRO.md](docs/GYRO.md).
 
-### Les autres tailles
+### Les tailles de Qwen3.8-Flash-Next
 
-| Votre mémoire (RAM + VRAM) | Prenez | Remarques |
+| Votre mémoire (RAM + VRAM) | Prenez | Pourquoi |
 | --- | --- | --- |
-| **32 Go** | **Gyro-S**, ou le **[Coder](docs/MODELS.md#coder)** pour le code | Le Coder demande 32 Go de RAM et garde la moitié des experts, il est donc moins bon hors du code |
-| **40 Go** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 Go), ou **Gyro-M** (35 Go) | Swift réfléchit moins longtemps avant de répondre. Gyro-M approche la qualité d'IQ3_XXS, mais il écrit les réponses 16 à 21 % plus lentement que Q2_0 |
+| **32 Go** | **Gyro-S**, ou le **[Coder](docs/MODELS.md#coder)** pour le code | Le Coder garde les experts dont le code a besoin |
+| **40 Go** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS (39,2 Go) ou **Gyro-M** | Swift réfléchit moins longtemps avant de répondre |
 | **48 Go** | **IQ3_XXS** (47,0 Go) | Plus lent, meilleur |
-| **64 Go** | **IQ3_S** (54,8 Go), l'original ou Swift 1.5 | Le plus lent, le meilleur. Il égale le modèle complet dans les tests publiés |
-| **96 Go ou plus** | **UD-IQ4_XS** d'Unsloth (environ 72 Go de RAM) jusqu'à **Q8_0** (environ 136 Go), 4 à 8 bits | Plus proche du modèle complet. Avec moins de RAM, Strata lit une partie depuis le SSD, ce qui est beaucoup plus lent |
+| **64 Go** | **IQ3_S** (54,8 Go) | Égale le modèle complet dans les tests publiés |
+| **96 Go ou plus** | **UD-IQ4_XS** à **Q8_0** d'Unsloth | Au plus près du modèle complet |
 
-Avoir moins de RAM que ce qu'indique une ligne peut encore fonctionner : Strata passe tout seul en
-[mode peu de RAM](docs/MODELS.md#a-big-graphics-card-and-little-ram). Attendez-vous à plus de lenteur, et à bien plus avec
-une petite carte graphique.
+Avoir moins de RAM que ce qu'indique une ligne peut encore fonctionner, en plus lent : Strata passe tout seul en
+[mode peu de RAM](docs/MODELS.md#a-big-graphics-card-and-little-ram). Il existe aussi :
+[NVFP4](docs/NVFP4.md) pour les cartes NVIDIA, [Qwen3.6-35B-A3B](docs/QWEN36.md) (plus petit, plusieurs requêtes à la fois) et
+[l'Uncensored IQ3_XXS d'OrcaRouter](docs/MODELS.md#orcarouter-uncensored-iq3_xxs). Toutes les tailles et ce qui tient où :
+[docs/MODELS.md](docs/MODELS.md).
 
-Autres choix :
+### DeepSeek V4.1-Flash (Terminal, depuis 0.2.4)
 
-- **[Swift 1.5](docs/MODELS.md#swift-15)** est une version affinée qui réfléchit moins longtemps avant de répondre, pour une qualité et un besoin en RAM à peu près identiques.
-- **[NVFP4](docs/NVFP4.md)** est la version 4 bits de NVIDIA pour les cartes NVIDIA. Elle demande environ 80 Go de RAM pour garder tous les experts en RAM.
-- **[Qwen3.6-35B-A3B](docs/QWEN36.md)** est un modèle plus petit et différent, qui lit les images et peut répondre à plusieurs requêtes à la fois.
-- **[L'Uncensored IQ3_XXS d'OrcaRouter](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** se configure à la main.
+Un modèle bien plus gros, qui tourne sur une seule carte graphique de 12 Go avec 46 à 64 Go de RAM. Strata garde en mémoire
+les parties les plus utilisées et lit le reste sur votre SSD. [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF)
+a produit les versions. Il fonctionne sur les cartes NVIDIA RTX des séries 30 à 50 et sur la Radeon AI PRO R9700. Choisissez-le
+dans `strata launch`. L'application de bureau ne le propose pas encore.
 
-Toutes les tailles, les téléchargements et ce qui tient où : [docs/MODELS.md](docs/MODELS.md).
+| Version | Téléchargement | Qualité | Écrit du code à |
+| --- | ---: | --- | --- |
+| **IQ1_M** (1,75 bit) | 239 Go | La plus petite, plus faible sur la prose simple | pas encore mesuré sur un PC |
+| **IQ2_XXS** (2.00 bits) | 257 Go | Bon équilibre | 10 tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XS** (2.25 bits) | 274 Go | Au plus près de l'original | 15 tokens/s (une R9700), 80 (4x R9700) |
+| **IQ4_NL** (table Engram) | compris dans chaque téléchargement ci-dessus | La table de consultation que les trois versions partagent | |
+
+Lancez-le avec `strata launch --model ist-das-2.00bpw` (ou `ist-das-1.75bpw`, `ist-das-2.25bpw`). Chiffres de qualité,
+vitesses par PC et installation manuelle : [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md).
 
 ## Quelle est sa vitesse ?
 
-Mesuré avec une carte graphique de 12 Go (RTX 5070, Ryzen 5 7600, 64 Go de RAM). Voir les résultats d'autres cartes :
-[vitesse de chaque taille](docs/MODELS.md#how-fast-is-each-size), [résultats de la communauté](docs/COMMUNITY_BENCHMARKS.md).
+Mesuré avec une carte graphique de 12 Go (RTX 5070, 64 Go de RAM). Voir les résultats d'autres cartes :
+[vitesse de chaque taille](docs/MODELS.md#how-fast-is-each-size) et [résultats de la communauté](docs/COMMUNITY_BENCHMARKS.md).
 
 | Modèle | Les réponses s'affichent à | Lit votre prompt à |
 | --- | --- | --- |
@@ -204,10 +200,7 @@ Mesuré avec une carte graphique de 12 Go (RTX 5070, Ryzen 5 7600, 64 Go de RAM)
 | **IQ3_S** | `███████░░░░░` 53 tokens/s | `███████░░░░░` 1 620 tokens/s |
 | **Coder** | `███████░░░░░` 55 tokens/s | `██████████░░` 2 180 tokens/s |
 
-Un token vaut environ ¾ de mot, donc 60 tokens par seconde, c'est plus rapide que votre lecture. « Lit votre prompt »
-indique la vitesse à laquelle Strata absorbe un long document, du code ou un historique de discussion.
-
-Mesuré avec une carte AMD de 16 Go (RX 9070 XT, Ryzen 9 3900X, 47 Go de RAM) :
+Avec une carte AMD de 16 Go (RX 9070 XT, 47 Go de RAM) :
 
 | Modèle | Les réponses s'affichent à | Lit votre prompt à |
 | --- | --- | --- |
@@ -215,84 +208,59 @@ Mesuré avec une carte AMD de 16 Go (RX 9070 XT, Ryzen 9 3900X, 47 Go de RAM) :
 | **IQ2_XS** | `███████░░░░░` 52 tokens/s | `█████░░░░░░░` 1 110 tokens/s |
 | **Coder** | `██████░░░░░░` 44 tokens/s | `██████░░░░░░` 1 420 tokens/s |
 
-Les barres utilisent la même échelle dans les deux tableaux. Une carte avec plus de VRAM est plus rapide. Une RTX 3090
-(24 Go) devrait écrire environ 100 à 140 tokens par seconde. La version du moteur derrière chaque chiffre est indiquée dans
-[DETAILS.md](docs/DETAILS.md#speed-measured).
+Un token vaut environ ¾ de mot, donc 60 tokens par seconde, c'est plus rapide que votre lecture. « Lit votre prompt »
+indique la vitesse à laquelle Strata absorbe un long document, du code ou un historique de discussion.
 
 ## Utilisation
 
 ### Dans l'application
 
-L'application comprend un **Chat**, un **Monitor** du modèle, de votre GPU, de votre CPU et de votre RAM, une page **Models** et les **Settings**. Le chat peut travailler dans un dossier de votre PC. En mode **Manual**, il demande
-avant de modifier un fichier ou d'exécuter une commande. Tapez `/loop 10m <what to do>` pour répéter un message toutes les
-10 minutes tant que le chat est ouvert.
+Un chat, un **Monitor** du modèle et de votre GPU, CPU et RAM, une page **Models** et les **Settings**. Le chat peut
+travailler dans un dossier de votre PC. En mode **Manual**, il demande avant de modifier un fichier ou d'exécuter une
+commande. Il peut chercher sur le web (DuckDuckGo ou Bing, sans compte). Les mots recherchés sont la seule chose qui quitte
+votre PC.
 
-Le chat peut chercher sur le web avec DuckDuckGo (ou Bing), sans compte. Vous pouvez ajouter une clé de recherche sous
-**Settings, Tools**. La recherche est la seule fonction qui envoie quelque chose hors de votre PC (les mots recherchés).
-
-Pour faire tourner deux modèles, activez **Run multiple models** (exécuter plusieurs modèles) et donnez à chacun sa propre carte de la même marque.
-
-<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
-<sub>Une discussion dans l'app Strata : l'agent a écrit un petit jardin de pagode en voxels dans un seul fichier HTML, et la page s'ouvre dans l'aperçu à côté de la conversation</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="L'application Strata : un chat où l'agent a construit un petit jardin de pagode en voxels, avec la page ouverte dans l'aperçu à droite"><br>
+<sub>L'agent a écrit un jardin de pagode en voxels dans un seul fichier HTML, et la page s'ouvre dans l'aperçu à côté du chat</sub></p>
 
 ### Dans le Terminal
 
-<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="La vue d'ensemble du moniteur du Terminal Strata pendant que le modèle écrit une réponse"><br>
 <sub><code>strata monitor</code> pendant que le modèle répond : vitesse, GPU, mémoire et les dernières requêtes</sub></p>
 
 ```sh
-strata launch                                  # guided screens: model, context, pictures, access, then serve
-strata launch --model q2_0 --yes --no-tui     # no questions: serve, print the address, return
-strata launch --plan --model q2_0              # show what would happen; nothing changes
-strata launch --status                         # what is being served now
-strata launch --stop                           # stop it
-strata monitor --url http://127.0.0.1:8080     # watch speed, GPU, memory and requests
-strata update --check                          # is there a new engine? (strata update installs it)
-strata doctor                                  # check the installed engine files
+strata launch                              # guided: model, context, pictures, access, then serve
+strata launch --model q2_0 --yes --no-tui  # no questions: serve and print the address
+strata launch --status                     # what is being served now
+strata launch --stop                       # stop it
+strata monitor                             # watch speed, GPU, memory and requests
+strata update                              # get the newest engine
+strata doctor                              # check the installed files
 ```
 
-`strata --help` liste tout. Démarrer et servir ne téléchargent rien. Seuls l'installation, `strata launch` (quand vous
-choisissez un modèle) et `strata update` le font. Pour joindre Strata depuis votre téléphone ou un autre PC, utilisez
-`strata launch --access lan`. La commande crée une clé d'API et refuse de démarrer sur un réseau sans elle. Aucun
-navigateur ne s'ouvre, sauf si vous ajoutez `--open`. Guide : [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). Le client complet : [docs/TERMINAL.md](docs/TERMINAL.md).
+Pour joindre Strata depuis votre téléphone ou un autre PC, utilisez `strata launch --access lan`. La commande crée une clé
+d'API pour vous. `strata --help` liste tout, et [docs/TERMINAL.md](docs/TERMINAL.md) l'explique.
 
-### Avec des agents d'IA
+### Avec des agents d'IA et d'autres applications
 
-Un agent installe Strata avec la commande en une ligne de l'option B et lance
-`strata launch --model NAME --yes --no-tui`. Les étapes, les options et les codes de sortie sont dans [docs/AI_SETUP.md](docs/AI_SETUP.md),
-et les règles du dépôt dans [AGENTS.md](AGENTS.md).
+Un agent installe Strata avec la commande en une ligne ci-dessus et lance `strata launch --model NAME --yes --no-tui`. Les
+étapes, les options et les codes de sortie sont dans [docs/AI_SETUP.md](docs/AI_SETUP.md). Les règles du dépôt pour les agents : [AGENTS.md](AGENTS.md).
 
-### Connecter vos autres applications
-
-| Type d'application | URL de base |
+| Votre application parle | URL de base |
 | --- | --- |
-| Compatible OpenAI (la plupart des applications et des agents) | `http://127.0.0.1:8080/v1` (n'importe quelle clé d'API, n'importe quel nom de modèle) |
-| API Anthropic (Claude Code et d'autres) | `http://127.0.0.1:8080`, sans `/v1`. Ces applications ajoutent `/v1/messages` elles-mêmes. Claude Code : `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` |
+| API OpenAI (la plupart des applications et des agents) | `http://127.0.0.1:8080/v1` (n'importe quelle clé d'API, n'importe quel nom de modèle) |
+| API Anthropic (Claude Code) | `http://127.0.0.1:8080`, sans `/v1`. Claude Code : `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` |
 | API OpenAI Responses (Codex CLI) | `http://127.0.0.1:8080/v1/responses` ([configuration](docs/DETAILS.md#the-responses-api-and-codex-cli)) |
 
-`strata connect` affiche les réglages exacts pour OpenCode, Codex CLI, Claude Code, oh-my-pi, pi, Hermes Agent et OpenClaw.
-`strata connect opencode --write` écrit le fichier après confirmation et garde une sauvegarde.
-
-### Images
-
-Les images sont activées par défaut pour les modèles qui savent les lire. Joignez ou collez une image dans le chat, ou
-envoyez-la depuis votre application. Le lecteur d'images tourne sur le processeur quand votre carte graphique a moins de
-24 Go (quelques secondes par image, sans prendre de mémoire à la carte) et sur la carte graphique à partir de 24 Go. La
-règle est la même pour NVIDIA et AMD. Vous pouvez désactiver les images par modèle, ou choisir le lecteur avec
-`--vision off`, `--vision gpu` ou `--vision cpu`.
-
-Les chiffres derrière la règle : sur une Radeon AI PRO R9700, le lecteur de la carte a pris 57 ms pour une image de
-260 tokens et celui du processeur 3,1 s. Sur des cartes de 16 Go (Tesla P100 et RTX A4000, Linux), le lecteur de la carte
-a coûté 3 à 5 % de vitesse sur le texte, parce qu'il occupe environ 1,4 Go que le modèle utiliserait sinon. Sur un Mac, le lecteur tourne sur le GPU quelle que soit la mémoire (0,45 s pour une image de 260 tokens sur un M4 de 32 Go, environ 1,2 Go de la
-mémoire partagée) ; le processeur met environ 50 s par image, il ne lit donc qu'avec `--vision cpu`.
+`strata connect` affiche les réglages exacts pour OpenCode, Codex CLI, Claude Code, oh-my-pi, pi, Hermes Agent et OpenClaw,
+et `strata connect opencode --write` les écrit pour vous (avec une sauvegarde).
 
 ### Bon à savoir
 
-- Choisissez le niveau de réflexion (**désactivé, faible, moyen ou élevé**) dans le menu du chat ou dans le réglage « reasoning effort » de votre application. Désactivé est le plus rapide.
-- Strata répond à une requête à la fois par défaut. Pour en traiter plusieurs en même temps, utilisez `--parallel N` dans `strata launch` ou
-  `"parallel": 2` dans la configuration ([BATCHING.md](docs/BATCHING.md)). Sur une carte de 12 Go, chaque réponse devient alors plus lente.
-- Strata lit en entier le premier message d'une discussion, soit environ 1 minute pour 30 000 tokens. Les messages suivants démarrent en quelques secondes.
-- Où sont stockées vos discussions et l'API complète : [docs/INSTALL.md](docs/INSTALL.md#where-things-are-stored), [docs/DETAILS.md](docs/DETAILS.md#using-it).
+- **Les images** sont activées pour tous les modèles qui savent les lire. Joignez ou collez une image dans le chat, ou envoyez-la depuis votre application. Détails : [docs/IMAGES.md](docs/IMAGES.md).
+- **La réflexion** peut être désactivée, faible, moyenne ou élevée, dans le menu du chat ou dans le réglage « reasoning effort » de votre application. Désactivée est le plus rapide.
+- **Le premier message** d'une discussion est lu en entier, environ 1 minute pour 30 000 tokens. Les messages suivants démarrent en quelques secondes.
+- **Une requête à la fois** par défaut. Pour en traiter plusieurs, utilisez `--parallel N` ([BATCHING.md](docs/BATCHING.md)). Sur une carte de 12 Go, chaque réponse devient alors plus lente.
 
 ## Compiler depuis les sources
 
@@ -355,13 +323,13 @@ bibliothèque.
 - **Votre SSD, ce sont les archives.** Il contient une table de consultation de 29 Go. Le modèle n'en lit que quelques lignes par
   mot, elle n'a donc pas besoin de tenir en RAM.
 
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
+<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="Les 24 576 experts du modèle : les plus sollicités sur la carte graphique, tous dans la RAM, une table de consultation sur le SSD"></p>
 
 Un petit assistant devine aussi les mots suivants. Le grand modèle les vérifie tous d'un coup et garde les bons. Vous
 obtenez la même réponse, 1,6 à 1,8 fois plus tôt. Les textes longs sont lus par gros morceaux, jusqu'à 8 192 tokens à la
 fois, à plus de 1 000 tokens par seconde.
 
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
+<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="Un petit assistant devine les mots suivants ; le grand modèle les vérifie tous d'un coup et garde les bons"></p>
 
 L'explication plus longue : [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Chaque élément avec ses chiffres :
 [les détails](docs/DETAILS.md#how-it-works) et l'[article](docs/paper/Strata-Paper.pdf).
@@ -370,25 +338,27 @@ L'explication plus longue : [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Chaque
 
 - **Mon PC s'est figé au premier démarrage de Strata.** Il charge le modèle en RAM. Patientez et ne fermez pas la fenêtre.
   Toujours figé après 10 minutes ? Redémarrez le PC, fermez les autres programmes et réessayez, ou choisissez une taille plus petite.
-- **Ça s'est arrêté pendant le téléchargement ou l'installation.** Relancez l'application ou `strata launch`, ou relancez
-  `START-HERE.bat` (ou `./setup.sh`). Cela reprend là où ça s'était arrêté.
-- **C'est très lent, le voyant du disque clignote sans arrêt, ou il affiche « the engine stopped unexpectedly ».** Votre PC
-  n'a pas assez de RAM libre. Fermez d'autres programmes (les navigateurs en consomment beaucoup) ou choisissez une taille plus petite, comme Q2_0 ou IQ2_XS.
-- **Il indique qu'il n'y a pas de moteur pour ce PC.** Dans l'application, ouvrez **Settings, Engine** et appuyez sur **Update engine** (mettre à jour le moteur). Dans le Terminal, lancez `strata update`. `strata doctor` montre quels fichiers du moteur sont installés.
+- **Ça s'est arrêté pendant le téléchargement ou l'installation.** Relancez l'application ou `strata launch`. Cela reprend là
+  où ça s'était arrêté.
+- **C'est très lent, ou il affiche « the engine stopped unexpectedly ».** Votre PC n'a pas assez de RAM libre. Fermez
+  d'autres programmes (les navigateurs en consomment beaucoup) ou choisissez une taille plus petite, comme Q2_0 ou IQ2_XS.
+- **Il indique qu'il n'y a pas de moteur pour ce PC.** Dans l'application, ouvrez **Settings, Engine** et appuyez sur **Update engine**
+  (mettre à jour le moteur). Dans le Terminal, lancez `strata update`.
 - **Il indique que le port 8080 est déjà utilisé.** Strata tourne déjà. Cherchez sa fenêtre.
 
-Autres problèmes et solutions : [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Toujours bloqué ? Ouvrez une
-[issue](https://github.com/Niko1221/Strata/issues). Dans l'application, joignez le fichier obtenu par **Settings, Engine, Diagnostics, View logs, Save logs**. Dans le Terminal, collez la sortie de `strata doctor`. Si
-vous avez lancé depuis les sources, joignez `strata-<model>.log` du dossier Strata. Pour un problème de sécurité,
-signalez-le en privé : [SECURITY.md](SECURITY.md).
+Autres solutions : [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Toujours bloqué ? Ouvrez une
+[issue](https://github.com/Niko1221/Strata/issues) et joignez les journaux : dans l'application via **Settings, Engine,
+Diagnostics, Save logs**, dans le Terminal la sortie de `strata doctor`. Pour un problème de sécurité, signalez-le en
+privé : [SECURITY.md](SECURITY.md).
 
 ## Remerciements et licence
 
 Le modèle est [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), de l'équipe Qwen. Il a été compressé par
 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI (Swift 1.5), agentionai (Gyro)
-et Unsloth. Strata utilise des parties de [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). Tous les
-remerciements : [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits). Strata est open source sous [licence MIT](LICENSE).
-Quelques parties et tous les modèles ont leurs propres licences ([lesquelles](docs/HOW_IT_WORKS.md#license)).
+et Unsloth. ISTA-DASLab a aussi produit les versions de DeepSeek V4.1-Flash. Strata utilise des parties de
+[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). Tous les remerciements : [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits).
+Strata est open source sous [licence MIT](LICENSE). Quelques parties et tous les modèles ont leurs propres licences
+([lesquelles](docs/HOW_IT_WORKS.md#license)).
 
 ## Contribuer
 

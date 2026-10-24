@@ -4360,7 +4360,7 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
 
 // The AMD layouts below (STRATA_EXP_MODE) also build for CUDA: Volta takes mode 8 by default (exp_mode), every
 // other CUDA card keeps mode 0, the CUDA layout above.
-#if defined(STRATA_HIP_GFX906) || !defined(__HIPCC__)
+#if 1  // dflash2-kern: the layouts build for every HIP arch too (default mode stays 0 off gfx906; STRATA_EXP_MODE picks one)
 #define STRATA_EXP_LAYOUTS 1
 #else
 #define STRATA_EXP_LAYOUTS 0
@@ -4948,6 +4948,26 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     }
 }
 
+// dflash2-kern: Strix Halo (gfx1151) takes mode 8 (gate/up + SwiGLU + q8_1 in one launch, the group's activations in LDS) for the
+// IQ packs' gate/up: native_expert_bench on the IQ3_S pack's real rows, 45 groups of one entry (a 8-token verify window's call),
+// gate/up -25% (IQ2_S), -8% (IQ3_XXS), -6% (IQ3_S), bitwise equal to mode 0.  STRATA_GFX1151_EXP8=0 keeps the old layout.
+bool gfx1151_exp8(int dev) {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    if (dev < 0 || dev >= 64) return false;
+    if (!per_dev[dev]) {
+        const char* v = std::getenv("STRATA_GFX1151_EXP8");
+        cudaDeviceProp p;
+        per_dev[dev] = !(v != nullptr && v[0] == '0') && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                               strata::kernels::gfx_arch_is_gfx1151(p.gcnArchName) ? 2 : 1;
+        (void) cudaGetLastError();
+    }
+    return per_dev[dev] == 2;
+#else
+    (void) dev;
+    return false;
+#endif
+}
 int g_exp_mode = -1;   // native_expert_set_mode (the bench); -1 = STRATA_EXP_MODE, else the card's default
 int exp_mode() {
     static const int m = [] { const char* v = std::getenv("STRATA_EXP_MODE"); return v ? std::atoi(v) : -1; }();
@@ -4961,6 +4981,7 @@ int exp_mode() {
     static int per_dev[64];   // 0 unknown, else mode + 1
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return kExpModeDefault;
+    if (!per_dev[dev] && gfx1151_exp8(dev)) per_dev[dev] = 1 + 8;
     if (!per_dev[dev]) {
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
@@ -5236,7 +5257,11 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const dim3 gd((unsigned) (((L.n_embd + d_rows - 1) / d_rows + tq_ch - 1) / tq_ch), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
     const int em0d = sm75_down_em(em0, cap_groups);
-    if ((em0d == 7 || em0d == 8) && (L.d_type == 20 || L.d_type == 42)) {
+    int dev_d = 0;
+    cudaGetDevice(&dev_d);
+    // gfx1151: the LDS down kernel is slower than the CUDA layout for IQ4_NL (86 vs 63 us, 24 groups) and faster for Q2_0 (-18%)
+    const bool lds_down_ok = L.d_type == 42 || (L.d_type == 20 && !gfx1151_exp8(dev_d));
+    if ((em0d == 7 || em0d == 8) && lds_down_ok) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
         if (L.d_type == 20) native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);

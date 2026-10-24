@@ -430,6 +430,30 @@ class WindowsDetection(unittest.TestCase):
                 (pub / setup.WIN_HIP_ASSET).unlink()           # installed: kept, nothing downloaded again
                 self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}), eng)
 
+    def test_prebuilt_hip_zip_archs_as_list_or_string(self):
+        """#3810 review: gfx names are names, not numbers - an installed ready-made engine is recognised (no download again) and a zip
+        is accepted whether BUILD.json writes archs as a list or as the ';'-separated string."""
+        import json
+        import zipfile
+        for archs in (["gfx1100", "gfx1151"], "gfx1100;gfx1151"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                pub = root / "pub"
+                pub.mkdir()
+                ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
+                meta = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": archs, "lib_dirs": ["rocm/bin"]}
+                with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
+                    z.writestr(setup.EXE, "engine")
+                    z.writestr("strata-device.exe", "probe")
+                    z.writestr("rocm/bin/amdhip64_7.dll", "dll")
+                    z.writestr("BUILD.json", json.dumps(meta))
+                with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "say", lambda *a, **k: None),                         mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
+                    eng = setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"})
+                    self.assertEqual(eng, root / "engine", archs)
+                    (pub / setup.WIN_HIP_ASSET).unlink()           # installed: recognised, nothing downloaded again
+                    self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"}), eng, archs)
+                    self.assertEqual(setup.engine_archs_hip(), ["gfx1100", "gfx1151"], archs)
+
 
 _HIP_DEVICES = setup.hip_devices                      # the real parser, for the tests that mock setup.hip_devices
 

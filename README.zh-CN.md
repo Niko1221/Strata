@@ -12,100 +12,95 @@
 <p align="center">支持 NVIDIA、AMD、Intel · Windows、Linux、Mac · 免费开源</p>
 
 <p align="center">
-  <a href="https://github.com/Niko1221/Strata/releases"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?include_prereleases&label=release" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT license"></a>
-  <a href="https://github.com/Niko1221/Strata/stargazers"><img src="https://img.shields.io/github/stars/Niko1221/Strata?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?include_prereleases&label=release" alt="最新版本"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT 许可证"></a>
+  <a href="https://github.com/Niko1221/Strata/stargazers"><img src="https://img.shields.io/github/stars/Niko1221/Strata?style=flat" alt="GitHub 星标"></a>
+  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="请我喝杯咖啡"></a>
 </p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
+<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="Strata 的模型写出的体素宝塔花园，在浏览器里运行"></a><br>
 <sub>一座体素宝塔花园，由一条提示词一次生成，在装有 RTX 5070 的电脑上用 Strata 运行（IQ3_S，128K 上下文） ·
 <a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">完整视频（49 秒）</a></sub></p>
 
-Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)**。这是一个 1250 亿参数的模型，
-通常需要服务器才能跑，现在用普通电脑就行。它能聊天、写代码、看图片，也能配合你的应用和编程智能体使用。
-你的聊天记录和文件都留在你自己的电脑上。
+<p align="center">
+  <a href="#安装"><b>安装</b></a> ·
+  <a href="#模型">模型</a> ·
+  <a href="#速度如何">速度</a> ·
+  <a href="#使用方法">使用方法</a> ·
+  <a href="#工作原理">工作原理</a> ·
+  <a href="#出问题了">帮助</a> ·
+  <a href="#支持-strata">支持</a>
+</p>
 
-**第一次用？** 先看[硬件要求](#硬件要求)，再[安装应用](#方式-astrata-应用)。
+Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)**。这是一个 1250 亿参数的模型，
+通常需要服务器才能跑，现在用普通电脑就行。从 0.2.4 起，它在终端版里也能运行 **DeepSeek V4.1-Flash**。它能聊天、写代码、
+看图片，也能配合你的应用和编程智能体使用。你的聊天记录和文件都留在你自己的电脑上。
 
 - **游戏电脑就能跑。** 内存和显存加起来有 32 GB 就可以开始。
-- **能接入你的工具。** 支持 OpenAI 和 Anthropic 的 API，Claude Code、Codex CLI、OpenCode 等智能体都能连上。
-- **能看图片。** 默认开启。
-- **免费。** MIT 许可证，不用注册账号，不走云端。
-- **隐私。** 没有遥测。Strata 下载什么、什么时候联网、如何校验下载内容，都写在 [docs/SAFETY.md](docs/SAFETY.md)。
-
-版本 0.2.2 · 引擎 0.1.47
+- **能接入你的工具。** Claude Code、Codex CLI、OpenCode 等智能体通过 OpenAI 和 Anthropic 的 API 连接。
+- **能看图片**，默认开启。
+- **免费且隐私。** MIT 许可证，不用注册账号，不走云端，没有遥测（[它下载什么、什么时候下载](docs/SAFETY.md)）。
 
 ## 硬件要求
 
-**内存和显存（VRAM）加起来至少要有 32 GB。** Mac 和 Ryzen AI Max 上指的是统一内存。内存越大，能跑的模型越大，
-或者速度越快。
+**内存和显存（VRAM）加起来至少要有 32 GB。** Mac 和 Ryzen AI Max 上指的是统一内存。32 GB 内存加一张 12-16 GB 显存的显卡，
+可以跑较小的尺寸；64 GB 可以跑所有尺寸。
 
-- 32 GB 内存加一张 12-16 GB 显存的显卡，可以跑 Coder。
-- 64 GB 内存可以跑所有尺寸。
-
-| 你的电脑 | 说明 |
+| 适用于 | 指南 |
 | --- | --- |
-| **NVIDIA** GeForce RTX 20、30、40、50 系列（12 GB 及以上） | 安装应用或终端版即可。 |
-| **AMD** Radeon RX 6800 及更新型号、Radeon AI PRO R9700（12 GB 及以上） | [AMD 显卡](docs/AMD_HIP.md) |
-| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md)、[Intel 引擎](docs/INTEL.md) |
-| **Apple 芯片 Mac**（M1 及更新，macOS 15 及以上） | [Mac](docs/MAC.md) |
-| **AMD Ryzen AI Max（Strix Halo）** 及其他统一内存系统 | [Strix Halo](docs/STRIX_HALO.md) |
-| 较旧的显卡和处理器 | [旧显卡](docs/OLDER_GPUS.md)、[旧处理器](docs/INSTALL.md#older-cpus-experimental) |
+| **NVIDIA** GeForce RTX 20、30、40 和 50 系列，12 GB 及以上 | [安装](#安装) |
+| **AMD** Radeon RX 6800 及更新型号、Radeon AI PRO R9700 | [AMD 显卡](docs/AMD_HIP.md) |
+| **Intel** Arc | [Intel Arc](docs/INTEL_ARC.md) |
+| **Apple 芯片 Mac**，M1 及更新，macOS 15 及以上 | [Mac](docs/MAC.md) |
+| **AMD Ryzen AI Max（Strix Halo）** 及其他统一内存的电脑 | [Strix Halo](docs/STRIX_HALO.md) |
+| 较旧的显卡和处理器 | [旧显卡](docs/OLDER_GPUS.md) |
 
-另外还需要：
-
-- 约 80 GB 的可用磁盘空间（用固态硬盘，首次启动会快很多）
-- Windows 10 / 11、Linux 或 macOS
-- 较新的显卡驱动
-
-同一品牌的两三张显卡可以共同运行一个模型（[多显卡](docs/MULTI_GPU.md)）。Strata 不会把一个模型拆到 NVIDIA 和 AMD
-显卡上。完整列表见 [docs/INSTALL.md](docs/INSTALL.md#what-you-need)。
+你还需要约 80 GB 的可用磁盘空间（固态硬盘）、Windows 10 / 11、Linux 或 macOS，以及较新的显卡驱动。同一品牌的两三张显卡可以共同运行一个模型（[多显卡](docs/MULTI_GPU.md)）。
 
 ## 安装
 
-三种方式任选一种。它们启动的是同一个引擎，用的是同样的模型。
+### 1. Strata 应用（最简单）
 
-### 方式 A：Strata 应用
+下载适合你电脑的文件，打开它，然后对推荐的模型点击安装。
 
-最简单的方式。应用内置引擎：安装、选模型、开始聊天。请根据你的系统和显卡，从
-[发布页](https://github.com/Niko1221/Strata/releases/latest)下载对应的文件。不确定选哪个？看表格下面那一段。
+**Windows 10 / 11**
 
-| 系统 | 你的显卡 | 要下载的文件 |
-| --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.2-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda13.exe) |
-| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.2-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda12.exe) |
-| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.2-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip.exe) |
-| | AMD Radeon RX 7000 系列或 Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.2-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.2-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.2-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx9070.AppImage) |
-| | AMD Radeon RX 7000 系列 | [`Strata-0.2.2-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-strixhalo.AppImage) |
-| **Mac**（Apple 芯片，macOS 15 及以上） | 内置 | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
+[![Windows，NVIDIA，驱动 580 或更新](https://img.shields.io/badge/Windows-NVIDIA%20%C2%B7%20driver%20580%2B-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda13.exe)
+[![Windows，NVIDIA，较旧的驱动](https://img.shields.io/badge/Windows-NVIDIA%20%C2%B7%20older%20driver-4C7A00?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda12.exe)
+[![Windows，AMD RX 9000 或 R9700](https://img.shields.io/badge/Windows-AMD%20RX%209000%20%C2%B7%20R9700-ED1C24?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip.exe)
+[![Windows，AMD RX 7000 或 Ryzen AI Max](https://img.shields.io/badge/Windows-AMD%20RX%207000%20%C2%B7%20Ryzen%20AI%20Max-B3131B?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip-rdna3.exe)
 
-**不确定时：** NVIDIA 显卡的驱动版本在 580 及以上就选 `cuda13`，否则选 `cuda12`。`cuda12` 适用于较旧的显卡和驱动。
-`hip` 和 `amd` 的文件是给 AMD 显卡用的。其他 AMD 显卡（RX 6000）目前还没有现成的应用，
-请看 [AMD 显卡](docs/AMD_HIP.md)。
+**Linux**
 
-然后：
+[![Linux，NVIDIA，驱动 580 或更新](https://img.shields.io/badge/Linux-NVIDIA%20%C2%B7%20driver%20580%2B-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda13.AppImage)
+[![Linux，NVIDIA，较旧的驱动](https://img.shields.io/badge/Linux-NVIDIA%20%C2%B7%20older%20driver-4C7A00?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda12.AppImage)
+[![Linux，AMD RX 9000 或 R9700](https://img.shields.io/badge/Linux-AMD%20RX%209000%20%C2%B7%20R9700-ED1C24?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx9070.AppImage)
+[![Linux，AMD RX 7000](https://img.shields.io/badge/Linux-AMD%20RX%207000-B3131B?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx7900.AppImage)
+[![Linux，AMD Ryzen AI Max](https://img.shields.io/badge/Linux-Ryzen%20AI%20Max-8A0E15?style=for-the-badge&logo=amd&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-strixhalo.AppImage)
 
-- **Windows：** 运行 `.exe`。它只为当前用户安装，不需要管理员权限。如果 Windows 提示“Windows 已保护你的电脑”，
-  点击**更多信息**，再点**仍要运行**（安装程序还没有代码签名）。
-- **Linux：** 给文件加上可执行权限（`chmod +x`），然后启动。需要 FUSE 2：`sudo apt install libfuse2`（Ubuntu 22.04），
-  或 `libfuse2t64`（Ubuntu 24.04 及更新）。
-- **Mac：** 打开 `.dmg`，把 Strata 拖到“应用程序”。
+**Mac**（Apple 芯片，macOS 15 及以上）
 
-第一个界面里，应用会检测你的电脑，并推荐合适的模型。点击安装即可。模型很大，要下载约 40-70 GB，中断后会从断点继续。
-关闭窗口会同时停止 Strata 和引擎。
+[![Mac，Apple 芯片](https://img.shields.io/badge/Mac-Apple%20Silicon-333333?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-mac.dmg)
 
-### 方式 B：终端（一行命令）
+NVIDIA 驱动低于 580（`nvidia-smi` 能看到版本）？请选较旧驱动的文件。AMD RX 6000 显卡用 RX 7000 的文件，它会自己下载合适的引擎。
+所有文件都在[发布页](https://github.com/Niko1221/Strata/releases/latest)。
 
-终端版就是 `strata` 命令，适合脚本、服务器和 AI 智能体。
+| 首次启动 | 怎么做 |
+| --- | --- |
+| **Windows** | 运行 `.exe`。不需要管理员权限。如果 Windows 提示“Windows 已保护你的电脑”，点击**更多信息**，再点**仍要运行**。 |
+| **Linux** | 给文件加上可执行权限（`chmod +x`），然后启动。需要 FUSE 2：`sudo apt install libfuse2t64`（Ubuntu 24.04 及更新）或 `libfuse2`（22.04）。 |
+| **Mac** | 打开 `.dmg`，把 Strata 拖到“应用程序”。 |
+
+模型下载很大（40-70 GB）。如果中断，会从断点继续。
+
+### 2. 终端版（一行命令）
+
+`strata` 命令，适合脚本、服务器和 AI 智能体。运行 DeepSeek 也要用它。
 
 Linux 和 Mac：
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 Windows（PowerShell）：
@@ -114,24 +109,16 @@ Windows（PowerShell）：
 irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-脚本会检查你的电脑，下载终端版，校验 SHA-256，然后解压到你的用户目录。不需要管理员权限。在 Windows 上，装完后请
-打开一个新的终端窗口。然后启动 Strata：
+然后启动它。它会一次问一个问题（模型、上下文、图片、允许谁连接），下载需要的东西，并开始提供服务：
 
 ```sh
 strata launch
 ```
 
-它会一次问一个问题：模型、上下文、图片、允许谁连接。接着为你的显卡下载引擎（已签名，使用前会先试启动），再下载
-模型，并开始提供服务。在脚本和 AI 智能体里，请使用参数：
-
-```sh
-strata launch --model q2_0 --yes --no-tui
-```
-
-如果想在运行前先看看安装脚本，先用 `curl -fsSL <address> -o install.sh` 下载，读完后再用 `sh install.sh` 运行。
+不需要管理员权限。安装程序会校验它下载的所有内容的 SHA-256。在 Windows 上，装完后请打开一个新的终端窗口。
 所有界面和参数见 [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md)。
 
-### 方式 C：让你的 AI 来安装
+### 3. 让你的 AI 来安装
 
 把下面这段话粘贴到 Claude Code、Cursor、Codex、GitHub Copilot 或其他编程助手里：
 
@@ -146,46 +133,55 @@ Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow doc
 
 ## 模型
 
-应用和 `strata launch` 会按你的内存推荐模型。它是同一个模型的几种尺寸，压缩程度不同。尺寸小的更快，尺寸大的稍微更聪明一点。
+应用和 `strata launch` 会按你的内存推荐尺寸。尺寸小的更快，尺寸大的稍微更聪明一点。
 
 ### 内存不够？试试 Gyro
 
-[Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF)（作者 agentionai）是运行这个模型占用最小的方式。
+[Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF)（作者 agentionai）是运行 Qwen3.8-Flash-Next 占用最小的方式。
+它可在 NVIDIA、AMD、Intel Arc 和 Apple 芯片上运行。
 
-| 尺寸 | 所需内存（RAM + VRAM） | 下载大小 | 说明 |
+| 尺寸 | 所需内存（RAM + VRAM） | 下载大小 | 适合 |
 | --- | ---: | ---: | --- |
-| **Gyro-S** | 27.6 GB | 58.5 GB | 给其他尺寸都放不下的电脑。质量低于 IQ2_XS。 |
-| **Gyro-M** | 35 GB | 92.0 GB | 质量约相当于 IQ3_XXS，显存占用少约 20%。输出回答比 Q2_0 慢，12 GB 的 RTX 3060 上慢 16%，R9700 上慢 21%。 |
+| **Gyro-S** | 27.6 GB | 58.5 GB | 其他尺寸都放不下的电脑。32 GB 的 Mac mini 上每秒 9 个 token。 |
+| **Gyro-M** | 35 GB | 92.0 GB | 质量约相当于 IQ3_XXS，显存占用少 20%。 |
 
-Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的 Intel Arc 显卡（已在 Arc A750 上测试）上运行，自 0.2.2 起也可在 Apple Silicon 的 Mac 上运行（32 GB 的 Mac mini 上 Gyro-S 为 9 token/秒，专家权重从 SSD 读取）。详情和测试数据：
-[docs/GYRO.md](docs/GYRO.md)。用 `strata launch --model gyro-s` 启动。
+用 `strata launch --model gyro-s` 启动。详情：[docs/GYRO.md](docs/GYRO.md)。
 
-### 其他尺寸
+### Qwen3.8-Flash-Next 的尺寸
 
-| 你的内存（RAM + VRAM） | 选择 | 备注 |
+| 你的内存（RAM + VRAM） | 选择 | 原因 |
 | --- | --- | --- |
-| **32 GB** | **Gyro-S**，写代码可选 **[Coder](docs/MODELS.md#coder)** | Coder 需要 32 GB 内存，只保留一半的专家，所以代码以外的能力较弱 |
-| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB），或 **Gyro-M**（35 GB） | Swift 回答前思考的时间更短。Gyro-M 的质量接近 IQ3_XXS，但输出回答比 Q2_0 慢 16-21% |
+| **32 GB** | **Gyro-S**，写代码可选 **[Coder](docs/MODELS.md#coder)** | Coder 保留代码用到的专家 |
+| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB）或 **Gyro-M** | Swift 回答前思考的时间更短 |
 | **48 GB** | **IQ3_XXS**（47.0 GB） | 更慢，更好 |
-| **64 GB** | **IQ3_S**（54.8 GB），原版或 Swift 1.5 | 最慢，最好：在公开测试中与完整模型持平 |
-| **96 GB 及以上** | Unsloth 的 **UD-IQ4_XS**（约 72 GB 内存）到 **Q8_0**（约 136 GB），4 到 8 位 | 更接近完整模型。内存不足时，Strata 会从固态硬盘读取一部分，速度会慢很多 |
+| **64 GB** | **IQ3_S**（54.8 GB） | 在公开测试中与完整模型持平 |
+| **96 GB 及以上** | Unsloth 的 **UD-IQ4_XS** 到 **Q8_0** | 最接近完整模型 |
 
-内存比这一行写的少，也可能能用：Strata 会自动切换到[低内存模式](docs/MODELS.md#a-big-graphics-card-and-little-ram)。
-速度会变慢，显卡较小时会慢得多。
+内存比这一行写的少，也可能能用，只是更慢：Strata 会自动切换到[低内存模式](docs/MODELS.md#a-big-graphics-card-and-little-ram)。
+另外还有：给 NVIDIA 显卡用的 [NVFP4](docs/NVFP4.md)、[Qwen3.6-35B-A3B](docs/QWEN36.md)（更小，能同时处理多个请求），
+以及 [OrcaRouter 的 Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)。所有尺寸，以及各种配置能跑什么：
+[docs/MODELS.md](docs/MODELS.md)。
 
-更多选择：
+### DeepSeek V4.1-Flash（终端版，0.2.4 起）
 
-- **[Swift 1.5](docs/MODELS.md#swift-15)** 是微调版本，回答前思考的时间更短，质量和内存占用大致相同。
-- **[NVFP4](docs/NVFP4.md)** 是 NVIDIA 为 NVIDIA 显卡提供的 4 位版本。要把所有专家放进内存，需要约 80 GB 内存。
-- **[Qwen3.6-35B-A3B](docs/QWEN36.md)** 是另一个更小的模型，能看图片，还能同时回答多个请求。
-- **[OrcaRouter 的 Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** 需要手动设置。
+一个大得多的模型，用一块 12 GB 显卡加 46 到 64 GB 内存就能运行。Strata 把最常用的部分留在内存里，其余的从你的固态硬盘读取。
+这些版本由 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) 制作。它可在
+NVIDIA RTX 30 到 50 系列显卡和 Radeon AI PRO R9700 上运行。请在 `strata launch` 里选择它。桌面应用暂时不提供。
 
-所有尺寸、下载大小，以及各种配置能跑什么：[docs/MODELS.md](docs/MODELS.md)。
+| 版本 | 下载大小 | 质量 | 写代码速度 |
+| --- | ---: | --- | --- |
+| **IQ1_M**（1.75 位） | 239 GB | 最小，普通文字表现较弱 | 还没在电脑上测量 |
+| **IQ2_XXS**（2.00 位） | 257 GB | 平衡得不错 | 每秒 10 个 token（RTX 3060），5（RTX 5070），48（4 块 R9700） |
+| **IQ2_XS**（2.25 位） | 274 GB | 最接近原模型 | 每秒 15 个 token（一块 R9700），80（4 块 R9700） |
+| **IQ4_NL**（Engram 表） | 已包含在上面每个下载中 | 三个版本共用的查找表 | |
+
+用 `strata launch --model ist-das-2.00bpw`（或 `ist-das-1.75bpw`、`ist-das-2.25bpw`）启动。质量数据、各台电脑的速度和手动安装：
+[docs/DEEPSEEK41.md](docs/DEEPSEEK41.md)。
 
 ## 速度如何？
 
-以下数据基于 12 GB 显卡（RTX 5070、Ryzen 5 7600、64 GB 内存）。其他显卡的结果见：
-[各模型的速度](docs/MODELS.md#how-fast-is-each-size)、[社区测试结果](docs/COMMUNITY_BENCHMARKS.md)。
+以下数据基于 12 GB 显卡（RTX 5070、64 GB 内存）。其他显卡的结果见：
+[各尺寸的速度](docs/MODELS.md#how-fast-is-each-size)和[社区测试结果](docs/COMMUNITY_BENCHMARKS.md)。
 
 | 模型 | 回答输出速度 | 读取提示词速度 |
 | --- | --- | --- |
@@ -195,9 +191,7 @@ Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的
 | **IQ3_S** | `███████░░░░░` 53 tokens/s | `███████░░░░░` 1,620 tokens/s |
 | **Coder** | `███████░░░░░` 55 tokens/s | `██████████░░` 2,180 tokens/s |
 
-一个 token 约等于 ¾ 个英文单词，所以每秒 60 个 token 比你阅读的速度还快。“读取提示词”指 Strata 吸收长文档、代码或聊天历史的速度。
-
-在 16 GB 的 AMD 显卡上测得的结果（RX 9070 XT、Ryzen 9 3900X、47 GB 内存）：
+在 16 GB 的 AMD 显卡上（RX 9070 XT、47 GB 内存）：
 
 | 模型 | 回答输出速度 | 读取提示词速度 |
 | --- | --- | --- |
@@ -205,78 +199,57 @@ Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的
 | **IQ2_XS** | `███████░░░░░` 52 tokens/s | `█████░░░░░░░` 1,110 tokens/s |
 | **Coder** | `██████░░░░░░` 44 tokens/s | `██████░░░░░░` 1,420 tokens/s |
 
-两张表的进度条使用同一个比例。显存更大的显卡更快：RTX 3090（24 GB）每秒大约能输出 100-140 个 token。每个数字对应的引擎版本见
-[DETAILS.md](docs/DETAILS.md#speed-measured)。
+一个 token 约等于 ¾ 个英文单词，所以每秒 60 个 token 比你阅读的速度还快。“读取提示词”指 Strata 吸收长文档、代码或聊天历史的速度。
 
 ## 使用方法
 
 ### 在应用里
 
-应用包含**聊天**、显示模型以及 GPU、CPU 和内存状态的**监控**、**模型**页面和**设置**。聊天可以在你电脑上的某个文件夹里工作。
-在**手动**模式下，修改文件或运行命令之前它会先询问你。输入 `/loop 10m <要做的事>`，在聊天保持打开期间每 10 分钟重复发送一次消息。
+聊天、显示模型以及 GPU、CPU 和内存状态的**监控**、**模型**页面和**设置**。聊天可以在你电脑上的某个文件夹里工作。
+在**手动**模式下，修改文件或运行命令之前它会先询问你。它可以搜索网页（DuckDuckGo 或 Bing，不需要账号）。
+发出电脑的只有搜索词。
 
-聊天可以用 DuckDuckGo（或 Bing）搜索网页，不需要账号。你也可以在**设置，工具**里添加搜索密钥。搜索是唯一会把内容发出电脑的功能，
-发出的就是搜索词。
-
-要同时运行两个模型，请打开**运行多个模型**，并为每个模型分配同一品牌的单独一张显卡。
-
-<p align="center"><img src="docs/media/app-chat.png" width="900" alt="The Strata app: a chat where the agent built a small voxel pagoda garden, with the page open in the preview on the right"><br>
-<sub>Strata 应用中的一次对话：智能体用一个 HTML 文件写出了一个小型体素宝塔花园，页面在对话旁的预览中打开</sub></p>
+<p align="center"><img src="docs/media/app-chat.png" width="900" alt="Strata 应用：一次对话，智能体做出了一个小型体素宝塔花园，页面在右侧的预览中打开"><br>
+<sub>智能体用一个 HTML 文件写出了体素宝塔花园，页面在聊天旁的预览中打开</sub></p>
 
 ### 在终端里
 
-<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="The Strata Terminal monitor overview while the model writes a reply"><br>
+<p align="center"><img src="docs/media/terminal-monitor.png" width="900" alt="模型写回复时，Strata 终端监控的总览界面"><br>
 <sub>模型回复时的 <code>strata monitor</code>：速度、GPU、内存和最近的请求</sub></p>
 
 ```sh
-strata launch                                  # 引导界面：模型、上下文、图片、访问方式，然后开始服务
-strata launch --model q2_0 --yes --no-tui     # 不提问：开始服务，打印地址，然后返回
-strata launch --plan --model q2_0              # 显示将要执行的操作；不做任何更改
-strata launch --status                         # 当前正在提供什么服务
-strata launch --stop                           # 停止服务
-strata monitor --url http://127.0.0.1:8080     # 查看速度、GPU、内存和请求
-strata update --check                          # 有新引擎吗？（strata update 会安装它）
-strata doctor                                  # 检查已安装的引擎文件
+strata launch                              # guided: model, context, pictures, access, then serve
+strata launch --model q2_0 --yes --no-tui  # no questions: serve and print the address
+strata launch --status                     # what is being served now
+strata launch --stop                       # stop it
+strata monitor                             # watch speed, GPU, memory and requests
+strata update                              # get the newest engine
+strata doctor                              # check the installed files
 ```
 
-`strata --help` 会列出所有命令。启动和提供服务时不会下载任何东西。只有安装、`strata launch`（在你选择模型时）和
-`strata update` 会下载。要从手机或另一台电脑访问 Strata，请使用 `strata launch --access lan`。它会生成一个 API 密钥，
-没有密钥就不会在网络上启动。除非你加上 `--open`，否则不会打开浏览器。指南：[docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md)。
-完整的客户端说明：[docs/TERMINAL.md](docs/TERMINAL.md)。
+要从手机或另一台电脑访问 Strata，请使用 `strata launch --access lan`。它会为你生成一个 API 密钥。
+`strata --help` 会列出所有命令，[docs/TERMINAL.md](docs/TERMINAL.md) 有详细说明。
 
-### 配合 AI 智能体
+### 配合 AI 智能体和其他应用
 
-智能体用方式 B 中的一行命令安装 Strata，然后运行 `strata launch --model NAME --yes --no-tui`。步骤、参数和退出码见
-[docs/AI_SETUP.md](docs/AI_SETUP.md)，仓库规则见 [AGENTS.md](AGENTS.md)。
+智能体用上面的一行命令安装 Strata，然后运行 `strata launch --model NAME --yes --no-tui`。步骤、参数和退出码见
+[docs/AI_SETUP.md](docs/AI_SETUP.md)。给智能体看的仓库规则：[AGENTS.md](AGENTS.md)。
 
-### 连接你的其他应用
-
-| 应用类型 | 基础 URL |
+| 你的应用使用 | 基础 URL |
 | --- | --- |
-| 兼容 OpenAI（大多数应用和智能体） | `http://127.0.0.1:8080/v1`（API 密钥和模型名称随便填） |
-| Anthropic API（Claude Code 等） | `http://127.0.0.1:8080`，不带 `/v1`。这些应用会自己加上 `/v1/messages`。Claude Code：`ANTHROPIC_BASE_URL=http://127.0.0.1:8080` |
+| OpenAI API（大多数应用和智能体） | `http://127.0.0.1:8080/v1`（API 密钥和模型名称随便填） |
+| Anthropic API（Claude Code） | `http://127.0.0.1:8080`，不带 `/v1`。Claude Code：`ANTHROPIC_BASE_URL=http://127.0.0.1:8080` |
 | OpenAI Responses API（Codex CLI） | `http://127.0.0.1:8080/v1/responses`（[设置方法](docs/DETAILS.md#the-responses-api-and-codex-cli)） |
 
-`strata connect` 会打印 OpenCode、Codex CLI、Claude Code、oh-my-pi、pi、Hermes Agent 和 OpenClaw 的具体设置。
-`strata connect opencode --write` 会在询问后写入配置文件，并保留备份。
-
-### 图片
-
-能看图片的模型默认开启图片功能。在聊天里附加或粘贴图片，或者从你的应用发送图片。显卡的显存小于 24 GB 时，读图由处理器完成
-（每张图片几秒钟，不占用显卡的显存）；显存达到 24 GB 时，由显卡完成。NVIDIA 和 AMD 的规则相同。你可以按模型关闭图片功能，
-也可以用 `--vision off`、`--vision gpu` 或 `--vision cpu` 选择读图方式。
-
-这条规则背后的数据：在 Radeon AI PRO R9700 上，显卡读一张 260 token 的图片用了 57 ms，处理器用了 3.1 秒。在 16 GB 的显卡
-（Tesla P100 和 RTX A4000，Linux）上，用显卡读图会让文字速度下降 3-5%，因为它占用约 1.4 GB 显存，否则这部分会被模型使用。
-在 Mac 上，无论内存多大，都由 GPU 读图（32 GB 的 M4 上读一张 260 token 的图片用 0.45 秒，占用约 1.2 GB 共享内存）；处理器读一张约需 50 秒，所以只有指定 `--vision cpu` 时才用。
+`strata connect` 会打印 OpenCode、Codex CLI、Claude Code、oh-my-pi、pi、Hermes Agent 和 OpenClaw 的具体设置，
+`strata connect opencode --write` 会帮你写入（并保留备份）。
 
 ### 使用须知
 
-- 在聊天菜单或你的应用的“reasoning effort”里选择思考级别（**off、low、medium 或 high**）。off 最快。
-- Strata 默认一次回答一个请求。要同时处理多个，请在 `strata launch` 中使用 `--parallel N`，或在配置里写
-  `"parallel": 2`（[BATCHING.md](docs/BATCHING.md)）。在 12 GB 显卡上，这会让每个回答变慢。
-- Strata 会完整读取聊天的第一条消息，每 30,000 个 token 约需 1 分钟。之后的消息几秒钟就开始。
-- 聊天记录存放的位置和完整的 API：[docs/INSTALL.md](docs/INSTALL.md#where-things-are-stored)、[docs/DETAILS.md](docs/DETAILS.md#using-it)。
+- **图片**对每个能看图片的模型都是默认开启的。在聊天里附加或粘贴图片，或者从你的应用发送图片。详情：[docs/IMAGES.md](docs/IMAGES.md)。
+- **思考级别**可以是 off、low、medium 或 high，在聊天菜单或你的应用的“reasoning effort”里设置。off 最快。
+- **聊天的第一条消息**会被完整读取，每 30,000 个 token 约需 1 分钟。之后的消息几秒钟就开始。
+- **默认一次处理一个请求。** 要处理更多，请使用 `--parallel N`（[BATCHING.md](docs/BATCHING.md)）。在 12 GB 显卡上，这会让每个回答变慢。
 
 ## 从源码构建
 
@@ -331,12 +304,12 @@ strata doctor                                  # 检查已安装的引擎文件
 - **你的内存是阅览室的书架。** 24,576 本书都在这里。某个词需要一本不在书桌上的书时，处理器会立刻从书架上取来读，显卡则继续工作。
 - **你的固态硬盘是档案室。** 里面存着一张 29 GB 的查找表。模型每个词只读其中几行，所以不用常驻内存。
 
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
+<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="模型的 24,576 位专家：最忙的在显卡上，全部在内存里，查找表在固态硬盘上"></p>
 
 另外有一个小助手会猜接下来的几个词。大模型一次检查所有猜测，保留正确的部分。得到的答案不变，但快了 1.6-1.8 倍。
 长文本按大块读取，一次最多 8,192 个 token，速度超过每秒 1,000 个 token。
 
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
+<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="小助手猜接下来的几个词；大模型一次检查全部猜测，保留正确的部分"></p>
 
 更详细的解释：[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)。每个部分和它的数据：
 [详细说明](docs/DETAILS.md#how-it-works)和[论文](docs/paper/Strata-Paper.pdf)。
@@ -345,24 +318,22 @@ strata doctor                                  # 检查已安装的引擎文件
 
 - **第一次启动 Strata 时我的电脑卡住了。** 它在把模型加载到内存。请等待，不要关闭窗口。10 分钟后还是卡住？重启电脑，
   关闭其他程序后再试，或者选一个更小的尺寸。
-- **下载或安装时中断了。** 重新启动应用或 `strata launch`，或者再运行一次 `START-HERE.bat`（或 `./setup.sh`）。
-  它会从中断的地方继续。
-- **非常慢、硬盘灯一直闪，或者提示“引擎意外停止”。** 你的电脑可用内存不够。关闭其他程序（浏览器很占内存），
+- **下载或安装时中断了。** 重新启动应用或 `strata launch`。它会从中断的地方继续。
+- **非常慢，或者提示“the engine stopped unexpectedly”。** 你的电脑可用内存不够。关闭其他程序（浏览器很占内存），
   或者选一个更小的尺寸，比如 Q2_0 或 IQ2_XS。
 - **提示这台电脑没有可用的引擎。** 在应用里打开**设置，引擎**，点击**更新引擎**。在终端里运行 `strata update`。
-  `strata doctor` 会显示已安装哪些引擎文件。
 - **提示 8080 端口已被占用。** Strata 已经在运行了。找一下它的窗口。
 
-更多问题和解决办法：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。还是解决不了？请提交
-[issue](https://github.com/Niko1221/Strata/issues)。在应用里，附上**设置，引擎，诊断，查看日志，保存日志**得到的文件。
-在终端里，粘贴 `strata doctor` 的输出。从源码运行时，附上 Strata 文件夹里的 `strata-<model>.log`。
-如果是安全问题，请私下报告：[SECURITY.md](SECURITY.md)。
+更多解决办法：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。还是解决不了？请提交
+[issue](https://github.com/Niko1221/Strata/issues) 并附上日志：在应用里是**设置，引擎，诊断，保存日志**，在终端里是
+`strata doctor` 的输出。如果是安全问题，请私下报告：[SECURITY.md](SECURITY.md)。
 
 ## 致谢与许可证
 
 模型是 Qwen 团队的 [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)。压缩工作由
 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)、UkisAI（Swift 1.5）、agentionai（Gyro）
-和 Unsloth 完成。Strata 使用了 [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) 的部分代码。全部致谢：
+和 Unsloth 完成。DeepSeek V4.1-Flash 的各个版本也由 ISTA-DASLab 制作。Strata 使用了
+[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) 的部分代码。全部致谢：
 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits)。Strata 以 [MIT 许可证](LICENSE)开源。少数部分和所有模型有各自的许可证
 （[具体是哪些](docs/HOW_IT_WORKS.md#license)）。
 

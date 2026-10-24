@@ -28,12 +28,16 @@ export function defaultReserves(config,hardware,baselineReserve=0){
  const placement=Array.isArray(config.gpu)?config.gpu:[config.gpu??0];
  const placed=(hardware?.gpus??[]).filter(g=>placement.includes(g.index)),gpuMemory=placed.map(g=>g.vram_gb).filter(n=>Number.isFinite(n)&&n>0);
  const headless=placed.length>0&&placed.every(computeOnly);   // no display on the card (the desktop is on an integrated GPU): no desktop to keep room for
- const floor=headless?(config.vision?ENGINE_DEFAULT_RESERVE_MIB:COMPUTE_ONLY_RESERVE_MIB):gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
- const safety=headless?floor:Math.max(config.vision?2048:floor,baselineReserve);
+ /* Only a picture reader that runs on the GPU needs VRAM of its own: the CPU reader (vision.gpu false) took the same 2048 floor and cost a 12 GB card a quarter of its expert cache (0.2.3 tuning, notes-023-tune.md). */
+ const pictures=config.vision?(typeof config.vision==='object'?Boolean(config.vision.gpu):true):false;
+ const floor=headless?(pictures?ENGINE_DEFAULT_RESERVE_MIB:COMPUTE_ONLY_RESERVE_MIB):gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
+ const safety=headless?floor:Math.max(pictures?2048:floor,baselineReserve);
  /* A card that shares the PC's memory (Strix Halo, other APUs) has no memory of its own to keep a fifth of: that fifth is RAM, and "Leave 20% for my work" already keeps it
   *  through the RAM budget. A fifth of the shared pool here held back 16 GB of expert cache for nothing (#3510); the display floor stays. */
  const shared=placed.length>0&&placed.some(g=>g.uma===true||g.unified===true);
- return {work:gpuMemory.length&&!headless&&!shared?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety,performance:safety};
+ /* "work" keeps a fifth of the card, but on a card of 16 GB or less no more than 1536 MiB: a fifth of 12 GB (2457) cost 20% of the speed against 1536, which already leaves 1.1 GiB of VRAM free after the load (RTX 5070, Gyro-S 64K, 5 pairs; notes-023-tune.md). */
+ const fifth=gpuMemory.length?Math.floor(Math.min(...gpuMemory)*1024*.2):0,cap=gpuMemory.length&&Math.min(...gpuMemory)<=16?1536:Infinity;
+ return {work:gpuMemory.length&&!headless&&!shared?Math.max(safety,Math.min(fifth,cap)):safety,performance:safety};
 }
 
 /** The reserve the person asked for (null: nothing) and the default for each profile. A 0.2.0-beta file has the key and the same number in "args" with no note that the
@@ -63,7 +67,8 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  const cores=Number(hardware?.cpu?.cores)||0;
  if(profile==='work'&&cores>1){
   const at=args.indexOf('--pool-workers'),previous=at>=0?Number(args[at+1]):0;
-  const workers=Math.max(1,Math.floor(cores*.8));remove('--pool-workers');
+  /* 80% of the physical cores rounded UP, never more than the cores less the host thread (the engine's own count): floor(0.8 x 6) = 4 ran 8-10% slower than the engine's 5 on a 6-core Ryzen (notes-023-tune.md); 12 logical threads gave 9 in 0.2.1. */
+  const workers=Math.max(1,Math.min(cores-1,Math.ceil(cores*.8)));remove('--pool-workers');
   args.push('--pool-workers',String(previous>0?Math.min(previous,workers):workers));
  }
  // Preserve calibrated worker counts and the installation's safety/vision reserve.

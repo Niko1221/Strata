@@ -7,6 +7,14 @@ import tune_es from '../locales/tune-es.json';
 import tune_ru from '../locales/tune-ru.json';
 import tune_pt from '../locales/tune-pt.json';
 import tune_ko from '../locales/tune-ko.json';
+import tools_en from '../locales/tools-en.json';
+import tools_zh from '../locales/tools-zh.json';
+import tools_ja from '../locales/tools-ja.json';
+import tools_de from '../locales/tools-de.json';
+import tools_es from '../locales/tools-es.json';
+import tools_ru from '../locales/tools-ru.json';
+import tools_pt from '../locales/tools-pt.json';
+import tools_ko from '../locales/tools-ko.json';
 import base_zh from '../locales/zh.json';
 import base_ja from '../locales/ja.json';
 import base_de from '../locales/de.json';
@@ -18,8 +26,9 @@ import base_ko from '../locales/ko.json';
 export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'}] as const;
 export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
-const english:Record<string,string>={...baseEnglish,...tune_en};
-const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh},{...base_ja,...tune_ja},{...base_de,...tune_de},{...base_es,...tune_es},{...base_ru,...tune_ru},{...base_pt,...tune_pt},{...base_ko,...tune_ko}] as Record<string,string>[];
+/* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en};
+const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh,...tools_zh},{...base_ja,...tune_ja,...tools_ja},{...base_de,...tune_de,...tools_de},{...base_es,...tune_es,...tools_es},{...base_ru,...tune_ru,...tools_ru},{...base_pt,...tune_pt,...tools_pt},{...base_ko,...tune_ko,...tools_ko}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);

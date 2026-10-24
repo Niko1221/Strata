@@ -136,9 +136,16 @@ def _print_check(report: dict) -> None:
     offered = (eng["offered"] or {}).get("version")
     text = {"available": f"update available: {installed} -> {offered} ({_mib(eng['download_bytes'])})",
             "install": f"no engine installed yet; {offered} is the one for this PC ({_mib(eng['download_bytes'])})",
-            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC",
+            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC", "wrong-make": eng.get("note") or "nothing was changed",
             "not-in-feed": "the feed lists no engines"}.get(eng["status"], eng.get("note") or eng["status"])
     print(f"  Engine   {text}")
+    pick = eng.get("offered")
+    if pick and eng["status"] in ("available", "install", "current"):
+        # round 8, N9: the list below names only the packages that were NOT chosen; say which one was
+        label = pick.get("label") or (f"{pick.get('version')} {pick.get('platform')}-{pick.get('backend')}" + (f"-{pick['variant']}" if pick.get("variant") else ""))
+        print(f"           selected for this PC: {label}")
+    if eng.get("reasons"):
+        print("           not used for this PC:")
     for reason in eng.get("reasons") or []:
         print(f"           - {reason}")
     if eng.get("note") and eng["status"] not in ("failed-before", "skipped", "current"):
@@ -169,6 +176,7 @@ def run(a) -> int:
         hardware = updater.detect_hardware()
         if a.backend:
             hardware["backend"] = a.backend
+            hardware["backend_source"] = "requested"             # the person's own decision: the make guard lets it through
         lines: list = []
         cancel = threading.Event()
         ctx = updater.Context(components=root, source="", trusted={}, hardware=hardware, emit=_emit_factory(a, lines), cancel=cancel,
@@ -235,6 +243,8 @@ def _maybe_wait(a, ctx, machine: bool) -> None:
     if not serving:
         return
     names = ", ".join(item.get("profile", "an engine") for item in serving)
+    if any(str(item.get("profile", "")).startswith("launch-") for item in serving):
+        return                                   # Strata's own launch: run_update says the one next step (stop the model first) instead of asking
     if machine or not sys.stdin.isatty():
         return                                   # run_update raises Busy (exit 7) with the same names
     answer = input(f"{names} is serving. Wait for it to stop and then update? [y/N] ").strip().lower()
