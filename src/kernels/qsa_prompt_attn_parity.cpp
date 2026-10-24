@@ -358,6 +358,7 @@ int main(int argc, char** argv) {
         _putenv_s("STRATA_HIP_WMMA", "1");
 #else
         setenv("STRATA_HIP_WMMA", "1", 1);
+        setenv("STRATA_HIP_WMMA_Q4", "1", 1);   // (NAS) the Q4_0-KV matrix-core kernel
 #endif
     }
 #endif
@@ -370,6 +371,13 @@ int main(int argc, char** argv) {
     fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
     fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
     fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
+#endif
+#if defined(__HIP_PLATFORM_AMD__)
+    if (std::getenv("STRATA_PARITY_SKIP_Q4") == nullptr) {   // (NAS) the Q4_0-KV matrix-core kernel
+        fails += run(2, ctx, nq, reps);
+        fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
+        fails += run(2, 2100, std::min<int64_t>(nq, 256), reps);
+    }
 #endif
     fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
     fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
