@@ -12,7 +12,7 @@ import threading
 import unittest
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import strata_bench as B  # noqa: E402
@@ -185,6 +185,30 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn(str(Path.home()), red(f"in {Path.home() / 'data'}"))
         if len(user) >= 4:
             self.assertNotIn(user, red(f"hello {user} world"))
+
+    def test_a_folder_under_a_short_home_keeps_its_own_placeholder(self):
+        # issue #3326 with a fixed machine (user name "dgbox", the repository directly under the home folder):
+        # a name is wrapped in word bounds, which makes its pattern longer than the pattern of the folder
+        # holding it, so the name won and the report kept the folder layout instead of <strata> and <home>.
+        def red(root, home, user, host, tmp):
+            with mock.patch.object(B, "ROOT", root), mock.patch.object(B.Path, "home", return_value=home), \
+                 mock.patch.object(B.getpass, "getuser", return_value=user), \
+                 mock.patch.object(B.socket, "gethostname", return_value=host), \
+                 mock.patch.object(B.platform, "node", return_value=host), \
+                 mock.patch.object(B.tempfile, "gettempdir", return_value=tmp):
+                return B.redactor()
+
+        linux = red(PurePosixPath("/home/dgbox/Strata"), PurePosixPath("/home/dgbox"), "dgbox", "dgbox-ubuntu-server", "/tmp")
+        self.assertEqual(linux("loading /home/dgbox/Strata/strata-x.json"), "loading <strata>/strata-x.json")
+        self.assertEqual(linux("dgbox-ubuntu-server wrote /home/dgbox/Strata/bench/results/run/results.json"),
+                         "<host> wrote <strata>/bench/results/run/results.json")
+        self.assertEqual(linux("in /home/dgbox/data"), "in <home>/data")
+        self.assertEqual(linux("hello dgbox world"), "hello <user> world")
+        self.assertEqual(linux("log /tmp/strata.log"), "log <tmp>/strata.log")
+        win = red(PureWindowsPath(r"C:\Users\dgbox\Strata"), PureWindowsPath(r"C:\Users\dgbox"), "dgbox", "dgbox-pc",
+                  r"C:\Users\dgbox\AppData\Local\Temp")
+        self.assertEqual(win(r"in C:\Users\dgbox\data"), r"in <home>\data")
+        self.assertEqual(win(r"loading C:\Users\dgbox\Strata\strata-x.json"), r"loading <strata>\strata-x.json")
 
     def test_objects_are_redacted_deeply(self):
         red = B.redactor()

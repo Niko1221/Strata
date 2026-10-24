@@ -68,14 +68,14 @@ BURST_MAX_TOKENS = 128
 def redactor(extra: list[str] = (), key: str = ""):
     """-> f(text) -> text with this machine's home folders, user and host names, the Strata folder, IP addresses and the
     API key replaced.  Applied to everything that is written or printed from the server's or the machine's own text."""
-    subs: list[tuple[re.Pattern, str]] = []
+    subs: list[tuple[re.Pattern, str, int]] = []
 
     def add(value, label, word=False):
         if value and len(str(value)) >= 4:
             v = str(value)
             for form in sorted({v, v.replace("\\", "/"), v.replace("/", "\\")}, key=len, reverse=True):
                 pat = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label))
+                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label, len(form)))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -89,7 +89,7 @@ def redactor(extra: list[str] = (), key: str = ""):
     for x in extra:
         add(x, "<private>", True)
     add(key, "<key>")
-    subs.sort(key=lambda p: -len(p[0].pattern))
+    subs.sort(key=lambda s: -s[2])      # by the text that is replaced: the word wrappers would make a short user name outrank the folder holding it
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     ip4 = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|169\.254)\.\d{1,3}\.\d{1,3}\b")
     bearer = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
@@ -97,7 +97,7 @@ def redactor(extra: list[str] = (), key: str = ""):
     def f(text):
         if not isinstance(text, str):
             return text
-        for pat, label in subs:
+        for pat, label, _ in subs:
             text = pat.sub(label, text)
         text = path_user.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}{m.group(3)}{m.group(4)}<user>", text)
         text = bearer.sub(r"\1<key>", text)
