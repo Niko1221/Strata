@@ -1,0 +1,8 @@
+{
+  "app_executable": "C:/Program Files/Strata/strata-desktop.exe",
+  "extension_root": "C:/Strata/extensions/strata-local-models",
+  "owner_directory": "C:/Strata/tray.state",
+  "base_url": "http://127.0.0.1:8080/v1",
+  "api_key_env": "STRATA_API_KEY",
+  "model_labels": {}
+}

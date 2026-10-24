@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <title>Current Model · Local Model Extension</title>
+  <link rel="stylesheet" href="./panel.css">
+  <script type="module" src="./panel.mjs"></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div><p class="eyebrow">Your Local Model Extension</p><h1>Current Model</h1><p class="intro">Your Shared Local Model, In One Place.</p></div>
+      <span class="badge" id="connection" role="status">Checking Connection</span>
+    </header>
+    <section class="card identity" aria-labelledby="model-name">
+      <div class="identity-heading"><div><span class="eyebrow" id="api-label">Local API</span><h2 id="model-name">Checking Model…</h2><p id="model-variant" class="muted">Variant Unconfirmed</p></div><span class="model-mark" aria-hidden="true">↗</span></div>
+      <p class="model-state" id="model-state" role="status">Connection Unavailable</p>
+      <div class="facts"><div><span>Effective Context</span><strong id="context-fact">Unconfirmed</strong></div><div><span>Auto Unload</span><strong id="idle-fact">Unconfirmed</strong></div></div>
+      <div class="actions"><button id="connect" class="primary" disabled>Use In Chat <span aria-hidden="true">↗</span></button><button id="load" disabled>Preload Model</button><button id="unload" disabled>Unload Model</button></div>
+      <p class="hint" id="control-hint">Waiting For Confirmed Model State.</p>
+    </section>
+    <div class="settings-grid">
+      <section class="card" aria-labelledby="context-heading">
+        <div class="section-heading"><div><h2 id="context-heading">Conversation Context</h2><p>Options From Your Model Catalog.</p></div></div>
+        <select id="context-choice" class="context-select" aria-labelledby="context-heading" disabled><option value="">Checking Context Choices…</option></select>
+        <p class="hint">Larger Options Are Not A Memory Fit Guarantee.</p>
+        <dl class="setting-state"><div><dt>Selected</dt><dd id="context-selected">Unconfirmed</dd></div><div><dt>Effective</dt><dd id="context-effective">Unconfirmed</dd></div></dl>
+        <p class="hint" id="context-pending">Waiting For Saved Settings.</p>
+      </section>
+      <section class="card" aria-labelledby="idle-heading">
+        <div class="section-heading"><div><h2 id="idle-heading">Auto Unload</h2><p>Free Memory Between Conversations.</p></div></div>
+        <div class="choices" role="group" aria-label="Auto Unload Time">
+          <button data-idle="0" aria-label="Never" aria-pressed="false" disabled><strong>∞</strong><span>Never</span></button>
+          <button data-idle="300" aria-label="5 Minutes" aria-pressed="false" disabled><strong>5</strong><span>Minutes</span></button>
+          <button data-idle="600" aria-label="10 Minutes" aria-pressed="false" disabled><strong>10</strong><span>Minutes</span></button>
+          <button data-idle="1800" aria-label="30 Minutes" aria-pressed="false" disabled><strong>30</strong><span>Minutes</span></button>
+        </div>
+        <dl class="setting-state"><div><dt>Selected</dt><dd id="idle-selected">Unconfirmed</dd></div><div><dt>Effective</dt><dd id="idle-effective">Unconfirmed</dd></div></dl>
+        <p class="hint" id="idle-pending">Waiting For Saved Settings.</p>
+      </section>
+    </div>
+    <p id="notice" class="message" role="status" aria-live="polite" hidden></p>
+    <p id="error" class="message error" role="alert" hidden></p>
+    <details class="card details"><summary>API And Owner State</summary><dl>
+      <div><dt>Extension</dt><dd id="extension-state">Unconfirmed</dd></div>
+      <div><dt>Compatibility</dt><dd id="compatibility">Unconfirmed</dd></div>
+      <div><dt>Model API</dt><dd id="api-url">Unconfirmed</dd></div>
+      <div><dt>Model ID</dt><dd id="model-id">Unconfirmed</dd></div>
+      <div><dt>Active Requests</dt><dd id="active-requests">Unconfirmed</dd></div>
+      <div><dt>In Flight</dt><dd id="in-flight">Unconfirmed</dd></div>
+    </dl></details>
+    <footer><span>Settings Stay With Your Shared Model.</span><button id="refresh">Refresh Status</button><button id="close">Close</button></footer>
+  </main>
+</body>
+</html>
