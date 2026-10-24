@@ -766,7 +766,8 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   choice, the default kernel for every shape without a row. Solution indices are valid for one architecture and one
   rocBLAS build (the full version string, `5.6.0.8d1ae90e` for ROCm 10.0.0's), and the engine refuses any other
   table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured
-  on an RX 6900 XT. Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
+  on an RX 6900 XT, and `gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt` (Arch Linux's ROCm 7.2.4 packages; prompts below
+  1,152 tokens 12-18% faster on an RX 6900 XT, `bench/results/2026-10-24-rdna2-rocblas-table-rocm72`). Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
   indices are valid on every gfx1030 - but have fewer CUs or other clocks, so their own table may pick differently;
   `tune_rocblas` makes one in about 5 minutes ([Tuning table](#tuning-table)), and a report of what it changed is welcome. Setup
   points the engine at the directory when a table for the card's architecture exists, and the engine's log says
