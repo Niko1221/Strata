@@ -254,6 +254,110 @@ int main() {
         check(s.tokens == (int64_t) history.size() - 2, "SUB resumes from its last turn boundary");
     }
     {
+        // holds(): what an idle batch slot holds is parked already (or a continuation of it is)
+        auto s = image({1, 2, 3, 4, 5});
+        ConversationCheckpoint cp;
+        cp.ids = {1, 2, 3};
+        s.checkpoints.push_back(cp);
+        ConversationCache cache(4096, 4);
+        cache.put(std::move(s));
+        check(cache.holds(std::vector<int32_t>{1, 2, 3, 4, 5}, {}, true), "the parked live state itself");
+        check(cache.holds(std::vector<int32_t>{1, 2, 3, 4}, {}, true), "a prefix of the parked live state");
+        check(cache.holds(std::vector<int32_t>{1, 2}, {}, true), "a prefix of a parked checkpoint");
+        check(!cache.holds(std::vector<int32_t>{1, 2, 3, 4, 5, 6}, {}, true), "a longer state is not held");
+        check(!cache.holds(std::vector<int32_t>{1, 2, 9}, {}, true), "a diverging state is not held");
+        check(!cache.holds(std::vector<int32_t>{}, {}, true), "an empty state is never held");
+        check(!cache.holds(std::vector<int32_t>{1, 2, 3}, {}, false), "steering mode is isolated");
+        check(!cache.holds(std::vector<int32_t>{1, 2, 3}, {{1, 77}}, true), "a slot with pictures is not held by a text image");
+        auto p = image({1, 2, 3, 4});
+        p.live.imgs = {{1, 77}, {3, 78}};
+        cache.put(std::move(p));
+        check(cache.holds(std::vector<int32_t>{1, 2, 3}, {{1, 77}}, true), "pictures below the state must match");
+        check(!cache.holds(std::vector<int32_t>{1, 2, 3, 4}, {{1, 77}}, true), "a picture inside the state that the slot lacks");
+    }
+    {
+        // The 2026-10-14 four-conversation measurement replayed at policy level: two batch slots, four parked
+        // entries, conversations A..D.  Each has a prompt P (8 tokens; the read's periodic checkpoint at 4), a first
+        // reply R1 (3 tokens; the slot holds P + 2 of them), the next turn as the client renders it (P + R1 + end +
+        // header: 14 tokens, the read's turn checkpoint at 12), a second reply R2 (4 tokens; the slot holds 17) and
+        // a third turn (21 tokens).  The engine parks the MAIN session (the prompt as read, plus the admission's
+        // token) whenever another conversation displaces it; the replies are decoded in the slots.  Measured:
+        // A's third turn found 199584 of 199839 held tokens (its prompt-read state), B found nothing.
+        //   slot_parks:   an idle slot parks what it holds before an admission overwrites it
+        //   checks_back:  a slot that gives "all it holds" back to the main session gives its checkpoints with it,
+        //                 so the chain still supersedes (#342) the parked copies a turn back
+        auto replay = [&](bool slot_parks, bool checks_back) {
+            std::vector<std::vector<int32_t>> full(4);
+            for (int c = 0; c < 4; ++c) {
+                for (int32_t t = 1; t <= 8; ++t) full[(size_t) c].push_back(c * 100 + t);
+                for (int32_t t : {21, 22, 23, 9, 31, 32, 41, 42, 43, 44, 9, 51, 52}) full[(size_t) c].push_back(c * 100 + t);
+            }
+            auto st = [&](int c, size_t n) { return std::vector<int32_t>(full[(size_t) c].begin(), full[(size_t) c].begin() + (std::ptrdiff_t) n); };
+            auto cp = [&](int c, size_t n) { ConversationCheckpoint k; k.ids = st(c, n); return k; };
+            auto park = [&](ConversationCache& cache, int c, size_t n, const std::vector<size_t>& cks) {
+                SavedConversation s = image({});
+                s.live.ids = st(c, n);
+                for (size_t k : cks) s.checkpoints.push_back(cp(c, k));
+                check(cache.put(std::move(s)), "the replay's parks all fit the budget");
+            };
+            auto restore = [&](ConversationCache& cache, int c, size_t prompt) -> int64_t {
+                const auto m = cache.best(st(c, prompt), {}, true);
+                if (m.tokens > 0) cache.take(m.index);
+                return m.tokens;
+            };
+            // the main chain after a slot gave "all it holds" back: its checkpoints, or none
+            auto back = [&](const std::vector<size_t>& slot_cks) { return checks_back ? slot_cks : std::vector<size_t>{}; };
+            auto slot_park = [&](ConversationCache& cache, int c, size_t n, const std::vector<size_t>& cks) {
+                if (slot_parks && !cache.holds(st(c, n), {}, true)) park(cache, c, n, cks);
+            };
+            enum { A, B, C, D };
+            ConversationCache cache(1 << 20, 4);
+            // initial-AB: B solo then admitted (its prompt + the first token parked when A's request came), A
+            // admitted directly, then alone: solo again from its slot (A's prompt-read state parked first)
+            park(cache, B, 9, {4});
+            park(cache, A, 8, {4});
+            std::vector<size_t> chain_a = back({4});           // slot 1 gave back A's 10 tokens
+            // resident1-AB: B's request displaces A's solo state; B's slot gives back 10; B admitted with the turn
+            // checkpoint; A's request restores A's solo state from RAM and is admitted beside B
+            park(cache, A, 12, chain_a);
+            std::vector<size_t> chain_b = back({4});
+            chain_b.push_back(12);
+            // (a request takes its parked conversation before it parks the one it displaces)
+            check(restore(cache, A, 14) == 12, "A's second turn resumes from its parked solo state");
+            park(cache, B, 15, chain_b);
+            chain_a.push_back(12);
+            // both decode: slot 0 holds B's 17, slot 1 holds A's 17
+            // initial-CD: C's request displaces A's main state; D admitted into slot 0 (B's reply), C into slot 1
+            park(cache, A, 14, chain_a);
+            slot_park(cache, B, 17, {12});
+            park(cache, D, 9, {4});
+            slot_park(cache, A, 17, {12});
+            park(cache, C, 8, {4});                              // C alone: solo again from its slot
+            std::vector<size_t> chain_c = back({4});
+            // resident1-CD: C continues from the main session (no park), D's request displaces it (slot 1 held C's
+            // own earlier state: covered, no slot park), D's slot gives back 10 (covered as well)
+            chain_c.push_back(12);
+            park(cache, C, 15, chain_c);
+            std::vector<size_t> chain_d = back({4});
+            chain_d.push_back(12);
+            // both decode: slot 0 holds D's 17, slot 1 holds C's 17
+            // exchange1-AB: A's request takes A's parked state, displaces D's main state, is admitted into slot 1
+            // (C's reply); B's request displaces A's state
+            const int64_t a_found = restore(cache, A, 21);
+            park(cache, D, 14, chain_d);
+            slot_park(cache, C, 17, {12});
+            park(cache, A, 22, {12, 20});
+            const int64_t b_found = restore(cache, B, 21);
+            return std::pair<int64_t, int64_t>(a_found, b_found);
+        };
+        const auto baseline = replay(false, false);
+        check(baseline.first == 14 && baseline.second == 0, "baseline: A returns to its prompt-read state, B to nothing (as measured)");
+        const auto parks_only = replay(true, false);
+        check(parks_only.first == 17 && parks_only.second == 0, "slot parks alone: A whole, B's copy evicted by a stale initial image");
+        const auto both = replay(true, true);
+        check(both.first == 17 && both.second == 17, "slot parks + checkpoints back: both return whole");
+    }
+    {
         // what is NOT superseded: another conversation sharing only the root, an entry without checkpoints, the
         // other steering mode, a branch whose deepest checkpoint the new chain does not hold
         auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
