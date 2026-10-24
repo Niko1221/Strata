@@ -13,7 +13,7 @@ import { USER_KEY, capture as captureUserArgs, merge as mergeUserArgs, setFlag a
 import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
 import { runtimeVision } from './native-vision.mjs';
-import { componentsDirectory, installerEnvironment, controlEnvironment } from './control-runtime.mjs';
+import { componentsDirectory, installerEnvironment, controlEnvironment, startWaitSeconds } from './control-runtime.mjs';
 import { createEngineStep } from './engine-step.mjs';
 import { dataFolderFromPick, isDriveRoot, makeFolder, rememberDataFolder, syncDataFolder, terminalSettingsFile } from './model-folder.mjs';
 import { createAutoTune, writeTuneConfig } from './native-autotune.mjs';
@@ -286,7 +286,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:300}));};
+   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWaitSeconds(300)}));};
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;

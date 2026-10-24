@@ -139,6 +139,12 @@ PC); `STRATA_READ_AHEAD=0` turns that off. On Linux with transparent huge pages 
 for `MADV_HUGEPAGE` on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_ARENA_THP=1` skips
 that request on any setting.
 
+**The app or `strata launch` says `startup_wait_expired` while the model is still loading.**
+The app waits 300 s for a model to start and `strata launch` 600 s. On a slow drive a big model needs longer. Set
+`STRATA_ENGINE_READY_S` to the number of seconds to wait (for example `STRATA_ENGINE_READY_S=1800`) before starting the
+app or the Terminal. The server's own engine wait (900 s) reads the same variable. A value of 600 or less changes only
+how long it waits; a larger one also lifts the 600 s limit on a start wait. Without it nothing changes.
+
 **Setup says the engine does not match GitHub's checksum.**
 Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
 

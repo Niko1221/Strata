@@ -1308,5 +1308,39 @@ class RuntimeTests(unittest.TestCase):
             os.close(exclusive)
 
 
+class StartWaitVariableTests(unittest.TestCase):
+    """STRATA_ENGINE_READY_S sets how long a model start is waited for; without it the old waits and the 600 s cap stay."""
+
+    def _env(self, value=None):
+        env = {k: v for k, v in os.environ.items() if k != "STRATA_ENGINE_READY_S"}
+        if value is not None:
+            env["STRATA_ENGINE_READY_S"] = value
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_unset_keeps_the_defaults_and_the_cap(self):
+        with self._env():
+            self.assertEqual(runtime.ready_wait(600), 600)
+            self.assertEqual(runtime.ready_wait(300), 300)
+            self.assertEqual(runtime.start_wait_max(), 600)
+            with self.assertRaisesRegex(runtime.ProfileError, "start wait must be 0..600"):
+                runtime.start("app-1", wait=601)
+
+    def test_variable_sets_the_wait_and_raises_the_cap(self):
+        with self._env("1800"):
+            self.assertEqual(runtime.ready_wait(600), 1800)
+            self.assertEqual(runtime.start_wait_max(), 1800)
+
+    def test_a_smaller_value_never_lowers_the_cap(self):
+        with self._env("120"):
+            self.assertEqual(runtime.ready_wait(600), 120)
+            self.assertEqual(runtime.start_wait_max(), 600)
+
+    def test_unusable_values_fall_back_to_the_default(self):
+        for value in ("", "0", "-5", "abc", "nan", "inf"):
+            with self.subTest(value=value), self._env(value):
+                self.assertEqual(runtime.ready_wait(600), 600)
+                self.assertEqual(runtime.start_wait_max(), 600)
+
+
 if __name__ == "__main__":
     unittest.main()

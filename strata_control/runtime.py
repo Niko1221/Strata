@@ -40,7 +40,25 @@ except ImportError:  # Windows has no qualified owner transport yet.
 
 from strata_control import owner_transport, paths, posix_owner, private_files, procs, profiles, readiness, winproc
 from serve import launch_identity
+
 from strata_control.profiles import ProfileError
+
+START_WAIT_MAX = 600.0
+
+
+def ready_wait(default: float) -> float:
+    """How long to wait for a model to start: ``STRATA_ENGINE_READY_S`` seconds when it is set to a positive number
+    (the same variable the server's own engine wait reads), else ``default``."""
+    try:
+        value = float(os.environ.get("STRATA_ENGINE_READY_S") or 0)
+    except ValueError:
+        return default
+    return value if 0 < value < float("inf") else default
+
+
+def start_wait_max() -> float:
+    """The longest start wait accepted: 600 s, or the ``STRATA_ENGINE_READY_S`` wait when that asks for more."""
+    return max(START_WAIT_MAX, ready_wait(0))
 
 
 MAX_MESSAGE = 64 * 1024
@@ -535,8 +553,8 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
         if token is None:
             raise ProfileError("the process to follow with --die-with-pid is not running")
         die_with = (die_with_pid, token)
-    if not 0 <= wait <= 600 or not 0 <= shutdown_timeout <= 300:
-        raise ProfileError("start wait must be 0..600 and shutdown timeout 0..300 seconds")
+    if not 0 <= wait <= start_wait_max() or not 0 <= shutdown_timeout <= 300:
+        raise ProfileError(f"start wait must be 0..{start_wait_max():.0f} and shutdown timeout 0..300 seconds")
     if expected_profile_revision is not None and (not isinstance(expected_profile_revision, str) or
             not re.fullmatch(r"[0-9a-f]{16}", expected_profile_revision)):
         raise ProfileError("expected profile revision must be 16 lowercase hex characters")
@@ -1368,7 +1386,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--die-with-pid", type=int)
     parser.add_argument("--die-with-token")
     args = parser.parse_args(argv)
-    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= 600:
+    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= start_wait_max():
         parser.error("shutdown timeout must be 0..300")
     if args.expected_profile_revision is not None and not re.fullmatch(r"[0-9a-f]{16}", args.expected_profile_revision):
         parser.error("expected profile revision must be 16 lowercase hex characters")

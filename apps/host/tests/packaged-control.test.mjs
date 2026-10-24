@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
-import { bundledPython, componentsDirectory, controlEnvironment, createControl, findControl, runCli } from '../server/control-runtime.mjs';
+import { bundledPython, componentsDirectory, controlEnvironment, createControl, findControl, runCli, startWaitSeconds } from '../server/control-runtime.mjs';
 import { resolvePython } from '../server/python-resolver.mjs';
 import { createNativeControl } from '../server/native-control.mjs';
 
@@ -549,4 +549,20 @@ test("onboarding 'use your own GGUF' (#3507, #3424): the models folder the perso
     // a folder of GGUF files named like a data folder's models/<tag> hands its Strata folder to the installer
     assert.ok(sent.data_dir === undefined || sent.data_dir === join(f.root, 'Strata-data'), `data_dir was ${sent.data_dir}`);
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('STRATA_ENGINE_READY_S sets the start wait; without it the fallback stays', () => {
+  const saved = process.env.STRATA_ENGINE_READY_S;
+  try {
+    delete process.env.STRATA_ENGINE_READY_S;
+    assert.equal(startWaitSeconds(300), 300);
+    process.env.STRATA_ENGINE_READY_S = '1800';
+    assert.equal(startWaitSeconds(300), 1800);
+    for (const bad of ['', '0', '-5', 'abc', 'Infinity']) {
+      process.env.STRATA_ENGINE_READY_S = bad;
+      assert.equal(startWaitSeconds(300), 300, `value ${JSON.stringify(bad)}`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.STRATA_ENGINE_READY_S; else process.env.STRATA_ENGINE_READY_S = saved;
+  }
 });

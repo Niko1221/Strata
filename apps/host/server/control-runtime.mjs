@@ -19,6 +19,14 @@ import { homedir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+
+/** How long to wait for a model to start: STRATA_ENGINE_READY_S seconds when it is set to a positive number (the variable
+ *  the server's own engine wait reads), else `fallback`. */
+export function startWaitSeconds(fallback) {
+  const value = Number(process.env.STRATA_ENGINE_READY_S);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export function bundledPython(dir, platform = process.platform) {
   return platform === 'win32' ? join(dir, 'python', 'python.exe') : join(dir, 'python', 'bin', 'python3');
 }
@@ -271,7 +279,7 @@ export function createControl({ control = findControl(), env = process.env, run 
     },
     // The app owns the engines it starts: `--die-with-pid` makes the owner stop its engine (drained) when this host is
     // gone, however the host ended (a crash, a kill, the shell's death). A Terminal's `runtime start` has no such tie.
-    async start(name, { waitSeconds = 300, dieWithPid = process.pid, drainSeconds = 15 } = {}) {
+    async start(name, { waitSeconds = startWaitSeconds(300), dieWithPid = process.pid, drainSeconds = 15 } = {}) {
       const result = await call(['runtime', 'start', '--profile', name, '--wait', String(waitSeconds), '--shutdown-timeout', String(drainSeconds), ...(dieWithPid ? ['--die-with-pid', String(dieWithPid)] : []), '--output', 'json'], { timeoutMs: (waitSeconds + 60) * 1000 });
       if (result.code !== 0 || !result.json?.ok) throw failure(result, 'The engine did not start.');
       return result.json;
