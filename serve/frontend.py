@@ -924,12 +924,12 @@ def coerce_param(value: str, declared) -> object:
 def coerce_args(args: dict, schema: dict | None) -> dict:
     """A call's arguments by the tool's declared parameter types - the one place every ToolCall passes through (the JSON
     form, the whole-call parser).  A value that is not a string (a JSON call already carrying a number or boolean) is
-    left alone; a string is coerced by its declared type (coerce_param); an undeclared parameter stays as it is."""
+    left alone; a string is coerced by its declared type (coerce_param); an undeclared parameter is JSON-decoded."""
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     out = {}
     for k, v in args.items():
         declared = (props.get(k) or {}).get("type")
-        out[k] = coerce_param(v, declared) if isinstance(v, str) and declared is not None else v
+        out[k] = coerce_param(v, declared) if isinstance(v, str) else v
     return out
 
 
