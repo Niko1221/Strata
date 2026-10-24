@@ -963,18 +963,25 @@ print(r.choices[0].message.content)
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
-  measured over its last 2,000 words and punctuation marks (counting passages over the last 30,000 words), and its
-  last 2,048 characters are checked for a period of at most 64 characters (#1753: a loop written as one long word,
-  such as a 24k-digit string cycling an 11-digit pattern, is a single word to the count and never repeats one
-  token); a periodic tail counts as fully repeated. If at
-  least 25% belong to 12-word passages seen three times, `"stop"` ends the reply there as `"length"` and says so in
+  measured three ways: the coverage of its last 2,000 words and punctuation marks by 12-word passages seen three
+  times (counting passages over the last 30,000 words), a period of at most 64 characters in its last 2,048
+  characters (#1753: a loop written as one long word, such as a 24k-digit string cycling an 11-digit pattern, is a
+  single word to the count and never repeats one token; a periodic tail counts as fully repeated), and the run of
+  identical sentences at its end (a production loop repeated one ~20-word sentence 15 times and stayed at ~15%
+  coverage, under the line, while burning over a thousand tokens; sentences shorter than 8 words and 40 characters
+  never count, so repeated code and short lines cannot trigger it). If the coverage reaches 25%, the tail is
+  periodic, or the same sentence ran 5 times in a row, `"stop"` ends the reply there as `"length"` and says so in
   the server window. `"recover"` stops and drains that generation, then goes on once from all its generated token
-  ids with the template's low-effort sentence in place of the xhigh one in the first system message (a splice of
-  token ids: the rest of the prompt is not decoded or re-encoded). The task stays the same; no answer or `</think>`
+  ids with the template's low-effort sentence in place of the xhigh or medium one in the first system message (a splice of
+  token ids: the rest of the prompt is not decoded or re-encoded). When the prompt carries no effort sentence to
+  swap (a low-effort run, or a client that sends none at all), the resume goes on from the same ids with the
+  sampling raise alone; a prompt without a system message was never a native-effort run and is left without
+  recovery, as before. The task stays the same; no answer or `</think>`
   is inserted, and both passes share the original output limit. On recovery only, temperature is raised to at least
   1.0 and presence penalty to at least 1.5; a client's top-p, top-k and seed are never changed. `/metrics` records
   `reasoning_recoveries` and the coverage. This is a policy, not a numerical engine fix or a guarantee of an answer.
-  `"recover"` needs the exact xhigh sentence in the first system message and skips requests with images; re-reading
+  the splice needs the exact xhigh or medium sentence in the first system message (without it the resume is the
+  sampling raise alone) and `"recover"` skips requests with images; re-reading
   the changed prefix costs prompt time. Either mode can mistake repeated useful code or checks for a loop, so keep
   the recorded answer quality alongside the completion rate when testing it.
 - **Changing the effort without re-reading the prompt (opt-in, 0.1.39, #458).** The effort's instruction is the
