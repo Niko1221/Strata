@@ -1,0 +1,14 @@
+# journalctl -k, 2026-10-21 18:45 to 20:05 (PDT), on the benchmark PC. Only page allocation failures and stalls, swap write errors,
+# NVIDIA driver (NVRM) lines and bcachefs data read errors are kept (a bcachefs error is joined with its outcome line). Host name and
+# paths replaced. The journal joined the end of the kernel's memory report with the first NVRM line of each event.
+# 253:0 is /dev/zram0, the compressed-RAM swap device (priority 100); the PC's second swap is an NVMe partition (priority -1).
+Oct 21 19:04:13 <HOST> kernel: strata: page allocation failure: order:0, mode:0x40920(GFP_ATOMIC|__GFP_ZERO|__GFP_COMP), nodemask=(null),cpuset=user.slice,mems_allowed=0-1
+Oct 21 19:04:13 <HOST> kernel: Memory cgroup min protection 0kB -- low protection 73400320kBNVRM: 0000:01:00.0: Failed to create a DMA mapping!
+Oct 21 19:04:13 <HOST> kernel: NVRM: GPU0 osIovaMap: osIovaMap: failed to map allocation (status = 0x59)
+Oct 21 19:04:13 <HOST> kernel: NVRM: GPU0 _iovaspaceCreateMapping: failed to map memdesc into I/O VA space 0x100 (status = 0x59)
+Oct 21 19:04:13 <HOST> kernel: NVRM: GPU0 nvAssertFailedNoLog: Assertion failed: status == NV_OK @ mem_desc.c:4326
+Oct 21 19:58:48 <HOST> kernel: strata: page allocation failure: order:0, mode:0x40920(GFP_ATOMIC|__GFP_ZERO|__GFP_COMP), nodemask=(null),cpuset=user.slice,mems_allowed=0-1
+Oct 21 19:58:48 <HOST> kernel: Memory cgroup min protection 0kB -- low protection 73400320kBNVRM: 0000:01:00.0: Failed to create a DMA mapping!
+Oct 21 19:58:48 <HOST> kernel: NVRM: GPU0 osIovaMap: osIovaMap: failed to map allocation (status = 0x59)
+Oct 21 19:58:48 <HOST> kernel: NVRM: GPU0 _iovaspaceCreateMapping: failed to map memdesc into I/O VA space 0x100 (status = 0x59)
+Oct 21 19:58:48 <HOST> kernel: NVRM: GPU0 nvAssertFailedNoLog: Assertion failed: status == NV_OK @ mem_desc.c:4326

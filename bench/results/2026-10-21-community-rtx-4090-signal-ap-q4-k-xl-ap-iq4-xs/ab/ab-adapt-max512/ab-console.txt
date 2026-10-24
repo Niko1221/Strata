@@ -1,0 +1,47 @@
+round 0 default: ready in 81 s
+  chat0  decode 74.6 tok/s  prompt 84.7 tok/s (34)  n 512
+  chat1  decode 66.6 tok/s  prompt 77.7 tok/s (27)  n 273
+  chat2  decode 68.7 tok/s  prompt 86.2 tok/s (29)  n 205
+  long   decode 62.7 tok/s  prompt 1561.8 tok/s (6345)  n 157
+round 0 adapt: ready in 82 s
+  chat0  decode 59.9 tok/s  prompt 85.2 tok/s (34)  n 419
+  chat1  decode 56.8 tok/s  prompt 62.8 tok/s (27)  n 273
+  chat2  decode 60.5 tok/s  prompt 75.5 tok/s (29)  n 204
+  long   decode 57.0 tok/s  prompt 1527.0 tok/s (6345)  n 157
+round 1 adapt: ready in 66 s
+  chat0  decode 59.6 tok/s  prompt 92.4 tok/s (34)  n 419
+  chat1  decode 56.6 tok/s  prompt 66.0 tok/s (27)  n 273
+  chat2  decode 63.5 tok/s  prompt 77.5 tok/s (29)  n 204
+  long   decode 59.7 tok/s  prompt 1541.1 tok/s (6345)  n 157
+round 1 default: ready in 81 s
+  chat0  decode 74.0 tok/s  prompt 82.7 tok/s (34)  n 512
+  chat1  decode 64.1 tok/s  prompt 74.0 tok/s (27)  n 273
+  chat2  decode 68.9 tok/s  prompt 82.0 tok/s (29)  n 205
+  long   decode 63.2 tok/s  prompt 1565.1 tok/s (6345)  n 157
+round 2 default: ready in 78 s
+  chat0  decode 73.8 tok/s  prompt 88.8 tok/s (34)  n 512
+  chat1  decode 64.5 tok/s  prompt 76.7 tok/s (27)  n 265
+  chat2  decode 68.4 tok/s  prompt 82.0 tok/s (29)  n 204
+  long   decode 64.7 tok/s  prompt 1557.7 tok/s (6345)  n 147
+round 2 adapt: ready in 79 s
+  chat0  decode 63.6 tok/s  prompt 93.0 tok/s (34)  n 419
+  chat1  decode 58.6 tok/s  prompt 68.8 tok/s (27)  n 273
+  chat2  decode 62.7 tok/s  prompt 79.0 tok/s (29)  n 204
+  long   decode 61.0 tok/s  prompt 1549.0 tok/s (6345)  n 157
+round 3 adapt: ready in 82 s
+  chat0  decode 60.6 tok/s  prompt 93.3 tok/s (34)  n 419
+  chat1  decode 58.0 tok/s  prompt 64.1 tok/s (27)  n 273
+  chat2  decode 58.2 tok/s  prompt 70.4 tok/s (29)  n 204
+  long   decode 58.2 tok/s  prompt 1536.4 tok/s (6345)  n 157
+round 3 default: ready in 78 s
+  chat0  decode 73.3 tok/s  prompt 76.1 tok/s (34)  n 512
+  chat1  decode 59.7 tok/s  prompt 76.5 tok/s (27)  n 265
+  chat2  decode 63.3 tok/s  prompt 77.0 tok/s (29)  n 204
+  long   decode 63.9 tok/s  prompt 1543.6 tok/s (6345)  n 147
+
+medians over rounds:
+  chat0  | default: decode   73.9  prompt    83.7 | adapt: decode   60.2  prompt    92.7
+  chat1  | default: decode   64.3  prompt    76.6 | adapt: decode   57.4  prompt    65.0
+  chat2  | default: decode   68.6  prompt    82.0 | adapt: decode   61.6  prompt    76.5
+  long   | default: decode   63.5  prompt  1559.8 | adapt: decode   59.0  prompt  1538.8
+exit=0

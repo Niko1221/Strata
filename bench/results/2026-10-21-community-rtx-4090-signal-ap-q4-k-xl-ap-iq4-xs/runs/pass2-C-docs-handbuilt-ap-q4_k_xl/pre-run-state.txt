@@ -1,0 +1,23 @@
+label: pass2-C-docs-handbuilt-ap-q4_k_xl
+start: 2026-10-21T19:00:29-07:00
+config: <BENCH>/configs/docs-handbuilt.json
+git HEAD: 04443aeb79b5563f7b617338e3aab4555c042d9a  engine: {"source":"local","version":"0.1.46.3","archs":[89],"vision":"gpu","cuda_dirs":["/opt/cuda/bin","/opt/cuda/lib64"],"src":"c87773ed5df25479","vision_src":"41b0903f5d532e38"}
+--- gpu
+name, driver_version, memory.used [MiB], memory.total [MiB], clocks.current.sm [MHz], clocks.max.sm [MHz], power.draw [W], power.limit [W], temperature.gpu, utilization.gpu [%]
+NVIDIA GeForce RTX 4090, 615.78.08, 178 MiB, 24564 MiB, 2535 MHz, 3120 MHz, 73.57 W, 600.00 W, 48, 0 %
+--- llama-swap /running: {"running":[]}
+--- memory
+               total        used        free      shared  buff/cache   available
+Mem:           95712        9837       62843          36       27408       85874
+--- loadavg: 5.20 6.08 3.50 1/1642 13357   governor: powersave
+--- top cpu
+    PID %CPU   RSS COMMAND
+    224  6.8     0 kcompactd0
+    241  6.7     0 kswapd0
+   4674  3.3 140016 steamwebhelper
+   3735  3.2 51264 steamwebhelper
+    918  3.0  6220 rngd
+--- config args
+<STRATA_ROOT>/engine/strata
+--pack <DATA>/packs/signal-ap-q4_k_xl --native <DATA>/models/agentionai-signal/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf --embd-gguf <DATA>/models/agentionai-signal/signal-ap-q4_k_xl-embd-bf16.gguf --expert-profile <STRATA_ROOT>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp <DATA>/mtp/rt --max-context 262144 --kv int8 --kv-resident 32768 --resident-budget-gib 67 --pcie-frac 0.35 --spec-min-p 0.70 --pool-workers 8
+{'cwd': '<STRATA_ROOT>', 'tokenizer': '<DATA>/packs/signal-ap-q4_k_xl/tokenizer', 'model_name': 'qwen3.8-flash-next-signal-ap-q4_k_xl', 'log': '<BENCH>/configs/docs-handbuilt.engine.log', 'host': '127.0.0.1', 'port': 18231, 'lib_dirs': ['/opt/cuda/bin', '/opt/cuda/lib64'], 'gpu': 0, 'gpus_asked': True}

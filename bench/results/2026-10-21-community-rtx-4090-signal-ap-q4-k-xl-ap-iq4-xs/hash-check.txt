@@ -1,0 +1,6 @@
+start: 2026-10-21T18:48:05-07:00
+bcachefs checksum counters before: nvme0n1p1=383 nvme1n1p2=376 
+Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf 427a7a10dd5a98d77c71be62a89d14e7408fc61a84c6efe889393852282cd3c6 (54 s)
+Signal-3.8-Flash-Next-AP-IQ4_XS.gguf 7fadb6b29035377204aed0d0085d3f58cc65fc7b4c3aa79f8f3f84fdfc304529 (76 s)
+bcachefs checksum counters after: nvme0n1p1=383 nvme1n1p2=376 
+end: 2026-10-21T18:50:15-07:00

@@ -1,0 +1,23 @@
+label: pass2-B-setup-ap-iq4_xs
+start: 2026-10-21T18:58:10-07:00
+config: <BENCH>/configs/setup-ap-iq4_xs.json
+git HEAD: 04443aeb79b5563f7b617338e3aab4555c042d9a  engine: {"source":"local","version":"0.1.46.3","archs":[89],"vision":"gpu","cuda_dirs":["/opt/cuda/bin","/opt/cuda/lib64"],"src":"c87773ed5df25479","vision_src":"41b0903f5d532e38"}
+--- gpu
+name, driver_version, memory.used [MiB], memory.total [MiB], clocks.current.sm [MHz], clocks.max.sm [MHz], power.draw [W], power.limit [W], temperature.gpu, utilization.gpu [%]
+NVIDIA GeForce RTX 4090, 615.78.08, 178 MiB, 24564 MiB, 2535 MHz, 3120 MHz, 84.38 W, 600.00 W, 48, 54 %
+--- llama-swap /running: {"running":[]}
+--- memory
+               total        used        free      shared  buff/cache   available
+Mem:           95712        9885       63403          26       26774       85826
+--- loadavg: 8.55 5.91 3.00 3/1643 11954   governor: powersave
+--- top cpu
+    PID %CPU   RSS COMMAND
+    224  7.4     0 kcompactd0
+    241  5.9     0 kswapd0
+    918  3.5  6304 rngd
+   4674  3.2 128476 steamwebhelper
+   3735  3.2 44540 steamwebhelper
+--- config args
+<STRATA_ROOT>/engine/strata
+--pack <MODEL_DATA>/ap-iq4xs/packs/signal-ap-iq4_xs --native <MODEL_DATA>/ap-iq4xs/models/signal-AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf --ple-gguf <MODEL_DATA>/ap-iq4xs/models/signal-AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf --embd-gguf <MODEL_DATA>/ap-iq4xs/packs/signal-ap-iq4_xs/token-embd-bf16.gguf --expert-profile <STRATA_ROOT>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <MODEL_DATA>/ap-iq4xs/mtp/rt --max-context 131072 --kv int8 --ple-io ram --kv-resident 32768 --vision --vram-reserve-mib 700
+{'cwd': '<STRATA_ROOT>', 'tokenizer': '<MODEL_DATA>/ap-iq4xs/packs/signal-ap-iq4_xs/tokenizer', 'model_name': 'signal-3.8-flash-next-ap-iq4_xs', 'log': '<BENCH>/configs/setup-ap-iq4_xs.engine.log', 'lib_dirs': ['/opt/cuda/bin', '/opt/cuda/lib64'], 'port': 18233, 'gpu': 0, 'gpus_asked': True, 'open_browser': False, 'vision': {'exe': '<STRATA_ROOT>/engine/strata-vision', 'mmproj': '<MODEL_DATA>/ap-iq4xs/models/mmproj-Signal-3.8-Flash-Next-F16.gguf', 'model': '<MODEL_DATA>/ap-iq4xs/models/signal-AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf', 'gpu': True, 'max_tokens': 1024}, 'args_written': ['--pack', '<MODEL_DATA>/ap-iq4xs/packs/signal-ap-iq4_xs', '--native', '<MODEL_DATA>/ap-iq4xs/models/signal-AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf', '--ple-gguf', '<MODEL_DATA>/ap-iq4xs/models/signal-AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf', '--embd-gguf', '<MODEL_DATA>/ap-iq4xs/packs/signal-ap-iq4_xs/token-embd-bf16.gguf', '--expert-profile', '<STRATA_ROOT>/data/expert-profile.bin', '--expert-cache', 'auto', '--prefill', 'auto', '--spec', '4', '--spec-min-p', '0.5', '--mtp', '<MODEL_DATA>/ap-iq4xs/mtp/rt', '--max-context', '131072', '--kv', 'int8', '--ple-io', 'ram', '--kv-resident', '32768', '--vision', '--vram-reserve-mib', '700']}
