@@ -2321,6 +2321,12 @@ cells so setup's 152 MiB figure stays honest); the cap comes from the free ring'
 limit. The exact-cell overlay is orthogonal to the level table: `--kv q4lm32w` turns it on for
 kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode.
 
+**Short-read note (method):** the scan limit is the reason `--prefill auto` is capped at 6,144 cells
+for a windowed run even when the host could take more (`auto_ceiling` 7,600). A run with
+`--short-read 0` (batched prompt path) and a windowed config is the case that crashed before
+the fix; with the fix it runs through. Timing or quality numbers taken on a machine that is not
+quiet (other programs, browser, YouTube) are not valid and are not quoted here.
+
 **The window and KV streaming do not combine.** Streaming (`--kv-resident`) keeps the KV cache in
 RAM and only the attention's window in VRAM; the window's exact cells need an always-resident side
 pool that a streamed KV does not have. Setup never writes the pair: a `q4lm8v` config's KV cache
