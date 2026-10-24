@@ -163,6 +163,37 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         path.write_text("{}")
         self.assertEqual(path.read_text(), "{}")
 
+    def test_default_dacl_allows_reopening_child_process_for_qos(self):
+        import subprocess
+        import sys
+        # Isolate token changes and keep this test independent of the test runner's defaults.
+        script = '''
+import ctypes
+from ctypes import wintypes
+import subprocess
+import sys
+from strata_control import private_files as pf
+from serve import winjob
+assert pf.adopt_user_defaults()
+k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+k32.OpenProcess.restype = wintypes.HANDLE
+k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+try:
+    handle = k32.OpenProcess(0x1000 | 0x0200, False, child.pid)
+    assert handle, "OpenProcess failed: %s" % ctypes.get_last_error()
+    try:
+        assert winjob.no_throttle(handle), "Setting child QoS failed"
+    finally:
+        k32.CloseHandle(handle)
+finally:
+    child.terminate()
+    child.wait()
+'''
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_only_the_users_own_folders_are_ever_repaired(self):
         self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))
 
