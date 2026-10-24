@@ -27,6 +27,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -73,6 +74,59 @@ bool metal_ctab() {
         return !(e && std::string(e) == "0");
     }();
     return on;
+}
+// The decode kernels' tiles measured on this GPU - the Mac's part of the calibration (tools/calibrate.py): the dense
+// GEMVs, gr_down and the routed experts' gate/up and down.  STRATA_METAL_CALIBRATE=<file>: measure them while the engine
+// answers (Window::calibrate), into <file>.  STRATA_METAL_TILES=<file> (what the calibration puts in the config's "env"):
+// use them; a shape the file lacks, or a file from another GPU, keeps the defaults.  The defaults are the M4's and M5's,
+// and a GPU with less ALU per byte of bandwidth (the M1 Max: 33 -> 21 ms of a 2-token window's GEMVs) wants other tiles.
+// A tile replaces the default only when it measured >= 3% faster; the answers may differ slightly (the order of a sum).
+const char* metal_env_file(const char* name) {
+    const char* e = std::getenv(name);
+    return e && *e ? e : nullptr;
+}
+const char* metal_calibrate_file() {
+    static const char* f = metal_env_file("STRATA_METAL_CALIBRATE");
+    return f;
+}
+const char* metal_tiles_file() {
+    static const char* f = metal_calibrate_file() ? metal_calibrate_file() : metal_env_file("STRATA_METAL_TILES");
+    return f;
+}
+// the candidates: every tile gemv.metal instantiates (GV_SET), and the formats it instantiates them for
+const std::array<int, 4> kGemvTiles[] = {{32, 1, 4, 1}, {32, 2, 4, 1}, {16, 1, 4, 1}, {16, 2, 4, 1}, {8, 1, 4, 1},
+                                         {8, 2, 4, 1},  {4, 2, 4, 1},  {4, 1, 4, 1},  {32, 1, 4, 4}, {32, 2, 4, 2},
+                                         {32, 1, 8, 8}, {16, 1, 8, 4}, {32, 1, 8, 2}, {8, 1, 8, 1},  {1, 1, 4, 1},
+                                         {1, 2, 4, 1},  {2, 1, 4, 1},  {2, 2, 4, 1},  {1, 1, 2, 1},  {4, 4, 4, 1}};
+bool gemv_tunable(int ty) {
+    switch (ty) {
+        case ref::F32: case ref::BF16: case ref::Q8_0: case ref::Q4_0: case ref::Q5_0: case ref::IQ4_NL: case ref::IQ4_XS:
+        case ref::Q2_0: case 142 /* Q2_0R */: case ref::IQ3_S: case ref::Q3_K: case ref::Q4_K: case ref::Q5_K: case ref::Q6_K:
+            return true;
+        default: return false;
+    }
+}
+// a tile fits a row of n_in when its K split divides the units and each lane of a row gets at least one unit pair
+bool gemv_tile_ok(const std::array<int, 4>& c, int ty, int n_in) {
+    const int unit = ty == ref::Q2_0 || ty == 142 || ty == ref::IQ3_S || ty == ref::BF16 || ty == ref::F32 ? 16 : 32;
+    const int U = n_in / unit;
+    return U % c[3] == 0 && U / c[3] >= c[0] / 2;
+}
+// gr_down's variants (gr.metal GRD): simdgroups a threadgroup, the K split of a row
+const std::array<int, 2> kGrdVariants[] = {{8, 8}, {8, 4}, {4, 4}, {4, 2}, {16, 16}, {16, 8}};
+// the routed experts' tiles (moe.metal GU_SET / DN_SET: lanes a row, rows a lane, simdgroups) and their formats
+const std::array<int, 3> kGuTiles[] = {{32, 1, 4}, {32, 2, 4}, {32, 4, 4}, {32, 2, 2}, {32, 2, 8}, {32, 1, 8},
+                                       {16, 1, 4}, {16, 2, 4}, {8, 1, 4},  {8, 2, 4},  {8, 1, 2}};
+const std::array<int, 3> kDnTiles[] = {{8, 1, 4}, {8, 2, 4}, {8, 4, 4}, {4, 1, 4},  {4, 2, 4},  {4, 4, 4},
+                                       {8, 1, 8}, {8, 2, 8}, {16, 1, 4}, {16, 2, 4}, {32, 1, 4}, {2, 2, 4}};
+bool moe_tunable(bool down, int ty) {
+    if (down) return ty == ref::Q5_1 || ty == ref::Q8_0 || ty == ref::Q2_0 || ty == 142 || ty == ref::IQ4_NL;
+    switch (ty) {
+        case ref::Q2_0: case ref::IQ3_XXS: case ref::IQ2_XXS: case ref::IQ2_XS: case ref::IQ2_S: case ref::IQ3_S:
+        case ref::IQ4_XS: case ref::Q4_K: case ref::Q5_K: case ref::Q6_K: case ref::Q8_0:
+            return true;
+        default: return false;
+    }
 }
 
 int xkind(int t) {
@@ -267,8 +321,25 @@ private:
         std::vector<mtl::Dispatch> ds;
         std::vector<int> cuts;                  // SSD streaming: the segment ends (one per layer, before its experts)
         std::vector<std::pair<int, int>> qsa;   // (dispatch, kind): 0 QsaArgs n_tok = T, 1 the merge (MAXT), 2 the scores
+        // STRATA_METAL_CALIBRATE: the dispatches whose tile is not measured yet (calibrate)
+        struct Gv { int i; std::array<int, 4> shape, tile; };   // (type, n_in, n_out, ntok), the default (L, R, S, K)
+        struct Grd { int i; std::string pre; int ntok; };
+        std::vector<Gv> gv;
+        std::vector<Grd> grd;
+        // a layer's routed experts: the route dispatch (and the index of its MoeArgs), gate/up, down; their formats and tiles
+        struct Moe { int r, ra, g, d, gt, dt, ntok; bool ct; std::array<int, 3> gu, dn; };
+        std::vector<Moe> moe;
     };
     std::map<int, Cached> wcache_;
+    Cached* cal_rec_ = nullptr;                                        // the encode in progress (calibrate)
+    std::map<std::array<int, 4>, std::array<int, 4>> cal_gemv_;         // (type, n_in, n_out, ntok) -> (L, R, S, K)
+    std::map<std::pair<std::string, int>, int> cal_grd_;             // (gr_down kind, ntok) -> kGrdVariants index
+    std::map<std::array<int, 3>, std::array<int, 3>> cal_moe_;        // (0 gate/up | 1 down, type, ntok) -> (L, R, S)
+    void calibrate_moe(Cached& c);
+    void calibrate_save();
+    std::string cal_file_;
+    void calibrate(Cached& c);
+    void calibrate_load();
     std::vector<std::pair<int, int>>* rec_ = nullptr;
     // ---- SSD streaming (stream.h): the dense weights in W_, the routed experts in the arena
     std::unique_ptr<ExpertStream> st_;
@@ -491,6 +562,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"});
     rcounter_ = cx_->alloc(16);
+    if (metal_tiles_file()) calibrate_load();
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -672,6 +744,11 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
             if (K == 1 || (L == 32 && K == 2)) Rr = 2;
         }
     }
+    if (metal_tiles_file() && gemv_tunable(ty)) {
+        const auto it = cal_gemv_.find({ty, n_in, n_out, ntok});
+        if (it != cal_gemv_.end()) { L = it->second[0]; Rr = it->second[1]; S = it->second[2]; K = it->second[3]; }
+        else if (cal_rec_) cal_rec_->gv.push_back({(int) ds.size(), {ty, n_in, n_out, ntok}, {L, Rr, S, K}});
+    }
     const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
                            std::to_string(S) + "_" + std::to_string(K);
     const mtl::Pipeline* p = P(lib_, fn, mtl::Constants().i(0, ntok), fn + "#" + std::to_string(ntok));
@@ -726,12 +803,21 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     const bool q8 = is_q8(tdn) && is_q8(tup);
     const bool injf = q8 && !final_ && !q8off_.count(tin.name) && tin.type == ref::F32;
     mtl::Dispatch d2;
-    const char* dn = injf ? "gr_down_q8f_8_8" : q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
-    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
+    // the variant: 8_8 (8 simdgroups split a row), or the one measured fastest here (STRATA_METAL_TILES)
+    const std::string dpre = injf ? "gr_down_q8f_" : q8 ? "gr_down_q8_" : "gr_down_";
+    int var = 0;
+    if (metal_tiles_file()) {
+        const auto it = cal_grd_.find({dpre, ntok});
+        if (it != cal_grd_.end()) var = it->second;
+        else if (cal_rec_) cal_rec_->grd.push_back({(int) ds.size(), dpre, ntok});
+    }
+    const auto [grd_sg, grd_ks] = kGrdVariants[var];
+    const std::string dn = dpre + std::to_string(grd_sg) + "_" + std::to_string(grd_ks);
+    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), dn + "#" + std::to_string(ntok));
     d2.args = {mtl::Arg::B(*bd, od), mtl::Arg::B(*bi, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_[1 - cur_inj_]), mtl::Arg::V(a)};
-    d2.grid[0] = LR + HC;
-    d2.tg[0] = 256;
+    d2.grid[0] = (LR + HC + grd_sg / grd_ks - 1) / (grd_sg / grd_ks);   // RS = SG / KS rows a threadgroup
+    d2.tg[0] = 32 * grd_sg;
     push(ds, d2);
     mtl::Dispatch d3;
     const char* up = q8 ? "gr_up_q8" : "gr_up";
@@ -927,12 +1013,25 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
         // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
         const bool tq_ = tg_.type >= 144;
-        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
+            dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        // STRATA_METAL_TILES: the tiles measured here (calibrate_moe, after the window's first run)
+        const int dt = dq2 ? 142 : td.type;
+        bool moe_rec = false;
+        if (metal_tiles_file() && !stream_ && moe_tunable(false, tg_.type) && moe_tunable(true, dt)) {
+            const auto gi = cal_moe_.find({0, tg_.type, ntok}), di = cal_moe_.find({1, dt, ntok});
+            if (gi != cal_moe_.end() && di != cal_moe_.end()) {
+                const auto &g = gi->second, &d = di->second;
+                if (NFF % (g[2] * (32 / g[0]) * g[1]) == 0 && N % (d[2] * (32 / d[0]) * d[1]) == 0) {   // another model's file: not its rows
+                    gl = g[0]; gr = g[1]; gs = g[2];
+                    dl = d[0]; dr = d[1]; ds_ = d[2];
+                }
+            } else moe_rec = cal_rec_ != nullptr;
+        }
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
@@ -952,6 +1051,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             r.tg[0] = 512;
         }
         push(ds, r);
+        const int r_i = (int) ds.size() - 1;
         {
             GlueArgs ga{NFF, MAXT, N, TOPK};
             mtl::Dispatch d;
@@ -987,6 +1087,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         g.ind_off = P_IGU * 4;
         if (cuts_) cuts_->push_back((int) ds.size());   // the host's turn: this layer's experts put in place
         push(ds, g);
+        const int g_i = (int) ds.size() - 1;
         nb_ = true;
         gemv(ds, T(b + "ffn_down_shexp.weight"), XH_, ysh_, N, ntok);
         if (hd) had_rows(ds, lib_, "d:", h_, 0, h_, 0, ntok * TOPK, NFF, hsh_.handle ? &hsh_ : nullptr, false);   // H h, in place
@@ -1000,6 +1101,8 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         dd.indirect = &plan_;
         dd.ind_off = P_IDN * 4;
         push(ds, dd);
+        if (moe_rec)
+            cal_rec_->moe.push_back({r_i, rf ? 8 : 4, g_i, (int) ds.size() - 1, tg_.type, dt, ntok, ct, {gl, gr, gs}, {dl, dr, ds_}});
     }
     {
         GlueArgs a{N, (uint32_t) ntok, N, TOPK};
@@ -1131,6 +1234,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         seg_T_ = Tn;
         const double r0 = now_ms();
         last_gpu_ms_ = 1000.0 * run_ds(c);
+        if (!c.moe.empty()) calibrate_moe(c);   // its first run had no routing to read
         {
             static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
             static int seen = 0;
@@ -1143,6 +1247,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     if (stream_ && !st_->ready() && !stream_arena(err)) return false;
     Cached& cw = wcache_[key];
     rec_ = &cw.qsa;
+    cal_rec_ = metal_calibrate_file() ? &cw : nullptr;
     cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;
@@ -1211,13 +1316,257 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         push(ds, d2);
     }
     rec_ = nullptr;
+    cal_rec_ = nullptr;
     cuts_ = nullptr;
+    if (!cw.gv.empty() || !cw.grd.empty()) calibrate(cw);
     seg_T_ = Tn;
     const double r0 = now_ms();
     last_gpu_ms_ = 1000.0 * run_ds(cw);
     tp_rg_ = now_ms() - r0;
+    if (!cw.moe.empty()) calibrate_moe(cw);   // the routing it reads is this run's
     last_n_disp_ = (int) ds.size();
     return finish(Tn, tokens, pos0, head, out, t0);
+}
+
+// The tiles file: "device <GPU name>", then "gemv type n_in n_out ntok L R S K", "grd kind ntok variant" and
+// "moe gate/up=0|down=1 type ntok L R S" lines.
+void Window::calibrate_load() {
+    if (metal_calibrate_file()) cal_file_ = metal_calibrate_file();
+    FILE* f = std::fopen(metal_tiles_file(), "r");
+    if (!f) {
+        if (!metal_calibrate_file())
+            std::fprintf(stderr, "strata metal tiles: %s does not open: the defaults\n", metal_tiles_file());
+        return;
+    }
+    char line[256] = {0};
+    const std::string want = "device " + cx_->device_name();
+    if (!std::fgets(line, sizeof line, f) || std::string(line).substr(0, std::strcspn(line, "\r\n")) != want) {
+        std::fprintf(stderr, "strata metal tiles: %s was measured on another GPU (not %s): the defaults\n", metal_tiles_file(),
+                     cx_->device_name().c_str());
+        std::fclose(f);
+        return;
+    }
+    char kind[16], pre[32];
+    int a[8];
+    while (std::fscanf(f, "%15s", kind) == 1) {
+        if (std::string(kind) == "gemv" && std::fscanf(f, "%d %d %d %d %d %d %d %d", a, a + 1, a + 2, a + 3, a + 4, a + 5, a + 6, a + 7) == 8) {
+            const std::array<int, 4> t{a[4], a[5], a[6], a[7]};
+            if (gemv_tunable(a[0]) && gemv_tile_ok(t, a[0], a[1]) &&
+                std::find(std::begin(kGemvTiles), std::end(kGemvTiles), t) != std::end(kGemvTiles))
+                cal_gemv_[{a[0], a[1], a[2], a[3]}] = t;
+        } else if (std::string(kind) == "grd" && std::fscanf(f, "%31s %d %d", pre, a, a + 1) == 3) {
+            if (a[1] >= 0 && a[1] < (int) std::size(kGrdVariants)) cal_grd_[{pre, a[0]}] = a[1];
+        } else if (std::string(kind) == "moe" && std::fscanf(f, "%d %d %d %d %d %d", a, a + 1, a + 2, a + 3, a + 4, a + 5) == 6) {
+            const std::array<int, 3> t{a[3], a[4], a[5]};
+            const bool down = a[0] == 1;
+            if (moe_tunable(down, a[1]) && (down ? std::find(std::begin(kDnTiles), std::end(kDnTiles), t) != std::end(kDnTiles)
+                                                 : std::find(std::begin(kGuTiles), std::end(kGuTiles), t) != std::end(kGuTiles)))
+                cal_moe_[{a[0], a[1], a[2]}] = t;
+        } else break;
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "strata metal tiles: %zu GEMV shapes, %zu gr_down kinds, %zu expert kernels from %s\n",
+                 cal_gemv_.size(), cal_grd_.size(), cal_moe_.size(), metal_tiles_file());
+}
+
+// Each GEMV shape (and gr_down kind) of a new window, all its dispatches together (the layers' different weights, as
+// the window reads them), timed on the candidate tiles: the best of 2 runs each, the outputs into a scratch buffer (the
+// inputs are only read, so the model's state is not touched).  The default stays unless a tile beats it by 3%.  Every
+// candidate for the decode windows (1 and 2 tokens; a larger window's GEMVs run at NTOK = 2 for that when the 2-token
+// tile is not known yet - they read only the constant); a larger window then its default against the 2-token pick.
+void Window::calibrate(Cached& c) {
+    const double t0 = now_ms();
+    size_t need = 4 * (size_t) MAXT * (LR + HC);
+    for (const auto& g : c.gv) {
+        GemvArgs ga;
+        std::memcpy(&ga, c.ds[(size_t) g.i].args[4].bytes.data(), sizeof ga);
+        need = std::max(need, 4 * ((size_t) (g.shape[3] - 1) * ga.y_stride + (size_t) g.shape[2]));
+    }
+    mtl::Buffer scratch = cx_->alloc(need);
+    auto best_of = [&](const std::vector<mtl::Dispatch>& ds) {
+        cx_->run(ds);
+        return std::min(cx_->run(ds), cx_->run(ds));
+    };
+    {   // lift the GPU out of its idle clocks
+        std::vector<mtl::Dispatch> w;
+        for (const auto& g : c.gv) { w.push_back(c.ds[(size_t) g.i]); w.back().args[3] = mtl::Arg::B(scratch); }
+        if (!w.empty()) cx_->warm(w, 0.3);
+    }
+    std::map<std::array<int, 4>, std::pair<std::array<int, 4>, std::vector<int>>> gvs;
+    for (const auto& g : c.gv) {
+        auto& e = gvs[g.shape];
+        e.first = g.tile;
+        e.second.push_back(g.i);
+    }
+    for (const auto& [shape, e] : gvs) {
+        const auto& [def, idx] = e;
+        const int ty = shape[0], n_in = shape[1], n_out = shape[2], ntok = shape[3];
+        auto with = [&](const std::array<int, 4>& t, mtl::Dispatch d, int nt) {
+            const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" +
+                                   std::to_string(t[2]) + "_" + std::to_string(t[3]);
+            d.p = P(lib_, fn, mtl::Constants().i(0, nt), fn + "#" + std::to_string(nt));
+            const int rpt = (t[2] / t[3]) * (32 / t[0]) * t[1];
+            d.grid[0] = (uint32_t) ((n_out + rpt - 1) / rpt);
+            d.tg[0] = (uint32_t) (t[2] * 32);
+            return d;
+        };
+        auto timed = [&](const std::array<int, 4>& t, int nt) {
+            std::vector<mtl::Dispatch> ds;
+            for (int i : idx) { ds.push_back(with(t, c.ds[(size_t) i], nt)); ds.back().args[3] = mtl::Arg::B(scratch); }
+            return best_of(ds);
+        };
+        // the better of `cands` against the default at nt (>= 3% faster, else the default)
+        auto pick = [&](const std::vector<std::array<int, 4>>& cands, int nt, double& td, double& tb) {
+            td = timed(def, nt);
+            std::array<int, 4> best = def;
+            tb = td;
+            for (const auto& t : cands) {
+                if (t == def || !gemv_tile_ok(t, ty, n_in)) continue;
+                const double tt = timed(t, nt);
+                if (tt < tb) { tb = tt; best = t; }
+            }
+            if (tb > 0.97 * td) { best = def; tb = td; }
+            return best;
+        };
+        const int nd = std::min(ntok, 2);
+        const std::array<int, 4> kd{ty, n_in, n_out, nd};
+        double td = 0, tb = 0;
+        if (!cal_gemv_.count(kd)) {
+            cal_gemv_[kd] = pick(std::vector<std::array<int, 4>>(std::begin(kGemvTiles), std::end(kGemvTiles)), nd, td, tb);
+            const auto& b = cal_gemv_[kd];
+            std::fprintf(stderr, "strata metal calibrate: gemv type %d %d->%d T%d x%zu: %d,%d,%d,%d %.1f us -> %d,%d,%d,%d %.1f us\n",
+                         ty, n_in, n_out, nd, idx.size(), def[0], def[1], def[2], def[3], 1e6 * td, b[0], b[1], b[2], b[3], 1e6 * tb);
+        }
+        if (ntok > 2) {
+            cal_gemv_[shape] = pick({cal_gemv_[kd]}, ntok, td, tb);
+            const auto& b = cal_gemv_[shape];
+            std::fprintf(stderr, "strata metal calibrate: gemv type %d %d->%d T%d x%zu: %d,%d,%d,%d %.1f us -> %d,%d,%d,%d %.1f us\n",
+                         ty, n_in, n_out, ntok, idx.size(), def[0], def[1], def[2], def[3], 1e6 * td, b[0], b[1], b[2], b[3], 1e6 * tb);
+        }
+        for (int i : idx) c.ds[(size_t) i] = with(cal_gemv_[shape], c.ds[(size_t) i], ntok);
+    }
+    std::map<std::pair<std::string, int>, std::vector<int>> grs;
+    for (const auto& g : c.grd) grs[{g.pre, g.ntok}].push_back(g.i);
+    for (const auto& [k, idx] : grs) {
+        auto with = [&](int v, mtl::Dispatch d) {
+            const auto [sg, ks] = kGrdVariants[v];
+            const std::string fn = k.first + std::to_string(sg) + "_" + std::to_string(ks);
+            d.p = P(lib_, fn, mtl::Constants().i(1, k.second), fn + "#" + std::to_string(k.second));
+            d.grid[0] = (uint32_t) ((LR + HC + sg / ks - 1) / (sg / ks));
+            d.tg[0] = (uint32_t) (32 * sg);
+            return d;
+        };
+        auto timed = [&](int v) {
+            std::vector<mtl::Dispatch> ds;
+            for (int i : idx) {
+                ds.push_back(with(v, c.ds[(size_t) i]));
+                ds.back().args[3] = mtl::Arg::B(scratch);                              // lo
+                ds.back().args[4] = mtl::Arg::B(scratch, 4 * (size_t) MAXT * LR);      // the inject values
+            }
+            return best_of(ds);
+        };
+        const double td = timed(0);
+        int best = 0;
+        double tb = td;
+        for (int v = 1; v < (int) std::size(kGrdVariants); ++v) {
+            const double tt = timed(v);
+            if (tt < tb) { tb = tt; best = v; }
+        }
+        if (tb > 0.97 * td) { best = 0; tb = td; }
+        cal_grd_[k] = best;
+        for (int i : idx) c.ds[(size_t) i] = with(best, c.ds[(size_t) i]);
+        std::fprintf(stderr, "strata metal calibrate: %s T%d x%zu: 8_8 %.1f us -> %d_%d %.1f us\n", k.first.c_str(), k.second,
+                     idx.size(), 1e6 * td, kGrdVariants[best][0], kGrdVariants[best][1], 1e6 * tb);
+    }
+    cx_->free(scratch);
+    c.gv.clear();
+    c.grd.clear();
+    calibrate_save();
+    std::fprintf(stderr, "strata metal calibrate: measured in %.0f ms, kept in %s\n", now_ms() - t0, cal_file_.c_str());
+}
+
+void Window::calibrate_save() {
+    FILE* f = cal_file_.empty() ? nullptr : std::fopen(cal_file_.c_str(), "w");
+    if (!f) return;
+    std::fprintf(f, "device %s\n", cx_->device_name().c_str());
+    for (const auto& [s, t] : cal_gemv_) std::fprintf(f, "gemv %d %d %d %d %d %d %d %d\n", s[0], s[1], s[2], s[3], t[0], t[1], t[2], t[3]);
+    for (const auto& [k, v] : cal_grd_) std::fprintf(f, "grd %s %d %d\n", k.first.c_str(), k.second, v);
+    for (const auto& [k, t] : cal_moe_) std::fprintf(f, "moe %d %d %d %d %d %d\n", k[0], k[1], k[2], t[0], t[1], t[2]);
+    std::fclose(f);
+}
+
+// The routed experts of a window that has just run: the layers of each pair of formats (a pack mixes them) together,
+// their gate/up (then down) dispatches on the routing the last layer left in plan_ (real experts of each layer, a real
+// count of them), with a direct grid in place of the indirect one - moe_route writes gx into the plan, the kernels do
+// not read it.  The outputs go to a scratch buffer.
+void Window::calibrate_moe(Cached& c) {
+    const int og = plan_.as<int>()[P_IGU + 1];
+    if (og <= 0) return;   // no routing yet: the next run
+    const double t0 = now_ms();
+    mtl::Buffer scratch = cx_->alloc(std::max(h_.bytes, ye_.bytes));
+    std::map<std::pair<int, int>, std::vector<const Cached::Moe*>> fmts;   // (gate/up format, down format) -> its layers
+    for (const auto& m : c.moe) fmts[{m.gt, m.dt}].push_back(&m);
+    for (const auto& [fmt, layers] : fmts) {
+        const Cached::Moe& m0 = *layers.front();
+        for (int down = 0; down < 2; ++down) {
+            const int ty = down ? fmt.second : fmt.first, rows = down ? N : NFF;
+            const std::array<int, 3> def = down ? m0.dn : m0.gu;
+            auto with = [&](const std::array<int, 3>& t, mtl::Dispatch d) {
+                const std::string fn = std::string(down ? "moe_down_" : "moe_gu_") + std::to_string(ty) + "_" + std::to_string(t[0]) +
+                                       "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]);
+                d.p = P(lib_, fn, mtl::Constants().b(23, m0.ct), fn + (m0.ct ? "#ct" : ""));
+                d.tg[0] = (uint32_t) (32 * t[2]);
+                return d;
+            };
+            auto timed = [&](const std::array<int, 3>& t) {
+                std::vector<mtl::Dispatch> ds;
+                for (const Cached::Moe* m : layers) {
+                    ds.push_back(with(t, c.ds[(size_t) (down ? m->d : m->g)]));
+                    mtl::Dispatch& d = ds.back();
+                    d.indirect = nullptr;
+                    d.grid[0] = (uint32_t) (rows / (t[2] * (32 / t[0]) * t[1]));
+                    d.grid[1] = (uint32_t) og;
+                    d.grid[2] = 1;
+                    d.args[2] = mtl::Arg::B(scratch);   // gate/up's h, down's ye
+                }
+                cx_->run(ds);
+                return std::min(cx_->run(ds), cx_->run(ds));
+            };
+            std::array<int, 3> best = def;
+            double td = 0, tb = 0;
+            const auto known = cal_moe_.find({down, ty, m0.ntok});   // measured meanwhile by another window
+            if (known != cal_moe_.end()) best = known->second;
+            else {
+                td = tb = timed(def);
+                const auto* b0 = down ? std::begin(kDnTiles) : std::begin(kGuTiles);
+                const auto* b1 = down ? std::end(kDnTiles) : std::end(kGuTiles);
+                for (const auto* t = b0; t != b1; ++t) {
+                    if (*t == def || rows % ((*t)[2] * (32 / (*t)[0]) * (*t)[1]) != 0) continue;
+                    const double tt = timed(*t);
+                    if (tt < tb) { tb = tt; best = *t; }
+                }
+                if (tb > 0.97 * td) { best = def; tb = td; }
+                cal_moe_[{down, ty, m0.ntok}] = best;
+            }
+            const int gx = rows / (best[2] * (32 / best[0]) * best[1]);
+            for (const Cached::Moe* m : layers) {
+                mtl::Dispatch& d = c.ds[(size_t) (down ? m->d : m->g)];
+                d = with(best, d);
+                MoeArgs a;   // the route writes gx into the plan: its copy of the arguments
+                std::vector<uint8_t>& rb = c.ds[(size_t) m->r].args[(size_t) m->ra].bytes;
+                std::memcpy(&a, rb.data(), sizeof a);
+                (down ? a.gx_dn : a.gx_gu) = (uint32_t) gx;
+                std::memcpy(rb.data(), &a, sizeof a);
+            }
+            std::fprintf(stderr, "strata metal calibrate: moe_%s type %d T%d x%zu (%d experts): %d,%d,%d %.1f us -> %d,%d,%d %.1f us\n",
+                         down ? "down" : "gu", ty, m0.ntok, layers.size(), og, def[0], def[1], def[2], 1e6 * td, best[0], best[1],
+                         best[2], 1e6 * tb);
+        }
+    }
+    cx_->free(scratch);
+    c.moe.clear();
+    calibrate_save();
+    std::fprintf(stderr, "strata metal calibrate: experts measured in %.0f ms\n", now_ms() - t0);
 }
 
 double Window::run_ds(Cached& c) {

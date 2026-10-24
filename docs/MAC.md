@@ -223,7 +223,13 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
   be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
-- **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
+- **Not ported:** the control vector (`--control-vector-scaled`).
+- **`./setup.sh --calibrate`:** the engine measures the tiles of its decode kernels on this Mac (the dense GEMVs, the
+  hyper-connection read, and the routed experts when the model is in memory - not when they stream from the SSD; the
+  defaults were tuned on the M4 and M5), then they race the defaults and go into the config's `env` (`STRATA_METAL_TILES`)
+  only when they are faster. A few minutes with the model in memory, longer with streaming; again after an update that
+  changes the kernels. The answers may differ slightly from the defaults' (the order of a sum: a near-tie can flip).
+  Measured on an M1 Max only: decode +30-32% on short chats, +26% after a 6K-token prompt.
 - **Streaming** is measured at 32 GB only.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Setup repacks
   Unsloth's shards into one file for the GPU; a Gyro file is used as it is. The Swift and Coder releases are not set up on Mac
