@@ -138,6 +138,24 @@ python tools/strata_bench.py --compare bench/results/2026-10-01-community-rtx-30
 python tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FOLDER   # two saved runs, nothing is started
 ```
 
+The compare table has two columns after the numbers, kept deliberately apart. The test column is the ground
+result: runs are matched slot by slot (same question, same prompt size), the speed ratios are tested with the
+Wilcoxon signed-rank test, Holm-corrected across the metrics - it says yes or no whatever the size of the
+change, and nothing else in the table can overturn it. The size column only says whether a real change is big enough to act on:
+(default 2% for prompt speed, 5% for generation speed; change it with `--floor-prefill` / `--floor-decode`).
+Being over the floor is never a statistical claim, and being under it never cancels a real one. The agent rows stay descriptive - the two
+sessions are different conversations. The columns need `pip install -r requirements-bench.txt` (scipy and
+statsmodels); without them the table prints as it did before.
+
+When you measure, the tool says up front how many runs it would take to decide: with three runs per test the
+prompt tests have three pairs (nine for the chats: three runs x three questions) and nothing can be significant -
+three runs that all point the same way still reach p=0.25 at best - and the note names the run count and the
+time cost before the suite starts. Use at least `--runs 8` when the prompt rows should be able to prove a change,
+or A/B the two settings with `python tools/ab_engine.py --stats --rounds 7`, which alternates the arms (so a
+change in the room does not become a result) and reports the same verdicts. The compare footer repeats this per
+metric: the spread of the pairs, the smallest change those pairs could detect, and the run counts a floor effect
+and any significance at all would need.
+
 The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
 checks](#optional-correctness-checks); for A/B tests of two builds use `tools/ab_engine.py`.
 

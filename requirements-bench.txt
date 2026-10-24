@@ -1,0 +1,24 @@
+# Optional packages for the paired-statistics columns of strata_bench --compare and ab_engine --stats
+# (tools/paired_stats.py wraps scipy and statsmodels; nothing here is re-implemented in-tree).
+# The benchmark itself runs without them - the tables print as before, without verdicts - and the
+# core install (requirements.txt) deliberately does not carry them: scipy/pandas are heavy for a
+# PC that only serves a model.  Install:  .venv/bin/pip install -r requirements-bench.txt
+scipy==1.15.3
+statsmodels==0.15.0
+
+# their dependencies (scipy needs numpy, which requirements.txt pins the same way)
+numpy==2.5.3; python_version >= "3.12"
+numpy==2.4.6; python_version == "3.11"
+numpy==2.2.6; python_version < "3.11"
+pandas==2.3.3
+patsy==1.0.3
+formulaic==1.2.2
+interface_meta==2.0.1
+narwhals==2.27.1
+packaging==26.3
+python-dateutil==2.9.0.post0
+pytz==2026.5
+tzdata==2026.5
+six==1.17.0
+wrapt==2.5.1
+typing_extensions==4.16.0
