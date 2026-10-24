@@ -78,14 +78,14 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
 }
 
 bool view_validate(const ConversationView& view, const SessionState& ss,
-                   const ModelGeometry& g, std::string& error) {
+                   const ModelGeometry& g, std::string& error, size_t stage_parts_allowed = 0) {
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, view.ids.size(), z, error)) return false;
     if (view.ids.empty() || !image_keys(view.images, view.ids.size()) ||
         std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
         return fail(error, "invalid live token/image metadata");
     for (const auto& c : view.checkpoints) {
-        if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
+        if (c.stage_parts.size() != stage_parts_allowed || c.ids.empty() || c.ids.size() > view.ids.size() ||
             !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
             return fail(error, "checkpoint is not a live token prefix");
         if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
@@ -97,6 +97,23 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
         }
         if (image != c.imgs.size()) return fail(error, "checkpoint image prefix differs");
     }
+    return true;
+}
+
+// view_validate for a layer-split capture: the live metadata and each checkpoint's own arrays are validated over
+// the main carve (with exactly one stage part per later stage), and every part is validated over its own stage's
+// carve and must carry its parent's ids - the same rule conversation_checkpoints_merge enforces on a restored
+// split.  A part count that contradicts the stage layout is refused, as in the engine's own checkpoint rule.
+bool view_validate_split(const ConversationView& view, const std::vector<const SessionState*>& sessions,
+                         const ModelGeometry& g, std::string& error) {
+    if (sessions.empty()) return fail(error, "no session carve to snapshot");
+    if (!view_validate(view, *sessions[0], g, error, sessions.size() - 1)) return false;
+    for (const auto& c : view.checkpoints)
+        for (size_t k = 1; k < sessions.size(); ++k) {
+            const auto& part = c.stage_parts[k - 1];
+            if (part.ids != c.ids || !conversation_checkpoint_validate(part, *sessions[k], g, error))
+                return fail(error, "a stage checkpoint part is not its parent's prefix over its own carve");
+        }
     return true;
 }
 
@@ -669,6 +686,128 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     }
     const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
     if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    // A single-device runtime engages an empty stage table (format v2 compares it): a file saved with later
+    // stages is refused by this session before its state arrays are read, and the closed table bounds its size.
+    l.stages = std::vector<SessionStageGeom>{};
+    l.max_stages = 0;
+    limits = std::move(l);
+    return true;
+}
+
+// The split siblings: every stage reports the sizes of its own carve (main first).
+bool conversation_session_sizes_split(const ModelGeometry& g, const std::vector<const SessionState*>& sessions,
+                                      std::vector<ConversationStateSizes>& per_stage, std::string& error) {
+    if (sessions.empty()) return fail(error, "no session carve to snapshot");
+    per_stage.clear();
+    for (const SessionState* ss : sessions) {
+        ConversationStateSizes z;
+        if (!conversation_session_sizes(g, *ss, z, error)) return false;
+        per_stage.push_back(z);
+    }
+    return true;
+}
+
+// conversation_snapshot_sources for a layer split: `meta` records the later stages' geometry and the live
+// checkpoint's per-stage parts - each stage saves its own running state, the part carrying the parent's token
+// metadata, as the split engine's per-stage checkpoints already do (generate.cpp's on_stage_chunk capture) - while
+// chain checkpoints pass through as given (their host state and parts are already captured).  `sources` holds one
+// streamed source per owned QSA layer, the draft closing the group of the stage that owns it.
+bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                         const ConversationView& view, const std::vector<const SessionState*>& sessions,
+                                         const std::vector<bool>& draft_of, const QsaState& draft,
+                                         const ModelGeometry& g, std::string& error) {
+    if (sessions.empty() || draft_of.size() != sessions.size())
+        return fail(error, "invalid layer-split layout");
+    if (!view_validate_split(view, sessions, g, error) || !sync(error)) return false;
+    SavedConversation captured;
+    captured.geometry = geometry_key(g);
+    captured.layer_lo = sessions[0]->layer_lo; captured.layer_hi = sessions[0]->layer_hi;
+    captured.live.ids = view.ids; captured.live.imgs = view.images;
+    captured.cvec = view.cvec;
+    captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    captured.stage_table.reserve(sessions.size() - 1);
+    for (size_t k = 1; k < sessions.size(); ++k)
+        captured.stage_table.push_back(SessionStageGeom{sessions[k]->layer_lo, sessions[k]->layer_hi,
+                                                        sessions[k]->qsa_alloc, sessions[k]->gdn_alloc, draft_of[k]});
+    if (!conversation_checkpoint_save(captured.live, *sessions[0], g, error)) return false;
+    for (size_t k = 1; k < sessions.size(); ++k) {
+        ConversationCheckpoint part;
+        part.ids = view.ids; part.imgs = view.images;
+        if (!conversation_checkpoint_save(part, *sessions[k], g, error)) return false;
+        captured.live.stage_parts.push_back(std::move(part));
+    }
+    size_t total = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) total += owned_qsa(*sessions[k]) + (draft_of[k] ? 1 : 0);
+    std::vector<SessionKvSource> out(total);
+    const int64_t upto = (int64_t) view.ids.size();
+    size_t at = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) {
+        const size_t layers = owned_qsa(*sessions[k]);
+        for (size_t j = 0; j < layers; ++j)
+            if (!conversation_kv_source(out[at + j], owned(*sessions[k], j), g, upto, true, error)) return false;
+        if (draft_of[k] && !conversation_kv_source(out[at + layers], draft, g, upto, false, error)) return false;
+        at += layers + (draft_of[k] ? 1 : 0);
+    }
+    meta = std::move(captured);
+    sources = std::move(out);
+    return true;
+}
+
+// conversation_session_read_limits for a layer split: the main carve bounds the live state, each later stage its
+// checkpoint parts, and every stage's pools bound their K/V group positions - so session_file_read refuses a file
+// that could not restore into THIS runtime, per stage, before it allocates.  The stage table is engaged (empty for
+// one carve) and the closed `max_stages` bounds the file's table exactly as the runtime's looks.
+bool conversation_session_read_limits_split(SessionReadLimits& limits, const std::vector<const SessionState*>& sessions,
+                                            const ModelGeometry& g, const std::vector<bool>& draft_of,
+                                            const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                            std::string& error) {
+    if (sessions.empty() || draft_of.size() != sessions.size())
+        return fail(error, "invalid layer-split layout");
+    if (sessions[0]->max_cells < 0) return fail(error, "invalid session cells");
+    const uint64_t tokens = std::min<uint64_t>(max_tokens, (uint64_t) sessions[0]->max_cells);
+    size_t layers = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) layers += owned_qsa(*sessions[k]) + (draft_of[k] ? 1 : 0);
+    SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
+    l.max_tokens = tokens;
+    l.max_checkpoints = max_checkpoints;
+    l.max_kv_layers = layers;
+    l.geometry = geometry_key(g);
+    l.layer_range = std::make_pair(sessions[0]->layer_lo, sessions[0]->layer_hi);
+    l.max_kv_bytes.assign(layers, {});
+    std::vector<std::array<uint64_t, 5>> stage_state;
+    stage_state.reserve(sessions.size() - 1);
+    size_t at = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) {
+        const SessionState& ss = *sessions[k];
+        ConversationStateSizes z;
+        if (!conversation_session_sizes(g, ss, z, error)) return false;
+        const size_t owned_layers = owned_qsa(ss);
+        if (owned_layers && !ss.qsa_states) return fail(error, "invalid session running-state targets");
+        size_t tails = 0, dead = 0, block_pos = 0;
+        if (!product(tails, {owned_layers, z.tail}) || !product(dead, {owned_layers, z.dead}) ||
+            !product(block_pos, {owned_layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+        const std::array<uint64_t, 5> state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
+        if (k == 0) l.max_state_bytes = state_bytes;
+        else stage_state.push_back(state_bytes);
+        for (size_t j = 0; j < owned_layers; ++j) {
+            const auto& st = owned(ss, j);
+            const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
+            if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[at + j], error)) return false;
+        }
+        if (draft_of[k]) {
+            const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
+            if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes[at + owned_layers], error)) return false;
+        }
+        at += owned_layers + (draft_of[k] ? 1 : 0);
+    }
+    std::vector<SessionStageGeom> table;
+    table.reserve(sessions.size() - 1);
+    for (size_t k = 1; k < sessions.size(); ++k)
+        table.push_back(SessionStageGeom{sessions[k]->layer_lo, sessions[k]->layer_hi,
+                                         sessions[k]->qsa_alloc, sessions[k]->gdn_alloc, draft_of[k]});
+    l.stages = std::move(table);
+    l.max_stages = sessions.size() - 1;
+    l.max_stage_state_bytes = std::move(stage_state);
     limits = std::move(l);
     return true;
 }

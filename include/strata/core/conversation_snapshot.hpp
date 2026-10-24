@@ -139,6 +139,20 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+// The layer-split siblings (a format-v2 session file): the same capture, sizes and read limits for a main session
+// plus its later stages, each owning its own carve.  `sessions[0]` is the main session; `sessions[k]` (k >= 1) is a
+// later stage.  `draft_of` marks - exactly once - which stage's K/V group ends with the draft layer's source; the
+// sources are flat in stage-group order, and `meta.stage_table` records the later stages.
+bool conversation_session_sizes_split(const ModelGeometry& g, const std::vector<const SessionState*>& sessions,
+                                      std::vector<ConversationStateSizes>& per_stage, std::string& error);
+bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                         const ConversationView& view, const std::vector<const SessionState*>& sessions,
+                                         const std::vector<bool>& draft_of, const QsaState& draft,
+                                         const ModelGeometry& g, std::string& error);
+bool conversation_session_read_limits_split(SessionReadLimits& limits, const std::vector<const SessionState*>& sessions,
+                                            const ModelGeometry& g, const std::vector<bool>& draft_of,
+                                            const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                            std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 /// #2409: true when a restore (or a copy) on CUDA device `device` from the calling thread creates no copy stream: this
