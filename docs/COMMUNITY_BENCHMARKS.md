@@ -67,6 +67,7 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
+  
 - [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
   Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
   `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
@@ -99,7 +100,6 @@ latency are measured by the client. Thinking is off for the suite so the answers
 Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
-
 - [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
   Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
   decode 73.7 / 57.5 tok/s and prompt 691 / 533 tok/s at a 31K prompt, 140,908-token prompt read at 546 tok/s
