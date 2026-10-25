@@ -43,6 +43,10 @@
 #include <utility>
 #include <string>
 #include <vector>
+#if defined(_WIN32) && !defined(STRATA_USE_HIP)
+// Windows with CUDA: the early arena load (ArenaExpertSource::begin_early_load; STRATA_EARLY_ARENA=0 turns it off)
+#define STRATA_EARLY_ARENA_BUILT 1
+#endif
 
 namespace strata::kernels::cpu {
 struct ExpertLayout;
@@ -1299,9 +1303,24 @@ public:
     double load_seconds() const { return load_seconds_; }
     double load_read_seconds() const { return load_read_s_; }
     double load_copy_seconds() const { return load_copy_s_; }
+#ifdef STRATA_EARLY_ARENA_BUILT
+    /// Windows with CUDA (STRATA_EARLY_ARENA=0 turns it off): start loading the arena NOW on a background thread - the
+    /// normal constructor (reserve, touch, register the whole range), then the expert read - so the read overlaps
+    /// the rest of the start (dense weights, MTP, head).  open() then waits for it and takes it, or drops it and
+    /// loads as before when this open cannot use it.  Only when the available RAM covers the arena plus
+    /// `headroom_bytes`: pinned first, a short arena would make a LATER allocation fail instead of open()'s plain
+    /// warning.  False, with `note`, when it does not start (open() loads as before).
+    bool begin_early_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
+                          std::string& note, uint64_t headroom_bytes);
+#endif
 
 private:
     void* arena_ = nullptr;          ///< the PinnedArena, owned
+#ifdef STRATA_EARLY_ARENA_BUILT
+    struct EarlyLoad;                    ///< STRATA_EARLY_ARENA: the arena loaded by early_thread_, and its stats
+    std::shared_ptr<EarlyLoad> early_;
+    std::thread early_thread_;
+#endif
     void* map_ = nullptr;            ///< STRATA_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
     uint64_t map_bytes_ = 0;
     std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)
