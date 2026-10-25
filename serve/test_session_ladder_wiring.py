@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from serve import session_ladder
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, SessionRefused, serve
 from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, prefix_fidelity
@@ -117,7 +118,9 @@ class LadderArrival(unittest.TestCase):
         self.seen("ses-big", parked=True)                    # park holds the big mid: switching to aux saves nothing
         self.ladder.on_arrival(self.service, "ses-big", P1)  # the big mid is the active session
         self.ladder.on_turn_done("aux", 100, 0, 0)                # an aux-sized completed turn
-        self.ladder.on_conv_event(parked_event(100, 100 * 41370))  # its own park event joins it
+        self.ladder.on_conv_event(parked_event(100, 100 * 41370))  # an aux park line: it matches no tracked
+        # fingerprint exactly (the estimate is 100 x 40.4 KiB = 4136960), so it joins nothing - join_event
+        # refuses to guess; the point stands: nothing churns
         self.ladder.on_arrival(self.service, "aux", "tiny question")  # switch to it: nothing churns
         self.assertEqual(self.calls, [])
         self.assertFalse(self.ladder.tracked["aux"].save_eligible)
@@ -145,6 +148,38 @@ class LadderArrival(unittest.TestCase):
         self.ladder.on_arrival(self.service, "ses-a", P1)         # ...so its save-away builds the filename
         self.assertEqual(self.calls, [("save", str(Path(self.dir.name) / "llm-session-ses_.._evil.bin"))])
         self.assertEqual(list(Path(self.dir.name).glob("*")), [])  # nothing landed outside the save dir
+
+    def test_wiring_refused_class_is_the_server_class_object(self):
+        """Eager registration: the ladder excepts the exact class object serve.server exports (module mode
+        proof; the __main__ script mode registers its own copy the same way)."""
+        self.assertIs(session_ladder._refused_class(), SessionRefused)
+
+    def test_wiring_registered_stand_in_class_pairs_with_refusals(self):
+        class StandIn(ValueError):
+            def __init__(self, kind, message, published=False):
+                super().__init__(message)
+                self.kind = kind
+                self.published = published
+
+        session_ladder.register_refused_class(StandIn)
+        self.addCleanup(session_ladder.register_refused_class, SessionRefused)
+        self.seen("ses-a")
+        self.seen("ses-b")
+        self.ladder.on_arrival(self.service, "ses-b", P1)          # ses-b active: the switch-away saves it
+        self.engine.session_file = mock.Mock(side_effect=StandIn("memory", "nope"))
+        self.ladder.on_arrival(self.service, "ses-a", P1)          # refused IN THE REGISTERED CLASS: ...
+        self.assertEqual(self.engine.session_file.call_count, 1)   # ...swallowed, no retry (not a missed
+        # except escaping as an uncaught ValueError)...
+        self.assertIsNone(self.ladder.tracked["ses-b"].file_path)  # ...and no phantom file state
+
+    def test_wiring_last_prompts_is_lru_bounded(self):
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           retention_max_files=3)                # a tiny cap to watch the ring turn over
+        ladder = SessionLadder(cfg)
+        for i in range(6):                                       # six arrivals past a three-slot ring
+            ladder.on_arrival(self.service, f"ses-{i}", f"HEAD {i}")
+        self.assertEqual(list(ladder.last_prompts), ["ses-3", "ses-4", "ses-5"])  # the oldest prompts are
+        # gone: retained text can never outrun the retention_max_files bound however many ids churn
 
 
 class LadderHarness(MockEngine):

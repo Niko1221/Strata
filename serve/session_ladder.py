@@ -132,21 +132,36 @@ def _safe_sid(session_id: str) -> str:
     return _SAFE_SID.sub("_", session_id)
 
 
+class _StandInRefused(ValueError):
+    """The fallback SessionRefused, used when the ladder is driven without server.py loaded (its own unit
+    tests): the same constructor the engine's SERR parse uses."""
+
+    def __init__(self, kind, message, published=False):
+        super().__init__(message)
+        self.kind = kind
+        self.published = published
+
+
+# The exact SessionRefused class object the running server module's Engine raises from session_file.
+# server.py registers it at its own import time (register_refused_class), in module mode AND in the
+# run-<model>.bat __main__ mode; session_ladder still imports nothing from server.py - registration is
+# push-based, server -> ladder.  The earlier lazy `from serve.server import SessionRefused` inside
+# on_arrival was removed: when server.py runs as a script, serve.server is not in sys.modules, so that
+# import pulled in a second copy of the server module mid-request (while the FIFO is held) whose
+# SessionRefused was a different class than the one __main__'s Engine raises - the except missed, the
+# refusal escaped as an uncaught ValueError, and the refuse->prefill posture broke into a 500.
+_refused_cls = _StandInRefused
+
+
+def register_refused_class(cls):
+    """server.py (module or __main__ copy) registers the class its Engine raises; the ladder's excepts
+    pair with exactly that class object."""
+    global _refused_cls
+    _refused_cls = cls
+
+
 def _refused_class():
-    """The engine's SessionRefused contract.  server.py owns the class the Engine raises; session_ladder
-    imports nothing from server.py at module level (its header contract), so the pairing resolves lazily -
-    the same class object when the ladder runs inside the server, this module's own stand-in when it is
-    driven without server.py loaded (the same constructor the engine's SERR parse uses)."""
-    try:
-        from serve.server import SessionRefused
-        return SessionRefused
-    except Exception:
-        class SessionRefused(ValueError):
-            def __init__(self, kind, message, published=False):
-                super().__init__(message)
-                self.kind = kind
-                self.published = published
-        return SessionRefused
+    return _refused_cls
 
 
 class _locked:
@@ -193,8 +208,10 @@ class SessionLadder:
         self.tracked: dict = {}
         self.saved_files: list = []                     # file paths kept for their sessions, least-recent first
         self.last_prompts: dict = {}                    # each session's last rendered prompt the ladder saw,
-        # kept only while it can matter for a save (see on_arrival/record_saved_prefix: bounded to
-        # save-eligible sessions, pruned with the LRU file eviction) - the text a save records as the prefix
+        # kept only while it can matter for a save (see on_arrival/record_saved_prefix) - the text a save
+        # records as the prefix; LRU-capped to cfg.retention_max_files entries (an arrival past the cap
+        # evicts the oldest, the ConvCacheLog._pending ring idiom) and pruned with the LRU file eviction,
+        # so the retained text can never outrun the 16-file bound (map §6) however many ids churn.
         self._lock = threading.Lock()
         self.last_active: str | None = None             # the session the engine is on right now (Task 7's on_arrival)
 
@@ -215,13 +232,15 @@ class SessionLadder:
         event join).  A SessionRefused (engine memory/storage/io) degrades to a plain prefill: the request
         is not failed, the refusal is logged, and no phantom file state is recorded.  An EngineDied is
         re-raised unchanged: the engine is gone and the request path handles it as it always has.
-        `service` duck-types only: .slot_save_path (the save/restore directory) and .engine.session_file."""
+        `service` duck-types only: .engine.session_file; the save/restore directory is the ladder's own
+        cfg.slot_save_path."""
         if session_id is None or not self.cfg.enabled:
             return                                   # no session identity: the ladder has nothing to switch
         SessionRefused = _refused_class()
         incoming = self.tracked.get(session_id)
         outgoing = self.tracked.get(self.last_active) if self.last_active not in (None, session_id) else None
-        self.last_prompts[session_id] = prompt            # what a save of this session will record next
+        self.last_prompts.pop(session_id, None)         # re-inserting moves a known id to the recent end (LRU)
+        self.last_prompts[session_id] = prompt          # what a save of this session will record next
         if outgoing is not None and should_save(outgoing, self.tracked, self.cfg):
             path = os.path.join(self.cfg.slot_save_path, f"llm-session-{_safe_sid(outgoing.session_id)}.bin")
             try:
@@ -242,6 +261,11 @@ class SessionLadder:
                           f"({e.kind}); this conversation continues as a cold prefill", flush=True)
         if self.last_active is not None and self.last_active != session_id:
             self._note_switch_away(self.last_active)      # after should_save saw its park state
+        while len(self.last_prompts) > self.cfg.retention_max_files:
+            del self.last_prompts[next(iter(self.last_prompts))]   # the LRU cap on the text ring (map §6's
+        # bound, review fix): retained prompt text can never outrun the retention_max_files file bound no
+        # matter how many ids churn in and out - the least-recently-arrived prompt goes first, and the cap
+        # runs after the save branch consumed this request's outgoing prefix.
         self.last_active = session_id
 
     def record_saved_prefix(self, session_id: str, prompt: str) -> None:
