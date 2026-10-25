@@ -921,6 +921,12 @@ struct Prefill::Impl {
     float *Xscale = nullptr, *Hscale = nullptr, *grp_tail = nullptr;   // NVFP4: activation scales, expert tails
     float* row_sd = nullptr;          // NVFP4 in MMQ: each Dm row's s_down, applied by the combine as it reads the row
     std::vector<int32_t> bounds_host;
+    // STRATA_PF_GROUP_SCRATCH: per group, its first entry in sub (-1: the group fits the scratch); a sub-range is
+    // experts [a, b) of `order` and the offset of its relative bounds in bounds_host / bounds_dev
+    struct SubRange { int32_t a, b, rel; };
+    std::vector<int32_t> sub_first;
+    std::vector<SubRange> sub;
+    int64_t group_cap = 0;
     std::unique_ptr<mmq::Context> mmq_ctx;
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
     // set_cpu_pool: a small chunk's CPU experts. The layer's MoE input (T x N, from `mixed`), the rows the pool writes
@@ -1258,6 +1264,52 @@ const MmqPlan& mmq_plan() {
 }
 // the FP16 buffers (Xs, Hh): the FP16 path's, or pf_wmma's activations and down input
 bool fp16_bufs(const MmqPlan& mp) { return mp.fallback || pf_wmma(); }
+// STRATA_PF_GROUP_SCRATCH=1 (opt-in): on a layout whose every layer takes MMQ (no fused experts, no FP16 fallback or pf_wmma), the
+// gate/up output, its SwiGLU and its q8_1 copy (GU, H, Hq) hold one expert group's rows instead of the whole chunk's:
+// a group's products read them and are done with them before the next group starts, so the products and the bits are
+// the ones of the chunk-sized buffers.  ~84 KB a token less, which lets a bigger chunk fit in the slots the prompt
+// path borrows (fewer chunks: every streamed expert crosses PCIe fewer times per token).  A group whose rows pass the
+// cap runs as sub-ranges of its experts (one expert holds at most T rows: a token routes to an expert once).
+bool pf_group_scratch() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_GROUP_SCRATCH"); return v != nullptr && std::atoi(v) != 0; }();
+    if (!on) return false;
+    const MmqPlan& mp = mmq_plan();
+    if (!mp.any || fp16_bufs(mp)) return false;   // the FP16 path's or pf_wmma's buffers: not this layout
+    for (char c : mp.layer) if (!c) return false;
+    for (char c : mp.direct) if (c) return false;   // STRATA_MMQ_DIRECT's guard tables are per whole group
+    return true;
+}
+// one MMQ product range: experts [a, b) of the layer's order, and its relative bounds' offset in the bounds table
+struct MoeRange { int32_t a, b, rel; };
+// the rows one group's scratch holds: T (a single expert's most) plus three times a group's average
+int64_t group_cap_rows(size_t T, int64_t n_expert) {
+    // STRATA_PF_GROUP_CAP=<rows> (a test knob, at least T): a smaller cap, so that most groups run as sub-ranges
+    static const int64_t forced = [] { const char* v = std::getenv("STRATA_PF_GROUP_CAP"); return v ? (int64_t) std::atoll(v) : 0; }();
+    if (forced > 0) return std::max<int64_t>(forced, (int64_t) T);
+    const int64_t avg = (int64_t) T * K * MMQ_GROUP / std::max<int64_t>(n_expert, 1);
+    return ((int64_t) T + 3 * avg + 63) / 64 * 64;
+}
+// the bounds table's int32s: the absolute bounds, one relative table per group and, with STRATA_PF_GROUP_SCRATCH, the
+// relative tables of the sub-ranges of the groups that pass the cap (at most one per expert, each with an end entry)
+size_t bounds_ints(int64_t n_expert) {
+    return (size_t) (2 * (n_expert + n_expert / MMQ_GROUP + 2)) + (pf_group_scratch() ? (size_t) (3 * n_expert + 64) : 0);
+}
+// STRATA_PF_HC_REGION=1 (opt-in): the hyper-connection read's scratch (xn16, lo, lo16, gated and the BF16x2 low halves) in the
+// region the attention half and the MoE half share, as a fourth set: a half's read is done with it before that half's
+// set is written, and the fused write at a half's end (gr_write_norm_rs: the next half's xn16) runs after the half's last
+// region reader on the same stream.  The same kernels on the same values: the same bits.  ~63 KB a token outside the
+// region less (the region already holds more than this set).
+bool pf_hc_region() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_HC_REGION"); return v != nullptr && std::atoi(v) != 0; }();
+    return on && !gr_unfused();
+}
+uint64_t hc_set_bytes(size_t T, bool f16_io) {
+    Alloc a; a.count_only = true; bool ok = true;
+    a.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); a.take<float>(T * LR, ok); a.take<uint16_t>(T * LR, ok);
+    a.take<float>(T * D, ok);
+    if (bf16x2_hc(f16_io)) { a.take<uint16_t>(T * D, ok); a.take<uint16_t>(T * LR, ok); }
+    return a.used;
+}
 // #136 P3: a layout whose chunks run the fused experts (STRATA_PF_FUSED=1, the Q2_0 pack, a streamed chunk of
 // stream_all_min() tokens or more).  Its GU, H and Xq hold only the fused path's grouping tables, int8 H and per-token
 // int8 activations, and Hq nothing: ~100 KB a token less than MMQ's FP32 GU / H and per-slot q8_1 rows, which is what
@@ -1271,6 +1323,10 @@ bool fused_layout(size_t T, bool src) {
 // default): MMQ's, for T tokens.
 struct MoeBufs { size_t gu, h, xq, hq; };
 MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused) {
+    if (!fused && pf_group_scratch()) {   // GU, H, Hq: one group's rows (Xq keeps every row: gate/up reads the layer's)
+        const size_t gc = (size_t) group_cap_rows(T, n_expert);
+        return {gc * 1280, gc * 640, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) gc, 640)};
+    }
     if (!fused) return {T * K * 1280, T * K * 640, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), 640)};
     const size_t ts = (size_t) std::min<int64_t>((int64_t) T, stream_all_min() - 1);   // MMQ's last small chunk
     return {std::max<size_t>(ts * K * 1280, (fused::group_bytes((int64_t) (T * K), (int) n_expert) + 3) / 4),
@@ -1489,7 +1545,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.steps_up.init(T * strata::kernels::kStepCount);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
     {
-        const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
+        const size_t need = 3 * T * K + bounds_ints(m.g->n_expert);
         const char* gc = std::getenv("STRATA_GROUP_COPY");
         if (m.grp_n < need && !(gc && gc[0] == '1')) {
             if (m.grp_host) cudaFreeHost(m.grp_host);
@@ -1579,13 +1635,17 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.emb = o.take<float>(T * N, ok); m.R = o.take<float>(T * D, ok);
     m.xn = gr_unfused() ? o.take<float>(T * D, ok) : nullptr;   // F-1: not needed (gr_mix_r reads R)
     m.grs = o.take<float>(T * HC, ok);
-    m.xn16 = o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); m.lo = o.take<float>(T * LR, ok); m.lo16 = o.take<uint16_t>(T * LR, ok);
-    m.gated = o.take<float>(T * D, ok); m.inj = o.take<float>(T * HC, ok);
+    const bool hcr = pf_hc_region();   // STRATA_PF_HC_REGION: xn16 / lo / lo16 / gated (and their _lo) are taken in the region
+    if (!hcr) {
+        m.xn16 = o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); m.lo = o.take<float>(T * LR, ok); m.lo16 = o.take<uint16_t>(T * LR, ok);
+        m.gated = o.take<float>(T * D, ok);
+    }
+    m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
     m.mixed_h = o.take<uint16_t>(T * N, ok);
     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
     m.bo = m.emb;
-    if (bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
+    if (!hcr && bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
@@ -1597,7 +1657,8 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.fused_bufs = fz;
         const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
         const uint64_t region = std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
-                                                                           m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz)});
+                                                                           m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz),
+                                           hcr ? hc_set_bytes(T, m.f16_io) : (uint64_t) 0});
         uint8_t* base = o.take<uint8_t>((size_t) region, ok);
         m.region = base;
         m.region_bytes = region;
@@ -1635,13 +1696,20 @@ bool Prefill::carve(size_t T, void* alloc) {
             // APR: the rotated expert input (only for Hadamard-folded packs)
             m.Xr = strata::kernels::cpu::hadamard_spec().any() ? c.take<float>(T * N, ok) : nullptr;
         }
+        if (hcr) {   // STRATA_PF_HC_REGION: the hyper-connection read's set, from the region's start like the others
+            Alloc h;
+            h.base = base; h.cap = region; h.owned = &m.owned;
+            m.xn16 = h.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); m.lo = h.take<float>(T * LR, ok);
+            m.lo16 = h.take<uint16_t>(T * LR, ok); m.gated = h.take<float>(T * D, ok);
+            if (bf16x2_hc(m.f16_io)) { m.xn16_lo = h.take<uint16_t>(T * D, ok); m.lo16_lo = h.take<uint16_t>(T * LR, ok); }
+        }
         if (base == nullptr) ok = false;
     }
     for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
-        m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2)), ok);
+        m.bounds_dev = o.take<int32_t>(bounds_ints(m.g->n_expert), ok);
         m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
         // (written at every run's start, not here: when serving, these are live expert-cache slots until a request
@@ -1671,6 +1739,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.ple_norm = o.take<float>((size_t) strata::kernels::NG_HC_DIM, ok);
     take_stage(o, ss, s, m.stage, ok);
     m.T = (int64_t) T;
+    m.group_cap = pf_group_scratch() && !m.fused_bufs ? group_cap_rows(T, m.g->n_expert) : 0;
     return ok;
 }
 
@@ -2358,23 +2427,25 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     } else {   // STRATA_RING_BYTES=0: 0.1.39's count
         f(T * N); f(T * D); f(T * D);
     }
-    o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
-    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok);
+    const bool hcr = pf_hc_region();
+    if (!hcr) { o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); f(T * LR); o.take<uint16_t>(T * LR, ok); f(T * D); }
+    f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok);
     if (!emb_reuse_account()) f(T * N);   // bo: aliases emb in carve; still counted unless STRATA_EMB_REUSE_ACCOUNT=1
     const bool f16_io = prompt_f16();   // the current device's mode (the stage's), as Prefill::init will decide it
-    if (bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
+    if (!hcr && bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
-                                       moe_set_bytes(T, g.n_expert, fused_layout(T, src))}), ok);
+                                       moe_set_bytes(T, g.n_expert, fused_layout(T, src)),
+                                       hcr ? hc_set_bytes(T, f16_io) : (uint64_t) 0}), ok);
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
-        o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2)), ok);
+        o.take<int32_t>(bounds_ints(g.n_expert), ok);
         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
@@ -3630,6 +3701,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const bool fused_nat = (use_mmq || fused_only) && stream_all && no_peer && lay.native && !had_gu && !had_d &&
                                            fused::native_supported(mmq_gt, mmq_dt);
                     const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
+                    if (m.group_cap > 0 && (fused_l || !use_mmq)) {   // GU / H / Hq are one group's size
+                        err = "prefill: STRATA_PF_GROUP_SCRATCH needs MMQ on every layer (a layer took the fused or FP16 path)";
+                        return false;
+                    }
                     // #583 / #954: the fused layout's GU/H/Xq hold the grouping tables and the int8 rows, sized for
                     // stream_all_min() - 1 tokens of MMQ's rows, so a layer that takes MMQ or the FP16 path at the FULL
                     // chunk would write T*K rows into a (stream_all_min() - 1)*K-row buffer: an illegal access, or a kernel
@@ -4092,6 +4167,29 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 for (size_t i = 0; i <= MMQ_GROUP; ++i)
                                     m.bounds_host[n + 1 + g * (MMQ_GROUP + 1) + i] =
                                         m.bounds_host[std::min(n, g * MMQ_GROUP + i)] - m.bounds_host[g * MMQ_GROUP];
+                            // STRATA_PF_GROUP_SCRATCH: a group whose rows pass the scratch's cap runs as sub-ranges of
+                            // its experts, each with its own relative bounds (appended); every expert fits alone
+                            m.sub_first.assign(ng, -1);
+                            m.sub.clear();
+                            if (m.group_cap > 0) {
+                                for (size_t g = 0; g < ng; ++g) {
+                                    const size_t j0 = g * MMQ_GROUP, j1 = std::min(n, j0 + MMQ_GROUP);
+                                    if (m.bounds_host[j1] - m.bounds_host[j0] <= m.group_cap) continue;
+                                    m.sub_first[g] = (int32_t) m.sub.size();
+                                    for (size_t a = j0; a < j1;) {
+                                        size_t b = a + 1;
+                                        while (b < j1 && m.bounds_host[b + 1] - m.bounds_host[a] <= m.group_cap) ++b;
+                                        const int32_t rel = (int32_t) m.bounds_host.size();
+                                        for (size_t i = a; i <= b; ++i) m.bounds_host.push_back(m.bounds_host[i] - m.bounds_host[a]);
+                                        m.sub.push_back({(int32_t) a, (int32_t) b, rel});
+                                        a = b;
+                                    }
+                                }
+                                if (m.bounds_host.size() > bounds_ints(m.g->n_expert)) {
+                                    err = "prefill: STRATA_PF_GROUP_SCRATCH's bounds table overflowed";
+                                    return false;
+                                }
+                            }
                             if (grp_mapped) {
                                 int32_t* bh = m.grp_host + 3 * m.grp_tk;
                                 std::memcpy(bh, m.bounds_host.data(), m.bounds_host.size() * 4);
@@ -4586,6 +4684,53 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // the group's products: gate/up, swiglu, the group's H to q8_1, down
                                 const size_t j0 = j - q, g = j0 / MMQ_GROUP, n = order.size();
                                 const int ngx = (int) (q + 1);
+                                if (m.group_cap > 0) {
+                                    // STRATA_PF_GROUP_SCRATCH: GU / H / Hq hold this range's rows only (the same
+                                    // products: gate/up writes its absolute rows at GU - ra; SwiGLU, the q8_1 copy and
+                                    // down read them from 0)
+                                    const MoeRange whole{(int32_t) j0, (int32_t) (j + 1), (int32_t) (n + 1 + g * (MMQ_GROUP + 1))};
+                                    const int32_t s0 = m.sub_first[g];
+                                    const size_t ns = s0 < 0 ? 1 : (size_t) [&] { size_t c = 0; while (s0 + c < m.sub.size() && (size_t) m.sub[s0 + c].a < j + 1) ++c; return c; }();
+                                    for (size_t si = 0; si < ns; ++si) {
+                                        const MoeRange rg = s0 < 0 ? whole : MoeRange{m.sub[s0 + si].a, m.sub[s0 + si].b, m.sub[s0 + si].rel};
+                                        const int64_t ra = m.bounds_host[rg.a], nra = m.bounds_host[rg.b] - ra;
+                                        if (nra <= 0) continue;
+                                        if (nra > m.group_cap) {
+                                            err = "prefill: STRATA_PF_GROUP_SCRATCH: a range of " + std::to_string(nra) +
+                                                  " rows passes the scratch's " + std::to_string(m.group_cap);
+                                            return false;
+                                        }
+                                        const int nx = rg.b - rg.a;
+                                        const size_t eo = (size_t) (rg.a - (int32_t) j0);   // the range's first slot in the group
+                                        int64_t maxr = 0;
+                                        for (int32_t i = rg.a; i < rg.b; ++i) maxr = std::max<int64_t>(maxr, m.cnt[(size_t) order[(size_t) i]]);
+                                        pt.mark(kPfGemmGU, cs);
+                                        mmq::Product gu;
+                                        gu.w = m.grp_gu + eo * mmq_gub; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
+                                        gu.n = nx; gu.xq = m.Xq; gu.bounds = m.bounds_dev + rg.a; gu.ids = m.ids_identity;
+                                        gu.total_rows = T * K; gu.max_rows = maxr; gu.dst = m.GU - ra * 1280; gu.ld_dst = 1280;
+                                        gu.y_scale = mmq::fp4_activations(mmq_gt) ? m.Xscale : nullptr;
+                                        m.mmq_ctx->run(gu, m.cs);
+                                        if (lay.native && lay.fmt[(size_t) l].tail_off)
+                                            mmq::swiglu_scaled(m.GU, m.H, nra, 640, m.bounds_dev + rg.a, nx, m.grp_tail + eo * 4, ra, m.cs);
+                                        else
+                                            mmq::swiglu(m.GU, m.H, nra, 640, !lay.native, m.cs);
+                                        if (had_d)   // per row, as the whole group's path
+                                            strata::kernels::hadamard_rows(m.H, m.H, nra, 640, had_block, had_sh, m.cs);
+                                        pt.mark(kPfGemmD, cs);
+                                        mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, nra, m.cs, m.Hscale);
+                                        mmq::Product dn;
+                                        dn.w = m.grp_d + eo * mmq_db; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
+                                        dn.n = nx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + rg.rel;
+                                        dn.ids = m.ids_identity; dn.total_rows = nra; dn.max_rows = maxr; dn.dst = m.Dm + ra * N;
+                                        dn.ld_dst = N;
+                                        dn.y_scale = mmq::fp4_activations(mmq_dt) ? m.Hscale : nullptr;
+                                        m.mmq_ctx->run(dn, m.cs);
+                                        if (lay.native && lay.fmt[(size_t) l].tail_off)
+                                            mmq::down_row_scales(m.row_sd + ra, dn.bounds, nx, m.grp_tail + eo * 4, nra, m.cs);
+                                    }
+                                    return true;
+                                }
                                 const int64_t r0 = m.bounds_host[j0], nr = m.bounds_host[j + 1] - r0;
                                 int64_t maxr = 0;
                                 for (size_t i = j0; i <= j; ++i) maxr = std::max<int64_t>(maxr, m.cnt[(size_t) order[i]]);
@@ -4796,9 +4941,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // (fused: GU and H hold the grouping tables and int8 rows, not floats)
                         // (the CPU's rows, the last rows_cpu of GU and H, are never written by the GPU: not checked)
                         const int64_t gpu_rows = T * K - rows_cpu;
-                        const int64_t bgu = fused_l ? 0 : bad(m.GU, gpu_rows * 1280), bdm = bad(m.Dm, T * K * N),
+                        const int64_t bgu = fused_l || m.group_cap > 0 ? 0 : bad(m.GU, gpu_rows * 1280), bdm = bad(m.Dm, T * K * N),
                                       bbo = bad(m.bo, T * N);
-                        const int64_t bh = m.H && !fused_l ? bad(m.H, gpu_rows * 640) : -1;
+                        const int64_t bh = m.H && !fused_l && m.group_cap == 0 ? bad(m.H, gpu_rows * 640) : -1;   // (group scratch: the last range's rows)
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {
                             reported = stats_.chunks;
