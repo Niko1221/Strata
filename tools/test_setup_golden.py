@@ -24,6 +24,9 @@ sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_setup_golden.json")
+# the picture reader's file name is the platform's (strata-vision, .exe on Windows; -hip on AMD), so the name the
+# baseline was recorded with is taken out on both sides, like <EXE>
+VEXE_RE = re.compile(r"(?<![w.-])strata-vision(?:-hip)?(?:\.exe)?(?![\w-])")
 
 
 def card(i, name, vram, arch):
@@ -56,7 +59,7 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", v.replace(str(t), "<T>").replace("\\", "/"))   # #973: only the whole name, not "strata-x.log" on Linux
+        return VEXE_RE.sub("<VEXE>", re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", v.replace(str(t), "<T>").replace("\\", "/")))   # #973: only the whole name, not "strata-x.log" on Linux
     return v
 
 
@@ -127,6 +130,8 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch("builtins.input", fake_input),
             *extra,
         ]
+        if sys.platform == "darwin":            # on a Mac setup.main() hands the run to ROOT/metal/setup_mac.py, and the mocked
+            patches.append(mock.patch.object(sys, "platform", "win32"))   # ROOT is an empty temp folder: these runs check the Windows path
         out = io.StringIO()
         code = None
         with contextlib.ExitStack() as st:
@@ -166,6 +171,9 @@ class Golden(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+        for entry in cls.golden.values():            # the baseline goes through the same name rule as a fresh run
+            if isinstance(entry.get("config"), dict):
+                entry["config"] = normalize(entry["config"], Path("<T>"))
 
     def cases(self):
         for prof, (ram, found) in PROFILES.items():

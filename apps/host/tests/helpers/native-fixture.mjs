@@ -1,11 +1,11 @@
 import {EventEmitter} from 'node:events';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {NATIVE_FIELDS} from '../../server/native-settings.mjs';
 import {createNativeControl} from '../../server/native-control.mjs';
 export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
- const root=mkdtempSync(join(tmpdir(),'strata-native-test-')),repo=join(root,'repo'),directory=join(root,'data');
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'strata-native-test-'))),repo=join(root,'repo'),directory=join(root,'data');
  const venvBin=process.platform==='win32'?'.venv/Scripts':'.venv/bin',venvPython=process.platform==='win32'?'.venv/Scripts/python.exe':'.venv/bin/python';
  for(const path of ['tools','serve',venvBin,'engine/.previous'])mkdirSync(join(repo,path),{recursive:true});
  writeFileSync(join(repo,'setup.py'),'# --rollback-engine\n');for(const path of ['tools/strata_mcp.py',venvPython])writeFileSync(join(repo,path),'fixture');

@@ -95,12 +95,15 @@ class Update(unittest.TestCase):
     def test_main_update_never_starts(self):
         with tempfile.TemporaryDirectory() as d:
             p = self.config(Path(d))
-            with mock.patch.object(sys, "argv", ["setup.py", "--update"]), \
-                    mock.patch.object(setup, "data_folder", return_value=(Path(d), [])), \
-                    mock.patch.object(setup, "installed_configs", return_value=[p]), \
-                    mock.patch.object(setup, "update_install", return_value=0) as up, \
-                    mock.patch.object(setup, "start") as start, \
-                    contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.ExitStack() as st:
+                st.enter_context(mock.patch.object(sys, "argv", ["setup.py", "--update"]))
+                if sys.platform == "darwin":       # on a Mac setup.main() hands the run to metal/setup_mac.py before it reads --update
+                    st.enter_context(mock.patch.object(sys, "platform", "win32"))
+                st.enter_context(mock.patch.object(setup, "data_folder", return_value=(Path(d), [])))
+                st.enter_context(mock.patch.object(setup, "installed_configs", return_value=[p]))
+                up = st.enter_context(mock.patch.object(setup, "update_install", return_value=0))
+                start = st.enter_context(mock.patch.object(setup, "start"))
+                st.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 self.assertEqual(setup.main(), 0)
         up.assert_called_once()
         start.assert_not_called()

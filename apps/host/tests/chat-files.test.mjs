@@ -1,7 +1,7 @@
 // The chat's own folder and opening its files by path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createChatFolders, openFile, openCommand, resolveChatFile, refusedFolder } from '../server/chat-files.mjs';
@@ -13,7 +13,7 @@ const HARNESS =process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
 
 test('a chat folder is remembered per chat, must exist, and is never a system folder or a whole drive', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'strata-cf-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'strata-cf-')));
   try {
     const mine = join(dir, 'pagoda'); mkdirSync(mine);
     const file = join(dir, 'folders.json');
