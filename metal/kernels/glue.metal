@@ -25,6 +25,7 @@ kernel void swiglu_prep(device const float* g [[buffer(0)]], device const float*
     raw[plane] = h * q2s[j & 7];
     raw[2 * plane] = h * p4s[j & 3];
     raw[3 * plane] = (j & 1) ? h * 0.00390625f : h;
+    if (xh16) put_x16(xp, plane, t * a.n + d, j, h);
     v[j] = h;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (j == 0) {

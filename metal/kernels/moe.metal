@@ -337,3 +337,135 @@ DN_SET(T_IQ4_NL)
 // Gyro (agentionai's trellis experts): TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down (the CUDA engine's STRATA_GU_FMTS / D_FMTS)
 GU_SET(T_TQK6) GU_SET(T_TQ2T)
 DN_SET(T_TQK7) DN_SET(T_TQ2T)
+
+#ifdef STRATA_METAL_F16   // window.cpp compiles it in only under STRATA_METAL_F16=1
+// ---- the fp16 path (STRATA_METAL_F16): x from the window's half plane, h also as half for the down
+template <int F, int LPR, int NR, int NE>
+static inline void gu_body16(device const uchar* g0, device const uchar* u0, device const half* x,
+                             device const float* xs16, device float* h, device half* h16, device const int* etok, int c,
+                             int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ag[NR][NE], au[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ag[r][t] = au[r][t] = 0.0f;
+    const int U = int(a.n_embd) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        half qg[NR][UNIT], qu[NR][UNIT];
+        float4 cg[NR], cu[NR];
+        for (int r = 0; r < NR; ++r) {
+            Dec16<F>::run(g0 + r * a.gu_row, u, qg[r], cg[r], tab);
+            Dec16<F>::run(u0 + r * a.gu_row, u, qu[r], cu[r], tab);
+        }
+        for (int t = 0; t < NE; ++t) {
+            const int tok = etok[t];
+            half xs[UNIT];
+            float xsum[2];
+            X16<F>::load(x + tok * int(a.n_embd), xs16 + tok * int(a.n_embd / 16), u, xs, xsum);
+            for (int r = 0; r < NR; ++r) {
+                ag[r][t] += unit_combine16<UNIT>(qg[r], cg[r], xs, xsum);
+                au[r][t] += unit_combine16<UNIT>(qu[r], cu[r], xs, xsum);
+            }
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float gv = lane_sum<LPR>(ag[r][t]), uv = lane_sum<LPR>(au[r][t]);
+            const float hv = gv / (1.0f + exp(-gv)) * uv;
+            if (li == 0) {
+                h[(c + t) * int(a.n_ff) + row0 + r] = hv;
+                h16[(c + t) * int(a.n_ff) + row0 + r] = half(hv);
+            }
+        }
+}
+
+template <int F, int LPR, int NR, int SG>
+kernel void moe_gu16(device const uchar* W [[buffer(0)]], device const half* x [[buffer(1)]],
+                     device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
+                     constant MoeArgs& a [[buffer(4)]], device const float* xs16 [[buffer(5)]],
+                     device half* h16 [[buffer(6)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    const ulong ex = (ulong)plan[P_GEXP + g];
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const int* etok = plan + P_ETOK + c;
+    device const uchar* E = W + ex * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + (ulong)row0 * a.gu_row;
+    device const uchar* u0 = E + a.up_off + (ulong)row0 * a.gu_row;
+    for (int k = 0; k < ne; k += 4) {
+        const int m = min(4, ne - k);
+        if (m == 4) gu_body16<F, LPR, NR, 4>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else if (m == 3) gu_body16<F, LPR, NR, 3>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else if (m == 2) gu_body16<F, LPR, NR, 2>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else gu_body16<F, LPR, NR, 1>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+    }
+}
+
+template <int F, int LPR, int NR, int NE>
+static inline void dn_body16(device const uchar* d0, device const half* h16, device float* ye, device const int* plan,
+                             int c, int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ac[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ac[r][t] = 0.0f;
+    const int U = int(a.n_ff) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        half q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec16<F>::run(d0 + r * a.d_row, u, q[r], sc[r], tab);
+        for (int t = 0; t < NE; ++t) {
+            half xs[UNIT];
+            float xsum[2];
+            X16<F>::load(h16 + (c + t) * int(a.n_ff), nullptr, u, xs, xsum);
+            for (int r = 0; r < NR; ++r) ac[r][t] += unit_combine16<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float v = lane_sum<LPR>(ac[r][t]);
+            if (li == 0) ye[(c + t) * int(a.n_embd) + row0 + r] = as_type<float>(plan[P_EW + c + t]) * v;
+        }
+}
+
+template <int F, int LPR, int NR, int SG>
+kernel void moe_down16(device const uchar* W [[buffer(0)]], device const half* h16 [[buffer(1)]],
+                       device float* ye [[buffer(2)]], device const int* plan [[buffer(3)]],
+                       constant MoeArgs& a [[buffer(4)]],
+                       uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                       ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    const ulong ex = (ulong)plan[P_GEXP + g];
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const uchar* d0 = W + a.down_off + ex * a.d_stride + (ulong)row0 * a.d_row;
+    for (int k = 0; k < ne; k += 4) {
+        const int m = min(4, ne - k);
+        if (m == 4) dn_body16<F, LPR, NR, 4>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else if (m == 3) dn_body16<F, LPR, NR, 3>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else if (m == 2) dn_body16<F, LPR, NR, 2>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else dn_body16<F, LPR, NR, 1>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+    }
+}
+#define GU16_(F, L, R, S) template [[host_name("moe_gu16_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_gu16<F, L, R, S>) moe_gu16<F, L, R, S>;
+#define DN16_(F, L, R, S) template [[host_name("moe_down16_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_down16<F, L, R, S>) moe_down16<F, L, R, S>;
+#define GU16(F, L, R, S) GU16_(F, L, R, S)   // F expanded to its number before the name is made
+#define DN16(F, L, R, S) DN16_(F, L, R, S)
+GU16(T_Q2_0, 32, 1, 4) GU16(T_Q2_0, 32, 2, 4) GU16(T_Q2_0, 32, 4, 4) GU16(T_Q2_0, 32, 2, 2) GU16(T_Q2_0, 32, 2, 8)
+GU16(T_Q2_0, 32, 1, 8) GU16(T_Q2_0, 16, 1, 4) GU16(T_Q2_0, 16, 2, 4) GU16(T_Q2_0, 8, 1, 4) GU16(T_Q2_0, 8, 2, 4) GU16(T_Q2_0, 8, 1, 2)
+DN16(T_Q2_0R, 8, 1, 4) DN16(T_Q2_0R, 8, 2, 4) DN16(T_Q2_0R, 8, 4, 4) DN16(T_Q2_0R, 4, 1, 4) DN16(T_Q2_0R, 4, 2, 4)
+DN16(T_Q2_0R, 4, 4, 4) DN16(T_Q2_0R, 8, 1, 8) DN16(T_Q2_0R, 8, 2, 8) DN16(T_Q2_0R, 16, 1, 4) DN16(T_Q2_0R, 16, 2, 4)
+DN16(T_Q2_0R, 32, 1, 4) DN16(T_Q2_0R, 2, 2, 4)
+#endif   // STRATA_METAL_F16

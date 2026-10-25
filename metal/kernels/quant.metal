@@ -10,6 +10,21 @@
 // Blocks start at 2-byte aligned addresses (18, 66, 74, 82, 98, 110 bytes), so every multi-byte field is read as
 // ushorts.
 
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
+
 #define T_Q4_0 2
 #define T_Q3_K 11
 #define T_BF16 30
