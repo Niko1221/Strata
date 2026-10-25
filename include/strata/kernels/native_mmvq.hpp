@@ -166,5 +166,8 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
 int native_mmvq_il_rows_for(int cc, int ggml_type, int ncols, int n_out);
 // Tests and benchmarks: every native_mmvq_il call takes `rows` a warp (0: the table).
 void native_mmvq_il_tune(int rows);
+// Tests and benchmarks: the P1 / P2 kernel variant for every native_mmvq_il call (0: today's kernel, 2-6 as
+// STRATA_MMVQ_IL_PF; -1: the environment).
+void native_mmvq_il_pf(int pf);
 
 } // namespace strata::kernels

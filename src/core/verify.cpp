@@ -63,6 +63,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <optional>
@@ -180,6 +181,16 @@ inline bool g_qfuse_hc() {
     return on;
 #else
     return false;
+#endif
+}
+// STRATA_GRAPH_PRIO=1 (opt-in): the window graph's kernel nodes keep their capturing stream's
+// priority (side_ high, sh_cs_ low).  Unset / 0: every node at the launch stream's priority, as before.
+[[maybe_unused]] inline bool graph_prio_on() {   // (every HIP caller is guarded off)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_GPU_METAL)
+    return false;
+#else
+    static const bool on = [] { const char* v = std::getenv("STRATA_GRAPH_PRIO"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
 #endif
 }
 // fork 34a35db + b063c13 (Eddoursul), STRATA_SIDE_MIXER=1 / =2: the mixer's work that reads only the layer's input on
@@ -965,9 +976,24 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
+    // STRATA_GRAPH_PRIO=1 (opt-in): the window's streams carry priorities that their captured kernel
+    // nodes keep (the window graph is instantiated with cudaGraphInstantiateFlagUseNodePriority): the GDN gates / QSA
+    // indexer branch (side_) at the device's highest, cs_ and side2_ in the middle, the shared expert (sh_cs_) at the
+    // lowest (= the default).  The indexer chain's 1-block kernels are then dispatched ahead of the q GEMV's queued
+    // blocks, and the shared expert behind the experts.  Unset: every stream at the default priority, as before.
+    int gp_lo = 0, gp_hi = 0;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    const bool gprio = graph_prio_on() && cudaDeviceGetStreamPriorityRange(&gp_lo, &gp_hi) == cudaSuccess && gp_lo != gp_hi;
+    if (graph_prio_on() && !gprio) (void) cudaGetLastError();   // (only a failed range query's error: unset clears nothing)
+#else
+    const bool gprio = false;   // (HIP: the default priority, as make_stream's below)
+#endif
+    const int gp_mid = gprio ? (gp_lo + gp_hi) / 2 : 0;
+    if (gprio) std::fprintf(stderr, "strata verify: STRATA_GRAPH_PRIO: stream priorities side %d, cs / side2 %d, shared expert %d\n",
+                            gp_hi, gp_mid, gp_lo);
     // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
     // streams get the device's highest priority (HIP: the default priority, as the drafter's)
-    auto make_stream = [](cudaStream_t* s) -> cudaError_t {
+    auto make_stream = [&](cudaStream_t* s, int gp = 0) -> cudaError_t {
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
         static const bool hi = [] {   // (STRATA_PIPED_CONCURRENT_PRIO=0: the default priority)
             const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
@@ -981,6 +1007,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                 return cudaSuccess;
             cudaGetLastError();   // (only the failed priority call's error: the default path clears nothing)
         }
+        if (gprio) {   // STRATA_GRAPH_PRIO: this stream's own priority (gp)
+            if (cudaStreamCreateWithPriority(s, cudaStreamNonBlocking, gp) == cudaSuccess) return cudaSuccess;
+            cudaGetLastError();
+        }
+#else
+        (void) gp;
 #endif
         return cudaStreamCreateWithFlags(s, cudaStreamNonBlocking);
     };
@@ -1002,8 +1034,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (ext_stream_ != nullptr) cs_ = ext_stream_;   // set_stream (pipelined windows): the stage's shared stream
-    else if (make_stream(&cs_) != cudaSuccess) cs_ = nullptr;
-    if (cs_ == nullptr || make_stream(&sh_cs_) != cudaSuccess) {
+    else if (make_stream(&cs_, gp_mid) != cudaSuccess) cs_ = nullptr;
+    if (cs_ == nullptr || make_stream(&sh_cs_, gp_lo) != cudaSuccess) {
         err = "verify: stream create failed";
         return false;
     }
@@ -1049,10 +1081,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
     }
     if (g_side_mixer() > 0 &&
-        (cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
+        ((gprio ? make_stream(&side_, gp_hi) : cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking)) != cudaSuccess ||
         cudaEventCreateWithFlags(&mfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&mjoin_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaStreamCreateWithFlags(&side2_, cudaStreamNonBlocking) != cudaSuccess ||
+        (gprio ? make_stream(&side2_, gp_mid) : cudaStreamCreateWithFlags(&side2_, cudaStreamNonBlocking)) != cudaSuccess ||
         cudaEventCreateWithFlags(&pfork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&pjoin_, cudaEventDisableTiming) != cudaSuccess)) {
         err = "verify: the mixer branch's stream / events could not be created";
@@ -1128,6 +1160,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const bool side_mixer = side_mixer_mode >= 1;
     const bool side_proj = side_mixer_mode >= 2 && !batch_rec_;   // fork b063c13: the GDN gate projection, the QSA queries
     auto branch = [&](cudaEvent_t e, cudaStream_t from, cudaStream_t to, const char* what) {
+        if (to == side_) note_prio_fork(from);   // STRATA_GRAPH_PRIO: where the high-priority branch leaves cs
         if (cudaEventRecord(e, from) == cudaSuccess && cudaStreamWaitEvent(to, e, 0) == cudaSuccess) return true;
         err = std::string("verify: the mixer branch could not ") + what;
         return false;
@@ -1431,6 +1464,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                                  (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
                                  (int) HV, n, side_);
+                    note_prio_tail(side_, 1);
                     if (cudaEventRecord(mjoin_, side_) != cudaSuccess) { err = "verify: the GDN gates' branch could not join"; return false; }
                 }
                 if (!q8_attn) quant_in(xm, (int) N);
@@ -1714,6 +1748,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     idx_append(side_);
                     idx_query(side_);
                     idx_select(side_);
+                    note_prio_tail(side_, 1);
                     if (cudaEventRecord(mjoin_, side_) != cudaSuccess) { err = "verify: the indexer's branch could not join"; return false; }
                 }
                 if (side_proj) {   // the queries beside the keys and values (fork b063c13)
@@ -1930,6 +1965,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const bool sh_fork_late = sh_fork && sh_fork_late_env && !ar_on();
         cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
         if (sh_fork && !sh_fork_late) {
+            note_prio_fork(cs);
             cudaEventRecord(ev_fork_, cs);
             cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
         }
@@ -2008,6 +2044,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                      m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
             }
             if (sh_fork_late) {
+                note_prio_fork(cs);
                 cudaEventRecord(ev_fork_, cs);
                 cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
             }
@@ -2045,7 +2082,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 err = std::string("verify shared expert: ") + e.what();
                 return false;
             }
-            if (sh_fork) cudaEventRecord(ev_join_, sh_cs_);
+            if (sh_fork) {
+                note_prio_tail(sh_cs_, -1);
+                cudaEventRecord(ev_join_, sh_cs_);
+            }
         }
         if (strata::kernels::cpu::expert_layout().native) {
             // APR: Hadamard-folded gate/up take H (s * x); xm itself stays as it is (the shared expert above and the
@@ -2465,6 +2505,10 @@ bool Verifier::capture(int T, std::string& err) {
         err = "verify: begin capture failed";
         return false;
     }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    prio_forks_.clear();
+    prio_tails_.clear();
+#endif
     std::string rerr;
     const bool ok = record_window(T, cs_, rerr);
     cudaGraph_t graph = nullptr;
@@ -2575,7 +2619,14 @@ bool Verifier::capture(int T, std::string& err) {
 #endif
     }
 #endif
-    const bool made = instantiate_evicting(exec_t, graph, {}, "verify: instantiate: ", err);
+    unsigned long long iflags = 0;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    if (graph_prio_on()) {   // STRATA_GRAPH_PRIO: the nodes run at their own (captured or repaired) priorities
+        apply_node_priorities(graph, T);
+        iflags = cudaGraphInstantiateFlagUseNodePriority;
+    }
+#endif
+    const bool made = instantiate_evicting(exec_t, graph, {}, "verify: instantiate: ", err, iflags);
     cudaGraphDestroy(graph);
     if (!made) return false;
     const cudaError_t ue = cudaGraphUpload(exec_t, cs_);
@@ -3667,19 +3718,115 @@ bool Verifier::evict_batch_graph(const std::vector<int>& keep, bool& evicted, st
     return true;
 }
 
+// STRATA_GRAPH_PRIO: the capture-time notes.  A fork note keeps cs's current tail (the node the branch's first kernel
+// will depend on); a tail note keeps a priority stream's current tail and the priority its nodes should run at
+// (1 = the device's highest, -1 = its lowest).  No-ops with the switch off, outside a capture, and on HIP / Metal.
+void Verifier::note_prio_fork(cudaStream_t from) {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    if (!graph_prio_on()) return;
+    cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+    const cudaGraphNode_t* deps = nullptr;
+    size_t nd = 0;
+    if (cudaStreamGetCaptureInfo(from, &st, nullptr, nullptr, &deps, nullptr, &nd) != cudaSuccess || st != cudaStreamCaptureStatusActive) {
+        (void) cudaGetLastError();
+        return;
+    }
+    for (size_t i = 0; i < nd; ++i) prio_forks_.push_back(deps[i]);
+#else
+    (void) from;
+#endif
+}
+
+void Verifier::note_prio_tail(cudaStream_t on, int prio) {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    if (!graph_prio_on()) return;
+    cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+    const cudaGraphNode_t* deps = nullptr;
+    size_t nd = 0;
+    if (cudaStreamGetCaptureInfo(on, &st, nullptr, nullptr, &deps, nullptr, &nd) != cudaSuccess || st != cudaStreamCaptureStatusActive) {
+        (void) cudaGetLastError();
+        return;
+    }
+    for (size_t i = 0; i < nd; ++i) prio_tails_.push_back({deps[i], prio});
+#else
+    (void) on; (void) prio;
+#endif
+}
+
+// STRATA_GRAPH_PRIO: what priorities the captured kernel nodes carry (a histogram, logged once per window graph).  If the
+// capture copied none from the streams (design 1's R1: some drivers read back 0 everywhere), each priority stream's
+// nodes are found by walking its noted tails back to the noted forks and the attribute is set per node.
+void Verifier::apply_node_priorities(cudaGraph_t graph, int T) {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    int lo = 0, hi = 0;
+    if (cudaDeviceGetStreamPriorityRange(&lo, &hi) != cudaSuccess) { (void) cudaGetLastError(); return; }
+    auto histogram = [&](std::map<int, int>& h) {
+        size_t nn = 0;
+        cudaGraphGetNodes(graph, nullptr, &nn);
+        std::vector<cudaGraphNode_t> nodes(nn);
+        cudaGraphGetNodes(graph, nodes.data(), &nn);
+        h.clear();
+        for (cudaGraphNode_t nd : nodes) {
+            cudaGraphNodeType ty;
+            if (cudaGraphNodeGetType(nd, &ty) != cudaSuccess || ty != cudaGraphNodeTypeKernel) continue;
+            cudaKernelNodeAttrValue v{};
+            if (cudaGraphKernelNodeGetAttribute(nd, cudaKernelNodeAttributePriority, &v) == cudaSuccess) ++h[v.priority];
+            else { (void) cudaGetLastError(); ++h[999]; }
+        }
+    };
+    std::map<int, int> h;
+    histogram(h);
+    bool captured = false;
+    for (auto& [p, c] : h) captured = captured || (p != 0 && p != 999 && c > 0);
+    int repaired = 0, walked_forks = (int) prio_forks_.size(), walked_tails = (int) prio_tails_.size();
+    if (!captured && !prio_tails_.empty()) {   // the fallback: per node from the capture-time notes
+        std::set<cudaGraphNode_t> stop(prio_forks_.begin(), prio_forks_.end()), seen;
+        for (auto& [tail, pr] : prio_tails_) {
+            std::vector<cudaGraphNode_t> stack{tail};
+            while (!stack.empty()) {
+                cudaGraphNode_t nd = stack.back();
+                stack.pop_back();
+                if (stop.count(nd) || !seen.insert(nd).second) continue;
+                cudaGraphNodeType ty;
+                if (cudaGraphNodeGetType(nd, &ty) == cudaSuccess && ty == cudaGraphNodeTypeKernel) {
+                    cudaKernelNodeAttrValue v{};
+                    v.priority = pr > 0 ? hi : lo;
+                    if (cudaGraphKernelNodeSetAttribute(nd, cudaKernelNodeAttributePriority, &v) == cudaSuccess) ++repaired;
+                    else (void) cudaGetLastError();
+                }
+                size_t nd_n = 0;
+                cudaGraphNodeGetDependencies(nd, nullptr, nullptr, &nd_n);
+                std::vector<cudaGraphNode_t> deps(nd_n);
+                if (nd_n > 0 && cudaGraphNodeGetDependencies(nd, deps.data(), nullptr, &nd_n) == cudaSuccess)
+                    for (size_t i = 0; i < nd_n; ++i) stack.push_back(deps[i]);
+                else (void) cudaGetLastError();
+            }
+        }
+        histogram(h);
+    }
+    std::string s;
+    for (auto& [p, c] : h) s += " " + std::to_string(c) + " x prio " + (p == 999 ? std::string("?") : std::to_string(p)) + ";";
+    std::fprintf(stderr, "strata verify: the %d-token window's kernel node priorities (range %d..%d):%s %s (%d forks, %d tails noted%s)\n",
+                 T, lo, hi, s.c_str(), captured ? "captured from the streams" : "NOT captured from the streams",
+                 walked_forks, walked_tails, repaired > 0 ? (", " + std::to_string(repaired) + " nodes set from the notes").c_str() : "");
+#else
+    (void) graph; (void) T;
+#endif
+}
+
 bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, const std::vector<int>& key,
-                                   const char* what, std::string& err) {
+                                   const char* what, std::string& err, unsigned long long flags) {
     // #997: every layout of active slots keeps its own graph pair (20-30 MiB each on an L40S), and with an expert cache
     // sized to the reserve the next window graph - a batch layout or a one-request window captured on first use - can
     // find no VRAM left: free the least recently used layouts until it fits (they are captured again when needed)
-    cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
+    cudaError_t ie = cudaGraphInstantiate(&ex, graph, flags);
     int freed = 0;
     for (bool evicted = true; ie == cudaErrorMemoryAllocation && evicted;) {
         (void) cudaGetLastError();
         if (!evict_batch_graph(key, evicted, err)) return false;
         if (evicted) {
             ++freed;
-            ie = cudaGraphInstantiate(&ex, graph, 0);
+            ie = cudaGraphInstantiate(&ex, graph, flags);
         }
     }
     if (freed > 0)

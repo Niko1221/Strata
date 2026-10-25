@@ -2,6 +2,7 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/platform/aux_cpus.hpp"
 
 #include <cuda_runtime.h>
 
@@ -12,6 +13,11 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
+namespace strata::core { void conversation_checkpoint_join(const void* only); }
 namespace strata::core::conversation_detail {
 
 /// Conversation snapshot / checkpoint copies go through a private non-blocking stream of the current device
@@ -33,6 +39,20 @@ inline cudaError_t private_stream(cudaStream_t& s) {
     }
     s = streams[(size_t) dev];
     return cudaSuccess;
+}
+
+/// First thing a background copy thread does (STRATA_CKPT_ASYNC, STRATA_PARK_ASYNC): a thread the host creates
+/// inherits the host's one CPU (strata/platform/aux_cpus.hpp), where its memcpys would take turns with the decode.
+/// Wide first: the mask the aux placement keeps as this thread's own is the one restore() puts back (a request with
+/// aux_cpus=0), and the host's one CPU must not be it.  No output depends on where a thread runs.
+inline void background_thread_placement() {
+#if defined(__linux__)
+    cpu_set_t all;
+    CPU_ZERO(&all);
+    for (int c = 0; c < CPU_SETSIZE; ++c) CPU_SET(c, &all);
+    (void) sched_setaffinity(0, sizeof all, &all);   // the kernel keeps the CPUs the process may use
+    strata::aux_cpus::pin_current_thread();          // (a no-op while the feature is off)
+#endif
 }
 
 /// `queued`: the copy is only queued on the private stream, and the caller synchronizes the device (or orders a
@@ -79,6 +99,7 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
     o.ids = copy_beating(c.ids);
     o.imgs = copy_beating(c.imgs);
     o.gdn = copy_beating(c.gdn);
+    o.dev_tag = c.dev_tag;   // the same bytes
     o.ple = copy_beating(c.ple);
     o.tails = copy_beating(c.tails);
     o.dead = copy_beating(c.dead);
@@ -90,10 +111,51 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
     return o;
 }
 
-inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs) {
+/// copy_beating into `out`'s storage (its capacity kept: a vector whose pages are in takes the copy without faults)
+template<class V>
+inline void assign_beating(V& out, const V& src) {
+    out.clear();
+    out.reserve(src.size());
+    const size_t step = std::max<size_t>(1, ((size_t) 1 << 20) / sizeof(typename V::value_type));
+    for (size_t at = 0; at < src.size(); at += step) {
+        out.insert(out.end(), src.begin() + (std::ptrdiff_t) at,
+                   src.begin() + (std::ptrdiff_t) std::min(src.size(), at + step));
+        if (const long us = test_slow_copy_us(); us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        core::progress_beat();
+    }
+}
+
+/// copy_checkpoint_beating into `o`, a dropped checkpoint's storage (STRATA_CKPT_POOL): the same bytes
+inline void copy_checkpoint_into(ConversationCheckpoint& o, const ConversationCheckpoint& c) {
+    assign_beating(o.ids, c.ids);
+    assign_beating(o.imgs, c.imgs);
+    assign_beating(o.gdn, c.gdn);
+    o.dev_tag = c.dev_tag;
+    assign_beating(o.ple, c.ple);
+    assign_beating(o.tails, c.tails);
+    assign_beating(o.dead, c.dead);
+    assign_beating(o.block_pos, c.block_pos);
+    o.used = c.used;
+    o.pinned = c.pinned;
+    o.stage_parts.clear();
+    for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
+}
+
+/// `storage` (optional): dropped checkpoints whose vectors the copies go into, taken from its back while it lasts
+inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs,
+                                                                    std::vector<ConversationCheckpoint>* storage = nullptr) {
+    for (const auto& c : cs) core::conversation_checkpoint_join(c.gdn.data());
     std::vector<ConversationCheckpoint> out;
     out.reserve(cs.size());
-    for (const auto& c : cs) out.push_back(copy_checkpoint_beating(c));
+    for (const auto& c : cs) {
+        if (storage != nullptr && !storage->empty()) {
+            out.push_back(std::move(storage->back()));
+            storage->pop_back();
+            copy_checkpoint_into(out.back(), c);
+        } else {
+            out.push_back(copy_checkpoint_beating(c));
+        }
+    }
     return out;
 }
 
