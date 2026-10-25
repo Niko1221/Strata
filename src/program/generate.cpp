@@ -3530,13 +3530,10 @@ int main(int argc, char** argv) {
             const bool resident = !o.expert_profile.empty();
             if (resident) take_resident_experts(o);
             else o.mmap_experts = true;
-            std::fprintf(stderr, "strata generate: the experts (%.1f GiB) do not fit the RAM available now (%.1f GiB, "
-                                 "2.5 GiB kept free): %s (STRATA_ARENA_FIT=0 copies them all anyway)\n",
+            std::fprintf(stderr, "strata generate: the experts (%.1f GiB) do not fit in RAM available now (%.1f GiB, "
+                                 "2.5 GiB kept free). Enabling `%s` mode to compensate.\n",
                          (double) arena_b / 1073741824.0, (double) hm->available / 1073741824.0,
-                         resident ? "the low-RAM mode, --resident-experts: the GPU keeps the experts it holds and only "
-                                    "the rest are copied into RAM"
-                                  : "the low-RAM mode, --mmap-experts: the experts the GPU does not hold are read from "
-                                    "the model's files (no --expert-profile for the resident variant)");
+                         resident ? "--resident-experts" : "--mmap-experts");
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
