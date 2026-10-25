@@ -339,5 +339,45 @@ class SessionLadderIntake(unittest.TestCase):
             self.assertEqual(len(lad.saved_files), cfg.retention_max_files)
 
 
+class _FakeEngine:
+    """An engine as the ladder's config reader sees it (Task 9): the spawn args, else the INFO line it
+    reported - the two sources conversation_slots() reads --conversation-cache-slots from."""
+
+    def __init__(self, args, info=None):
+        self.spawn = ("exe", list(args), ".", None, {}, False, None)
+        self.info = info or {}
+
+
+class LadderConfigFromJson(unittest.TestCase):
+    """Task 9: strata.json's `session_ladder` block becomes a LadderConfig through serve.server.ladder_config_of,
+    with the engine's own --conversation-cache-mib as its park budget."""
+
+    def test_ladder_config_from_json(self):
+        from serve.server import ladder_config_of
+        engine = _FakeEngine(["--conversation-cache-mib", "8192"])
+        cfg = ladder_config_of({"session_ladder": {"idle_save_s": 8.0, "retention_max_files": 16}},
+                               engine, "/var/lib/strata/sessions")
+        self.assertTrue(cfg.enabled)
+        self.assertEqual((cfg.idle_save_s, cfg.retention_max_files), (8.0, 16))  # the dict's values
+        self.assertEqual(cfg.park_budget_mib, 8192)  # from the fake engine args, like conversation_slots()
+        self.assertEqual(cfg.slot_save_path, "/var/lib/strata/sessions")  # the service's slot save dir
+        # absent or False: disabled, exactly what Service.__init__ builds today
+        for off_cfg in ({}, {"session_ladder": False}, {"session_ladder": True}):
+            cfg = ladder_config_of(off_cfg, engine, "/var/lib/strata/sessions")
+            self.assertFalse(cfg.enabled)
+            self.assertEqual(cfg.park_budget_mib, 0)  # the disabled ladder's budget today
+        # no --conversation-cache-mib argument: the INFO line names it instead (lazy-start order);
+        # neither: fallback 0 = LadderConfig's disabled default (and the engine's own "parking off"), documented.
+        cfg = ladder_config_of({"session_ladder": {}}, _FakeEngine([], {"conversation_cache_mib": 4096}), "/d")
+        self.assertTrue(cfg.enabled)
+        self.assertEqual(cfg.park_budget_mib, 4096)
+        cfg = ladder_config_of({"session_ladder": {}}, _FakeEngine([]), "/d")
+        self.assertTrue(cfg.enabled)
+        self.assertEqual(cfg.park_budget_mib, 0)  # documented fallback: LadderConfig's disabled default
+        # a dict absent key keeps LadderConfig's pinned defaults
+        cfg = ladder_config_of({"session_ladder": {}}, engine, "/d")
+        self.assertEqual((cfg.idle_save_s, cfg.retention_max_files), (8.0, 16))
+
+
 if __name__ == "__main__":
     unittest.main()
