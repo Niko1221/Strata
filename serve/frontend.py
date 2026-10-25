@@ -717,19 +717,26 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 
 
 def param_end(text: str, final: bool = False, names=None) -> int:
-    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a tag-shaped
-    opener - `<parameter=` (with or without its `>`, any name), a damaged `<=NAME>`, a bare `<NAME>`, `</function>`,
-    `</tool_call>`, a garbled `</<` - or by the end of the text when `final`.  Plain text after it (not starting with
-    `<`) keeps it inside the value: a file that documents the call format (#210) is part of the value, even a whole
-    call written there: a `<function=` in the value that is not closed yet owns the next closer.
+    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a call-format
+    follower - `</function>`, `</tool_call>`, `<parameter=` (any name, with or without its `>`), a damaged `<=NAME>`,
+    a garbled `</<` - or by the end of the text when `final`.  (A bare `<NAME>` of a declared parameter not set yet is
+    rewritten to `<parameter=NAME>` before this, fix_param_openers.)  Any other tag or plain text after it stays in
+    the value: a file that documents the call format (#210) or holds markup is part of the value, even a whole call
+    written there: a `<function=` in the value that is not closed yet owns the next closer.
     -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at, inner_end = text.find(PARAM_END), -1
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        if not after or after == "<":
+        if after.startswith((FUNC_END, CALL_END, "<parameter=", "</<")):
+            follows = True
+        elif after.startswith("<="):        # a damaged `<=NAME>` opener, maybe still arriving
+            follows = True if ">" in after.split("\n", 1)[0] else (None if "\n" not in after else False)
+        elif not after or any(t.startswith(after) for t in (FUNC_END, CALL_END, "<parameter=", "</<", "<=")):
             follows = None                  # the follower has not arrived
+        elif names and "\n" not in after and ">" not in after and any(("<%s>" % n).startswith(after) for n in names):
+            follows = None                  # a bare `<NAME>` opener still arriving
         else:
-            follows = after[0] == "<" and (after[1].isalpha() or after[1] in "=/")
+            follows = False
         if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
             inner_end, follows = at, False  # closes the parameter of a call written inside the value
         if follows:
