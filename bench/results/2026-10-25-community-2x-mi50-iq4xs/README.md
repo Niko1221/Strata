@@ -123,3 +123,38 @@ strata generate: PLE table locked in RAM (--ple-io ram) in 14.3 s
 That is **+28% decode** and it puts IQ4_XS at the same speed as IQ3_S had on this machine (73.5 vs 73.7 tok/s)
 while keeping the 262,144-token window and the 4.25-bit weights. The alternative for a smaller box is a larger
 `--ple-row-cache` (90 B per row), which is a bounded compromise between the two.
+
+## Correctness and limitations
+
+- Quality suite: 17/17 for both models; a second 13-task suite also 13/13 for both. On short, checkable tasks the
+  3.06 vs 4.25 bit difference did not show.
+- The 140K needle was found (answer `48213`), so the 262,144-token window is usable on 2x16 GB with KV streaming.
+- Vision answered correctly on a two-shape image (10-11 s per image, 320 prompt tokens).
+- Not measured: 262K prefill beyond 140K, two clients at once, power at 262K, `--kv fp16` (other gfx906 owners use
+  it at 262K), and any GPU-encoder path (the encoder runs on the CPU here).
+
+## The PLE table is the real cost here: `--ple-io ram`
+
+This model carries a per-layer-embedding table of **320,001,536 rows at 90 bytes = 28.8 GB** inside the
+`-00002-of-00003.gguf` shard. With the default `--ple-io direct` the engine reads those rows from the SSD with
+unbuffered reads and a 90 MB row cache (`--ple-row-cache` default 1,048,576 rows), so every token puts a few SSD
+reads on the decode path. On this box that showed up as 4-11 MB/s of disk reads during generation and a decode of
+**57.5 tok/s** at a 31K prompt.
+
+With 128 GB of RAM there is room for the whole table, so `--ple-io ram` locks it in memory:
+
+```text
+strata generate: PLE table locked in RAM (--ple-io ram) in 14.3 s
+```
+
+| | `--ple-io direct` (default) | `--ple-io ram` |
+| --- | ---: | ---: |
+| 31K prompt, decode | 57.5 tok/s (49.0-65.9) | **73.5 tok/s** (64.1-73.6, 5 runs) |
+| 31K prompt, prompt rate | 533 tok/s | 532 tok/s |
+| disk reads during generation | 4-11 MB/s | 0.02 MB/s |
+| RAM | 55.4 GiB of experts | 55.4 + 28.8 GiB, 92 of 125 GB used |
+| time to ready | 48 s | 63 s |
+
+That is **+28% decode** and it puts IQ4_XS at the same speed as IQ3_S had on this machine (73.5 vs 73.7 tok/s)
+while keeping the 262,144-token window and the 4.25-bit weights. The alternative for a smaller box is a larger
+`--ple-row-cache` (90 B per row), which is a bounded compromise between the two.
