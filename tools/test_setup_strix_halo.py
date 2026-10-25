@@ -122,7 +122,7 @@ class Gfx1103Switches(unittest.TestCase):
         copies the gfx1151 hipBLASLt table's solutions 1176 / 1177 and so does not apply beside a gfx1103 table.  The
         engine keeps gfx1103 out of its own arch defaults, so setup writes this set."""
         src = (ROOT / "src/core/arch_defaults.cpp").read_text(encoding="utf-8")
-        tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1]
+        tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1].split("bool igpu_prompt_defaults_arch", 1)[0]   # the gfx1151 function only, not the iGPU set below it
         block = tail.rsplit("t = {", 1)[1].split("};", 1)[0]              # the gfx1151 switch table
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
         self.assertIn("STRATA_HCD_EXACT", gfx1151)                       # the parse found the gfx1151 block
@@ -139,7 +139,7 @@ class Gfx1150Switches(unittest.TestCase):
         copies the gfx1151 hipBLASLt table's solutions 1176 / 1177 and so does not apply beside a gfx1150 table.  The
         engine keeps gfx1150 out of its own arch defaults (src/core/arch_defaults_test.cpp), so setup writes this set."""
         src = (ROOT / "src/core/arch_defaults.cpp").read_text(encoding="utf-8")
-        tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1]
+        tail = src.split("gfx_arch_is_gfx1151(gcn_arch)) return t;", 1)[1].split("bool igpu_prompt_defaults_arch", 1)[0]   # the gfx1151 function only, not the iGPU set below it
         block = tail.rsplit("t = {", 1)[1].split("};", 1)[0]              # the gfx1151 switch table
         gfx1151 = dict(re.findall(r'\{"(STRATA_[A-Z0-9_]+)",\s*"([^"]+)"\}', block))
         self.assertIn("STRATA_HCD_EXACT", gfx1151)                       # the parse found the gfx1151 block

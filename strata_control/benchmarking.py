@@ -17,6 +17,7 @@ from strata_cli.cli import _launch_plan, _source
 from strata_cli.client import ClientError, Endpoint
 from strata_control import journal, profiles, runtime
 from strata_control.profiles import ProfileError
+from strata_control import posix_owner
 
 
 #: Windows byte-range locks are mandatory: a locked byte cannot be read through any other handle. The lock
@@ -33,8 +34,8 @@ def _lease_file(profile: str, *, create: bool) -> Path | None:
         return None
     details = directory.lstat()
     if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-            (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-        raise ProfileError("benchmark lease directory must be owner-only", 5)
+            (posix_owner.owner_only_wrong(directory, details))):
+        raise ProfileError(posix_owner.owner_only_text("benchmark lease directory must be owner-only", directory), 5)
     return directory / f".bench-{profile}.lock"
 
 
@@ -45,9 +46,9 @@ def _lease_descriptor(path: Path, *, create: bool) -> int:
     descriptor = os.open(path, flags, 0o600)
     details = os.fstat(descriptor)
     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size > 65 or (os.name == "posix" and
-            (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
+            (posix_owner.owner_only_wrong(path, details))):
         os.close(descriptor)
-        raise ProfileError("benchmark lease file must be owner-only", 5)
+        raise ProfileError(posix_owner.owner_only_text("benchmark lease file must be owner-only", path), 5)
     return descriptor
 
 
@@ -139,8 +140,8 @@ def request_cancel(profile: str, path: Path) -> dict:
     directory = path.parent if path.name in ("results.json", "progress.json") else path
     details = directory.lstat()
     if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-            (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-        raise ProfileError("benchmark output directory must be owner-only", 5)
+            (posix_owner.owner_only_wrong(directory, details))):
+        raise ProfileError(posix_owner.owner_only_text("benchmark output directory must be owner-only", directory), 5)
     if benchmark_activity(profile, directory) != "active":
         raise ProfileError("the exact benchmark run is not active", 6)
     if bench.progress(directory)["state"] != "running":
@@ -152,7 +153,7 @@ def request_cancel(profile: str, path: Path) -> dict:
     except FileExistsError:
         details = marker.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size != 1 or (os.name == "posix" and
-                (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
+                (posix_owner.owner_only_wrong(marker, details))):
             raise ProfileError("benchmark cancellation marker is invalid", 5)
     else:
         try:
@@ -175,7 +176,7 @@ def cancel_requested(directory: Path) -> bool:
     except FileNotFoundError:
         return False
     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size != 1 or (os.name == "posix" and
-            (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
+            (posix_owner.owner_only_wrong(marker, details))):
         raise ProfileError("benchmark cancellation marker is invalid", 5)
     return True
 
@@ -321,8 +322,8 @@ def job_status(profile: str, job_id: str) -> dict:
     if directory.exists() or directory.is_symlink():
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-                (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ProfileError("benchmark output directory must be owner-only", 5)
+                (posix_owner.owner_only_wrong(directory, details))):
+            raise ProfileError(posix_owner.owner_only_text("benchmark output directory must be owner-only", directory), 5)
     activity = benchmark_activity(profile, directory)
     try:
         phase = bench.progress(directory)

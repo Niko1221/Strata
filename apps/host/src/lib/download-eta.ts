@@ -55,12 +55,12 @@ export function installProgress(install: InstallParts | undefined): { done_gb: n
 }
 
 /** Which part of a multi-part install is being fetched now: the model's parts (with "part 2 of 4"), the picture reader or the engine. */
-export interface InstallStage { kind: 'model' | 'vision' | 'engine' | 'other'; index?: number; count?: number }
+export interface InstallStage { kind: 'model' | 'vision' | 'engine' | 'draft' | 'other'; index?: number; count?: number }
 export function installStage(install: { parts?: { kind?: string; state?: string; files_done?: number; files_total?: number }[]; running?: boolean } | undefined): InstallStage | undefined {
   const parts = install?.parts ?? [];
   const now = parts.find(p => p.state === 'downloading') ?? parts.find(p => !['done', 'current', 'skipped', 'failed'].includes(p.state ?? ''));
   if (!now) return undefined;
-  const kind = now.kind === 'model' || now.kind === 'vision' || now.kind === 'engine' ? now.kind : 'other';
+  const kind = now.kind === 'model' || now.kind === 'vision' || now.kind === 'engine' || now.kind === 'draft' ? now.kind : 'other';
   const count = Number(now.files_total) > 1 ? Number(now.files_total) : undefined;
   return { kind, ...(count ? { index: Math.min(count, Number(now.files_done ?? 0) + 1), count } : {}) };
 }
@@ -68,6 +68,7 @@ export function installStage(install: { parts?: { kind?: string; state?: string;
 export function stageText(stage: InstallStage | undefined): string {
   if (!stage) return tr('Downloading model files…');
   if (stage.kind === 'vision') return tr('Downloading the picture reader…');
+  if (stage.kind === 'draft') return tr('Preparing your model…');   // the speed-up layer's own download (setup step 6)
   if (stage.kind === 'engine') return tr('Downloading the engine for this PC…');
   if (stage.count && stage.index) return tr('Downloading model files · part {0} of {1}', [stage.index, stage.count]);
   return tr('Downloading model files…');

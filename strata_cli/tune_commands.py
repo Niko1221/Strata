@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+from strata_control import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
 
@@ -151,7 +152,7 @@ def _write_status(path: str | None, payload: dict[str, Any]) -> None:
     try:
         tmp = path + ".tmp"
         Path(tmp).write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     except OSError:
         pass
 

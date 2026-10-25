@@ -503,6 +503,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
                   ": the pack is inconsistent (repack with tools/iq_pack.py)";
             return false;
         }
+        for (int64_t l = 0; l < n_layers; ++l) L.fmt[(size_t) l].layer = (int) l;
         HadamardSpec h;
         if (have && !hadamard_parse(pack_dir + "/hadamard.txt", n_layers, h, err)) return false;
         hadamard_set(std::move(h));

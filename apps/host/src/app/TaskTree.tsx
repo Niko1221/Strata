@@ -6,6 +6,7 @@ import { navigate, href, useLocation } from '../lib/router';
 import { blankTask, type Task } from '../lib/tasks';
 import { TaskEditor } from '../components/TaskEditor';
 import { pushToast, setNavOpen } from '../lib/store';
+import { useBoard } from '../lib/use-board';
 type TaskLeaf = Task & {
     id: string;
 };
@@ -14,6 +15,7 @@ export function TaskTree({ collapsed }: {
 }) {
     const [editor, setEditor] = useState<Task | null>(null);
     const location = useLocation();
+    const { board } = useBoard();
     const [open, setOpen] = useState(() => localStorage.getItem('strata.tasks-open') !== 'false');
     const [tasks, setTasks] = useState<TaskLeaf[]>([]), [remove, setRemove] = useState<TaskLeaf | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
     const [leaving, setLeaving] = useState<string | null>(null);
@@ -76,8 +78,8 @@ export function TaskTree({ collapsed }: {
     if (collapsed)
         return dialogs;
     return <section className="task-tree" aria-label={tr("Scheduled tasks")}>
-    <div className="ws__head"><button className="navgroup__label task-tree__heading" aria-expanded={open} onClick={() => { setOpen(!open); localStorage.setItem('strata.tasks-open', String(!open)); }}>{tr("Tasks")}<Icon name="chevron" size={12} className={`ws__chev ${open ? 'is-open' : ''}`}/></button><div className="ws__tools"><IconBtn name="plus" title={tr("Add a task")} onClick={() => { setNavOpen(false); setEditor(blankTask()); }}/></div></div>
-    {tr(open ? <div className="navsessions">{tr(tasks.map(t => <div className="ws__session row task-tree-row" data-leaving={leaving === t.id || undefined} key={t.id}><a className="navsession" href={href('tasks', t.id)} aria-current={location.route === 'tasks' && location.param === t.id ? 'page' : undefined} title={t.title}><span className="navsession__title">{t.title}</span>{tr(!t.enabled ? <Icon name="clock" size={12}/> : null)}</a><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Edit task {0}", [t.title])} title={tr("Edit {0}", [t.title])} disabled={t.status === 'running'} onClick={() => { setNavOpen(false); setEditor({ ...t }); }}><Icon name="pencil" size={15}/></button><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Delete task {0}", [t.title])} disabled={t.status === 'running'} title={tr(t.status === 'running' ? 'Stop this task before deleting' : `Delete ${t.title}`)} onClick={() => { setNavOpen(false); setRemove(t); setError(''); }}><Icon name="trash" size={15}/></button></div>))}{tr(!tasks.length ? <p className="small muted ws__empty">{tr("No tasks yet")}</p> : null)}{tr(error && !remove ? <p className="xs inline-error">{tr("Couldn\u2019t load tasks.")}</p> : null)}</div> : null)}
+    <div className="ws__head"><button className="navgroup__label task-tree__heading" aria-expanded={open} onClick={() => { setOpen(!open); localStorage.setItem('strata.tasks-open', String(!open)); }}>{tr("Tasks")}{tr(board.need ? <span className="navcount" title={tr("{0} need your attention", [board.need])}><span className="sr-only">{tr("{0} need your attention", [board.need])}</span><span aria-hidden="true">{board.need}</span></span> : null)}<Icon name="chevron" size={12} className={`ws__chev ${open ? 'is-open' : ''}`}/></button><div className="ws__tools"><IconBtn name="plus" title={tr("Add a task")} onClick={() => { setNavOpen(false); setEditor(blankTask()); }}/></div></div>
+    {tr(open ? <div className="navsessions"><div className="ws__session row task-tree-row"><a className="navsession" href="#/tasks?view=board" aria-current={location.route === 'tasks' && !location.param && location.query.get('view') === 'board' ? 'page' : undefined} onClick={() => setNavOpen(false)}><span className="navsession__title">{tr("Task board")}</span></a></div>{tr(tasks.map(t => <div className="ws__session row task-tree-row" data-leaving={leaving === t.id || undefined} key={t.id}><a className="navsession" href={href('tasks', t.id)} aria-current={location.route === 'tasks' && location.param === t.id ? 'page' : undefined} title={t.title}><span className="navsession__title">{t.title}</span>{tr(board.problemTasks.includes(t.id) ? <span className="navsession__dot navsession__dot--warn" role="img" aria-label={tr("Needs attention")} title={tr("Needs attention")}/> : null)}{tr(!t.enabled ? <Icon name="clock" size={12}/> : null)}</a><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Edit task {0}", [t.title])} title={tr("Edit {0}", [t.title])} disabled={t.status === 'running'} onClick={() => { setNavOpen(false); setEditor({ ...t }); }}><Icon name="pencil" size={15}/></button><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Delete task {0}", [t.title])} disabled={t.status === 'running'} title={tr(t.status === 'running' ? 'Stop this task before deleting' : `Delete ${t.title}`)} onClick={() => { setNavOpen(false); setRemove(t); setError(''); }}><Icon name="trash" size={15}/></button></div>))}{tr(!tasks.length ? <p className="small muted ws__empty">{tr("No tasks yet")}</p> : null)}{tr(error && !remove ? <p className="xs inline-error">{tr("Couldn\u2019t load tasks.")}</p> : null)}</div> : null)}
     {dialogs}
   </section>;
 }

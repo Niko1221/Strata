@@ -103,7 +103,7 @@ export function expertParams(cores = null) {
     { id: 'server.parallel', group: 'Server', label: 'Engine request slots', effect: 'This UI host dispatches one request at a time', type: 'number', value: 1, recommended: 1 },
     { id: 'server.queue', group: 'Server', label: 'Queue depth', effect: 'Requests allowed to wait', type: 'number', value: 8, recommended: 8 },
     { id: 'server.timeout', group: 'Server', label: 'Request timeout', effect: 'Seconds before a call is dropped', type: 'number', value: 600, recommended: 600 },
-    { id: 'server.cors', group: 'Server', label: 'Allow browser origins', effect: 'CORS for local web apps', type: 'toggle', value: false, recommended: false },
+    { id: 'server.cors', group: 'Server', label: 'Allow browser origins', effect: 'This switch does nothing in the app. Web pages from any site can already call the API shown under Serving. To allow only some sites, or to use the engine’s own server (port 8080), add "cors_origins": ["https://your.site"] to the model’s config file.', type: 'toggle', value: false, recommended: false },
 
     // Advanced
     { id: 'adv.rope', group: 'Advanced', label: 'RoPE scaling', effect: 'Extends context beyond training', type: 'number', value: 1, recommended: 1, advanced: true },

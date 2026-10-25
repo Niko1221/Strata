@@ -33,6 +33,18 @@ class TemplateTests(unittest.TestCase):
         self.assertIn(r'StrCmp $4 "$LOCALAPPDATA\${PRODUCTNAME}" restore_done 0', self.text)
         self.assertIn("StrIsUnder", self.text)          # a remembered folder under Temp is ignored too
 
+    def test_the_install_folder_page_is_shown_except_in_an_update(self):
+        # #3186 #3190: the person can put the app on another drive; the app's own updater (passive) and silent installs keep the folder
+        # the earlier install wrote to the registry, so an update never asks again and never moves the app
+        text = self.text.replace("\r\n", "\n")
+        match = re.search(r"!define MUI_PAGE_CUSTOMFUNCTION_PRE (\w+)\n!insertmacro MUI_PAGE_DIRECTORY", text)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), "SkipIfPassive")
+        self.assertIn('WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR', text)
+        self.assertIn("Call RestorePreviousInstallLocation", text)
+        conf = (ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        self.assertIn('"installMode": "currentUser"', conf)
+
     def test_the_uninstaller_removes_files_one_by_one_and_only_empty_folders(self):
         uninstall = self.text[self.text.index("Section Uninstall"):]
         self.assertNotRegex(uninstall, r'RMDir /r "\$INSTDIR"')

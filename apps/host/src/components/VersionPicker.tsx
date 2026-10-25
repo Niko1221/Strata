@@ -5,7 +5,7 @@ import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
 import { versionNote, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
-import { VERSION_GROUPS, fitOn, groupOpen, recommendedVersions, type FitHardware } from '../lib/native-fit';
+import { VERSION_GROUPS, fitOn, groupOpen, recommendedVersions, type FitHardware, type PcPick } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker where the quantization alone is ambiguous. */
 export function versionName(v: CatalogVersion, withMaker = false): string {
@@ -26,7 +26,7 @@ const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
  * which stays on the SSD, is not in it); the download size is secondary. "Uses SSD N GB" appears only where this computer would read
  * part of the model from its SSD. The first group is a fixed list of four; the rest fold away.
  */
-export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel }: {
+export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick }: {
   versions: CatalogVersion[];
   selectedId: string;
   hardware: FitHardware | null | undefined;
@@ -38,13 +38,15 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   showRecommended?: boolean;
   /** What the button says while the selected version is one of the recommended four shown elsewhere. */
   moreLabel?: string;
+  /** The engine's own pick for this PC (catalog.recommendation); it comes first in the Recommended group. */
+  pick?: PcPick | null;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   // A group is open when the person opened it; until they touch it, only the group that holds the selected version is open.
   const [opened, setOpened] = useState<Record<string, boolean>>({});
   const selected = versions.find(v => v.id === selectedId);
-  const recommended = recommendedVersions(versions);
+  const recommended = recommendedVersions(versions, pick);
   // Where the recommended four are shown outside the menu, the menu holds only the others.
   const apart = new Set(showRecommended ? [] : recommended.map(x => x.v.id));
   const rest = versions.filter(v => !apart.has(v.id));

@@ -35,6 +35,8 @@ export interface CustomTool {
 export interface ToolsState {
   groups: ToolGroup[];
   search: { provider: 'builtin' | 'exa' | 'perplexity' | 'deepseek'; keySet: boolean };
+  /** Skip the once-per-chat question before the first web search or page in Manual mode. Off unless the person turned it on. */
+  webWithoutAsking: boolean;
   browser: { enabled: boolean; found: boolean; name: string | null; missing?: 'component' };
   custom: CustomTool[];
 }
@@ -139,6 +141,9 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
             <Btn size="sm" disabled={busy || !key.trim()} onClick={() => { void save({ search: { provider: state.search.provider, key: key.trim() } }); setKey(''); pushToast('success', tr('Key saved')); }}>{tr('Save key')}</Btn>
           </div>
         </Field> : null}
+        <Field label={tr('Let the assistant search the web without asking')} hint={tr('In Manual mode the assistant asks once per chat before it searches the web or opens a web page. Turn this on to skip that question.')}>
+          <button className="st-toggle" role="switch" aria-checked={state.webWithoutAsking} aria-label={tr('Let the assistant search the web without asking')} disabled={busy} onClick={() => void save({ webWithoutAsking: !state.webWithoutAsking })} />
+        </Field>
       </div>
     </section>
 

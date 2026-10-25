@@ -433,7 +433,7 @@ print("python ok", sys.version.split()[0])' >>"$LOG" 2>&1); then rec OK "smoke: 
     if run_timeout 30 "$f" --version >"$WORK/engine-version.txt" 2>&1; then say "        $(head -n 1 "$WORK/engine-version.txt")"; else
       cat "$WORK/engine-version.txt" >>"$LOG"; fails=$((fails + 1)); say "        engine did not start: $f"
     fi
-  done < <(find "$res/engine-bundle" -mindepth 2 -maxdepth 2 -type f \( -name strata -o -name strata-device \) 2>/dev/null)
+  done < <(find "$res/engine-bundle" -mindepth 2 -maxdepth 2 -type f \( -name strata -o -name strata-device -o -name strata-vision \) 2>/dev/null)
   [ "$fails" -eq 0 ] || fail "smoke: bundled engine starts" "$fails engine(s) did not start under the hardened runtime"
   if [ -x "$py" ] && [ -d "$res/engine-bundle" ]; then
     out="$(cd "$ctl" && env HOME="$home" "$py" -c '
@@ -473,7 +473,7 @@ smoke_terminal() {   # extracted terminal folder
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     run_timeout 30 "$f" --version >>"$LOG" 2>&1 || fail "smoke: engine in the Terminal archive" "$f does not start"
-  done < <(find "$root" -type f \( -name strata -o -name strata-device \) -perm -u+x 2>/dev/null | while IFS= read -r c; do file "$c" | grep -q 'Mach-O' && printf '%s\n' "$c"; done)
+  done < <(find "$root" -type f \( -name strata -o -name strata-device -o -name strata-vision \) -perm -u+x 2>/dev/null | while IFS= read -r c; do file "$c" | grep -q 'Mach-O' && printf '%s\n' "$c"; done)
 }
 
 # ----------------------------------------------------------------------------------------------------------------- the app

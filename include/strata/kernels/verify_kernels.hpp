@@ -123,6 +123,12 @@ void embedding_gather_dev(const uint8_t* codes, const float* scales, const float
                           uint64_t row_groups, float* out, void* stream);
 /// R[t][c][:] = x[t][:] for the hc streams.
 void broadcast_streams(const float* x, float* R, int64_t n_embd, int hc, int n_tok, void* stream);
+/// out[:n_embd] = the mean of the hc streams of ONE row R[hc][n_embd] (the DFlash2 drafter's target features; only the
+/// STRATA_TAP_FILE hook calls it).
+void hc_mean_streams(const float* R, float* out, int64_t n_embd, int hc, void* stream);
+/// STRATA_ROUTE_STATS only: acc[r] += the number of ids of row r (k per row, n rows <= 8) that no earlier row of the window holds
+/// (duplicates inside a row count once).
+void route_marginal_stats(const int32_t* ids, int n, int k, unsigned long long* acc, void* stream);
 /// dst[:n] = src[(*index) * stride + :n]  (index read from device memory; a negative index copies nothing).
 void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* index, int64_t n, void* stream);
 

@@ -1,4 +1,5 @@
 import { tr } from './i18n';
+import type { LoopRecord } from './types';
 import { LOOP_MAX_FAILURES, LOOP_MAX_RUNS, judgeAnswer, loopEndNote, loopEvery, loopLimitNote, withStopRule, type LoopLimits, type LoopStop } from './loop';
 
 /**
@@ -20,6 +21,8 @@ export interface LoopHost {
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
+  /** Keep a small record of the loop on the chat (running, or how it ended) so the task board can show it. Optional: the tests do not need it. */
+  track?(sessionId: string, record: LoopRecord): void;
 }
 
 export interface LoopStart extends LoopLimits { everyMs: number; prompt: string }
@@ -30,6 +33,8 @@ interface LoopState extends LoopStart {
   startedAt: number;
   timer: unknown;
   running: boolean;
+  lastText?: string;
+  nextAt?: number;
 }
 
 export class LoopScheduler {
@@ -41,6 +46,15 @@ export class LoopScheduler {
 
   isRunning(sessionId: string | null): boolean { return !!sessionId && this.loops.has(sessionId); }
 
+  /** The chats that have a loop going. */
+  ids(): string[] { return [...this.loops.keys()]; }
+
+  private record(sessionId: string, loop: LoopState, endedWhy?: NonNullable<LoopRecord['endedWhy']>) {
+    const record: LoopRecord = { prompt: loop.prompt, everyMs: loop.everyMs, startedAt: loop.startedAt, state: endedWhy ? 'ended' : 'running', answers: loop.answers, ...(loop.maxRuns !== undefined ? { maxRuns: loop.maxRuns } : {}), ...(loop.lastText ? { lastText: loop.lastText } : {}) };
+    if (endedWhy) { record.endedAt = this.host.now(); record.endedWhy = endedWhy; } else if (loop.nextAt !== undefined) record.nextAt = loop.nextAt;
+    try { this.host.track?.(sessionId, record); } catch { /* the record is a courtesy to the board */ }
+  }
+
   /** What the person is told for /loop with nothing after it. */
   describe(sessionId: string): string | null {
     const loop = this.loops.get(sessionId);
@@ -49,11 +63,15 @@ export class LoopScheduler {
     return tr('A loop is running in this chat: it sends "{0}" {1}, while this chat is open. Type /loop stop to stop it.', [loop.prompt, loopEvery(loop.everyMs)]) + (limit ? ' ' + limit : '');
   }
 
-  stop(sessionId: string): boolean {
+  /** The person stopped it (/loop stop or the board's Stop loop). */
+  stop(sessionId: string): boolean { return this.end(sessionId, 'stopped'); }
+
+  private end(sessionId: string, why: NonNullable<LoopRecord['endedWhy']>): boolean {
     const loop = this.loops.get(sessionId);
     if (!loop) return false;
     if (loop.timer) this.host.clearTimer(loop.timer);
     this.loops.delete(sessionId);
+    this.record(sessionId, loop, why);
     return true;
   }
 
@@ -62,6 +80,7 @@ export class LoopScheduler {
     if (this.loops.has(sessionId)) { this.host.note(sessionId, tr('This chat already has a loop. Type /loop stop first, then start a new one.')); return false; }
     const loop: LoopState = { ...command, answers: 0, failures: 0, startedAt: this.host.now(), timer: null, running: false };
     this.loops.set(sessionId, loop);
+    this.record(sessionId, loop);
     const limit = loopLimitNote(loop);
     this.host.note(sessionId, tr('Loop started: "{0}" {1}, while this chat is open. Type /loop stop to stop it. For work that must go on with Strata closed, use the Tasks screen.', [loop.prompt, loopEvery(loop.everyMs)]) + (limit ? ' ' + limit : ''));
     await this.run(sessionId);
@@ -79,6 +98,7 @@ export class LoopScheduler {
       // The person may have typed /loop stop while the answer was coming: nothing more happens then.
       if (this.loops.get(sessionId) !== loop) return;
       if (result.answered) {
+        loop.lastText = String(result.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
         if (result.failed) loop.failures += 1; else { loop.failures = 0; loop.answers += 1; }
         why = judgeAnswer(loop, loop, result, this.host.now());
       }
@@ -94,13 +114,15 @@ export class LoopScheduler {
   }
 
   private finish(sessionId: string, loop: LoopState, why: LoopStop) {
-    this.stop(sessionId);
+    this.end(sessionId, why);
     this.host.note(sessionId, loopEndNote(why, loop.answers));
   }
 
   private schedule(sessionId: string, ms: number) {
     const loop = this.loops.get(sessionId);
     if (!loop) return;
+    loop.nextAt = this.host.now() + ms;
+    this.record(sessionId, loop);
     loop.timer = this.host.setTimer(() => void this.tick(sessionId), ms);
   }
 
@@ -108,7 +130,7 @@ export class LoopScheduler {
     const loop = this.loops.get(sessionId);
     if (!loop) return;
     loop.timer = null;
-    if (!this.host.exists(sessionId)) { this.stop(sessionId); return; }
+    if (!this.host.exists(sessionId)) { this.end(sessionId, 'stopped'); return; }
     // The time is up, or the count is reached: never fire again, even if the last answer was not judged (a busy chat).
     if (loop.maxMs !== undefined && this.host.now() - loop.startedAt >= loop.maxMs) { this.finish(sessionId, loop, 'time'); return; }
     if (loop.maxRuns !== undefined && loop.answers >= loop.maxRuns) { this.finish(sessionId, loop, 'count'); return; }
