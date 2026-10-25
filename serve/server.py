@@ -902,6 +902,38 @@ def conversation_slots(engine) -> int | None:
     return slots if isinstance(slots, int) else None
 
 
+def conversation_cache_mib(engine) -> int | None:
+    """The engine's conversation-cache park budget in MiB: its --conversation-cache-mib argument, which is known
+    before the engine has started (a lazy start has reported no INFO line yet), else the INFO line it reported.
+    None when neither names it."""
+    args = engine.spawn[1] if hasattr(engine, "spawn") else []
+    if "--conversation-cache-mib" in args[:-1]:
+        try:
+            return int(args[args.index("--conversation-cache-mib") + 1])
+        except ValueError:
+            pass
+    mib = (getattr(engine, "info", None) or {}).get("conversation_cache_mib")
+    return mib if isinstance(mib, int) else None
+
+
+def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
+    """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
+    enables the ladder with its values - idle_save_s and retention_max_files, absent keys keeping LadderConfig's
+    pinned defaults - and the slot save directory the service resolved.  Absent, false, or any non-dict leaves it
+    disabled exactly as Service.__init__ builds it.  park_budget_mib is the engine's own cache budget:
+    --conversation-cache-mib read exactly like conversation_slots() reads --conversation-cache-slots (spawn args
+    first, the INFO line after a start), so the ladder never plans a save the cache itself would refuse; the
+    fallback when neither names it is 0 - LadderConfig's disabled default, which Service.__init__ passes today
+    and which the engine itself reads as "parking off"."""
+    block = cfg.get("session_ladder")
+    if not isinstance(block, dict):
+        return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
+    return LadderConfig(enabled=True, slot_save_path=slot_save_path,
+                        park_budget_mib=conversation_cache_mib(engine) or 0,
+                        idle_save_s=float(block.get("idle_save_s", 8.0)),
+                        retention_max_files=int(block.get("retention_max_files", 16)))
+
+
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
@@ -4061,9 +4093,9 @@ class Service:
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
-        # Task 7: the session ladder on the request path.  Built disabled here (its config lives in main(), which
-        # replaces this with an enabled one once the config source lands); disabled, every hook below short-circuits
-        # and the request path is byte-for-byte the one without the ladder.
+        # Task 7: the session ladder on the request path.  Built disabled here; main() replaces it with an
+        # enabled one when the config carries a `session_ladder` dict (Task 9, ladder_config_of); disabled,
+        # every hook below short-circuits and the request path is byte-for-byte the one without the ladder.
         self.session_ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.slot_save_path,
                                                          park_budget_mib=0))
         self.config_path = None                         # #564: the run config the web page's Settings view edits
@@ -9286,6 +9318,18 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    # Task 9: the config's `session_ladder` block (a dict) turns the ladder on with its values and this save
+    # dir; absent or false leaves the disabled one Service.__init__ built - the request path unchanged.
+    # park_budget_mib comes from the engine's own --conversation-cache-mib (ladder_config_of).
+    if isinstance(cfg.get("session_ladder"), dict):
+        if svc.slot_save_path is None:
+            raise SystemExit('[strata] config "session_ladder" needs slot_save_path: the ladder saves and '
+                             "restores through the engine's slot save directory")
+        svc.session_ladder = SessionLadder(ladder_config_of(cfg, engine, svc.slot_save_path))
+        lcfg = svc.session_ladder.cfg
+        print(f"[strata] session ladder on: idle save after {lcfg.idle_save_s:g} s, park budget "
+              f"{lcfg.park_budget_mib} MiB (--conversation-cache-mib), retention "
+              f"{lcfg.retention_max_files} files in {svc.slot_save_path}", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
