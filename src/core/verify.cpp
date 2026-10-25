@@ -87,6 +87,7 @@ bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, 
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
 }  // namespace strata::metal_engine
+namespace strata::gpu { void* host_view(const void* device_pointer); }
 #endif
 
 namespace strata::core {
@@ -2867,7 +2868,30 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #if defined(STRATA_GPU_METAL)
     (void) pool;
     (void) user;
-    return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
+    if (!strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err)) return false;
+    // A sampled or penalized request: the window's greedy pick is replaced by the CPU sampler over the head's logits
+    // (unified memory), Philox(seed, pos0 + t) per row - the CUDA path's rule (see above), so a seed replays the same
+    // text whatever the drafts were.  A draft is kept when the sample equals it: for a point-mass draft that is the
+    // rejection step (accept with p_target(d), else a sample of the residual).  Greedy requests keep the GPU argmax.
+    const bool metal_sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
+    if (head_sampling_ && (metal_sampled || hist_d_ != nullptr)) {
+        strata::kernels::SamplerParams sp = sampling_;
+        sp.counter = (uint64_t) pos0;
+        sp.logit_bias = nullptr;
+        const int32_t* hist = hist_d_ != nullptr ? (const int32_t*) strata::gpu::host_view(hist_d_) : nullptr;
+        if (hist_d_ != nullptr && hist == nullptr) { err = "verify: the penalty history is not host-visible"; return false; }
+        std::vector<float> rows((size_t) n_vocab_);
+        for (int t = 0; t < T; ++t) {
+            if (!strata::metal_engine::window_copy_logits(metal_, t, rows.data())) { err = "verify: the head logits are missing"; return false; }
+            strata::kernels::SamplerParams sr = sp;
+            sr.counter = sp.counter + (uint64_t) t;
+            strata::kernels::sample_tokens(rows.data(), 1, (int) n_vocab_, hist ? hist + (size_t) t * (size_t) hist_len_ : nullptr,
+                                           hist_len_, sr, (int*) out + t, nullptr);
+        }
+    }
+    spec_q_ = nullptr;
+    spec_nq_ = 0;
+    return true;
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
