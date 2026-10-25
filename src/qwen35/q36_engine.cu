@@ -389,22 +389,24 @@ struct KV8 {
     int8_t *kq = nullptr, *vq = nullptr, *kq_h = nullptr, *vq_h = nullptr;
     __half *ks = nullptr, *vs = nullptr, *ks_h = nullptr, *vs_h = nullptr;
     int nv = 0, nh = 0;
+    int pbase = 0;     // the first cell of the VRAM part (a bounce buffer's view of host cells starts at its piece)
     bool on = false;
     bool v4 = false;   // STRATA_Q36_KV=k8v4: V as 4 bits (llama.cpp's Q4_0 rounding), HD / 2 bytes a cell
 };
 constexpr int kKv8Blk = 32;
 /// Cell p of KV head kvh: its HD values and its HD / 32 scales, in VRAM or in host memory.
 __device__ __forceinline__ const int8_t* kv8_q(const int8_t* d, const int8_t* h, const KV8& kv, int kvh, int p, int HD) {
-    return p < kv.nv ? d + ((size_t) kvh * kv.nv + p) * HD : h + ((size_t) kvh * kv.nh + (p - kv.nv)) * HD;
+    const int q = p - kv.pbase;
+    return q < kv.nv ? d + ((size_t) kvh * kv.nv + q) * HD : h + ((size_t) kvh * kv.nh + (q - kv.nv)) * HD;
 }
 __device__ __forceinline__ const __half* kv8_s(const __half* d, const __half* h, const KV8& kv, int kvh, int p, int HD) {
-    const int nb = HD / kKv8Blk;
-    return p < kv.nv ? d + ((size_t) kvh * kv.nv + p) * nb : h + ((size_t) kvh * kv.nh + (p - kv.nv)) * nb;
+    const int nb = HD / kKv8Blk, q = p - kv.pbase;
+    return q < kv.nv ? d + ((size_t) kvh * kv.nv + q) * nb : h + ((size_t) kvh * kv.nh + (q - kv.nv)) * nb;
 }
 /// Cell p of KV head kvh: its V bytes (HD, or HD / 2 with v4).
 __device__ __forceinline__ const int8_t* kv8_vq(const KV8& kv, int kvh, int p, int HD) {
-    const int rb = kv.v4 ? HD / 2 : HD;
-    return p < kv.nv ? kv.vq + ((size_t) kvh * kv.nv + p) * rb : kv.vq_h + ((size_t) kvh * kv.nh + (p - kv.nv)) * rb;
+    const int rb = kv.v4 ? HD / 2 : HD, q = p - kv.pbase;
+    return q < kv.nv ? kv.vq + ((size_t) kvh * kv.nv + q) * rb : kv.vq_h + ((size_t) kvh * kv.nh + (q - kv.nv)) * rb;
 }
 /// V value d of a cell's bytes (q) and scales (s).
 __device__ __forceinline__ float kv8_vval(const KV8& kv, const int8_t* q, const __half* s, int d) {
@@ -503,10 +505,10 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
 /// nothing (the merge stops before them).  grid (n_chunk, n_rows), block 256, HD == 256.
 __global__ void k_attn_part(const float* q, const float* kc, const float* vc, const int32_t* pos0, int t0, int H,
                             int HKV, int ctx, float scale, int n_chunk, float* pacc, float* pm, float* pl, RowSel rs,
-                            KV8 kv = KV8()) {
+                            KV8 kv = KV8(), int coff = 0) {
     constexpr int HD = 256;
     __shared__ float qs[HD], sc[kChunkCells], sh[kThreads];
-    const int c = blockIdx.x, row = blockIdx.y;
+    const int c = blockIdx.x + coff, row = blockIdx.y;
     const int t = t0 + row / H, h = row % H, kvh = h / (H / HKV);
     const int npos = (rs.cell ? rs.cell[t] : *pos0 + t) + 1;
     if (rs.kc) {
@@ -1516,6 +1518,10 @@ struct Engine {
     bool stream_hold = false;   // forward_window: a layer's staging stays for its next chunk
     std::vector<KV8> kq8;   // per layer, the current session's
     int kv_nv = 0, kv_tile = 4096;
+    // KV8 decode with cells in host memory: each piece of them copied once per layer into a VRAM bounce buffer (every
+    // query head and row then reads VRAM - read in place, a GQA group re-read the host cells over PCIe per head)
+    int kv_bounce = [] { const char* v = std::getenv("STRATA_Q36_KV_BOUNCE"); return v ? std::max(0, std::atoi(v)) / 256 * 256 : 8192; }();
+    KV8 kvb;   // the bounce buffers (nv = kv_bounce cells a head)
     float *m_row = nullptr, *l_row = nullptr;
     // verify windows (T <= kVerify): the GDN inputs of every row per layer, kept for the commit
     static constexpr int kVerify = 8;
@@ -2150,6 +2156,16 @@ struct Engine {
                          (double) cell * (cells - kv_nv) / (1 << 30), kv_tile);
         }
         for (Sess& ss : sess) alloc_session(ss);
+        if (kv8 && kv_bounce > 0 && kv_nv < ctx) {
+            const size_t hk = (size_t) g.n_head_kv, hd = (size_t) g.head_dim, nb = hd / kKv8Blk, P = (size_t) kv_bounce;
+            kvb.on = true;
+            kvb.v4 = kv_v4;
+            kvb.nv = kv_bounce;
+            CK(cudaMalloc((void**) &kvb.kq, hk * P * hd));
+            CK(cudaMalloc((void**) &kvb.vq, hk * P * (kv_v4 ? hd / 2 : hd)));
+            CK(cudaMalloc((void**) &kvb.ks, hk * P * nb * 2));
+            CK(cudaMalloc((void**) &kvb.vs, hk * P * nb * 2));
+        }
         if (n_sess > 1) {   // the batch rows' tables: per state index the session pointers, on the device
             const size_t ns = sess[0].conv.size();
             std::vector<float*> hc(ns * (size_t) n_sess), hs(hc), hk(hc), hv(hc);
@@ -2754,10 +2770,31 @@ struct Engine {
                     const int nt = std::min(rows_per, T - t0);
                     const int nc = graph_mode ? n_chunk
                                               : (int) std::min<int64_t>(n_chunk, (p0 + t0 + nt + kChunkCells - 1) / kChunkCells);
-                    k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, rows_mode ? nullptr : kc[li],
-                                                                         rows_mode ? nullptr : vc[li], dpos, t0, H, HKV, ctx,
-                                                                         1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs,
-                                                                         kv8 ? kq8[li] : KV8());
+                    const KV8 kvl = kv8 ? kq8[li] : KV8();
+                    const int nd = kvl.on && kvb.on ? std::min(nc, kvl.nv / kChunkCells) : nc;
+                    if (nd > 0)
+                        k_attn_part<<<dim3(nd, nt * H), kChunkCells, 0, st>>>(q, rows_mode ? nullptr : kc[li],
+                                                                             rows_mode ? nullptr : vc[li], dpos, t0, H, HKV, ctx,
+                                                                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs,
+                                                                             kvl);
+                    for (int hc = nd; hc < nc; hc += kv_bounce / kChunkCells) {   // host cells: through the bounce buffer
+                        const int pc = std::min(kv_bounce / kChunkCells, nc - hc), cells = pc * kChunkCells;
+                        const size_t q0 = (size_t) hc * kChunkCells - (size_t) kvl.nv, hd = (size_t) HD, nb = hd / kKv8Blk;
+                        const size_t vb = kvl.v4 ? hd / 2 : hd, P = (size_t) kv_bounce, NH = (size_t) kvl.nh;
+                        auto cp = [&](void* dst, const void* src, size_t rowb) {
+                            CK(cudaMemcpy2DAsync(dst, P * rowb, (const uint8_t*) src + q0 * rowb, NH * rowb, (size_t) cells * rowb,
+                                                 (size_t) HKV, cudaMemcpyHostToDevice, st));
+                        };
+                        cp(kvb.kq, kvl.kq_h, hd);
+                        cp(kvb.vq, kvl.vq_h, vb);
+                        cp(kvb.ks, kvl.ks_h, nb * 2);
+                        cp(kvb.vs, kvl.vs_h, nb * 2);
+                        KV8 view = kvb;
+                        view.pbase = hc * kChunkCells;
+                        k_attn_part<<<dim3(pc, nt * H), kChunkCells, 0, st>>>(q, nullptr, nullptr, dpos, t0, H, HKV, ctx,
+                                                                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs,
+                                                                             view, hc);
+                    }
                     k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att, rs);
                 }
             }
