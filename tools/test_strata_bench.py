@@ -340,20 +340,22 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
     def test_project_version_does_not_use_the_locale_code_page(self):
-        # #2792: a Windows with a Chinese or Japanese code page decodes a text file read without an encoding as GBK / cp932,
-        # and CMakeLists.txt is UTF-8 with a BOM.  Path.read_text here defaults to GBK, as it does on such a machine.
+        # #2792: on Windows a text file read without an encoding is decoded with the locale's code page, and CMakeLists.txt
+        # is UTF-8 with non-ASCII text.  Path.read_text here defaults to each Windows ANSI code page in turn.
         original = Path.read_text
-
-        def gbk_default(self, encoding=None, errors=None, **kw):
-            return original(self, encoding=encoding or "gbk", errors=errors, **kw)
-
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "CMakeLists.txt").write_bytes(
-                "﻿cmake_minimum_required(VERSION 3.24)\n# notes — €\nproject(strata VERSION 9.8.7 LANGUAGES CXX)\n"
+                "cmake_minimum_required(VERSION 3.24)\n# notes — § €\nproject(strata VERSION 9.8.7 LANGUAGES CXX)\n"
                 .encode("utf-8"))
-            with mock.patch.object(B, "ROOT", root), mock.patch.object(Path, "read_text", gbk_default):
-                self.assertEqual(B.project_version(), "9.8.7")
+            for code_page in ("cp874", "cp932", "cp936", "cp949", "cp950", "cp1250", "cp1251", "cp1252", "cp1253",
+                              "cp1254", "cp1255", "cp1256", "cp1257", "cp1258"):
+                def locale_default(self, encoding=None, errors=None, **kw):
+                    return original(self, encoding=encoding or code_page, errors=errors, **kw)
+
+                with self.subTest(code_page=code_page), mock.patch.object(B, "ROOT", root), \
+                        mock.patch.object(Path, "read_text", locale_default):
+                    self.assertEqual(B.project_version(), "9.8.7")
 
 
 if __name__ == "__main__":
