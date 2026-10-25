@@ -1262,8 +1262,8 @@ def fix_openers(buf: str, schemas: dict, start: int = 0) -> str:
         return "%s<parameter=%s>" % (m.group(1), n)
 
     def stub(m):
-        if m.start() < start or m.group(1) in props_of(m.start()) or not props_of(m.start()):
-            return m.group(0)
+        if m.start() < start or m.group(1) in props_of(m.start()) or m.group(1) in schemas or not props_of(m.start()):
+            return m.group(0)       # (a declared tool's name is the opener of the next call, <parameter=NAME>)
         return ""
     buf = _COLON_OPEN.sub(colon, buf)
     buf = _FUNC_FOR_PARAM.sub(func, buf)
