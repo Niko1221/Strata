@@ -115,12 +115,15 @@ class Decisions(unittest.TestCase):
             self.assertTrue(drafting.supported_model(family="qwen") and drafting.supported_model(family="gyro"))
             self.assertFalse(drafting.supported_model(family="coder") or drafting.supported_model(family="swift") or drafting.supported_model(family="nvfp4"))
 
-    def test_while_the_engine_cannot_serve_it_the_choice_says_so_and_nothing_is_downloaded(self):
-        self.assertFalse(drafting.ENGINE_SERVES_DFLASH2, "src/program/generate.cpp: --draft dflash2 is off with --serve in this release")
-        d = drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data)
-        self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_SERVED))
-        self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data))
-        self.assertEqual(drafting.decide("auto", klass="blackwell", model_name=GYRO, data_dir=self.data).note, "")
+    def test_the_fork_serves_it_and_the_upstream_refusal_stays_available(self):
+        with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
+            d = drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data)
+            self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_SERVED))
+            self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data))
+            self.assertEqual(drafting.decide("auto", klass="blackwell", model_name=GYRO, data_dir=self.data).note, "")
+        with serving_dflash2():
+            self.ready()
+            self.assertEqual(drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data).drafter, "dflash2")
 
     def test_auto_follows_the_table(self):
         with serving_dflash2(), mock.patch.dict(drafting.SUGGESTED, {"blackwell": drafting.Suggestion("dflash2", True, "wins everywhere")}):
@@ -188,7 +191,8 @@ class EngineArguments(unittest.TestCase):
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
             self.assertEqual(args[-4:], ["--draft", "dflash2", "--draft-model", str(pack)])
-        with mock.patch("serve.server.drafting_card_class", return_value="blackwell"):
+        with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), \
+                mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))
             self.assertNotIn("--mtp", off)
@@ -425,9 +429,10 @@ class TheAppAsksControl(unittest.TestCase):
         self.assertEqual(self.plan("--mode", "off")["drafter"], "off")
 
     def test_dflash2_is_needed_once_the_engine_can_serve_it_and_not_before(self):
-        before = self.plan("--mode", "dflash2")
-        self.assertFalse(before["needed"], "while the engine cannot serve it nothing is downloaded")
-        self.assertEqual(before["line"], "Drafting: MTP (DFlash2 isn't available in this mode)")
+        with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
+            before = self.plan("--mode", "dflash2")
+            self.assertFalse(before["needed"], "a stock engine cannot serve it, so nothing is downloaded")
+            self.assertEqual(before["line"], "Drafting: MTP (DFlash2 isn't available in this mode)")
         with serving_dflash2():
             plan = self.plan("--mode", "dflash2")
             self.assertTrue(plan["needed"])
@@ -461,10 +466,12 @@ class TheDownloadPlanListsIt(unittest.TestCase):
         from strata_cli.launch.runner import Runner
         with Home() as home:
             runner = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768, vision="off", drafting="dflash2"), catalog=catalog(HW_12))
-            line = runner.drafting_plan_line()
-            self.assertEqual(line, "Drafting: MTP (DFlash2 isn't available in this mode)")
-            self.assertNotIn("dflash2", [p["kind"] for p in runner.download_plan()["parts"]], "nothing to fetch while the engine cannot serve it")
+            with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
+                line = runner.drafting_plan_line()
+                self.assertEqual(line, "Drafting: MTP (DFlash2 isn't available in this mode)")
+                self.assertNotIn("dflash2", [p["kind"] for p in runner.download_plan()["parts"]], "nothing to fetch while the engine cannot serve it")
             with serving_dflash2():
+                self.assertEqual(runner.drafting_plan_line(), "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)")
                 kinds = {p["kind"]: p for p in runner.download_plan()["parts"]}
                 self.assertEqual(kinds["dflash2"]["gb"], 1.2)
                 self.assertIn("the DFlash2 drafter (1.2 GB)", runner.download_plan()["text"])
