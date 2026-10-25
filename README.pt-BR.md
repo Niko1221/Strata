@@ -36,6 +36,7 @@ Recomendamos **primeiro a ISTA-DASLab**, depois a **Unsloth** e outros provedore
 | **ISTA-DASLab · recomendado** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S. [Coder: IQ1\_M](docs/MODELS.md#coder) para programar. |
 | **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
 | **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF). Usa menos memória, mas é mais lento. |
+| **Signal · agentionai** | AP-Q4\_K\_XL, AP-IQ4\_XS. Um ajuste que pensa de forma mais direta. [Detalhes](docs/MODELS.md). |
 | **Outras opções** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
 [Compare tamanhos, necessidades de memória e compatibilidade](docs/MODELS.md).
