@@ -274,6 +274,7 @@ void DFlashDrafter::clear_graphs() {
 void DFlashDrafter::release() {
     reference_mode_ = false;
     context_graphs_ = false;
+    prompt_grid_ = false;
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     // Also cover partial execution failures before the normal joins.
@@ -305,8 +306,10 @@ void DFlashDrafter::release() {
     free_dev(conv_dynamic_); free_dev(conv_result_); free_dev(selector_hidden_);
     free_dev(selector_unary_); free_dev(selector_ids_); free_dev(selector_scratch_);
     free_dev(proj_float_); free_dev(proj_q8_);
-    free_dev(prompt_tapin_); free_dev(prompt_xn16_); free_dev(prompt_ctx_);
-    free_dev(prompt_k_); free_dev(prompt_v_); free_dev(prompt_q8_);
+    free_dev(prompt_tapin_); free_dev(prompt_xn16_);
+    // K/V may be views into the FC buffer, whose contents are dead after conversion.
+    if (prompt_k_ != prompt_ctx_) { free_dev(prompt_k_); free_dev(prompt_v_); }
+    free_dev(prompt_ctx_); free_dev(prompt_q8_);
     free_dev(prompt_pos_); free_dev(prompt_steps_);
     prompt_rows_ = 0;
     prompt_tapin_ = prompt_xn16_ = nullptr;
@@ -379,6 +382,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         return false;
     }
     DFlashSection::df_stream() = cs_;
+    const char* prompt_grid = std::getenv("STRATA_DFLASH2_PROMPT_GRID");
+    prompt_grid_ = dg.is_dflash2() && prompt_grid && prompt_grid[0] == '1';
     const char* context_graph = std::getenv("STRATA_DFLASH2_CONTEXT_GRAPH");
     context_graphs_ = dg.is_dflash2() && context_graph && context_graph[0] == '1';
     if (std::getenv("STRATA_DF_EVENTS") != nullptr && std::getenv("STRATA_DF_EVENTS")[0] == '1') {
@@ -631,10 +636,18 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         if (prompt_rows_ > 8) {
             const int64_t PR = prompt_rows_;
             ok = take(PR * F * 2, (void**)&prompt_tapin_) &&
-                 take(PR * N * 2, (void**)&prompt_xn16_) && take(PR * N * 4, (void**)&prompt_ctx_) &&
-                 take(PR * KVW * 4, (void**)&prompt_k_) && take(PR * KVW * 4, (void**)&prompt_v_) &&
-                 take(PR * (F / 32) * 36, (void**)&prompt_q8_) &&
-                 take(PR * dg.n_head_kv * 4, (void**)&prompt_pos_) && take(PR * 16, (void**)&prompt_steps_);
+                 take(PR * N * 2, (void**)&prompt_xn16_) && take(PR * N * 4, (void**)&prompt_ctx_);
+            // FC's normalized float output is no longer read after xn16 is
+            // produced. Reuse it for K/V when both projections fit; the stream
+            // and graph dependencies retain the conversion-before-write order.
+            if (ok && KVW <= N / 2) {
+                prompt_k_ = prompt_ctx_;
+                prompt_v_ = prompt_ctx_ + PR * KVW;
+            } else if (ok) {
+                ok = take(PR * KVW * 4, (void**)&prompt_k_) && take(PR * KVW * 4, (void**)&prompt_v_);
+            }
+            if (ok && !quant_types_.empty()) ok = take(PR * (F / 32) * 36, (void**)&prompt_q8_);
+            ok = ok && take(PR * dg.n_head_kv * 4, (void**)&prompt_pos_) && take(PR * 16, (void**)&prompt_steps_);
             std::fprintf(stderr, "dflash2: prompt context groups up to %d rows, matrix-major projections\n", prompt_rows_);
         } else prompt_rows_ = 0;
     }
@@ -897,6 +910,8 @@ bool DFlashDrafter::prompt_fusion_rows(int64_t pos0, int rows, std::string& err)
     auto matrix = [&](const uint16_t* input, const uint16_t* w, float* output, int width, int outputs) {
         int type = 30;
         for (const auto& entry : quant_types_) if (entry.first == w) { type = entry.second; break; }
+        if (prompt_grid_ && type != 30 &&
+            native_prompt_mmvq(type, w, prompt_q8_, output, width, outputs, rows, cs_)) return;
         // Preserve the original <=8-column projections and reduction order.
         // Finish this matrix for every input group before reading the next one.
         for (int r = 0; r < rows; r += 8) {

@@ -95,14 +95,18 @@ int main(int argc, char** argv) {
         flag("STRATA_DF_PARITY", nullptr); flag("STRATA_DF_DBG", nullptr); flag("STRATA_DF_EVENTS", nullptr);
         flag("STRATA_DFLASH2_CONTEXT_GRAPH", "0"); flag("STRATA_DFLASH2_DIRECT_QUANT", "0");
         flag("STRATA_DFLASH2_BF16_TILE", "0");
-        bool graphs = true, distant = false, timing = false, context_only = false;
+        bool graphs = true, distant = false, timing = false, context_only = false, grid = false, memory_only = false;
         for (int i = 2; i < argc; ++i) {
             if (std::string(argv[i]) == "--no-graphs") graphs = false;
             else if (std::string(argv[i]) == "--long") distant = true;
             else if (std::string(argv[i]) == "--bench") timing = true;
             else if (std::string(argv[i]) == "--context-only") context_only = true;
-            else throw std::runtime_error("expected --no-graphs, --long, --bench or --context-only");
+            else if (std::string(argv[i]) == "--grid") grid = true;
+            else if (std::string(argv[i]) == "--memory-only") memory_only = true;
+            else throw std::runtime_error("expected --no-graphs, --long, --bench, --context-only or --grid / --memory-only");
         }
+        if (grid && context_only) throw std::runtime_error("choose --grid or --context-only");
+        flag("STRATA_DFLASH2_PROMPT_GRID", "0");
         flag("STRATA_DFLASH_GRAPH", graphs ? "1" : "0");
         const int64_t capacity = distant ? 327680 : 16384;
         ModelGeometry geometry;
@@ -113,13 +117,18 @@ int main(int argc, char** argv) {
         std::string error;
         if (!before.load(argv[1], error) || !after.load(argv[1], error)) throw std::runtime_error(error);
         if (!before.artifact().geom().is_dflash2()) throw std::runtime_error("expected a DFlash2 artifact");
-        flag("STRATA_DFLASH2_PROMPT_BATCH", "0");
+        flag("STRATA_DFLASH2_PROMPT_BATCH", grid ? "1" : "0");
         if (!before.upload(geometry, session, 0, capacity, -1, error)) throw std::runtime_error(error);
         flag("STRATA_DFLASH2_PROMPT_BATCH", context_only ? "0" : "1");
         flag("STRATA_DFLASH2_CONTEXT_GRAPH", context_only ? "1" : "0");
+        flag("STRATA_DFLASH2_PROMPT_GRID", grid ? "1" : "0");
         if (!after.upload(geometry, session, 0, capacity, -1, error)) throw std::runtime_error(error);
-        if (!context_only && after.vram_bytes() <= before.vram_bytes())
+        if (!context_only && !grid && after.vram_bytes() <= before.vram_bytes())
             throw std::runtime_error("prompt batching was not enabled in the candidate");
+        std::printf("ACCOUNTED_VRAM before=%llu after=%llu delta=%lld\n",
+                    (unsigned long long)before.vram_bytes(), (unsigned long long)after.vram_bytes(),
+                    (long long)after.vram_bytes() - (long long)before.vram_bytes());
+        if (memory_only) return 0;
         const auto& dg = before.artifact().geom();
         int64_t position = 0;
         std::vector<std::pair<int64_t,int>> cases;
@@ -156,7 +165,7 @@ int main(int argc, char** argv) {
             const int cap = strata::spec::dflash_prompt_batch_rows(std::min(capacity, physical_cells));
             for (int rows : {64,128,256,512}) expected_graphs += rows <= cap;
         }
-        if (before.context_graph_count() != 0 || after.context_graph_count() != expected_graphs)
+        if (before.context_graph_count() != (grid ? expected_graphs : 0) || after.context_graph_count() != expected_graphs)
             throw std::runtime_error("context graph capture silently fell back or used an unexpected cache key");
         std::printf("context graphs: original=%d candidate=%d\n", before.context_graph_count(), after.context_graph_count());
         if (timing) {

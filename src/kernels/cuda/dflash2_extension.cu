@@ -142,6 +142,7 @@ __global__ void topk_register_kernel(const float* logits, int32_t* ids, float* u
         __syncthreads();
     }
 }
+template<bool WarpReduce = false>
 __global__ void topk_parallel_kernel(const float* logits, const int32_t* candidates, int32_t* ids, float* unary,
                                     int vocab, int top_k, int tile_width, int tiles) {
     const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
@@ -150,8 +151,10 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
     ids += ((size_t) row * tiles + tile) * top_k;
     unary += ((size_t) row * tiles + tile) * top_k;
     const int begin = tile * tile_width, end = begin + min(vocab - begin, tile_width);
-    __shared__ float score[256];
-    __shared__ int token[256];
+    __shared__ float score[WarpReduce ? 8 : 256];
+    __shared__ int token[WarpReduce ? 8 : 256];
+    __shared__ float winner_score;
+    __shared__ int winner_id;
     float upper = INFINITY;
     int upper_id = -1;
     for (int k = 0; k < top_k; ++k) {
@@ -163,6 +166,34 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
             if (candidate < 0 || !isfinite(v) || v > upper || (v == upper && candidate <= upper_id)) continue;
             if (id < 0 || v > best || (v == best && candidate < id)) { best = v; id = candidate; }
         }
+        if constexpr (WarpReduce) {
+            for (int offset = 16; offset; offset >>= 1) {
+                const float value = __shfl_down_sync(0xffffffffu, best, offset);
+                const int other = __shfl_down_sync(0xffffffffu, id, offset);
+                if (other >= 0 && (id < 0 || value > best || (value == best && other < id))) {
+                    best = value; id = other;
+                }
+            }
+            if ((t & 31) == 0) { score[t / 32] = best; token[t / 32] = id; }
+            __syncthreads();
+            if (t < 32) {
+                best = t < 8 ? score[t] : -INFINITY;
+                id = t < 8 ? token[t] : -1;
+                for (int offset = 16; offset; offset >>= 1) {
+                    const float value = __shfl_down_sync(0xffffffffu, best, offset);
+                    const int other = __shfl_down_sync(0xffffffffu, id, offset);
+                    if (other >= 0 && (id < 0 || value > best || (value == best && other < id))) {
+                        best = value; id = other;
+                    }
+                }
+                if (!t) { winner_score = best; winner_id = id; }
+            }
+            __syncthreads();
+            // Separate winner storage is not overwritten by the next warp
+            // reduction. Its first barrier protects every reader of this winner.
+            upper = winner_score; upper_id = winner_id;
+            if (!t) { ids[k] = upper_id; unary[k] = upper; }
+        } else {
         score[t] = best; token[t] = id;
         __syncthreads();
         for (int offset = 128; offset; offset >>= 1) {
@@ -179,6 +210,53 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
         upper = score[0]; upper_id = token[0];
         if (!t) { ids[k] = upper_id; unary[k] = upper; }
         __syncthreads();
+        }
+    }
+}
+// Each vocabulary tile supplies a sorted list. Only its head can be the next
+// global winner, so keep two list heads per lane instead of rescanning all K.
+__global__ void topk_merge_heads(const int32_t* candidates, const float* scores,
+                                 int32_t* ids, float* unary, int tiles, int top_k) {
+    const int row = blockIdx.x, lane = threadIdx.x;
+    int cursor[2] = {}, head[2];
+    float value[2];
+#pragma unroll
+    for (int part = 0; part < 2; ++part) {
+        const int tile = lane + part * 32;
+        const size_t at = ((size_t)row * tiles + tile) * top_k;
+        head[part] = tile < tiles ? candidates[at] : -1;
+        value[part] = tile < tiles ? scores[at] : -INFINITY;
+    }
+    for (int k = 0; k < top_k; ++k) {
+        int id = -1;
+        float best = -INFINITY;
+#pragma unroll
+        for (int part = 0; part < 2; ++part) {
+            const int other = head[part]; const float score = value[part];
+            if (other >= 0 && isfinite(score) && (id < 0 || score > best || (score == best && other < id))) {
+                best = score; id = other;
+            }
+        }
+        for (int offset = 16; offset; offset >>= 1) {
+            const float score = __shfl_down_sync(0xffffffffu,best,offset);
+            const int other = __shfl_down_sync(0xffffffffu,id,offset);
+            if (other >= 0 && (id < 0 || score > best || (score == best && other < id))) {
+                best = score; id = other;
+            }
+        }
+        best = __shfl_sync(0xffffffffu,best,0);
+        id = __shfl_sync(0xffffffffu,id,0);
+        if (!lane) { ids[(size_t)row*top_k+k]=id; unary[(size_t)row*top_k+k]=best; }
+#pragma unroll
+        for (int part = 0; part < 2; ++part) {
+            if (id >= 0 && head[part] == id) {
+                ++cursor[part];
+                const int tile = lane + part * 32;
+                const size_t at = ((size_t)row * tiles + tile) * top_k + cursor[part];
+                head[part] = cursor[part] < top_k ? candidates[at] : -1;
+                value[part] = cursor[part] < top_k ? scores[at] : -INFINITY;
+            }
+        }
     }
 }
 __device__ float codebook_value(const float* p, size_t i) { return p[i]; }
@@ -372,6 +450,19 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
         const char* value = std::getenv("STRATA_DFLASH2_TILED_TOPK");
         return !value || value[0] != '0';
     }();
+    static const bool warp_reduce = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_WARP_TOPK");
+        return value && value[0] == '1';
+    }();
+    auto parallel = [&](const float* source, const int32_t* candidates, int32_t* output_ids,
+                        float* output_scores, int width, int tile_width, int tiles, dim3 grid) {
+        if (warp_reduce)
+            topk_parallel_kernel<true><<<grid,256,0,(cudaStream_t)stream>>>(
+                source,candidates,output_ids,output_scores,width,top_k,tile_width,tiles);
+        else
+            topk_parallel_kernel<false><<<grid,256,0,(cudaStream_t)stream>>>(
+                source,candidates,output_ids,output_scores,width,top_k,tile_width,tiles);
+    };
     if (serial) topk_kernel<<<rows, 1, 0, (cudaStream_t) stream>>>(logits, ids, unary, vocab, top_k);
     else if (tiled && scratch && vocab > kTopkTile && rows <= 65535 &&
              (vocab + kTopkTile - 1LL) / kTopkTile <= 65535) {
@@ -386,12 +477,15 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
             topk_register_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
                 logits, local_ids, local_scores, vocab, top_k, tiles);
         else
-            topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
-                logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
-        topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
-            local_scores, local_ids, ids, unary, tiles * top_k, top_k, tiles * top_k, 1);
-    } else topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
-        logits, nullptr, ids, unary, vocab, top_k, vocab, 1);
+            parallel(logits,nullptr,local_ids,local_scores,vocab,kTopkTile,tiles,dim3(rows,tiles));
+        static const bool merge_heads = [] {
+            const char* value = std::getenv("STRATA_DFLASH2_MERGE_TOPK");
+            return value && value[0] == '1';
+        }();
+        if (merge_heads && tiles <= 64)
+            topk_merge_heads<<<rows,32,0,(cudaStream_t)stream>>>(local_ids,local_scores,ids,unary,tiles,top_k);
+        else parallel(local_scores,local_ids,ids,unary,tiles*top_k,tiles*top_k,1,dim3(rows));
+    } else parallel(logits,nullptr,ids,unary,vocab,vocab,1,dim3(rows));
 }
 void dflash2_select(const int32_t* ids, const float* unary, const float* hidden,
                     const float* prev, const float* next, const int32_t* anchor,

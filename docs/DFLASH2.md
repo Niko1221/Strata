@@ -77,6 +77,29 @@ draft forward width; the floor limits how many consecutive confident proposals
 the target verifies. Use `--spec-min-p 0` explicitly for an ungated experiment.
 Verifying uncertain suffix rows can cost time even when the target rejects them.
 
+## Optional code paths
+
+These options need a CUDA build containing this change. All are off by default.
+Set them before starting the engine and restart after changing them. They change
+execution of the same weights. They do not replace the checkpoint or the target head.
+
+| Environment variable | Value 1 enables | Limits |
+| --- | --- | --- |
+| `STRATA_DFLASH2_PROMPT_BATCH` | Groups context projections by matrix | Up to 512 rows, bounded by distinct physical KV cells. About 27 MiB of extra scratch at 512 rows for official quantized artifacts, or 20 MiB for BF16. |
+| `STRATA_DFLASH2_PROMPT_GRID` | Runs groups of eight projected rows in one grid | Requires prompt batching. Q4_0, Q5_0 and Q8_0 backbone matrices; unsupported layouts keep the previous path. |
+| `STRATA_DFLASH2_DIRECT_QUANT` | Converts BF16 directly to Q8_1 | Replaces the intermediate FP32 activation buffer pass for quantized DFlash2 projections. |
+| `STRATA_DFLASH2_CONTEXT_GRAPH` | Caches small context CUDA graphs | One to eight rows; `STRATA_DFLASH_GRAPH=0` still applies. |
+| `STRATA_DFLASH2_BF16_TILE` | Uses measured row tiles for small BF16 projections | Official 2560-input, 256/640-output shapes with seven or eight rows. Values 2/4 select fixed tiles for experiments. |
+| `STRATA_DFLASH2_WARP_TOPK` | Uses warp reductions for parallel top-k | Preserves finite-value filtering and smaller-token tie breaking. |
+| `STRATA_DFLASH2_MERGE_TOPK` | Merges sorted tile lists using their current heads | Uses the existing tiled workspace, with at most 64 vocabulary tiles. Other cases retain the previous merge. |
+
+The last option can be combined with the existing
+`STRATA_DFLASH2_REGISTER_TOPK=1` tile kernel. Each component can be measured
+separately. Component gains are not additive, and do not establish a faster full
+request. The measurements so far are from one RTX 4070 Ti SUPER / Ryzen 9 5900X PC.
+See the [code-path report](../bench/results/2026-10-25-dflash2-code-optimization/README.md)
+and the [follow-up measurements](../bench/results/2026-10-25-dflash2-follow-up/README.md).
+
 ## Context and memory
 
 Setup passes `--dflash-window 0`: the draft capacity follows `--max-context`.

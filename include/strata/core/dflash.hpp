@@ -240,12 +240,14 @@ private:
     std::array<cudaGraphExec_t, 4> prompt_graph_exec_{};
     int prompt_rows_ = 0;
     uint16_t *prompt_tapin_ = nullptr, *prompt_xn16_ = nullptr;
+    // K/V are views into ctx when its allocation fits both projection outputs.
     float *prompt_ctx_ = nullptr, *prompt_k_ = nullptr, *prompt_v_ = nullptr;
     uint8_t* prompt_q8_ = nullptr;
     int32_t *prompt_pos_ = nullptr, *prompt_steps_ = nullptr;
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
     bool context_graphs_ = false;
+    bool prompt_grid_ = false;
     bool reference_mode_ = false;
     int64_t context_floor_ = 0;
     void clear_graphs();

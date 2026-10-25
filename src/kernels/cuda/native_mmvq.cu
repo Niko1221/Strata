@@ -1172,7 +1172,7 @@ static bool s26_tsum_on() {
 
 // S26 STRATA_LFUSE (PAIR): blocks n_out.. compute the same rows of w2 into y2 (two matrices of one shape on one
 // input in one launch; each output's code is the single matrix's)
-template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false, bool INDEXED = false>
+template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false, bool INDEXED = false, bool PROMPT = false>
 __launch_bounds__(NW * WARP, (ROWS <= 2 ? 4 : 1))
 __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w, const Q81Block* x_, float* y_,
                                          int n_in, int n_out,
@@ -1180,6 +1180,13 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
                                          const int32_t* __restrict__ row_ids = nullptr) {
     const Q81Block* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
     float* STRATA_PDL_RESTRICT y = y_;
+
+    if constexpr (PROMPT) {
+        // Each y tile is the original NCOLS-row invocation, with the same
+        // dot products and reductions. Only scheduling across groups changes.
+        x += std::size_t(blockIdx.y) * NCOLS * (n_in / Q8K);
+        y += std::size_t(blockIdx.y) * NCOLS * n_out;
+    }
 
     constexpr int BPI = F::BPI * NW / WARPS;           // blocks per iteration scale with the warp count
     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
@@ -2939,6 +2946,43 @@ void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream) {
     if (q8_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q8_PACKED=1 tensors
     small_mmvq<Q80Block, 8>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
+}
+
+namespace {
+template<typename F>
+void prompt_mmvq_launch(const void* weights, const void* activation, float* out,
+                         int width, int outputs, int rows, cudaStream_t stream) {
+    constexpr int NC = 8;
+    const dim3 grid((unsigned(outputs) + 1) / 2, unsigned(rows / NC));
+    launch_pdl(native_mmvq_multi_kernel<F, NC, WARPS, 2, false, false, false, true>,
+               grid, dim3(WARP, WARPS), 0, stream,
+               (const typename F::Block*)weights, (const Q81Block*)activation, out,
+               width, outputs, (const typename F::Block*)nullptr, (float*)nullptr, (const int32_t*)nullptr);
+}
+}
+bool native_prompt_mmvq(int type, const void* weights, const void* activation, float* out,
+                         int width, int outputs, int rows, void* stream) {
+#if defined(STRATA_HIP_GFX906)
+    // gfx906 uses the separate wave64 dispatch; retain that layout.
+    return false;
+#else
+    if (!g_multi_exact || rows < 16 || rows > 512 || outputs < 1 ||
+        (type != 2 && type != 6 && type != 8)) return false;
+    validate_shape(width, 8);
+    validate_pointer(weights); validate_pointer(activation); validate_pointer(out); validate_stream(stream);
+    const auto cuda_stream = static_cast<cudaStream_t>(stream);
+    switch (type) {
+    case 2: prompt_mmvq_launch<SmallTraits<Q40Block,4>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
+    case 6: prompt_mmvq_launch<SmallTraits<Q50Block,4>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
+    case 8: prompt_mmvq_launch<SmallTraits<Q80Block,8>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
+    }
+    launch_check();
+    const int complete = rows / 8 * 8;
+    if (complete < rows)
+        native_mmvq(type, weights, (const uint8_t*)activation + std::size_t(complete) * (width / 32) * 36,
+                    out + std::size_t(complete) * outputs, width, outputs, rows - complete, stream);
+    return true;
+#endif
 }
 
 void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,

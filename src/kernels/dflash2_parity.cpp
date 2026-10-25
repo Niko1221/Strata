@@ -87,6 +87,47 @@ void direct_bf16_quantization(bool timing) {
     }
     checked(cudaStreamDestroy(stream));
 }
+void prompt_projection_grid() {
+#if defined(STRATA_HIP_GFX906)
+    std::puts("SKIP: prompt grid retains the gfx906 wave64 dispatch");
+    return;
+#else
+    using namespace strata::kernels;
+    cudaStream_t stream;
+    checked(cudaStreamCreate(&stream));
+    for (int type : {2,6,8}) for (int width : {96,2560,7680,12800}) {
+        const int outputs = width >= 7680 ? 2560 : 257;
+        const int block_bytes = type == 2 ? 18 : type == 6 ? 22 : 34;
+        std::vector<uint8_t> weights((size_t)(width / 32) * outputs * block_bytes);
+        for (size_t b = 0; b < weights.size() / block_bytes; ++b) {
+            const uint16_t scale = __half_as_ushort(__float2half(((int)(b % 19) - 9) * 0.015625f));
+            std::memcpy(weights.data() + b * block_bytes, &scale, 2);
+            for (int j = 2; j < block_bytes; ++j)
+                weights[b * block_bytes + j] = (uint8_t)(b * 17 + j * 23);
+        }
+        Device<uint8_t> w(weights);
+        for (int rows : {16,17,64,129,512}) {
+            std::vector<uint16_t> features((size_t)width * rows);
+            for (size_t j = 0; j < features.size(); ++j)
+                features[j] = bf16_from_f32(((int)(j % 109) - 54) * 0.03125f);
+            Device<uint16_t> x(features);
+            Device<uint8_t> q8((size_t)rows * (width / 32) * 36);
+            Device<float> expected((size_t)rows * outputs), got((size_t)rows * outputs);
+            native_quantize_bf16_q8_1(x.p,q8.p,width,rows,stream);
+            for (int row = 0; row < rows; row += 8)
+                native_mmvq(type,w.p,q8.p + (size_t)row * (width / 32) * 36,
+                            expected.p + (size_t)row * outputs,width,outputs,std::min(8,rows-row),stream);
+            if (!native_prompt_mmvq(type,w.p,q8.p,got.p,width,outputs,rows,stream))
+                throw std::runtime_error("prompt grid unexpectedly declined supported geometry");
+            checked(cudaStreamSynchronize(stream));
+            const auto a=expected.read((size_t)rows*outputs), b=got.read((size_t)rows*outputs);
+            if (std::memcmp(a.data(),b.data(),a.size()*sizeof(float)))
+                throw std::runtime_error("prompt grid changed projection bits");
+        }
+    }
+    checked(cudaStreamDestroy(stream));
+#endif
+}
 void bf16_projection_tiles(bool timing) {
     using namespace strata::kernels;
     cudaStream_t stream;
@@ -516,9 +557,36 @@ void full_vocabulary_topk(bool timing) {
     }
 }
 
-void topk_tile_edges() {
+void topk_graph_benchmark() {
     using namespace strata::kernels;
-    for (int rows : {1,3,7}) for (int vocab : {4095,4096,4097,8193}) for (int top : {1,16,64}) {
+    constexpr int rows=7,vocab=248320,top=16,replays=200,calls=10;
+    std::vector<float> logits((size_t)rows*vocab);
+    for (size_t i=0;i<logits.size();++i) logits[i]=((int)((i*73)%10007)-5003)*0.0625f;
+    Device<float> input(logits),unary(rows*top);Device<int32_t> ids(rows*top);
+    Device<uint8_t> scratch(dflash2_topk_scratch_bytes(rows,vocab,top));
+    cudaStream_t stream;checked(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
+    checked(cudaDeviceSynchronize());
+    cudaGraph_t graph=nullptr;cudaGraphExec_t exec=nullptr;
+    checked(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+    for(int i=0;i<calls;++i) dflash2_topk(input.p,ids.p,unary.p,rows,vocab,top,stream,scratch.p,
+                                         dflash2_topk_scratch_bytes(rows,vocab,top));
+    checked(cudaStreamEndCapture(stream,&graph));checked(cudaGraphInstantiate(&exec,graph,0));
+    for(int i=0;i<20;++i)checked(cudaGraphLaunch(exec,stream));
+    cudaEvent_t a,b;checked(cudaEventCreate(&a));checked(cudaEventCreate(&b));
+    for(int rep=0;rep<8;++rep) {
+        checked(cudaEventRecord(a,stream));
+        for(int i=0;i<replays;++i)checked(cudaGraphLaunch(exec,stream));
+        checked(cudaEventRecord(b,stream));checked(cudaEventSynchronize(b));float ms;
+        checked(cudaEventElapsedTime(&ms,a,b));
+        std::printf("TOPK_GRAPH rows=%d vocab=%d k=%d rep=%d ms=%.9f\n",rows,vocab,top,rep,ms/(replays*calls));
+    }
+    checked(cudaEventDestroy(a));checked(cudaEventDestroy(b));
+    checked(cudaGraphExecDestroy(exec));checked(cudaGraphDestroy(graph));checked(cudaStreamDestroy(stream));
+}
+void topk_tile_edges(bool compact = false) {
+    using namespace strata::kernels;
+    for (int rows : {1,3,7}) for (int vocab : {4095,4096,4097,8193,262144,262145}) for (int top : {1,16,64}) {
+        if (compact && (rows != 3 || (vocab != 4097 && vocab != 262144) || top != 16)) continue;
         std::vector<float> logits(rows*vocab);
         for (size_t i=0;i<logits.size();++i) logits[i]=(int)(i%97)-48;
         // All-invalid rows, fewer finite values than K, exact ties (including
@@ -584,7 +652,18 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
-    try { direct_bf16_quantization(timing); bf16_projection_tiles(timing); invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+    if (argc > 1 && std::strcmp(argv[1], "--topk-smoke") == 0) {
+        try { topk_tile_edges(true); checked(cudaDeviceSynchronize()); }
+        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
+        std::puts("PASS: compact top-k edge checks"); return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--topk-bench") == 0) {
+        try { topk_tile_edges(); full_vocabulary_topk(false); topk_graph_benchmark(); checked(cudaDeviceSynchronize()); }
+        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
+        std::puts("PASS: top-k edges and full-vocabulary CPU oracle");
+        return 0;
+    }
+    try { prompt_projection_grid(); direct_bf16_quantization(timing); bf16_projection_tiles(timing); invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
     return 0;
