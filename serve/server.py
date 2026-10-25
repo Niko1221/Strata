@@ -4569,6 +4569,13 @@ class Service:
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+            # Task 8, the FIFO held (this method's contract): the fresh engine parks nothing - the ladder
+            # resets every park flag while keeping its tracked entries and file_paths (the next switch
+            # back is restore-eligible) - and, unless a restore is already pending below (the image job's
+            # restore_after_load owns this start, never overwritten or doubled), queues the last active
+            # conversation's checkpoint for the warm restore the very next line performs.
+            self.session_ladder.on_start(self)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
@@ -4675,8 +4682,20 @@ class Service:
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued"):
                     return "busy"
+            ladder = self.session_ladder
+            if ladder is not None and ladder.cfg.enabled:
+                # Task 8, the FIFO held (this method's acquire above): the idle-save hook immediately
+                # before the lazy-unload decision, on the SAME idle measurement the decision uses - the
+                # human-latency head start (cfg.idle_save_s) saves the last-active session before an idle
+                # unload can drop its park; a manual /unload inside the window earns the same check.
+                ladder.on_idle(self, time.time() - (self.last_request_at or self.started_at))
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
+            if ladder is not None and ladder.cfg.enabled:
+                # Task 8: the engine is about to go and with it every parked conversation - save all the
+                # ladder's tracked save-eligible sessions first (unchanged ones skipped).  A refused save
+                # is swallowed inside the ladder; an EngineDied propagates as any engine trouble here does.
+                ladder.on_unload(self)
             self.engine.unload()
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
@@ -4699,6 +4718,9 @@ class Service:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
                     print(f"[strata] idle unload: {e}", flush=True)
+                except EngineDied as e:                 # Task 8: the ladder's save-on-unload can find
+                    print(f"[strata] idle unload: {e}", flush=True)   # the engine gone mid-save; the
+                    # thread lives, the next turn (or the next request's ensure_loaded) handles the dead engine
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
