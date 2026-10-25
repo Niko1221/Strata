@@ -14261,16 +14261,8 @@ int main(int argc, char** argv) {
                     if (!strata::program::vram_rules::refill(host_res, xc.slots(), evicted, pick_miss, fill, sync, e))
                         return false;
                 }
-                // the verifier decided its fast paths from the residency table at init: re-check them with the
-                // cache as it is now (its own device's residency table and slot offsets)
-                strata::core::VerifyHits h;
-                h.d_res = t.idx == 0 ? d_res : stages[(size_t) t.idx - 1]->d_res;
-                h.h_res = host_res.empty() ? nullptr : host_res.data();
-                h.cache_base = xc.device_slot(0);
-                h.slot_off = xc.slot_offsets();
-                h.n_slots = xc.slots();
-                h.blob = thits.blob;
-                stage_ver((int) t.idx).refresh_residency(h);
+                // nothing to tell the verifiers: each window's refresh_ar (#871) reads the host residency table, so
+                // a stage that was 100% resident at init takes the doorbell graph once this shrink marks one -1
             }
             settle.run();   // before the report: it prints the prompt chunk the relend chose
             for (size_t k = 0; k < targets.size(); ++k) {
