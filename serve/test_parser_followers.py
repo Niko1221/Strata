@@ -13,7 +13,7 @@ def tool(name, **props):
     return {"name": name, "input_schema": {"type": "object", "properties": {k: {"type": v} for k, v in props.items()}}}
 
 
-TOOLS = [tool("Grep", pattern="string", path="string", head_limit="integer"),
+TOOLS = [tool("Grep", pattern="string", path="string", head_limit="integer", context="number", **{"-n": "boolean"}),
          tool("Read", file_path="string", offset="integer"),
          tool("Bash", command="string", description="string", timeout="number", run_in_background="boolean")]
 SCHEMAS = [{"name": t["name"], "parameters": t["input_schema"]} for t in TOOLS]
@@ -63,6 +63,19 @@ CASES = {
     "coerced_after_cut": (
         body("Bash", P + "command" + GT + "\nls\n" + PE + "\n" + P + "run_in_background " + GT + "\ntrue\n" + PE),
         ("Bash", {"command": "ls", "run_in_background": True})),
+    "closing_tag_of_declared_opens_it": (
+        body("Grep", P + "pattern" + GT + "\nfoo\n" + PE + "\n" + P + "-n" + GT + "\ntrue\n" + PE + "\n"
+             + LT + "/context" + GT + "\n2\n" + PE),
+        ("Grep", {"pattern": "foo", "-n": True, "context": 2})),
+    "bare_tag_of_declared_opens_it": (
+        body("Bash", P + "command" + GT + "\nls\n" + PE + "\n" + LT + "timeout" + GT + "\n300\n" + PE),
+        ("Bash", {"command": "ls", "timeout": 300})),
+    "closing_tag_of_set_stays": (
+        body("Bash", P + "command" + GT + "\nls\n" + PE + "\n" + LT + "/command" + GT + "\nx\n" + PE),
+        ("Bash", {"command": "ls\n" + PE + "\n" + LT + "/command" + GT + "\nx"})),
+    "function_name_ends_at_line": (
+        CS + "\n" + F + "Grep\n" + P + "pattern" + GT + "\nfoo\n" + PE + "\n" + FE + "\n" + CE,
+        ("Grep", {"pattern": "foo"})),
     "plain_text_after_closer_stays": (
         body("Bash", P + "command" + GT + "\necho a\n" + PE + " then text\n" + PE),
         ("Bash", {"command": "echo a" + "\n" + PE + " then text"})),

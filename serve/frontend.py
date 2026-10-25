@@ -719,8 +719,8 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 def param_end(text: str, final: bool = False, names=None) -> int:
     """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a call-format
     follower - `</function>`, `</tool_call>`, `<parameter=` (any name, with or without its `>`), a damaged `<=NAME>`,
-    a garbled `</<` - or by the end of the text when `final`.  (A bare `<NAME>` of a declared parameter not set yet is
-    rewritten to `<parameter=NAME>` before this, fix_param_openers.)  Any other tag or plain text after it stays in
+    a garbled `</<` - or by the end of the text when `final`.  (A bare `<NAME>` or `</NAME>` of a declared parameter not
+    set yet is rewritten to `<parameter=NAME>` before this, fix_param_openers.)  Any other tag or plain text after it stays in
     the value: a file that documents the call format (#210) or holds markup is part of the value, even a whole call
     written there: a `<function=` in the value that is not closed yet owns the next closer.
     -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
@@ -733,8 +733,9 @@ def param_end(text: str, final: bool = False, names=None) -> int:
             follows = True if ">" in after.split("\n", 1)[0] else (None if "\n" not in after else False)
         elif not after or any(t.startswith(after) for t in (FUNC_END, CALL_END, "<parameter=", "</<", "<=")):
             follows = None                  # the follower has not arrived
-        elif names and "\n" not in after and ">" not in after and any(("<%s>" % n).startswith(after) for n in names):
-            follows = None                  # a bare `<NAME>` opener still arriving
+        elif names and "\n" not in after and ">" not in after and any(
+                t.startswith(after) for n in names for t in ("<%s>" % n, "</%s>" % n)):
+            follows = None                  # a bare `<NAME>` / `</NAME>` opener still arriving
         else:
             follows = False
         if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
@@ -786,11 +787,22 @@ def split_second_call(buf: str, final: bool = False) -> str:
 NOT_PARAMS = ("function", "think", "parameter")
 
 
+def cut_name(text: str) -> str:
+    """A tag's name as written after `=`: it ends at the first whitespace, `<` or `>` (the one cut for function and
+    parameter names)."""
+    return re.split(r"[\s<>]", text, 1)[0]
+
+
+def func_name(text: str) -> str:
+    """The tool a `<function=` opener names (`text`: what follows `=`); a stray space before the name is skipped."""
+    return cut_name(text.lstrip())
+
+
 def param_name(opener: str, names=None) -> str | None:
-    """The parameter a `<parameter=` opener names (`opener`: the text between `=` and `>`): cut at the first
-    whitespace, `<` or `>`.  None - the parameter is dropped - when that is empty, one of the call's own tags
-    (NOT_PARAMS), or not among `names` (when there are any)."""
-    name = re.split(r"[\s<>]", opener, 1)[0]
+    """The parameter a `<parameter=` opener names (`opener`: the text between `=` and `>`), cut by cut_name.  None -
+    the parameter is dropped - when that is empty, one of the call's own tags (NOT_PARAMS), or not among `names`
+    (when there are any)."""
+    name = cut_name(opener)
     if not name or name in NOT_PARAMS or (names and name not in names):
         return None
     return name
@@ -972,7 +984,7 @@ def coerce_param(value: str, declared) -> object:
     if declared == "boolean" and text.lower() in _BOOLS:
         return _BOOLS[text.lower()]
     try:
-        v = json.loads(value)
+        v = json.loads(text)
     except ValueError:
         return value
     if declared == "boolean" and not isinstance(v, bool):
@@ -992,33 +1004,34 @@ def coerce_args(args: dict, schema: dict | None) -> dict:
     return out
 
 
-_FUSED = re.compile(r"<function=([^<>\s=]+)[ \t]*(?=<parameter=)")
+_FUSED = re.compile(r"<function=([^<>\s=]+)\s*(?=<parameter=)")
 
 
 def fix_fused(buf: str, schemas: dict) -> str:
-    """`<function=Read <parameter=file_path>` - the tool's name fused with its first parameter's opener (the model left
-    out the `>` after the name) - is `<function=Read>\n<parameter=file_path>` when the prefix is a declared tool."""
-    return _FUSED.sub(lambda m: "<function=%s>\n" % m.group(1) if m.group(1) in schemas else m.group(0), buf)
+    """`<function=Read <parameter=file_path>` - the tool's name (func_name) fused with its first parameter's opener,
+    or ended by a line break (the model left out the `>` after the name) - is `<function=Read>\n<parameter=file_path>`
+    when the name is a declared tool."""
+    return _FUSED.sub(lambda m: "<function=%s>\n" % m.group(1) if func_name(m.group(1)) in schemas else m.group(0), buf)
 
 
 _DAMAGED_PARAM = re.compile(r"(?:</parameter>|<function=[^>\n]*>)\s*<=([^>\s]+)>")
 
 
-_BARE_PARAM = re.compile(r"</parameter>\s*<([^<>\s=/]+)>")
+_BARE_PARAM = re.compile(r"</parameter>\s*</?([^<>\s=/]+)>")
 
 
 def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
     """recover: inside a call, `<=NAME>` after the function opener or a `</parameter>` is `<parameter=NAME>` when NAME
-    is a declared parameter of that call's tool (seen from Coder-L); so is a bare `<NAME>` after a `</parameter>` when
+    is a declared parameter of that call's tool (seen from Coder-L); so is a bare `<NAME>` or `</NAME>` after a `</parameter>` when
     NAME is declared and not set yet in the call.  Only text from `start` on is rewritten."""
     out, last = [], 0
     ms = [(m.start(1) - 2, m) for m in _DAMAGED_PARAM.finditer(buf)]
-    ms += [(m.start(1) - 1, m) for m in _BARE_PARAM.finditer(buf)]
+    ms += [(m.start(1) - (2 if buf[m.start(1) - 1] == "/" else 1), m) for m in _BARE_PARAM.finditer(buf)]
     for cut, m in sorted(ms, key=lambda t: t[0]):
         if cut < start or cut < last:
             continue
         f = buf.rfind(FUNC_START, 0, m.start(1))
-        name = buf[f + len(FUNC_START):buf.find(">", f)].strip() if f >= 0 else ""
+        name = func_name(buf[f + len(FUNC_START):]) if f >= 0 else ""
         props = ((schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
         bare = buf[cut] == "<" and buf[cut:cut + 2] != "<="
         if m.group(1) in props and not (bare and PARAM_START + m.group(1) + ">" in buf[f:cut]):
@@ -1034,7 +1047,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
-    name = body[len("<function="):body.index(">")].strip()      # `<function= capture>`: the model's stray space
+    name = func_name(body[len("<function="):])      # `<function= capture>`: the model's stray space
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
@@ -1329,7 +1342,7 @@ class OutputParser:
                 if b < 0:
                     return out
                 raw_name = rest[a + 10:b]
-                name = raw_name.strip()
+                name = func_name(raw_name)
                 name = self.aliases.get(name, name)
                 if raw_name != raw_name.strip() and name not in self.schemas:
                     return out
@@ -1644,6 +1657,9 @@ class OutputParser:
                     if raw_name != raw_name.strip() and name not in self.schemas:
                         is_call = None     # only declared names gain whitespace normalization
                 is_partial = FUNC_START.startswith(after) or re.fullmatch(r"<function=\s*[^<>\s]*\s*", after)
+                fused = re.fullmatch(r"<function=\s*[^<>\s]+\s+(<[^>]*)", after)    # name ended by a line break
+                if fused and "<parameter=".startswith(fused.group(1)):
+                    is_partial = True               # held until fix_fused can see the whole `<parameter=`
                 if not is_call and not is_partial:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]

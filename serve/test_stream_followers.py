@@ -15,7 +15,8 @@ CS, CE = LT + "tool_call" + GT, LT + "/tool_call" + GT
 TOOLS = [{"name": "Bash", "description": "", "input_schema": {"type": "object", "properties": {
               "command": {"type": "string"}, "description": {"type": "string"}, "timeout": {"type": "number"}}}},
          {"name": "Grep", "description": "", "input_schema": {"type": "object", "properties": {
-              "pattern": {"type": "string"}, "path": {"type": "string"}, "head_limit": {"type": "integer"}}}}]
+              "pattern": {"type": "string"}, "path": {"type": "string"}, "head_limit": {"type": "integer"},
+              "context": {"type": "number"}, "-n": {"type": "boolean"}}}}]
 SCHEMAS = [{"name": t["name"], "parameters": t["input_schema"]} for t in TOOLS]
 
 
@@ -28,7 +29,7 @@ class Svc:
     def model_for(self, req):
         return "m"
 
-    def run(self, ids, thinking, tools, max_new, req, cancel, force=None):
+    def run(self, ids, thinking, tools, max_new, req, cancel, force=None, declared_only=False):
         parser = OutputParser(thinking=False, tools=SCHEMAS, stream_tools=True, recover=self.recover)
         for t in self.tokens:
             for ev in parser.feed(t):
@@ -92,7 +93,9 @@ class StreamFollowers(unittest.TestCase):
         for text in (CS + "\n" + F + "Bash" + GT + "\n" + P + "command" + GT + "\n" + FE + "\n" + CE,
                      CS + "\n" + F + "Bash" + GT + "\n" + P + "command" + GT + FE + "\n" + CE):
             for step in (1, 5, len(text)):
-                self.both([text[k:k + step] for k in range(0, len(text), step)], [{"command": ""}])
+                # recovery on only: with it off upstream keeps a call cut short as text
+                self.assertEqual(streamed_inputs([text[k:k + step] for k in range(0, len(text), step)], True),
+                                 [{"command": ""}])
 
     def test_value_cut_at_a_markup_shaped_closer(self):
         text = (CS + "\n" + F + "Grep" + GT + "\n" + P + "path" + GT + "\n" + LT + "file" + GT + "\n" + PE + "\n" + LT)
@@ -115,6 +118,21 @@ class StreamFollowers(unittest.TestCase):
         for step in (1, 7, len(text)):
             self.assertEqual(streamed_inputs([text[k:k + step] for k in range(0, len(text), step)], True),
                              [{"command": "doc:\n" + inner}])
+
+    def test_declared_closing_tag_after_a_closer_opens_that_parameter(self):
+        text = call("Grep", P + "pattern" + GT + "\nfoo\n" + PE + "\n" + P + "-n" + GT + "\ntrue\n" + PE + "\n"
+                    + LT + "/context" + GT + "\n2\n" + PE)
+        text2 = call("Bash", P + "command" + GT + "\nls\n" + PE + "\n" + LT + "timeout" + GT + "\n300\n" + PE)
+        for step in (1, 3, len(text)):
+            self.assertEqual(streamed_inputs([text[k:k + step] for k in range(0, len(text), step)], True),
+                             [{"pattern": "foo", "-n": True, "context": 2}])      # recovery is opt-in
+            self.assertEqual(streamed_inputs([text2[k:k + step] for k in range(0, len(text2), step)], True),
+                             [{"command": "ls", "timeout": 300}])
+
+    def test_function_name_ended_by_a_line_break(self):
+        text = CS + "\n" + F + "Grep\n" + P + "pattern" + GT + "\nfoo\n" + PE + "\n" + FE + "\n" + CE
+        for step in (1, 3, len(text)):
+            self.both([text[k:k + step] for k in range(0, len(text), step)], [{"pattern": "foo"}])
 
 
 if __name__ == "__main__":
