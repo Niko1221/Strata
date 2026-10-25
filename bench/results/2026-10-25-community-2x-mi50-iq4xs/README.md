@@ -70,6 +70,25 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 - Load to ready: 40 s (IQ3_S) and 48 s (IQ4_XS); switching models between the two takes that long.
 - Power under a 31K prompt: ~406 W peak for both cards, 49-54 C edge.
 
+### Layer split: an even 24/24 beats 27/21 on long prompts
+
+The 48 layers can be cut unevenly or in half. Measured with everything else fixed (`--ple-io ram`, 262K context),
+five runs each, unique prompt text per run:
+
+| Test | `--layer-split 27` (27/21) | `--layer-split 24` (24/24) | Delta |
+| --- | ---: | ---: | ---: |
+| 31K prompt, decode median | 70.4 tok/s | 70.3 tok/s | 0% |
+| 31K prompt, prompt rate | 533 tok/s | **556 tok/s** | +4.2% |
+| 118K prompt, decode median | **62.8 tok/s** | 59.6 tok/s | -5.1% |
+| 118K prompt, prompt rate | 548 tok/s | **596 tok/s** | +8.7% |
+
+The even split keeps both cards busy during the prompt pass (+9% at 118K), because the 27/21 cut leaves the second
+card waiting for the first one in every window. At depth the uneven split keeps a small decode lead, because the
+second card has the smaller expert cache (4,745 slots against 5,131) and more layers on it means more misses.
+
+What that comes to for a request of 118K prompt and ~500 generated tokens: **223 s with 27/21 against 206 s with
+24/24**, so the even split is the better default for long-prompt work. On short chats the two are within noise.
+
 ## Correctness and limitations
 
 - Quality suite: 17/17 for both models; a second 13-task suite also 13/13 for both. On short, checkable tasks the
