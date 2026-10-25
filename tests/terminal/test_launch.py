@@ -486,6 +486,37 @@ class AdoptRules(unittest.TestCase):
             self.assertEqual((cfg["exe"], cfg["backend"]), ("component:strata-engine", "sycl"))
             self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
 
+    def test_signal_is_adopted_with_its_bf16_token_embedding(self):
+        """Signal is one GGUF holding its own n-gram table, and the engine reads its token embedding from a BF16 copy beside the pack:
+        an Arc card that already has both gets the settings setup writes; a missing copy is named, never configured around."""
+        from strata_cli.launch import adopt
+        with Home() as h:
+            d = h.base / "Strata-data"
+            m = d / "models" / "signal-AP-Q4_K_XL"
+            m.mkdir(parents=True)
+            gguf = m / "Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf"
+            gguf.write_bytes(b"GGUF")
+            pack = d / "packs" / "signal-ap-q4_k_xl"
+            (pack / "tokenizer").mkdir(parents=True)
+            (pack / "experts.bin").write_bytes(b"x")
+            plan = lambda: adopt.plan(family="signal", model="AP-Q4_K_XL", model_dir=m, data_dir=d,
+                                      src=Path(__file__).resolve().parents[2], context=32768, kv=None,
+                                      model_name="signal-3.8-flash-next-ap-q4_k_xl", family_def={"embd_bf16": True},
+                                      log=h.base / "x.log", backend="sycl", pack_name="signal-ap-q4_k_xl")
+            cfg, problems = plan()
+            self.assertIsNone(cfg)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("token-embd-bf16.gguf", problems[0])
+            self.assertNotIn("not for signal", " ".join(problems))          # the family is adopted, not refused
+            embd = pack / "token-embd-bf16.gguf"
+            embd.write_bytes(b"x")
+            cfg, problems = plan()
+            self.assertEqual(problems, [], problems)
+            a = cfg["args"]
+            self.assertEqual(a[a.index("--native") + 1], str(gguf))
+            self.assertEqual(a[a.index("--ple-gguf") + 1], str(gguf))       # one file: the n-gram table is inside it, as for Gyro
+            self.assertEqual(a[a.index("--embd-gguf") + 1], str(embd))
+
     def test_plan_intel_flags_follow_the_driver(self):
         from unittest import mock
         from strata_cli.launch import adopt

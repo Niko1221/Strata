@@ -5,7 +5,7 @@ that this Terminal does not run. When setup says it cannot set this card up, and
 prepared before, "use model files I already have"), the run config is simple enough to write here: the same arguments setup writes for the GSQ-RCO models,
 with the engine named as the component (`component:strata-engine`). Nothing is downloaded, prepared or compiled; if a file is missing the person is told which.
 
-Only the GSQ-RCO families (qwen, swift, coder) and Gyro (one GGUF with its n-gram table inside) are adopted this way; images stay off.
+Only the GSQ-RCO families (qwen, swift, coder), Gyro and Signal (one GGUF with its n-gram table inside) are adopted this way; images stay off.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 SHARD = re.compile(r"^(?P<stem>.+)-(?P<i>\d{5})-of-(?P<n>\d{5})\.gguf$")
-FAMILIES = ("qwen", "swift", "coder", "gyro")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11)
+FAMILIES = ("qwen", "swift", "coder", "gyro", "signal")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Signal is one GGUF like Gyro
 UNSUPPORTED = ("no nvidia gpu found", "no amd gpu", "nvidia gpu", "not supported", "cannot be used")
 
 
@@ -65,10 +65,10 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
     problems: list[str] = []
     if family not in FAMILIES:
         # no full stop: the caller joins the problems with "; " and ends the sentence (a "gyro.." came out of the old text, round 8, N11)
-        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder and Gyro files, not for {family}"]
-    shards = find_single(model_dir) if family == "gyro" else find_shards(model_dir)
+        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Signal files, not for {family}"]
+    shards = find_single(model_dir) if family in ("gyro", "signal") else find_shards(model_dir)
     if not shards:
-        problems.append(f"the model file is not in {model_dir}" if family == "gyro" else
+        problems.append(f"the model file is not in {model_dir}" if family in ("gyro", "signal") else
                         f"the model files are not all in {model_dir} (every -0000N-of-0000N.gguf shard is needed)")
     pack = Path(data_dir) / "packs" / (pack_name or model.lower())
     if not (pack / "experts.bin").exists() and not (pack / "index.txt").exists():
@@ -79,12 +79,18 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
     profile = src / "data" / (family_def.get("profile") or "expert-profile.bin")
     if not profile.exists():
         problems.append(f"the expert profile {profile} is missing")
+    # Signal reads its token embedding from a BF16 copy setup writes beside the pack (setup.py's embd_bf16); this installer cannot make one
+    embd = pack / "token-embd-bf16.gguf" if family_def.get("embd_bf16") else None
+    if embd is not None and not embd.exists():
+        problems.append(f"the BF16 token embedding {embd} is missing (this installer cannot prepare it for this graphics card)")
     if problems:
         return None, problems
     mtp = Path(data_dir) / "mtp" / "rt"
     args = ["--pack", str(pack), "--native", str(shards[0])]
-    if len(shards) > 1 or family == "gyro":            # Gyro's one file holds the n-gram table too
+    if len(shards) > 1 or family in ("gyro", "signal"):            # Gyro's and Signal's one file holds the n-gram table too
         args += ["--ple-gguf", str(shards[-1])]
+    if embd is not None:
+        args += ["--embd-gguf", str(embd)]
     if backend == "metal":
         # a Mac: the Metal defaults metal/setup_mac.py writes for a model that streams from the SSD (one token per step, no draft layer, the GGUF mapped in place)
         args += ["--expert-profile", str(profile), "--expert-cache", "64", "--prefill", "auto", "--spec", "2", "--suffix-draft", "0",
