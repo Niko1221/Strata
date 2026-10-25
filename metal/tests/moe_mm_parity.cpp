@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         TM = tm; TN = tn; TK = tk; SG = sg;
-        DTN = dtn; DTK = dtk; DSG = dsg;
+        if (DTN < 0) { DTN = dtn; DTK = dtk; DSG = dsg; }   // an explicit --dtile stays
     }
     mtl::Context cx;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
