@@ -49,7 +49,7 @@ def main():
             assert row['offered'] == 0 and row['accepted'] == 0
             assert row['tokens'] == expected.setdefault(row['task'], row['tokens'])
         controls[count] = expected
-    manifest, summary, missing = [], {}, []
+    manifest, summary, missing, timing = [], {}, [], {}
     for label, directory, mode in names:
         path = source / directory / (mode + '.json')
         if not path.exists():
@@ -84,6 +84,16 @@ def main():
         (destination / (label + '.json')).write_text(encode(normalized))
         manifest.append({'label': label, 'source': str(path.relative_to(source)),
                          'source_sha256': hashlib.sha256(raw).hexdigest()})
+        log_path = path.with_suffix('.log')
+        if log_path.exists():
+            log_bytes = log_path.read_bytes()
+            lines = [line for line in log_bytes.decode(errors='replace').splitlines()
+                     if line.startswith('strata decode timing:')]
+            assert len(lines) == len(data['rows']), (log_path, len(lines), len(data['rows']))
+            timing[label] = {'requests': [{key: row[key] for key in ('task', 'rep', 'control')} for row in data['rows']], 'log_sha256': hashlib.sha256(log_bytes).hexdigest(),
+                             'lines': lines, 'request_rows': len(data['rows'])}
+
+    (destination / 'decode-timing.json').write_text(encode(timing))
     (destination / 'summary.json').write_text(encode(summary))
     (destination / 'manifest.json').write_text(encode({'files': manifest, 'missing': missing}))
     print(f'Archived {len(manifest)} completed profiles; missing: {missing}')

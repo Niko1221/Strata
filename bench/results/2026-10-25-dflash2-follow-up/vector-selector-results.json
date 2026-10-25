@@ -1,0 +1,90 @@
+[
+  {
+    "rep": 0,
+    "lattice": 0,
+    "vector": 0,
+    "returncode": 0,
+    "log": "vector-selector-0-l0-v0.log",
+    "ms": [
+      0.067041,
+      0.06485
+    ]
+  },
+  {
+    "rep": 1,
+    "lattice": 0,
+    "vector": 1,
+    "returncode": 0,
+    "log": "vector-selector-1-l0-v1.log",
+    "ms": [
+      0.039793,
+      0.041135
+    ]
+  },
+  {
+    "rep": 2,
+    "lattice": 1,
+    "vector": 0,
+    "returncode": 0,
+    "log": "vector-selector-2-l1-v0.log",
+    "ms": [
+      0.020726,
+      0.022272
+    ]
+  },
+  {
+    "rep": 3,
+    "lattice": 1,
+    "vector": 1,
+    "returncode": 0,
+    "log": "vector-selector-3-l1-v1.log",
+    "ms": [
+      0.01793,
+      0.019487
+    ]
+  },
+  {
+    "rep": 4,
+    "lattice": 1,
+    "vector": 1,
+    "returncode": 0,
+    "log": "vector-selector-4-l1-v1.log",
+    "ms": [
+      0.01793,
+      0.019487
+    ]
+  },
+  {
+    "rep": 5,
+    "lattice": 1,
+    "vector": 0,
+    "returncode": 0,
+    "log": "vector-selector-5-l1-v0.log",
+    "ms": [
+      0.022528,
+      0.023921
+    ]
+  },
+  {
+    "rep": 6,
+    "lattice": 0,
+    "vector": 1,
+    "returncode": 0,
+    "log": "vector-selector-6-l0-v1.log",
+    "ms": [
+      0.041904,
+      0.041107
+    ]
+  },
+  {
+    "rep": 7,
+    "lattice": 0,
+    "vector": 0,
+    "returncode": 0,
+    "log": "vector-selector-7-l0-v0.log",
+    "ms": [
+      0.060631,
+      0.064072
+    ]
+  }
+]

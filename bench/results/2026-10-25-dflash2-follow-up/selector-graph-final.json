@@ -1,0 +1,714 @@
+[
+  {
+    "rep": 0,
+    "lattice": 0,
+    "vector": 0,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.063712
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.063551
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.063162
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.060675
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.060681
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.060829
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.060625
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.060625
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.062286
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.062657
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.062286
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.062093
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.062291
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.062268
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.062289
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.062136
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-0-l0-v0.log"
+  },
+  {
+    "rep": 1,
+    "lattice": 0,
+    "vector": 1,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.040482
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.040404
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.040033
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.040046
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.040035
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.039885
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.04038
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.04004
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.041378
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.041384
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.04138
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.041591
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.041171
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.041391
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.041375
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.041165
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-1-l0-v1.log"
+  },
+  {
+    "rep": 2,
+    "lattice": 1,
+    "vector": 0,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.019909
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.02011
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.019955
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.019914
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.019971
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.019907
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.020109
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.019952
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.021694
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.021482
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.021549
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.021694
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.02149
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.02153
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.02149
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.021695
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-2-l1-v0.log"
+  },
+  {
+    "rep": 3,
+    "lattice": 1,
+    "vector": 1,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.017172
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.01722
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.017183
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.017219
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.017174
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.017205
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.017175
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.017221
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.018747
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.018964
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.018802
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.018747
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.018797
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.018747
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.018793
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.018951
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-3-l1-v1.log"
+  },
+  {
+    "rep": 4,
+    "lattice": 1,
+    "vector": 1,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.017222
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.017177
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.017222
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.017178
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.017225
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.017178
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.017223
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.017544
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.018956
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.018949
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.018749
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.018796
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.018804
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.018754
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.018793
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.018747
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-4-l1-v1.log"
+  },
+  {
+    "rep": 5,
+    "lattice": 1,
+    "vector": 0,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.019964
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.019914
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.020084
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.020126
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.019923
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.019963
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.019915
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.019915
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.0217
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.021548
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.02149
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.021534
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.021694
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.021494
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.021543
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.021689
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-5-l1-v0.log"
+  },
+  {
+    "rep": 6,
+    "lattice": 0,
+    "vector": 1,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.040859
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.040381
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.040044
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.04018
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.039885
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.040035
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.040387
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.040034
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.041402
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.041382
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.041545
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.041383
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.041389
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.041584
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.041013
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.041438
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-6-l0-v1.log"
+  },
+  {
+    "rep": 7,
+    "lattice": 0,
+    "vector": 0,
+    "timing": [
+      {
+        "confidence": 0,
+        "round": 0,
+        "ms": 0.060679
+      },
+      {
+        "confidence": 0,
+        "round": 1,
+        "ms": 0.060689
+      },
+      {
+        "confidence": 0,
+        "round": 2,
+        "ms": 0.060834
+      },
+      {
+        "confidence": 0,
+        "round": 3,
+        "ms": 0.060644
+      },
+      {
+        "confidence": 0,
+        "round": 4,
+        "ms": 0.06084
+      },
+      {
+        "confidence": 0,
+        "round": 5,
+        "ms": 0.060836
+      },
+      {
+        "confidence": 0,
+        "round": 6,
+        "ms": 0.060682
+      },
+      {
+        "confidence": 0,
+        "round": 7,
+        "ms": 0.060843
+      },
+      {
+        "confidence": 1,
+        "round": 0,
+        "ms": 0.062938
+      },
+      {
+        "confidence": 1,
+        "round": 1,
+        "ms": 0.062457
+      },
+      {
+        "confidence": 1,
+        "round": 2,
+        "ms": 0.062293
+      },
+      {
+        "confidence": 1,
+        "round": 3,
+        "ms": 0.062137
+      },
+      {
+        "confidence": 1,
+        "round": 4,
+        "ms": 0.062298
+      },
+      {
+        "confidence": 1,
+        "round": 5,
+        "ms": 0.062293
+      },
+      {
+        "confidence": 1,
+        "round": 6,
+        "ms": 0.062089
+      },
+      {
+        "confidence": 1,
+        "round": 7,
+        "ms": 0.062089
+      }
+    ],
+    "returncode": 0,
+    "log": "selector-graph-final-7-l0-v0.log"
+  }
+]

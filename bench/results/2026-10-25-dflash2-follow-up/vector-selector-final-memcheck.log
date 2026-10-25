@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+BF16 selector rows=8 rank=256 k=16 confidence=0: 1.490729 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 1.498736 ms/pass
+========= ERROR SUMMARY: 0 errors

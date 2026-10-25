@@ -1,0 +1,18 @@
+BF16 selector rows=8 rank=256 k=16 confidence=0: 0.020695 ms/pass
+selector graph confidence=0 round=0: 0.019964 ms/call
+selector graph confidence=0 round=1: 0.019914 ms/call
+selector graph confidence=0 round=2: 0.020084 ms/call
+selector graph confidence=0 round=3: 0.020126 ms/call
+selector graph confidence=0 round=4: 0.019923 ms/call
+selector graph confidence=0 round=5: 0.019963 ms/call
+selector graph confidence=0 round=6: 0.019915 ms/call
+selector graph confidence=0 round=7: 0.019915 ms/call
+BF16 selector rows=8 rank=256 k=16 confidence=1: 0.022272 ms/pass
+selector graph confidence=1 round=0: 0.021700 ms/call
+selector graph confidence=1 round=1: 0.021548 ms/call
+selector graph confidence=1 round=2: 0.021490 ms/call
+selector graph confidence=1 round=3: 0.021534 ms/call
+selector graph confidence=1 round=4: 0.021694 ms/call
+selector graph confidence=1 round=5: 0.021494 ms/call
+selector graph confidence=1 round=6: 0.021543 ms/call
+selector graph confidence=1 round=7: 0.021689 ms/call

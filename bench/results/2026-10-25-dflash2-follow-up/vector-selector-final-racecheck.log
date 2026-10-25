@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+BF16 selector rows=8 rank=256 k=16 confidence=0: 10.319708 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 10.218496 ms/pass
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

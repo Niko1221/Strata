@@ -14,6 +14,7 @@ import tempfile
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--baseline-native', type=Path, required=True)
 p.add_argument('--baseline-topk', type=Path, required=True)
+p.add_argument('--baseline-selector', type=Path, help='Optional pre-vector selector executable')
 p.add_argument('--candidate', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--cuobjdump', default='/usr/local/cuda/bin/cuobjdump')
@@ -31,6 +32,8 @@ def sections(folder, executable, kind, normalize):
     result = {}
     for file, name in zip(files, demangled):
         name = name.removeprefix('void ')
+        if kind == 'selector_lattice' and 'selector_lattice_walk(' in name:
+            continue
         if normalize and kind == 'native_mmvq_multi_kernel':
             end = name.find('>(')
             if end < 0 or not name[:end].endswith(', false'):
@@ -39,7 +42,7 @@ def sections(folder, executable, kind, normalize):
         elif normalize:
             if '<false>' not in name:
                 continue
-            name = name.replace('topk_parallel_kernel<false>', 'topk_parallel_kernel', 1)
+            name = name.replace(kind + '<false>', kind, 1)
         assert name not in result, name
         result[name] = file.read_bytes()
     return result
@@ -50,9 +53,14 @@ for label, exe in [('baseline_native', a.baseline_native),
                    ('baseline_topk', a.baseline_topk), ('candidate', a.candidate)]:
     report['executables'][label] = {'name': exe.name,
         'sha256': hashlib.sha256(exe.read_bytes()).hexdigest()}
+kinds = [('native_mmvq_multi_kernel', a.baseline_native),
+         ('topk_parallel_kernel', a.baseline_topk)]
+if a.baseline_selector:
+    report['executables']['baseline_selector'] = {'name': a.baseline_selector.name,
+        'sha256': hashlib.sha256(a.baseline_selector.read_bytes()).hexdigest()}
+    kinds += [(kind, a.baseline_selector) for kind in ('select_bf16_parallel', 'selector_lattice')]
 with tempfile.TemporaryDirectory(prefix='dflash-default-text-') as temporary:
-    for kind, baseline in [('native_mmvq_multi_kernel', a.baseline_native),
-                           ('topk_parallel_kernel', a.baseline_topk)]:
+    for kind, baseline in kinds:
         before_dir = Path(temporary) / (kind + '-before')
         after_dir = Path(temporary) / (kind + '-after')
         before_dir.mkdir(); after_dir.mkdir()

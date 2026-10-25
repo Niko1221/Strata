@@ -1,0 +1,10 @@
+{
+  "measured_log_mtime_utc": "2026-10-25T21:44:22.301324+00:00",
+  "fixture_sha256": "43750f7eea5779138b379cb8e27d3189207b4ada6d2947b361e76d258da128f5",
+  "engine_sha256": "ed1a9578fe55c5dd5a1dabc2f968301fd0816b6d4dc8458122d5e886f97de7d9",
+  "sources": {
+    "src/kernels/cuda/dflash2_extension.cu": "1eb29670e3fd0d90036cd11fe1da195dc6e3fff439afadbd361afc8e8012f238",
+    "src/kernels/dflash2_parity.cpp": "162bc2702cef5ede9c2a8d60f4c91e0f2aefe69fd72283450b4872003d8494db"
+  },
+  "method": "Two processes per configuration in forward/reverse order; 10 calls per graph, 20 warmup graph replays, 8 rounds of100 measured graph replays. Per-process median first; median of two process medians reported. Synthetic hot data,8rows rank256 topk16."
+}

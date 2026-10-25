@@ -2,7 +2,8 @@
 
 This continues the [earlier code-path study](../2026-10-25-dflash2-code-optimization/README.md).
 All additions remain opt-in. Component improvements do not establish an increased
-whole-model advantage over MTP. Full-request studies are running at this snapshot.
+whole-model advantage over MTP. Short full-request studies completed; the final
+256K study was interrupted without a completed control result.
 
 Hardware: RTX 4070 Ti SUPER 16 GiB / SM89, driver 610.57.04, Ryzen 9 5900X,
 about 125 GiB RAM, Linux, GCC 14.2 and CUDA 13.4.92. Desktop applications remain
@@ -59,6 +60,54 @@ STRATA_DFLASH2_WARP_TOPK=1 STRATA_DFLASH2_MERGE_TOPK=1 \
   build-dflash2/dflash2_extension_parity --topk-bench
 STRATA_DFLASH2_REGISTER_TOPK=1 STRATA_DFLASH2_MERGE_TOPK=1 \
   build-dflash2/dflash2_extension_parity --topk-bench
+```
+
+## Vector selector
+
+`STRATA_DFLASH2_VECTOR_SELECTOR=1` reads four BF16 codebook values and four
+hidden values per iteration. Four separate score updates retain the original
+FMA order. Dispatch requires rank divisible by four, eight-byte codebook alignment
+and sixteen-byte hidden alignment; other inputs retain scalar reads. Reference
+and serial modes remain unchanged. The option also supports the existing lattice
+selector. It remains off by default.
+
+Final CUDA Graph measurements, with confidence enabled:
+
+| Selector | Scalar | Vector reads | Lower latency |
+| --- | ---: | ---: | ---: |
+| Existing parallel candidates | 62.290 µs | 41.387 µs | 33.6% |
+| Existing lattice | 21.543 µs | 18.795 µs | 12.8% |
+
+The fixture uses synthetic hot data, eight rows, rank 256 and K=16. Each graph
+contains ten calls, with 20 warmup replays and eight timing rounds of 100 replays.
+Two processes per configuration run in forward/reverse order. Each process is
+summarized by its median round; the table uses the median of those two values.
+Individual rounds are not independent trials. `selector-graph-final.json`, its
+logs and `selector-graph-metadata.json` preserve samples and source/binary hashes.
+The earlier host-enqueued screen is retained in `vector-selector-results.json`.
+
+The expanded fixture checks ranks 1/3/4/12/256/260/1024, rows 2/3/8 and K up to 64;
+IDs and confidence match the scalar reference exactly. Misaligned pointers,
+nonfinite hidden values and negative anchors retain the expected behavior.
+Ordinary full extension fixtures pass with vector reads both with and without
+lattice. Vector Memcheck reports zero errors; vector+lattice Racecheck reports
+zero errors and warnings. The graph fixture was added after those sanitizer
+runs; it changes measurement orchestration, not the tested device algorithm.
+
+SM89 instruction bytes remain identical for both original scalar selector kernels
+(7552 and 2560 bytes), in addition to the 414 original MMVQ kernels and original
+top-k. `default-v7-text.json` records this final check. The V7 engine SHA256 is
+`ed1a9578fe55c5dd5a1dabc2f968301fd0816b6d4dc8458122d5e886f97de7d9`.
+The full-model `vector384-smoke` run used one short-code prompt, a warmup, one
+measured 384-token request and a same-process target-only check; every token also
+matches the common separate control. This validates that case, not a model-level
+speed claim. CUDA extension ON/OFF builds passed; HIP/SYCL were not available.
+
+```sh
+STRATA_DFLASH2_VECTOR_SELECTOR=1 \
+  build-dflash2/dflash2_extension_parity --selector-bench
+STRATA_DFLASH2_VECTOR_SELECTOR=1 STRATA_DFLASH2_LATTICE_SELECTOR=1 \
+  build-dflash2/dflash2_extension_parity --selector-bench
 ```
 
 ## Short-request screen
@@ -152,6 +201,16 @@ in `full-request/summary.json`; no best-run percentage is used as a speed claim.
 Accepted/offered counts stay exactly 279/368, 246/322 and 266/327 for the tasks.
 The final scratch-reuse executable is evaluated separately by the 256K study.
 
+The existing runtime timing diagnostics explain the limited impact. A measured
+short-code request in `default384-c` reports 72.91 ms/window: verification
+68.65 ms (including 54.05 ms waiting for CPU expert jobs) and draft 4.23 ms.
+The long-code request reports 65.20 ms/window: verification 61.00 ms, CPU jobs
+46.92 ms and draft 4.17 ms. These diagnostic categories are the engine's own
+accounting, not an independent hardware profiler. `full-request/decode-timing.json`
+retains every timing line and the matching request labels; source log hashes are
+included. Saving tens of microseconds in a selection kernel does not remove the
+measured CPU expert wait.
+
 ## Prompt scratch memory
 
 After FC normalization has been converted to BF16, its float buffer is dead.
@@ -204,7 +263,24 @@ Passed on the tested revisions:
 
 Not run: HIP/SYCL builds or hardware execution, Metal, Windows, other GPUs,
 concurrent requests, vision or multi-GPU. The completed 384-output screen does not establish a stable full-model speedup.
-The final 256K study is pending in this snapshot. No default changed.
+The final 256K attempt did not produce a completed result. No default changed.
+
+## 256K attempt and limits
+
+The final V6 scratch-reuse engine was queued for seven cold-process arms:
+target-only, baseline A, optimized A, MTP A, optimized B, baseline B and MTP B.
+The prompt contains 261747 input tokens, with an output budget of 384, context
+262144, requested resident limit 32768, expert cache 2700 slots, reserve 480 MiB,
+prefill 512 and short-read 64. V6 excludes the later vector selector.
+
+Only the target-only arm started, at 19:25:26 UTC. At 21:43:36 UTC, after the
+renewed five-hour deadline 21:38:15 UTC, no benchmark processes remained and
+neither a completed target result nor a failure record existed. The cause of
+interruption is not established. Startup logged 2700 resident experts and 1703 MiB
+free VRAM, but startup alone cannot establish prompt completion, performance or
+token parity. `long-study-status.json`, the exact command and startup log preserve
+this incomplete attempt. No 256K throughput or comparison against MTP is claimed.
+The earlier distant-position synthetic KV fixture is separate from this attempt.
 
 ## Rejected experiments
 

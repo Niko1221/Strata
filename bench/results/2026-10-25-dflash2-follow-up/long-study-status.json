@@ -1,0 +1,22 @@
+{
+  "checked_utc": "2026-10-25T21:43:36Z",
+  "status": "interrupted without a completed target-only result",
+  "planned_arms": [
+    "target",
+    "baseline-a",
+    "optimized-a",
+    "mtp-a",
+    "optimized-b",
+    "baseline-b",
+    "mtp-b"
+  ],
+  "started_arms": [
+    "target"
+  ],
+  "completed_arms": [],
+  "cause": "Not established. No long benchmark processes remained at inspection; neither target-long.json nor target-long-failed.json existed. Startup log alone cannot establish performance or token parity.",
+  "source_sha256": {
+    "target-long-command.json": "ca2648dca5283ed6faa145376240f75bbe4ab0790ae0536a9243bdf1cd40a23f",
+    "target-long-engine.log": "0ca040ded62226f2836b028572e807e82a1efb62792240c2fc1d0a962e1d3b2a"
+  }
+}
