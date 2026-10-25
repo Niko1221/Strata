@@ -5437,10 +5437,13 @@ int main(int argc, char** argv) {
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
-            // the slots borrow the RoPE table of the session already on this device (the same context length)
+            // with --kv-pool-tokens the slots borrow the RoPE table of the session already on this device (the same
+            // context length); without it each slot keeps its own, as before, so the VRAM left to the expert cache and
+            // with it the output stay those of a build without the pool
             const strata::core::SessionState& host_ss = k == 0 ? ss : stages[k - 1]->ss;
-            const strata::core::QsaState* rope =
-                g.n_qsa_layers() > 0 && host_ss.qsa_alloc > 0 ? &host_ss.qsa_states[host_ss.qsa_primary()] : nullptr;
+            const strata::core::QsaState* rope = kv_pool.active() && g.n_qsa_layers() > 0 && host_ss.qsa_alloc > 0
+                                                     ? &host_ss.qsa_states[host_ss.qsa_primary()]
+                                                     : nullptr;
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, rope != nullptr);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {

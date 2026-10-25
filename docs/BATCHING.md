@@ -204,7 +204,7 @@ chunks its conversation has reached.
 - `GET /metrics` shows the pool as `live.kv_pool`: `cells` in all, `free`, `main` (cells the main session holds) and
   `slots` (one count per slot), updated whenever a chunk moves. A request refused for a full pool is not in a slot:
   it did not start.
-- The slot sessions borrow the main session's RoPE table (64 MiB each at 262K) with or without the pool.
+- The slot sessions borrow the main session's RoPE table (64 MiB each at 262K); without the pool each keeps its own.
 - The MTP drafter's K/V ring (the solo drafter's, and each `--batch-mtp` slot drafter's on a layer split) is not in the
   pool: it keeps its own pinned-RAM copy, as without the pool.
 - Without `--kv-pool-tokens` nothing changes: each session pins its own copy, as before.
