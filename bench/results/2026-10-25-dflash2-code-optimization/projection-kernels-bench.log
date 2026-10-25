@@ -1,0 +1,136 @@
+BF16 Q8_1 30 projections rows=8 width=2560 direct=0: 0.053524 ms/pass
+BF16 Q8_1 30 projections rows=8 width=2560 direct=1: 0.030484 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=0 10 calls: 0.117453 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=1 10 calls: 0.024801 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=2 10 calls: 0.041390 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=4 10 calls: 0.074547 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=0 10 calls: 0.136223 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=1 10 calls: 0.059392 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=2 10 calls: 0.052685 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=4 10 calls: 0.077844 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=0 10 calls: 0.136530 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=1 10 calls: 0.125440 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=2 10 calls: 0.099410 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=4 10 calls: 0.087777 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=0 10 calls: 0.138045 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=1 10 calls: 0.181094 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=2 10 calls: 0.153272 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=4 10 calls: 0.156785 ms/pass
+Q8 projection width=12800 outputs=2560 rows=2 variant=0 5 matrices: 0.303862 ms/pass
+Q8 projection width=12800 outputs=2560 rows=2 variant=1 5 matrices: 0.307149 ms/pass
+Q8 projection width=12800 outputs=2560 rows=2 variant=2 5 matrices: 0.311798 ms/pass
+Q8 projection width=12800 outputs=2560 rows=2 variant=4 5 matrices: 0.333046 ms/pass
+Q8 projection width=12800 outputs=2560 rows=4 variant=0 5 matrices: 0.295649 ms/pass
+Q8 projection width=12800 outputs=2560 rows=4 variant=1 5 matrices: 0.309105 ms/pass
+Q8 projection width=12800 outputs=2560 rows=4 variant=2 5 matrices: 0.315843 ms/pass
+Q8 projection width=12800 outputs=2560 rows=4 variant=4 5 matrices: 0.334940 ms/pass
+Q8 projection width=12800 outputs=2560 rows=8 variant=0 5 matrices: 0.368128 ms/pass
+Q8 projection width=12800 outputs=2560 rows=8 variant=1 5 matrices: 0.484229 ms/pass
+Q8 projection width=12800 outputs=2560 rows=8 variant=2 5 matrices: 0.390595 ms/pass
+Q8 projection width=12800 outputs=2560 rows=8 variant=4 5 matrices: 0.383150 ms/pass
+Q8 projection width=2560 outputs=4096 rows=2 variant=0 5 matrices: 0.099338 ms/pass
+Q8 projection width=2560 outputs=4096 rows=2 variant=1 5 matrices: 0.100321 ms/pass
+Q8 projection width=2560 outputs=4096 rows=2 variant=2 5 matrices: 0.099420 ms/pass
+Q8 projection width=2560 outputs=4096 rows=2 variant=4 5 matrices: 0.099185 ms/pass
+Q8 projection width=2560 outputs=4096 rows=2 variant=8 5 matrices: 0.103526 ms/pass
+Q8 projection width=2560 outputs=4096 rows=4 variant=0 5 matrices: 0.102625 ms/pass
+Q8 projection width=2560 outputs=4096 rows=4 variant=1 5 matrices: 0.103096 ms/pass
+Q8 projection width=2560 outputs=4096 rows=4 variant=2 5 matrices: 0.104253 ms/pass
+Q8 projection width=2560 outputs=4096 rows=4 variant=4 5 matrices: 0.104499 ms/pass
+Q8 projection width=2560 outputs=4096 rows=4 variant=8 5 matrices: 0.104356 ms/pass
+Q8 projection width=2560 outputs=4096 rows=8 variant=0 5 matrices: 0.116808 ms/pass
+Q8 projection width=2560 outputs=4096 rows=8 variant=1 5 matrices: 0.154931 ms/pass
+Q8 projection width=2560 outputs=4096 rows=8 variant=2 5 matrices: 0.115139 ms/pass
+Q8 projection width=2560 outputs=4096 rows=8 variant=4 5 matrices: 0.117289 ms/pass
+Q8 projection width=2560 outputs=4096 rows=8 variant=8 5 matrices: 0.136970 ms/pass
+Q8 projection width=2560 outputs=1024 rows=2 variant=0 5 matrices: 0.017295 ms/pass
+Q8 projection width=2560 outputs=1024 rows=2 variant=1 5 matrices: 0.021565 ms/pass
+Q8 projection width=2560 outputs=1024 rows=2 variant=2 5 matrices: 0.028385 ms/pass
+Q8 projection width=2560 outputs=1024 rows=2 variant=4 5 matrices: 0.030812 ms/pass
+Q8 projection width=2560 outputs=1024 rows=4 variant=0 5 matrices: 0.022231 ms/pass
+Q8 projection width=2560 outputs=1024 rows=4 variant=1 5 matrices: 0.029706 ms/pass
+Q8 projection width=2560 outputs=1024 rows=4 variant=2 5 matrices: 0.024463 ms/pass
+Q8 projection width=2560 outputs=1024 rows=4 variant=4 5 matrices: 0.029798 ms/pass
+Q8 projection width=2560 outputs=1024 rows=8 variant=0 5 matrices: 0.036608 ms/pass
+Q8 projection width=2560 outputs=1024 rows=8 variant=1 5 matrices: 0.040294 ms/pass
+Q8 projection width=2560 outputs=1024 rows=8 variant=2 5 matrices: 0.033075 ms/pass
+Q8 projection width=2560 outputs=1024 rows=8 variant=4 5 matrices: 0.033075 ms/pass
+Q8 projection width=4096 outputs=2560 rows=2 variant=0 5 matrices: 0.105820 ms/pass
+Q8 projection width=4096 outputs=2560 rows=2 variant=1 5 matrices: 0.106250 ms/pass
+Q8 projection width=4096 outputs=2560 rows=2 variant=2 5 matrices: 0.102543 ms/pass
+Q8 projection width=4096 outputs=2560 rows=2 variant=4 5 matrices: 0.117217 ms/pass
+Q8 projection width=4096 outputs=2560 rows=2 variant=8 5 matrices: 0.093962 ms/pass
+Q8 projection width=4096 outputs=2560 rows=4 variant=0 5 matrices: 0.107387 ms/pass
+Q8 projection width=4096 outputs=2560 rows=4 variant=1 5 matrices: 0.103455 ms/pass
+Q8 projection width=4096 outputs=2560 rows=4 variant=2 5 matrices: 0.105298 ms/pass
+Q8 projection width=4096 outputs=2560 rows=4 variant=4 5 matrices: 0.123587 ms/pass
+Q8 projection width=4096 outputs=2560 rows=4 variant=8 5 matrices: 0.098253 ms/pass
+Q8 projection width=4096 outputs=2560 rows=8 variant=0 5 matrices: 0.119767 ms/pass
+Q8 projection width=4096 outputs=2560 rows=8 variant=1 5 matrices: 0.149985 ms/pass
+Q8 projection width=4096 outputs=2560 rows=8 variant=2 5 matrices: 0.143370 ms/pass
+Q8 projection width=4096 outputs=2560 rows=8 variant=4 5 matrices: 0.141844 ms/pass
+Q8 projection width=4096 outputs=2560 rows=8 variant=8 5 matrices: 0.126956 ms/pass
+Q8 projection width=2560 outputs=7680 rows=2 variant=0 5 matrices: 0.178657 ms/pass
+Q8 projection width=2560 outputs=7680 rows=2 variant=1 5 matrices: 0.180951 ms/pass
+Q8 projection width=2560 outputs=7680 rows=2 variant=2 5 matrices: 0.188928 ms/pass
+Q8 projection width=2560 outputs=7680 rows=2 variant=4 5 matrices: 0.193260 ms/pass
+Q8 projection width=2560 outputs=7680 rows=2 variant=8 5 matrices: 0.179292 ms/pass
+Q8 projection width=2560 outputs=7680 rows=4 variant=0 5 matrices: 0.185518 ms/pass
+Q8 projection width=2560 outputs=7680 rows=4 variant=1 5 matrices: 0.186184 ms/pass
+Q8 projection width=2560 outputs=7680 rows=4 variant=2 5 matrices: 0.187474 ms/pass
+Q8 projection width=2560 outputs=7680 rows=4 variant=4 5 matrices: 0.198492 ms/pass
+Q8 projection width=2560 outputs=7680 rows=4 variant=8 5 matrices: 0.189686 ms/pass
+Q8 projection width=2560 outputs=7680 rows=8 variant=0 5 matrices: 0.220355 ms/pass
+Q8 projection width=2560 outputs=7680 rows=8 variant=1 5 matrices: 0.292485 ms/pass
+Q8 projection width=2560 outputs=7680 rows=8 variant=2 5 matrices: 0.218204 ms/pass
+Q8 projection width=2560 outputs=7680 rows=8 variant=4 5 matrices: 0.213535 ms/pass
+Q8 projection width=2560 outputs=7680 rows=8 variant=8 5 matrices: 0.278057 ms/pass
+Q8 projection width=7680 outputs=2560 rows=2 variant=0 5 matrices: 0.188918 ms/pass
+Q8 projection width=7680 outputs=2560 rows=2 variant=1 5 matrices: 0.180582 ms/pass
+Q8 projection width=7680 outputs=2560 rows=2 variant=2 5 matrices: 0.183521 ms/pass
+Q8 projection width=7680 outputs=2560 rows=2 variant=4 5 matrices: 0.200817 ms/pass
+Q8 projection width=7680 outputs=2560 rows=4 variant=0 5 matrices: 0.180490 ms/pass
+Q8 projection width=7680 outputs=2560 rows=4 variant=1 5 matrices: 0.181658 ms/pass
+Q8 projection width=7680 outputs=2560 rows=4 variant=2 5 matrices: 0.187023 ms/pass
+Q8 projection width=7680 outputs=2560 rows=4 variant=4 5 matrices: 0.203438 ms/pass
+Q8 projection width=7680 outputs=2560 rows=8 variant=0 5 matrices: 0.201492 ms/pass
+Q8 projection width=7680 outputs=2560 rows=8 variant=1 5 matrices: 0.279910 ms/pass
+Q8 projection width=7680 outputs=2560 rows=8 variant=2 5 matrices: 0.241377 ms/pass
+Q8 projection width=7680 outputs=2560 rows=8 variant=4 5 matrices: 0.234076 ms/pass
+convolution 5 layers rows8 fused=0: 0.063683 ms/pass
+convolution 5 layers rows8 fused=1: 0.025907 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=0: 0.060877 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 0.064369 ms/pass
+topk rows=8 vocab=248320 k=16 single CTA: 1.025126 ms/pass
+topk rows=8 vocab=248320 k=16 tiled: 0.099318 ms/pass
+attention page=4 rows=2 heads=32 end=32: 0.006943 ms/pass bits=02d088f1904da363
+attention page=4 rows=2 heads=32 end=128: 0.011530 ms/pass bits=ec17d47bb5bb8dcb
+attention page=4 rows=2 heads=32 end=512: 0.016732 ms/pass bits=5590045101889710
+attention page=4 rows=2 heads=32 end=1024: 0.028800 ms/pass bits=9f81f5b79f369d3e
+attention page=4 rows=2 heads=32 end=2053: 0.055332 ms/pass bits=b199ebdfef4b9acb
+attention page=4 rows=4 heads=32 end=32: 0.007214 ms/pass bits=61086d99756d551c
+attention page=4 rows=4 heads=32 end=128: 0.011418 ms/pass bits=2ea927cd126f783e
+attention page=4 rows=4 heads=32 end=512: 0.027617 ms/pass bits=d958b990dfc2766c
+attention page=4 rows=4 heads=32 end=1024: 0.052900 ms/pass bits=23bd0f7e36e050ef
+attention page=4 rows=4 heads=32 end=2053: 0.105103 ms/pass bits=a5d05545d10d7eb7
+attention page=4 rows=8 heads=32 end=32: 0.008940 ms/pass bits=2e4ef52863390255
+attention page=4 rows=8 heads=32 end=128: 0.018734 ms/pass bits=722df155f7cc9d62
+attention page=4 rows=8 heads=32 end=512: 0.058004 ms/pass bits=9ea416ca4f3fa156
+attention page=4 rows=8 heads=32 end=1024: 0.103880 ms/pass bits=2da9e311d44b5055
+attention page=4 rows=8 heads=32 end=2053: 0.209485 ms/pass bits=397ac82472876eb1
+attention page=64 rows=2 heads=32 end=32: 0.007675 ms/pass bits=aa32e91e321f53ac
+attention page=64 rows=2 heads=32 end=128: 0.011003 ms/pass bits=a5c34e00ce051cb3
+attention page=64 rows=2 heads=32 end=512: 0.018371 ms/pass bits=4238a8b3b0594270
+attention page=64 rows=2 heads=32 end=1024: 0.028012 ms/pass bits=b04cbfdf60b66373
+attention page=64 rows=2 heads=32 end=2053: 0.045204 ms/pass bits=9316156b1a9a65e6
+attention page=64 rows=4 heads=32 end=32: 0.007173 ms/pass bits=5720af05e5ec8e1f
+attention page=64 rows=4 heads=32 end=128: 0.012083 ms/pass bits=ee20fb300032f242
+attention page=64 rows=4 heads=32 end=512: 0.023086 ms/pass bits=0fa2dddc39ddf9be
+attention page=64 rows=4 heads=32 end=1024: 0.042614 ms/pass bits=8e873f0ff55ef0f7
+attention page=64 rows=4 heads=32 end=2053: 0.082058 ms/pass bits=62da8a2c9bca9762
+attention page=64 rows=8 heads=32 end=32: 0.008335 ms/pass bits=51af8ad963e5e8ef
+attention page=64 rows=8 heads=32 end=128: 0.015780 ms/pass bits=0102e8d908c1a5db
+attention page=64 rows=8 heads=32 end=512: 0.047703 ms/pass bits=5bdceda0e388eb7a
+attention page=64 rows=8 heads=32 end=1024: 0.082698 ms/pass bits=565002747ea4f3f9
+attention page=64 rows=8 heads=32 end=2053: 0.161075 ms/pass bits=66b3bf50f789711c
+PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal

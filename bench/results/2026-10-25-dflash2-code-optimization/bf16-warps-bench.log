@@ -1,0 +1,195 @@
+BF16 Q8_1 30 projections rows=8 width=2560 direct=0: 0.053417 ms/pass
+BF16 Q8_1 30 projections rows=8 width=2560 direct=1: 0.030213 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=0 warps=4 10 calls: 0.038625 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=1 warps=1 10 calls: 0.023183 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=1 warps=2 10 calls: 0.023296 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=1 warps=4 10 calls: 0.024658 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=1 warps=8 10 calls: 0.024115 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=2 warps=1 10 calls: 0.036966 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=2 warps=2 10 calls: 0.036987 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=2 warps=4 10 calls: 0.038912 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=2 warps=8 10 calls: 0.038656 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=4 warps=1 10 calls: 0.037007 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=4 warps=2 10 calls: 0.037018 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=4 warps=4 10 calls: 0.037089 ms/pass
+BF16 projection width=2560 outputs=7 rows=2 tile=4 warps=8 10 calls: 0.037018 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=0 warps=4 10 calls: 0.104479 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=1 warps=1 10 calls: 0.023562 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=1 warps=2 10 calls: 0.023900 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=1 warps=4 10 calls: 0.024576 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=1 warps=8 10 calls: 0.025037 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=2 warps=1 10 calls: 0.039311 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=2 warps=2 10 calls: 0.038943 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=2 warps=4 10 calls: 0.041124 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=2 warps=8 10 calls: 0.042906 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=4 warps=1 10 calls: 0.068444 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=4 warps=2 10 calls: 0.066775 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=4 warps=4 10 calls: 0.068813 ms/pass
+BF16 projection width=2560 outputs=7 rows=7 tile=4 warps=8 10 calls: 0.066908 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=0 warps=4 10 calls: 0.112292 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=1 warps=1 10 calls: 0.022866 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=1 warps=2 10 calls: 0.022856 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=1 warps=4 10 calls: 0.023532 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=1 warps=8 10 calls: 0.024003 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=2 warps=1 10 calls: 0.037765 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=2 warps=2 10 calls: 0.039414 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=2 warps=4 10 calls: 0.041011 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=2 warps=8 10 calls: 0.039762 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=4 warps=1 10 calls: 0.064051 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=4 warps=2 10 calls: 0.063877 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=4 warps=4 10 calls: 0.069345 ms/pass
+BF16 projection width=2560 outputs=7 rows=8 tile=4 warps=8 10 calls: 0.063621 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=0 warps=4 10 calls: 0.039834 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=1 warps=1 10 calls: 0.032492 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=1 warps=2 10 calls: 0.032000 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=1 warps=4 10 calls: 0.031427 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=1 warps=8 10 calls: 0.028303 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=2 warps=1 10 calls: 0.039854 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=2 warps=2 10 calls: 0.041431 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=2 warps=4 10 calls: 0.039813 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=2 warps=8 10 calls: 0.039823 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=4 warps=1 10 calls: 0.039813 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=4 warps=2 10 calls: 0.039803 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=4 warps=4 10 calls: 0.041892 ms/pass
+BF16 projection width=2560 outputs=256 rows=2 tile=4 warps=8 10 calls: 0.039834 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=0 warps=4 10 calls: 0.106721 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=1 warps=1 10 calls: 0.062536 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=1 warps=2 10 calls: 0.053125 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=1 warps=4 10 calls: 0.053412 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=1 warps=8 10 calls: 0.054815 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=2 warps=1 10 calls: 0.053432 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=2 warps=2 10 calls: 0.052296 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=2 warps=4 10 calls: 0.050954 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=2 warps=8 10 calls: 0.051384 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=4 warps=1 10 calls: 0.075336 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=4 warps=2 10 calls: 0.072479 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=4 warps=4 10 calls: 0.072714 ms/pass
+BF16 projection width=2560 outputs=256 rows=7 tile=4 warps=8 10 calls: 0.075817 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=0 warps=4 10 calls: 0.132803 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=1 warps=1 10 calls: 0.070892 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=1 warps=2 10 calls: 0.062239 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=1 warps=4 10 calls: 0.058214 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=1 warps=8 10 calls: 0.054600 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=2 warps=1 10 calls: 0.055142 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=2 warps=2 10 calls: 0.052572 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=2 warps=4 10 calls: 0.052859 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=2 warps=8 10 calls: 0.049510 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=4 warps=1 10 calls: 0.073196 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=4 warps=2 10 calls: 0.072960 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=4 warps=4 10 calls: 0.076155 ms/pass
+BF16 projection width=2560 outputs=256 rows=8 tile=4 warps=8 10 calls: 0.072376 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=0 warps=4 10 calls: 0.042742 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=1 warps=1 10 calls: 0.042772 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=1 warps=2 10 calls: 0.042465 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=1 warps=4 10 calls: 0.043919 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=1 warps=8 10 calls: 0.046520 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=2 warps=1 10 calls: 0.042691 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=2 warps=2 10 calls: 0.043131 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=2 warps=4 10 calls: 0.043192 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=2 warps=8 10 calls: 0.043213 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=4 warps=1 10 calls: 0.045373 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=4 warps=2 10 calls: 0.043141 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=4 warps=4 10 calls: 0.042691 ms/pass
+BF16 projection width=2560 outputs=640 rows=2 tile=4 warps=8 10 calls: 0.042721 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=0 warps=4 10 calls: 0.118968 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=1 warps=1 10 calls: 0.109660 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=1 warps=2 10 calls: 0.112497 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=1 warps=4 10 calls: 0.119685 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=1 warps=8 10 calls: 0.122696 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=2 warps=1 10 calls: 0.111544 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=2 warps=2 10 calls: 0.105482 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=2 warps=4 10 calls: 0.108063 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=2 warps=8 10 calls: 0.099881 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=4 warps=1 10 calls: 0.092211 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=4 warps=2 10 calls: 0.090450 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=4 warps=4 10 calls: 0.086938 ms/pass
+BF16 projection width=2560 outputs=640 rows=7 tile=4 warps=8 10 calls: 0.101151 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=0 warps=4 10 calls: 0.136796 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=1 warps=1 10 calls: 0.122880 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=1 warps=2 10 calls: 0.123310 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=1 warps=4 10 calls: 0.133069 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=1 warps=8 10 calls: 0.128123 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=2 warps=1 10 calls: 0.108063 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=2 warps=2 10 calls: 0.104428 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=2 warps=4 10 calls: 0.102892 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=2 warps=8 10 calls: 0.100475 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=4 warps=1 10 calls: 0.090266 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=4 warps=2 10 calls: 0.086303 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=4 warps=4 10 calls: 0.085770 ms/pass
+BF16 projection width=2560 outputs=640 rows=8 tile=4 warps=8 10 calls: 0.103424 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=0 warps=4 10 calls: 0.047698 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=1 warps=1 10 calls: 0.066867 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=1 warps=2 10 calls: 0.060088 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=1 warps=4 10 calls: 0.056515 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=1 warps=8 10 calls: 0.055245 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=2 warps=1 10 calls: 0.048169 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=2 warps=2 10 calls: 0.047022 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=2 warps=4 10 calls: 0.048159 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=2 warps=8 10 calls: 0.050596 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=4 warps=1 10 calls: 0.049705 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=4 warps=2 10 calls: 0.047268 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=4 warps=4 10 calls: 0.049541 ms/pass
+BF16 projection width=2560 outputs=1024 rows=2 tile=4 warps=8 10 calls: 0.049019 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=0 warps=4 10 calls: 0.127109 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=1 warps=1 10 calls: 0.163727 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=1 warps=2 10 calls: 0.174141 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=1 warps=4 10 calls: 0.183931 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=1 warps=8 10 calls: 0.174817 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=2 warps=1 10 calls: 0.157368 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=2 warps=2 10 calls: 0.158638 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=2 warps=4 10 calls: 0.149105 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=2 warps=8 10 calls: 0.148449 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=4 warps=1 10 calls: 0.149125 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=4 warps=2 10 calls: 0.144620 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=4 warps=4 10 calls: 0.143964 ms/pass
+BF16 projection width=2560 outputs=1024 rows=7 tile=4 warps=8 10 calls: 0.137329 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=0 warps=4 10 calls: 0.134011 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=1 warps=1 10 calls: 0.183685 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=1 warps=2 10 calls: 0.194765 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=1 warps=4 10 calls: 0.193536 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=1 warps=8 10 calls: 0.195492 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=2 warps=1 10 calls: 0.163256 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=2 warps=2 10 calls: 0.153088 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=2 warps=4 10 calls: 0.157450 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=2 warps=8 10 calls: 0.150784 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=4 warps=1 10 calls: 0.156129 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=4 warps=2 10 calls: 0.148152 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=4 warps=4 10 calls: 0.148326 ms/pass
+BF16 projection width=2560 outputs=1024 rows=8 tile=4 warps=8 10 calls: 0.142449 ms/pass
+convolution 5 layers rows8 fused=0: 0.062208 ms/pass
+convolution 5 layers rows8 fused=1: 0.026194 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=0: 0.062638 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 0.063652 ms/pass
+topk rows=8 vocab=248320 k=16 single CTA: 1.025792 ms/pass
+topk rows=8 vocab=248320 k=16 tiled: 0.101642 ms/pass
+attention page=4 rows=2 heads=32 end=32: 0.006968 ms/pass bits=02d088f1904da363
+attention page=4 rows=2 heads=32 end=128: 0.010455 ms/pass bits=ec17d47bb5bb8dcb
+attention page=4 rows=2 heads=32 end=512: 0.016758 ms/pass bits=5590045101889710
+attention page=4 rows=2 heads=32 end=1024: 0.029199 ms/pass bits=9f81f5b79f369d3e
+attention page=4 rows=2 heads=32 end=2053: 0.056648 ms/pass bits=b199ebdfef4b9acb
+attention page=4 rows=4 heads=32 end=32: 0.007598 ms/pass bits=61086d99756d551c
+attention page=4 rows=4 heads=32 end=128: 0.012001 ms/pass bits=2ea927cd126f783e
+attention page=4 rows=4 heads=32 end=512: 0.028918 ms/pass bits=d958b990dfc2766c
+attention page=4 rows=4 heads=32 end=1024: 0.053064 ms/pass bits=23bd0f7e36e050ef
+attention page=4 rows=4 heads=32 end=2053: 0.105610 ms/pass bits=a5d05545d10d7eb7
+attention page=4 rows=8 heads=32 end=32: 0.008806 ms/pass bits=2e4ef52863390255
+attention page=4 rows=8 heads=32 end=128: 0.016364 ms/pass bits=722df155f7cc9d62
+attention page=4 rows=8 heads=32 end=512: 0.054958 ms/pass bits=9ea416ca4f3fa156
+attention page=4 rows=8 heads=32 end=1024: 0.104223 ms/pass bits=2da9e311d44b5055
+attention page=4 rows=8 heads=32 end=2053: 0.213704 ms/pass bits=397ac82472876eb1
+attention page=64 rows=2 heads=32 end=32: 0.007588 ms/pass bits=aa32e91e321f53ac
+attention page=64 rows=2 heads=32 end=128: 0.010875 ms/pass bits=a5c34e00ce051cb3
+attention page=64 rows=2 heads=32 end=512: 0.017971 ms/pass bits=4238a8b3b0594270
+attention page=64 rows=2 heads=32 end=1024: 0.028733 ms/pass bits=b04cbfdf60b66373
+attention page=64 rows=2 heads=32 end=2053: 0.047652 ms/pass bits=9316156b1a9a65e6
+attention page=64 rows=4 heads=32 end=32: 0.006963 ms/pass bits=5720af05e5ec8e1f
+attention page=64 rows=4 heads=32 end=128: 0.011372 ms/pass bits=ee20fb300032f242
+attention page=64 rows=4 heads=32 end=512: 0.022968 ms/pass bits=0fa2dddc39ddf9be
+attention page=64 rows=4 heads=32 end=1024: 0.040919 ms/pass bits=8e873f0ff55ef0f7
+attention page=64 rows=4 heads=32 end=2053: 0.085535 ms/pass bits=62da8a2c9bca9762
+attention page=64 rows=8 heads=32 end=32: 0.008310 ms/pass bits=51af8ad963e5e8ef
+attention page=64 rows=8 heads=32 end=128: 0.015708 ms/pass bits=0102e8d908c1a5db
+attention page=64 rows=8 heads=32 end=512: 0.042854 ms/pass bits=5bdceda0e388eb7a
+attention page=64 rows=8 heads=32 end=1024: 0.080369 ms/pass bits=565002747ea4f3f9
+attention page=64 rows=8 heads=32 end=2053: 0.159283 ms/pass bits=66b3bf50f789711c
+PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal
