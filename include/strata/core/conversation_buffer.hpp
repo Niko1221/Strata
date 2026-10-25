@@ -9,6 +9,9 @@
 #include <initializer_list>
 #include <utility>
 #include <vector>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 namespace strata::core {
 
@@ -77,7 +80,12 @@ public:
                 const size_t count = std::min(segment_bytes, n - size_);
                 const size_t previous = segments_.empty() ? 0 : segments_.back().capacity();
                 Segment segment;
-                segment.reserve(segment_capacity(count, previous, growing, held));
+                const size_t cap = segment_capacity(count, previous, growing, held);
+                segment.reserve(cap);
+                // #3321: a fresh 16 MiB segment is a new mapping. Advise huge pages before the
+                // zero-fill touches it, so the first fault is not one 4 KiB page at a time.
+                // Linux only; other systems keep the ordinary pages. Failure is ignored.
+                advise_hugepage(segment.data(), segment.capacity());
                 segment.resize(count, value);
                 segments_.push_back(std::move(segment));
                 size_ += count;
@@ -135,6 +143,22 @@ private:
         if (!growing) return count;
         const size_t geometric = std::min(segment_bytes, std::max<size_t>(65536, std::min(previous, segment_bytes/2)*2));
         return std::max(count, std::min(geometric, std::max<size_t>(65536, held / 8)));
+    }
+    static void advise_hugepage(void* p, size_t n) {
+#if defined(__linux__)
+        if (p == nullptr || n < (size_t{2} << 20)) return;
+        // madvise requires a page-aligned address. The kernel uses huge pages for the 2 MiB-aligned
+        // middle of that range; an unaligned edge is left as ordinary pages.
+        const uintptr_t raw = reinterpret_cast<uintptr_t>(p);
+        constexpr uintptr_t page = 4096;
+        const uintptr_t start = (raw + page - 1) & ~(page - 1);
+        const uintptr_t end = (raw + n) & ~(page - 1);
+        if (end <= start) return;
+        (void) ::madvise(reinterpret_cast<void*>(start), static_cast<size_t>(end - start), MADV_HUGEPAGE);
+#else
+        (void) p;
+        (void) n;
+#endif
     }
     static bool add(size_t& n, size_t extra) {
         if (extra > SIZE_MAX - n) return false;
