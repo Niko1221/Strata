@@ -393,6 +393,12 @@ move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case rea
 - Draft layer: `--lookup-chain-min M` (the shortest context match `--lookup-chain` extends, default 3),
   `--mtp-hnorm stream` (one norm per stream, as llama.cpp's MTP graph) and `--mtp-draft-vocab FILE` (a token subset
   of your own instead of `<mtp>/draft_vocab.bin`).
+- `--lookup-max-t N` (8 < N <= 16, one-conversation decode): prompt-lookup windows up to N tokens while the MTP's own
+  windows stay at `--spec`; a window past 8 runs as two token groups of at most 8. Each window size is a CUDA graph
+  (~20-35 MiB of VRAM), so past the MTP's sizes only `--lookup-sizes A,B,...` get one (default `--spec`+1, `--spec`+2
+  and N); a size whose graph finds no VRAM is dropped and the round takes the next smaller one. Batch, pipelined and
+  layer-split windows stay at 8. Same tokens; on copy-heavy turns (edits that rewrite a file) decode +19% on an RTX
+  2060 SUPER (IQ3_XXS, `--spec 3 --lookup-max-t 16 --lookup-sizes 8,16`: 40.5 -> 48.3 tokens/s). Off by default.
 - Elsewhere: HIP `STRATA_DENSE_MMQ=1` and `STRATA_HIP_ADAPT_KERNEL_COPY=1` in [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration);
   `STRATA_KEEP_EMPTY_TURNS=1` and `STRATA_TOPK_STREAM=0` in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 

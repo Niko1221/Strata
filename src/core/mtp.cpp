@@ -1738,6 +1738,27 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     return true;
 }
 
+bool MtpDrafter::draft_long(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
+                            float* probs, float min_p, int* n_drafts) {
+    if (T < 1 || T > strata::kernels::kVerifyLongT || a < 0 || a >= T) {
+        err = "mtp: draft arguments out of range";
+        return false;
+    }
+    if (a < max_t_) return draft(std::min(T, max_t_), tokens, p, a, drafts, err, probs, min_p, n_drafts);
+    // the window's rows: the bound buffer, or the rows draft() would stage from
+    const float* rows = (src_R_ != nullptr && src_R_ != window_R_) ? src_R_ : window_R_;
+    if (rows == nullptr) { err = "mtp: no window rows bound"; return false; }
+    // rows 0..a-1 at cells p..p+a-1 (what the round's catch-up writes), queued on the drafter's stream
+    if (!prefill(rows, tokens, a, p, err, false)) return false;
+    // row a as a one-row round: stage_source_R copies its residual row into the bound buffer's row 0 (row a >= max_t
+    // of the same buffer: the two never overlap), after the catch-up above has read row 0 on the same stream
+    const float* saved = src_R_;
+    src_R_ = rows + (size_t) a * (size_t) (g_->hc * g_->n_embd);
+    const bool ok = draft(1, tokens + a, p + a, 0, drafts, err, probs, min_p, n_drafts);
+    src_R_ = saved;
+    return ok;
+}
+
 bool MtpDrafter::stage_source_R(int T, std::string& err) {
     if (src_R_ == nullptr || src_R_ == window_R_) return true;
     const Clock::time_point t_src = Clock::now();

@@ -13,6 +13,10 @@
 // and takes the lookup window only when its best E/cost beats the MTP's by `margin`. Costs are the measured round
 // times per window size (EMA; sizes not seen yet are scaled from seen ones by a prior shape), so the policy adapts
 // to the machine and the context length. It only chooses which drafts to verify: the output is unchanged.
+//
+// Window sizes: every size from 1 to max_t is allowed unless set_sizes() narrows them. A size the verifier cannot
+// hold (its window graph found no VRAM) is dropped with disable(); a lookup or chain then takes the largest allowed
+// size that fits its proposal (--lookup-max-t: a few long lookup sizes, each its own window graph).
 #pragma once
 
 #include <array>
@@ -22,7 +26,7 @@ namespace strata::spec {
 
 class DraftPolicy {
 public:
-    static constexpr int kMaxT = 8;
+    static constexpr int kMaxT = 16;
     static constexpr int kBuckets = 4;
     static constexpr int kCtxBuckets = 3;   // STRATA_SPEC_COST: row costs per context length (< 6K, < 24K, longer)
 
@@ -59,6 +63,14 @@ public:
     /// round) counts as a tenth of a sample, so one capture cannot price a width out of use.  Off: the cost EMA as it always was.
     void set_robust(bool on) { robust_ = on; }
 
+    /// The window sizes a lookup or chained window may use, as a bit mask (bit t = size t; bit 1 is always kept).
+    void set_sizes(unsigned mask);
+    void disable(int t);                   // drop one size (its window graph did not fit)
+    bool allowed(int t) const { return t >= 1 && t <= max_t_ && ((sizes_ >> t) & 1u); }
+    /// The largest allowed size <= t (1 if none).
+    int fit(int t) const;
+    int max_t() const { return max_t_; }
+    unsigned sizes() const { return sizes_; }
     /// COST-AWARE MTP WINDOW (STRATA_SPEC_COST=1): the MTP chain is drafted one step at a time; after draft j (probability p_j)
     ///   E_j = 1 + q_0 + .. + q_j,  q_i = prod_{k<=i} a(p_k)   a() = the acceptance measured for MTP drafts of that probability
     /// is the expected tokens of the window of j + 2 rows, worth E_j / cost(j + 2) tokens per ms (cost() = the measured round time of
@@ -85,6 +97,7 @@ private:
 
     int max_t_;
     double margin_;
+    unsigned sizes_ = ~0u;                                 // allowed window sizes (bit t)
     std::array<std::array<double, kMaxT + 1>, kCtxBuckets> cost_{}, cost_n_{};   // round ms by context bucket and window size
     int bk_ = 0;                                           // the current context bucket
     std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{};    // tokens committed by MTP windows of that size

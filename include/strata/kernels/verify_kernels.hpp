@@ -19,6 +19,11 @@
 namespace strata::kernels {
 
 inline constexpr int kVerifyMaxT = 8;
+/// --lookup-max-t: the longest one-conversation window (a prompt-lookup window).  A window past kVerifyMaxT tokens
+/// runs as two token groups of at most kVerifyMaxT each (the --spec-split layout), so every per-group kernel, the CPU
+/// experts and the drafter keep their kVerifyMaxT rows; only the window-wide parts (staging, head, commit) take more.
+/// Batch and pipelined windows stay at kVerifyMaxT.
+inline constexpr int kVerifyLongT = 2 * kVerifyMaxT;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
 /// `history` is NOT written, but with `commit` (one token): it then keeps the token, as gdn_conv_commit.  Bitwise

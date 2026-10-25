@@ -10,7 +10,9 @@ namespace {
 // The shape of a round's cost by window size, relative to one token, used only for sizes not measured yet (the
 // measured round times replace it). Between the RTX 5070's measured curves: +10 ms per token with every missed expert
 // on the CPU (bench/results/2026-09-27-spec/window-cost), flatter with the default CPU/DMA split.
-constexpr double kShape[DraftPolicy::kMaxT + 1] = {0.0, 1.0, 1.35, 1.7, 2.05, 2.45, 2.85, 3.25, 3.6};
+// (sizes 9-16, above the measured curves: +0.4 a token)
+constexpr double kShape[DraftPolicy::kMaxT + 1] = {0.0, 1.0, 1.35, 1.7, 2.05, 2.45, 2.85, 3.25, 3.6,
+                                                   4.0, 4.4, 4.8, 5.2, 5.6, 6.0, 6.4, 6.8};
 constexpr double kCostAlpha = 0.1;    // EMA weight of a new round time
 constexpr double kTokAlpha = 0.05;    // EMA weight of a new MTP window outcome
 constexpr double kCalDecay = 0.995;   // the MTP probability -> acceptance table fades slowly
@@ -28,6 +30,18 @@ constexpr double kStaleRounds = 300.0;
 
 DraftPolicy::DraftPolicy(int max_t, double margin)
     : max_t_(std::clamp(max_t, 1, kMaxT)), margin_(margin) {}
+
+void DraftPolicy::set_sizes(unsigned mask) { sizes_ = mask | 2u; }
+
+void DraftPolicy::disable(int t) {
+    if (t > 1 && t <= kMaxT) sizes_ &= ~(1u << t);
+}
+
+int DraftPolicy::fit(int t) const {
+    for (t = std::min(t, max_t_); t > 1; --t)
+        if (allowed(t)) return t;
+    return 1;
+}
 
 int DraftPolicy::bucket(int match) {
     return match < 6 ? 0 : match < 12 ? 1 : match < 24 ? 2 : 3;
@@ -131,10 +145,11 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
     for (int k = 1; k <= std::min(lookup_k, max_t_ - 1); ++k) {
         qi *= q;
         e += qi;
+        if (!allowed(k + 1)) continue;
         const double r = e / cost_ms(k + 1);
         if (r > best) { best = r; best_t = k + 1; }
     }
-    const int t_full = std::min(lookup_k, max_t_ - 1) + 1;
+    const int t_full = fit(std::min(lookup_k, max_t_ - 1) + 1);
     if (best_t > 0 && best > base * (1.0 + margin_)) {
         p.lookup = true;
         p.t = best_t;
@@ -144,7 +159,7 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
     }
     // a guessed cost can keep the policy from ever measuring a size: the first few times a confident lookup would
     // need a size not measured yet, it is tried (verification keeps the output; only the one round's speed is at stake)
-    if (t_full > p.t && (cost_n_[bk_][t_full] < kProbes || stale(t_full)) && q >= 0.85) {
+    if (t_full > p.t && t_full > 1 && (cost_n_[bk_][t_full] < kProbes || stale(t_full)) && q >= 0.85) {
         p.lookup = true;
         p.t = t_full;
     }
@@ -241,17 +256,18 @@ int DraftPolicy::chain(int t_mtp, double p_mtp, int k_avail, int match) const {
     for (int k = 1; k <= kmax; ++k) {
         ci *= c;
         gain += ci;
+        if (!allowed(t_mtp + k)) continue;
         const double r = (e0 + p_mtp * gain) / cost_ms(t_mtp + k);
         if (r > best) { best = r; best_k = k; }
     }
-    const int t_full = t_mtp + kmax;
+    const int t_full = fit(t_mtp + kmax), k_full = t_full - t_mtp;
     if (best_k > 0 && best > base * (1.0 + margin_)) {
         // As choose(): a profitable shorter chain must not keep a stale full size from being measured again.
-        if (best_k < kmax && p_mtp * c >= 0.6 && stale(t_full)) return kmax;
+        if (best_k < k_full && p_mtp * c >= 0.6 && stale(t_full)) return k_full;
         return best_k;
     }
     // as choose(): a size whose cost is only guessed is tried a few times when the continuation looks likely
-    if ((cost_n_[bk_][t_full] < kProbes || stale(t_full)) && p_mtp * c >= 0.6) return kmax;
+    if (k_full > 0 && (cost_n_[bk_][t_full] < kProbes || stale(t_full)) && p_mtp * c >= 0.6) return k_full;
     return 0;
 }
 
