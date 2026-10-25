@@ -2977,6 +2977,8 @@ void FileExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
             if (io_ahead_) io_enqueue(layer, e, true);
             continue;
         }
+        if (!direct_.empty()) continue;   // the reads bypass the page cache: a hint on the mapping
+                                          // only makes the drive read the blob twice
         if (role_ptr_.empty() || unmapped_) continue;
         for (int r = 0; r < 3; ++r) {
             const size_t i = (size_t) (3 * layer + r);

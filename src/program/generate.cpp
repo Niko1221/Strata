@@ -2340,8 +2340,10 @@ int64_t profile_fill_threads()
 /// profile index of the first failed job (-1 when all filled) and `err` carries its message; once a job
 /// fails no new job starts, so the callers keep their own failure exit.  `device` >= 0 pins each worker to
 /// that card, as the stages do.  `STRATA_FILL_AHEAD`'s advise and the unbuffered tier's batched reads
-/// overlap less than this does, so the parallel path runs without either (the unbuffered tier keeps the
-/// sequential loop).
+/// overlap less than this does, so the parallel path runs without either.  An unbuffered tier takes the
+/// parallel path too: its blob_stable reads through the staged pool (claim under the stage mutex, the
+/// direct read outside it), and several workers overlap the drive's latency better than the 64-pair
+/// batch loop, which measured 82 MB/s against 1671 MB/s of random-read capability (2026-10-25).
 void parallel_profile_fill(const std::vector<ProfileFillJob>& jobs, strata::core::ExpertCache& cache,
                            strata::core::ExpertSource& src, int device, int64_t& filled, uint64_t& bytes,
                            int64_t& bad, std::string& err)
@@ -6541,9 +6543,13 @@ int main(int argc, char** argv) {
         const auto fill_t0 = std::chrono::steady_clock::now();
         uint64_t fill_bytes = 0;
         // Several workers overlapping the reads and copies is what `fill_ahead` and the unbuffered batch
-        // loader each try to do one pair at a time, so the parallel path runs without them; an unbuffered
-        // source keeps its own batch loader and the sequential loop.  STRATA_FILL_THREADS<=1 = old path.
-        if (profile_fill_threads() >= 2 && !src.unbuffered()) {
+        // loader each try to do one pair at a time, so the parallel path runs without them.  An unbuffered
+        // source takes the parallel path too (the staged pool serialises nothing the workers share): its
+        // 64-pair batch loop measured 82 MB/s where 8 workers on the same tier reach 1372 MB/s (#4064).
+        // STRATA_FILL_THREADS<=1 keeps the old sequential loop.
+        if (profile_fill_threads() >= 2) {   // unbuffered too: blob_stable on a direct tier reads
+                                               // through the staged pool - claim under the stage
+                                               // mutex, the direct read outside it
             const auto& flay = strata::kernels::cpu::expert_layout();
             std::vector<ProfileFillJob> jobs;
             jobs.reserve((size_t) want);
@@ -6683,7 +6689,7 @@ int main(int argc, char** argv) {
         int64_t filled = 0;
         const auto sfill_t0 = std::chrono::steady_clock::now();
         uint64_t sfill_bytes = 0;
-        if (profile_fill_threads() >= 2 && !src.unbuffered()) {
+        if (profile_fill_threads() >= 2) {
             // the same parallel fill as CUDA0's above; the stage's card is `st.dev`, which each worker pins to
             std::vector<ProfileFillJob> jobs;
             for (const auto& pr : st.profile) {
