@@ -230,7 +230,8 @@ static void test_mask_cache(void) {
     grammar_free(g);
 }
 
-// a minimal v3 GGUF: zero tensors, 100-token vocabulary, token 99 CONTROL + eos
+// a minimal v3 GGUF: zero tensors, 100-token vocabulary, token 99 CONTROL + eos.  Ids 5-9 carry
+// GPT2-byte-mapped pieces (the form Qwen-family GGUFs store) so the loader's byte map is pinned.
 static void write_test_gguf(const std::string& path) {
     std::string b;
     auto u32 = [&b](uint32_t v) { b.append((const char*) &v, 4); };
@@ -245,7 +246,19 @@ static void write_test_gguf(const std::string& path) {
     u32(8); // elem STRING
     u64(100);
     for (int i = 0; i < 100; ++i) {
-        str("t" + std::to_string(i));
+        // the GPT2 byte-map forms: 'Ĥ' rides byte 0x82 (U+0124), 'Ń' rides 0xAD (U+0143),
+        // "ä¸Ń" is the piece of a 一-class CJK character (bytes E4 B8 AD), 'Ċ' the newline,
+        // 'Ġthe' the space-prefixed word
+        std::string piece;
+        switch (i) {
+            case 5: piece = "\xc4\xa4"; break;
+            case 6: piece = "\xc5\x83"; break;
+            case 7: piece = "\xc3\xa4\xc2\xb8\xc5\x83"; break;
+            case 8: piece = "\xc4\x8a"; break;
+            case 9: piece = "\xc4\xa0the"; break;
+            default: piece = "t" + std::to_string(i); break;
+        }
+        str(piece);
     }
     str("tokenizer.ggml.token_type");
     u32(9); // ARRAY
@@ -272,6 +285,21 @@ static void test_load_grammar_vocab(void) {
     assert(vocab.pieces[99] == "t99" && "full arrays: the 100th token is not sampled away");
     assert(vocab.control[99] == 1 && vocab.control[0] == 0);
     assert(vocab.is_eog(99) && !vocab.is_eog(98));
+    // the GPT2 byte map, complete: the pieces decode back to the raw bytes the grammar speaks
+    const auto hex = [](const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) {
+            char b[4];
+            std::snprintf(b, sizeof b, "%02x", c);
+            out += b;
+        }
+        return out;
+    };
+    assert(hex(vocab.pieces[5]) == "82" && "'Ĥ' rides byte 0x82");
+    assert(hex(vocab.pieces[6]) == "ad" && "'Ń' rides byte 0xAD");
+    assert(hex(vocab.pieces[7]) == "e4b8ad" && "a CJK piece decodes to its own UTF-8 bytes");
+    assert(hex(vocab.pieces[8]) == "0a" && "'Ċ' rides byte 0x0A");
+    assert(hex(vocab.pieces[9]) == "20746865" && "'Ġthe' decodes to \" the\"");
     std::remove(path.c_str());
 }
 

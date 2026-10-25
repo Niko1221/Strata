@@ -51,8 +51,9 @@ RIG = {
 
 
 def engine_args(max_context):
-    # the IQ pack's start contract: --native + --spec T (T >= 2) + --prefill. Grammar requests
-    # turn drafting off per request (suffix/n-gram family); MTP would be a hard refusal.
+    # the IQ pack's start contract: --native + --spec T (T >= 2) + --prefill. Grammar requests turn
+    # the suffix/n-gram family off per request; the MTP drafter rides the masked windows (phase 2),
+    # so add --mtp <rt> to compare constrained-with-drafts (see .zcode-obj/acceptance_mtp.py).
     return ["--pack", RIG["pack"], "--native", RIG["native"],
             "--resident-budget-gib", "40", "--expert-profile", RIG["profile"],
             "--expert-cache", "auto", "--prefill", "auto", "--spec", "2",

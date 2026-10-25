@@ -8,6 +8,7 @@
 #include "strata/grammar/grammar_vocab.hpp"
 
 #include <cstdint>
+#include <exception>
 #include <list>
 #include <map>
 #include <memory>
@@ -37,6 +38,21 @@ struct SlotGrammar {
     // rejection (no stack survives the token: the engine fed a token the mask had banned).
     bool advance(int32_t token, std::string& err);
 };
+
+// The drafted window's one chain step: advance `scratch` (a clone the caller owns and reuses across
+// the window's drafts) through `draft` and stage the mask for the state it leaves.  False when the
+// grammar refuses the draft - the caller reuses the previous row's mask, which the row before it was
+// sampled under, so the draft can never win that row's acceptance compare.
+inline bool grammar_chain_step(const SlotGrammar& live, grammar& scratch, int32_t draft,
+                               std::vector<uint32_t>& out) {
+    try {
+        grammar_accept(scratch, draft, live.entry->vocab->token_to_piece(draft));
+    } catch (const std::exception&) {
+        return false;
+    }
+    out = live.entry->cache->mask_for(grammar_stacks(&scratch), grammar_get_rules(&scratch));
+    return true;
+}
 
 class GrammarRegistry {
 public:

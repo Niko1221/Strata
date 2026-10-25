@@ -1,4 +1,9 @@
 // src/grammar/grammar_vocab.cpp - build the GrammarVocab from GGUF tokenizer metadata.
+//
+// The pieces are expected in the GPT2 byte-level form byte-level-BPE vocabularies store (Qwen and
+// the other supported families): every byte of the real piece rides the bytes_to_unicode symbol,
+// which this loader decodes back.  A sentencepiece-style vocab holding literal U+0100-U+0143 text
+// would be rewritten into raw bytes by that decode - not a supported family here.
 #include "strata/grammar/grammar_vocab.hpp"
 
 #include "strata/artifact/gguf_reader.hpp"
