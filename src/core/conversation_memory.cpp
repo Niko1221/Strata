@@ -17,6 +17,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_host.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace strata::core {
@@ -286,6 +290,20 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(__APPLE__)
+    // free (which already counts the speculative pages) + inactive + purgeable: what the kernel hands back without paging
+    vm_statistics64_data_t vm{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm), &count) != KERN_SUCCESS)
+        return {};
+    vm_size_t page = 0;
+    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS || page == 0) return {};
+    uint64_t total_bytes = 0;
+    size_t len = sizeof total_bytes;
+    std::optional<uint64_t> total;
+    if (sysctlbyname("hw.memsize", &total_bytes, &len, nullptr, 0) == 0 && total_bytes != 0) total = total_bytes;
+    const uint64_t pages = (uint64_t) vm.free_count + vm.inactive_count + vm.purgeable_count;
+    return combine(pages * page, total, CgroupScan{}, memory_limit_bytes());
 #else
     return {};
 #endif

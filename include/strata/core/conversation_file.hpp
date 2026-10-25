@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <optional>
 #include <string>
@@ -108,6 +109,20 @@ struct SessionInputs {
 };
 // The fingerprint's list: every role with its file, none merged (a path in two roles is two entries).
 std::vector<SessionModelFile> session_model_inputs(const SessionInputs& inputs);
+
+// The MTP model the Metal engine loads (metal/src/engine/window.cpp mtp_load) and the session fingerprint hashes, from the
+// one rule: STRATA_METAL_MTP_GGUF, else <rt>/../mtp-q2_0.gguf (tools/mtp_pack.py).  The rt directory itself holds only
+// draft_vocab.bin there, no dense.bin.
+inline std::string metal_mtp_gguf_path(const std::string& rt_dir) {
+    if (const char* e = std::getenv("STRATA_METAL_MTP_GGUF")) return e;
+    std::string d = rt_dir;
+    while (!d.empty() && d.back() == '/') d.pop_back();
+    const size_t s = d.rfind('/');
+    return (s == std::string::npos ? std::string(".") : d.substr(0, s)) + "/mtp-q2_0.gguf";
+}
+// The MTP files a session is bound to, as the running backend loads them: Metal - the GGUF and the draft subset beside
+// it (rt/draft_vocab.bin, window.cpp); CUDA/CPU - <rt>/dense.bin, dense.txt, experts.bin and draft_vocab.bin.
+std::vector<SessionModelFile> session_mtp_inputs(const std::string& rt_dir, bool metal);
 
 // Why a session file operation failed, for the caller's answer (the server maps it to an HTTP status):
 //   invalid   refused: not a session file, corrupt, another model or configuration, over this engine's limits, a

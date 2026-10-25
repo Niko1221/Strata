@@ -59,6 +59,8 @@
 // draft hand over to it; bind has nothing to bind there.
 namespace strata::metal_engine {
 bool mtp_load(const std::string& rt_dir, int max_t, std::string& err);
+// the drafter's K/V lives in the decode window: kv_state() describes it, for the conversation snapshots
+void mtp_bind_state(strata::core::QsaState* st);
 bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
 bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
                int* n_drafts, std::string& err);
@@ -255,6 +257,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     g_ = &g;
     ss_ = &ss;
     max_t_ = max_t;
+    strata::metal_engine::mtp_bind_state(&st_);
     return strata::metal_engine::mtp_load(rt_dir, max_t, err);
 #endif
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
