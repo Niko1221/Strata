@@ -44,7 +44,7 @@ MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
-INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
+INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e222": ("Arc Pro B65", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
              "e20b": ("Arc B580", 12.0),
              "e20c": ("Arc B570", 10.0), "e212": ("Arc B50", 16.0),
              "56a0": ("Arc A770", 16.0), "56a1": ("Arc A750", 8.0), "56a2": ("Arc A580", 8.0),
@@ -437,8 +437,10 @@ def install(argv) -> None:
             d = S.MODELS.get(m, {})
             shard1 = d.get("download_gb", 0) - 28.8          # all but the per-layer lookup table (read from disk)
             room = intel[0]["vram_gb"] - 3 + max(0.0, real_ram - 10)   # VRAM, plus a pinned host mirror (or the CPU)
+            every = sum(g["vram_gb"] - 1.5 for g in intel)   # a layer split across every card (each keeps its own room)
             msg = (f"  {m:8s} ~{shard1:.0f} GB of weights: " +
                    ("fits in VRAM" if shard1 <= intel[0]["vram_gb"] - 1.5 else
+                    f"fits in VRAM across the {len(intel)} cards (--layer-split)" if len(intel) > 1 and shard1 <= every else
                     "fits, the experts the card does not hold are computed on the CPU (slower)" if alch and shard1 <= room else
                     "fits with part of its experts mirrored in RAM (slower)" if shard1 <= room else "does not fit"))
         say(msg)
