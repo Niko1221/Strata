@@ -49,6 +49,12 @@ CASES = {
     "G": ("<tool_call>\n<function=Bash>\n<parameter=command\n" + PE + "\n<parameter=command>\ngrep -rln x scripts/\n" + PE +
           "\n" + PE + "\n<parameter=description>\nList\n" + PE + "\n</function>\n</tool_call>",
           [("Bash", {"command": "grep -rln x scripts/", "description": "List"})]),
+    # a lone `</` line (live raw 96493fcfb19f): the same empty stub, not part of the value
+    "H": ("<tool_call>\n<function=Bash>\n<parameter=command>\nnpx vitest run src/builds/mirror-sync.test.ts 2>&1 | tail -8\n"
+          "</parameter>\n<parameter=description>\nRun mirror-sync tests after fix\n</parameter>\n<parameter=timeout>\n"
+          "120000\n</parameter>\n</\n</parameter>\n</function>\n</tool_call>",
+          [("Bash", {"command": "npx vitest run src/builds/mirror-sync.test.ts 2>&1 | tail -8",
+                     "description": "Run mirror-sync tests after fix", "timeout": 120000})]),
 }
 
 
@@ -59,7 +65,7 @@ def splits(text, how):
         return list(text)
     pieces, at = [], 0
     while at < len(text):          # cut so that "</parameter>\n<" and "<\n</parameter>" each arrive as one token
-        for tok in (PE + "\n" + LT, LT + "\n" + PE, PE + "\n" + PE):
+        for tok in (PE + "\n" + LT + "/", PE + "\n" + LT, LT + "\n" + PE, PE + "\n" + PE):
             if text.startswith(tok, at):
                 pieces.append(tok)
                 at += len(tok)

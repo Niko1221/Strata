@@ -724,7 +724,8 @@ FOLLOWERS = (FUNC_END, CALL_END, "<parameter=", "</<", "</invoke>", "<parameter 
 # the model's empty stub: a lone `<` line closed by a parameter closer, after a value or right after the function opener
 # (or a lone `<` line, left open: whatever follows it is the next opener or closer)
 # (or a stray further closer, or an opener cut before its `>`: `<parameter=NAME` + line break)
-STUB = re.compile(r"(?:</parameter>\s*)+|<(?:\s*</parameter>\s*|[ \t]*\n\s*(?:</parameter>\s*)?)")
+# (the lone line is `<` or `</`)
+STUB = re.compile(r"(?:</parameter>\s*)+|</?(?:\s*</parameter>\s*|[ \t]*\n\s*(?:</parameter>\s*)?)")
 
 
 def broken_opener(s: str) -> int:
@@ -747,8 +748,11 @@ def stub_follows(after: str):
 
 
 def stub_pending(text: str) -> bool:
-    """`text` (no leading whitespace) is a stub still arriving: `<` and whitespace, then a prefix of the closer."""
-    return text.startswith("<") and PARAM_END.startswith(text[1:].lstrip()) and not text.startswith("<parameter")
+    """`text` (no leading whitespace) is a stub still arriving: `<` or `</` and whitespace, then a prefix of the closer."""
+    rest = text[1:]
+    if rest.startswith("/"):
+        rest = rest[1:]
+    return text.startswith("<") and PARAM_END.startswith(rest.lstrip()) and not text.startswith("<parameter")
 
 
 def param_end(text: str, final: bool = False, names=None) -> int:
