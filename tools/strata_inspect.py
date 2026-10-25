@@ -47,6 +47,8 @@ KNOWN = [
     ("unsloth", "UD-Q5_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q5_K_XL/"),
     ("unsloth", "UD-Q6_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q6_K_XL/"),
     ("unsloth", "Q8_0", "unsloth/Qwen3.8-Flash-Next-GGUF", "Q8_0/"),
+    ("signal", "AP-Q4_K_XL", "agentionai/Signal-3.8-Flash-Next-GGUF", "AP-Q4_K_XL/"),
+    ("signal", "AP-IQ4_XS", "agentionai/Signal-3.8-Flash-Next-GGUF", "AP-IQ4_XS/"),
 ]
 
 

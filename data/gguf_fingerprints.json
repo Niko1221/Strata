@@ -295,6 +295,36 @@
   ],
   "repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
  },
+ "signal/AP-Q4_K_XL": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 101131745280,
+  "expert_bytes": {
+   "IQ4_NL": 22649241600,
+   "Q4_K": 45298483200
+  },
+  "experts_bpw": 4.5,
+  "bpw": 4.572,
+  "files": [
+   "AP-Q4_K_XL/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf"
+  ],
+  "repo": "agentionai/Signal-3.8-Flash-Next-GGUF"
+ },
+ "signal/AP-IQ4_XS": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 90436270080,
+  "expert_bytes": {
+   "IQ3_S": 34603008000,
+   "IQ4_NL": 22649241600
+  },
+  "experts_bpw": 3.792,
+  "bpw": 4.089,
+  "files": [
+   "AP-IQ4_XS/Signal-3.8-Flash-Next-AP-IQ4_XS.gguf"
+  ],
+  "repo": "agentionai/Signal-3.8-Flash-Next-GGUF"
+ },
  "_roles": {
   "blk.N.attn_gate.weight": [
    "IQ3_S",
@@ -504,12 +534,14 @@
   "blk.N.ssm_alpha.weight": [
    "BF16",
    "F32",
-   "Q5_K"
+   "Q5_K",
+   "Q6_K"
   ],
   "blk.N.ssm_beta.weight": [
    "BF16",
    "F32",
-   "Q5_K"
+   "Q5_K",
+   "Q6_K"
   ],
   "blk.N.ssm_conv1d.weight": [
    "F32"
