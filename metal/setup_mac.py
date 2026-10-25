@@ -453,10 +453,10 @@ def main(argv=None) -> int:
 
     mmproj = vexe = None
     if vision == "yes":
-        mmproj = models_root / fam["mmproj"]
+        mmproj = models_root / fam.get("mmproj_as", fam["mmproj"])   # under its own name where the family has one (Signal's F16 is not Qwen3.6's)
         if not (mmproj.exists() and S.done(mmproj)):
             S.download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        sha = VISION_SHA256.get(fam["mmproj"])
+        sha = fam.get("mmproj_sha256") or VISION_SHA256.get(fam["mmproj"])
         if sha:
             S.verify_sha256(mmproj, *sha)
         vexe = build_vision(llama)

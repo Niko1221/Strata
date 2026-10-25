@@ -646,6 +646,8 @@ FAMILIES = {
                "file": "Signal-3.8-Flash-Next-{q}.gguf", "shards": 1, "tag": "signal-",
                "mmproj_hf": hf("agentionai/Signal-3.8-Flash-Next-GGUF"), "mmproj": "mmproj-F16.gguf",
                "mmproj_as": "mmproj-Signal-3.8-Flash-Next-F16.gguf", "name": "signal-3.8-flash-next",
+               # the same size and SHA-256 as the entry REPO_PINS makes for its repository (measured on the file this pin points at)
+               "mmproj_sha256": (904004128, "f456cd796fdbdef0cadb22710b54e0071b6cdf22c07963365baa898267aec517"),
                "pack_args": ["--compat-bf16"], "embd_bf16": True, "sha256": SIGNAL_FILES,
                "license": "Qwen Community License 1.0: https://huggingface.co/agentionai/Signal-3.8-Flash-Next-GGUF"},
 }
@@ -8497,14 +8499,16 @@ def mac_control_setup(a) -> int:
     ok("model files present")
     mmproj = None
     if vision != "none":
-        mmproj = Path(models_root) / fam["mmproj"]
+        mmproj = Path(models_root) / fam.get("mmproj_as", fam["mmproj"])   # under its own name where the family has one (Signal's F16 is not Qwen3.6's)
         if not mmproj.exists():                        # an earlier install's copy (the same file for every family)
-            mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
+            mmproj = find_in(roots, f"models/{mmproj.name}") or mmproj
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         elif not (mmproj.exists() and done(mmproj)):
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam["mmproj"] in ISTA_FILES:
+        if fam.get("mmproj_sha256"):                   # the NVFP4 and Signal encoders are pinned by size and SHA-256 too
+            verify_sha256(mmproj, *fam["mmproj_sha256"])
+        elif fam["mmproj"] in ISTA_FILES:
             verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
         ok(f"vision encoder: {mmproj}")
 

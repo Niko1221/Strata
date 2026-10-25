@@ -99,6 +99,22 @@ class Names(unittest.TestCase):
             ch = setup.choices_from_config(p)
         self.assertEqual((ch["family"], ch["model"], ch["vision"], ch["kv"]), ("signal", "AP-IQ4_XS", "gpu", "int8"))
 
+    def test_its_encoder_is_pinned_once_and_named_the_same_way_on_every_path(self):
+        """Its repository calls the image encoder mmproj-F16.gguf, which is also Qwen3.6's (a different file, 4.7 MB smaller). Setup keeps
+        it under a name of its own; every install path must resolve that name, or a PC that has the other one already would read pictures
+        with the wrong encoder, and both setup.py paths must check the one pin."""
+        self.assertEqual(FAM["mmproj"], "mmproj-F16.gguf")
+        self.assertEqual(FAM["mmproj_as"], "mmproj-Signal-3.8-Flash-Next-F16.gguf")
+        self.assertEqual(FAM["mmproj_sha256"], setup.REPO_PINS["agentionai/Signal-3.8-Flash-Next-GGUF"]["mmproj-F16.gguf"])
+        src = (setup.ROOT / "setup.py").read_text(encoding="utf-8")
+        self.assertIn('Path(models_root) / fam.get("mmproj_as", fam["mmproj"])', src)      # mac_control_setup
+        self.assertIn('Path(a.models_dir) / fam.get("mmproj_as", fam.get("mmproj", MMPROJ))', src)      # the PC path
+        self.assertNotIn('Path(models_root) / fam["mmproj"]', src)
+        self.assertEqual(src.count('if fam.get("mmproj_sha256"):'), 2)                      # the PC path and the Mac one
+        mac = (setup.ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")           # the Mac Terminal's installer
+        self.assertIn('models_root / fam.get("mmproj_as", fam["mmproj"])', mac)
+        self.assertNotIn('models_root / fam["mmproj"]', mac)
+
 
 class Install(unittest.TestCase):
     def test_the_pack_the_embedding_and_the_config(self):
