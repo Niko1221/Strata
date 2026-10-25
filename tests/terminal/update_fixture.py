@@ -53,6 +53,8 @@ def build_package(parent: Path, version: str, *, engine_source: str = GOOD_ENGIN
     src = parent / f"src-{version}-{variant}"
     src.mkdir(parents=True)
     (src / "engine_main.py").write_text(engine_source, encoding="utf-8")
+    if backend == "hip":
+        (src / "BUILD.json").write_text(json.dumps({"hipblaslt_version": 100400}), encoding="utf-8")
     if WINDOWS:
         entry = "strata.cmd"
         (src / entry).write_bytes(f'@echo off\r\n"{sys.executable}" "%~dp0engine_main.py" %*\r\n'.encode())

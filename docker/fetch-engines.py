@@ -33,6 +33,7 @@ from strata_control import engine_component as ec, feed as feedmod, signing, tra
 FLAVORS = {
     "cuda13": ("cuda", "cuda13", "cuda"),
     "cuda12": ("cuda", "cuda12", "cuda"),
+    "rocm-gfx1031": ("hip", "rx6000", "hip"),
     "rocm-gfx120x": ("hip", "rx9070", "hip"),       # RX 9000, Radeon AI PRO R9700 (gfx1200 / gfx1201)
     "rocm-gfx110x": ("hip", "rx7900", "hip"),       # RX 7000 (gfx1100 / gfx1101 / gfx1102)
     "rocm-gfx1151": ("hip", "halo", "hip"),         # Strix Halo (gfx1151)

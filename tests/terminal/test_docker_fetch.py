@@ -29,8 +29,11 @@ class FetchEngines(unittest.TestCase):
         self.trust = self.root / "trust.json"
         self.trust.write_text(json.dumps({"keys": [{k: self.key[k] for k in ("alg", "key_id", "public")}]}), encoding="utf-8")
         folder = fx.build_package(self.root / "pub", "0.1.45", key=self.key, backend="cuda", variant="cuda13")
+        rx6000 = fx.build_package(self.root / "pub", "0.1.45", key=self.key, backend="hip", variant="rx6000",
+                                  archs=("gfx1030", "gfx1031"))
         from feed_tool import build_feed, pack_engine
         pack_engine(folder, self.release, url_prefix="")
+        pack_engine(rx6000, self.release, url_prefix="")
         build_feed(self.release, key=self.key, sequence=1, engine_dir=self.release)
         self.out = self.root / "out"
 
@@ -50,6 +53,16 @@ class FetchEngines(unittest.TestCase):
         self.assertTrue((Path(folder) / "engine-component.json").is_file())
         self.assertIn("signature and every file verified", r.stderr)
 
+    def test_gfx1031_flavor_fetches_the_rx6000_package(self):
+        r = self.run_script("--flavors", "rocm-gfx1031")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        flavor, build_flavor, folder = r.stdout.strip().split("\t")
+        self.assertEqual((flavor, build_flavor), ("rocm-gfx1031", "hip"))
+        manifest = json.loads((Path(folder) / "engine-component.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["backend"], manifest["variant"]), ("hip", "rx6000"))
+        self.assertEqual(set(manifest["archs"]), {"gfx1030", "gfx1031"})
+        self.assertIn("signature and every file verified", r.stderr)
+
     def test_a_flavor_without_a_package_is_an_error_unless_skipped(self):
         r = self.run_script("--flavors", "cuda13,sycl")
         self.assertEqual(r.returncode, 3, r.stderr)
@@ -65,7 +78,7 @@ class FetchEngines(unittest.TestCase):
         self.assertFalse(self.out.exists() and any(self.out.iterdir()))
 
     def test_an_archive_that_is_not_the_one_in_the_feed_is_refused(self):
-        archive = next(self.release.glob("strata-engine-*.tar.gz"))
+        archive = next(self.release.glob("*linux-x86_64-cuda-cuda13.tar.gz"))
         data = bytearray(archive.read_bytes())
         data[len(data) // 2] ^= 0xFF
         archive.write_bytes(bytes(data))

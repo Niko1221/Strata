@@ -138,7 +138,8 @@ class Document(unittest.TestCase):
 
     def test_tags_in_the_document_match_the_compose_defaults(self):
         doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
-        for tag in ("0.2.3-cuda13", "0.2.3-cuda12", "0.2.3-rocm-gfx120x", "0.2.3-rocm-gfx110x", "0.2.3-rocm-gfx1151", "0.2.3-sycl"):
+        for tag in ("0.2.3-cuda13", "0.2.3-cuda12", "0.2.3-rocm-gfx1031", "0.2.3-rocm-gfx120x", "0.2.3-rocm-gfx110x",
+                    "0.2.3-rocm-gfx1151", "0.2.3-sycl"):
             self.assertIn(tag, doc)
         for name, tag in (("docker-compose.nvidia.yml", "ghcr.io/niko1221/strata:0.2.3-cuda13"), ("docker-compose.amd.yml", "ghcr.io/niko1221/strata:0.2.3-rocm-gfx120x"),
                           ("docker-compose.intel.yml", "ghcr.io/niko1221/strata:0.2.3-sycl")):
@@ -170,9 +171,11 @@ class Publishing(unittest.TestCase):
         src = (DOCKER / "fetch-engines.py").read_text(encoding="utf-8")
         flavors = re.findall(r'^    "([a-z0-9-]+)": \("', src, re.M)
         doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
-        self.assertTrue({"cuda13", "cuda12", "rocm-gfx120x", "rocm-gfx110x", "rocm-gfx1151", "sycl"} <= set(flavors), flavors)
+        self.assertTrue({"cuda13", "cuda12", "rocm-gfx1031", "rocm-gfx120x", "rocm-gfx110x", "rocm-gfx1151", "sycl"} <= set(flavors), flavors)
         for flavor in flavors:
             self.assertIn(f"0.2.3-{flavor}", doc)
+        publish = (DOCKER / "publish.sh").read_text(encoding="utf-8")
+        self.assertIn("flavor_list=${flavors:-cuda13,cuda12,rocm-gfx1031", publish)
 
     def test_build_script_copies_everything_the_terminal_package_needs(self):
         """docker/build.sh lists the Terminal's files by hand; the list must cover package_terminal.py's payload (it once missed docs/TERMINAL_LAUNCH.md)."""

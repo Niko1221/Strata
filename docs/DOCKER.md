@@ -19,6 +19,7 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 | --- | --- | --- |
 | NVIDIA **RTX 20, 30, 40, 50** series (and the matching RTX A / Quadro cards) | `0.2.3-cuda13` | NVIDIA driver **580 or newer**, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
 | NVIDIA **GTX 10 (Pascal), Tesla P100, V100 (Volta)**, or any NVIDIA card whose driver is **575 to 579** | `0.2.3-cuda12` | NVIDIA driver **575 or newer**, the same toolkit |
+| AMD **RX 6000** series (RDNA 2, gfx1030 / gfx1031) | `0.2.3-rocm-gfx1031` (when the release feed carries the `rx6000` engine package) | the `amdgpu` kernel driver |
 | AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.3-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
 | AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.3-rocm-gfx110x` | the `amdgpu` kernel driver |
 | AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.3-rocm-gfx1151` | the `amdgpu` kernel driver |
@@ -313,6 +314,8 @@ files the signed update feed names. Nothing publishes by itself: a maintainer st
 2. GitHub, **Actions, Docker images, Run workflow** ([.github/workflows/docker-images.yml](../.github/workflows/docker-images.yml); the file has to be on
    the default branch to show up). Inputs: the release tag (`v0.2.3`), the flavors (empty: every flavor the release has a package
    for), **push** and **latest**. Run it once with **push off**: it builds every image and publishes nothing (a dry run).
+   If the release tag does not contain the image build scripts for a flavor in its feed, set **source_ref** to a branch or commit
+   that supports that flavor.
 3. Run it again with **push on**. It logs in to `ghcr.io` with the job's `GITHUB_TOKEN` (`packages: write`) and pushes
    `ghcr.io/niko1221/strata:0.2.3-<flavor>` and `latest-<flavor>`. Turn **latest** off for a pre-release.
 4. The first push creates each package as private. In the repository's Packages, open every package, **Package settings, Change
@@ -329,6 +332,7 @@ the job starts the image once to see that the Terminal inside it runs.
 | --- | --- |
 | `cuda13` | `linux-x86_64`, cuda, variant `cuda13` |
 | `cuda12` | `linux-x86_64`, cuda, variant `cuda12` |
+| `rocm-gfx1031` | `linux-x86_64`, hip, variant `rx6000` (gfx1030 / gfx1031) |
 | `rocm-gfx120x` | `linux-x86_64`, hip, variant `rx9070` (gfx1200 / gfx1201) |
 | `rocm-gfx110x` | `linux-x86_64`, hip, variant `rx7900` (gfx1100 / gfx1101 / gfx1102) |
 | `rocm-gfx1151` | `linux-x86_64`, hip, variant `halo` (Strix Halo, gfx1151) |
@@ -336,6 +340,11 @@ the job starts the image once to see that the Terminal inside it runs.
 
 A flavor the feed has no package for is left out, with a line in the log. The same steps run from a Linux computer with Docker:
 `docker/publish.sh --release-tag v0.2.3` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
+The workflow's default flavor list comes from the signed release feed. Once that release includes the signed `rx6000` package,
+`rocm-gfx1031` is included automatically; to build and push only that image, run the workflow with **flavors** set to
+`rocm-gfx1031`, **push** enabled, and **latest** enabled or disabled as needed. The resulting tags are
+`ghcr.io/niko1221/strata:<version>-rocm-gfx1031` and, when latest is enabled,
+`ghcr.io/niko1221/strata:latest-rocm-gfx1031`.
 The images run on the runner without a graphics card, so the card checks (`docker/smoke-test.sh`) stay a manual step on a computer with the card.
 
 ## Known limits

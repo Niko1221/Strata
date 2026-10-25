@@ -32,7 +32,7 @@ on:
         default: true
         type: boolean
       source_ref:
-        description: 'Git ref of the Dockerfile and the Terminal sources (empty: the release tag)'
+        description: 'Git ref of the Dockerfile and Terminal sources (empty: the release tag)'
         required: false
         default: ''
         type: string
