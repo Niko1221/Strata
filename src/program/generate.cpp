@@ -170,9 +170,11 @@ void emit_lp_line(const strata::core::Verifier& ver, int t, int32_t token, int k
     const double lse = (double) mx + std::log(se);
     std::printf("LP %.6f", (double) row[(size_t) token] - lse);
     if (!allowed.empty()) {
-        // 只要调用方点名的那几个 id：server 侧再按它们归一化 ⇒ 与 allowed_token_ids 语义一致
+        // 只要调用方点名的那几个 id：server 侧再按它们归一化 ⇒ 与 allowed_token_ids 语义一致。
+        // server 只在能从 tokenizer 读到词表大小时把越界 id 拒为 400；引擎自己的 vocab() 是权威，
+        // 越界的 id 不出现在行上，也就不会越界读 logits
         for (const int32_t id : allowed) {
-            if (id == token) continue;
+            if (id == token || id < 0 || (int64_t) id >= ver.vocab()) continue;
             std::printf(" %d:%.6f", (int) id, (double) row[(size_t) id] - lse);
         }
         std::printf("\n");
