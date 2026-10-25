@@ -1,6 +1,7 @@
 """#533: POST /v1/vram (opt-in hot VRAM resize) - the engine command, the route, the config key, a reserve kept for
 an unloaded engine and applied when it loads again, and the per-GPU form of it (#533 on a layer split): one cache per
 GPU, `gpu` naming which one moves."""
+import contextlib
 import io
 import json
 import queue
@@ -229,6 +230,69 @@ class Route(unittest.TestCase):
         self.assertEqual(self.engine.calls, [])
         self.assertEqual(self.request("/v1/load", {})[0], 200)
         self.assertEqual(self.engine.calls, [(5000, 1)])
+
+
+class CardOrder(unittest.TestCase):
+    """The engine numbers its cards in the order CUDA_VISIBLE_DEVICES gives them, which ordered_gpus can change from
+    the config's "gpu" list (#1352: the faster card last); with replicas each engine runs only its own group of
+    cards.  POST /v1/vram's "gpu" and the nvidia-smi number in the log follow the engine, not the config."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.engine = VramEngine(tok)
+        self.engine.loaded = True
+        self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+
+    def resize(self, reserve_mib, gpu=None):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.svc.vram(reserve_mib, gpu)
+        return out.getvalue()
+
+    def test_labels_in_the_engine_order(self):
+        """The config lists 0 then 2; the engine runs on 2,0 (card 0 is faster, so it goes last): the engine's GPU 0
+        is nvidia-smi 2."""
+        self.svc.gpu_indices = [0, 2]                         # the config's order
+        self.svc.engine_gpus = [2, 0]                         # the engine's order
+        log = self.resize(4000, 0)
+        self.assertIn("VRAM on GPU 0 (nvidia-smi 2)", log)
+        self.assertIn("VRAM on GPU 1 (nvidia-smi 0)", log)
+        self.assertEqual(self.svc.gpu_label(1), 0)
+
+    def test_the_order_comes_from_the_engine_environment(self):
+        from serve.server import child_env, engine_card_order, gpu_list
+        cfg = {"gpu": [0, 2], "args": []}
+        with mock.patch("serve.server.gpu_speed_scores", return_value={0: 9.0, 2: 1.0}), \
+                mock.patch("serve.server.gpu_vram_mib", return_value={0: 24576, 2: 24576}):
+            env = child_env(cfg)
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "2,0")
+        self.assertEqual(gpu_list(cfg), [0, 2])
+        self.assertEqual(engine_card_order(cfg, env), [2, 0])
+        self.assertEqual(engine_card_order(cfg, {}), [0, 2])           # nothing visible: the config's order
+
+    def test_two_replicas_count_one_replica(self):
+        """Two replicas of two cards each: the service lists four cards, but an engine has two, numbered 0 and 1."""
+        self.svc.gpu_indices = [0, 1, 2, 3]
+        self.svc.replica_gpu_groups = [[0, 1], [2, 3]]
+        with self.assertRaisesRegex(ValueError, "this run has 2 GPUs"):
+            self.svc.vram(4000, 2)
+        self.assertEqual(self.engine.calls, [])
+        self.assertIn("VRAM on GPU 1 (nvidia-smi 1)", self.resize(4000, 1))
+        self.assertEqual(self.engine.calls, [(4000, 1)])
+
+    def test_replica_order_from_its_own_environment(self):
+        from serve import replicas as rp
+        from serve.server import child_env, engine_card_order
+        cfg = {"gpu": [0, 1, 2, 3], "replicas": 2, "args": []}
+        groups = rp.gpu_groups(cfg)
+        self.assertEqual(groups, [[0, 1], [2, 3]])
+        speeds = {0: 9.0, 1: 1.0, 2: 9.0, 3: 1.0}             # in each group the first card is the faster one
+        with mock.patch("serve.server.gpu_speed_scores", side_effect=lambda gl: {i: speeds[i] for i in gl}), \
+                mock.patch("serve.server.gpu_vram_mib", return_value=None):
+            env = child_env(rp.replica_cfg(cfg, 0, groups[0]))
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1,0")
+        self.assertEqual(engine_card_order(cfg, env, groups), [1, 0])
+        self.assertEqual(engine_card_order(cfg, {}, groups), [0, 1])   # nothing visible: the first group's order
 
 
 if __name__ == "__main__":
