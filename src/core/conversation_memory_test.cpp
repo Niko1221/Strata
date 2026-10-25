@@ -49,6 +49,21 @@ int main() {
                                    std::numeric_limits<uint64_t>::max(), 0), "maximal exact bound");
     check(!conversation_memory_admit(std::numeric_limits<uint64_t>::max(),
                                     std::numeric_limits<uint64_t>::max(), 1), "maximal sum overflow rejected");
+    // the evict-to-admit loop's prediction: would it fit if every parked conversation gave its RAM back?
+    check(!conversation_memory_admit_predict({}, 0, 0, 1ull << 30), "prediction fails closed on unknown telemetry");
+    check(conversation_memory_admit_predict(100, 40, 60, 0), "prediction agrees with the plain gate");
+    check(conversation_memory_admit_predict(5285ull << 20, 3702ull << 20, 2560ull << 20, 4ull << 30),
+          "the box's own gate sample (log 2791: 5285 MiB free after a full-eviction attempt, need 6262) "
+          "with a SYNTHETIC 4 GiB credit: predicts a fit - exactly the false promise a ledger makes");
+    check(!conversation_memory_admit_predict(5585ull << 20, 3882ull << 20, 2560ull << 20, 0),
+          "log 4653's sample with nothing parked: the plain gate exactly");
+    check(!conversation_memory_admit_predict(1872ull << 20, 868ull << 20, 2560ull << 20, 800ull << 20),
+          "log 4347's sample with a SYNTHETIC 800 MiB credit: still short of the 3428 MiB gate - refused");
+    check(conversation_memory_admit_predict(50, 40, 30, std::numeric_limits<uint64_t>::max()),
+          "a freeable of everything still obeys the sum");
+    check(!conversation_memory_admit_predict(std::numeric_limits<uint64_t>::max(),
+                                             std::numeric_limits<uint64_t>::max(), 1, 0),
+          "prediction arithmetic cannot overflow");
     // #3493: the budget used when --conversation-cache-mib is not given
     const auto GiB = [](uint64_t n) { return n << 30; };
     check(auto_conversation_cache_mib({}, 2560) == 0, "unknown telemetry: no cache");

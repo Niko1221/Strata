@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <istream>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -82,6 +83,21 @@ std::optional<uint64_t> conversation_mem_available(std::istream& meminfo);
 inline bool conversation_memory_admit(std::optional<uint64_t> available,
                                       uint64_t allocation, uint64_t floor) {
     return available && *available >= floor && allocation <= *available - floor;
+}
+
+/// The prediction behind the RAM-gate decision: would the allocation still pass the floor once
+/// `freeable` more bytes are given back?  The RAM gate credits the MEASURED empty-cache gain, not
+/// the cache ledger - on the reported box an emptied 10.4 GiB cache still measured only
+/// 5285 MiB free against a 6262 MiB need (log 2786/2791), so
+/// only a measurement predicts.  Fails closed on unknown telemetry and cannot overflow, as does
+/// conversation_memory_admit().  A false answer means: do not destroy the cache for it - shrink
+/// what can be given up or keep every parked conversation and skip.
+inline bool conversation_memory_admit_predict(std::optional<uint64_t> available, uint64_t allocation,
+                                              uint64_t floor, uint64_t freeable) {
+    if (!available) return false;
+    if (allocation > std::numeric_limits<uint64_t>::max() - floor) return false;
+    const uint64_t need = allocation + floor;
+    return freeable >= need || *available >= need - freeable;
 }
 
 } // namespace strata::core

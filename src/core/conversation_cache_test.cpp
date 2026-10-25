@@ -558,5 +558,261 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // slot pressure with byte budget to spare: the SMALLEST parked conversation is the cheapest
+        // re-read, so it leaves; the big parent (whose loss costs a minute) stays.  The reported box:
+        // a 190k-token parent evicted oldest-first by short subagent copies, 69 s re-reads after.
+        auto sized = [](std::initializer_list<int32_t> ids, size_t n) {
+            auto s = image(ids);
+            s.live.gdn.resize(n, 5);
+            return s;
+        };
+        // prompts one token LONGER than the parked ids: conversation_prefix() refuses an
+        // exactly-equal prompt (the last token starts the next verify window), same as `a`/`b` above
+        const std::vector<int32_t> parent_ids = {1, 2, 3, 4}, sub_ids = {9, 8, 7, 6};
+        ConversationCache cache(1 << 20, 2);
+        check(cache.put(sized({1, 2, 3}, 16384)), "the big parent conversation parks first");
+        check(cache.put(sized({9, 8, 7}, 64)), "a small subagent parks second");
+        check(cache.put(sized({5, 6}, 64)), "a third parks under slot pressure");
+        check(cache.size() == 2 && cache.evictions() == 1, "one eviction, two slots");
+        check(cache.best(parent_ids, {}, true).tokens == 3 && cache.best(sub_ids, {}, true).tokens == 0,
+              "the smallest left, the old big parent stayed");
+        // ties evict the oldest of the smallest, so equal-sized entries keep the old oldest-first order
+        ConversationCache equal(1 << 20, 2);
+        check(equal.put(image({1, 2, 3})) && equal.put(image({9, 8, 7})) && equal.put(image({5, 6})),
+              "three equal-sized conversations in two slots");
+        check(equal.best(parent_ids, {}, true).tokens == 0 && equal.best(sub_ids, {}, true).tokens == 3,
+              "equal sizes: still oldest-first");
+        // byte-bound pressure keeps the oldest-first victim
+        ConversationCache tight(2 * image({1, 2, 3}).bytes(), 8);
+        check(tight.put(image({1, 2, 3})) && tight.put(image({9, 8, 7})) && tight.put(image({5, 6})),
+              "a third parks under byte pressure, slots to spare");
+        check(tight.best(parent_ids, {}, true).tokens == 0 && tight.best(sub_ids, {}, true).tokens == 3,
+              "byte-bound eviction is still oldest-first");
+        // a pinned or guarded entry is never the smallest victim
+        auto cp = [](std::initializer_list<int32_t> ids) { ConversationCheckpoint c; c.ids = ids; return c; };
+        ConversationCache pin1(1 << 20, 2);
+        auto tiny_pinned = sized({1, 2}, 16);
+        tiny_pinned.checkpoints.push_back(cp({1, 2}));
+        tiny_pinned.checkpoints.back().pinned = true;
+        check(pin1.put(std::move(tiny_pinned)) && pin1.put(sized({9, 8, 7}, 4096)), "pinned small, plain big");
+        check(pin1.put(sized({5, 6}, 64)), "a third parks");
+        check(pin1.size() == 2 && pin1.best(std::vector<int32_t>{1, 2, 9}, {}, true).tokens == 2,
+              "the pinned smallest stays; the bigger plain one left");
+    }
+    {
+        // evict_smallest(): exact accounting, the oldest of the smallest wins ties, pinned-only says false
+        auto sized = [](std::initializer_list<int32_t> ids, size_t n) {
+            auto s = image(ids);
+            s.live.gdn.resize(n, 5);
+            return s;
+        };
+        ConversationCache cache(1 << 20, 4);
+        check(!cache.evict_smallest(), "an empty cache has no smallest");
+        auto pinned = sized({1, 2}, 16);
+        ConversationCheckpoint c; c.ids = {1, 2}; c.pinned = true;
+        pinned.checkpoints.push_back(std::move(c));
+        cache.put(std::move(pinned));
+        check(!cache.evict_smallest() && cache.size() == 1, "only a pinned one is left: false, nothing evicted");
+        cache.put(sized({3, 4}, 64));
+        cache.put(sized({5, 6}, 128));
+        const size_t before = cache.bytes(), mid = sized({3, 4}, 64).bytes();
+        check(cache.evict_smallest() && cache.size() == 2 && cache.evictions() == 1,
+              "evict_smallest drops exactly one entry and counts it");
+        check(cache.bytes() == before - mid && cache.best(std::vector<int32_t>{3, 4, 9}, {}, true).tokens == 0,
+              "the smallest entry's bytes went with it");
+    }
+    {
+        // conversation_slot_ceiling_bytes: the documented field sum of SavedConversation::bytes() with every
+        // field at the largest it can get - live + kept checkpoints each carrying one full running state and
+        // ids/imgs bounded at ctx, the kv at the part sizes, the vector directories, the geometry array and the
+        // struct body.  Zero inputs leave only the fixed terms: the caller treats 0 as "no ceiling".
+        const size_t img = sizeof(ConversationImageKey);
+        auto sum = [&](size_t kv, size_t state, size_t ctx, size_t kept, size_t n_kv) {
+            return (kept + 1) * (state + ctx * (sizeof(int32_t) + img)) + kv + 18 * sizeof(int64_t) +
+                   sizeof(SavedConversation) + (kept + 1) * sizeof(ConversationCheckpoint) +
+                   n_kv * sizeof(ConversationKv);
+        };
+        struct Sized { size_t kv, state, ctx, kept, n_kv; };
+        const Sized cases[] = {{0, 0, 0, 0, 0},
+                               {4096, 1024, 64, 0, 1}, {4096, 1024, 64, 1, 1}, {4096, 1024, 64, 6, 1},
+                               {4096, 1024, 64, 64, 1}, {4096, 1024, 0, 6, 1},
+                               // the with-draft box: the full-context K/V of a MoE session, 12 QSA layers + draft
+                               {size_t(1) << 34, size_t(1) << 24, size_t(1) << 21, 7, 13}};
+        for (const auto& c : cases)
+            check(conversation_slot_ceiling_bytes(c.kv, c.state, c.ctx, c.kept, img, c.n_kv) ==
+                      sum(c.kv, c.state, c.ctx, c.kept, c.n_kv),
+                  "exact sum: live + kept checkpoints at the state and token bound, kv, directories, struct");
+        check(conversation_slot_ceiling_bytes(0, 0, 0, 0, img, 0) ==
+                  18 * sizeof(int64_t) + sizeof(SavedConversation) + sizeof(ConversationCheckpoint),
+              "zero inputs: only the fixed fields remain, the caller must not clamp on them");
+        // saturating: SIZE_MAX-sized inputs report the ceiling of everything, never a wrapped small number
+        check(conversation_slot_ceiling_bytes(SIZE_MAX, 1, 1, 6, img, 13) == SIZE_MAX, "kv at SIZE_MAX saturates");
+        check(conversation_slot_ceiling_bytes(1, SIZE_MAX, 1, 6, img, 13) == SIZE_MAX, "state at SIZE_MAX saturates");
+        check(conversation_slot_ceiling_bytes(1, 1, SIZE_MAX, 6, img, 13) == SIZE_MAX, "ctx at SIZE_MAX saturates");
+        check(conversation_slot_ceiling_bytes(1, 1, 1, SIZE_MAX, img, 13) == SIZE_MAX, "kept at SIZE_MAX saturates");
+        check(conversation_slot_ceiling_bytes(1, 1, 1, 6, SIZE_MAX, 13) == SIZE_MAX, "img key at SIZE_MAX saturates");
+        check(conversation_slot_ceiling_bytes(1, 1, 1, 6, img, SIZE_MAX) == SIZE_MAX, "n_kv at SIZE_MAX saturates");
+        const size_t base_v = conversation_slot_ceiling_bytes(1 << 20, 1 << 16, 1 << 12, 6, img, 13);
+        check(conversation_slot_ceiling_bytes((1 << 20) + 1, 1 << 16, 1 << 12, 6, img, 13) >= base_v &&
+              conversation_slot_ceiling_bytes(1 << 20, (1 << 16) + 1, 1 << 12, 6, img, 13) >= base_v &&
+              conversation_slot_ceiling_bytes(1 << 20, 1 << 16, (1 << 12) + 1, 6, img, 13) >= base_v &&
+              conversation_slot_ceiling_bytes(1 << 20, 1 << 16, 1 << 12, 7, img, 13) >= base_v &&
+              conversation_slot_ceiling_bytes(1 << 20, 1 << 16, 1 << 12, 6, img + 1, 13) >= base_v &&
+              conversation_slot_ceiling_bytes(1 << 20, 1 << 16, 1 << 12, 6, img, 14) >= base_v,
+              "the ceiling is monotone in every input");
+    }
+    {
+        // PROPERTY: an entry built exactly at the bound the ceiling assumes - ids at ctx, one image key per token,
+        // the whole running state in every checkpoint, the K/V at the part sizes in the main and draft vectors,
+        // kept checkpoints - never charges bytes() beyond the ceiling: the helper cannot cut capacity a real
+        // entry uses.  Vectors resize to exact capacities; a fresh ConversationBuffer allocates its payload.
+        const size_t ctx = 64, state = 4096, kept = 3, img = sizeof(ConversationImageKey), kv = 5000;
+        SavedConversation s;
+        auto full = [&](ConversationCheckpoint& c) {
+            c.ids.resize(ctx);
+            c.imgs.resize(ctx);
+            c.gdn.resize(state);
+        };
+        full(s.live);
+        s.checkpoints.resize(kept);
+        for (auto& c : s.checkpoints) full(c);
+        s.kv.resize(2);   // the main layer's and the draft layer's vectors
+        s.kv[0].k.resize(kv / 2);
+        s.kv[1].k.resize(kv - kv / 2);
+        const size_t ceiling = conversation_slot_ceiling_bytes(kv, state, ctx, kept, img, 2);
+        check(s.bytes() <= ceiling, "property: an entry at the bound never exceeds the ceiling");
+        ConversationCache fits(ceiling, 1);
+        check(fits.put(std::move(s)), "and the ceiling admits such an entry as a whole slot's budget");
+        // the multi-layer box: 13 K/V vectors (12 QSA layers + the draft) at a realistic token bound
+        const size_t big_ctx = 8192, big_kept = 6, n_kv = 13;
+        SavedConversation m;
+        auto full_big = [&](ConversationCheckpoint& c) {
+            c.ids.resize(big_ctx);
+            c.imgs.resize(big_ctx);
+            c.gdn.resize(state);
+        };
+        full_big(m.live);
+        m.checkpoints.resize(big_kept);
+        for (auto& c : m.checkpoints) full_big(c);
+        m.kv.resize(n_kv);
+        for (size_t j = 0; j < n_kv; ++j) m.kv[j].k.resize(1000);
+        check(m.bytes() <= conversation_slot_ceiling_bytes(n_kv * 1000, state, big_ctx, big_kept, img, n_kv),
+              "property: a 13-vector K/V entry at a realistic bound fits the honest n_kv ceiling");
+    }
+    {
+        // conversation_cache_budget_bytes: the startup clamp.  Never raises; an unknown per-slot never clamps.
+        check(conversation_cache_budget_bytes(1000, 4, 0) == 1000, "unknown per-slot: no clamp");
+        check(conversation_cache_budget_bytes(1000, 4, 300) == 1000, "wanted below slots x per-slot: unchanged");
+        check(conversation_cache_budget_bytes(1200, 4, 300) == 1200, "exactly the ceiling: unchanged");
+        check(conversation_cache_budget_bytes(1201, 4, 300) == 1200, "above it: clamped to slots x per-slot");
+        check(conversation_cache_budget_bytes(0, 4, 300) == 0, "nothing wanted stays nothing");
+        check(conversation_cache_budget_bytes(1000, 0, 300) == 1000, "zero slots: construction disables it, no clamp");
+        check(conversation_cache_budget_bytes(SIZE_MAX, 4, SIZE_MAX) == SIZE_MAX, "slots x per-slot saturates, never wraps");
+        check(conversation_cache_budget_bytes(1 << 20, 4, SIZE_MAX) == (1 << 20), "a saturated ceiling cuts nothing");
+    }
+    {
+        // shrink(): one slot per event, the budget by the slot ratio and capped at slots x per-slot,
+        // oldest-first victims inside the new caps, pinned ones kept, nothing left to give at one slot.
+        auto sized = [](std::initializer_list<int32_t> ids, size_t n) {
+            auto s = image(ids);
+            s.live.gdn.resize(n, 5);
+            return s;
+        };
+        auto cp = [](std::initializer_list<int32_t> ids) {
+            ConversationCheckpoint c; c.ids = ids; c.pinned = true; return c;
+        };
+        size_t sb = 0, ba = 0, fr = 0;
+        ConversationCache cache(size_t(1) << 24, 4);
+        check(cache.shrink(0, sb, ba, fr) && sb == 4 && ba == ((size_t(1) << 24) * 3 / 4) && fr == 0 &&
+                  cache.slots() == 3 && cache.size() == 0,
+              "4 to 3 slots: budget 3/4, an empty cache frees nothing");
+        const size_t big = sized({1, 2, 3}, 4096).bytes();
+        cache.put(sized({1, 2, 3}, 4096));
+        cache.put(sized({9, 8, 7}, 2048));
+        cache.put(sized({5, 6}, 64));
+        check(cache.shrink(0, sb, ba, fr) && sb == 3 && cache.slots() == 2 && cache.size() == 2 && fr == big,
+              "3 to 2 slots: the oldest entry leaves, freed is exact");
+        check(cache.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 0 &&
+                  cache.best(std::vector<int32_t>{9, 8, 7, 6}, {}, true).tokens == 3 &&
+                  cache.best(std::vector<int32_t>{5, 6, 9}, {}, true).tokens == 2,
+              "the oldest went, the newer two stay");
+        ConversationCache capped(size_t(1) << 24, 4);
+        check(capped.shrink(1000, sb, ba, fr) && sb == 4 && ba == 3000,
+              "the per-slot cap bites: the budget goes to slots x per-slot");
+        const size_t one = sized({1, 2, 3}, 4096).bytes();
+        ConversationCache tight(one * 3, 4);
+        tight.put(sized({1, 2, 3}, 4096));
+        tight.put(sized({9, 8, 7}, 4096));
+        tight.put(sized({5, 6, 8}, 4096));
+        check(tight.shrink(0, sb, ba, fr) && sb == 4 && tight.slots() == 3 && ba == one * 3 * 3 / 4 &&
+                  tight.size() == 2 && tight.bytes() == one * 2 && fr == one,
+              "byte-bound shrink evicts oldest-first back inside the scaled budget");
+        // the cap and the eviction together: a per-slot cap below the held bytes (with the ratio budget far
+        // above them) forces the extra evictions itself, and freed accounts for every one of them
+        ConversationCache cap_evict(size_t(1) << 24, 4);
+        cap_evict.put(sized({1, 2, 3}, 4096));
+        cap_evict.put(sized({9, 8, 7}, 4096));
+        cap_evict.put(sized({5, 6, 8}, 4096));
+        const size_t cap = one * 3 / 4;
+        check(cap_evict.shrink(cap, sb, ba, fr) && sb == 4 && cap_evict.slots() == 3 && ba == cap * 3 &&
+                  cap_evict.size() == 2 && cap_evict.bytes() <= ba && fr == one &&
+                  cap_evict.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 0,
+              "a per-slot cap under the held bytes forces extra oldest-first evictions, freed accounts for them");
+        // pinned entries can never be evicted: caps that leave no room beside them are refused outright
+        auto pinned = [&](std::initializer_list<int32_t> ids) {
+            SavedConversation s = image(ids);
+            s.checkpoints.push_back(cp(ids));
+            s.checkpoints.back().gdn.resize(64, 1);
+            return s;
+        };
+        const size_t p = pinned({1, 2, 3}).bytes();
+        ConversationCache pins(p * 2 + 128, 2);
+        check(pins.put(pinned({1, 2, 3})) && pins.put(pinned({9, 8, 7})), "two pinned conversations park");
+        check(!pins.shrink(0, sb, ba, fr) && sb == 2 && ba == p * 2 + 128 && pins.slots() == 2 &&
+                  pins.size() == 2 && fr == 0 && pins.bytes() <= ba,
+              "all pinned: one slot would leave two survivors - refuse, caps and bytes untouched");
+        check(pins.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 3 &&
+                  pins.best(std::vector<int32_t>{9, 8, 7, 6}, {}, true).tokens == 3,
+              "both pinned conversations stand untouched");
+        ConversationCache pin_tight(p + (size_t(1) << 12), 2);
+        check(pin_tight.put(pinned({1, 2, 3})) && pin_tight.put(image({9, 8, 7})),
+              "a pin and a plain entry fill the tight cache");
+        check(!pin_tight.shrink(0, sb, ba, fr) && sb == 2 && ba == p + (size_t(1) << 12) &&
+                  pin_tight.slots() == 2,
+              "half the budget cannot leave room beside the pin: refuse rather than kill every future park");
+        ConversationCache pin_room(p * 3 + (size_t(1) << 16), 3);
+        check(pin_room.put(pinned({1, 2, 3})) && pin_room.put(image({4, 5, 6})) && pin_room.put(image({7, 8, 9})),
+              "a pin and two plain entries park");
+        check(pin_room.shrink(0, sb, ba, fr) && sb == 3 && pin_room.slots() == 2 &&
+                  ba == (p * 3 + (size_t(1) << 16)) * 2 / 3 && pin_room.size() == 2 &&
+                  pin_room.all_pinned() == false &&
+                  pin_room.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 3,
+              "caps that leave room beside the pin: the oldest plain entry goes, the pin stays");
+        ConversationCache one_slot(size_t(1) << 20, 1);
+        check(!one_slot.shrink(1000, sb, ba, fr) && sb == 1 && ba == (size_t(1) << 20) && fr == 0 &&
+                  one_slot.slots() == 1,
+              "one slot: nothing left to give, the budget untouched");
+        ConversationCache off(0, 4), no_slots(size_t(1) << 20, 0);
+        check(!off.shrink(1000, sb, ba, fr) && !no_slots.shrink(1000, sb, ba, fr),
+              "a disabled cache does not shrink");
+        // all_pinned(): the RAM ceiling is only recorded when nothing PERMANENTLY held remains.
+        ConversationCache fresh(size_t(1) << 20, 4);
+        check(fresh.all_pinned(), "an empty cache can learn the ceiling");
+        check(pins.all_pinned(), "only pinned entries: the ceiling stands");
+        ConversationCache mixed(size_t(1) << 20, 4);
+        check(mixed.put(image({5, 6, 7})), "a plain conversation parks");
+        check(!mixed.all_pinned(), "a plain entry could still go");
+        const uint64_t only = mixed.best(std::vector<int32_t>{5, 6, 7, 8}, {}, true).serial;
+        mixed.guard(only);
+        check(!mixed.all_pinned(), "a guarded donor is only held for this attempt - no ceiling beside it");
+        mixed.unguard();
+        check(!mixed.all_pinned(), "still a plain entry after unguard");
+        // no room beside a full budget: retain() refuses instead of wrapping its headroom check
+        std::vector<ConversationKv> one_kv(1);
+        one_kv[0].k.resize(16, 1);
+        pins.retain(std::move(one_kv), 1);
+        check(pins.take_reuse().kv.empty(), "no room beside the pins: nothing retained, no wrap");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

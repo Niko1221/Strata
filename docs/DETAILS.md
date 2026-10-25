@@ -1220,7 +1220,10 @@ Oversized snapshots or host allocation failures fall back to ordinary prompt pro
 `--conversation-cache-min-tokens N` (default 0 = park every conversation) parks only conversations of at least N
 tokens. A parked conversation costs one of the slots whatever its length, and parking is a switch-time decision, so a
 client that interleaves short side requests with one long conversation spends the cache on the side requests and, once
-it is full, evicts the long one oldest-first - exactly the reuse it wanted. Setting the minimum above the side
+it is full, can push the long one out - exactly the reuse it wanted. A full cache with room left in the byte budget
+evicts the SMALLEST parked conversation (the cheapest to read again; ties oldest-first), so short side requests cycle
+through the slots instead of pushing the long conversation out; only when the bytes themselves are the limit does the
+long one leave oldest-first again. Setting the minimum above the side
 requests' length keeps the long conversation parked. The check runs before `make_room()`, so a skipped park evicts
 nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
 parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
@@ -1232,8 +1235,37 @@ to N tokens again (#2265).
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 RAM headroom remain available: the engine checks before allocation (against the
 snapshot's estimated size, less the K/V it already retains) and again after capture.
-Unknown telemetry or insufficient RAM skips parking, and the same figure and floor
-decide whether a session file may be saved or restored (below). An 8 GiB budget
+A snapshot that fails the check evicts parked conversations first, the SMALLEST first (the cheapest to read
+again; pinned and guarded ones stay), until it fits or none can go. An attempt that empties the cache - or is
+left with nothing but permanently pinned conversations - and still refuses records the free RAM it measured
+afterwards as this box's empty-cache ceiling (a conversation merely borrowed for this very attempt does not
+count: its RAM is back one step later, so a reading taken beside it would be too low). Emptying the
+cache does not always return what its ledger promised (measured on the reported box: after its 10.4 GiB of
+parked conversations was emptied only 5285 MiB was free, under the 6262 MiB the snapshot needed, and the park
+still refused). From then on the engine predicts from the learned
+number instead of the ledger, and a park that could not fit even at the ceiling does not empty the cache for
+nothing: when conversations are parked to protect it gives up ONE slot and tries admission once with the freed
+RAM - the freed RAM may admit this very snapshot - and keeps the rest parked when it still does not fit. On such
+a box a slot nobody can park in is
+dead weight, so such a park shrinks the budget with the slot count - where the engine knows what one
+full-context conversation costs, never past what the remaining slots could hold - so the rest park again (one
+slot per hopeless event, never the last one). The log line is `conversation cache: free RAM (measured empty-cache
+ceiling C MiB) cannot admit a N MiB snapshot plus the M MiB floor - dropping 1 of S slots and shrinking the
+budget to B MiB so the rest can park again (freed F MiB; --conversation-cache-mib sets it)`. The skip-and-keep line
+prints when there is no slot left to give, and also when that single try after a shrink still does not fit:
+`conversation cache: skip parking (physical RAM admission; need N MiB plus M MiB floor, X MiB available,
+source S; measured empty-cache ceiling C MiB would not admit it: kept)`. A hopeless park that finds the cache
+empty has nothing to give up and nothing to protect, so it takes the plain refusal line instead - and that
+attempt still learns the ceiling. Free RAM climbing back to the
+recorded ceiling makes the number stale: it is cleared and the attempt runs again. The budget can also be clamped
+at startup, opt-in with `STRATA_CONV_CACHE_CLAMP=1`: one parked conversation can never hold more than one
+full-context conversation of this model, so the budget need never exceed the slots times that one-conversation cost,
+computed from the loaded model; the clamp
+never raises a budget, and a cost the engine cannot compute clamps nothing - never an invented number. The runtime
+slot-dropping above needs no flag - it only ever acts once free RAM has already proven too low. The log line is
+`conversation cache: budget X MiB is more than S slots x Y MiB of one full-context conversation: clamped to
+Z MiB (--conversation-cache-mib sets it)`. Unknown telemetry or insufficient RAM skips parking, and the same
+figure and floor decide whether a session file may be saved or restored (below). An 8 GiB budget
 is a cap, not a recommendation for every machine.
 
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three

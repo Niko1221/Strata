@@ -183,6 +183,53 @@ struct SavedConversation {
     }
 };
 
+// One parked conversation at the machine's limit, from sizes the engine already knows:
+// `kv_bytes` full-context K/V (main layers + draft, at the state's cell bound), `state_bytes`
+// one full running state (conversation_session_sizes total: gdn + ple + the per-QSA-layer indexer sizes),
+// `ctx` the token bound, `kept_checkpoints` the checkpoints a parked conversation can hold (--prompt-cache N plus the
+// one tail checkpoint; 0 without --prompt-cache), `img_key_bytes` sizeof(ConversationImageKey), `n_kv` the number
+// of entries in the entry's K/V vector (the owned QSA layers plus the draft layer).
+//
+// The sum mirrors SavedConversation::bytes() field for field, every field at the largest it can get:
+//   live + kept checkpoints - each holds one full running state (`state_bytes`), its token ids and its image-key
+//     list, both bounded by the session's token count: (kept_checkpoints + 1) x (state_bytes +
+//     ctx x (sizeof(int32_t) + img_key_bytes)).  A checkpoint's `stage_parts` are empty: `stage_images` below is.
+//   kv - the layers' K/V buffers at the cell bound: kv_bytes.
+//   the vector payloads bytes() charges for capacity: the checkpoint vector's directory, (kept_checkpoints + 1) x
+//     sizeof(ConversationCheckpoint), and the K/V vector's, n_kv x sizeof(ConversationKv) - counted with the entry's
+//     true K/V vector size, exactly as bytes() charges it.
+//   what bytes() does not charge but the entry occupies: the geometry array (18 x sizeof(int64_t)) and the struct
+//     body, sizeof(SavedConversation).
+// `stage_images` is empty: this sizes a whole-session park on one GPU.  A layer split parks one image per stage;
+// the caller sizes that itself or does not clamp.
+// A ceiling: given the true `n_kv` it over-counts every field of SavedConversation::bytes() for a single-GPU
+// entry except the KiB-scale capacity-directory slack (ids and image keys sized at ctx, the whole running state
+// in every checkpoint, the geometry arrays, and
+// `stage_images` empty by construction at the clamp site). 0 inputs mean unknown: the caller must treat 0 as
+// "no ceiling".  Saturates instead of wrapping.
+inline size_t conversation_slot_ceiling_bytes(size_t kv_bytes, size_t state_bytes, size_t ctx,
+                                              size_t kept_checkpoints, size_t img_key_bytes, size_t n_kv) {
+    auto sat_add = [](size_t a, size_t b) { return a > SIZE_MAX - b ? SIZE_MAX : a + b; };
+    auto sat_mul = [](size_t a, size_t b) { return a != 0 && b > SIZE_MAX / a ? SIZE_MAX : a * b; };
+    const size_t n = sat_add(kept_checkpoints, 1);   // live + kept checkpoints
+    const size_t per_state = sat_add(state_bytes, sat_mul(ctx, sat_add(sizeof(int32_t), img_key_bytes)));
+    size_t total = sat_mul(per_state, n);
+    total = sat_add(total, kv_bytes);
+    total = sat_add(total, 18 * sizeof(int64_t));
+    total = sat_add(total, sat_mul(sizeof(ConversationCheckpoint), n));
+    total = sat_add(total, sat_mul(n_kv, sizeof(ConversationKv)));
+    total = sat_add(total, sizeof(SavedConversation));
+    return total;
+}
+
+// The startup budget: what the user asked for, clamped to `slots x per_slot` when that ceiling is
+// known. per_slot == 0 -> no clamp. Never raises.
+inline size_t conversation_cache_budget_bytes(size_t wanted, size_t slots, size_t per_slot) {
+    if (per_slot == 0 || slots == 0) return wanted;
+    const size_t cap = slots > SIZE_MAX / per_slot ? SIZE_MAX : slots * per_slot;
+    return wanted < cap ? wanted : cap;
+}
+
 template<class Token>
 int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
                             const std::vector<ConversationImageKey>& images) {
@@ -198,6 +245,7 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// Served by the single serve-request thread; the cache holds no lock.
 class ConversationCache {
 public:
     struct Match {
@@ -212,8 +260,9 @@ public:
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
-    /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
-    /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
+    /// with one long conversation spends the cache on the side requests and, once full, can push the long one out -
+    /// exactly the reuse it wanted; a full cache with byte budget to spare evicts the smallest, so the long one stays.
+    /// 0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
@@ -233,7 +282,9 @@ public:
         reuse_ = {};
         ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
         for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
-        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+        // bytes_ can stand OVER budget_ after a shrink leaves pinned survivors - then nothing new is
+        // worth retaining, and `budget_ - bytes_` must never wrap.
+        if (enabled() && bytes_ <= budget_ && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
@@ -325,18 +376,28 @@ public:
         }
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            // Two pressures, two victims. When the BYTES do not fit, the oldest unpinned entry leaves, as
+            // always: age is the best guess of what comes back. When only the SLOT COUNT is full and the
+            // byte budget has room, the SMALLEST parked conversation leaves - a slot costs the same whatever
+            // sits in it, and losing the smallest snapshot is the cheapest re-read (a 190k-token parent
+            // evicted oldest-first among short subagent copies reads again for a minute). Ties go to the
+            // oldest of the smallest, so equal-sized entries keep the old order. With only pinned ones left
+            // the new image does not fit (the caller skips parking it - the pinned prefix is what the
+            // queries come back to).
+            const bool byte_bound = bytes_ > budget_ - held - incoming;
+            if (!(byte_bound ? evict_oldest() : evict_smallest())) return false;
         }
         return true;
     }
 
-    // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
-    // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
-    // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
+    // The parked conversation that has gone unused the longest.  This is make_room()'s byte-bound loop
+    // body, ConversationCache::shrink()'s victim and session_save_reclaim()'s lever.  A ConversationBuffer
+    // is a list of 16 MiB
+    // segments and each segment is its own allocation - but on the reported box an emptied 10.4 GiB
+    // cache still left only 5285 MiB free against a 6262 MiB need (log
+    // 2786/2791), so eviction may be necessary and is never
+    // promised; the physical-RAM admission gate in generate.cpp therefore MEASURES its empty-cache
+    // ceiling instead of trusting these ledgers (F2).
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
     bool evict_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
@@ -348,6 +409,65 @@ public:
             return true;
         }
         return false;
+    }
+
+    // The smallest parked conversation that can go: under slot pressure with byte budget to spare this is
+    // the cheapest snapshot to lose (the re-read scales with its size). Ties go to the oldest of the
+    // smallest. Pinned and guarded entries are kept, exactly as in evict_oldest(). False when none can go.
+    bool evict_smallest() {
+        size_t pick = SIZE_MAX;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (pick == SIZE_MAX || entries_[i].bytes() < entries_[pick].bytes()) pick = i;
+        }
+        if (pick == SIZE_MAX) return false;
+        bytes_ -= entries_[pick].bytes();
+        erase(pick);
+        ++evictions_;
+        return true;
+    }
+
+    // True when no future attempt could free more RAM: every remaining entry is PINNED.  A guarded
+    // borrow-donor does NOT count as permanent - the guard is released when the park attempt ends.
+    bool all_pinned() const {
+        for (const auto& entry : entries_)
+            if (!entry.pinned()) return false;
+        return true;
+    }
+
+    // The RAM gate's last resort (the physical-RAM admission gate in generate.cpp): on a box that cannot admit
+    // even an emptied cache's snapshot, one slot held empty is dead weight - give up ONE slot and scale the
+    // budget to the rest, so the smaller conversations still park.  False when there is nothing to give
+    // (disabled, or already one slot) and when the new caps would leave no slot and no byte beside the PINNED
+    // entries - those never leave, and caps they already fill would refuse every future park for nothing.
+    // The budget goes by the slot ratio and is then capped at
+    // `slots x per_slot_bytes` (0: unknown, no cap); entries over the new caps leave oldest-first, exactly as
+    // make_room picks them - a pinned or guarded entry stays (the pin is what the returning queries come back
+    // to).  Reports the slot count before, the budget after, and the bytes the evictions released.
+    bool shrink(size_t per_slot_bytes, size_t& slots_before, size_t& budget_after, size_t& freed) {
+        slots_before = slots_;
+        budget_after = budget_;
+        freed = 0;
+        if (!enabled() || slots_ <= 1) return false;
+        size_t pinned_n = 0, pinned_b = 0;
+        for (const auto& entry : entries_)
+            if (entry.pinned()) { ++pinned_n; pinned_b += entry.bytes(); }
+        const size_t new_slots = slots_ - 1;
+        size_t new_budget = budget_ > SIZE_MAX / new_slots ? SIZE_MAX : budget_ * new_slots / slots_;
+        if (per_slot_bytes != 0)
+            new_budget = std::min(new_budget,
+                                  new_slots > SIZE_MAX / per_slot_bytes ? SIZE_MAX : new_slots * per_slot_bytes);
+        // Pinned entries can never be evicted: caps that leave no slot and no byte beside them would
+        // refuse every future park while freeing nothing.  Refuse; the caller keeps the cache.
+        if (new_slots <= pinned_n || new_budget <= pinned_b) return false;
+        const size_t before = bytes();
+        slots_ = new_slots;
+        budget_ = new_budget;
+        while (entries_.size() > slots_ || bytes() > budget_)
+            if (!evict_oldest()) break;
+        freed = before - bytes();
+        budget_after = budget_;
+        return true;
     }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
