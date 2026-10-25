@@ -65,7 +65,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.session_ladder import (LadderConfig, PARK_COST_KIB_PER_TOKEN, ConvEvent, SessionLadder,  # noqa: E402
-                                  extract_session_id)  # the session ladder: event intake (drain_events) + request-path hooks
+                                  extract_session_id, register_refused_class)  # the session ladder: event intake (drain_events) + request-path hooks
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -447,6 +447,13 @@ class SessionRefused(ValueError):
     @property
     def status(self) -> int:
         return self.STATUS[self.kind]
+
+
+register_refused_class(SessionRefused)      # Task 7 review: the ladder's `except SessionRefused` must pair with
+# this exact class object.  Registration flows server -> ladder because server.py may run as __main__ (the
+# run-<model>.bat mode, see the header): serve.server is then not in sys.modules, a from-serve.server import
+# could only ever yield a different copy's class, and it would happen mid-request under the FIFO.  Loaded as
+# a module or run as the script, whichever server copy started registers the class its Engine raises.
 
 
 class EngineStuck(RuntimeError):
@@ -4988,9 +4995,11 @@ class Service:
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
-        self.request_trace.prompt = prompt        # Task 7: the rendered text lives only here; the thread-local carries
-        # it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) - the ladder
-        # byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would drift).
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+            self.request_trace.prompt = prompt    # Task 7: the rendered text lives only here; the thread-local
+        # carries it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) -
+        # the ladder byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would
+        # drift).  Behind cfg.enabled so the disabled path writes nothing at all.
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
@@ -7408,9 +7417,13 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
-                    svc.request_trace.session_id = extract_session_id(self.headers)   # Task 7: OpenCode's session
-                    # headers, read once per request on the same thread that later runs _run (thread-local precedent:
-                    # request_trace.record at 4633/5212); absent headers -> None, which skips the ladder entirely.
+                    if svc.session_ladder is not None and svc.session_ladder.cfg.enabled:
+                        # Task 7: OpenCode's session headers, read once per request on the same thread that later
+                        # runs _run (thread-local precedent: request_trace.record at 4633/5212); absent headers ->
+                        # None, which skips the ladder entirely.  Unconditional while enabled, so a headerless
+                        # keep-alive request clears the previous request's id; behind cfg.enabled so the disabled
+                        # path writes nothing at all.
+                        svc.request_trace.session_id = extract_session_id(self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
