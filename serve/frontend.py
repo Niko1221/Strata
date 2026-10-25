@@ -1226,10 +1226,54 @@ def fix_tags(buf: str, schemas: dict, start: int = 0) -> str:
     return text[:start] + _JUNK_BEFORE_END.sub(r"\1\n", text[start:])
 
 
+_OPENER_CTX = r"(?:</parameter>|<function=[^<>\n]*>)\s*"
+_COLON_OPEN = re.compile(r"(?m)(" + _OPENER_CTX + r")<parameter=([^<>\s=:]+):[ \t]*([^\n]*)$")
+_FUNC_FOR_PARAM = re.compile(r"((?:(?:</parameter>|<function=[^<>\n]*>|<tool_call>|</think>|<)\s*)+)<function=([^<>\s=]+)>")
+_STUB_OPEN = re.compile(r"<parameter=([^<>\s=]+)>\s*(?=<parameter=)")
+
+
+def fix_openers(buf: str, schemas: dict, start: int = 0) -> str:
+    """recover: inside a call, after the function opener or a `</parameter>`, `<parameter=NAME: "VALUE"` (the `>` and the
+    line break replaced by a colon; one pair of surrounding quotes goes, a missing closing one just ends at the line's
+    end) and `<function=NAME>` are `<parameter=NAME>` when NAME is a declared parameter of the call's tool (and, for the
+    latter, not a tool); `<parameter=NAME>` of an undeclared NAME directly followed by another parameter opener is an
+    empty stub and dropped (Coder-L).  Only text from `start` on is rewritten."""
+    def props_of(i):
+        """The declared parameters of the call's tool at `i`; none while a value is open (not closed by `</parameter>`)."""
+        for m in reversed(list(re.finditer(r"<function=([^<>\s=]+)>", buf[:i]))):
+            if func_name(m.group(1)) in schemas:
+                body = buf[m.end():i]
+                if len(re.findall(r"<parameter=[^<>\n]*>", body)) > body.count(PARAM_END):
+                    return {}
+                return ((schemas[func_name(m.group(1))].get("parameters") or {}).get("properties")) or {}
+        return {}
+
+    def colon(m):
+        if m.start(2) < start or m.group(2) not in props_of(m.start(2) - len('<parameter=')):
+            return m.group(0)
+        v = m.group(3).rstrip()
+        v = v[1:-1] if len(v) > 1 and v[0] == v[-1] == '"' else v[1:] if v[:1] == '"' else v
+        return "%s<parameter=%s>\n%s" % (m.group(1), m.group(2), v)
+
+    def func(m):
+        n = m.group(2)
+        if m.start(2) < start or n in schemas or n not in props_of(m.start(2) - len('<function=')):
+            return m.group(0)
+        return "%s<parameter=%s>" % (m.group(1), n)
+
+    def stub(m):
+        if m.start() < start or m.group(1) in props_of(m.start()) or not props_of(m.start()):
+            return m.group(0)
+        return ""
+    buf = _COLON_OPEN.sub(colon, buf)
+    buf = _FUNC_FOR_PARAM.sub(func, buf)
+    return _STUB_OPEN.sub(stub, buf)
+
+
 def fix_forms(buf: str, schemas: dict, start: int = 0) -> str:
     """fix_param_openers and fix_elements, repeated while they rewrite: an element's closer opens the next one."""
     while True:
-        fixed = fix_elements(fix_param_openers(fix_tags(buf, schemas, start), schemas, start), schemas, start)
+        fixed = fix_elements(fix_param_openers(fix_openers(fix_tags(buf, schemas, start), schemas, start), schemas, start), schemas, start)
         if fixed == buf:
             return buf
         buf = fixed
