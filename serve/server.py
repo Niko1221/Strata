@@ -929,21 +929,33 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     block = cfg.get("session_ladder")
     if not isinstance(block, dict):
         return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
+
+    def _num(key, default, cast):
+        # F6 (final review): a malformed strata.json value ("idle_save_s": "eight") must not surface as a
+        # bare ValueError at startup - the conversion is wrapped and the refusal names the bad key and value.
+        raw = block.get(key, default)
+        try:
+            return cast(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
     return LadderConfig(enabled=True, slot_save_path=slot_save_path,
                         park_budget_mib=conversation_cache_mib(engine),
-                        idle_save_s=float(block.get("idle_save_s", 8.0)),
-                        retention_max_files=int(block.get("retention_max_files", 16)))
+                        idle_save_s=_num("idle_save_s", 8.0, float),
+                        retention_max_files=_num("retention_max_files", 16, int))
 
 
 def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """main()'s session_ladder gate (Task 9 review round 1): the enabled LadderConfig of ladder_config_of,
-    or a refusal to start when its park budget resolves to None - the same posture as the slot_save_path
-    guard beside it.  An enabled ladder without a real budget would save every turn, aux sizes included."""
+    or a refusal to start when its park budget resolves to None or to a non-positive number - the same
+    posture as the slot_save_path guard beside it.  An enabled ladder without a real budget would save
+    every turn, aux sizes included: F5 pins the explicit `--conversation-cache-mib 0` case too - an
+    over_budget ladder with a 0 budget saves everything the engine could still hold in park."""
     ladder = ladder_config_of(cfg, engine, slot_save_path)
-    if ladder.enabled and ladder.park_budget_mib is None:
+    if ladder.enabled and (ladder.park_budget_mib is None or ladder.park_budget_mib <= 0):
         raise SystemExit('[strata] config "session_ladder" needs the engine\'s park budget: neither a '
                          "--conversation-cache-mib argument in the engine args nor the engine's INFO line "
-                         "names one; without a real budget every turn would look save-worthy")
+                         "names a positive one; without a real budget every turn would look save-worthy")
     return ladder
 
 
@@ -5599,12 +5611,15 @@ class Service:
                     for ev in opening:
                         yield "event", ev
                     if (self.session_ladder is not None and self.session_ladder.cfg.enabled
-                            and session_id and not par):
+                            and not par):
                         # Task 7, FIFO held, the engine about to read this prompt: freshen the ladder's park state
                         # from the engine log (the drain consumes each line exactly once, shared with metrics()'s
                         # feed) and hand the conversation switch to the ladder: save the outgoing session when park
                         # lost it, restore an incoming one that missed park while its saved prefix still matches.
                         # A SessionRefused degrades inside the ladder to a plain prefill; an EngineDied propagates.
+                        # F2: called for a headerless request too (session_id None) - an enabled ladder treats it
+                        # as an identity-unknown switch rather than letting last_active go stale on a foreign
+                        # conversation (which the next switch-away would then checkpoint under the wrong id).
                         self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
                         for ev in self.conv_log.drain_events():
                             self.session_ladder.on_conv_event(ev)
@@ -7487,9 +7502,10 @@ def make_handler(svc: Service):
                     if svc.session_ladder is not None and svc.session_ladder.cfg.enabled:
                         # Task 7: OpenCode's session headers, read once per request on the same thread that later
                         # runs _run (thread-local precedent: request_trace.record at 4633/5212); absent headers ->
-                        # None, which skips the ladder entirely.  Unconditional while enabled, so a headerless
-                        # keep-alive request clears the previous request's id; behind cfg.enabled so the disabled
-                        # path writes nothing at all.
+                        # None, which an enabled ladder treats as an identity-unknown switch (F2) and a disabled
+                        # one ignores entirely.  Unconditional while enabled, so a headerless keep-alive request
+                        # clears the previous request's id; behind cfg.enabled so the disabled path writes nothing
+                        # at all.
                         svc.request_trace.session_id = extract_session_id(self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
