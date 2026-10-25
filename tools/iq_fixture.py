@@ -1,6 +1,6 @@
 """tools/iq_fixture.py - deterministic i-quant fixtures for src/kernels/iq_parity.cpp (TODO 24).
 
-For each of the ten types iq_parity tests, writes `<out>/<name>.bin` (int32 header: the KERNEL type id,
+For each of the eleven types iq_parity tests, writes `<out>/<name>.bin` (int32 header: the KERNEL type id,
 rows, cols - then the raw GGUF block bytes) and `<out>/<name>.f32` (rows*cols float32 reference values,
 dequantized by the same library the comparison treats as ground truth):
 
@@ -61,6 +61,7 @@ LAYOUT = {   # (block values, block bytes) == the vendored gguf-py's GGML_QUANT_
     "IQ4_NL":   (32,  18),
     "IQ4_XS":  (256, 136),
     "Q3_K":    (256, 110),
+    "MXFP4":    (32,  17),
 }
 HALF_ONE = struct.pack("<e", 1.0)      # fp16 1.0 = 0x3c00: a tame, exactly-representable scale
 
@@ -75,6 +76,10 @@ def repair_scales(name: str, raw: np.ndarray) -> None:
     if name == "Q3_K":
         raw[:, 108:110] = np.frombuffer(HALF_ONE, dtype=np.uint8)
         return
+    if name == "MXFP4":                            # one E8M0 exponent at byte 0: 2^(e-128) per block, 124..130,
+        raw[:, 0] = (124 + np.arange(raw.shape[0]) % 7).astype(np.uint8)   # and the two subnormal codes 0 and 1
+        raw[:2, 0] = (0, 1)
+        return
     if name == "IQ1_M":
         raw[:, 48:56] &= np.uint8(0x0F)            # clear the four scale nibbles
         for byte, nib in ((49, 0x30), (51, 0xC0), (54, 0x00), (55, 0x00)):
@@ -83,7 +88,7 @@ def repair_scales(name: str, raw: np.ndarray) -> None:
     raw[:, 0:2] = np.frombuffer(HALF_ONE, dtype=np.uint8)
 # name -> (the KERNEL type id written into the .bin header, identical to the gguf-py enum id)
 KERNEL_IDS = {"IQ2_XXS": 16, "IQ2_XS": 17, "IQ2_S": 22, "IQ3_XXS": 18, "IQ3_S": 21,
-              "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11}
+              "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11, "MXFP4": 39}
 
 
 def build(name: str, rows: int, cols: int, seed: int):

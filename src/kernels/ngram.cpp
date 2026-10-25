@@ -194,6 +194,8 @@ const PleFormatInfo kPleFormats[] = {
     // NVFP4 x16 (NVIDIA's Qwen3.8-Flash-Next-FP4-Local, tools/nvfp4_local_pack.py ple): 90-byte rows, I8 bytes marked
     // strata.ple.format = nvfp4x16 with strata.ple.scale. The tensor is [90, rows]: ne0 is the row's byte count.
     {PleFormat::NVFP4, "NVFP4", "I8", PLE_ROW_BYTES_NVFP4, true, dequant_nvfp4},
+    // MXFP4 (llama-quantize's MXFP4_MOE files): 85-byte rows of 17-byte blocks (one E8M0 exponent + 16 nibble bytes)
+    {PleFormat::MXFP4, "MXFP4", "MXFP4", PLE_ROW_BYTES_MXFP4, false, dequant_blocks<strata::dequantize_mxfp4, 17>},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
