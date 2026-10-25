@@ -20,8 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from serve.frontend import ChatTemplate
-from serve.server import (ByteTokenizer, LogprobEntries, LPLines, MockEngine, Service, StrataEngine, logprob_span,
-                          serve, top_logprobs, allowed_ids)
+from serve.server import (ByteTokenizer, LogprobEntries, LPLines, MockEngine, Service, StrataEngine, batch_slots_on,
+                          logprob_span, serve, top_logprobs, allowed_ids)
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ChatTemplate(ROOT / "serve" / "chat_template.jinja")
@@ -500,6 +500,26 @@ class Api(unittest.TestCase):
         self.assertEqual(plain["choices"][0]["message"]["content"],
                          '{"rent":"$1,250","quote":"x"}')
         self.assertNotIn("logprobs", plain["choices"][0])
+
+
+class Replicas(unittest.TestCase):
+    """`--replicas`: a ReplicaEngine's own `batch` is how many requests its engines run at once and counts a replica
+    without slots as one, so asking it "does this engine use batch slots" refused logprobs on a server that has
+    none -- one that reads every reply by the GEN path, which does write LP lines."""
+
+    @staticmethod
+    def replica(*batches):
+        from serve.replicas import ReplicaEngine
+        return ReplicaEngine([SimpleNamespace(gen=1, batch=b) for b in batches])
+
+    def test_no_slots_behind_replicas(self):
+        self.assertFalse(batch_slots_on(self.replica(0, 0)))
+        self.assertFalse(batch_slots_on(SimpleNamespace(batch=0)))      # no replicas: the engine's own figure
+
+    def test_slots_behind_replicas(self):
+        self.assertTrue(batch_slots_on(self.replica(2, 3)))             # every one of them
+        self.assertTrue(batch_slots_on(self.replica(0, 2)))             # one is enough
+        self.assertTrue(batch_slots_on(SimpleNamespace(batch=4)))
 
 
 class Span(unittest.TestCase):

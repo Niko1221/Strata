@@ -1484,35 +1484,56 @@ class StrataEngine:
         except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
-    def _control(self, cancel, on_token, stop_when=None, on_quiet=None):
+    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE).  `on_quiet()` runs whenever the engine has been
-        quiet for half a second: between two PP lines of a read whose chunks take longer than that."""
+        quiet for half a second: between two PP lines of a read whose chunks take longer than that.
+
+        `want_lp`: a batch admission's token is the only one this reader ever sees with an `LP` line after it (a
+        slot's `BT` lines carry none), so a request asking for logprobs there is a `max_tokens` 1 one: read the
+        line here, for the request itself (its own lines: the engine's is shared by the slots' readers)."""
         stopped = False
         beat = time.monotonic()
+        held = NO_LINE                               # a line read while looking for a token's LP line
         while True:
-            try:
-                # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
-                # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
-                line = self.lines.get(timeout=0.5)
-            except queue.Empty:
-                if cancel.is_set() and not stopped:
-                    self._send("STOP")
-                    stopped = True
-                if on_quiet is not None:
-                    on_quiet()
-                if time.monotonic() - beat >= 10.0:
-                    beat = time.monotonic()
-                    yield None
-                continue
+            if held is not NO_LINE:
+                line, held = held, NO_LINE
+            else:
+                try:
+                    # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
+                    # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
+                    line = self.lines.get(timeout=0.5)
+                except queue.Empty:
+                    if cancel.is_set() and not stopped:
+                        self._send("STOP")
+                        stopped = True
+                    if on_quiet is not None:
+                        on_quiet()
+                    if time.monotonic() - beat >= 10.0:
+                        beat = time.monotonic()
+                        yield None
+                    continue
             beat = time.monotonic()
             if line is None:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             if not line.startswith(("PP ", "INFO")):
                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
             if line.startswith("T "):
-                on_token(int(line[2:]))
+                t = int(line[2:])
+                if want_lp:
+                    # the engine writes the token and its LP line in one flush: the next line is that one, or a
+                    # line this reader must still see (held for the next turn, as generate() does)
+                    try:
+                        held = self.lines.get(timeout=0.5)
+                    except queue.Empty:
+                        held = NO_LINE
+                    if isinstance(held, str) and held.startswith("LP "):
+                        own = getattr(cancel, "_strata_lp_lines", None)
+                        if own is not None:
+                            own.append((t, held))
+                        held = NO_LINE
+                on_token(t)
                 if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
                     self._send("STOP")
                     stopped = True
@@ -1789,6 +1810,12 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
+        # server refuses these requests unless max_tokens is 1.  The lines go to the request itself, through its
+        # cancel Event: several requests read control lines at once, and the engine's lp_lines is one attribute.
+        want_lp = top_logprobs(sampling or {}) is not None
+        if want_lp:
+            cancel._strata_lp_lines = LPLines(cancel)
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
@@ -1843,7 +1870,8 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
+                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way,
+                                           want_lp=want_lp):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
@@ -1971,7 +1999,8 @@ class StrataEngine:
                         if self.progress and live["state"] == "reading":
                             live["prompt_read"] = self.progress[0]
                     try:
-                        for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress())):
+                        for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress()),
+                                               want_lp=want_lp):
                             while pending:
                                 t = pending.pop(0)
                                 out.append(t)
@@ -3773,6 +3802,15 @@ def allowed_ids(req: dict) -> list:
     if not isinstance(ids, (list, tuple)):
         return []
     return [x for x in ids if isinstance(x, int) and not isinstance(x, bool) and x >= 0]
+
+
+def batch_slots_on(engine) -> bool:
+    """Does this engine run requests in batch slots ("parallel", whose `BT` lines carry no LP lines)?
+
+    Asked of each engine behind a ReplicaEngine: its own `batch` is how many requests it can run at once, so it
+    counts a replica without slots as one (serve/replicas.py) -- a server with `--replicas 2` and no `--parallel`
+    has none, and reads every reply by the GEN path, which does write them."""
+    return any(int(getattr(e, "batch", 0) or 0) for e in (getattr(engine, "engines", None) or [engine]))
 
 
 NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
@@ -5900,8 +5938,8 @@ class LogprobEntries:
     with these ids instead (every other logit -inf before sampling) and reports the unmasked
     distribution; here they filter what is reported, so the chosen token can be outside them.
 
-    Not on `--parallel`: the engine's batched loop prints `BT <slot> <id>` and never an LP line,
-    so a request that asks for logprobs on such a server is refused (400) before it starts.
+    On `--parallel`: only a `max_tokens` 1 request gets entries (an admission, decoded through the single-token path
+    that writes an LP line); the slot's `BT` lines carry none, so a longer reply is refused (400) before it starts.
     """
 
     def __init__(self, svc, allowed=(), owner=None):
@@ -5939,8 +5977,11 @@ class LogprobEntries:
 
     def take(self, eng) -> list:
         # the engine's current lines are this request's only when they carry its Event (a later generate pass
-        # of the same request makes new ones: the old ones are read to the end first); another request's never are
-        cur, old = getattr(eng, "lp_lines", None), None
+        # of the same request makes new ones: the old ones are read to the end first); another request's never are.
+        # A batch admission keeps its own lines on the request's cancel Event: the engine's is one attribute, and
+        # the next request to read control lines may already have replaced it.
+        own = getattr(self.owner, "_strata_lp_lines", None)
+        cur, old = (own if own is not None else getattr(eng, "lp_lines", None)), None
         if cur is not self.lines and getattr(cur, "owner", None) is self.owner:
             old, self.lines = self.lines, cur
         out = []
@@ -7430,13 +7471,13 @@ def make_handler(svc: Service):
             # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
             # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
             # alternatives) until it ends, so a long one holds a lot: streaming hands each entry out with its chunk.
-            if top_logprobs(req) is not None and getattr(svc.engine, "batch", 0):
-                # --parallel/--batch: the batched loop prints "BT <slot> <id>" and never calls emit_lp_line, so no
-                # LP line ever reaches the server there (src/program/generate.cpp).  Refused rather than answered
-                # with the field missing, which a client cannot tell from a reply that had no tokens.
-                raise ValueError("logprobs is not available when the engine runs requests in batch slots "
-                                 "(--parallel/--batch): it writes no LP lines there; start the server without "
-                                 "--parallel")
+            if top_logprobs(req) is not None and batch_slots_on(svc.engine) and max_req != 1:
+                # --parallel/--batch: a slot's "BT <slot> <id>" lines carry no LP line, and the batched loop never
+                # calls emit_lp_line (src/program/generate.cpp); an admission -- a max_tokens 1 request -- is read
+                # as GEN 1, which does write them.  Past that one token a reply would hold entries for a prefix
+                # only, which a client cannot tell from the model's own answer, so the longer one is refused.
+                raise ValueError('logprobs is available with "parallel" (batch slots) only for max_tokens 1; '
+                                 'run the server without "--parallel" for longer replies')
             n_vocab = len(getattr(svc.tok, "tokens", ())) or None
             if top_logprobs(req) is not None and n_vocab:
                 # emit_lp_line indexes the logits row with each named id as given, so an id past the vocabulary

@@ -517,8 +517,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   them when it was named (vLLM's field, but vLLM masks generation with it, while here it filters what is reported,
   so a token outside the named ids keeps its own `logprob` and an empty list). An id past the model's vocabulary is
   a 400. A token whose probability could not be read gets no entry, and the reply goes on. On a server started with
-  `--parallel`, a request that asks for logprobs gets a 400: the engine's batched loop writes no LP lines, so there is
-  nothing to report.
+  `--parallel`, only a `max_tokens` 1 request gets them: it is the one a batch slot decodes through the single-token
+  path, which writes an LP line. A longer reply there is a 400, since the slot's `BT` lines carry none -- entries for
+  a prefix only, which a client cannot tell from the model's own answer.
 - **Non-finite logits end the request and drop the cached state (on by default).** If a verify window's logits are NaN, the
   window emits no tokens, the request ends, and the next request drops the live session, checkpoints and parked
   conversations and reads its prompt from token 0. The server retries a request that had sent nothing once, transparently.
