@@ -7,6 +7,7 @@
 
 using strata::ds4::experts_per_word;
 using strata::ds4::experts_test_override;
+using strata::ds4::copy_all_fits;
 
 static int fails = 0;
 #define CHECK_EQ(a, b)                                                                              \
@@ -107,6 +108,24 @@ int main() {
     CHECK_EQ(prefill_chunk_default(false, 0.30, false, false, false, 24 * GiB), 2048);
     // the rule takes no --max-context: a 128K session on a 12 GB card gets the same chunk, because the chunk's buffers and the KV are
     // allocated whole at load for that context and a chunk that does not fit there is halved before the first prompt (4096 -> 2048 -> 1024 ...)
+    // copy_all_fits: the 251 GB R9700 box (108 GB lane) copies; a 64 GB PC, a 125 GB box with the 2.25 pack's lane, an unknown RAM do not
+    {
+        const double GB = 1e9, margin = 8.0 * (1ull << 30);
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (236 * GB), margin, 1e300), 1);
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (110 * GB), margin, 1e300), 0);   // inside the margin
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (116 * GB), margin, 1e300), 0);   // 108 + 8.6 > 116
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (118 * GB), margin, 1e300), 1);
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (101 * GB), margin, 1e300), 0);   // the 125 GB box, free RAM 101 GB
+        CHECK_EQ(copy_all_fits(92 * GB, ~uint64_t{0}, margin, 1e300), 0);             // RAM not known
+        CHECK_EQ(copy_all_fits(0, (uint64_t) (236 * GB), margin, 1e300), 0);          // nothing on the CPU lane
+        // Windows: the commit room (RAM + page file beside its margin) must hold the lane too, whatever the free RAM says
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (236 * GB), margin, 90 * GB), 0);
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (236 * GB), margin, 108 * GB), 1);
+        // the owner-PC class: 64 GB RAM, a 12 GB card (a lane of ~120 GB), 40 GB free, a 90 GB commit limit
+        CHECK_EQ(copy_all_fits(120 * GB, (uint64_t) (40 * GB), margin, 60 * GB), 0);
+        // a 192 GB Windows PC with a 4 GB page file: 150 GB free RAM but only 100 GB of commit room: no
+        CHECK_EQ(copy_all_fits(108 * GB, (uint64_t) (150 * GB), margin, 100 * GB), 0);
+    }
     if (fails == 0) std::printf("experts rule: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }

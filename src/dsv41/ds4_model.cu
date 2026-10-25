@@ -1978,7 +1978,7 @@ struct Model::Impl {
         // most (4 x R9700: 8192 214, 1024 370) the small one wins; with the experts copied into RAM (--mmap-experts off) 4096 beats 8192 by 7-9%
         // (H100 32 GiB: 2048 502, 4096 538, 8192 495).  A GGUF pack always has file_experts set (copied only by --mmap-experts off).
         const bool own_default = !(par || o.tp > 1);   // (a single-card run: no --threads, tp 1 - a launch with several cards passes --tp 1; one card passes neither)
-        const bool gguf_copy = pk.gguf && o.mmap_experts == 0;
+        const bool gguf_copy = pk.gguf && (o.mmap_experts == 0 || (store_gb() <= 0.0 && auto_copy_all));
         uint64_t vmin_bytes = ~0ull;
         for (const Dev& dv : devs) vmin_bytes = std::min<uint64_t>(vmin_bytes, (uint64_t) dv.total);
         if (devs.empty()) vmin_bytes = 0;
@@ -4275,12 +4275,18 @@ struct Model::Impl {
         // (auto: none - copies that all fit were measured no faster than the page cache: the CPU lane's rows are
         // compute-bound, ~46 GB/s from either on 2 Xeon sockets, NUMA parts included; a part copied cost decode speed
         // on 64 GB and on 32 GB of RAM)
-        double budget = o.mmap_experts == 0 ? std::min(all, can) : 0.0;
+        double budget = o.mmap_experts == 0 ? std::min(all, can) : auto_copy_all && all <= can ? all : 0.0;   // (auto: all or none)
         if (const char* v = std::getenv("DS4_COPY_GB")) budget = std::atof(v) * 1e9;
+        if (o.mmap_experts < 0 && auto_copy_all && all > can)
+            std::fprintf(stderr, "ds4: the CPU lane's experts (%.1f GB) do not all fit the RAM this process can get now (%.1f GB beside %.0f GB for "
+                                 "the rest): read in place from the model's files (--mmap-experts off copies what fits)\n", all / 1e9, can / 1e9, kRamMargin / 1e9);
         if (o.mmap_experts == 0 && all > can)
             std::fprintf(stderr, "ds4: --mmap-experts off: the CPU lane's experts (%.1f GB) do not all fit the RAM this "
                                  "process can get (%.1f GB beside %.0f GB for the rest) - the most-routed copied, the "
                                  "others read in place\n", all / 1e9, can / 1e9, kRamMargin / 1e9);
+        if (auto_copy_all && budget > 0)
+            std::fprintf(stderr, "ds4: --mmap-experts auto: the CPU lane's experts (%.1f GB) fit the RAM this process can get (%.1f GB beside %.0f GB for "
+                                 "the rest): copied in at load, no demand store (--mmap-experts on keeps them in place)\n", all / 1e9, can / 1e9, kRamMargin / 1e9);
         if (budget <= 0) {
             if (o.verbose)
                 std::fprintf(stderr, "ds4: the CPU lane's experts (%.1f GB) stay in place: the RAM this process can get "
@@ -4565,6 +4571,22 @@ struct Model::Impl {
     // than they are is never filled), never less than the old 48 GB.  A PC whose free RAM holds them all (the 251 GB R9700 box:
     // 115 GB of CPU-lane experts, 1 card, 2.00 set: 12.6 -> 21.4 tokens/s with the whole set resident, misses 15.4 -> 1.5 a token)
     // gets every one; the RAM that the room below leaves (free - 12 GB) is what bounds it elsewhere.
+    // Whether the experts the GPUs will not hold (the CPU lane's: the pack's less the GPUs' share) all fit the RAM this process can get beside
+    // kRamMargin, so that --mmap-experts auto copies them in (a copied expert is the CPU lane's own memory: no page cache to lose to the
+    // Engram tables and the files' churn, no store indirection or miss path).  Measured, 1 x R9700 + 251 GB, 2.00 pack, warm: decode +10-15%.
+    // --mmap-experts on/off and --ssd-cache N stand as given.
+    bool cpu_lane_fits_ram() const {
+        if (!pk.gguf || o.mmap_experts >= 0 || o.ssd_cache_gb >= 0.0 || std::getenv("DS4_STORE_GB") || std::getenv("DS4_COPY_GB")) return false;
+        if (const char* v = std::getenv("DS4_COPY_ALL")) return std::atoi(v) != 0 && ram_avail() != ~uint64_t{0};
+        const uint64_t avail = ram_avail();
+        if (avail == ~uint64_t{0}) return false;
+        double exp_b = 0, room = 0, other_b = 0;
+        const double share = gpu_expert_share(&exp_b, &room, &other_b);
+        if (exp_b <= 0) return false;
+        const double lane = exp_b * (1.0 - std::min(1.0, share));
+        return copy_all_fits(lane, avail, (double) kRamMargin, commit_room());   // (Windows: the commit room too, not only the free RAM)
+    }
+    mutable bool auto_copy_all = false;   // (set by store_gb(): the auto size is the CPU lane's experts copied in, no demand store)
     double store_cap_gb() const {
         double b = 0;
         for (const auto& kt : pk.t)
@@ -4577,7 +4599,10 @@ struct Model::Impl {
         double gb = o.ssd_cache_gb;
         if (const char* v = std::getenv("DS4_STORE_GB")) gb = std::atof(v);
         if (!pk.gguf) gb = 0.0;
-        else if (gb < 0.0) {   // auto: the RAM free now less 12 GB for the system and the owner's programs, all the experts at most
+        else if (gb < 0.0 && cpu_lane_fits_ram()) {   // auto, and the RAM holds every CPU-lane expert beside kRamMargin: they are copied in at load
+            auto_copy_all = true;                       // (copy_experts), the demand store would only be a second, smaller copy of them
+            gb = 0.0;
+        } else if (gb < 0.0) {   // auto: the RAM free now less 12 GB for the system and the owner's programs, all the experts at most
             const uint64_t avail = ram_avail();
             avail0_ = avail;
             const double room = avail == ~uint64_t{0} ? 0.0 : (double) avail / 1e9 - 12.0;
@@ -4608,6 +4633,13 @@ struct Model::Impl {
     void init_store() {
         const double gb = store_gb_now();
         if (gb <= 0.0 || L.empty() || L[0].lay.fmt != gg::kFmtMXFP4 || !file_experts) return;
+        if (o.ssd_cache_gb < 0.0 && !std::getenv("DS4_STORE_GB")) {   // (the auto size: say when it holds less than the CPU lane's experts)
+            double exp_b = 0;
+            const double share = gpu_expert_share(&exp_b), lane_gb = exp_b * (1.0 - std::min(1.0, share)) / 1e9;
+            if (lane_gb > gb + 1.0 && o.verbose)
+                std::fprintf(stderr, "ds4: RAM store: the auto size (%.1f GB) holds less than the CPU lane's experts (%.1f GB): the hottest are kept, the "
+                                     "rest is read from the SSD as the prompt picks it (--ssd-cache N sets the size)\n", gb, lane_gb);
+        }
         std::vector<ExpertStore::LayerGeo> geo((size_t) g.nl);   // (the trunk's layers: the drafter's bigger experts stay in place)
         for (const Layer& l : L) {
             if (l.il >= g.nl) continue;

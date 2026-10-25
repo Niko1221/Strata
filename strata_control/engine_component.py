@@ -524,6 +524,22 @@ def _drm_vendor_makes(root: str = "/sys/class/drm") -> set[str]:
     return {backend for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")) if vendor in vendors}
 
 
+def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None = None) -> str | None:
+    """Under WSL (the GPU is reached through /dev/dxg, there is no /dev/kfd) the Linux AMD (HIP) engines hang: librocdxg 1.2.2
+    never completes a barrier-AND packet, so the first GPU command never returns. A plain sentence with one next step for that
+    case, else None. A warning only: the caller goes on (recommend, never force)."""
+    if backend != "hip":
+        return None
+    if wsl is None:
+        import platform
+        import sys
+        wsl = sys.platform.startswith("linux") and "microsoft" in platform.uname().release.lower()
+    if not wsl or not Path(dev_root, "dxg").exists() or Path(dev_root, "kfd").exists():
+        return None
+    return ("The AMD engines do not run under WSL yet: the driver layer WSL uses for the card never finishes a GPU command, so the engine "
+            "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
+
+
 def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that

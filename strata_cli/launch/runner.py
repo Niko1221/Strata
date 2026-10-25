@@ -666,8 +666,22 @@ class Runner:
     def _cli(self, *args: str) -> list[str]:
         return [self.python, str(ROOT / "strata.py"), *args]
 
+    def warn_wsl_amd(self) -> None:
+        """Under WSL the Linux AMD engines hang (no /dev/kfd, librocdxg never completes a GPU command): say so plainly with one next step,
+        and go on (a warning, never a refusal)."""
+        try:
+            from strata_control import engine_component as ec
+            note = ec.wsl_amd_note("hip") and ec.wsl_amd_note(ec.detect_backend()[0])    # the cheap file test first: no GPU tool is run on other systems
+        except Exception:                                    # noqa: BLE001 - a nicety, never a reason to stop
+            return
+        if note:
+            self.emit("engine", note, level="warn")
+            if note not in self.notices:
+                self.notices.append(note)
+
     # ---- 1. the engine
     def ensure_engine(self) -> None:
+        self.warn_wsl_amd()
         if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
             return

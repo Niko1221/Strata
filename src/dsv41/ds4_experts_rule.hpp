@@ -50,6 +50,15 @@ inline int prefill_chunk_default(bool own_default, double gpu_share, bool gguf_c
     return file_experts ? big : 2048;
 }
 
+// --mmap-experts auto copies all the CPU lane's experts into RAM at load (no demand store) only when they fit: lane_bytes of experts,
+// ram_avail the RAM this process can still get (~0: unknown -> no), ram_margin left to the rest, commit_room what Windows still lets it
+// commit beside its margin (1e300: no such limit, Linux).  All or none: a lane that does not fit both leaves the demand store as it was.
+// Measured 1 x R9700 + 251 GB, 2.00 pack: decode +10-25% (the copies sit on huge pages, the store's page-locked arena does not).
+inline bool copy_all_fits(double lane_bytes, uint64_t ram_avail, double ram_margin, double commit_room) {
+    if (!(lane_bytes > 0.0) || ram_avail == ~uint64_t{0}) return false;
+    return lane_bytes + ram_margin <= (double) ram_avail && lane_bytes <= commit_room;
+}
+
 // DS4_TOPK=N (a test, not for users): over the flag and the rule; returns the count to use
 inline int experts_test_override(int chosen, int model_k) {
     if (const char* v = std::getenv("DS4_TOPK")) {

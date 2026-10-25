@@ -347,6 +347,13 @@ class NoNetwork(Install):
         self.assertIn("Check the internet connection and run the same command again.", out)
         self.assertFalse([c for c in self.calls if c[0] == "get"])
 
+    def test_a_local_feed_needs_no_github(self):
+        """A run on a local feed (a folder, a loopback address) downloads nothing from GitHub: a slow or down GitHub must not stop it."""
+        self.github_up = False
+        with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": str(self.root / "feed")}):
+            rc, out = self.install(engine=False)
+        self.assertNotIn("can't reach GitHub", out)
+
     def test_a_package_the_person_has_needs_no_github(self):
         self.github_up = False
         self.install(engine=False)                                    # (the first run only creates the folders)
@@ -376,6 +383,15 @@ class GithubCheck(unittest.TestCase):
             self.assertTrue(setup.github_reachable(1))                       # any answer means it is reachable
         with mock.patch.object(setup, "_urlopen", return_value=mock.MagicMock()):
             self.assertTrue(setup.github_reachable(1))
+
+    def test_a_local_feed_is_told_from_the_signed_one(self):
+        for feed in ("C:/feeds/f", "/tmp/feed", "file:///tmp/feed", "http://127.0.0.1:8099/feed.json", "https://localhost/f"):
+            self.assertTrue(setup.local_feed(feed), feed)
+        for feed in (None, "", "https://github.com/Niko1221/Strata/releases/latest/download/feed.json"):
+            with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": ""}):
+                self.assertFalse(setup.local_feed(feed), feed)
+        with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": "/tmp/x"}):
+            self.assertTrue(setup.local_feed())                              # the environment names it when --feed does not
 
 
 class OfficialSets(unittest.TestCase):
