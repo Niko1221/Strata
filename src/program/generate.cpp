@@ -105,6 +105,7 @@
 #include "strata/program/stage_reserve.hpp"
 #include "strata/program/split_walk.hpp"
 #include "strata/program/gpu_report.hpp"
+#include "strata/program/vram_rules.hpp"
 #include "strata/prefill/share_rules.hpp"
 #include "strata/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
@@ -14178,6 +14179,17 @@ int main(int argc, char** argv) {
                     return false;
                 }
             }
+            // From the first shrink on, every exit - an error's too - puts the residency table as it is on every
+            // device that keeps a copy and lays the prompt's loan out on the caches as they are.  An error that
+            // returned before this left the devices' tables naming slots a shrink had released and a loan that
+            // reached past the end of a cache.
+            struct VramSettle {
+                decltype(res_upload)& upload;
+                decltype(relend)& lend;
+                bool due = true;
+                void run() { if (due) { due = false; upload(); lend(); } }
+                ~VramSettle() { run(); }
+            } settle{res_upload, relend};
             const auto t0 = Clock::now();
             std::vector<std::string> notes(targets.size());         // per cache: the floor, a grow that failed
             std::vector<int64_t> before_slots(targets.size(), 0);      // per cache, for the report
@@ -14206,49 +14218,48 @@ int main(int argc, char** argv) {
                         // Rounding the keep DOWN to a segment boundary takes the whole segments the reserve needs.
                         keep = std::max(floor_b, xc.segment_floor(keep));
                     }
-                    if (!xc.shrink(keep, e)) return false;
-                    // slot numbers are per cache: only this cache's layers can lose one
-                    const int64_t live = xc.slots();
-                    for (size_t i = 0; i < host_res.size(); ++i) {
-                        const int64_t owner = stages.empty() ? 0 : (int64_t) stage_of((int64_t) (i / g.n_expert));
-                        if (owner != (int64_t) t.idx) continue;
-                        if (host_res[i] >= live) {
-                            evicted.emplace_back((int32_t) i, host_res[i]);
-                            host_res[i] = strata::core::kNotResident;
-                        }
-                    }
+                    const bool shrunk = xc.shrink(keep, e);
+                    // a shrink the driver refused part-way has released the segments before it: their rows go too
+                    strata::program::vram_rules::evict_past(host_res, xc.slots(), [&](int64_t i) {
+                        return (stages.empty() ? 0 : (int64_t) stage_of(i / g.n_expert)) == (int64_t) t.idx;
+                    }, evicted);
+                    if (!shrunk) return false;
                 } else if (mapped < xc.full_bytes()) {
                     std::string gerr;
                     if (!xc.grow(mapped + ((int64_t) free_b - want_free), gerr)) notes[k] = " (" + gerr + ")";
-                    const int64_t live = xc.slots();
-                    std::string ferr;
-                    std::vector<std::pair<int32_t, int32_t>> keep_out;
-                    for (const auto& [i, slot] : evicted) {
-                        if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
+                    // a row that is back already (the adaptive tier) gives its slot to the layer's most-routed miss
+                    auto pick_miss = [&](int64_t i) -> int64_t {
                         const int64_t layer = i / g.n_expert;
-                        int64_t pick = i;
-                        if (host_res[(size_t) i] >= 0) {   // back already (the adaptive tier): the layer's most-routed miss
-                            pick = -1;
-                            float best = -1.0f;
-                            for (int64_t ex = 0; ex < g.n_expert; ++ex) {
-                                const size_t j = (size_t) (layer * g.n_expert + ex);
-                                if (host_res[j] >= 0) continue;
-                                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
-                                if (u > best) { best = u; pick = (int64_t) j; }
-                            }
+                        int64_t pick = -1;
+                        float best = -1.0f;
+                        for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                            const size_t j = (size_t) (layer * g.n_expert + ex);
+                            if (host_res[j] >= 0) continue;
+                            const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
+                            if (u > best) { best = u; pick = (int64_t) j; }
                         }
-                        if (pick < 0) continue;
+                        return pick;
+                    };
+                    auto fill = [&](int64_t pick, int32_t slot, std::string& fe) {
+                        const int64_t layer = pick / g.n_expert;
+                        std::string ferr;
                         const uint8_t* b = srcp->blob_stable(layer, pick % g.n_expert);
                         if (b == nullptr || !xc.fill_slot_queued(slot, b, ferr,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
-                            e = "VRAM: refilling the cache failed: " + ferr;
+                            fe = "VRAM: refilling the cache failed: " + ferr;
                             return false;
                         }
                         srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
-                        host_res[(size_t) pick] = slot;
-                    }
-                    evicted.swap(keep_out);
-                    if (!xc.sync_queued(ferr)) { e = "VRAM: " + ferr; return false; }
+                        return true;
+                    };
+                    auto sync = [&](std::string& se) {
+                        std::string ferr;
+                        if (xc.sync_queued(ferr)) return true;
+                        se = "VRAM: " + ferr;
+                        return false;
+                    };
+                    if (!strata::program::vram_rules::refill(host_res, xc.slots(), evicted, pick_miss, fill, sync, e))
+                        return false;
                 }
                 // the verifier decided its fast paths from the residency table at init: re-check them with the
                 // cache as it is now (its own device's residency table and slot offsets)
@@ -14261,8 +14272,7 @@ int main(int argc, char** argv) {
                 h.blob = thits.blob;
                 stage_ver((int) t.idx).refresh_residency(h);
             }
-            res_upload();
-            relend();
+            settle.run();   // before the report: it prints the prompt chunk the relend chose
             for (size_t k = 0; k < targets.size(); ++k) {
                 const VramTarget& t = targets[k];
                 const strata::core::OnDevice on(t.dev == 0 ? -1 : t.dev);
