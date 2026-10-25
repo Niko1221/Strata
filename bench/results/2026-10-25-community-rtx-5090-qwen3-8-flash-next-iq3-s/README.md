@@ -8,7 +8,7 @@ Measured on 2026-10-25 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 - CPU: AMD Ryzen 7 9800X3D 8-Core Processor (8 cores, 16 threads); installed RAM: 62.2 GiB; storage: not measured
 - OS: Linux 7.3.0-5-cachyos; GPU driver: 615.78.08; CUDA: not read
 - Strata: project 0.1.50, commit 41cf05a0; engine 0.1.50
-- Background workloads and power limits: not recorded
+- Background workloads and power limits: background load not recorded. The card runs a custom LACT profile: a **400 W cap** (the card's minimum; the stock default is 575 W), locked 300-2500 MHz core, +600 MHz VF offset at p-state 0. It was in force during this run (lactd active since this machine's boot at 09:59:07, `/etc/lact/config.yaml` unchanged since 2026-10-19) and re-checked afterwards with `nvidia-smi --query-gpu=power.limit` -> 400.00 W. These are a 400 W card's numbers, not a stock 5090's.
 
 ## Model and configuration
 
@@ -59,4 +59,4 @@ Per-request data: `results.json`. Engine log lines from the start: `engine-log-e
 
 ## Correctness and limitations
 
-Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. Total time of the suite: 33 s.
+Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded, and the power limit in the section above was read by hand after the run, not by the suite. Total time of the suite: 33 s.

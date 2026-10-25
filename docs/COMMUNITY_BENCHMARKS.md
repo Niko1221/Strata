@@ -73,7 +73,7 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
-- [2026-10-25: RTX 5090 32 GB, Ryzen 7 9800X3D, 62.2 GiB RAM, Linux](../bench/results/2026-10-25-community-rtx-5090-qwen3-8-flash-next-iq3-s/README.md):
+- [2026-10-25: RTX 5090 32 GB (400 W cap via LACT), Ryzen 7 9800X3D, 62.2 GiB RAM, Linux](../bench/results/2026-10-25-community-rtx-5090-qwen3-8-flash-next-iq3-s/README.md):
   engine 0.1.50 from source at `41cf05a0`, Qwen3.8-Flash-Next IQ3_S, 262,144-token context, `--kv int8 --kv-grow --vram-reserve-mib 832`;
   `tools/strata_bench.py`, three runs per test: chat decode 183.9 tok/s (first token 0.15 s), fresh 4K prompt 5,987.8 tok/s, fresh 16K prompt 7,007.9 tok/s, agent session decode 223.0 tok/s with a 0.65 s first token.
 - [2026-10-25: the same machine, the Gyro-M set](../bench/results/2026-10-25-community-rtx-5090-qwen3-8-flash-next-gyro-gyro-m/README.md):
