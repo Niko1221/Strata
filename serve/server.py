@@ -3840,6 +3840,28 @@ def batch_slots_on(engine) -> bool:
     return any(int(getattr(e, "batch", 0) or 0) for e in (getattr(engine, "engines", None) or [engine]))
 
 
+def check_logprobs(req: dict, svc, max_req: int) -> None:
+    """The checks a logprobs request passes before anything is sent, on /v1/chat/completions and /v1/completions
+    alike.  No cap of our own on the reply's length: max_tokens (or the rest of the context) already bounds it."""
+    if top_logprobs(req) is None:
+        return
+    if batch_slots_on(svc.engine) and max_req != 1:
+        # --parallel/--batch: a slot's "BT <slot> <id>" lines carry no LP line, and the batched loop never
+        # calls emit_lp_line (src/program/generate.cpp); an admission -- a max_tokens 1 request -- is read
+        # as GEN 1, which does write them.  Past that one token a reply would hold entries for a prefix
+        # only, which a client cannot tell from the model's own answer, so the longer one is refused.
+        raise ValueError('logprobs is available with "parallel" (batch slots) only for max_tokens 1; '
+                         'run the server without "--parallel" for longer replies')
+    n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+    if n_vocab:
+        # emit_lp_line indexes the logits row with each named id as given, so an id past the vocabulary
+        # would read out of bounds: refused here, before anything is sent
+        bad = [i for i in allowed_ids(req) if i >= n_vocab]
+        if bad:
+            raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
+                             f"(0..{n_vocab - 1})")
+
+
 NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
 
 
@@ -6275,6 +6297,57 @@ def openai_collect(chunks) -> dict:
     return out
 
 
+class CompletionLogprobs:
+    """The engine's LP lines as the legacy /v1/completions `logprobs` object (vLLM's shape):
+    `tokens`, `token_logprobs`, `top_logprobs` (one {token: logprob} per token) and `text_offset`.
+
+    Unlike LogprobEntries every generated token is listed, the stop token too, so a one-token decision whose most
+    likely token is a stop token still has its distribution.  `allowed_token_ids` reports the named ids'
+    full-vocabulary logprobs, not renormalised (vLLM also reports the unmasked distribution), so a caller can tell
+    how much of the mass its labels hold.  `return_tokens_as_token_ids` keys every token as "token_id:<id>", which
+    keeps two ids that decode to the same text apart."""
+
+    def __init__(self, svc, req, owner):
+        self.tok, self.stop_ids, self.owner = svc.tok, svc.stop_ids, owner
+        self.allowed = allowed_ids(req)
+        self.as_ids = req.get("return_tokens_as_token_ids") is True
+        self.seen = []                             # this request's LPLines, in order (one per generate pass)
+
+    def watch(self, eng):
+        # a batch admission keeps the request's lines on its cancel Event, as LogprobEntries.take reads them
+        own = getattr(self.owner, "_strata_lp_lines", None)
+        cur = own if own is not None else getattr(eng, "lp_lines", None)
+        if getattr(cur, "owner", None) is self.owner and not any(cur is s for s in self.seen):
+            self.seen.append(cur)
+
+    def text(self, t) -> str:
+        raw = self.tok.token_bytes(t) if hasattr(self.tok, "token_bytes") else self.tok.decode([t]).encode("utf-8")
+        return raw.decode("utf-8", "replace")
+
+    def name(self, t) -> str:
+        return f"token_id:{t}" if self.as_ids else self.text(t)
+
+    def build(self, offset: int) -> dict:
+        out = {"tokens": [], "token_logprobs": [], "top_logprobs": [], "text_offset": []}
+        for lines in self.seen:
+            while lines:
+                t, line = lines.popleft()
+                f = line.split()
+                try:                               # "LP nan": no head logits for that window row
+                    lp = float(f[1])
+                    alts = [(int(i), float(v)) for i, _, v in (x.partition(":") for x in f[2:])]
+                except (IndexError, ValueError):
+                    lp, alts = None, []
+                if self.allowed and t in self.allowed and lp is not None:
+                    alts = [(t, lp)] + alts        # the line never repeats the chosen id among the named ones
+                out["tokens"].append(self.name(t))
+                out["token_logprobs"].append(lp if lp is not None and math.isfinite(lp) else None)
+                out["top_logprobs"].append({self.name(i): v for i, v in alts if math.isfinite(v)})
+                out["text_offset"].append(offset)
+                offset += 0 if t in self.stop_ids else len(self.text(t))
+        return out
+
+
 def logprob_span(text: str, part: str, entries: list):
     """The entries whose tokens spell `part`, a piece of `text`, or None when the tokens do not
     spell `text` or no token boundary falls at both ends of `part`."""
@@ -7620,21 +7693,7 @@ def make_handler(svc: Service):
             # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
             # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
             # alternatives) until it ends, so a long one holds a lot: streaming hands each entry out with its chunk.
-            if top_logprobs(req) is not None and batch_slots_on(svc.engine) and max_req != 1:
-                # --parallel/--batch: a slot's "BT <slot> <id>" lines carry no LP line, and the batched loop never
-                # calls emit_lp_line (src/program/generate.cpp); an admission -- a max_tokens 1 request -- is read
-                # as GEN 1, which does write them.  Past that one token a reply would hold entries for a prefix
-                # only, which a client cannot tell from the model's own answer, so the longer one is refused.
-                raise ValueError('logprobs is available with "parallel" (batch slots) only for max_tokens 1; '
-                                 'run the server without "--parallel" for longer replies')
-            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
-            if top_logprobs(req) is not None and n_vocab:
-                # emit_lp_line indexes the logits row with each named id as given, so an id past the vocabulary
-                # would read out of bounds: refused here, before anything is sent
-                bad = [i for i in allowed_ids(req) if i >= n_vocab]
-                if bad:
-                    raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
-                                     f"(0..{n_vocab - 1})")
+            check_logprobs(req, svc, max_req)
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
@@ -7708,16 +7767,24 @@ def make_handler(svc: Service):
             """OpenAI legacy text completions over a caller-tokenized prompt (no chat template)."""
             req = svc.with_shared(req, "openai")
             prompt = req.get("prompt")
-            if not isinstance(prompt, str):
-                raise ValueError("prompt must be a string")
+            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+            # a string, or one prompt already tokenized (a list of token ids, as vLLM takes it)
+            given_ids = isinstance(prompt, list) and bool(prompt) and \
+                all(isinstance(i, int) and not isinstance(i, bool) and i >= 0 for i in prompt)
+            if not isinstance(prompt, str) and not given_ids:
+                raise ValueError("prompt must be a string or a list of token ids (one prompt per request)")
+            if given_ids and n_vocab and max(prompt) >= n_vocab:
+                raise ValueError(f"prompt: token id {max(prompt)} is outside the vocabulary (0..{n_vocab - 1})")
             for key in ("n", "best_of"):
                 value = req.get(key, 1)
                 if value != 1:
                     raise ValueError(f"{key} must be 1 (the server generates one sequence at a time)")
             if req.get("suffix") not in (None, ""):
                 raise ValueError("suffix is not supported")
-            if req.get("logprobs") is not None:
-                raise ValueError("logprobs are not supported")
+            if req.get("logprobs") is not None and top_logprobs(req) is None:
+                raise ValueError("logprobs must be a whole number 0..20 (or true with top_logprobs)")
+            if top_logprobs(req) is not None and req.get("stream"):
+                raise ValueError("logprobs on /v1/completions are not supported with stream: true")
             stream_options = req.get("stream_options")
             if stream_options is not None:
                 if not isinstance(stream_options, dict) or set(stream_options) - {"include_usage"}:
@@ -7732,7 +7799,9 @@ def make_handler(svc: Service):
             if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "disabled":
                 thinking = False
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            ids = svc.tok.encode(prompt, parse_special=True)
+            ids = list(prompt) if given_ids else svc.tok.encode(prompt, parse_special=True)
+            if given_ids:
+                prompt = svc.tok.decode(ids)             # for echo and text_offset
             if thinking is False:                        # passthrough stays untouched when thinking is on; asked off,
                 tail = svc.tok.encode(svc.template.gen_prompt_tail(False), parse_special=True)   # the prompt gets the tail
                 tail_on = svc.tok.encode(svc.template.gen_prompt_tail(True), parse_special=True)  # a chat render adds
@@ -7742,12 +7811,14 @@ def make_handler(svc: Service):
                 max_new = int(req.get("max_tokens") or 0)
             except (TypeError, ValueError):
                 raise ValueError("max_tokens must be a whole number")
+            check_logprobs(req, svc, max_new)
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             svc.reasoning_budget(req)
             stop_strings(req)
             check_request_sampling(req)
             cancel = threading.Event()
             self._watch_client(cancel)
+            lp = CompletionLogprobs(svc, req, cancel) if top_logprobs(req) is not None else None
             svc.load()
             model = svc.model_for(req)
             cid, created = "cmpl-" + uuid.uuid4().hex[:24], int(time.time())
@@ -7774,6 +7845,8 @@ def make_handler(svc: Service):
                         yield {"id": cid, "object": "text_completion", "created": created, "model": model,
                                "choices": [{"text": prompt, "index": 0, "logprobs": None, "finish_reason": None}]}
                     for kind, value in svc.run(ids, thinking, None, max_new, req, cancel):
+                        if lp is not None:
+                            lp.watch(svc.engine)
                         if kind == "ping":
                             yield None
                         elif kind == "event":
@@ -7806,6 +7879,9 @@ def make_handler(svc: Service):
                                   "choices": [{"index": 0, "text": "", "logprobs": None, "finish_reason": "length"}],
                                   "usage": {"prompt_tokens": len(ids), "completion_tokens": 0, "total_tokens": len(ids)}}
                 result["choices"][0]["text"] = "".join(text)
+                if lp is not None:
+                    lp.watch(svc.engine)
+                    result["choices"][0]["logprobs"] = lp.build(len(prompt) if req.get("echo") else 0)
                 self._json(200, result)
                 return
             self._sse()
