@@ -20,10 +20,16 @@ def exe_name() -> str:
     return NAME + (".exe" if os.name == "nt" else "")
 
 
+def version_key(folder_name: str) -> tuple:
+    """The version at the front of a package folder's name ("0.1.49-windows-x86_64-cuda-cuda13" -> (0, 1, 49)), for choosing the newest."""
+    head = str(folder_name).split("-")[0]
+    return tuple(int(x) for x in head.split(".") if x.isdigit())
+
+
 def find(dest: Path) -> Path | None:
     """The newest installed package's strata-dsv41 in `dest` (engine-dsv41/), or None."""
     try:
-        folders = sorted((d for d in Path(dest).iterdir() if d.is_dir() and (d / exe_name()).is_file()), key=lambda d: d.name)
+        folders = sorted((d for d in Path(dest).iterdir() if d.is_dir() and (d / exe_name()).is_file()), key=lambda d: (version_key(d.name), d.name))
     except OSError:
         return None
     return folders[-1] / exe_name() if folders else None
@@ -150,4 +156,111 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
         return target / exe_name()
     except (updater.UpdateError, feedmod.FeedError, signing.SignatureError) as e:
         emit(f"The DeepSeek engine could not be fetched: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------------------------- upgrade of an installed package
+
+def source_reachable(source: str, timeout: float = 10.0) -> bool:
+    """Can the feed `source` be reached within `timeout` seconds?  A folder or file: it exists.  A URL: any HTTP answer counts (a 404 is an answer);
+    no answer, a refused or timed-out connection does not.  One quick check instead of minutes of retries."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from strata_control import transfer
+    kind = transfer.kind_of(source)
+    if kind in ("path", "file"):
+        try:
+            return transfer._local_path(source).exists()
+        except (OSError, transfer.TransferError):
+            return False
+    parts = urllib.parse.urlsplit(source)
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"{parts.scheme}://{parts.netloc}/", method="HEAD", headers={"User-Agent": "strata-launch"}),
+                               timeout=timeout).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+
+
+def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
+    """The new engine starts: `strata-dsv41 --version` runs, loads its libraries and names itself (it needs no graphics card and no model)."""
+    import subprocess
+    try:
+        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(Path(exe).parent))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"it could not be started ({exc})"
+    first = ((done.stdout or "").strip().splitlines() or [""])[0]
+    if done.returncode != 0 or not first.startswith(NAME):
+        tail = ((done.stderr or "").strip().splitlines() or [first or f"exit {done.returncode}"])[-1]
+        return False, f"it did not start correctly ({tail[:160]})"
+    return True, first
+
+
+def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware: dict | None = None,
+            emit: Callable[[str], None] = print, cancel=None) -> Path | None:
+    """The installed DeepSeek engine package in `dest` (engine-dsv41/) is older than the signed feed's `dsv41` member for this PC: fetch the newer one,
+    check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then remove the older
+    folders (one generation).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
+    network), or the newer one could not be installed (one plain line, the installed engine keeps running).  Versions compare numerically
+    (0.1.49 < 0.1.49.1).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
+    from strata_control import feed as feedmod, signing, transfer, updater
+
+    dest = Path(dest)
+    current = installed or find(dest)
+    if current is None:
+        return None
+    have_name = Path(current).parent.name
+    have = version_key(have_name)
+    shown = have_name.split("-")[0]
+    work = dest.parent / (DIR + ".work")
+    hw = hardware or updater.detect_hardware()
+    try:
+        (work / "state").mkdir(parents=True, exist_ok=True)
+        ctx = updater.Context(components=work, source=source, trusted=signing.load_trusted_keys(), hardware=hw, cancel=cancel,
+                              emit=lambda event: None)
+        state = updater.State(work)
+        try:
+            feed = updater.open_feed(ctx, state)
+        except feedmod.FeedError as exc:
+            if "could not be read" in str(exc):
+                return None                                       # no network, no feed here: silent, the launch goes on
+            emit(f"A newer DeepSeek engine may be available but could not be checked: {exc}; still using {shown}.")
+            return None
+        except (updater.UpdateError, OSError):
+            return None                                           # (offline mode and the like: silent)
+        pkg, _reasons = feedmod.select_engine(list(feed.dsv41), hw)
+        if pkg is None or version_key(pkg.version) <= have:
+            return None
+        target = None
+        try:
+            archive = updater._download(ctx, "dsv41", pkg.url, pkg.size, pkg.sha256, "the DeepSeek engine", feed)
+            stage_root, _component = updater.stage_engine(ctx, feed, pkg, archive)
+            try:
+                folder = stage_root / "engine" / updater.folder_name(pkg)
+                target = dest / folder.name
+                shutil.rmtree(target, ignore_errors=True)
+                shutil.move(str(folder), str(target))
+            finally:
+                shutil.rmtree(stage_root, ignore_errors=True)
+            if os.name != "nt":
+                (target / exe_name()).chmod(0o755)
+            ok, why = _test_start(target / exe_name())
+            if not ok:
+                raise updater.UpdateError(why)
+        except (updater.UpdateError, feedmod.FeedError, signing.SignatureError, transfer.TransferError, OSError) as exc:
+            if target is not None and target.name != have_name:
+                shutil.rmtree(target, ignore_errors=True)         # (never the installed one)
+            emit(f"A newer DeepSeek engine is available but could not be installed: {str(exc).rstrip('.')}; still using {shown}.")
+            return None
+        for old in dest.iterdir():                                # switched: the older generations go
+            if old.is_dir() and old.name != target.name and version_key(old.name) < version_key(target.name):
+                shutil.rmtree(old, ignore_errors=True)
+        emit(f"DeepSeek engine updated from {shown} to {pkg.version}.")
+        shutil.rmtree(work, ignore_errors=True)
+        return target / exe_name()
+    except Exception as exc:                                      # noqa: BLE001 - an upgrade check must never stop a launch
+        emit(f"A newer DeepSeek engine may be available but could not be checked ({type(exc).__name__}); still using {shown}.")
         return None

@@ -1425,6 +1425,23 @@ bool light_down(const SetArgs& a, cudaStream_t s) {
     return light_set(a, false, s);
 }
 
+bool hipk_force(int mode) {
+#if defined(STRATA_USE_HIP)
+    hipk::force_mode().store(mode, std::memory_order_relaxed);
+    return mode < 0 || hipk::ok_device() || mode == 0;
+#else
+    (void) mode;
+    return false;
+#endif
+}
+long long hipk_launches() {
+#if defined(STRATA_USE_HIP)
+    return hipk::launches().load(std::memory_order_relaxed);
+#else
+    return -1;
+#endif
+}
+
 bool set_gate_up(const SetArgs& a, cudaStream_t s) {
     if (is_tq(a.tg)) return tq::set_gate_up(a, s);
     if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;

@@ -316,6 +316,20 @@ def short(g: Gguf):
     return None if have >= need else "%s: %d of %d bytes" % (g.path.name, have, need)
 
 
+def find_mmproj(model: pathlib.Path):
+    """The DeepSeek vision tower beside the model (an automatic find, no --mmproj): an mmproj*.gguf in the model's parent folder whose projector IS
+    deepseek41v.  The folder is shared with other families' files (Qwen keeps its own mmproj-Qwen3.8-Flash-Next-BF16.gguf there, projector
+    qwen3vl_merger): those are never taken, and never an error - the pack is made without a vision tower.  A file named with --mmproj is checked
+    strictly in main()."""
+    for p in sorted(model.parent.glob("mmproj*.gguf")):
+        try:
+            if Gguf(p).kv.get("clip.projector_type") == "deepseek41v":
+                return p
+        except (OSError, ValueError, SystemExit, struct.error):
+            continue
+    return None
+
+
 def is_engram_file(g) -> bool:
     """The Engram table's GGUF: general.architecture 'engram' (the first release) or 'deepseek41-engram' (ISTA-DASLab's final files)."""
     arch = str(g.kv.get("general.architecture") or "")
@@ -404,7 +418,7 @@ def main() -> int:
                                           "blocks become mtp.0-2 beside the trunk's tensors (default: the first dspark-*.gguf "
                                           "in <model>/.. when there is one)")
     ap.add_argument("--mmproj", help="unsloth's vision tower GGUF (mmproj-*.gguf, clip / deepseek41v): its tensors become the "
-                                     "checkpoint's vision.* / aligner.* (default: the first mmproj*.gguf in <model>/..)")
+                                     "checkpoint's vision.* / aligner.* (default: the first mmproj*.gguf in <model>/.. whose projector is deepseek41v; other families' are ignored)")
     ap.add_argument("--tq-experts", nargs="+", help="folders tq_convert.py wrote (tq.json + tq-L<layer>.bin): the routed experts of the layers "
                                          "listed there are read from it as trellis types (TQK5X ..), the others keep their MXFP4")
     ap.add_argument("--dense-override", action="append", help="a folder dense_requant.py wrote (dense.json + dense.bin): its tensors replace the same-named "
@@ -731,8 +745,7 @@ def main() -> int:
         print("DSpark drafter from %s: %d blocks" % (ds_path.name, nb))
     # the vision tower from unsloth's mmproj GGUF (clip, projector deepseek41v): llama.cpp's names -> the checkpoint's;
     # the F32 norms / biases / marker rows are read as BF16 by the engine; mlp.w1 is the file's gate and up
-    mm_path = pathlib.Path(a.mmproj).expanduser().resolve() if a.mmproj else next(
-        iter(sorted(model.parent.glob("mmproj*.gguf"))), None)
+    mm_path = pathlib.Path(a.mmproj).expanduser().resolve() if a.mmproj else find_mmproj(model)
     mm_geo = {}
     if mm_path is not None:
         if not mm_path.is_file():

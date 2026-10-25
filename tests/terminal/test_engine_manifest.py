@@ -204,6 +204,46 @@ class Arch(unittest.TestCase):
         self.assertFalse(ec.arch_covers(["sm_75", "compute_89"], ["sm_86"]), "PTX never runs on an older card")
         self.assertTrue(ec.arch_covers(["sm_86"], []), "cannot tell: not a refusal")
 
+    def test_machine_code_runs_on_a_newer_minor_of_the_same_major(self):
+        """CUDA's cubin rule: sm_MN code runs on sm_MK when K >= N (an RTX 40 card, sm_89, runs sm_86 code)."""
+        self.assertTrue(ec.arch_covers(["sm_86"], ["sm_89"]))
+        self.assertTrue(ec.arch_covers(["sm_120"], ["sm_121"]))
+        self.assertTrue(ec.arch_covers(["sm_86"], ["sm_86"]))
+        self.assertTrue(ec.arch_covers(["sm_80"], ["sm_86"]))
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_80"]), "an older minor version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_90"]), "another major version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_75"]), "an older major version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_120"]), "Blackwell is another major version")
+        self.assertFalse(ec.arch_covers(["sm_120"], ["sm_89"]))
+        self.assertFalse(ec.arch_covers(["sm_89"], ["sm_100"]), "sm_100 is major 10, not major 1 + minor 00")
+        self.assertTrue(ec.arch_covers(["sm_86", "sm_120"], ["sm_75", "sm_89"]), "one covered card is enough")
+
+    def test_the_packages_of_each_engine(self):
+        """The Qwen engine (sm_86 + PTX 89) and the DeepSeek engine (sm_86 + sm_120 + PTX 120) on the RTX 20 to 50 families."""
+        from strata_control import feed
+
+        def package(archs):
+            return feed.EnginePackage(version="0.1.49.1", platform="linux-x86_64", backend="cuda", variant="cuda13", archs=tuple(archs),
+                                      min_driver={}, min_runtime=None, build_id="b", url="u", format="tar.gz", size=1, sha256="a" * 64,
+                                      manifest_sha256="b" * 64, installed_bytes=1)
+
+        def fits(pkg, card):
+            hw = {"platform": "linux-x86_64", "backend": "cuda", "cuda_archs": [card], "nvidia_driver": None}
+            return not feed.engine_fit_reasons(pkg, hw)
+
+        qwen = package(["sm_86", "compute_89"])
+        deepseek = package(["sm_86", "sm_120", "compute_120"])
+        deepseek_89 = package(["sm_86", "sm_89", "sm_120", "compute_120"])
+        for card, qwen_ok, deepseek_ok in (("sm_75", False, False), ("sm_86", True, True), ("sm_89", True, True), ("sm_90", True, False),
+                                            ("sm_120", True, True), ("sm_121", True, True)):
+            with self.subTest(card=card):
+                self.assertEqual(fits(qwen, card), qwen_ok, f"Qwen engine on {card}")
+                self.assertEqual(fits(deepseek, card), deepseek_ok, f"DeepSeek engine on {card}")
+        for card in ("sm_86", "sm_89", "sm_120", "sm_121"):
+            self.assertTrue(fits(deepseek_89, card), card)
+        self.assertFalse(fits(deepseek_89, "sm_90"), "H100 (sm_90) needs its own code or PTX 90")
+        self.assertFalse(fits(deepseek_89, "sm_75"))
+
 
 class Start(unittest.TestCase):
     """What a start checks: every file's hash (not only the entrypoint), the driver, the signature policy."""

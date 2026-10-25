@@ -61,6 +61,11 @@ void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cud
 /// pre / post / comb as hc_split_sinkhorn (comb[t][j * hc + k], j the source stream, k the destination).  Strides: mixes
 /// 32, pre / post 8, comb 64 floats a row.
 void hc_mix(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, cudaStream_t s);
+/// hc_mix then hc_split in one launch (cnt: T zeroed unsigned counters, left zero; n_mix <= 32, T <= kWin): the last block of a token
+/// runs the split - the same arithmetic as the two launches
+void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, unsigned* cnt,
+                  const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre, float* post,
+                  float* comb, cudaStream_t s);
 void hc_split(const float* mixes, const float* scale, const float* base, int hc, int iters, float hc_eps, int T,
               float* pre, float* post, float* comb, cudaStream_t s);
 /// x[t][e] = sum_s mix[t][s] h[t][s][e], then x = rmsnorm(x) * w (w null: no norm).

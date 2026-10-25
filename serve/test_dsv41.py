@@ -562,10 +562,12 @@ class Api(ApiBase):
         self.chat()
         self.assertNotIn("strata_prefix", self.engine.last_sampling)     # no system message
         body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], "max_tokens": 40}
-        for off in (None, "0"):                                           # off by default, and when switched off
-            self.auto_pin(off)
-            self.post("/v1/chat/completions", body)
-            self.assertNotIn("strata_prefix", self.engine.last_sampling)
+        self.auto_pin("0")                                                # switched off
+        self.post("/v1/chat/completions", body)
+        self.assertNotIn("strata_prefix", self.engine.last_sampling)
+        self.auto_pin(None)                                               # on by default
+        self.post("/v1/chat/completions", body)
+        self.assertIn("strata_prefix", self.engine.last_sampling)
 
     def test_a_clients_own_prefix_wins(self):
         self.start("ok")
@@ -600,7 +602,7 @@ class SlotEnv(unittest.TestCase):
     def test_deepseek_gets_a_folder_in_the_data_folder_and_the_default_switch(self):
         env = self.env({"arch": "deepseek41", "log": str(Path("data") / "strata-deepseek.log"), "args": []})
         self.assertEqual(Path(env["STRATA_DS4_SLOT_DIR"]), Path("data") / "ds4-slots")
-        self.assertEqual(env["STRATA_DS4_SLOT_KEEP"], "0")
+        self.assertEqual(env["STRATA_DS4_SLOT_KEEP"], "1")
         self.assertEqual(env["STRATA_DS4_SLOT_GB"], "2")
 
     def test_the_configs_own_settings_win(self):

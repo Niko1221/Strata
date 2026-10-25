@@ -92,7 +92,10 @@ void gg_cpu_quant(int act, const float* x, int k, void* dst) {
 // min_tokens(type) and these rows from there.  DS4_GG_IQ256=0 never takes them, =1 always (the old opt-in).
 static int g_iq256 = -1;   // -1: from the environment and the CPU, 0 off, 1 always, 2 from min_tokens(type)
 void gg_cpu_set_iq256(int mode) { g_iq256 = mode; }
-static int min_tokens(int type) { return type == 21 ? 1 : type == 29 ? 3 : 2; }
+// IQ1_M from one token too: ggml's own IQ1_M dot (and IQ1_S's) uses _pdep_u64 where the build has BMI2, which AMD Zen 1/2 run in
+// microcode - 1.8 GB/s against these rows' 33 GB/s on an EPYC 7452 (a 2.00 set decodes 3x slower on one card), 19-31 GB/s on Intel.
+// The rows are bit-identical, so taking them at every token count only changes the speed.
+static int min_tokens(int type) { return type == 21 ? 1 : type == 29 ? 1 : 2; }
 static bool own_ok(int type, int impl) {
     static std::once_flag once[2][32];
     static bool ok[2][32];

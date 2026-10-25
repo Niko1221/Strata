@@ -15,6 +15,14 @@ import tools_es from '../locales/tools-es.json';
 import tools_ru from '../locales/tools-ru.json';
 import tools_pt from '../locales/tools-pt.json';
 import tools_ko from '../locales/tools-ko.json';
+import fix_en from '../locales/fix-en.json';
+import fix_zh from '../locales/fix-zh.json';
+import fix_ja from '../locales/fix-ja.json';
+import fix_de from '../locales/fix-de.json';
+import fix_es from '../locales/fix-es.json';
+import fix_ru from '../locales/fix-ru.json';
+import fix_pt from '../locales/fix-pt.json';
+import fix_ko from '../locales/fix-ko.json';
 import base_zh from '../locales/zh.json';
 import base_ja from '../locales/ja.json';
 import base_de from '../locales/de.json';
@@ -27,8 +35,9 @@ export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文�
 export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
 /* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
-const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en};
-const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh,...tools_zh},{...base_ja,...tune_ja,...tools_ja},{...base_de,...tune_de,...tools_de},{...base_es,...tune_es,...tools_es},{...base_ru,...tune_ru,...tools_ru},{...base_pt,...tune_pt,...tools_pt},{...base_ko,...tune_ko,...tools_ko}] as Record<string,string>[];
+/* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en};
+const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja},{...base_de,...tune_de,...tools_de,...fix_de},{...base_es,...tune_es,...tools_es,...fix_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);
@@ -45,7 +54,7 @@ const patterns=Object.entries(english).filter(([,value])=>/\{\d+\}/.test(value))
  expression+=escape(value.slice(at));
  return{id,slots,pattern:new RegExp('^'+expression+'$'),specificity:value.replace(/\{\d+\}/g,'').length};
 }).sort((a,b)=>b.specificity-a.specificity);
-const localizedTemplateSlots:Record<string,number[]>={s2473:[1,2],s0825:[0,1],s2455:[0],s2456:[0],s7400:[1]};
+const localizedTemplateSlots:Record<string,number[]>={s1242:[0],s2473:[1,2],s0825:[0,1],s2455:[0],s2456:[0],s7400:[1]};
 
 /** Translate interface copy only. Non-string React children pass through unchanged. */
 export function tr<T>(value:T,values?:readonly unknown[]):T{

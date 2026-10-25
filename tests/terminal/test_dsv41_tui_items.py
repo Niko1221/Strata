@@ -127,6 +127,7 @@ class OwnEngine(unittest.TestCase):
         f = mock.MagicMock()
         f.notices = []
         f.dsv41_engine_found.return_value = (found, True)
+        f.upgrade_dsv41_engine.side_effect = lambda path: path          # (the upgrade has its own tests: tests/terminal/test_dsv41_upgrade.py)
         return R.Runner.use_own_dsv41_engine, f
 
     def test_a_stale_path_in_the_config_is_replaced_by_this_installs_package(self):
@@ -176,3 +177,129 @@ class MissingEngine(unittest.TestCase):
             self.assertFalse(self.check({"arch": "deepseek41", "exe": str(exe)}, None))
             self.assertFalse(self.check({"arch": "deepseek41", "exe": "C:/gone/x.exe"}, exe))
         self.assertFalse(self.check({"arch": "qwen4exp", "exe": "component:strata-engine"}, None))
+
+
+class WhichInstallsEngine(unittest.TestCase):
+    """The DeepSeek engine package that runs: the newest of the running Terminal's own install and the install the model's settings came from."""
+
+    def runner(self, own, root):
+        f = mock.MagicMock()
+        f.catalog.src = Path(own)
+        f.catalog.root = Path(root)
+        f.catalog.strata.setup_module.side_effect = RuntimeError("none")
+        f.catalog.data_dir.return_value = Path(root) / "data"
+        f.s.data_dir = None
+        return f
+
+    def make(self, base, version):
+        d = Path(base) / "engine-dsv41" / f"{version}-windows-x86_64-cuda-cuda13"
+        d.mkdir(parents=True)
+        exe = d / ("strata-dsv41.exe" if sys.platform == "win32" else "strata-dsv41")
+        exe.write_bytes(b"x")
+        return exe
+
+    def found(self, own, root):
+        from strata_cli.launch import runner as R
+        f = self.runner(own, root)
+        with mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": "", "STRATA_INSTALL_DIR": ""}), \
+                mock.patch("strata_control.engine_component.status", return_value={"usable": False}):
+            out = R.Runner.dsv41_engine_found(f)
+        return out[0], getattr(f, "dsv41_choice", None)
+
+    def test_the_running_terminals_newer_package_beats_an_older_first_install(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            old = self.make(Path(d) / "inst5", "0.1.48")
+            new = self.make(Path(d) / "inst8", "0.1.49")
+            exe, choice = self.found(Path(d) / "inst8", Path(d) / "inst5")
+            self.assertEqual(exe, new)
+            self.assertIn("own folder", choice[1])
+            self.assertIn("newest of 2", choice[1])
+
+    def test_an_older_package_in_the_running_terminal_does_not_beat_a_newer_one_in_the_settings_install(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.make(Path(d) / "inst8", "0.1.48")
+            new = self.make(Path(d) / "inst5", "0.1.49")
+            exe, _ = self.found(Path(d) / "inst8", Path(d) / "inst5")
+            self.assertEqual(exe, new)
+
+    def test_the_same_version_in_both_means_the_running_terminals_own(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.make(Path(d) / "inst5", "0.1.49")
+            own = self.make(Path(d) / "inst8", "0.1.49")
+            exe, choice = self.found(Path(d) / "inst8", Path(d) / "inst5")
+            self.assertEqual(exe, own)
+            self.assertIn("own folder", choice[1])
+
+    def test_only_the_settings_install_has_one(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            only = self.make(Path(d) / "inst5", "0.1.49")
+            (Path(d) / "inst8").mkdir()
+            exe, choice = self.found(Path(d) / "inst8", Path(d) / "inst5")
+            self.assertEqual(exe, only)
+            self.assertIn("settings came from", choice[1])
+
+    def test_versions_compare_as_numbers(self):
+        from strata_control import dsv41_engine
+        self.assertGreater(dsv41_engine.version_key("0.1.49-x"), dsv41_engine.version_key("0.1.9-x"))
+        self.assertGreater(dsv41_engine.version_key("0.1.49.1-x"), dsv41_engine.version_key("0.1.49-x"))
+
+
+class DiskCountsOnlyTheRest(unittest.TestCase):
+    """The menu's disk check asks only for what is still to be downloaded: files already in the models folder count as done (P2003)."""
+
+    def setUp(self):
+        import strata_mcp as M
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.s = M.Strata(ROOT)
+        self.s.data_dir = lambda: Path(self.tmp.name)
+        self.hw = {"ram_gb": 64.0, "gpus": [CARD], "engine_vendor": "nvidia", "disk_free_gb": 176.0}
+
+    def put_files(self, model="IST-DAS-2.00bpw", legacy=False):
+        S = self.s.setup_module()
+        fam = S.MULTI_FILE_FAMILIES["deepseek41"]
+        md = fam["models"][model]
+        models = Path(self.tmp.name) / "models"
+        sizes = {}
+        for where, names in ((models / (fam["tag"] + model), md["shards"]), (models / (fam["tag"] + "shared"), md["shared"])):
+            where.mkdir(parents=True, exist_ok=True)
+            for n in names:
+                name = S.DSV41_LEGACY_NAMES.get(n, n) if legacy and n in S.DSV41_LEGACY_NAMES else n
+                real = S.DSV41_ALL_FILES[name][0]
+                (where / name).write_bytes(b"x" * 8)
+                sizes[name] = (8, S.DSV41_ALL_FILES[name][1])
+        return sizes
+
+    def test_with_every_file_in_place_a_small_disk_is_not_tight(self):
+        S = self.s.setup_module()
+        with mock.patch.dict(S.DSV41_ALL_FILES, self.put_files()):
+            words = self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw")
+        self.assertNotIn("free disk space", words)
+
+    def test_the_first_releases_names_count_too(self):
+        S = self.s.setup_module()
+        with mock.patch.dict(S.DSV41_ALL_FILES, self.put_files(legacy=True)):
+            self.assertNotIn("free disk space", self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw"))
+
+    def test_with_nothing_in_place_176_gb_is_tight_for_the_257_gb_set(self):
+        words = self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw")
+        self.assertIn("free disk space", words)
+        self.assertTrue(words.startswith("tight"))
+
+    def test_only_part_of_the_files_means_only_the_rest_is_counted(self):
+        S = self.s.setup_module()
+        sizes = self.put_files()
+        first = S.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"][0]
+        part = dict(sizes)
+        part[first] = (S.DSV41_ALL_FILES[first][0], sizes[first][1])          # shard 1 is not here at its real size: the rest of the files are
+        (Path(self.tmp.name) / "models" / ("deepseek-v4.1-flash-IST-DAS-2.00bpw") / first).unlink()
+        with mock.patch.dict(S.DSV41_ALL_FILES, part):
+            hw = {**self.hw, "disk_free_gb": 46.0}                               # shard 1 is 39.1 GB: 46 GB is enough for it plus the 6 GB of room
+            self.assertNotIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))
+            hw = {**self.hw, "disk_free_gb": 44.0}
+            self.assertIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))

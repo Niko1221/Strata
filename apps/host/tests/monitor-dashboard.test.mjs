@@ -4,7 +4,7 @@ import { parseCpuTopology, parseNvidiaReadings, parsePcieThroughput, gpuMemoryTo
 import { cpuUtilization, diskRate, parseLinuxDiskCounters, parseMacDiskCounters } from '../server/system-telemetry.mjs';
 import { parseEngineMetrics } from '../server/supervisor.mjs';
 import { originalDashboard } from '../server/monitor-dashboard.mjs';
-import { gpuMetric, gpuCapacity } from '../src/lib/monitor-hardware.ts';
+import { gpuMetric, gpuCapacity, gpuReported, shortGpuName } from '../src/lib/monitor-hardware.ts';
 import { referencePaths } from '../src/lib/monitor-chart.ts';
 
 const gpu=(id,index=0,unified=false)=>({id,index,unified,vramGb:24,name:id,vendor:'nvidia',backend:'cuda'});
@@ -91,4 +91,16 @@ test('original requests, cache, progress, hardware and MCP facts are translated 
   assert.equal(mapped.expertCache.memoryGb,8);assert.equal(mapped.hardware.vramUsedGb,4);
   assert.equal(mapped.generation.total,600);assert.equal(mapped.history[0].gpuTempC,null);
   assert.equal(mapped.mcp.servers[0].state,'ready');assert.equal(mapped.mcp.servers[0].tools[0].name,'read_file');
+});
+
+test('All GPUs: a card with no temperature sensor is left out and the card that reports is named (#3727 follow-up)',()=>{
+  const devices=[{...gpu('nv',0),name:'NVIDIA GeForce RTX 5070'},{...gpu('igpu',1),name:'AMD Radeon(TM) Graphics',vramGb:0.4}];
+  const readings=[reading('nv',3,0.8,34,7),reading('igpu',0,0.001,null,null)];
+  const temp=gpuReported(devices,readings,'temperatureC','max');
+  assert.equal(temp.value,34); assert.equal(temp.partial,true); assert.deepEqual(temp.devices.map(d=>shortGpuName(d.name)),['RTX 5070']);
+  const load=gpuReported(devices,readings,'utilizationPct','mean');
+  assert.equal(load.partial,false); assert.equal(load.value,1.5);
+  assert.equal(gpuReported(devices,[reading('nv',3,0.8,null,null),reading('igpu',0,0,null,null)],'temperatureC','max').value,null,'no card reports: still unavailable');
+  assert.equal(shortGpuName('AMD Radeon RX 9070 XT'),'RX 9070 XT');
+  assert.equal(shortGpuName('Intel(R) Arc(TM) A750 Graphics'),'A750 Graphics');
 });
