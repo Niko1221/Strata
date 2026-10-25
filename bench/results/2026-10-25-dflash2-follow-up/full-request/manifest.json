@@ -1,0 +1,140 @@
+{
+  "files": [
+    {
+      "label": "control128",
+      "source": "prompt-control128/mtp.json",
+      "source_sha256": "ce756bc02db483b75b7cb8d1036ae55a0f6fc1e9bf37800ebfc655ef51d480f2"
+    },
+    {
+      "label": "prompt-baseline128-a",
+      "source": "prompt-baseline128-a/dflash2-il.json",
+      "source_sha256": "107666ac449b3878cfef76660a27966091492e000656b1d219afa130b29f4525"
+    },
+    {
+      "label": "prompt-batch128-a",
+      "source": "prompt-batch128-a/dflash2-il.json",
+      "source_sha256": "44dbbfd70bcf342ff116c919df6d85be5f1cd6fc231b5f6c7d3947a4f726122e"
+    },
+    {
+      "label": "mtp128",
+      "source": "prompt-mtp128/mtp.json",
+      "source_sha256": "b7583c828d1d166c0af91211e4e064416a65fb2e4b3612970b47582338542125"
+    },
+    {
+      "label": "control384",
+      "source": "control384/mtp.json",
+      "source_sha256": "e91183eefbdabf7475ae8bff500f91a849eb5c435a4f33dbe22d09f54d3cd985"
+    },
+    {
+      "label": "prompt-batch128-b-retry",
+      "source": "session2/prompt-batch128-b-retry/dflash2-il.json",
+      "source_sha256": "328d0a79243ee065d9be76c4da047a214bb9838bb7afbe63fc76ced0322b039f"
+    },
+    {
+      "label": "prompt-baseline128-b",
+      "source": "session2/prompt-baseline128-b/dflash2-il.json",
+      "source_sha256": "5e79dc15514bd67f00a7bf220847a8f6fea897fdd751f6f91872d6b01bfd6f6d"
+    },
+    {
+      "label": "grid-baseline128-a",
+      "source": "session2/grid-baseline128-a/dflash2-il.json",
+      "source_sha256": "789f7ea8f487ae02095f82d40014e72fe96456b695639b8ec7170a8b1f7b9847"
+    },
+    {
+      "label": "grid128-a",
+      "source": "session2/grid128-a/dflash2-il.json",
+      "source_sha256": "f9f4c8675a3d5acdc6614a60aea4878e40d54728d0fb5fb1922b2e517ec3a245"
+    },
+    {
+      "label": "grid-baseline128-b",
+      "source": "session2/grid-baseline128-b/dflash2-il.json",
+      "source_sha256": "3df5a61acb44c3e6c201fb4193df237b75ff4f36ef83e2a5708b8ac634374dab"
+    },
+    {
+      "label": "selector-baseline128-a",
+      "source": "session2/selector-baseline128-a/dflash2-il.json",
+      "source_sha256": "cef92d2da369aad953077e5e4450531c9bba68b03a4d1ae5a8aa259591b7f68d"
+    },
+    {
+      "label": "selector128-a",
+      "source": "session2/selector128-a/dflash2-il.json",
+      "source_sha256": "2e60da9c92191f6284ca77d0f7dfaed36f942be286c268bb39c47a9ea492df30"
+    },
+    {
+      "label": "selector128-b",
+      "source": "session2/selector128-b/dflash2-il.json",
+      "source_sha256": "b69c13fb6bc305b269762af3f9b61c8cb52d2649efe974853c68a8e3bc086cab"
+    },
+    {
+      "label": "selector-baseline128-b",
+      "source": "session2/selector-baseline128-b/dflash2-il.json",
+      "source_sha256": "511625fe4357fcb899bd98c88202556af0eaf41666ff4e376d287e7a60bd7de0"
+    },
+    {
+      "label": "pipeline128",
+      "source": "session2/pipeline128/dflash2-il.json",
+      "source_sha256": "9106828e27c91c9640ccde35cfeed3bbe9f3ade7aaffa04259aad565490457c7"
+    },
+    {
+      "label": "default384-a",
+      "source": "session2/default384-a/dflash2-il.json",
+      "source_sha256": "f8e6ccfac45128a162309011d107881ac26a019b48dc56f3c07cf5138900296e"
+    },
+    {
+      "label": "topk384-a",
+      "source": "session2/topk384-a/dflash2-il.json",
+      "source_sha256": "f85ff8d7dcf0912261763b14aa90189a8ac6a3c3a7422275ba30ff2fda6d5a18"
+    },
+    {
+      "label": "register384-a",
+      "source": "session2/register384-a/dflash2-il.json",
+      "source_sha256": "2e623d32cdb49331761b8744743ab304fa9a8b407f30c2d7059c9f91fbc330a0"
+    },
+    {
+      "label": "register-merge384-a",
+      "source": "session2/register-merge384-a/dflash2-il.json",
+      "source_sha256": "5399c0b75c3a7711836bcb13d4afeab1a49f68d893bb85619a964a577bce9001"
+    },
+    {
+      "label": "register-merge384-b",
+      "source": "session2/register-merge384-b/dflash2-il.json",
+      "source_sha256": "6c27f38afa30d8b1cfb325f923c211d4933300342d41e1ce1693904db4dc5389"
+    },
+    {
+      "label": "register384-b",
+      "source": "session2/register384-b/dflash2-il.json",
+      "source_sha256": "a6eb01fe368f585c6083c489e4213cdd22343eb9b7357c2fd1bd25b7176d4481"
+    },
+    {
+      "label": "topk384-b",
+      "source": "session2/topk384-b/dflash2-il.json",
+      "source_sha256": "c8ccb84d3291c5acc737f6daabd3f501e2c6aa6834b46a2ab68dd86d80271c1c"
+    },
+    {
+      "label": "default384-b",
+      "source": "session2/default384-b/dflash2-il.json",
+      "source_sha256": "5e5fd67339ac7018a05a84609330c844b28b4c254a1c65442fa7add03fdb586b"
+    },
+    {
+      "label": "pipeline384-a",
+      "source": "session2/pipeline384-a/dflash2-il.json",
+      "source_sha256": "c8ac0121d9f95613703dfb68896a9ac596a55c44fb37c1fba1df678be45ae7d7"
+    },
+    {
+      "label": "pipeline384-b",
+      "source": "session2/pipeline384-b/dflash2-il.json",
+      "source_sha256": "a4ab5c94b9fc1fb14f22caf823908577139b851e86412f132ccd4d067f8916c9"
+    },
+    {
+      "label": "default384-c",
+      "source": "session2/default384-c/dflash2-il.json",
+      "source_sha256": "59cfd7f29f32cefc8c818c78d6291259437c081b0746143c06d77dc2c095b333"
+    },
+    {
+      "label": "vector384-smoke",
+      "source": "session2/vector384-smoke/dflash2-il.json",
+      "source_sha256": "704cfff3cf4923adba03a1b67ebe68a31e1ea206f0300adfd8a25197716f239e"
+    }
+  ],
+  "missing": []
+}
