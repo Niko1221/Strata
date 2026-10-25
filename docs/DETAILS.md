@@ -220,6 +220,20 @@ request: [SOURCE_INSTALL.md](SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.
 
+**One KV pool for all the sessions (`--kv-pool-tokens N`, with `--kv-resident`; ported from PR #1011 by xdbxdbx):**
+KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
+context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
+(524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
+moves between the main session and a slot by swapping chunks (its checkpoint chain moves with them, so a prompt with an
+edited last message still resumes from a periodic checkpoint: both lanes of two 133k conversations reuse 118,784 tokens
+(engine 0.1.44.1, with a separately proposed slot choice that is not in this change; not re-measured on 0.2.0-beta);
+at 256k per lane that needs `--conversation-cache-mib` of at least 4528), and when the pool is full an idle slot's cached
+conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
+`length` with `"truncated": true`. It works across a layer split. Measured on 0.2.0-beta (engine 0.1.45.3, 2 x RTX 3080,
+two lanes of about 256k, same binary with and without the flag): a conversation moves in 0.36-0.5 s instead of 3.5-5.2 s
+copied, 3.2 GiB more `MemAvailable` at idle, no change in short-context speed. Details, the behaviour when it is full
+and what was not measured: docs/BATCHING.md.
+
 ### Low-RAM modes (chosen by setup)
 
 Normally all of a model's experts are copied into RAM (23-50 GB, pinned) and the GPU holds a copy of the most-used ones.
@@ -639,6 +653,12 @@ allocation failures fall back to ordinary prompt processing. With `--layer-split
 stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
+
+The K/V retained after a restore belongs to the conversation it was restored from: the engine remembers that
+conversation's tokens and pictures, and a later parking may only reuse the bytes of the prefix two conversations
+actually share. When the session gives its conversation up - it moved into a batch slot (the shared KV pool,
+`--kv-pool-tokens`), the request was cancelled, the session was reset - the retained K/V is dropped with it
+instead of waiting to be mistaken for another conversation's.
 
 ### Session files (disk)
 

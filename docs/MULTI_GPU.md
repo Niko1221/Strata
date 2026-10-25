@@ -103,8 +103,10 @@ share is probed on its own link. A `--pcie-frac` you give applies to every card 
 
 **What each card holds**
 
-- Every card: a copy of the dense weights, its own session state (the KV cache of the full context), its verify window, its
-  prompt-path buffers, and an expert cache for its layers filled from the expert profile.
+- Every card: a copy of the dense weights, its own session state (the KV cache of the full context; with `--kv-resident
+  --kv-pool-tokens N` only the attended window in VRAM, and the K/V of its QSA layers in one pinned pool shared by the
+  main session and the `--batch` slots, see docs/BATCHING.md), its verify window, its prompt-path buffers, and an expert
+  cache for its layers filled from the expert profile.
 - The last card: also the output head and the draft layer (about 0.8 GB).
 - Host RAM: the expert arena once, shared by all cards. The CPU pool computes whatever no card holds.
 
@@ -212,7 +214,8 @@ the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reach
 
 - Every card needs compute capability 7.5 (RTX 20 or newer), unless you opt into the CUDA 12 engine for older cards.
 - Works across cards: images (`--vision`), control vectors, KV streaming (`--kv-resident`) and mid-prompt checkpoints
-  (`--prompt-cache-every`). Each card keeps its own part.
+  (`--prompt-cache-every`). Each card keeps its own part. `--kv-pool-tokens N` shares one pinned K/V pool between the
+  sessions of all cards (one chunk table per conversation, a copy on each card).
 - The older helper-GPU caches (`--expert-cache-device1..3`, [SECOND_GPU.md](SECOND_GPU.md)) take the visible GPUs no stage runs on.
   A weak helper can make decoding slower, because its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`); a native (IQ) pack says so at start.

@@ -59,7 +59,7 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
         q = __float2int_rn(x / sf);
         q = q < -127 ? -127 : (q > 127 ? 127 : q);
     }
-    // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident
+    // KV streaming: the host copy always, the VRAM page only if the block is resident
     const long long page = (long long) table[pos / page_size];
     if (page >= 0) {
         const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
@@ -67,7 +67,7 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
         if (t == 0) (is_v ? v_scale : k_scale)[row * groups + g] = sbits;
     }
     if (host.k_q != nullptr) {
-        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
+        const long long row = (host.block(pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
         (is_v ? host.v_q : host.k_q)[row * head_dim + g * KV_Q8_GROUP + t] = (int8_t) q;
         if (t == 0) (is_v ? host.v_scale : host.k_scale)[row * groups + g] = sbits;
     }
