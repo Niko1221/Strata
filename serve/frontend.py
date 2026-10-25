@@ -716,10 +716,15 @@ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
+# what ends a value after its `</parameter>`: the call format's own tags, and the Anthropic XML form's (`</invoke>`,
+# `<parameter name=`) that Coder-L writes in place of `</function>` (seen live: `limit` = "25\\n</parameter>\\n</invoke>")
+FOLLOWERS = (FUNC_END, CALL_END, "<parameter=", "</<", "</invoke>", "<parameter name=")
+
+
 def param_end(text: str, final: bool = False, names=None) -> int:
     """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a call-format
     follower - `</function>`, `</tool_call>`, `<parameter=` (any name, with or without its `>`), a damaged `<=NAME>`,
-    a garbled `</<` - or by the end of the text when `final`.  (A bare `<NAME>` or `</NAME>` of a declared parameter not
+    a garbled `</<`, the Anthropic form's `</invoke>` / `<parameter name=` - or by the end of the text when `final`.  (A bare `<NAME>` or `</NAME>` of a declared parameter not
     set yet is rewritten to `<parameter=NAME>` before this, fix_param_openers.)  Any other tag or plain text after it stays in
     the value: a file that documents the call format (#210) or holds markup is part of the value, even a whole call
     written there: a `<function=` in the value that is not closed yet owns the next closer.
@@ -727,11 +732,11 @@ def param_end(text: str, final: bool = False, names=None) -> int:
     at, inner_end = text.find(PARAM_END), -1
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith((FUNC_END, CALL_END, "<parameter=", "</<")):
+        if after.startswith(FOLLOWERS):
             follows = True
         elif after.startswith("<="):        # a damaged `<=NAME>` opener, maybe still arriving
             follows = True if ">" in after.split("\n", 1)[0] else (None if "\n" not in after else False)
-        elif not after or any(t.startswith(after) for t in (FUNC_END, CALL_END, "<parameter=", "</<", "<=")):
+        elif not after or any(t.startswith(after) for t in (*FOLLOWERS, "<=")):
             follows = None                  # the follower has not arrived
         elif names and "\n" not in after and ">" not in after and any(
                 t.startswith(after) for n in names for t in ("<%s>" % n, "</%s>" % n)):
@@ -1789,6 +1794,8 @@ class OutputParser:
             text = text[:held_from(text)].rstrip("\n")    # a closer cut off by the end is not value
             if text.endswith(CALL_END):
                 text = text[:-len(CALL_END)].rstrip()
+            if text.endswith("</invoke>"):          # the Anthropic form's closer, written instead of `</function>`
+                text = text[:-len("</invoke>")].rstrip()
             bases = ([text[:-len(FUNC_END)].rstrip()] if text.endswith(FUNC_END) else []) + [text]
             for base, tail in [(b, t) for b in bases for t in ("", "\n" + FUNC_END, "\n" + PARAM_END + "\n" + FUNC_END)]:
                 if function_end(base + tail, self.schemas, True) == len(base + tail):
@@ -1802,8 +1809,10 @@ class OutputParser:
                     return out + self._finish_call(body)
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
-                # A natural end immediately after </function> retains native streaming recovery.
+            if (self.recover and self.ss == "between" and reason in (None, "stop")) or (
+                    self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop")):
+                # every parameter is whole and only junk (`<parameter name=`) follows, or a natural end immediately
+                # after </function>: native streaming recovery
                 out += self._close_scan()
                 out.append(Event("tool_call", call=self.scall))
             elif self.ss == "function_done":
