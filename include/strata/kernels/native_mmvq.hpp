@@ -42,6 +42,9 @@ int native_mmvq_b6_rows();
 // One quantization may serve multiple weight matrices sharing the same input.
 // Q8_1 stores FP16 scale and FP16 warp sum of the ORIGINAL float inputs; it does
 // not reconstruct that sum from the quantized integers.
+// Direct BF16 activation input; same Q8_1 blocks as conversion to FP32 then quantization.
+// Unlike MMVQ, quantization can process more than eight rows (bounded by INT32_MAX total elements).
+void native_quantize_bf16_q8_1(const uint16_t* x, void* out, int n_in, int ncols, void* stream);
 void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols,
                           void* stream);
 

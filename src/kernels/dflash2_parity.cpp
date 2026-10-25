@@ -1,6 +1,8 @@
 #include "strata/kernels/bf16_bits.hpp"
+#include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/dflash2.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/spec/dflash_policy.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -26,6 +28,113 @@ template<class T> struct Device {
 void near(float got, double want) {
     if (!std::isfinite(got) || std::abs(got - want) > 3e-5 * (1 + std::abs(want)))
         throw std::runtime_error("GPU/reference mismatch: " + std::to_string(got) + " vs " + std::to_string(want));
+}
+void direct_bf16_quantization(bool timing) {
+    using namespace strata::kernels;
+    cudaStream_t stream;
+    checked(cudaStreamCreate(&stream));
+    for (int width : {32, 96, 2560, 7680, 12800}) for (int rows : {1, 3, 8, 9, 64, 257, 512}) {
+        std::vector<uint16_t> input((size_t)width * rows);
+        for (size_t i = 0; i < input.size(); ++i)
+            input[i] = bf16_from_f32(((int)(i % 997) - 498) * 0.03125f);
+        // Zero blocks, signed zero, subnormals, large finite scales and sums.
+        const uint16_t edges[] = {0, 0x8000, 1, 0x8001, 0x4780, 0xc780, 0x7f7f, 0xff7f};
+        for (size_t block = 0; block < input.size() / 32; block += 7)
+            std::fill_n(input.begin() + block * 32, 32, edges[(block / 7) % 8]);
+        Device<uint16_t> x(input);
+        Device<float> wide(input.size());
+        const size_t bytes = native_q8_1_bytes(width, 1) * rows;
+        Device<uint8_t> expected(bytes), got(bytes);
+        bf16_to_f32_bulk(x.p, wide.p, input.size(), stream);
+        for (int r = 0; r < rows; r += 8)
+            native_quantize_q8_1(wide.p + (size_t)r * width,
+                expected.p + r * native_q8_1_bytes(width, 1), width, std::min(8, rows - r), stream);
+        native_quantize_bf16_q8_1(x.p, got.p, width, rows, stream);
+        checked(cudaStreamSynchronize(stream));
+        if (expected.read(bytes) != got.read(bytes))
+            throw std::runtime_error("direct BF16 Q8_1 quantization changed bits");
+    }
+    if (timing) {
+        constexpr int width = 2560, rows = 8;
+        Device<uint16_t> x(std::vector<uint16_t>(width * rows, bf16_from_f32(0.125f)));
+        Device<float> wide(width * rows);
+        Device<uint8_t> output(native_q8_1_bytes(width, rows));
+        for (bool direct : {false, true}) {
+            cudaGraph_t graph = nullptr;
+            cudaGraphExec_t exec = nullptr;
+            checked(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+            for (int layer = 0; layer < 5; ++layer) for (int projection = 0; projection < 6; ++projection) {
+                if (direct) native_quantize_bf16_q8_1(x.p, output.p, width, rows, stream);
+                else {
+                    bf16_to_f32_bulk(x.p, wide.p, width * rows, stream);
+                    native_quantize_q8_1(wide.p, output.p, width, rows, stream);
+                }
+            }
+            checked(cudaStreamEndCapture(stream, &graph));
+            checked(cudaGraphInstantiate(&exec, graph, 0));
+            for (int i = 0; i < 20; ++i) checked(cudaGraphLaunch(exec, stream));
+            cudaEvent_t start, end;
+            checked(cudaEventCreate(&start)); checked(cudaEventCreate(&end));
+            checked(cudaEventRecord(start, stream));
+            for (int i = 0; i < 200; ++i) checked(cudaGraphLaunch(exec, stream));
+            checked(cudaEventRecord(end, stream)); checked(cudaEventSynchronize(end));
+            float ms;
+            checked(cudaEventElapsedTime(&ms, start, end));
+            std::printf("BF16 Q8_1 30 projections rows=8 width=2560 direct=%d: %.6f ms/pass\n", direct, ms / 200);
+            checked(cudaEventDestroy(start)); checked(cudaEventDestroy(end));
+            checked(cudaGraphExecDestroy(exec)); checked(cudaGraphDestroy(graph));
+        }
+    }
+    checked(cudaStreamDestroy(stream));
+}
+void bf16_projection_tiles(bool timing) {
+    using namespace strata::kernels;
+    cudaStream_t stream;
+    checked(cudaStreamCreate(&stream));
+    for (int width : {128,2560}) for (int outputs : {7,256,640,1024}) {
+        std::vector<uint16_t> weight((size_t)width * outputs), input((size_t)width * 8);
+        for (size_t j = 0; j < weight.size(); ++j) weight[j] = bf16_from_f32(((int)(j % 101) - 50) * 0.005f);
+        for (size_t j = 0; j < input.size(); ++j) input[j] = bf16_from_f32(((int)(j % 37) - 18) * 0.03f);
+        Device<uint16_t> w(weight), x(input);
+        Device<float> expected((size_t)outputs * 8), got((size_t)outputs * 8);
+        for (int rows : {1,2,3,7,8}) {
+            bf16_gemv_batch(x.p, w.p, expected.p, width, outputs, rows, stream);
+            checked(cudaStreamSynchronize(stream));
+            const auto reference = expected.read((size_t)outputs * rows);
+            for (int tile : {1,2,4}) for (int warps : {1,2,4,8}) {
+                dflash2_bf16_project(x.p, w.p, got.p, width, outputs, rows, tile, stream, warps);
+                checked(cudaStreamSynchronize(stream));
+                const auto result = got.read(reference.size());
+                if (std::memcmp(reference.data(), result.data(), reference.size() * sizeof(float)))
+                    throw std::runtime_error("BF16 token tiling changed projection bits");
+            }
+            if (timing && width == 2560 && (rows == 2 || rows == 7 || rows == 8))
+            for (int tile : {0,1,2,4}) for (int warps : {1,2,4,8}) {
+                if (tile == 0 && warps != 4) continue;
+                cudaGraph_t graph = nullptr;
+                cudaGraphExec_t exec = nullptr;
+                checked(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+                for (int layer = 0; layer < 10; ++layer) {
+                    if (tile) dflash2_bf16_project(x.p, w.p, got.p, width, outputs, rows, tile, stream, warps);
+                    else bf16_gemv_batch(x.p, w.p, got.p, width, outputs, rows, stream);
+                }
+                checked(cudaStreamEndCapture(stream, &graph));
+                checked(cudaGraphInstantiate(&exec, graph, 0));
+                for (int j = 0; j < 20; ++j) checked(cudaGraphLaunch(exec, stream));
+                cudaEvent_t start, end;
+                checked(cudaEventCreate(&start)); checked(cudaEventCreate(&end));
+                checked(cudaEventRecord(start, stream));
+                for (int j = 0; j < 100; ++j) checked(cudaGraphLaunch(exec, stream));
+                checked(cudaEventRecord(end, stream)); checked(cudaEventSynchronize(end));
+                float ms;
+                checked(cudaEventElapsedTime(&ms, start, end));
+                std::printf("BF16 projection width=2560 outputs=%d rows=%d tile=%d warps=%d 10 calls: %.6f ms/pass\n", outputs, rows, tile, warps, ms / 100);
+                checked(cudaEventDestroy(start)); checked(cudaEventDestroy(end));
+                checked(cudaGraphExecDestroy(exec)); checked(cudaGraphDestroy(graph));
+            }
+        }
+    }
+    checked(cudaStreamDestroy(stream));
 }
 void convolve() {
     using namespace strata::kernels;
@@ -475,7 +584,7 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
-    try { invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+    try { direct_bf16_quantization(timing); bf16_projection_tiles(timing); invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
     return 0;

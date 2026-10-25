@@ -1,5 +1,6 @@
 #include "strata/spec/dflash_policy.hpp"
 #include <cstdio>
+#include <vector>
 
 using strata::spec::DFlashPolicy;
 static int fails;
@@ -18,6 +19,23 @@ int main() {
     CHECK(dflash_attention_bucket(INT64_MAX, INT64_MAX) == INT64_MAX);
     CHECK(dflash_attention_bucket(0, 8192) == 0);
     CHECK(dflash_attention_bucket(8193, 8192) == 0);
+    using strata::spec::dflash_prompt_batch_rows;
+    CHECK(dflash_prompt_batch_rows(-1) == 0);
+    CHECK(dflash_prompt_batch_rows(15) == 0);
+    CHECK(dflash_prompt_batch_rows(INT64_MAX) == 512);
+    for (int page : {4,64}) for (int slots : {1,2,3,8,34,515}) {
+        const int cells = page * slots, count = dflash_prompt_batch_rows(cells);
+        CHECK(count % 8 == 0 && count <= cells && count <= 512);
+        for (int start : {0,1,page-1,cells-1,cells+3}) {
+            std::vector<bool> written(cells, false);
+            for (int row = 0; row < count; ++row) {
+                const int cell = start + row;
+                const int physical = ((cell / page) % slots) * page + cell % page;
+                CHECK(!written[physical]); // simultaneous rows cannot alias after a page-ring wrap
+                written[physical] = true;
+            }
+        }
+    }
     using strata::spec::dflash_proposal_fits;
     CHECK(dflash_proposal_fits(90, 7, false, 100, 97));
     CHECK(!dflash_proposal_fits(90, 7, true, 100, 97));

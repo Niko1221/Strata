@@ -152,15 +152,19 @@ __device__ __forceinline__ float warp_max(float x) {
     return x;
 }
 
+template<class T>
 __launch_bounds__(QUANT_THREADS, 1)
-__global__ void native_quantize_q8_1_kernel(const float* x_, Q81Block* y_, int n_in) {
-    const float* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
+__global__ void native_quantize_q8_1_kernel(const T* x_, Q81Block* y_, int n_in) {
+    const T* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
     Q81Block* STRATA_PDL_RESTRICT y = y_;
     pdl_trigger();   // PDL (pdl.hpp): the projection after this one may start loading its weights
     pdl_wait();
     const int i = int(blockIdx.x) * QUANT_THREADS + int(threadIdx.x);
     if (i >= n_in) return; // n_in is a multiple of 32: only whole warps return.
-    const float xi = x[i];
+    const float xi = [&] {
+        if constexpr (std::is_same_v<T, uint16_t>) return __uint_as_float((uint32_t)x[i] << 16);
+        else return x[i];
+    }();
     const float amax = warp_max(fabsf(xi));
     const float sum = warp_sum(xi);
     const float d = q8_1_finite(amax / 127.0f);   // #606: q8_1_finite.hpp - the same bits for every finite block
@@ -2513,8 +2517,22 @@ void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols, voi
     // ncols * n_in elements: every 32-element block stays inside one column.
     const int n_total = n_in * ncols;
     const unsigned blocks = unsigned((std::size_t(n_total) + QUANT_THREADS - 1) / QUANT_THREADS);
-    launch_pdl(native_quantize_q8_1_kernel, dim3(blocks), dim3(QUANT_THREADS), 0, static_cast<cudaStream_t>(stream), x,
+    launch_pdl(native_quantize_q8_1_kernel<float>, dim3(blocks), dim3(QUANT_THREADS), 0, static_cast<cudaStream_t>(stream), x,
                static_cast<Q81Block*>(x_q8_1), n_total);
+    launch_check();
+}
+
+void native_quantize_bf16_q8_1(const uint16_t* x, void* out, int n_in, int ncols, void* stream) {
+    validate_shape(n_in, 1);
+    if (ncols < 1 || (int64_t)n_in * ncols > INT32_MAX)
+        throw std::invalid_argument("native BF16 quantization requires a positive bounded row count");
+    validate_pointer(x);
+    validate_pointer(out);
+    validate_stream(stream);
+    const int n_total = n_in * ncols;
+    const unsigned blocks = unsigned((std::size_t(n_total) + QUANT_THREADS - 1) / QUANT_THREADS);
+    launch_pdl(native_quantize_q8_1_kernel<uint16_t>, dim3(blocks), dim3(QUANT_THREADS), 0,
+               static_cast<cudaStream_t>(stream), x, static_cast<Q81Block*>(out), n_total);
     launch_check();
 }
 

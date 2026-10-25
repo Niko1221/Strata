@@ -2,6 +2,7 @@
 // Reference: llama.cpp src/models/dflash.cpp (a9d27ac), z-lab/dflash (MIT, 07ebd93).
 #include "strata/kernels/dflash2.hpp"
 #include "strata/kernels/bf16_bits.hpp"
+#include "strata/kernels/bf16_gemv.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cmath>
@@ -11,6 +12,39 @@
 
 namespace strata::kernels {
 namespace {
+template<int Tile, int Warps>
+__global__ void bf16_project_tiles(const uint16_t* __restrict__ x, const uint16_t* __restrict__ weights,
+                                   float* __restrict__ out, int width, int outputs, int rows) {
+    const int output = blockIdx.x * Warps + threadIdx.x / 32;
+    if (output >= outputs) return;
+    const int lane = threadIdx.x & 31, row0 = blockIdx.y * Tile;
+    const uint16_t* w = weights + (size_t)output * width;
+    float acc[Tile] = {};
+    for (int i = lane; i < width; i += 32) {
+        const float value = f32_from_bf16(w[i]);
+#pragma unroll
+        for (int b = 0; b < Tile; ++b)
+            if (row0 + b < rows) acc[b] += f32_from_bf16(x[(size_t)(row0 + b) * width + i]) * value;
+    }
+#pragma unroll
+    for (int b = 0; b < Tile; ++b) {
+        float value = acc[b];
+        for (int offset = 16; offset; offset >>= 1)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (lane == 0 && row0 + b < rows) out[(size_t)(row0 + b) * outputs + output] = value;
+    }
+}
+template<int Tile>
+void launch_bf16_tiles(const uint16_t* x, const uint16_t* weights, float* out,
+                        int width, int outputs, int rows, int warps, void* stream) {
+    const dim3 grid((outputs + warps - 1) / warps, (rows + Tile - 1) / Tile);
+    switch (warps) {
+    case 1: bf16_project_tiles<Tile,1><<<grid,32,0,(cudaStream_t)stream>>>(x,weights,out,width,outputs,rows); break;
+    case 2: bf16_project_tiles<Tile,2><<<grid,64,0,(cudaStream_t)stream>>>(x,weights,out,width,outputs,rows); break;
+    case 4: bf16_project_tiles<Tile,4><<<grid,128,0,(cudaStream_t)stream>>>(x,weights,out,width,outputs,rows); break;
+    case 8: bf16_project_tiles<Tile,8><<<grid,256,0,(cudaStream_t)stream>>>(x,weights,out,width,outputs,rows); break;
+    }
+}
 template<int Epilogue = 0>
 __global__ void conv_kernel(const float* x, const float* dynamic, const float* base, float* out,
                             int rows, int hidden, int kernel, int group, int side, int block_rows, uint16_t* bf16 = nullptr) {
@@ -277,6 +311,22 @@ __global__ void selector_lattice_walk(const int32_t* ids,const float* scores,con
 }
 }  // namespace
 
+void dflash2_bf16_project(const uint16_t* x, const uint16_t* weights, float* out,
+                          int width, int outputs, int rows, int tile, void* stream, int warps) {
+    if (!x || !weights || !out || width < 1 || outputs < 1 || outputs > INT32_MAX - 7 ||
+        rows < 1 || rows > 8 || (tile != 1 && tile != 2 && tile != 4) ||
+        (warps != 1 && warps != 2 && warps != 4 && warps != 8))
+        throw std::invalid_argument("dflash2_bf16_project: invalid buffers or geometry");
+    if (rows <= tile) {
+        bf16_gemv_batch(x, weights, out, width, outputs, rows, stream);
+        return;
+    }
+    switch (tile) {
+    case 1: launch_bf16_tiles<1>(x,weights,out,width,outputs,rows,warps,stream); break;
+    case 2: launch_bf16_tiles<2>(x,weights,out,width,outputs,rows,warps,stream); break;
+    case 4: launch_bf16_tiles<4>(x,weights,out,width,outputs,rows,warps,stream); break;
+    }
+}
 void dflash2_convolve(const float* x, const float* dynamic, const float* base, float* out,
                      int rows, int hidden, int kernel, int group, int side, int block_rows, void* stream) {
     if (!x || !dynamic || !base || !out || rows <= 0 || (int64_t)rows * hidden > INT32_MAX - 255 || hidden <= 0 || kernel <= 0 || kernel > 8 || group <= 0 || hidden % group ||

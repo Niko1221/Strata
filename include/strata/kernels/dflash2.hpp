@@ -111,6 +111,11 @@ void dflash2_convolve(const float* x, const float* dynamic, const float* base, f
 void dflash2_convolve_epilogue(const float* x, const float* dynamic, const float* base,
                                uint16_t* bf16, float* residual, int rows, int hidden,
                                int kernel, int group, int side, int block_rows, void* stream);
+// Small BF16 projections with token tiles. Each output retains the original
+// warp-per-output FMA sequence and shuffle reduction; tile is 1, 2 or 4 rows.
+// Warps may be 1/2/4/8 for measurements; the runtime uses the measured value 4.
+void dflash2_bf16_project(const uint16_t* x, const uint16_t* weights, float* out,
+                          int width, int outputs, int rows, int tile, void* stream, int warps = 4);
 // Top-k unary candidates for each row, with deterministic smaller-token tie breaking.
 // Optional caller-owned workspace enables parallel vocabulary tiles followed by
 // an exact candidate merge. No allocation or synchronization inside the call.

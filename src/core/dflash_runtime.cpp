@@ -256,6 +256,14 @@ int64_t DFlashDrafter::shrink_scratch(int64_t cells, const std::function<void(Vm
 }
 
 void DFlashDrafter::clear_graphs() {
+    for (auto& graph : prompt_graph_exec_) {
+        if (graph) cudaGraphExecDestroy(graph);
+        graph = nullptr;
+    }
+    for (auto& graph : context_graph_exec_) {
+        if (graph) cudaGraphExecDestroy(graph);
+        graph = nullptr;
+    }
     for (auto& graph : graph_exec_) {
         if (graph) cudaGraphExecDestroy(graph);
         graph = nullptr;
@@ -265,6 +273,7 @@ void DFlashDrafter::clear_graphs() {
 
 void DFlashDrafter::release() {
     reference_mode_ = false;
+    context_graphs_ = false;
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     // Also cover partial execution failures before the normal joins.
@@ -296,6 +305,13 @@ void DFlashDrafter::release() {
     free_dev(conv_dynamic_); free_dev(conv_result_); free_dev(selector_hidden_);
     free_dev(selector_unary_); free_dev(selector_ids_); free_dev(selector_scratch_);
     free_dev(proj_float_); free_dev(proj_q8_);
+    free_dev(prompt_tapin_); free_dev(prompt_xn16_); free_dev(prompt_ctx_);
+    free_dev(prompt_k_); free_dev(prompt_v_); free_dev(prompt_q8_);
+    free_dev(prompt_pos_); free_dev(prompt_steps_);
+    prompt_rows_ = 0;
+    prompt_tapin_ = prompt_xn16_ = nullptr;
+    prompt_ctx_ = prompt_k_ = prompt_v_ = nullptr;
+    prompt_q8_ = nullptr; prompt_pos_ = prompt_steps_ = nullptr;
     free_dev(xq_);
     if (scratch_range_) scratch_range_.reset();
     else free_dev(attn_scratch_);
@@ -363,6 +379,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         return false;
     }
     DFlashSection::df_stream() = cs_;
+    const char* context_graph = std::getenv("STRATA_DFLASH2_CONTEXT_GRAPH");
+    context_graphs_ = dg.is_dflash2() && context_graph && context_graph[0] == '1';
     if (std::getenv("STRATA_DF_EVENTS") != nullptr && std::getenv("STRATA_DF_EVENTS")[0] == '1') {
         df_timing().on = true;
         df_timing().init();
@@ -602,6 +620,25 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         ok = take(R * width * sizeof(float), (void**) &proj_float_) &&
              take(strata::kernels::native_q8_1_bytes(width, (int) R), (void**) &proj_q8_);
     }
+#ifdef STRATA_ENABLE_DFLASH2
+    const char* prompt_batch = std::getenv("STRATA_DFLASH2_PROMPT_BATCH");
+    if (ok && dg.is_dflash2() && local_ring && F % 32 == 0 && N % 32 == 0 &&
+        prompt_batch && prompt_batch[0] == '1') {
+        // A single append must never wrap onto the same physical cell twice.
+        // Eight-row boundaries match the original projection batches exactly.
+        prompt_rows_ = strata::spec::dflash_prompt_batch_rows(
+            std::min(cap_, st_[0].n_slots * shapes_.page_size));
+        if (prompt_rows_ > 8) {
+            const int64_t PR = prompt_rows_;
+            ok = take(PR * F * 2, (void**)&prompt_tapin_) &&
+                 take(PR * N * 2, (void**)&prompt_xn16_) && take(PR * N * 4, (void**)&prompt_ctx_) &&
+                 take(PR * KVW * 4, (void**)&prompt_k_) && take(PR * KVW * 4, (void**)&prompt_v_) &&
+                 take(PR * (F / 32) * 36, (void**)&prompt_q8_) &&
+                 take(PR * dg.n_head_kv * 4, (void**)&prompt_pos_) && take(PR * 16, (void**)&prompt_steps_);
+            std::fprintf(stderr, "dflash2: prompt context groups up to %d rows, matrix-major projections\n", prompt_rows_);
+        } else prompt_rows_ = 0;
+    }
+#endif
     if (!ok) return bail(err);
     // no selection table: the drafter reads logical cells straight from the
     // block position (dflash_attn_batch); dflash_identity_fill stays for the load test
@@ -706,6 +743,19 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     if (!taps || rows < 1 || stride_rows < rows || pos0 < 0 || rows > cap_ - pos0) {
         err = "dflash: invalid prompt tap layout or context range"; return false;
     }
+    const bool batched = prompt_rows_ > 8 && rows > 8 && !reference_mode_ &&
+        !parity_dir_[0] && !std::getenv("STRATA_DF_DBG") && !df_timing().on;
+    if (batched) {
+        for (int64_t r0 = 0; r0 < rows; r0 += prompt_rows_) {
+            const int nr = (int)std::min<int64_t>(prompt_rows_, rows - r0);
+            if (pos0 + r0 + nr <= context_floor_) continue;
+            int first = 0;
+            while (first + 8 <= nr && pos0 + r0 + first + 8 <= context_floor_) first += 8;
+            strata::kernels::dflash_gather_taps(taps + (r0 + first) * N, prompt_tapin_,
+                n_taps, (int)N, nr - first, stride_rows * N, cs_);
+            if (!prompt_fusion_rows(pos0 + r0 + first, nr - first, err)) return false;
+        }
+    } else {
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
         const int nr = (int) std::min<int64_t>(8, rows - r0);
         // Keep the original batch boundaries and projection arithmetic. The
@@ -722,6 +772,7 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
             if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: profiling sync failed"; return false; }
             df_timing_drain();
         }
+    }
     }
     // The prefill callback lends its tap buffer only until this call returns. Its
     // producer runs on another stream and can reuse/free the buffer immediately.
@@ -785,8 +836,19 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
 
 void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {
     if (quant_types_.empty()) return;
-    strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
-    strata::kernels::native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
+#ifdef STRATA_ENABLE_DFLASH2
+    static const bool direct_bf16 = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_DIRECT_QUANT");
+        return value && value[0] == '1';
+    }();
+    if (artifact_.geom().is_dflash2() && direct_bf16) {
+        strata::kernels::native_quantize_bf16_q8_1(x, proj_q8_, ni, rows, stream);
+    } else
+#endif
+    {
+        strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
+        strata::kernels::native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
+    }
 }
 
 void DFlashDrafter::project(const uint16_t* x, const uint16_t* w, float* y,
@@ -798,7 +860,106 @@ void DFlashDrafter::project(const uint16_t* x, const uint16_t* w, float* y,
         native_mmvq(entry.second, w, proj_q8_, y, ni, no, rows, stream);
         return;
     }
+#ifdef STRATA_ENABLE_DFLASH2
+    static const int bf16_tile = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_BF16_TILE");
+        return value && (value[0] == '1' || value[0] == '2' || value[0] == '4') ? value[0] - '0' : 0;
+    }();
+    // Only the official small matrices and wide batches improved in the
+    // measured sweep. Value 1 selects their per-shape tiles; 2/4 retain fixed
+    // tiles for paired measurements. Unmeasured shapes keep the original GEMV.
+    const int tile = bf16_tile == 1 ? (no == 640 ? 4 : 2) : bf16_tile;
+    if (bf16_tile && artifact_.geom().is_dflash2() && !reference_mode_ && ni == 2560 &&
+        (no == 256 || no == 640) && rows >= 7) {
+        dflash2_bf16_project(x, w, y, ni, no, rows, tile, stream);
+        return;
+    }
+#endif
     bf16_gemv_batch(x, w, y, ni, no, rows, stream);
+}
+
+bool DFlashDrafter::prompt_fusion_rows(int64_t pos0, int rows, std::string& err) {
+    using namespace strata::kernels;
+    const auto& dg = artifact_.geom();
+    const int N = (int)dg.hidden, F = (int)dg.fusion_in(), KVW = (int)(dg.n_head_kv * dg.head_dim);
+    if (rows < 1 || rows > prompt_rows_ || pos0 < 0 || pos0 > cap_ - rows) {
+        err = "dflash2: invalid batched prompt context range";
+        return false;
+    }
+    auto weight = [&](const std::string& name) -> const uint16_t* {
+        for (const auto& [key, value] : wt_) if (key == name) return value;
+        return nullptr;
+    };
+    auto norm = [&](const std::string& name) -> const float* {
+        for (const auto& [key, value] : wf_) if (key == name) return value;
+        return nullptr;
+    };
+    auto matrix = [&](const uint16_t* input, const uint16_t* w, float* output, int width, int outputs) {
+        int type = 30;
+        for (const auto& entry : quant_types_) if (entry.first == w) { type = entry.second; break; }
+        // Preserve the original <=8-column projections and reduction order.
+        // Finish this matrix for every input group before reading the next one.
+        for (int r = 0; r < rows; r += 8) {
+            const int count = std::min(8, rows - r);
+            if (type == 30)
+                bf16_gemv_batch(input + (int64_t)r * width, w, output + (int64_t)r * outputs,
+                                width, outputs, count, cs_);
+            else
+                native_mmvq(type, w, prompt_q8_ + (int64_t)r * (width / 32) * 36,
+                             output + (int64_t)r * outputs, width, outputs, count, cs_);
+        }
+    };
+    // Positions vary on each replay; all captured nodes read these buffers.
+    dflash_build_positions(prompt_pos_, rows, (int)dg.n_head_kv, pos0, cs_);
+    dflash_build_steps(prompt_steps_, rows, pos0, (int)shapes_.page_size, cs_);
+    auto forward = [&]() -> bool {
+        if (!quant_types_.empty()) native_quantize_bf16_q8_1(prompt_tapin_, prompt_q8_, F, rows, cs_);
+        matrix(prompt_tapin_, weight("fc"), prompt_ctx_, F, N);
+        native_qsa_rms_norm_weighted(prompt_ctx_, norm("hidden_norm"), prompt_ctx_, N, rows, kEps, cs_);
+        f32_to_bf16_bulk(prompt_ctx_, prompt_xn16_, (int64_t)rows * N, cs_);
+        if (!quant_types_.empty()) native_quantize_bf16_q8_1(prompt_xn16_, prompt_q8_, N, rows, cs_);
+        for (int l = 0; l < dg.layers; ++l) {
+            const std::string pre = "layers." + std::to_string(l) + ".self_attn.";
+            matrix(prompt_xn16_, weight(pre + "k_proj"), prompt_k_, N, KVW);
+            matrix(prompt_xn16_, weight(pre + "v_proj"), prompt_v_, N, KVW);
+            native_qsa_rms_norm_weighted(prompt_k_, norm(pre + "k_norm"), prompt_k_,
+                                         (int)dg.head_dim, rows * (int)dg.n_head_kv, kEps, cs_);
+            dflash_rope_neox_apply(prompt_k_, prompt_k_, rows * (int)dg.n_head_kv,
+                                   (int)dg.head_dim, dg.rope_theta, prompt_pos_, cs_);
+            const auto& state = st_[(size_t)l];
+            if (state.kv_q4 || state.kv_int8 || rows > state.n_slots * shapes_.page_size) {
+                err = "dflash2: batched prompt needs distinct owned FP16 KV cells";
+                return false;
+            }
+            kv_append_f16_steps(state.k_pool, state.v_pool, state.page_table, prompt_steps_, 4,
+                                 prompt_k_, prompt_v_, KVW, rows, shapes_, cs_, nullptr);
+        }
+        return true;
+    };
+    int slot = rows == 64 ? 0 : rows == 128 ? 1 : rows == 256 ? 2 : rows == 512 ? 3 : -1;
+    const char* graph_env = std::getenv("STRATA_DFLASH_GRAPH");
+    if (slot < 0 || (graph_env && graph_env[0] == '0')) return forward();
+    auto& exec = prompt_graph_exec_[(size_t)slot];
+    if (!exec) {
+        cudaGraph_t graph = nullptr;
+        if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) == cudaSuccess) {
+            const bool ok = forward();
+            const auto captured = cudaStreamEndCapture(cs_, &graph);
+            cudaGraphExec_t candidate = nullptr;
+            if (ok && captured == cudaSuccess && graph && cudaGraphInstantiate(&candidate, graph, 0) == cudaSuccess)
+                exec = candidate;
+            else if (candidate) cudaGraphExecDestroy(candidate);
+            if (graph) cudaGraphDestroy(graph);
+            if (!ok) return false;
+            cudaGetLastError();
+        } else cudaGetLastError();
+    }
+    if (!exec) return forward();
+    if (cudaGraphLaunch(exec, cs_) != cudaSuccess) {
+        err = "dflash2: batched prompt graph launch failed";
+        return false;
+    }
+    return true;
 }
 
 bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
@@ -823,6 +984,17 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             if (n == name) return p;
         return nullptr;
     };
+    const bool capture = context_graphs_ && dg.is_dflash2() && rows <= 8 && !reference_mode_ &&
+        (!std::getenv("STRATA_DFLASH_GRAPH") || std::getenv("STRATA_DFLASH_GRAPH")[0] != '0') &&
+        !parity_dir_[0] && !std::getenv("STRATA_DF_DBG") && !df_timing().on;
+    auto positions = [&] {
+        dflash_build_positions(poskv_, rows, (int) dg.n_head_kv, pos0, cs_);
+        dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_);
+    };
+    // Logical positions change on every call; graph nodes read stable buffers.
+    // Keep the original launch order when graph execution is disabled.
+    if (capture) positions();
+    const auto forward = [&]() -> bool {
     // ctx = hidden_norm(fc(taps)); one batched launch per chunk (the weights were read once per
     // row before)
     {
@@ -865,8 +1037,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
     }
     prepare_projection(xn16_, (int) N, rows, cs_);   // all layers share the same context activation
-    dflash_build_positions(poskv_, rows, (int) dg.n_head_kv, pos0, cs_);
-    dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_);
+    if (!capture) positions();
+
 
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
@@ -939,6 +1111,30 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                 }
             }
         }
+    }
+    return true;
+    };
+    if (!capture) return forward();
+    auto& exec = context_graph_exec_[rows];
+    if (!exec) {
+        cudaGraph_t graph = nullptr;
+        if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) == cudaSuccess) {
+            const bool ok = forward();
+            const auto captured = cudaStreamEndCapture(cs_, &graph);
+            cudaGraphExec_t candidate = nullptr;
+            if (ok && captured == cudaSuccess && graph &&
+                cudaGraphInstantiate(&candidate, graph, 0) == cudaSuccess)
+                exec = candidate;
+            else if (candidate) cudaGraphExecDestroy(candidate);
+            if (graph) cudaGraphDestroy(graph);
+            if (!ok) return false;
+            cudaGetLastError();
+        } else cudaGetLastError();
+    }
+    if (!exec) return forward();
+    if (cudaGraphLaunch(exec, cs_) != cudaSuccess) {
+        err = "dflash2: context graph launch failed";
+        return false;
     }
     return true;
 }

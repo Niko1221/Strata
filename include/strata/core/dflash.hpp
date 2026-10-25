@@ -173,7 +173,7 @@ public:
 
     /// Context cells for committed positions [pos0, pos0 + rows): `taps` is the prompt path's
     /// capture, BF16 rows [n_taps x stride_rows x n_embd], `stride_rows` the per-tap row stride.
-    /// Runs in batches of up to 8 rows through the fusion and one K/V append per draft layer.
+    /// Projections use up to 8 rows. Optional prompt grouping reuses each matrix across larger batches.
     bool add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
                      std::string& err);
     /// The same from the verify window's capture: f32 taps [n_taps][stride_floats] (the window's
@@ -190,6 +190,13 @@ public:
     bool propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err, float* probabilities = nullptr);
 
     cudaStream_t stream() const { return cs_; }
+    /// Context graph diagnostics; proposal graphs are not counted.
+    int context_graph_count() const {
+        int count = 0;
+        for (auto graph : context_graph_exec_) if (graph) ++count;
+        for (auto graph : prompt_graph_exec_) if (graph) ++count;
+        return count;
+    }
     /// The drafter's per-layer K/V states (read-only: STRATA_STATE_HASH hashes them like MTP's).
     const std::vector<QsaState>& kv_states() const { return st_; }
     const ModelGeometry& pool_geometry() const { return pool_g_; }
@@ -205,6 +212,7 @@ private:
     /// ctx = hidden_norm(fc(tapin_)) for `rows` rows already staged in `tapin_` ([rows][F] bf16),
     /// then each draft layer's context K/V appended at [pos0, pos0+rows).
     bool fusion_rows(int64_t pos0, int rows, std::string& err);
+    bool prompt_fusion_rows(int64_t pos0, int rows, std::string& err);
 
     void project(const uint16_t* x, const uint16_t* w, float* y, int ni, int no, int rows, void* stream, bool prepared = false);
     void prepare_projection(const uint16_t* x, int ni, int rows, void* stream);
@@ -228,8 +236,16 @@ private:
     cudaEvent_t projection_ready_ = nullptr;
     std::array<cudaEvent_t, 2> projection_done_{};
     std::array<cudaGraphExec_t, 18> graph_exec_{};
+    std::array<cudaGraphExec_t, 9> context_graph_exec_{};
+    std::array<cudaGraphExec_t, 4> prompt_graph_exec_{};
+    int prompt_rows_ = 0;
+    uint16_t *prompt_tapin_ = nullptr, *prompt_xn16_ = nullptr;
+    float *prompt_ctx_ = nullptr, *prompt_k_ = nullptr, *prompt_v_ = nullptr;
+    uint8_t* prompt_q8_ = nullptr;
+    int32_t *prompt_pos_ = nullptr, *prompt_steps_ = nullptr;
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
+    bool context_graphs_ = false;
     bool reference_mode_ = false;
     int64_t context_floor_ = 0;
     void clear_graphs();

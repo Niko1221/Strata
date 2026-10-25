@@ -19,6 +19,12 @@ inline int64_t dflash_attention_bucket(int64_t visible, int64_t capacity) {
     return cells;
 }
 
+// Matrix batches keep the original eight-row projection boundaries. A single
+// parallel append must fit in distinct physical cells, including across a wrap.
+inline int dflash_prompt_batch_rows(int64_t distinct_cells) {
+    return distinct_cells < 16 ? 0 : (int)(std::min<int64_t>(512, distinct_cells) / 8 * 8);
+}
+
 // A target verifies anchor + K proposals; DFlash2 also evaluates an anchor
 // in its draft forward. Subtraction keeps untrusted large positions overflow-safe.
 inline bool dflash_proposal_fits(int64_t pos, int k, bool dflash2,

@@ -1243,6 +1243,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(dflash2_extension_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME dflash2_extension_parity COMMAND dflash2_extension_parity)
     set_tests_properties(dflash2_extension_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_executable(dflash_prompt_fusion_parity tests/core/dflash_prompt_fusion_parity.cpp)
+    target_link_libraries(dflash_prompt_fusion_parity PRIVATE strata_engine)
+    add_test(NAME dflash_prompt_fusion_parity COMMAND dflash_prompt_fusion_parity)
+    set_tests_properties(dflash_prompt_fusion_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
   endif()
 
   # DFlash tap packing: padded planes, 1..8 rows, BF16 and F32 sources.
