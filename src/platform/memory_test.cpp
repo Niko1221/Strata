@@ -101,8 +101,31 @@ int file_tier_prefers_direct_cases() {
     return fail;
 }
 
+// the start-up check that sends a start whose arena cannot fit to the resident low-RAM mode
+int arena_fits_ram_cases() {
+    using strata::platform::arena_fits_ram;
+    struct Case { const char* what; double avail, arena; bool fits; };
+    const Case cases[] = {
+        {"Strix Halo, Windows: 36.2 available, IQ3_S's 46.8 arena", 36.2, 46.8, false},
+        {"the same PC with 32 GB more visible: 68.2 available", 68.2, 46.8, true},
+        {"fits with just over the 1 GiB floor beside it", 47.9, 46.8, true},
+        {"just under the floor beside it", 47.7, 46.8, false},
+        {"a tight start that works today: 2 GiB to spare", 48.8, 46.8, true},
+        {"available under the floor", 0.9, 0.0, false},
+        {"nothing available", 0.0, 23.4, false},
+    };
+    int fail = 0;
+    for (const Case& c : cases) {
+        const bool got = arena_fits_ram(gib(c.avail), gib(c.arena));
+        std::printf("arena_fits_ram %-62s -> %s%s\n", c.what, got ? "arena" : "low-RAM mode",
+                    got == c.fits ? "" : "   <-- WRONG");
+        fail |= got != c.fits;
+    }
+    return fail;
+}
+
 int main() {
-    int fail_keeps = file_cache_keeps_cases() | file_tier_prefers_direct_cases();
+    int fail_keeps = file_cache_keeps_cases() | file_tier_prefers_direct_cases() | arena_fits_ram_cases();
     const uint64_t bytes = 256ull << 20;
     void* p = std::malloc(bytes);
     if (p == nullptr) return 2;

@@ -2311,6 +2311,18 @@ static void prime_hw_queues() {
 }
 #endif
 
+// `--resident-experts`, and the start-up switch to it when the expert arena cannot fit the RAM (arena_fits_ram)
+static void take_resident_experts(Options& o) {
+    o.mmap_experts = o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
+    o.resident_headroom = 4ull << 30;
+    // A/B arms: STRATA_RESIDENT_PIN=0 keeps the copy pageable (the --resident-cpu-experts form);
+    // STRATA_RESIDENT_HEADROOM_GIB=N leaves N GiB of the available RAM free instead of 4
+    if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
+        o.resident_pin = false;
+    if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
+        o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
+}
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -2759,16 +2771,7 @@ int main(int argc, char** argv) {
         else if (a == "--mmap-experts") o.mmap_experts = true;
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
-        else if (a == "--resident-experts") {
-            o.mmap_experts = o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
-            o.resident_headroom = 4ull << 30;
-            // A/B arms: STRATA_RESIDENT_PIN=0 keeps the copy pageable (the --resident-cpu-experts form);
-            // STRATA_RESIDENT_HEADROOM_GIB=N leaves N GiB of the available RAM free instead of 4
-            if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
-                o.resident_pin = false;
-            if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
-                o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
-        }
+        else if (a == "--resident-experts") take_resident_experts(o);
         else if (a == "--resident-budget-gib") {
             const double gib = std::atof(next("--resident-budget-gib"));
             if (!(gib > 0.0)) { std::fprintf(stderr, "strata generate: --resident-budget-gib needs N > 0\n"); return 2; }
@@ -3510,6 +3513,28 @@ int main(int argc, char** argv) {
                 (void) cudaGetLastError();
             }
 #endif
+        }
+    }
+    // The expert arena copies every expert into RAM.  When the RAM available now cannot hold it with 1 GiB to spare
+    // (platform::kArenaFitFloor), its read takes the RAM to zero and the start fails (a Strix Halo on Windows: 36.2 GiB available,
+    // a 46.8 GiB arena, error 1453 at layer 21), so the resident low-RAM mode is taken instead (--resident-experts:
+    // the GPU's cache keeps what it holds, only the rest is copied into RAM), or without a profile the experts are
+    // read from the model's files (--mmap-experts).  Decided here, before anything that depends on the mode
+    // (--kv-grow, the prompt chunk).  A start whose arena fits is unchanged; STRATA_ARENA_FIT=0 keeps the arena.
+    if (!o.mmap_experts && o.shared_expert_arena.empty()) {
+        const char* fit_env = std::getenv("STRATA_ARENA_FIT");
+        const uint64_t arena_b = strata::kernels::cpu::expert_layout().total;
+        const auto hm = strata::core::sample_host_memory();
+        if (!(fit_env != nullptr && fit_env[0] == '0') && hm && hm->available > 0 &&
+            !strata::platform::arena_fits_ram(hm->available, arena_b)) {
+            const bool resident = !o.expert_profile.empty();
+            if (resident) take_resident_experts(o);
+            else o.mmap_experts = true;
+            std::fprintf(stderr, "strata generate: the experts (%.1f GiB) do not fit in RAM available now (%.1f GiB, "
+                                 "%.1f GiB kept free). Enabling `%s` mode to compensate.\n",
+                         (double) arena_b / 1073741824.0, (double) hm->available / 1073741824.0,
+                         (double) strata::platform::kArenaFitFloor / 1073741824.0,
+                         resident ? "--resident-experts" : "--mmap-experts");
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;

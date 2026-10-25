@@ -232,6 +232,16 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
 | RAM budget | `--resident-budget-gib N` | The N GiB of experts the GPU does not hold that the profile ranks hottest are copied into RAM; the rest are read from the files. Implies `--mmap-experts` and leaves 4 GiB of headroom. On Windows the available commit limit also caps N, and a clamped budget is reported. This is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) on a 64 GB PC. |
 
 - In a source checkout, `START-HERE.bat --setup --low-ram on|off` overrides the choice, and `--low-ram resident|mmap` forces one variant.
+- The engine checks too. Setup decides from the RAM the PC has, but drivers and other programs can hold much of it when
+  the model starts. When the experts do not fit the RAM available then with 1 GiB to spare, the engine takes the
+  resident mode by itself (the mapped one without an `--expert-profile`) and prints one line. Before, it read experts
+  into RAM until none was left and the start failed: a Ryzen AI Max+ 395 on Windows with a 64 GB BIOS carve-out
+  (Windows sees 63.6 GiB) had 23-38 GiB available for IQ3_S's 46.8 GiB of experts and stopped with Windows error 1453.
+  With the check it starts, its GPU holds all 24,576 experts, and 400-token answers decoded at 18.3-21.1 tokens/s
+  (`--resident-experts` given by hand: 19.3 and 20.3). One case changes: Windows does not count memory it could page
+  out of other programs as available, so a start that worked only by paging them out now takes the resident mode.
+  That can happen on a 64 GB PC with a 16 GB card; the speed there is not measured. `STRATA_ARENA_FIT=0` keeps the old
+  behavior.
 - The resident variant keeps 4 GB of the RAM it finds free (`STRATA_RESIDENT_HEADROOM_GIB`). When even the missing experts do
   not fit, it says so and runs the mapped mode. The server log shows per request how many expert reads went to the file
   (`resident RAM: ... blob reads from the file`, 0 in steady use).
