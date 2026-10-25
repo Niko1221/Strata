@@ -273,6 +273,26 @@ class Api(unittest.TestCase):
         self.assertEqual(lps[0]["top_logprobs"][0]["token"], "A")
         self.assertEqual(self.engine.sampling.get("logprobs"), True)
 
+    def test_engine_wire_keeps_chosen_score_separate_from_raw_top_k(self):
+        # The LP header is the sampled token's full-vocabulary score. Following pairs are raw top-K IDs;
+        # the chosen token can be outside that list, and the server must not replace its score with one of them.
+        class TwoAlternativeEngine(LpEngine):
+            def line(self, i, t):
+                return "LP -2.500000 65:-0.500000 72:-1.250000\n"
+
+        self.engine = self.svc.engine = TwoAlternativeEngine(self.tok, "Z")
+        for stream in (False, True):
+            out = self.post({"logprobs": True, "top_logprobs": 2}, stream)
+            if stream:
+                entries = [entry for chunk in out if chunk.get("choices")
+                           for entry in chunk["choices"][0].get("logprobs", {}).get("content", [])]
+            else:
+                entries = out["choices"][0]["logprobs"]["content"]
+            self.assertEqual([entry["token"] for entry in entries], ["Z"])
+            self.assertEqual(entries[0]["logprob"], -2.5)
+            self.assertEqual([alt["token"] for alt in entries[0]["top_logprobs"]], ["A", "H"])
+            self.assertEqual([alt["logprob"] for alt in entries[0]["top_logprobs"]], [-0.5, -1.25])
+
     def test_a_request_reads_only_its_own_lines(self):
         # A's last "." is held by its stop string and sent after A has left the queue, when B is
         # already generating on the same engine: each reply's tokens must spell that reply

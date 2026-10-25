@@ -75,6 +75,7 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#include <limits>
 
 #if defined(STRATA_GPU_METAL)
 // The Metal backend's decode window (metal/src/engine/window.cpp): this file's init/run/commit hand over to it.
@@ -635,6 +636,11 @@ Verifier::~Verifier() {
     if (tap_scratch_) cudaFree(tap_scratch_);
     if (h_tap_) cudaFreeHost(h_tap_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+    if (logprobs_scratch_) cudaFree(logprobs_scratch_);
+    if (logprobs_chosen_) cudaFree(logprobs_chosen_);
+    if (logprobs_out_) cudaFree(logprobs_out_);
+#endif
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
@@ -4146,6 +4152,64 @@ bool Verifier::copy_logits(int t, float* host) const {
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),
                       cudaMemcpyDeviceToHost) == cudaSuccess;
 }
+
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+bool Verifier::logprobs(int rows, const int32_t* chosen, int top_k,
+                        strata::kernels::LogprobItem* out, std::string& err) {
+    if (next_ != nullptr) return next_->logprobs(rows, chosen, top_k, out, err);
+    if (head_logits_ == nullptr || chosen == nullptr || out == nullptr || rows < 1 ||
+        rows > last_t_ || rows > max_t_ || top_k < 0 || top_k > strata::kernels::kLogprobsMaxTop ||
+        top_k > n_vocab_ || n_vocab_ > std::numeric_limits<int>::max()) {
+        err = "verify: invalid logprobs rows, top_k, or head state";
+        return false;
+    }
+    for (int t = 0; t < rows; ++t)
+        if (chosen[t] < 0 || chosen[t] >= n_vocab_ || nonfinite_in(t)) {
+            err = "verify: logprobs selected an invalid token or a non-finite head row";
+            return false;
+        }
+    const size_t scratch_bytes = strata::kernels::logprobs_scratch_bytes(
+        max_t_, (int) n_vocab_, std::min(strata::kernels::kLogprobsMaxTop, (int) n_vocab_));
+    if (scratch_bytes == 0) {
+        err = "verify: logprobs vocabulary is outside the supported range";
+        return false;
+    }
+    const OnDevice on(device_);
+    auto failed = [&](const char* step, cudaError_t code) {
+        err = std::string("verify: logprobs ") + step + ": " + cudaGetErrorString(code);
+        return false;
+    };
+    cudaError_t rc = cudaSuccess;
+    if (!logprobs_scratch_ && (rc = cudaMalloc(&logprobs_scratch_, scratch_bytes)) != cudaSuccess)
+        return failed("scratch allocation", rc);
+    if (!logprobs_chosen_ && (rc = cudaMalloc((void**) &logprobs_chosen_, (size_t) max_t_ * sizeof(int32_t))) != cudaSuccess)
+        return failed("chosen-token allocation", rc);
+    if (!logprobs_out_ &&
+        (rc = cudaMalloc((void**) &logprobs_out_, (size_t) max_t_ *
+                                               (strata::kernels::kLogprobsMaxTop + 1) *
+                                               sizeof(strata::kernels::LogprobItem))) != cudaSuccess)
+        return failed("result allocation", rc);
+    if ((rc = cudaMemcpyAsync(logprobs_chosen_, chosen, (size_t) rows * sizeof(int32_t),
+                              cudaMemcpyHostToDevice, cs_)) != cudaSuccess)
+        return failed("chosen-token upload", rc);
+    if (!strata::kernels::logprobs_extract(head_logits_, rows, (int) n_vocab_, logprobs_chosen_, top_k,
+                                          logprobs_scratch_, logprobs_out_, cs_))
+        return failed("kernel launch", cudaGetLastError());
+    if ((rc = cudaMemcpyAsync(out, logprobs_out_, (size_t) rows * (top_k + 1) *
+                             sizeof(strata::kernels::LogprobItem), cudaMemcpyDeviceToHost, cs_)) != cudaSuccess)
+        return failed("result download", rc);
+    if ((rc = cudaStreamSynchronize(cs_)) != cudaSuccess) return failed("completion", rc);
+    for (int t = 0; t < rows; ++t)
+        for (int j = 0; j <= top_k; ++j) {
+            const auto& item = out[(size_t) t * (top_k + 1) + j];
+            if (item.id < 0 || item.id >= n_vocab_ || !std::isfinite(item.logprob)) {
+                err = "verify: logprobs returned a non-finite or invalid result";
+                return false;
+            }
+        }
+    return true;
+}
+#endif
 
 
 // ================================ PIPELINED WINDOWS (see verify.hpp) ================================

@@ -27,6 +27,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/logprobs.hpp"
 
 #include <cuda_runtime.h>
 
@@ -105,6 +106,12 @@ public:
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+    /// Raw head-softmax scores for accepted tokens in the first `rows` of the last window.
+    /// Returns one chosen token plus `top_k` alternatives per row, before the next window overwrites logits.
+    bool logprobs(int rows, const int32_t* chosen, int top_k, strata::kernels::LogprobItem* out,
+                  std::string& err);
+#endif
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
     /// #879 GUARD: the first row of the last finished window (run, run_slot_rows, batch_poll, pl_finish) whose head
     /// logits held a NaN or an infinity, else -1; nonfinite_pos() is that row's position.  Every window graph
@@ -645,6 +652,11 @@ private:
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+    void* logprobs_scratch_ = nullptr;
+    int32_t* logprobs_chosen_ = nullptr;
+    strata::kernels::LogprobItem* logprobs_out_ = nullptr;
+#endif
     uint16_t* sh_bf16_ = nullptr;
     uint8_t* arg_scratch_ = nullptr;   ///< argmax_rows' partials and counters
     int32_t* one_ = nullptr;           ///< device {1}: the n_keep of a one-token window, which commits itself
