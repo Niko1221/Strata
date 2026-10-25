@@ -1,0 +1,5 @@
+timestamp=2026-10-25T12:21:31+08:00
+0, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 95 %
+1, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 72342 MiB, 73415 MiB, 99 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 2557153, /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41, 72292 MiB

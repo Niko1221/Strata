@@ -1,0 +1,26 @@
+    These files are DeepSeek-V4.1-Flash IST-DAS-2.25bpw; they are used where they are.
+Plan for 'IST-DAS-2.25bpw 256K':
+  model     DeepSeek-V4.1-Flash IST-DAS-2.25bpw, 274 GB   (your files in /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-files)
+  context   256K    pictures off    parallel one at a time
+  download  Nothing to download: your model files are used where they are.
+  drafting  DSpark (used when it speeds up answers on this computer)
+  placement
+    - DeepSeek-V4.1-Flash, IST-DAS 2.25 bpw: a 274 GB download (155 GB of model, 111 GB n-gram
+      table, 8 GB drafter). Quality: about 7.3% above the original model's perplexity (code and
+      agent work about 2-3% above), the better of the two, 17 GB more disk.
+    - The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for
+      the model files (a slow disk makes every word slower). The same table serves every IST-DAS
+      set, so installing another one downloads it once.
+    - Graphics memory: NVIDIA RTX PRO 5000 72GB Blackwell (72 GB). About 7,351 of the 15,360 experts
+      (71 GB) stay on the card; the other 8,009 (78 GB) are computed on the CPU from RAM, and the
+      ones RAM cannot hold are read from the SSD when a word needs them.
+    - That fits this computer: 249 GB of RAM keeps all 78 GB of the CPU's experts cached.
+    - Measured on an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7
+      tokens a second, a 4,000-token prompt read at 121 tokens a second; an RTX 3060 (12 GB) with 46
+      GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: about 31 tokens a
+      second. Other computers are slower or faster by what their cards, RAM and drive can do.
+    - DeepSeek engine: installed, 0.1.49.2.
+  tuning    quick    access This computer only, port 18084
+  cards     Main: GPU 2 RTX PRO 5000 72GB Blackwell. Off: GPU 1 RTX PRO 5000 72GB Blackwell.
+  same as   strata launch --model-path "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-files" --model ist-das-2.25bpw --family deepseek41 --data-dir "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data" --context 256k --vision off --tune quick --access local --port 18084 --gpu 1 --set cpu-threads=8
+Nothing was changed.

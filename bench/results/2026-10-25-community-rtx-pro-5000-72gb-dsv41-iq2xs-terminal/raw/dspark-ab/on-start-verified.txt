@@ -1,0 +1,36 @@
+=== DSpark ON verified startup ===
+2026-10-25T15:41:42+08:00
+{"schema_version": 1, "ok": true, "profile": "launch-ist-das-2-25bpw-256k", "host_pid": 2792196, "owner_id": "c5d90db1813c45d494ad3235e1bf5539", "child_pid": 2792204, "profile_revision": "5d935bae52fc010b", "shutdown_timeout": 30.0, "state": "ready", "instance_id": "43a884dca5d0460087ee0c647028c094", "model_state": "ready", "api_identity_verified": true, "launch_attested": true, "generation_ready": true, "readiness_state": "generation_ready", "api_url": "http://127.0.0.1:18084"}
+
+LISTEN 0      256                     127.0.0.1:18083      0.0.0.0:*    users:(("python",pid=1398097,fd=25))    
+LISTEN 0      256                     127.0.0.1:18084      0.0.0.0:*    users:(("python3.12",pid=2792204,fd=21))
+=== processes ===
+1398097       1    23:25:07 Ssl  /home/hermes/AI/venvs/strata-nvfp4-gptq-0.1.44/bin/python /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/serve/server.py --engine strata --config /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/strata-qwen-gptq-nvfp4-prod.json --port 18083
+2792196       1       01:56 Ss   /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/app-data/terminal/0.1.49.2/python/bin/python3.12 -m strata_control.runtime --host launch-ist-das-2-25bpw-256k --shutdown-timeout 30.0 --startup-wait 600.0
+2792204 2792196       01:55 Ssl  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/app-data/terminal/0.1.49.2/python/bin/python3.12 -m serve.server --engine strata --config /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/config-on.json --host 127.0.0.1 --port 18084 --ready-file /home/hermes/.local/state/strata/runtime/launch-ist-das-2-25bpw-256k-5acfd7ff79a24db19ee14fe718bdb0e5.ready.json --shutdown-timeout 30.0 --owner-fd 7
+2792219 2792204       01:55 SNl  /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41 --serve --pack /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw --max-context 262144 --eos 1 --dspark on --dspark-conf 0.65 --cpu-threads 8
+2794301 2794300       00:00 Ss   bash -c E=/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab; SNAP="$E/on-start-verified.txt"; { echo '=== DSpark ON verified startup ==='; date -Is; cd /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/app-data/terminal/0.1.49.2; CUDA_VISIBLE_DEVICES= ./bin/strata runtime status --profile launch-ist-das-2-25bpw-256k --json; echo; ss -ltnp | grep -E ':(18083|18084)\b' || true; echo '=== processes ==='; ps -eo pid,ppid,etime,stat,args | grep -E '[s]trata-dsv41|[s]trata_control.runtime|[s]erve.server'; echo '=== GPU ==='; nvidia-smi --query-gpu=index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader; echo '=== lease ==='; /home/hermes/AI/scripts/gpu_lease.sh status; echo '=== RAM ==='; free -h; echo '=== startup engine lines ==='; sed -n '1,12p' "$E/dspark-on.engine.log"; } > "$SNAP"; rc=$?; echo "on_verified_snapshot_rc=$rc"; sha256sum "$SNAP"; sed -n '1,38p' "$SNAP"
+=== GPU ===
+0, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 99 %
+1, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 72320 MiB, 73415 MiB, 0 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 2792219, /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41, 72270 MiB
+=== lease ===
+=== gpu_lease status 2026-10-25T15:41:42+08:00 ===
+gpu[0] uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b mem=69960MiB lock=HELD owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease
+gpu[1] uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 mem=72320MiB lock=HELD owner='strata-dsv41-1017-iq2-xs' pid='2554744' lease=/AI/run/lease-f6c86fc0.lease
+=== RAM ===
+               total        used        free      shared  buff/cache   available
+内存：         249Gi       161Gi        22Gi        26Gi        93Gi        88Gi
+交换：            0B          0B          0B
+=== startup engine lines ===
+[strata] 2026-10-25 15:39:47 engine started: /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41 --serve --pack /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw --max-context 262144 --eos 1 --dspark on --dspark-conf 0.65 --cpu-threads 8
+ds4: tensor parallel 2 -> 1: the experts' 256-value blocks split n_ff 2304 no other way (each GPU its own layers)
+ds4: the experts VRAM leaves over (~91.5 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (133.9 GB of RAM free to keep them: the most-routed 0.0 GB read ahead; prompts in chunks of 8192)
+ds4: RAM store: up to 4218 slots of 11.4 MB (48.0 GB), policy 0, 8 reader threads, unbuffered reads
+ds4: RAM store: 3962 of the profile's hottest experts read in (36.2 GB) in 6.2 s
+ds4: CUDA0 layers [0, 42] + head: weights 6.61 GB, experts 65.12 GB (6296 of 15744 in VRAM), caches 0.24 GB, 576 MiB free
+ds4: 9448 routed experts on the CPU lane (91.9 GB, in place in the model's files), 8 threads
+maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT
+ds4 slots: folder /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/ds4-slots: 0 conversation(s) kept from earlier runs (0.00 GB)
+maya ds4 serve: prompt 31 tokens = 0 reused + 31 read in 3254 ms (9.5 tok/s), 1 generated in 0 ms (3007.90 tok/s); CPU lane 0.0% of the experts

@@ -1,0 +1,1 @@
+{"object": "list", "data": [{"id": "deepseek-v4.1-flash", "object": "model", "status": {"value": "loaded"}, "meta": {"n_ctx": 262144}, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}}]}

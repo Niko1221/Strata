@@ -1,0 +1,18 @@
+timestamp=2026-10-25T11:52:44+08:00
+--- GPU state ---
+0, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 98 %
+1, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 37 MiB, 73415 MiB, 0 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+--- GPU1 services/ports/lease ---
+inactive
+inactive
+check: FREE gpu=f6c86fc0 uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 index=1 lockfile=/AI/run/lock-f6c86fc0.lock lease=none
+--- GPU0 process/lease ---
+    PID    PPID STAT     ELAPSED
+1398149 1398097 Rl      19:36:08
+check: HELD gpu=827ea1a1 uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b index=0 owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease
+--- installed model artifacts ---
+drwxrwxr-x 3 hermes hermes 4096 10月 25 10:57 /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw
+drwxrwxr-x 2 hermes hermes 4096 10月 25 10:57 /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-files
+-rwxr-xr-x 1 hermes hermes  459 10月 25 10:57 /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/run-deepseek-v4.1-flash-ist-das-2.25bpw.sh
+-rw-rw-r-- 1 hermes hermes 1180 10月 25 10:57 /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/strata-deepseek-v4.1-flash-ist-das-2.25bpw.json

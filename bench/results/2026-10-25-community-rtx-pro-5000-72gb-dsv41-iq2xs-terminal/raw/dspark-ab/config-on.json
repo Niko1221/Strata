@@ -1,0 +1,43 @@
+{
+  "exe": "/home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41",
+  "args": [
+    "--pack",
+    "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw",
+    "--max-context",
+    "262144",
+    "--eos",
+    "1",
+    "--dspark",
+    "on",
+    "--dspark-conf",
+    "0.65",
+    "--cpu-threads",
+    "8"
+  ],
+  "cwd": "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/app-data/terminal/0.1.49.2",
+  "tokenizer": "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw/tokenizer",
+  "model_name": "deepseek-v4.1-flash",
+  "arch": "deepseek41",
+  "log": "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/dspark-on.engine.log",
+  "lib_dirs": [
+    "/home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13"
+  ],
+  "port": 18084,
+  "engine_ready_s": 3600,
+  "gpu": 1,
+  "gpus_asked": true,
+  "args_written": [
+    "--pack",
+    "/home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/model-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw",
+    "--max-context",
+    "262144",
+    "--eos",
+    "1",
+    "--dspark",
+    "on",
+    "--dspark-conf",
+    "0.65"
+  ],
+  "host": "127.0.0.1",
+  "open_browser": false
+}

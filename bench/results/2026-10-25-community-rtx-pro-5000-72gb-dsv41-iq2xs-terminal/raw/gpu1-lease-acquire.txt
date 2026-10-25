@@ -1,0 +1,1 @@
+acquire: OK gpu=f6c86fc0 uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 index=1 owner=strata-dsv41-1017-iq2-xs holder_pid=2529704 token=[REDACTED] lease=/AI/run/lease-f6c86fc0.lease

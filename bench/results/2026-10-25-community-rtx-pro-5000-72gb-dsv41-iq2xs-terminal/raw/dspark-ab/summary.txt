@@ -1,0 +1,73 @@
+=== DSpark A/B summary ===
+2026-10-25T15:48:37+08:00
+OFF measured calls
+2026-10-25T15:33:22+08:00
+HTTP=200
+TTFB_s=13.847962
+TOTAL_s=13.848015
+curl_rc=0
+prompt=106 completion=512 finish=length
+2026-10-25T15:33:36+08:00
+HTTP=200
+TTFB_s=13.129080
+TOTAL_s=13.129154
+curl_rc=0
+prompt=106 completion=512 finish=length
+2026-10-25T15:33:49+08:00
+HTTP=200
+TTFB_s=12.437616
+TOTAL_s=12.437679
+curl_rc=0
+prompt=106 completion=512 finish=length
+ON measured calls
+2026-10-25T15:42:56+08:00
+HTTP=200
+TTFB_s=13.679577
+TOTAL_s=13.679626
+curl_rc=0
+prompt=106 completion=512 finish=length
+2026-10-25T15:43:09+08:00
+HTTP=200
+TTFB_s=11.664947
+TOTAL_s=11.665012
+curl_rc=0
+prompt=106 completion=512 finish=length
+2026-10-25T15:43:21+08:00
+HTTP=200
+TTFB_s=10.899270
+TOTAL_s=10.899348
+curl_rc=0
+prompt=106 completion=512 finish=length
+response hashes
+d00fb2415730d68cd0fcd1c34072b950c4133a3dbb641bd689a1d2fc80db6442  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/off-run1.json
+0bbef71b138cffefa4bc67f222ba63d8adf8b7cd6bad32ff8ce8f696a06f3ff6  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/off-run2.json
+96a31f80157f947329e34c6b4db48f624b20014f03fa6c3ef21ee38eab8c08ec  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/off-run3.json
+24b6d91af69cf7940bd1ed4404725184e2eb3ba296e8ba8880cd08dd76c6804b  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/on-run1.json
+5f0ae0a19978694a38d1f9d8a65f5638ba600793a87a6a3d5fbc24efaff58fd0  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/on-run2.json
+9b63d73029a157a661b814738379bf1f56167025d82943546b7ff65e533b4558  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/on-run3.json
+d878e417f520412dddab9fa515f5e9b181a9ca93a7eede0d2efd5ee3087e271f  /home/hermes/AI/tests/strata-dsv41-1017-iq2-xs-20261024/evidence/dspark-ab/request-512.json
+OFF engine records
+maya ds4 serve: prompt 106 tokens = 0 reused + 106 read in 6188 ms (17.1 tok/s), 256 generated in 10557 ms (24.25 tok/s); CPU lane 6.3% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 1055 ms (16.1 tok/s), 239 generated in 9261 ms (25.81 tok/s); CPU lane 7.6% of the experts
+maya ds4 serve: prompt 106 tokens = 105 reused + 1 read in 65 ms (15.4 tok/s), 256 generated in 6442 ms (39.74 tok/s); CPU lane 6.6% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 779 ms (21.8 tok/s), 239 generated in 6559 ms (36.44 tok/s); CPU lane 6.6% of the experts
+maya ds4 serve: prompt 106 tokens = 105 reused + 1 read in 33 ms (30.1 tok/s), 256 generated in 6243 ms (41.01 tok/s); CPU lane 6.1% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 745 ms (22.8 tok/s), 239 generated in 6105 ms (39.15 tok/s); CPU lane 6.0% of the experts
+maya ds4 serve: prompt 106 tokens = 105 reused + 1 read in 101 ms (9.9 tok/s), 256 generated in 6160 ms (41.56 tok/s); CPU lane 5.8% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 675 ms (25.2 tok/s), 239 generated in 5499 ms (43.46 tok/s); CPU lane 5.6% of the experts
+ON engine records
+maya ds4 serve: prompt 106 tokens = 0 reused + 106 read in 4490 ms (23.6 tok/s), 257 generated in 9219 ms (27.88 tok/s); CPU lane 7.0% of the experts
+maya ds4 serve: prompt 379 tokens = 106 reused + 273 read in 4105 ms (66.5 tok/s), 239 generated in 6923 ms (34.52 tok/s); CPU lane 5.5% of the experts
+maya ds4 serve: prompt 106 tokens = 0 reused + 106 read in 2185 ms (48.5 tok/s), 256 generated in 6070 ms (42.17 tok/s); CPU lane 4.9% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 754 ms (22.5 tok/s), 239 generated in 4668 ms (51.20 tok/s); CPU lane 5.1% of the experts
+maya ds4 serve: prompt 106 tokens = 105 reused + 1 read in 42 ms (23.7 tok/s), 256 generated in 4541 ms (56.37 tok/s); CPU lane 5.0% of the experts
+maya ds4 serve: prompt 379 tokens = 106 reused + 273 read in 2438 ms (112.0 tok/s), 239 generated in 4641 ms (51.50 tok/s); CPU lane 4.5% of the experts
+maya ds4 serve: prompt 106 tokens = 0 reused + 106 read in 1893 ms (56.0 tok/s), 256 generated in 4348 ms (58.88 tok/s); CPU lane 4.3% of the experts
+maya ds4 serve: prompt 379 tokens = 362 reused + 17 read in 599 ms (28.4 tok/s), 239 generated in 4056 ms (58.92 tok/s); CPU lane 4.3% of the experts
+OFF GPU/pid samples
+0 1398149 C strata
+1 2779223 C strata-dsv41
+ON GPU/pid samples
+0 1398149 C strata
+0 2796857 C rustdesk
+1 2792219 C strata-dsv41

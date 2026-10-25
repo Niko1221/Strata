@@ -1,0 +1,19 @@
+=== after auto stop ===
+2026-10-25T15:27:12+08:00
+{"schema_version": 1, "ok": true, "profile": "launch-ist-das-2-25bpw-256k", "state": "stopped"}
+
+{"schema_version": 1, "ok": true, "profile": {"id": "launch-ist-das-2-25bpw-256k", "overrides": {"host": "127.0.0.1", "port": 18084}, "schema_version": 1, "source_config": "/home/hermes/.local/state/strata/launch/ist-das-2-25bpw-256k.json"}, "revision": "3e2515c2b7f3cbca"}
+
+=== endpoints ===
+LISTEN 0      256                     127.0.0.1:18083      0.0.0.0:*    users:(("python",pid=1398097,fd=25))   
+=== old processes ===
+=== GPU ===
+0, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 99 %
+1, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 37 MiB, 73415 MiB, 0 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+=== lease ===
+=== gpu_lease status 2026-10-25T15:27:13+08:00 ===
+gpu[0] uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b mem=69960MiB lock=HELD owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease
+gpu[1] uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 mem=37MiB lock=HELD owner='strata-dsv41-1017-iq2-xs' pid='2554744' lease=/AI/run/lease-f6c86fc0.lease
+=== current config hash ===
+2ddce0799086aa2142c3391dbb42baddb6c818d790718a45cda0f44ad591a305  /home/hermes/.local/state/strata/launch/ist-das-2-25bpw-256k.json

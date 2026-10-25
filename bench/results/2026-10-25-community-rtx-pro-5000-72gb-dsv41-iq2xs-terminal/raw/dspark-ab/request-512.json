@@ -1,0 +1,13 @@
+{
+  "model": "deepseek-v4.1-flash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain in detail how a large language model handles a request from tokenization through attention, expert routing, memory access, and token generation. Include a concrete example, compare GPU-resident and CPU-resident experts, and discuss the trade-offs in latency, bandwidth, memory capacity, and correctness. Continue with practical tuning guidance and examples; give a full answer rather than a short summary."
+    }
+  ],
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_tokens": 512,
+  "stream": false
+}

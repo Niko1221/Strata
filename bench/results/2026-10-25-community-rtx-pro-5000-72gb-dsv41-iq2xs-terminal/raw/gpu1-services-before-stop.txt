@@ -1,0 +1,14 @@
+timestamp=2026-10-25T11:39:31+08:00
+0, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 100 %
+1, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 8249 MiB, 73415 MiB, 0 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 1332669, /home/hermes/AI/eng/breeze-tts/.venv/bin/python, 7724 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 1332672, /home/hermes/AI/venvs/comfyui-v0.41.3/bin/python, 478 MiB
+--- units ---
+active
+active
+--- queue ---
+{"queue_running": [], "queue_pending": []}
+--- leases ---
+check: HELD gpu=827ea1a1 uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b index=0 owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease
+check: FREE gpu=f6c86fc0 uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 index=1 lockfile=/AI/run/lock-f6c86fc0.lock lease=none

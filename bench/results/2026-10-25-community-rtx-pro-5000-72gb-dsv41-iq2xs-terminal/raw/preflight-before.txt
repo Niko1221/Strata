@@ -1,0 +1,22 @@
+timestamp=2026-10-24T22:58:14+08:00
+--- host ---
+Roy
+Linux Roy 7.0.0-34-generic #34~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 15:38:29 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+--- GPU snapshot ---
+0, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 595.91.07, 69954 MiB, 73415 MiB, 0 %
+1, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 595.91.07, 8249 MiB, 73415 MiB, 0 %
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69772 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 1332669, /home/hermes/AI/eng/breeze-tts/.venv/bin/python, 7724 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 1332672, /home/hermes/AI/venvs/comfyui-v0.41.3/bin/python, 478 MiB
+--- memory and disk ---
+               total        used        free      shared  buff/cache   available
+内存：         249Gi       121Gi        28Gi        22Gi       123Gi       127Gi
+交换：            0B          0B          0B
+文件系统        大小  已用  可用 已用% 挂载点
+/dev/nvme1n1p4  1.8T  1.1T  569G   66% /home
+--- services and queue ---
+active
+active
+{"queue_running": [], "queue_pending": []}
+--- lease state (GPU0 only read) ---
+check: HELD gpu=827ea1a1 uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b index=0 owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease

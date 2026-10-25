@@ -1,0 +1,26 @@
+timestamp=2026-10-25T12:29:28+08:00
+--- GPUs ---
+0, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 69960 MiB, 73415 MiB, 98 %
+1, NVIDIA RTX PRO 5000 72GB Blackwell, GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 72342 MiB, 73415 MiB, 0 %
+--- compute apps ---
+GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b, 1398149, /home/hermes/AI/Strata-nvfp4-gptq-0.2.0/engine/strata, 69778 MiB
+GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323, 2557153, /home/hermes/AI/Strata-nvfp4-gptq-0.1.42/engine-dsv41/0.1.49.2-linux-x86_64-cuda-cuda13/strata-dsv41, 72292 MiB
+--- RAM/disk ---
+               total        used        free      shared  buff/cache   available
+内存：         249Gi       165Gi        19Gi        26Gi        92Gi        83Gi
+交换：            0B          0B          0B
+文件系统        大小  已用  可用 已用% 挂载点
+/dev/nvme1n1p4  1.8T  1.4T  313G   82% /home
+--- GPU leases ---
+check: HELD gpu=827ea1a1 uuid=GPU-827ea1a1-456e-c8e5-de5e-50f7d6922d8b index=0 owner='maya-ds4' pid='322133' lease=/AI/run/lease-827ea1a1.lease
+check: HELD gpu=f6c86fc0 uuid=GPU-f6c86fc0-af32-5f25-9a4c-2ad8da6a4323 index=1 owner='strata-dsv41-1017-iq2-xs' pid='2554744' lease=/AI/run/lease-f6c86fc0.lease
+--- GPU1 services/ports ---
+inactive
+inactive
+LISTEN 0      256                     127.0.0.1:18083      0.0.0.0:*    users:(("python",pid=1398097,fd=25))    
+LISTEN 0      256                     127.0.0.1:18084      0.0.0.0:*    users:(("python3.12",pid=2557132,fd=21))
+--- GPU0 PID ---
+    PID    PPID STAT     ELAPSED
+1398149 1398097 Rl      20:12:53
+--- endpoint ---
+{"object": "list", "data": [{"id": "deepseek-v4.1-flash", "object": "model", "status": {"value": "loaded"}, "meta": {"n_ctx": 262144}, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}}]}
