@@ -1876,7 +1876,9 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                        "shorter), coder = the Coder (half the experts, ~32 GB RAM, for code), "
                                        "unsloth = Unsloth's 4- to 8-bit files (UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, "
                                        "UD-Q6_K_XL, Q8_0): every expert in RAM where they fit, else part of them read "
-                                       "from the SSD"},
+                                       "from the SSD, signal = agentionai's Signal fine-tune (AP-Q4_K_XL, AP-IQ4_XS): "
+                                       "more direct thinking (26% fewer reasoning tokens on MATH-500, by its authors' "
+                                       "numbers), ~4-bit only, a 90-101 GB download, the same RAM rule as unsloth"},
              "model": {"type": "string", "enum": list(models),
                        "description": "the size (quantization): see strata_models"},
              "context": {"type": "integer", "minimum": 1024, "maximum": 2097152, "examples": contexts,

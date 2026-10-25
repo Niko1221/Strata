@@ -207,9 +207,10 @@ as the config does; OpenClaw needs Node 24.16 or newer.
 The data folder is the one you set, else the app's (`app-settings.json` beside its install folder, else a `Documents/Strata` that holds
 models), else Strata's default.
 
-`strata models import PATH --plan` recognises the Gyro-S and Gyro-M files (TQK6/TQK7 and TQ2_T experts) and every file set setup
-installs, also under another name when the header matches. It says which run config, prepared pack, draft layer and picture reader
-already exist. Nothing is copied or moved.
+`strata models import PATH --plan` recognises the Gyro-S and Gyro-M files (TQK6/TQK7 and TQ2_T experts), agentionai's Signal
+files (AP-Q4_K_XL's Q4_K and AP-IQ4_XS's IQ3_S experts) and every file set setup installs, also under another name when the
+header matches. It says which run config, prepared pack, draft layer and picture reader already exist. A Signal run config also
+wants the BF16 embedding copy beside the pack; the importer reports it as missing when it is not there. Nothing is copied or moved.
 
 ## When there is no engine for this computer
 
