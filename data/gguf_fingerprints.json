@@ -127,6 +127,26 @@
   ],
   "repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
  },
+ "swift/IQ3_S": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 83732712960,
+  "expert_bytes": {
+   "IQ2_S": 10747904000,
+   "IQ3_S": 7208960000,
+   "IQ3_XXS": 10918297600,
+   "IQ4_NL": 18402508800,
+   "IQ4_XS": 891289600,
+   "Q2_0": 2123366400
+  },
+  "experts_bpw": 3.331,
+  "bpw": 3.786,
+  "files": [
+   "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+  ],
+  "repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+ },
  "coder/IQ1_M": {
   "arch": "qwen4exp",
   "tensors": 1224,

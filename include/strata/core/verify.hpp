@@ -249,6 +249,14 @@ public:
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
     }
+    /// #3862: a batch_mtp window's draft rows sample through the mask the row's draft leaves (the
+    /// slot's own row holds the state before it).  The window's caller sets one pointer per row -
+    /// nullptr keeps the slot's own row (every x row, and a draft row whose draft the grammar
+    /// refused).  Set on the first stage, it reaches the last; the next window replaces it whole.
+    void set_row_grammar_masks(const uint32_t* const* masks, int n) {
+        row_gmask_.assign(masks, masks + (n > 0 ? n : 0));
+        if (next_) next_->set_row_grammar_masks(masks, n);
+    }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
     /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
@@ -412,6 +420,7 @@ private:
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
+    std::vector<const uint32_t*> row_gmask_;   ///< #3862: the window's per-row grammar masks (set_row_grammar_masks)
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;

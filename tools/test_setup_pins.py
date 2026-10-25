@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+os.environ.pop("HF_ENDPOINT", None)   # these tests expect the original endpoint; a user's mirror must not skew them
 import setup  # noqa: E402
 
 SHA = re.compile(r"/resolve/[0-9a-f]{40}/")

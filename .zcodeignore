@@ -1,0 +1,84 @@
+# Generated, not source: deterministic build products of tools/ (see docs/).
+# tiny-qwen4exp.gguf is ~113 MB, over GitHub's 100 MB file limit -- regenerate with
+#   python tools/make_tiny_model.py
+bench/tiny-*.gguf
+bench/wide-*.gguf
+bench/micro/*.exe
+bench/micro/*.obj
+bench/micro/*.bin
+bench/micro/*.dll
+bench/micro/*.txt
+*.log
+build*/
+pack/
+logs/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
+*.nsys-rep
+
+# Pi harness metadata (local session state, not project source)
+*.sqlite
+*.npz
+*.occ1
+td.log
+
+# created by setup.py on the user's machine
+/.venv/
+/build/
+/third_party/llama.cpp
+/models/
+/packs/
+/mtp/
+/run-*.bat
+/run-*.sh
+/strata-*.json
+/strata-*.log
+/build-strata.bat
+/.strata-mcp/
+
+# image encoder (setup.py --vision): build output and the generated build script
+build-vision*/
+build-vision.bat
+
+# setup.py outputs (engine, downloads) and release builds
+/engine/
+/build-release*/
+/dist/
+*.done
+/third_party/*.zip
+
+/.rocm-win/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

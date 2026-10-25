@@ -28,8 +28,11 @@ time.sleep(120)
 
 
 def running(pid: int) -> bool:
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-    return str(pid) in out
+    # a CJK Windows prints the no-tasks line in its ANSI codepage (GBK here); decode forgivingly -
+    # a pid never appears in it either way, which is all this helper reads
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace").stdout
+    return out is not None and str(pid) in out
 
 
 @unittest.skipUnless(os.name == "nt", "job objects are Windows-only")

@@ -1,0 +1,8 @@
+{
+ "what": "the vocab-map fix acceptance: JSON 49/50 (the one 502 is the recipe item hitting the fixed output budget, finish_reason=len - the canary refused an incomplete answer, pre-fix runs passed it only because the broken vocab kept answers short), tools 30/30, plain 124.3 vs constrained 135.9 tok/s (the MTP drafting more than covers the mask cost)",
+ "incident": "the filler-character corruption was traced to sp_piece_to_text decoding only part of the GPT2 byte map; 88990 of 248320 tokens stayed invalid UTF-8 and were banned by every grammar mask",
+ "contaminated_runs": [
+  "vocab-fix (smoke raced the process cleanup)",
+  "vocab-fix2 (a 65GB orphan engine held RAM/VRAM)"
+ ]
+}

@@ -26,6 +26,10 @@ struct SamplerParams {
     uint64_t seed = 0;           // drives Philox, which is counter-based on (seed, token index)
     uint64_t counter = 0;        // absolute draw index of row 0; advance across decode calls
     bool greedy = false;
+    const uint32_t* grammar_mask = nullptr; // per-row device bitmask [row][mask_stride_words], bit=1 BANS the token
+                                    // (-inf), read at the logit read BEFORE penalties; null = off (upstream mirror;
+                                    // the port tree has no logit_bias, so this rides the plain logit)
+    int mask_stride_words = 0;   // words per row: (n_vocab + 31) / 32; 0 when grammar_mask is null
 };
 
 // logits (n_tokens, n_vocab) -> one sampled token id per row in `out`.

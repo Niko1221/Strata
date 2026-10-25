@@ -1,0 +1,123 @@
+{
+  "stamp": "vocab-fix",
+  "rig": "RTX 4090 48GiB, 96GiB RAM",
+  "model": "swift-qwen3.8-flash-next-iq3-s",
+  "exe": "F:\\Strata-dev\\build\\strata.exe",
+  "engine_args": [
+    "--pack",
+    "F:/Strata-data/packs/swift-iq3_s",
+    "--native",
+    "F:/Strata-data/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--resident-budget-gib",
+    "40",
+    "--expert-profile",
+    "F:/Strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "2",
+    "--max-context",
+    "16384",
+    "--kv",
+    "int8",
+    "--mtp",
+    "F:/Strata-data/mtp/rt"
+  ],
+  "protocol_smoke": {
+    "ok": false,
+    "why": "engine died waiting for INFO line (model loaded)"
+  },
+  "capability": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "grammar",
+    "constrained_decoding": true,
+    "stream_buffered": false
+  },
+  "json_suite": {
+    "n": 50,
+    "passed": 48,
+    "canary_502": 2,
+    "other_failures": 0,
+    "fails": [
+      [
+        5,
+        "person",
+        "canary 502: {\"error\": {\"type\": \"structured_output_failed\", \"code\": \"structured_output_failed\", \"message\": \"grammar engine bug: a constrained stream failed its own schema: model did not return valid JSON: Invalid "
+      ],
+      [
+        33,
+        "recipe",
+        "canary 502: {\"error\": {\"type\": \"structured_output_failed\", \"code\": \"structured_output_failed\", \"message\": \"the constrained answer did not fit the output budget: structured output was incomplete (finish_reason=len"
+      ]
+    ]
+  },
+  "tools_suite": {
+    "n": 30,
+    "parsed": 30,
+    "parse_failures": 0,
+    "rescued_from_reasoning_delta": 0,
+    "fails": []
+  },
+  "perf": {
+    "runs": 3,
+    "plain_med_tok_s": 107.41,
+    "constrained_med_tok_s": 103.69,
+    "constrained_cost_pct": 3.5,
+    "plain_all": [
+      49.13,
+      107.41,
+      111.66
+    ],
+    "constrained_all": [
+      26.25,
+      103.69,
+      109.49
+    ]
+  },
+  "probe": {
+    "slots": 6,
+    "rounds": 2,
+    "plain": [
+      {
+        "tok_s": 132.7,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 1013,
+        "slot_errors": []
+      },
+      {
+        "tok_s": 165.9,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 1064,
+        "slot_errors": []
+      }
+    ],
+    "constrained": [
+      {
+        "tok_s": 93.1,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 770,
+        "slot_errors": []
+      },
+      {
+        "tok_s": 180.8,
+        "cpu_s": 0.0,
+        "cpu_ms_per_tok": 0.0,
+        "tokens": 771,
+        "slot_errors": []
+      }
+    ],
+    "plain_med_cpu_ms_per_tok": 0.0,
+    "constrained_med_cpu_ms_per_tok": 0.0,
+    "plain_med_tok_s": 149.3,
+    "constrained_med_tok_s": 136.95
+  },
+  "acceptance_ok": false
+}

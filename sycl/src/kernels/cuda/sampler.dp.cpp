@@ -172,11 +172,16 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
 
     // `n_vocab` is the "no candidate" index: it loses every comparison to a real one, so a thread with no
     // elements contributes nothing rather than contributing a bogus zero.
+    const uint32_t* mrow =
+        p.grammar_mask ? p.grammar_mask + (size_t)t * p.mask_stride_words : nullptr;
     float bv = sycl::bit_cast<float, int>(0xff800000); // -inf
     int best = n_vocab;
     for (int v = item_ct1.get_local_id(2); v < n_vocab;
          v += item_ct1.get_local_range(2)) {
-        const float s = apply_penalties(l[v], hit_count(v, dpct_local), p);
+        const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31)))
+                              ? sycl::bit_cast<float, int>(0xff800000)
+                              : l[v];
+        const float s = apply_penalties(raw, hit_count(v, dpct_local), p);
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
@@ -510,6 +515,8 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
         // the greedy kernel, whose tie rule this reduction shares).
         float bv = sycl::bit_cast<float, int>(0xff800000); // -inf
         int best = n_vocab;
+        const uint32_t* mrow =
+            p.grammar_mask ? p.grammar_mask + (size_t)t * p.mask_stride_words : nullptr;
         for (int v = item_ct1.get_local_id(2); v < n_vocab;
              v += item_ct1.get_local_range(2)) {
             bool taken = false;
@@ -518,7 +525,10 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
                 taken = true; break;
             }
             if (taken) continue;
-            const float s = apply_penalties(l[v], hit_count(v, dpct_local), p);
+            const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31)))
+                                  ? sycl::bit_cast<float, int>(0xff800000)
+                                  : l[v];
+            const float s = apply_penalties(raw, hit_count(v, dpct_local), p);
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -881,12 +891,17 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
     float prev_v = sycl::bit_cast<float>(
         0x7f800000); // +inf and id -1: round 0 takes every logit
     int prev_i = -1;
+    const uint32_t* mrow =
+        p.grammar_mask ? p.grammar_mask + (size_t)t * p.mask_stride_words : nullptr;
     for (int i = 0; i < k; ++i) {
         float bv = sycl::bit_cast<float, int>(0xff800000); // -inf
         int best = n_vocab;
         for (int v = item_ct1.get_local_id(2); v < n_vocab;
              v += item_ct1.get_local_range(2)) {
-            const float s = apply_penalties(l[v], hit_count(v, dpct_local), p);
+            const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31)))
+                                  ? sycl::bit_cast<float, int>(0xff800000)
+                                  : l[v];
+            const float s = apply_penalties(raw, hit_count(v, dpct_local), p);
             if ((s < prev_v || (s == prev_v && v > prev_i)) && s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -1083,11 +1098,18 @@ sampler_split_part_kernel(const float *__restrict__ logits, int n_vocab,
     // This warp's logits, penalised: `apply_penalties` with a zero count returns the logit unchanged, so only the
     // bitmap's hits go through it.  Past the vocabulary: -inf, which no round picks.
     const int lo = blo + warp * kSplitWarpSpan;
+    const uint32_t* mrow =
+        p.grammar_mask ? p.grammar_mask + (size_t)t * p.mask_stride_words : nullptr;
     float s[kSplitPerLane];
 #pragma unroll
     for (int j = 0; j < kSplitPerLane; ++j) {
         const int v = lo + 32 * j + lane;
-        s[j] = v < n_vocab ? l[v] : sycl::bit_cast<float, int>(0xff800000);
+        // The v >= n_vocab guard keeps the mask read in bounds for the padded lanes.
+        s[j] = v < n_vocab
+                   ? (mrow && (mrow[v >> 5] & (1u << (v & 31)))
+                          ? sycl::bit_cast<float, int>(0xff800000)
+                          : l[v])
+                   : sycl::bit_cast<float, int>(0xff800000);
     }
     if (use_bits) {
 #pragma unroll
@@ -1495,7 +1517,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         }();
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        if (!(multi && shmem == 0 && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
+        if (!(multi && shmem == 0 && !p.grammar_mask && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             /*
             DPCT1049: The work-group size passed to the SYCL kernel may
             exceed the limit. To get the device limit, query
