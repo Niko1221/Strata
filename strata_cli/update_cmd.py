@@ -56,7 +56,10 @@ def add_parsers(sp, components_sp) -> list:
     comp_update.add_argument("--no-control", action="store_true")
     rollback = components_sp.add_parser("rollback", help="return to the previous engine version the last update kept")
     _common(rollback)
-    return [update, comp_update, rollback]
+    install_file = components_sp.add_parser("install-file", help="install an engine package you downloaded yourself (no network; the package's signature is checked)")
+    install_file.add_argument("file", help="the engine package (.tar.gz or .zip) from the release page")
+    _common(install_file)
+    return [update, comp_update, rollback, install_file]
 
 
 def _emit_factory(a, lines: list):
@@ -72,7 +75,7 @@ def _emit_factory(a, lines: list):
         if event.get("event") == "progress":
             pct = event.get("percent", 0)
             if sys.stdout.isatty():
-                print(f"\r  downloading {event.get('label', '')}: {pct}%  ({event['done'] / (1 << 20):.0f} of {event['total'] / (1 << 20):.0f} MiB)   ",
+                print(f"\r  downloading {event.get('label', '')}: {pct}%  ({event['done'] // 1_000_000} of {event['total'] // 1_000_000} MB)   ",
                       end="" if pct < 100 else "\n", flush=True)
             elif pct >= state["pct"] + 10 or pct == 100:
                 state["pct"] = pct
@@ -91,11 +94,19 @@ def _feed_source(a, root: Path) -> str:
     if os.environ.get(ENV_FEED):
         return os.environ[ENV_FEED]
     remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    return remembered or DEFAULT_FEED
+    return remembered if _may_be_remembered(remembered) else DEFAULT_FEED
+
+
+def _may_be_remembered(source) -> bool:
+    """Only an https address is carried over to later runs. A loopback address or a folder is what a test of an update feed uses; once
+    one such run had been made on a PC, every later check (the app's Settings included) tried that dead address and said "No internet
+    connection". Those runs name their feed again each time (--feed or STRATA_UPDATE_FEED)."""
+    return isinstance(source, str) and source.lower().startswith("https://")
 
 
 def _mib(n: int | None) -> str:
-    return f"{(n or 0) / (1 << 20):.0f} MiB"
+    from strata_control.updater import megabytes
+    return f"{megabytes(n)} MB"
 
 
 def _line(name: str, result: dict) -> str:
@@ -193,6 +204,16 @@ def run(a) -> int:
                 print("Saved tuning presets are marked for the short re-check; none were deleted." if out["presets_marked"] else
                       "Saved tuning presets are unchanged.")
                 print("Run `strata update --force` to try the newer version again.")
+            return 0
+        if getattr(a, "components_command", None) == "install-file":
+            ctx.trusted = signing.load_trusted_keys()
+            ctx.serving = updater.serving_now
+            _maybe_wait(a, ctx, machine)
+            out = updater.install_engine_file(ctx, Path(a.file))
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, **out}, ensure_ascii=False))
+            else:
+                print(out.get("note") or _line("Engine", out))
             return 0
         acquisition.require("the update", "`strata update` from a terminal")
         trusted = signing.load_trusted_keys()

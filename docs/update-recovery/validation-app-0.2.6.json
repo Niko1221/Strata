@@ -1,0 +1,158 @@
+{
+  "validatedAtUtc": "2026-10-25T14:18:50.516836+00:00",
+  "environment": {
+    "os": "Windows x64",
+    "node": "v24.18.0",
+    "npm": "12.0.2",
+    "appVersion": "0.2.6"
+  },
+  "source": {
+    "parentHead": "4532a840712cea4df29ac1d67e9f7f78608c3b8b",
+    "upstreamMain": "4b9e05a2a806a3fe24f7b2560d98626c37dade35",
+    "testedTree": "59eab9490b133fb0487ceb1a4878a3822e3cefc0",
+    "testedSources": {
+      "apps/host/package-lock.json": {
+        "gitBlob": "85c844b643a145ef0ce5c46b72479dedfc4e3bcb",
+        "sha256": "e388d101e2b9d183539966b8f9a4d26b45a553f6487287145456bec64f5479d3"
+      },
+      "apps/host/package.json": {
+        "gitBlob": "3912ffc3d2e2f152f90f327ff4a84b14dfabdacb",
+        "sha256": "06150a0c8247991b9a3b0ab2172ff9b72e23e8a679b2df994fe6461c89521003"
+      },
+      "apps/host/src/components/NativeModels.tsx": {
+        "gitBlob": "4da541dde504d7b6691c431a713767776c4bdc4a",
+        "sha256": "fda4b2bfd8ce851c2060484d52fe7aa9543c4dd610d5004b6930ab0436895192"
+      },
+      "apps/host/src/components/NativeOperations.tsx": {
+        "gitBlob": "83d4733d8286fcedbd56857e26c7d44db2511d0c",
+        "sha256": "213b542e7c644cd766b649b7c9a125ce42cbb70fcb7146115b2be753b0ec5b26"
+      },
+      "apps/host/src/components/RecoveredUpdateHistory.tsx": {
+        "gitBlob": "1220a1f20cfdb1eb28bb49ed672b93a843a143ae",
+        "sha256": "af0378c07e3e4965dcf315f508cd901cdda00426b876f260262268fb4affa946"
+      },
+      "apps/host/src/components/SettingsUpdates.tsx": {
+        "gitBlob": "37a3751357da068d25358ad27ad6844d6ff32429",
+        "sha256": "32affc4a04e9dd0d6daa0ddb2d76b00ca2271ffbb6ff37f2eaf6134083bde9d3"
+      },
+      "apps/host/src/lib/engine-version.ts": {
+        "gitBlob": "1448cc05ba13f1217d9c34883ac296bb32602e52",
+        "sha256": "4bcbbf0ead638d38e7fe0fc18ea7c77c55c061611906a0862324d324f764b694"
+      },
+      "apps/host/src/lib/native-job-diagnostics.ts": {
+        "gitBlob": "8c80c7f430333515af113d22aa2c746f7232599e",
+        "sha256": "e5bb981e1ffe07119fce8262acefb55d9e53d78b322902b1b3b47b6dc6203ea5"
+      },
+      "apps/host/src/lib/types.ts": {
+        "gitBlob": "28e044bd39bcede5e6db60582bd638ac6329d64b",
+        "sha256": "d49e49eaeaa40f2e5234e0b1abf70191e22327ccfb5c43826babbd07bf34212f"
+      },
+      "apps/host/src/lib/update-check.ts": {
+        "gitBlob": "16acc17175988f03f19b82a40709cb1420ee8e4b",
+        "sha256": "edf8429a5eb415a8d2d74c09548c5813047be16a0ca51dcfd145dfa030b7a8e1"
+      },
+      "apps/host/tests/native-update-recovery.test.mjs": {
+        "gitBlob": "f5128dbab93f5676f390ed34fa7fc238f82a3850",
+        "sha256": "c532512d13a6d22f8ffa415836e7eac2027ae4859f258653866c74394dcb50e9"
+      }
+    }
+  },
+  "change": "Resolve the SettingsUpdates import conflict by retaining upstream shownEngineVersion and PR RecoveredUpdateHistory; keep the recovered-interruption presentation scope.",
+  "profileIsolation": {
+    "processScoped": true,
+    "allProfileAndTemporaryDirectories": "Task-owned temporary directories",
+    "helperPreloaded": true
+  },
+  "commands": [
+    {
+      "command": [
+        "node",
+        "--import",
+        "./tests/helpers/isolate-profile.mjs",
+        "--test",
+        "--test-reporter=tap",
+        "--test-isolation=none",
+        "tests/native-update-recovery.test.mjs",
+        "tests/native-job-diagnostics.test.mjs",
+        "tests/update-cache.test.mjs",
+        "tests/ui4-fixes.test.mjs",
+        "tests/component-updates.test.mjs",
+        "tests/engine-version.test.mjs"
+      ],
+      "cwd": "apps/host",
+      "log": "affected-tests.tap",
+      "startedAtUtc": "2026-10-25T14:18:37.341557+00:00",
+      "exitCode": 0,
+      "completedAtUtc": "2026-10-25T14:18:38.840596+00:00",
+      "sha256": "1ecc49f6b9f5d52457279d90725c53cd78ebb0bde9cdef6735ff8b4a37f3d036",
+      "tapSummary": {
+        "tests": 63,
+        "suites": 0,
+        "pass": 63,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "command": [
+        "npm.cmd",
+        "run",
+        "typecheck"
+      ],
+      "cwd": "apps/host",
+      "log": "typecheck.log",
+      "startedAtUtc": "2026-10-25T14:18:38.845716+00:00",
+      "exitCode": 0,
+      "completedAtUtc": "2026-10-25T14:18:44.730656+00:00",
+      "sha256": "47c31d6b09b69d2e1a98cd4a36664c1d8e8de5c56ae7e3f5d140715b1c6f5e51"
+    },
+    {
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "cwd": "apps/host",
+      "log": "build.log",
+      "startedAtUtc": "2026-10-25T14:18:44.737065+00:00",
+      "exitCode": 0,
+      "completedAtUtc": "2026-10-25T14:18:50.054578+00:00",
+      "sha256": "f57488fed55243ba2354b168f29e18ad5666fea0c3a4d4f4716dc9a827b3745b"
+    }
+  ],
+  "passed": {
+    "tests": 63,
+    "fail": 0,
+    "skipped": 0,
+    "typecheck": true,
+    "productionBuild": true,
+    "gitDiffCheck": true
+  },
+  "advisories": [
+    "Vite reported chunks larger than 500 kB after minification."
+  ],
+  "sourcesUnchangedAfterValidation": true,
+  "publishedTapSha256": "1ecc49f6b9f5d52457279d90725c53cd78ebb0bde9cdef6735ff8b4a37f3d036",
+  "notRun": [
+    "Fresh interactive browser acceptance or screenshots",
+    "Installed desktop shell or real update/restart",
+    "Signed packaging, GPU backend builds or model execution"
+  ],
+  "limits": "The PR diff from the pinned main contains Host presentation/tests and evidence. Upstream engine/installer changes included by the merge were not independently revalidated. Existing 0.2.2 screenshots and 0.2.3 receipts remain historical.",
+  "dependencyInstallation": {
+    "command": [
+      "npm.cmd",
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--cache",
+      "<task-cache>"
+    ],
+    "exitCode": 0,
+    "logSha256": "a7a8e49390ee4cef23cd65765745c40f801bf31f393c82c227ef96801a279431",
+    "cacheScope": "Task workspace; private absolute path omitted"
+  }
+}

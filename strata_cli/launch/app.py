@@ -24,11 +24,11 @@ from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
 from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, FolderScreen,
-                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, StartScreen,
+                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
 from strata_cli.launch.widgets import CSS, Glyphs
 
-SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen,
+SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen,
            "parallel": ParallelScreen, "tuning": TuningScreen, "advanced": AdvancedScreen, "access": AccessScreen, "save": SaveScreen}
 
 
@@ -148,8 +148,14 @@ class Ctx:
                     tuned_args, tuned_env = list(merged.get("args") or []), dict(merged.get("env") or {})
             except Exception:                                # noqa: BLE001
                 pass
-        exe = self.engine_exe()
-        text = P.engine_help_text(exe) if exe else None
+        if (cfg or {}).get("arch") == "deepseek41" or self.settings.family == "deepseek41":   # DeepSeek runs strata-dsv41: its settings, not the Qwen engine's
+            own = (cfg or {}).get("exe")
+            exe = own if own and Path(str(own)).is_file() else None
+            text = P.dsv41_help_text(exe)
+            exe = exe or "static"
+        else:
+            exe = self.engine_exe()
+            text = P.engine_help_text(exe) if exe else None
         if exe and text:
             self.engine_flags = sorted({p.name for p in P.parse_help(text)})
             self.engine_note = ""

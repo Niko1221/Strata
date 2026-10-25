@@ -44,6 +44,34 @@ class EngineExitIsExplained(unittest.TestCase):
         self.assertIn("render group", nxt)
         self.assertIn(str(log), nxt)
 
+    def test_a_gpu_runtime_start_failure_gets_a_plain_sentence_and_keeps_the_runtime_text_out_of_it(self):
+        cfg, log = self.config_with_log(["strata generate: loading", "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'",
+                                         "  what():  "])
+        text, nxt = R.explain_engine_exit({"state": "failed", "error": "server_exited", "engine_exit_code": 134}, cfg)
+        self.assertIn("stopped while it was loading the model (exit code 134)", text)
+        self.assertNotIn("hsa_exception", text + nxt)
+        self.assertNotIn("terminate called", text + nxt)
+        self.assertIn("graphics card was not ready yet", nxt)
+        self.assertIn("wait a few seconds", nxt)
+        self.assertIn("restart the PC", nxt)
+        self.assertIn(str(log), nxt)
+        text, nxt = R.explain_engine_exit({"error": "server_exited", "engine_exit_code": 134,
+                                           "log_tail": "terminate called after throwing an instance of 'rocr::AMD::hsa_exception' | what():"}, None)
+        self.assertNotIn("hsa_exception", text)
+        self.assertIn("graphics card was not ready yet", nxt)
+
+    def test_a_real_cause_in_the_same_log_wins_over_the_gpu_runtime_start_failure(self):
+        cfg, log = self.config_with_log(["strata generate: CUDA error: out of memory",
+                                         "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'", "  what():  "])
+        text, nxt = R.explain_engine_exit({"state": "failed", "error": "server_exited", "engine_exit_code": 134}, cfg)
+        self.assertIn("out of memory", text)
+        self.assertIn("--context 16k", nxt)
+        self.assertNotIn("graphics card was not ready", nxt)
+        cfg, _ = self.config_with_log(["Permission denied: /dev/dri/renderD128", "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'"])
+        self.assertIn("render group", R.explain_engine_exit({"error": "server_exited", "engine_exit_code": 134}, cfg)[1])
+        cfg, _ = self.config_with_log(["hsaKmtOpenKFD ok", "strata generate: CUDA error: out of memory"])
+        self.assertNotIn("graphics card was not ready", R.explain_engine_exit({"error": "server_exited"}, cfg)[1])
+
     def test_out_of_memory_and_old_engine_get_their_own_next_step(self):
         cfg, _ = self.config_with_log(["strata generate: CUDA error: out of memory"])
         self.assertIn("--context 16k", R.explain_engine_exit({"error": "server_exited"}, cfg)[1])
