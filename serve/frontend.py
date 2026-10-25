@@ -721,6 +721,36 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 FOLLOWERS = (FUNC_END, CALL_END, "<parameter=", "</<", "</invoke>", "<parameter name=")
 
 
+# the model's empty stub: a lone `<` line closed by a parameter closer, after a value or right after the function opener
+# (or a lone `<` line, left open: whatever follows it is the next opener or closer)
+# (or a stray further closer, or an opener cut before its `>`: `<parameter=NAME` + line break)
+STUB = re.compile(r"(?:</parameter>\s*)+|<(?:\s*</parameter>\s*|[ \t]*\n\s*(?:</parameter>\s*)?)")
+
+
+def broken_opener(s: str) -> int:
+    """Length of the `<parameter=NAME` line of `s` when its `>` is missing (the line ends first), else 0."""
+    line = s.split("\n", 1)
+    return len(line[0]) if s.startswith("<parameter=") and len(line) > 1 and ">" not in line[0] else 0
+
+
+def stub_follows(after: str):
+    """`after` (no leading whitespace) begins with a stub: True when what ends the value is certain, None when the
+    follower of a lone `<` line has not arrived, False when text follows it (a `<` line of the value itself);
+    False too when there is no stub."""
+    m = STUB.match(after)
+    if not m:
+        return False
+    rest = after[m.end():]
+    if m.group().rstrip().endswith(PARAM_END) or rest.startswith(FOLLOWERS):
+        return True
+    return None if not rest or any(t.startswith(rest) for t in FOLLOWERS) else False
+
+
+def stub_pending(text: str) -> bool:
+    """`text` (no leading whitespace) is a stub still arriving: `<` and whitespace, then a prefix of the closer."""
+    return text.startswith("<") and PARAM_END.startswith(text[1:].lstrip()) and not text.startswith("<parameter")
+
+
 def param_end(text: str, final: bool = False, names=None) -> int:
     """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a call-format
     follower - `</function>`, `</tool_call>`, `<parameter=` (any name, with or without its `>`), a damaged `<=NAME>`,
@@ -732,11 +762,11 @@ def param_end(text: str, final: bool = False, names=None) -> int:
     at, inner_end = text.find(PARAM_END), -1
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith(FOLLOWERS):
+        if after.startswith(FOLLOWERS) or stub_follows(after):
             follows = True
         elif after.startswith("<="):        # a damaged `<=NAME>` opener, maybe still arriving
             follows = True if ">" in after.split("\n", 1)[0] else (None if "\n" not in after else False)
-        elif not after or any(t.startswith(after) for t in (*FOLLOWERS, "<=")):
+        elif not after or PARAM_END.startswith(after) or stub_pending(after) or stub_follows(after) is None or any(t.startswith(after) for t in (*FOLLOWERS, "<=")):
             follows = None                  # the follower has not arrived
         elif names and "\n" not in after and ">" not in after and any(
                 t.startswith(after) for n in names for t in ("<%s>" % n, "</%s>" % n)):
@@ -849,7 +879,12 @@ def call_end(text: str, schemas: dict | None = None, final: bool = False) -> int
         rest = text[pos:]
         s = rest.lstrip()
         pos += len(rest) - len(s)
-        if s.startswith("<parameter="):
+        stub = STUB.match(s) if stub_follows(s) else None
+        if stub:
+            pos += stub.end()
+        elif broken_opener(s):
+            pos += broken_opener(s)
+        elif s.startswith("<parameter="):
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
@@ -863,7 +898,7 @@ def call_end(text: str, schemas: dict | None = None, final: bool = False) -> int
             if s.startswith(CALL_END):
                 return pos + len(FUNC_END) + len(rest) - len(s)
             return -1 if CALL_END.startswith(s) else text.find(CALL_END, pos)
-        elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s):
+        elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s) or stub_pending(s):
             return -1
         else:
             return text.find(CALL_END, pos)
@@ -932,7 +967,12 @@ def function_end(text: str, schemas: dict | None = None, final: bool = False) ->
         rest = text[pos:]
         s = rest.lstrip()
         pos += len(rest) - len(s)
-        if s.startswith(PARAM_START):
+        stub = STUB.match(s) if stub_follows(s) else None
+        if stub:
+            pos += stub.end()
+        elif broken_opener(s):
+            pos += broken_opener(s)
+        elif s.startswith(PARAM_START):
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
@@ -1061,6 +1101,8 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         gt = rest.find(">")
         if gt < 0:      # cut inside the parameter name: drop the opener, keep the complete parameters
             break
+        if "\n" in rest[:gt]:      # an opener cut before its `>`: the line is dropped
+            continue
         pname = param_name(rest[:gt], props)
         rest = rest[gt + 1:]
         if empty_value(rest):                   # the call's closer where the value should be: empty, no closer
@@ -1361,7 +1403,14 @@ class OutputParser:
             elif self.ss == "between":
                 stripped = rest.lstrip()
                 self.sp += len(rest) - len(stripped)
-                if stripped.startswith("<parameter="):
+                stub = STUB.match(stripped) if stub_follows(stripped) is not False else None
+                if stub:
+                    if stub_follows(stripped) is None:
+                        return out          # a lone `<` line: what follows it has not arrived
+                    self.sp += stub.end()
+                elif broken_opener(stripped):
+                    self.sp += broken_opener(stripped)
+                elif stripped.startswith("<parameter="):
                     b = stripped.find(">")
                     if b < 0:
                         return out

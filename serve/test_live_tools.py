@@ -20,7 +20,7 @@ TOOLS = [
         "required": ["pattern"], "properties": {
             "pattern": {"type": "string"}, "path": {"type": "string"},
             "output_mode": {"type": "string", "enum": ["content", "files_with_matches", "count"]},
-            "-n": {"type": "boolean"}, "head_limit": {"type": "number"}}}},
+            "-n": {"type": "boolean"}, "-A": {"type": "number"}, "head_limit": {"type": "number"}}}},
     {"name": "Read", "description": "read", "input_schema": {
         "type": "object", "required": ["file_path"], "properties": {
             "file_path": {"type": "string"}, "limit": {"type": "number"}, "offset": {"type": "number"}}}},
