@@ -74,6 +74,14 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-23: RTX 4090 24 GB, Ryzen 7 9800X3D, 125.4 GiB RAM](../bench/results/2026-10-23-community-rtx-4090-qwen3-8-flash-next-abliterated-ud-q4-k-x/README.md):
+  the Strata Mnemosyne fork of 0.1.48.1 with the memory system on in the server (engine 0.1.48), Huihui abliterated
+  UD-Q4_K_XL, 393,216-token context, `--kv int8 --spec 4` with MTP and the Q8 PLE n-gram table; `tools/strata_bench.py`
+  suite 1, three runs each - prompt 2,171 tok/s at 7,323 tokens and 2,636 tok/s at 16,297, decode 80.3 tok/s short chat
+  and 97.8 tok/s on agent follow-up turns, conversation-cache hit 46.6 % (46.5-46.7) over five follow-up turns. Speed
+  only, no correctness run; every prompt carries this build's standing text (about 7,000 tokens), which the report's own
+  caveat explains - compare it by the token column, not by the arm names.
+
 ## Run the standard benchmark
 
 ```sh

@@ -1,0 +1,6 @@
+[strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (4093 experts, 11.93 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] memory core on: /home/<user>/Strata-data/memory-eval/pgdata (inject on, recall 96 notes <= 48000 chars; per-turn on 12 notes <= 24000 chars; budget unlimited; floor cos 0.3; auto-shelve on (sub-shelves only); block floor 0.15; exposure decay on (12 turns, step 0.05, cap 3); shelf router on (bm25 vote, unaddressed blocks only); at-rest data-dir 0700, encrypted pg_dump backups: tools/m6_backup.py; tool on (unlimited rounds per request; the header X-Strata-Memory-Tool: 1/on/true turns the tool ON for one request - it is a switch, not a count); embedder on: bge-small-en-v1.5 (CPU, hybrid rerank); GET /memory to inspect)
+ready: http://127.0.0.1:8005/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 393216 tokens, images on)
