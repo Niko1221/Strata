@@ -747,6 +747,42 @@ def param_end(text: str, final: bool = False, names=None) -> int:
     return inner_end if final else -1
 
 
+def held_from(text: str, names=None) -> int:
+    """Where the text a parameter closer still holds begins: the last `</parameter>` whose follower has not arrived
+    (param_end answers -2), or a cut-off prefix of one; len(text) when nothing is held.  Nothing from there on is
+    value until param_end decides (final=True: at the end of the output)."""
+    at = text.rfind(PARAM_END)
+    if at >= 0 and param_end(text[at:], names=names) == -2:
+        return at
+    return len(text) - max((k for k in range(1, len(PARAM_END)) if text.endswith(PARAM_END[:k])), default=0)
+
+
+def empty_value(rest: str) -> bool:
+    """A value that begins with the call's own `</function>`: the parameter is empty, its closer left out."""
+    return rest.lstrip().startswith(FUNC_END)
+
+
+def split_second_call(buf: str, final: bool = False) -> str:
+    """recover: a `<tool_call>` at a line start inside a parameter's value, whose call is closed and not followed by
+    a later `</parameter>` of the value, is a second call the model began before closing the first: the first gets its
+    closers.  (One that a closer follows is part of the value, #210.)  A call whose end has not arrived
+    or whose follower has not is left alone until `final`."""
+    for m in re.finditer(r"\n[ \t]*" + re.escape(CALL_START) + r"\s*" + re.escape(FUNC_START), buf):
+        k = m.start()
+        if buf.rfind(PARAM_START, 0, k) < 0 or buf.rfind(PARAM_START, 0, k) < buf.rfind(PARAM_END, 0, k):
+            continue
+        j = buf.find(CALL_END, k)
+        if j < 0 and not final:
+            return buf
+        tail = buf[j + len(CALL_END):].lstrip() if j >= 0 else ""
+        if j >= 0 and PARAM_END in tail:
+            continue
+        if j >= 0 and not final:
+            return buf
+        return buf[:k] + "\n" + PARAM_END + "\n" + FUNC_END + "\n" + CALL_END + buf[k:]
+    return buf
+
+
 NOT_PARAMS = ("function", "think", "parameter")
 
 
@@ -1009,9 +1045,12 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
             break
         pname = param_name(rest[:gt], props)
         rest = rest[gt + 1:]
-        end = param_end(rest, final=True, names=set(props))
-        value = rest[:end] if end >= 0 else rest
-        rest = rest[end + len(PARAM_END):] if end >= 0 else ""
+        if empty_value(rest):                   # the call's closer where the value should be: empty, no closer
+            value, rest = "", rest[rest.index(FUNC_END):]
+        else:
+            end = param_end(rest, final=True, names=set(props))
+            value = rest[:end] if end >= 0 else rest
+            rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         if pname:
             args[pname] = trim_value(value.removeprefix("\n"), pname, props)
     return ToolCall(name=name, arguments=coerce_args(args, schema))
@@ -1257,7 +1296,7 @@ class OutputParser:
         self.ss = "name"             # name -> between -> str|raw -> ... -> function_done -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
         self.sfirst = True
-        self.sval_started = False
+        self.sval_started, self.sval_at = False, 0
         self.sdeclared = {}
         self.spname = ""
 
@@ -1333,7 +1372,15 @@ class OutputParser:
                     if rest[0] == "\n":          # the value's leading newline is not part of it
                         self.sp += 1
                         rest = rest[1:]
-                    self.sval_started = True
+                    self.sval_started, self.sval_at = True, self.sp
+                if self.sp == self.sval_at:          # nothing of the value yet: `</function>` here is the call's closer
+                    if empty_value(rest):
+                        args('"')
+                        self.sp += len(rest) - len(rest.lstrip())
+                        self.ss = "between"
+                        continue
+                    if rest.strip() and FUNC_END.startswith(rest.lstrip()):
+                        return out
                 end = param_end(rest, names=set(self.sdeclared))
                 if end >= 0:
                     value = trim_value(rest[:end], self.spname, self.sdeclared)
@@ -1347,6 +1394,8 @@ class OutputParser:
                 done = max((len(t) for t in tags[1:] if text.endswith(t)), default=0)
                 safe = rest.find(PARAM_END) if end == -2 else (
                     len(text) - done if done else len(rest) - self._hold(rest, tags))
+                if self.recover:                # a second call may begin in the value (split_second_call)
+                    safe = min(safe, rest.find(CALL_START) if CALL_START in rest else len(rest) - self._hold(rest, (CALL_START,)))
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
                     safe -= 1
                 if safe > 0:
@@ -1647,6 +1696,8 @@ class OutputParser:
                 drop = None
                 if self.recover and ("<=" in self.buf or PARAM_END in self.buf):
                     self.buf = fix_param_openers(self.buf, self.schemas, self.sp if self.stream_tools else 0)
+                if self.recover and CALL_START in self.buf[self.sp:]:
+                    self.buf = split_second_call(self.buf)
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
                     i = function_end(self.buf, self.schemas)      # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
@@ -1699,6 +1750,11 @@ class OutputParser:
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
+        if self.state == "call" and self.recover and CALL_START in self.buf[self.sp:]:
+            split = split_second_call(self.buf, True)       # the output ended: the second call is decided
+            if split != self.buf:
+                self.buf = split
+                out += self.feed("")
         if self.state == "call":                # cut inside a parameter name: the opener is dropped, not the parameters before it
             self.buf = re.sub(r"<parameter=[^>\n]*$", "", self.buf)
         if self.state == "call" and self.bare and function_end(self.buf, self.schemas, True) >= 0:
@@ -1714,6 +1770,7 @@ class OutputParser:
             # `</function>` / `</tool_call>`): complete it, so the client gets whole arguments instead of JSON cut
             # after the last key
             text = self.buf.rstrip()
+            text = text[:held_from(text)].rstrip("\n")    # a closer cut off by the end is not value
             if text.endswith(CALL_END):
                 text = text[:-len(CALL_END)].rstrip()
             bases = ([text[:-len(FUNC_END)].rstrip()] if text.endswith(FUNC_END) else []) + [text]
