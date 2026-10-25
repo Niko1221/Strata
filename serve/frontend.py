@@ -1862,6 +1862,10 @@ class OutputParser:
             if text.endswith("</invoke>"):          # the Anthropic form's closer, written instead of `</function>`
                 text = text[:-len("</invoke>")].rstrip()
             bases = ([text[:-len(FUNC_END)].rstrip()] if text.endswith(FUNC_END) else []) + [text]
+            head = text[text.find(FUNC_START) + len(FUNC_START):].split(">", 1)[0].strip()
+            needs = ((self.schemas.get(func_name(head)) or {}).get("parameters") or {}).get("required")
+            if needs and PARAM_START not in text:       # a stub alone is not a call: it would name a tool and give it nothing
+                bases = []
             for base, tail in [(b, t) for b in bases for t in ("", "\n" + FUNC_END, "\n" + PARAM_END + "\n" + FUNC_END)]:
                 if function_end(base + tail, self.schemas, True) == len(base + tail):
                     body = base + tail

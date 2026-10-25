@@ -130,6 +130,10 @@ class LiveTools(unittest.TestCase):
         for _, args in got:
             self.assertTrue(args)
 
+    def test_stub_alone_is_not_a_call(self):
+        """2026-10-25 (raw log): `<function=Bash>` then a lone `<` and `</` was sent as a Bash call without arguments."""
+        self.assertEqual(self.inputs("<tool_call>\n<function=Bash>\n<\n</"), [])
+
     def test_cut_before_a_parameter_opens_no_block(self):
         self.assertEqual(self.inputs("<tool_call>\n<function=Edit>\n<replace_all>\nfalse\n"), [])
 
