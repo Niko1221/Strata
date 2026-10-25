@@ -74,10 +74,12 @@ and their limits. Report what you actually measured and label estimates separate
   +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
 - [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
   Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
-  decode 73.7 / 73.5 tok/s and prompt 691 / 532 tok/s at a 31K prompt (IQ4_XS needs `--ple-io ram`: the 28.8 GB
-  PLE table read from the SSD costs 28% of decode otherwise), 140,908-token prompt read at 546 tok/s
-  with the needle found; expert cache 12,245 / 9,876 slots at 98-99.7% / 90-94% hit; quality 17/17 on both.
-  RAM runs at JEDEC 2400 (DOCP 3200 and 3600 hung the machine under load); the IQ4_XS pack needs --compat-bf16.
+  final config `--layer-split 24` + `--ple-io ram`: at a 31K prompt decode 73.7 (IQ3_S) against 70.3 (IQ4_XS) tok/s
+  and prompt 691 against 556 tok/s, at a 118K prompt 59.6 decode and 596 tok/s prompt. The 28.8 GB PLE table read
+  from the SSD costs 28% of IQ4_XS decode (57.5 without `--ple-io ram`), an even 24/24 split adds 9% to the prompt
+  rate at 118K, and the 140,908-token needle was found; expert cache 12,245 / 9,876 slots at 98-99.7% / 90-94% hit;
+  quality 17/17 on both. RAM runs at JEDEC 2400 (DOCP 3200 and 3600 hung the machine under load); the IQ4_XS pack
+  needs `--compat-bf16`.
 
 ## Run the benchmark
 
