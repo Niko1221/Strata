@@ -15,12 +15,18 @@ if "%DSV41_ARCH%"=="" set "DSV41_ARCH=86-real;120"
 if "%BUILD_JOBS%"=="" set "BUILD_JOBS=4"
 if "%STRATA_GGML_DIR%"=="" ( echo set STRATA_GGML_DIR to the llama.cpp checkout & exit /b 2 )
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-if not exist "%BD%\build.ninja" (
+rem configure every time: cmake bakes the build id (the commit) in at configure, so a build dir left from an older commit would print the old one
+if exist "%SRCD%\CMakeLists.txt" (
   cmake -G Ninja -S "%SRCD%" -B "%BD%" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=%DSV41_ARCH%" "-DCMAKE_CUDA_COMPILER=%CUDA_ROOT%/bin/nvcc.exe" "-DCUDAToolkit_ROOT=%CUDA_ROOT%" "-DSTRATA_GGML_DIR=%STRATA_GGML_DIR%"
   if errorlevel 1 exit /b 1
 )
+rem a stale exe must not pass for this build, and the build id is baked in when cmake configures (a git checkout gives it; a tarball needs BUILD_ID)
+if exist "%BD%\strata-dsv41.exe" del /q "%BD%\strata-dsv41.exe"
 start "" /belownormal /wait /b cmake --build "%BD%" -j %BUILD_JOBS% --target strata-dsv41
 if errorlevel 1 exit /b 1
 if not exist "%BD%\strata-dsv41.exe" ( echo no strata-dsv41.exe & exit /b 1 )
+for /f "delims=" %%V in ('"%BD%\strata-dsv41.exe" --version') do set "DSV41_VERSION=%%V"
+echo %DSV41_VERSION%
+if not "%DSV41_VERSION:build unknown=%"=="%DSV41_VERSION%" if not "%ALLOW_UNKNOWN_BUILD_ID%"=="1" ( echo strata-dsv41.exe prints no commit: build from a git checkout or put the commit in BUILD_ID & exit /b 1 )
 echo built %BD%\strata-dsv41.exe
 exit /b 0

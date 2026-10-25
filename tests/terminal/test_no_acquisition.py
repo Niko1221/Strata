@@ -48,6 +48,8 @@ NETWORK_ALLOWED = {
     ("strata_control/tune_session.py", "urlopen"): "the loopback engine (127.0.0.1) the auto-tuner a user started measures",
     ("strata_control/loopback.py", "urlopen"): "the one opener for this computer's own servers (no proxy); any other address is passed on unchanged",
     ("strata_control/components.py", "urlopen"): "the component fetcher: only `strata install`/UPDATE call it",
+    ("strata_control/dsv41_engine.py", "urlopen"): "the DeepSeek engine's one 10-second 'is the feed reachable' check, called only by strata launch and "
+                                                  "setup (test_the_deepseek_engine_check_is_reached_only_from_launch_and_setup); never while serving",
 }
 #: Modules that import the installer on purpose, with the explicit command that reaches them.
 INSTALLER_IMPORT_ALLOWED = {
@@ -108,6 +110,26 @@ class ImportGraphTests(unittest.TestCase):
                         found.setdefault(rel, []).append(n)
         for rel in found:
             self.assertIn(rel, INSTALLER_IMPORT_ALLOWED, f"{rel} imports installer code: {found[rel]}")
+
+    def test_the_deepseek_engine_check_is_reached_only_from_launch_and_setup(self):
+        """strata_control/dsv41_engine.py (the engine's self-upgrade, 0.2.4.2) reaches the network; serving must never import it."""
+        importers = set()
+        for d in SERVING_DIRS:
+            for p in sorted((ROOT / d).glob("*.py")):
+                if p.name.startswith("test_") or p.name == "dsv41_engine.py":
+                    continue
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    names = [a.name for a in node.names] if isinstance(node, ast.Import) else                         [node.module] + [f"{node.module}.{a.name}" for a in node.names] if isinstance(node, ast.ImportFrom) and node.module else []
+                    if any(n.endswith("dsv41_engine") for n in names):
+                        importers.add(p.relative_to(ROOT).as_posix())
+        importers.update(p.relative_to(ROOT).as_posix() for p in (ROOT / "strata_cli" / "launch").glob("*.py")
+                         if "dsv41_engine" in p.read_text(encoding="utf-8") and not p.name.startswith("test_"))
+        importers.discard("strata_cli/launch/runner.py")
+        if "dsv41_engine" in (ROOT / "setup.py").read_text(encoding="utf-8"):
+            importers.add("setup.py")
+        importers.discard("setup.py")
+        self.assertEqual(sorted(importers), [], "only strata_cli/launch/runner.py and setup.py may use the DeepSeek engine check")
 
     def test_no_installer_subprocess_or_network_call_on_the_serving_side(self):
         bad = []
@@ -313,7 +335,15 @@ class CliServeIsOfflineTests(unittest.TestCase):
                     contextlib.redirect_stdout(out):
                 code = cli.main(["serve", "--profile", str(cfg), "--plan", "--output", "json"])
         self.assertEqual(code, 0, out.getvalue())
-        self.assertEqual((rec.network, rec.programs), ([], []))
+        # Reading the hardware is not acquiring anything: nvidia-smi / hipInfo / rocminfo and PowerShell's Get-CimInstance (display adapters) only
+        # print what is here. Whether a PC runs them depends on the PC (a machine with nvidia-smi on PATH does), so the check is that nothing else runs.
+        probes = {"nvidia-smi", "hipinfo", "rocminfo", "rocm-smi", "vulkaninfo"}
+
+        def read_only(argv):
+            stem = Path(argv[0]).stem.lower()
+            return stem in probes or (stem in ("powershell", "pwsh") and any("Get-CimInstance" in a for a in argv))
+        self.assertEqual(rec.network, [])
+        self.assertEqual([a for a in rec.programs if not read_only(a)], [])
         self.assertNotIn("setup", sys.modules.get("strata_cli.cli").__dict__.get("__name__", ""))
 
     def test_strata_install_without_the_installer_is_a_typed_error(self):

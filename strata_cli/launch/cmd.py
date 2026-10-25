@@ -105,6 +105,10 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster: auto (recommended: Strata picks from what it measured on cards like yours; "
                         "that is the MTP today), mtp, dflash2 (Qwen3.8-Flash-Next only; downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run "
                         "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
+    g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
+                   help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
+                        "of graphics memory or less), full uses all 6")
+    g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
                    "Main does the last steps of every answer; a helper holds part of the model")
@@ -233,6 +237,12 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.mtp = a.mtp
     if a.drafting:
         s.drafting = a.drafting
+    if getattr(a, "full_quality", False):
+        if getattr(a, "speed", None) == "faster":
+            notices.append(S.Notice("warn", "--full-quality and --speed faster were both given; full quality is used.", ""))
+        s.speed = "full"
+    elif getattr(a, "speed", None):
+        s.speed = a.speed
     if a.gpu and getattr(a, "gpu_roles", None):
         raise ValueError("Use --gpu (which cards) or --gpu-roles (a role for each card), not both.")
     if a.gpu:
@@ -337,6 +347,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
             if s.vision not in (None, "off"):
                 notices.append(S.Notice("warn", "DeepSeek-V4.1-Flash cannot read pictures in this Strata version, so pictures are off.", ""))
             s.vision = "off"                                 # (tuning is DeepSeek's own short tune: tools/dsv41/tune.py, run by the launch)
+        elif s.speed:
+            notices.append(S.Notice("warn", "--speed and --full-quality are for DeepSeek; this model uses all its experts, so they are not used.", ""))
+            s.speed = None
         notices += S.check_context(s, max_fit_tokens=None)
     if s.access != "local" and not s.api_key and not s.no_key:
         from strata_cli.launch import access
@@ -412,6 +425,15 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 
 
 # ------------------------------------------------------------------------------------------------ plain-text run
+
+def _engine_log_of(config) -> str:
+    """Where this launch writes the engine's log (#3656): the config's own "log", printed so a failure can be read without a search."""
+    try:
+        from strata_cli.launch.runner import read_config
+        return str(read_config(Path(config)).get("log") or "")
+    except (OSError, ValueError, TypeError):
+        return ""
+
 
 def _say(line: str = "") -> None:
     sys.stdout.write(line + "\n")
@@ -685,7 +707,7 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting)
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None
@@ -747,6 +769,8 @@ def run_launch(a: argparse.Namespace) -> int:
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
+                if plan.get("speed"):
+                    _say(f"  speed     {plan['speed'].replace('Speed: ', '', 1)}")
                 _placement_lines(plan.get("placement"))
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
@@ -815,6 +839,17 @@ def run_launch(a: argparse.Namespace) -> int:
             from strata_cli.launch import access
             _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key"
                  + (f" --preset \"{s.name}\")" if (a.preset or a.save_preset) else ")"))
+        speed_line = ""
+        if hasattr(runner, "speed_line"):
+            from strata_cli.launch.runner import experts_from_log
+            speed_line = runner.speed_line(experts_from_log(_engine_log_of(result.config) or None))
+            if not isinstance(speed_line, str):
+                speed_line = ""
+        if speed_line:
+            _say(f"  {'Speed':<14} {speed_line.replace('Speed: ', '', 1)}")
+        engine_log = _engine_log_of(result.config)
+        if engine_log:
+            _say(f"  {'Engine log':<14} {engine_log}   (follow it: strata logs --follow)")
         for n in result.notices:
             _say(f"[!] {n}")
         local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
