@@ -9,7 +9,7 @@ TOOLS = [
         "-n": {"type": "boolean"}, "head_limit": {"type": "integer"}}}},
     {"name": "Write", "parameters": {"properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}}},
 ]
-SAMPLE_A = ("<tool_call>\n<Grep>\n<pattern>\nloopRepeat|loop-guard|loopRepeat\\\\(\n</parameter>\n"
+SAMPLE_A = ("<tool_call>\n<Grep>\n<pattern>\nloopRepeat|loop-guard|loopRepeat\\(\n</parameter>\n"
             "<parameter=path>\ntest\n</parameter>\n<parameter=output_mode>\ncontent\n</parameter>\n"
             "<parameter=-n>\ntrue\n</parameter>\n</function>\n</tool_call>")
 SAMPLE_B = ("<tool_call>\n<function=Grep>\n<parameter=pattern>\nfoo\n</parameter>\n"
@@ -29,7 +29,7 @@ class BareParamOpenerTests(unittest.TestCase):
     def test_sample_a_keeps_pattern(self):
         for step in (None, 1, 3, 7):
             self.assertEqual(calls(SAMPLE_A, step), [("Grep", {
-                "pattern": "loopRepeat|loop-guard|loopRepeat\\\\(", "path": "test",
+                "pattern": "loopRepeat|loop-guard|loopRepeat\\(", "path": "test",
                 "output_mode": "content", "-n": True})], step)
 
     def test_sample_b_keeps_head_limit(self):
