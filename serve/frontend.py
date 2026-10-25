@@ -539,6 +539,13 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
+def require_messages(messages: list) -> None:
+    """A chat request with no message at all is a 400 (OpenAI: "empty array. Expected an array with minimum length 1"); the
+    template would otherwise render just the assistant turn and the model would answer nothing."""
+    if not messages:
+        raise ValueError("messages must be a non-empty list: send at least one message")
+
+
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []

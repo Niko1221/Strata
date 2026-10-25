@@ -236,10 +236,10 @@ class VsRange(unittest.TestCase):
 
     def test_the_range_follows_the_toolkit(self):
         self.assertIsNone(self.asked(None))      # #881: without CUDA vswhere gets no version range
-        self.assertEqual(self.asked((13, 0)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 2)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 3)), "[16.0,19.0)")
-        self.assertEqual(self.asked((14, 0)), "[16.0,19.0)")
+        self.assertEqual(self.asked((13, 0)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 2)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 3)), "[17.0,19.0)")
+        self.assertEqual(self.asked((14, 0)), "[17.0,19.0)")
 
 
     def test_vcvars_by_hand(self):
