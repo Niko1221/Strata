@@ -54,19 +54,24 @@ inline Result resolve(const Input& in) {
     r.groups = in.given;
     r.would_be = in.given;
     const bool defaulted = !in.set && in.later_stages > 0 && in.batch > 1;   // the 0.1.41 default
-    if (!in.auto_given && !defaulted) return r;
-    r.from_auto = true;
-    r.would_be = auto_groups(in.later_stages, in.batch);
-    r.groups = r.would_be;
-    if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
-        if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
-        else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
-        else if (in.adapt_async) r.serial = Serial::AdaptAsync;
-        // STRATA_PIPED_MTP: one slot per group (the slots as many as the stages) pipelines AND drafts
-        r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.would_be == in.batch;
-        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
-        if (r.serial != Serial::None) r.groups = 1;
+    if (in.auto_given || defaulted) {
+        r.from_auto = true;
+        r.would_be = auto_groups(in.later_stages, in.batch);
+        r.groups = r.would_be;
+        if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
+            if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
+            else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
+            else if (in.adapt_async) r.serial = Serial::AdaptAsync;
+            if (r.serial != Serial::None) r.groups = 1;
+        }
     }
+    // STRATA_PIPED_MTP: one slot per group (the slots as many as the stages) pipelines AND drafts.
+    // NOTE (0.1.49.2 port): this must NOT live inside the `!in.set` block above.  With --batch-groups given
+    // explicitly (a number or `auto`) the operator has already asked for those groups, and the drafts can
+    // run in them; the PR had the assignment inside, so the feature silently did nothing for everyone who
+    // passed --batch-groups -- which is the documented way to configure a layer split.
+    r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.would_be == in.batch;
+    r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
     return r;
 }
 

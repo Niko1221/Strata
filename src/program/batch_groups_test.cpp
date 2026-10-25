@@ -79,6 +79,26 @@ int main() {
         r = bg::resolve(i);
         check(r.groups == 4 && !r.mtp_piped && !r.mtp_dropped, "STRATA_PIPED_MTP without --batch-mtp: nothing to draft");
     }
+    {   // 0.1.49.2 port: --batch-groups given EXPLICITLY (a number or `auto`) must not silently
+        // drop the drafts: the operator asked for those groups, and one slot per group still drafts.
+        bg::Input i = in(4, 3);
+        i.batch_mtp = true;
+        i.mtp_piped = true;
+        i.set = true;
+        i.auto_given = true;   // --batch-groups auto
+        i.given = 4;
+        auto r = bg::resolve(i);
+        check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
+              "STRATA_PIPED_MTP, --batch-groups auto given: 4 groups of 1 slot, and the drafts stay");
+        i.auto_given = false;  // --batch-groups 4
+        r = bg::resolve(i);
+        check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
+              "STRATA_PIPED_MTP, --batch-groups 4 given: 4 groups of 1 slot, and the drafts stay");
+        i.given = 2;           // two slots per group: the pipelined path drafts only for one slot per group
+        r = bg::resolve(i);
+        check(r.groups == 2 && !r.mtp_piped && r.mtp_dropped,
+              "STRATA_PIPED_MTP, --batch-groups 2 given: dropped as before");
+    }
     {
         bg::Input i = in(2, 1);
         i.adapt_async = true;
