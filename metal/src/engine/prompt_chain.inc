@@ -281,8 +281,8 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         // this layer's tiles and the grid x each one is dispatched over, computed together (src/moe_tiles.h)
         const MoeTile gu2 = gu2_tile(eg.type), dn2 = dn2_tile(ed.type);
         PcMmPlanArgs pa{(uint32_t) nent, TOPK, NEXP, (uint32_t) PC_TM, (uint32_t) nblk,
-                        (uint32_t) (b.k4 ? moe_grid_x(NFF, b.gu3[1], b.gu3[3]) : moe_grid_x(NFF, gu2.tn)),
-                        (uint32_t) (b.k4 ? moe_grid_x(N, b.dn3[1], b.dn3[3]) : moe_grid_x(N, dn2.tn))};
+                        (uint32_t) (b.v3e ? moe_grid_x(NFF, b.gu3[1], b.gu3[3]) : moe_grid_x(NFF, gu2.tn)),
+                        (uint32_t) (b.v3e ? moe_grid_x(N, b.dn3[1], b.dn3[3]) : moe_grid_x(N, dn2.tn))};
         const uint32_t nclr = (uint32_t) b.maxrows;
         D(P_(b.lib, "mm_clear"), {mtl::Arg::B(b.stok), mtl::Arg::V(nclr)}, (b.maxrows + 255) / 256, 1, 256);
         D(P_(b.lib, "mm_hist"), {mtl::Arg::B(b.ids), mtl::Arg::B(b.bcnt), mtl::Arg::V(pa)}, nblk, 1, 1024);
