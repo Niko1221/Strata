@@ -9,6 +9,7 @@
 #include "strata/platform/memory.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -231,6 +232,10 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
+    // --ple-io ram: the page-locked private copy of the table, when it was read into RAM instead of faulted in
+    // through the mapping.  `data` points into it; close() releases both.
+    void* owned = nullptr;
+    uint64_t owned_bytes = 0;
     // the table is shared by the prompt path and the decode windows; they can use it at once (one on a worker thread)
     std::recursive_mutex mu;
     uint32_t rows[PLE_N_HEADS] = {};
@@ -379,34 +384,98 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             (void) sink;
         }
 #else
+        // --ple-io ram: hold the table in page-locked RAM, and get it there with the unbuffered reader.
+        // Faulting it in through the mapping (~page at a time: MADV_POPULATE_READ, or the per-page toucher this
+        // replaced) delivers ~200 MB/s on this box even over eight threads, because every page is its own fault
+        // and the read-ahead window is one 128 KiB request; the same drive does 940 MB/s for the unbuffered
+        // expert-complement copy of this engine (4 MiB requests, a few workers).  So read the table into an
+        // anonymous region, lock it first (no swap window while it is being filled) and point the row readers at
+        // it.  The page-cache populate stays as the fallback for old kernels or a refused lock.
         const uint64_t page = 4096;
-        const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
-        const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
-        madvise((void*) a0, a1 - a0, MADV_WILLNEED);
-        // Fault the table in with several threads first: mlock (and a single toucher) brings it in one page at a time
-        // from one thread, ~0.5 GB/s from a cold file - 106 s for a 54 GB Q8_0 table.  The pages are then resident
-        // and mlock only pins them.
+        bool in_ram = false;
+        double read_s = 0.0, mlock_s = 0.0;
         {
+            const uint64_t table_off = impl_->file->data_start() + t->offset;   // validated above
+            const uint64_t lead = table_off & (page - 1);                       // O_DIRECT wants an aligned offset
+            const uint64_t total = (lead + need + page - 1) / page * page;
+            void* map = mmap(nullptr, (size_t) total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (map != MAP_FAILED) {
+                const auto tl0 = std::chrono::steady_clock::now();
+                const bool locked_here = mlock(map, (size_t) total) == 0;
+                mlock_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tl0).count();
+                uint64_t read_len = (lead + need + 511) / 512 * 512;            // O_DIRECT: 512-byte multiples
+                const uint64_t avail = impl_->file->file_size() - (table_off - lead);
+                if (read_len > avail) read_len = avail / 512 * 512;
+                const auto tr0 = std::chrono::steady_clock::now();
+                const bool filled = locked_here &&
+                    strata::platform::read_range_direct(impl_->file->path(), table_off - lead, read_len, map, 8);
+                read_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tr0).count();
+                if (filled) {
+                    impl_->data = (const uint8_t*) map + lead;
+                    impl_->owned = map;
+                    impl_->owned_bytes = total;
+                    impl_->locked = true;
+                    in_ram = true;
+                } else {
+                    if (locked_here) munlock(map, (size_t) total);
+                    munmap(map, (size_t) total);
+                }
+            }
+        }
+        if (in_ram) {
+            std::fprintf(stderr,
+                         "strata: PLE table %.1f GiB: read into page-locked RAM in %.1f s (%.0f MB/s), "
+                         "mlock in %.1f s\n",
+                         (double) need / (1ull << 30), read_s,
+                         read_s > 0.0 ? (double) need / read_s / 1e6 : 0.0, mlock_s);
+        } else {
+            const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
+            const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
             constexpr uintptr_t kPiece = 64ull << 20;
             const uintptr_t pieces = (a1 - a0 + kPiece - 1) / kPiece;
             const unsigned threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
             std::atomic<uintptr_t> next{0};
-            auto touch = [&] {
-                volatile uint8_t sink = 0;
-                for (uintptr_t i; (i = next.fetch_add(1)) < pieces;)
-                    for (uintptr_t p = a0 + i * kPiece, e = std::min(a1, p + kPiece); p < e; p += page)
-                        sink = sink + *(const volatile uint8_t*) p;
-                (void) sink;
-            };
-            std::vector<std::thread> pool;
-            for (unsigned t = 0; t < threads; ++t) pool.emplace_back(touch);
-            for (auto& t : pool) t.join();
-        }
-        if (mlock((const void*) a0, a1 - a0) == 0) {
-            impl_->locked = true;
-        } else {
-            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted in "
-                                 "but may be reclaimed\n", std::strerror(errno));
+            // Fault the table in with MADV_POPULATE_READ (Linux 5.14+) instead of the userspace toucher: the
+            // advise fills the page tables from kernel side, where the touch loop pays one page fault per 4 KiB
+            // page.  On kernels without the advise (ENOSYS/EINVAL) the WILLNEED + touch pool below runs unchanged.
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22   // Linux 5.14; a build host without the header definition still gets the advise
+#endif
+            const auto tp0 = std::chrono::steady_clock::now();
+            const int populate_errno = madvise((void*) a0, a1 - a0, MADV_POPULATE_READ) == 0 ? 0 : errno;
+            const bool fallback = populate_errno != 0;
+            const double populate_s =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - tp0).count();
+            if (fallback) {
+                madvise((void*) a0, a1 - a0, MADV_WILLNEED);
+                auto touch = [&] {
+                    volatile uint8_t sink = 0;
+                    for (uintptr_t i; (i = next.fetch_add(1)) < pieces;)
+                        for (uintptr_t p = a0 + i * kPiece, e = std::min(a1, p + kPiece); p < e; p += page)
+                            sink = sink + *(const volatile uint8_t*) p;
+                    (void) sink;
+                };
+                std::vector<std::thread> tpool;
+                for (unsigned t = 0; t < threads; ++t) tpool.emplace_back(touch);
+                for (auto& t : tpool) t.join();
+            }
+            const auto tm0 = std::chrono::steady_clock::now();
+            const bool locked_ok = mlock((const void*) a0, a1 - a0) == 0;
+            const double lock_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tm0).count();
+            char how[96];
+            if (fallback)
+                std::snprintf(how, sizeof how, "touched x%u after MADV_POPULATE_READ errno %d", threads,
+                              populate_errno);
+            else
+                std::snprintf(how, sizeof how, "populated");
+            std::fprintf(stderr, "strata: PLE table %.1f GiB: %s in %.1f s, mlock in %.1f s\n",
+                         (double) need / (1ull << 30), how, populate_s, lock_s);
+            if (locked_ok) {
+                impl_->locked = true;
+            } else {
+                std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted "
+                                     "in but may be reclaimed\n", std::strerror(errno));
+            }
         }
 #endif
     }
@@ -454,6 +523,14 @@ void PleTable::close() {
     impl_->pending = false;
     impl_->locked = false;   // the unmap below releases the lock
     impl_->mode = PleIo::Mmap;
+#if !defined(_WIN32)
+    if (impl_->owned != nullptr) {          // --ple-io ram's private copy
+        munlock(impl_->owned, (size_t) impl_->owned_bytes);
+        munmap(impl_->owned, (size_t) impl_->owned_bytes);
+        impl_->owned = nullptr;
+        impl_->owned_bytes = 0;
+    }
+#endif
     delete impl_->file;
     impl_->file = nullptr;
     impl_->data = nullptr;
