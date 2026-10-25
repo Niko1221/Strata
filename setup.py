@@ -7274,13 +7274,99 @@ def control_engine_step(gpu, vision):
     return llama, eng, meta, [], gpu, "none"
 
 
-def engine_step(a, gpu, hip, amd, cuda_tk, vision):
+def local_engine_build() -> Path | None:
+    """A build of this tree, for the engines a ready-made download cannot be: q4lm8v and its exact-cell window
+    exist only in a build from this source (until the feature is released).  The folders a build of this tree
+    leaves are found by their name (build-hip*: setup --build and tools/hip/build_windows.bat), newest first."""
+    dirs = [p for p in ROOT.glob("build-hip*") if (p / EXE).is_file()]
+    return max(dirs, key=lambda p: (p / EXE).stat().st_mtime) if dirs else None
+
+
+def local_rocm_lib_dirs() -> list[str]:
+    """The ROCm bin folder a self-build links against: STRATA_ROCM_BIN if set, else ROCM_PATH/HIP_PATH, else the
+    newest ROCm under C:\\Program Files\\AMD\\ROCm.  [] when none is found (the engine then needs it on PATH)."""
+    asked = os.environ.get("STRATA_ROCM_BIN")
+    if asked and Path(asked).is_dir():
+        return [asked]
+    for key in ("ROCM_PATH", "HIP_PATH"):
+        root = os.environ.get(key)
+        if root and (Path(root) / "bin").is_dir():
+            return [str(Path(root) / "bin")]
+    base = Path("C:/Program Files/AMD/ROCm")
+    if base.is_dir():
+        vers = [p for p in base.iterdir() if (p / "bin").is_dir()]
+        vers.sort(key=lambda p: [int(x) for x in p.name.split(".") if x.isdigit()] or [0])
+        if vers:
+            return [str(vers[-1] / "bin")]
+    return []
+
+
+def install_local_engine(src: Path, gpu: dict, hip: bool, llama: Path | None = None, vision: str = "none") -> Path:
+    """Install an engine built from this tree into engine/ instead of downloading the ready-made one (--engine-dir,
+    or the automatic choice for q4lm8v): strata.exe and, when the build made it, strata-device.exe, with a
+    BUILD.json that says "source": "local" - the same word setup already uses for a --build engine, so nothing
+    else in setup treats it as a downloaded package.  With `vision` wanted, the CPU image reader from this tree
+    goes beside it (copied from the build folder or build-vision, else compiled once by build_vision_cpu)."""
+    src = Path(src)
+    if not (src / EXE).is_file():
+        fail(f"{src} has no {EXE}", "point --engine-dir at the folder the build made (strata.exe is in it)")
+    eng = ROOT / "engine"
+    eng.mkdir(exist_ok=True)
+    try:
+        shutil.copy2(src / EXE, eng / EXE)
+    except PermissionError:
+        fail(f"{eng / EXE} is in use: a model is running from it",
+             "close the Strata window (or stop the server) and run setup again")
+    dev = "strata-device.exe" if WIN else "strata-device"
+    if (src / dev).is_file():
+        shutil.copy2(src / dev, eng / dev)
+    libs = local_rocm_lib_dirs() if hip else []
+    meta = {"source": "local", "backend": "hip" if hip else "cuda",
+            "version": binary_engine_version(src / EXE) or source_version(),
+            "archs": [str(gpu["arch"])] if gpu.get("arch") else [], "vision": "none",
+            **({"lib_dirs": libs} if libs else {})}
+    (eng / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    ok(f"engine from this tree (not the ready-made one): {eng / EXE}")
+    if hip and not libs:
+        warn("no ROCm bin folder found for the engine's libraries: set STRATA_ROCM_BIN to it (e.g. "
+             "C:\\Program Files\\AMD\\ROCm\\7.1\\bin)")
+    if vision != "none":
+        reader = next((p for p in (src / VEXE, ROOT / "build-vision" / "bin" / VEXE) if p.is_file()), None)
+        if reader is not None:
+            try:
+                shutil.copy2(reader, eng / VEXE)
+            except PermissionError:
+                fail(f"{eng / VEXE} is in use: a model is running from it",
+                     "close the Strata window (or stop the server) and run setup again")
+            meta.update({"vision": "cpu", "vision_src": source_hash(VISION_SOURCES)})
+            (eng / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+            ok(f"image reader (CPU, from this tree): {eng / VEXE}")
+        elif llama is not None:
+            build_vision_cpu(eng, eng / "BUILD.json", meta, llama, source_hash(VISION_SOURCES))
+    return eng
+
+
+def engine_step(a, gpu, hip, amd, cuda_tk, vision, kv=None):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
+    # a self-built engine (--engine-dir / STRATA_ENGINE_DIR), or the automatic one for q4lm8v: the ready-made
+    # engine carries neither q4lm8v nor its window, so a download would only give a model that cannot start
+    local = getattr(a, "engine_dir", None) or os.environ.get("STRATA_ENGINE_DIR")
+    if not local and kv == "q4lm8v" and hip:
+        local = local_engine_build()
+        if local is None:
+            fail("q4lm8v and its exact-cell window are not in the ready-made engine yet",
+                 "build this tree (tools\\hip\\build_windows.bat on Windows), then run setup again with "
+                 "--engine-dir <the build folder> (docs/AMD_HIP.md); --kv int8 needs no build")
+        say(f"  q4lm8v is only in an engine built from this tree: using {local} instead of the ready-made one")
+    if local:
+        eng = install_local_engine(Path(local), gpu, hip, llama, vision)
+        meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+        return llama, eng, meta, meta.get("lib_dirs") or [], gpu, vision
     if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
@@ -7975,6 +8061,10 @@ def main() -> int:
                          "Volta). 12 also runs with an older driver (Windows 528+, Linux 525+). docs/OLDER_GPUS.md")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
+    ap.add_argument("--engine-dir", metavar="DIR", default=os.environ.get("STRATA_ENGINE_DIR"),
+                    help="install an engine you built yourself from this folder (strata.exe in it) instead of the "
+                         "ready-made one; q4lm8v and its exact-cell window exist only in a build from this tree, "
+                         "so setup picks the newest build-hip*/ folder by itself when q4lm8v is chosen")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--kv-check", metavar="CONFIG", nargs="?", const="auto", default=None,
                     help="check a Strata config's KV cache settings: --kv mode, STRATA_KV_WINDOW env and the "
@@ -8738,7 +8828,7 @@ def main() -> int:
 
     # ---- 4. the engine
     step(4, "the Strata engine")
-    llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
+    llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision, kv=kv)
     reader = None
     if hip and vision != "none":                       # AMD: the engine folder's reader (GPU, else CPU), settled now the engine is known
         vision, reader = hip_reader(eng, vision, gpu)
