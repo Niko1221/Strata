@@ -20,7 +20,7 @@ TOOLS = [
         "required": ["pattern"], "properties": {
             "pattern": {"type": "string"}, "path": {"type": "string"},
             "output_mode": {"type": "string", "enum": ["content", "files_with_matches", "count"]},
-            "-n": {"type": "boolean"}, "-A": {"type": "number"}, "head_limit": {"type": "number"}}}},
+            "-n": {"type": "boolean"}, "-A": {"type": "number"}, "-C": {"type": "number"}, "head_limit": {"type": "number"}}}},
     {"name": "Read", "description": "read", "input_schema": {
         "type": "object", "required": ["file_path"], "properties": {
             "file_path": {"type": "string"}, "limit": {"type": "number"}, "offset": {"type": "number"}}}},
@@ -148,7 +148,7 @@ class LiveTools(unittest.TestCase):
                 "\n<parameter=old_string>\n" + old + "\n" + PE + "\n<parameter=new_string>\n" + new + "\n" + PE +
                 "\n</function>\n</tool_call>")
         got = self.inputs(text)
-        self.assertEqual(got, [("Edit", {"file_path": path, "old_string": old, "new_string": new})])
+        self.assertEqual(got, [("Edit", {"replace_all": False, "file_path": path, "old_string": old, "new_string": new})])
         for _, args in got:
             self.assertTrue(args)
 

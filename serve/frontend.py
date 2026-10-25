@@ -1125,7 +1125,7 @@ def fix_fused(buf: str, schemas: dict) -> str:
 _DAMAGED_PARAM = re.compile(r"(?:</parameter>|<function=[^>\n]*>)\s*<=([^>\s]+)>")
 
 
-_BARE_PARAM = re.compile(r"</parameter>\s*</?([^<>\s=/]+)>")
+_BARE_PARAM = re.compile(r"(?:(?:</parameter>\s*)+|<function=[^>\n]*>\s*)</?(?!parameter>)([^<>\s=/]+)>")
 
 
 def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
@@ -1142,6 +1142,8 @@ def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
         name = func_name(buf[f + len(FUNC_START):]) if f >= 0 else ""
         props = ((schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
         bare = buf[cut] == "<" and buf[cut:cut + 2] != "<="
+        if m.group(0).startswith(FUNC_START) and buf[m.end():].lstrip().startswith("<"):
+            continue                    # a first `<NAME>` whose value begins with a tag is not an opener
         if m.group(1) in props and not (bare and PARAM_START + m.group(1) + ">" in buf[f:cut]):
             out += [buf[last:cut], PARAM_START + m.group(1) + ">"]
             last = m.end()
@@ -1197,10 +1199,37 @@ def fix_elements(buf: str, schemas: dict, start: int = 0) -> str:
                                  r"\1</function>\2", text[start:])
 
 
+_SPACED_TAG = re.compile(r"(?m)^<(/?)\s+([^<>\s=/]+)(?=>|[ \t]*$)")
+_CUT_CLOSER = re.compile(r"(?m)^</([^<>\s=/]+)[ \t]*\n(?=\s*(?:<parameter=|<=|<[^<>\s=/]+>|</parameter>|</function>|</tool_call>|</invoke>))")
+_TAIL_JUNK = re.compile(r"(</parameter>)\s*(?:</(?!function>|tool_call>)[^<>\s]*>?\s*)+(?:<\|im_end\|>)?\Z")
+_JUNK_BEFORE_END = re.compile(r"(</parameter>)\s*(?:</(?!parameter>|function>|tool_call>)[^<>\s]*>\s*)+(?=</function>)")
+
+
+def drop_tail(text: str) -> str:
+    """A value's closer followed, up to the end of the output, only by closing tags of any name (`</end_parameter>`,
+    `</invoke` cut by the end - Coder-L's degenerate tail): they are not part of the value, the call is complete."""
+    return _TAIL_JUNK.sub(r"\1", text)
+
+
+def fix_tags(buf: str, schemas: dict, start: int = 0) -> str:
+    """recover: a tag of a declared parameter that stands on its own line after a `<` / `</` and whitespace
+    (`< description>`) is written without the whitespace (cut_name's rule); a closer cut before its `>` (`</parameter`
+    or `</NAME` ending a line, an opener or closer line following) is `</parameter>`; closing tags of any other name
+    between a `</parameter>` and the `</function>` are dropped.  Only text from `start` on is rewritten."""
+    def declared(text: str, m, name: str) -> bool:
+        f = text.rfind(FUNC_START, 0, m.start())
+        props = (((schemas.get(func_name(text[f + len(FUNC_START):])) or {}).get("parameters") or {}).get("properties") or {}) if f >= 0 else {}
+        return m.start() >= start and (name in props or name == "parameter")
+    text = buf
+    text = _SPACED_TAG.sub(lambda m: "<" + m.group(1) + m.group(2) if declared(text, m, m.group(2)) else m.group(0), text)
+    text = _CUT_CLOSER.sub(lambda m: PARAM_END + "\n" if declared(text, m, m.group(1)) else m.group(0), text)
+    return text[:start] + _JUNK_BEFORE_END.sub(r"\1\n", text[start:])
+
+
 def fix_forms(buf: str, schemas: dict, start: int = 0) -> str:
     """fix_param_openers and fix_elements, repeated while they rewrite: an element's closer opens the next one."""
     while True:
-        fixed = fix_elements(fix_param_openers(buf, schemas, start), schemas, start)
+        fixed = fix_elements(fix_param_openers(fix_tags(buf, schemas, start), schemas, start), schemas, start)
         if fixed == buf:
             return buf
         buf = fixed
@@ -1218,7 +1247,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     if props:       # a declared name written as an element; a stray closer where `</function>` belongs
         tail = "\n" + CALL_END if re.search(r"</[^<>\s]+>\s*$", body) else ""      # the wrapper's closer, as a call has it
         body = fix_forms(body + tail, {name: schema}).removesuffix(tail)
-        body = re.sub(r"(</parameter>\s*)</(?!parameter>|function>)[^<>\s=/]+>\s*$", r"\1</function>", body)
+        body = re.sub(r"(</parameter>\s*)</(?!parameter>|function>)[^<>\s=/]+>\s*$", r"\1</function>", drop_tail(body))
     rest = body[body.index(">") + 1:]
     args = {}
     if rest.lstrip().startswith(ARGS_START):          # recover: the arguments as one JSON object
@@ -1984,6 +2013,8 @@ class OutputParser:
             if split != self.buf:
                 self.buf = split
                 out += self.feed("")
+        if self.state == "call" and self.recover:
+            self.buf = drop_tail(self.buf)              # the degenerate tail of closing tags is not the last value's
         if self.state == "call":                # cut inside a parameter name: the opener is dropped, not the parameters before it
             self.buf = re.sub(r"<parameter=[^>\n]*$", "", self.buf)
         if self.state == "call" and self.bare and function_end(self.buf, self.schemas, True) >= 0:
