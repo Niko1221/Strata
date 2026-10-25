@@ -591,6 +591,35 @@ class Completions(unittest.TestCase):
 
     def test_not_asked_no_logprobs(self):
         self.assertIsNone(self.post({})["choices"][0]["logprobs"])
+        self.assertIsNone(self.post({"logprobs": False})["choices"][0]["logprobs"])   # as chat: not asked
+
+    def test_a_request_reads_only_its_own_lines(self):
+        # as Api's: A's last "." is held by its stop string and sent after A has left the queue, when B is
+        # already generating on the same engine; each reply's tokens are its own
+        first_out = threading.Event()
+        engine = NextEngine(self.tok, ["Six.", "Bonjour!"], first_out)
+        svc = Service(engine, self.tok, TEMPLATE)
+        svc.fifo = HandOver(engine)
+        httpd = serve(svc, port=0)
+        got = {}
+        try:
+            self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            a = threading.Thread(target=lambda: got.update(a=self.post({"logprobs": 1, "stop": [".!"]})))
+            b = threading.Thread(target=lambda: got.update(b=self.post({"logprobs": 1})))
+            a.start()
+            self.assertTrue(engine.first_in.wait(10))
+            b.start()
+            a.join(30)
+            first_out.set()
+            b.join(30)
+        finally:
+            first_out.set()
+            httpd.shutdown()
+            httpd.server_close()
+        for key, text in (("a", "Six."), ("b", "Bonjour!")):
+            choice = got[key]["choices"][0]
+            self.assertEqual(choice["text"], text)
+            self.assertEqual("".join(t for t in choice["logprobs"]["tokens"] if t != "<|im_end|>"), text, key)
 
     def test_refusals(self):
         self.assertIn("stream", self.refused({"logprobs": 1, "stream": True}))

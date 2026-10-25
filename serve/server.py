@@ -7781,7 +7781,7 @@ def make_handler(svc: Service):
                     raise ValueError(f"{key} must be 1 (the server generates one sequence at a time)")
             if req.get("suffix") not in (None, ""):
                 raise ValueError("suffix is not supported")
-            if req.get("logprobs") is not None and top_logprobs(req) is None:
+            if req.get("logprobs") not in (None, False) and top_logprobs(req) is None:
                 raise ValueError("logprobs must be a whole number 0..20 (or true with top_logprobs)")
             if top_logprobs(req) is not None and req.get("stream"):
                 raise ValueError("logprobs on /v1/completions are not supported with stream: true")
