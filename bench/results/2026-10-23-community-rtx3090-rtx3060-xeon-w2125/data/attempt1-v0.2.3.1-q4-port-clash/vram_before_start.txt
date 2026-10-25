@@ -1,0 +1,3 @@
+index, name, memory.used [MiB], memory.total [MiB]
+0, NVIDIA GeForce RTX 3090, 23896 MiB, 24576 MiB
+1, NVIDIA GeForce RTX 3060, 11673 MiB, 12288 MiB

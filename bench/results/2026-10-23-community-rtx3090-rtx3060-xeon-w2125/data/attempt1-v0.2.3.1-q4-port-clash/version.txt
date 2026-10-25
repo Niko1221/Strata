@@ -1,0 +1,6 @@
+2026-10-23T22:00:06+00:00
+engine: strata 0.1.48.1 (~/strata-0.2.3.1/build/strata)
+commit 7ddc17a38fe7f31637e895ecfba58c2cd43d65ec 2026-10-23 14:37:21 +0200
+v0.2.3.1
+run script: ~/strata-0.2.3.1/run-unsloth-ud-iq4_xs.sh
+config: ~/strata-0.2.3.1/strata-unsloth-ud-iq4_xs.json

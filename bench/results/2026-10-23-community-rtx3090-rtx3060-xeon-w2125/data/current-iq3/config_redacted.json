@@ -1,0 +1,53 @@
+{
+ "exe": "~/strata-src/Strata/engine/strata",
+ "args": [
+  "--pack",
+  "~/strata-src/Strata-data/packs/iq3_s",
+  "--native",
+  "~/strata-src/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "~/strata-src/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "~/strata-src/Strata/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "~/strata-src/Strata-data/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--expert-cache-device1",
+  "auto",
+  "--remote-expert-opt",
+  "--conversation-cache-mib",
+  "24576",
+  "--conversation-cache-slots",
+  "12"
+ ],
+ "cwd": "~/strata-src/Strata",
+ "tokenizer": "~/strata-src/Strata-data/packs/iq3_s/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_s",
+ "log": "~/strata-src/Strata/strata-iq3_s.log",
+ "lib_dirs": [
+  "/usr/local/cuda/bin",
+  "/usr/local/cuda/lib64"
+ ],
+ "port": 8080,
+ "gpu": 0,
+ "gpus_asked": true,
+ "host": "0.0.0.0",
+ "env": {
+  "CUDA_VISIBLE_DEVICES": "0,1",
+  "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+ },
+ "fit_max_tokens": true
+}

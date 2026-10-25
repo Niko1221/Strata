@@ -1,0 +1,3 @@
+server.log:358:[strata] 400 invalid request: prompt (280646 tokens) + max tokens (256) exceeds the context (262144); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+~/strata-src/Strata/strata-unsloth-ud-iq4_xs.log:40:strata generate: resident RAM mode: 39.72 GiB of experts in RAM (page-locked), 6970 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+~/strata-src/Strata/strata-unsloth-ud-iq4_xs.log:170:strata generate: resident RAM mode: 39.72 GiB of experts in RAM (page-locked), 6970 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)

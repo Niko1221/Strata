@@ -1,0 +1,213 @@
+{
+ "label": "iq3_new",
+ "depths": {
+  "1000": {
+   "depth": 1000,
+   "cold": [
+    {
+     "prompt_tokens": 979,
+     "ttft": 1.847761869430542,
+     "prefill_tps": 529.8301779015042,
+     "decode_tps": 94.21873455634594,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 968,
+     "ttft": 1.8318815231323242,
+     "prefill_tps": 528.4184527091152,
+     "decode_tps": 106.60403538399021,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 968,
+     "ttft": 1.8646957874298096,
+     "prefill_tps": 519.119529590527,
+     "decode_tps": 129.1452977623779,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "multi-turn",
+    "ttft": 3.588373899459839,
+    "cached": 961,
+    "new_tokens": 2264,
+    "eff_prefill_tps": 630.9264484230035,
+    "prose_decode_tps": 97.83340155602623,
+    "prompt_tokens": 3225,
+    "hit": false,
+    "expected_cached": 0,
+    "expected_ttft_2500": 4.73109897503183
+   },
+   "prompt_tokens": 968,
+   "cold_ttft": 1.847761869430542,
+   "cold_prefill_tps": 528.4184527091152,
+   "code_decode_tps": 106.60403538399021,
+   "cache_verdict": "NO HIT (prompt below the checkpoint interval; nothing to reuse)",
+   "peak_ram_used_mb": 55601,
+   "min_ram_avail_mb": 115730,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23896,
+   "peak_vram1_mib": 11673
+  },
+  "150000": {
+   "depth": 150000,
+   "cold": [
+    {
+     "prompt_tokens": 152346,
+     "ttft": 86.48507714271545,
+     "prefill_tps": 1761.5293300669957,
+     "decode_tps": 105.37335089904745,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 152333,
+     "ttft": 87.47619414329529,
+     "prefill_tps": 1741.4223548690559,
+     "decode_tps": 104.39233767932333,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 152334,
+     "ttft": 86.50784039497375,
+     "prefill_tps": 1760.927094058527,
+     "decode_tps": 97.88893472191855,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "append-to-user-message",
+    "ttft": 6.889952182769775,
+    "cached": 147456,
+    "new_tokens": 7700,
+    "eff_prefill_tps": 1117.5694396335539,
+    "prose_decode_tps": 82.38633213319356,
+    "prompt_tokens": 155156,
+    "hit": true,
+    "expected_cached": 147456,
+    "expected_ttft_2500": 1.4197067036080875
+   },
+   "prompt_tokens": 152334,
+   "cold_ttft": 86.50784039497375,
+   "cold_prefill_tps": 1760.927094058527,
+   "code_decode_tps": 104.39233767932333,
+   "cache_verdict": "WORKING (append-to-user-message)",
+   "peak_ram_used_mb": 69132,
+   "min_ram_avail_mb": 102199,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23896,
+   "peak_vram1_mib": 11673
+  },
+  "200000": {
+   "depth": 200000,
+   "cold": [
+    {
+     "prompt_tokens": 199638,
+     "ttft": 114.70314502716064,
+     "prefill_tps": 1740.475380624721,
+     "decode_tps": 104.04319677707078,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 199629,
+     "ttft": 114.05184864997864,
+     "prefill_tps": 1750.3355040973936,
+     "decode_tps": 107.70307295086259,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 199628,
+     "ttft": 113.65125823020935,
+     "prefill_tps": 1756.4961717857814,
+     "decode_tps": 110.50527544967036,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "append-to-user-message",
+    "ttft": 5.677044630050659,
+    "cached": 196608,
+    "new_tokens": 5622,
+    "eff_prefill_tps": 990.3039990632999,
+    "prose_decode_tps": 78.36783501969953,
+    "prompt_tokens": 202230,
+    "hit": true,
+    "expected_cached": 196608,
+    "expected_ttft_2500": 1.428297600173054
+   },
+   "prompt_tokens": 199629,
+   "cold_ttft": 114.05184864997864,
+   "cold_prefill_tps": 1750.3355040973936,
+   "code_decode_tps": 107.70307295086259,
+   "cache_verdict": "WORKING (append-to-user-message)",
+   "peak_ram_used_mb": 78445,
+   "min_ram_avail_mb": 92887,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23896,
+   "peak_vram1_mib": 11673
+  },
+  "250000": {
+   "depth": 250000,
+   "cold": [
+    {
+     "prompt_tokens": 250992,
+     "ttft": 140.60521841049194,
+     "prefill_tps": 1785.0831059999337,
+     "decode_tps": 104.13362627707718,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 250982,
+     "ttft": 145.08811616897583,
+     "prefill_tps": 1729.859113393516,
+     "decode_tps": 109.4990388162221,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 250983,
+     "ttft": 142.40117716789246,
+     "prefill_tps": 1762.506497429361,
+     "decode_tps": 109.56826183591983,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "append-to-user-message",
+    "ttft": 9.100542068481445,
+    "cached": 245760,
+    "new_tokens": 9053,
+    "eff_prefill_tps": 994.7759080586967,
+    "prose_decode_tps": 78.41738100663648,
+    "prompt_tokens": 254813,
+    "hit": true,
+    "expected_cached": 245760,
+    "expected_ttft_2500": 1.4184344872749592
+   },
+   "prompt_tokens": 250983,
+   "cold_ttft": 142.40117716789246,
+   "cold_prefill_tps": 1762.506497429361,
+   "code_decode_tps": 109.4990388162221,
+   "cache_verdict": "WORKING (append-to-user-message)",
+   "peak_ram_used_mb": 78799,
+   "min_ram_avail_mb": 92532,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23896,
+   "peak_vram1_mib": 11673
+  }
+ },
+ "needles": [],
+ "events": [
+  "depth 1000: cache miss with structure 'append-to-user-message' (cached=0, ttft=3.6s)",
+  "depth 1000: cache miss with structure 'multi-turn' (cached=961, ttft=3.6s)",
+  "depth 150000 cold run redone: redo-size (prompt 140748 vs target 150000)",
+  "depth 200000 cold run redone: redo-size (prompt 208348 vs target 200000)",
+  "depth 250000: prompt of 280673 tokens rejected as over the context; shrinking and redoing"
+ ],
+ "max_context": 262144,
+ "base_swap_mb": 0,
+ "started": "2026-10-23 21:37:09",
+ "corpus_files": 3133,
+ "corpus_mb": 42.4,
+ "completed": true,
+ "finished": "2026-10-23 22:00:06",
+ "peak_swap_overall_mb": 0
+}

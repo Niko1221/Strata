@@ -1,0 +1,20 @@
+label,depth,stage,run,status,structure,prompt_tokens,cached_usage,cached_log,completion_tokens,ttft_s,prefill_tps,decode_tps,finish,note
+q4_cur,1000,cold,1,ok,,983,0,,256,3.051,322.2,30.6,length,
+q4_cur,1000,cold,2,ok,,971,0,,256,3.053,318.0,40.9,length,
+q4_cur,1000,cold,3,ok,,970,0,,256,3.126,310.3,41.5,length,
+q4_cur,1000,append,1,ok,append-to-user-message,2966,0,,256,6.491,456.9,24.1,length,new_tokens=1996 hit=False
+q4_cur,1000,append,1,ok,multi-turn,3233,0,,256,6.365,507.9,36.2,length,new_tokens=2263 hit=False
+q4_cur,150000,cold,1,redo-size,,140735,0,,256,127.638,1102.6,29.5,length,prompt 140735 vs target 150000
+q4_cur,150000,cold,1,ok,,152332,0,,256,135.465,1124.5,36.6,length,
+q4_cur,150000,cold,2,ok,,152326,0,,256,135.397,1125.0,40.6,length,
+q4_cur,150000,cold,3,ok,,152318,0,,256,135.349,1125.4,38.2,length,
+q4_cur,150000,append,1,ok,append-to-user-message,155138,147456,,256,8.659,17917.3,25.3,length,new_tokens=7682 hit=True
+q4_cur,200000,cold,1,redo-size,,208314,0,,256,188.941,1102.5,29.2,length,prompt 208314 vs target 200000
+q4_cur,200000,cold,1,ok,,199640,0,,256,181.346,1100.9,36.3,length,
+q4_cur,200000,cold,2,ok,,199634,0,,256,181.254,1101.4,40.9,length,
+q4_cur,200000,cold,3,ok,,199629,0,,256,181.223,1101.6,41.2,length,
+q4_cur,200000,append,1,ok,append-to-user-message,202232,196608,,256,8.186,24704.3,22.8,length,new_tokens=5624 hit=True
+q4_cur,250000,cold,1,ok,,250959,0,,256,228.917,1096.3,30.9,length,
+q4_cur,250000,cold,2,ok,,250953,0,,256,229.443,1093.7,39.2,length,
+q4_cur,250000,cold,3,ok,,250945,0,,256,229.494,1093.5,41.3,length,
+q4_cur,250000,append,1,ok,append-to-user-message,254775,245760,,256,13.367,19059.5,25.9,length,new_tokens=9015 hit=True

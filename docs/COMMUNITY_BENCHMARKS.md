@@ -58,6 +58,8 @@ and their limits. Report what you actually measured and label estimates separate
   prompt 586/804/833 tok/s at those three lengths, needles 6/6 at 33.5k and 130k; one engine session, no clock capture.
 - [2026-10-10: AMD Radeon RX 9060 XT 16 GB (gfx1200), Ryzen 7 9800X3D, 64 GB RAM](../bench/results/2026-10-10-community-rx-9060-xt/README.md):
   Strata 0.1.40.3 prebuilt Windows HIP engine, Flash-Next IQ2_XS and IQ3_XXS: a prefill-size sweep (8,192 best), a matched 32K coding comparison (9/9 tasks each, IQ2_XS about 17% faster decode), one 113K recall request. Sanitized data, fixtures and scripts included.
+- [2026-10-23: RTX 3090 24 GB + RTX 3060 12 GB, Xeon W-2125, 172 GiB RAM](../bench/results/2026-10-23-community-rtx3090-rtx3060-xeon-w2125/README.md):
+  Strata v0.1.41 and v0.2.3.1 source builds, Flash-Next IQ3_S and Unsloth UD-IQ4_XS at 262,144-token context with helper expert cache; three cold runs each at 1K warm-up, 150K, 200K and 250K prompt tokens. Prompt 1,762 / 1,750 / 1,536 tok/s for IQ3_S (200K / 250K) and UD-IQ4_XS (2 cards, 250K); v0.2.3.1 decode 109.5 tok/s for IQ3_S and 80.8 for UD-IQ4_XS on two cards at 250K. Speed only; no quality checks.
 - [2026-10-10: 2x Tesla P40 24 GB, Xeon E5-2699 v3, 125 GB RAM](../bench/results/2026-10-10-community-2x-p40-iq3_s/README.md):
   Strata 0.1.41 CUDA 12 source build (sm_61), Flash-Next IQ3_S, 131,072-token context, layer split; decode 35.0 tok/s, prompt 350/558 tok/s at 3.9K/21.9K, needles 6/6, conversation checkpoints.
 - [2026-10-12: Tesla P40 24 GB (sm_61), 20 vCPUs of a Xeon E5-2695 v4 without AVX-512, 98 GB RAM](../bench/results/2026-10-12-p40-sm61-kernels/README.md):

@@ -1,0 +1,7 @@
+server.log:280:[strata] 400 invalid request: prompt (280669 tokens) leaves no room to answer in the context (262144); requests are never truncated
+~/strata-src/Strata/strata-iq3_s.log:237:strata generate: layer split, CUDA1: 17.32 GiB free of 23.61, room for experts 14.79 GiB
+~/strata-src/Strata/strata-iq3_s.log:288:strata generate: layer split, CUDA1: 6.36 GiB free of 11.68, room for experts 3.82 GiB
+~/strata-src/Strata/strata-iq3_s.log:476:strata generate: layer split, CUDA1: 6.41 GiB free of 11.68, room for experts 5.63 GiB
+~/strata-src/Strata/strata-iq3_s.log:612:strata generate: layer split, CUDA1: 6.43 GiB free of 11.68, room for experts 5.66 GiB
+~/strata-src/Strata/strata-iq3_s.log:744:strata generate: layer split, CUDA1: 6.28 GiB free of 11.68, room for experts 3.74 GiB
+~/strata-src/Strata/strata-iq3_s.log:893:strata generate: layer split, CUDA1: 6.20 GiB free of 11.68, room for experts 3.67 GiB

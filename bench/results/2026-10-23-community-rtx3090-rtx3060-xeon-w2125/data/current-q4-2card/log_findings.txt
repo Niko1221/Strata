@@ -1,0 +1,1 @@
+server.log:293:[strata] 400 invalid request: prompt (280640 tokens) + max tokens (256) exceeds the context (262144); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)

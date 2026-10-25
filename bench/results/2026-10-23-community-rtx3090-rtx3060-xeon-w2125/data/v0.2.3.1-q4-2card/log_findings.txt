@@ -1,0 +1,1 @@
+server.log:289:[strata] 400 invalid request: request exceeds the context window: prompt (280666 tokens) leaves no room to answer in the context (262144); requests are never truncated

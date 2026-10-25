@@ -11,6 +11,7 @@ How to read the table:
 
 | Folder | Hardware | Model | Prompt tok/s | Output tok/s | Strata | PR |
 |---|---|---|---|---|---|---|
+| [2026-10-23-community-rtx3090-rtx3060-xeon-w2125](2026-10-23-community-rtx3090-rtx3060-xeon-w2125/) | RTX 3090 24 GB (PCIe 3.0 x16) + RTX 3060 12 GB (x8), Xeon W-2125, 172 GiB RAM | Qwen3.8-Flash-Next IQ3_S and UD-IQ4_XS, 262K, helper expert cache | IQ3_S 2 cards 1,762 at 250K (v0.2.3.1; 1,750 at 200K); UD-IQ4_XS 2 cards 1,536 at 250K, 3090 only 1,103 | IQ3_S 109.5 at 250K; UD-IQ4_XS 2 cards 80.8, 3090 only 58.6 (v0.2.3.1, medians of 3 cold runs) | 0.2.3.1 and 0.1.41 (source builds) | - |
 | [2026-10-01-0.1.31-release](2026-10-01-0.1.31-release/) | RX 7900 XTX 24 GB, Ryzen 7 7700X | Coder IQ1_M | 545 to 900 median (0.1.30 to 0.1.31) | 16-34 to 17-65 | 0.1.30 / 0.1.31 | #404 |
 | [2026-10-01-community-2x-rtx-pro-4500](2026-10-01-community-2x-rtx-pro-4500/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 1,428 / 2,454 / 2,785 | 115 / 120 / 93 | 0.1.30 | #418 |
 | [2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36](2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 2,960 / 5,065 / 5,762 | 127 / 130 / 105 | 0.1.36 | #418 |

@@ -1,0 +1,6 @@
+2026-10-23T22:57:44+00:00
+engine: strata 0.1.48.1 (~/strata-0.2.3.1/build/strata)
+commit 7ddc17a38fe7f31637e895ecfba58c2cd43d65ec 2026-10-23 14:37:21 +0200
+v0.2.3.1
+run script: ~/strata-bench/configs/run-q4-2card-new.sh
+config: ~/strata-bench/configs/strata-q4-2card-new.json

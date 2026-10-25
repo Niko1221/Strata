@@ -1,0 +1,6 @@
+label,depth,stage,run,status,structure,prompt_tokens,cached_usage,cached_log,completion_tokens,ttft_s,prefill_tps,decode_tps,finish,note
+q4_cur,1000,cold,1,ok,,980,0,,256,3.071,319.1,29.2,length,
+q4_cur,1000,cold,2,ok,,974,0,,256,3.037,320.7,41.2,length,
+q4_cur,1000,cold,3,ok,,969,0,,256,3.144,308.2,35.7,length,
+q4_cur,1000,append,1,ok,append-to-user-message,2962,0,,256,6.506,455.3,23.4,length,new_tokens=1993 hit=False
+q4_cur,1000,append,1,ok,multi-turn,3231,0,,256,6.379,506.5,38.2,length,new_tokens=2262 hit=False

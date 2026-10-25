@@ -1,0 +1,1 @@
+{"status": "ok", "max_context": 262144, "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs-2card", "images": false, "api_key": true, "loaded": true, "service": "strata"}

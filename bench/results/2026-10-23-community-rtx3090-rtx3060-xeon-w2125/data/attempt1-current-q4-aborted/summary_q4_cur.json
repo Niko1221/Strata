@@ -1,0 +1,63 @@
+{
+ "label": "q4_cur",
+ "depths": {
+  "1000": {
+   "depth": 1000,
+   "cold": [
+    {
+     "prompt_tokens": 980,
+     "ttft": 3.0713155269622803,
+     "prefill_tps": 319.0815112927457,
+     "decode_tps": 29.15639852286263,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 974,
+     "ttft": 3.036872625350952,
+     "prefill_tps": 320.7246796817634,
+     "decode_tps": 41.2035827302288,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 969,
+     "ttft": 3.1438710689544678,
+     "prefill_tps": 308.21874649021555,
+     "decode_tps": 35.740384559476475,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "multi-turn",
+    "ttft": 6.379374742507935,
+    "cached": 0,
+    "new_tokens": 2262,
+    "eff_prefill_tps": 354.5802043776372,
+    "prose_decode_tps": 38.204010496331094,
+    "prompt_tokens": 3231,
+    "hit": false,
+    "expected_cached": 0,
+    "expected_ttft_2500": 7.83498858918949
+   },
+   "prompt_tokens": 974,
+   "cold_ttft": 3.0713155269622803,
+   "cold_prefill_tps": 319.0815112927457,
+   "code_decode_tps": 35.740384559476475,
+   "cache_verdict": "NO HIT (prompt below the checkpoint interval; nothing to reuse)",
+   "peak_ram_used_mb": 5799,
+   "min_ram_avail_mb": 124341,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23996,
+   "peak_vram1_mib": 7
+  }
+ },
+ "needles": [],
+ "events": [
+  "depth 1000: cache miss with structure 'append-to-user-message' (cached=0, ttft=6.5s)",
+  "depth 1000: cache miss with structure 'multi-turn' (cached=0, ttft=6.4s)"
+ ],
+ "max_context": 262144,
+ "base_swap_mb": 0,
+ "started": "2026-10-23 20:23:45",
+ "corpus_files": 3133,
+ "corpus_mb": 42.4
+}

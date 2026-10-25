@@ -1,0 +1,173 @@
+{
+ "label": "iq3_cur",
+ "depths": {
+  "1000": {
+   "depth": 1000,
+   "cold": [
+    {
+     "prompt_tokens": 995,
+     "ttft": 1.9472265243530273,
+     "prefill_tps": 510.98317918126764,
+     "decode_tps": 90.68530113813263,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 988,
+     "ttft": 1.960080862045288,
+     "prefill_tps": 504.0608370457994,
+     "decode_tps": 100.79890254239444,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 982,
+     "ttft": 1.9260342121124268,
+     "prefill_tps": 509.8559484688315,
+     "decode_tps": 110.42392955235333,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "multi-turn",
+    "ttft": 3.6144044399261475,
+    "cached": 975,
+    "new_tokens": 2293,
+    "eff_prefill_tps": 634.4060378718582,
+    "prose_decode_tps": 90.17851770809865,
+    "prompt_tokens": 3268,
+    "hit": false,
+    "expected_cached": 0,
+    "expected_ttft_2500": 4.903345753850374
+   },
+   "prompt_tokens": 988,
+   "cold_ttft": 1.9472265243530273,
+   "cold_prefill_tps": 509.8559484688315,
+   "code_decode_tps": 100.79890254239444,
+   "cache_verdict": "NO HIT (prompt below the checkpoint interval; nothing to reuse)",
+   "peak_ram_used_mb": 55799,
+   "min_ram_avail_mb": 115595,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23904,
+   "peak_vram1_mib": 11673
+  },
+  "150000": {
+   "depth": 150000,
+   "cold": [
+    {
+     "prompt_tokens": 152344,
+     "ttft": 84.49961686134338,
+     "prefill_tps": 1802.8957486278716,
+     "decode_tps": 99.8543302550873,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 152339,
+     "ttft": 85.34711265563965,
+     "prefill_tps": 1784.9344314043833,
+     "decode_tps": 99.61961991797185,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 152335,
+     "ttft": 87.26023960113525,
+     "prefill_tps": 1745.7550047572654,
+     "decode_tps": 101.94136730325643,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "append-to-user-message",
+    "ttft": 6.908573627471924,
+    "cached": 147456,
+    "new_tokens": 7701,
+    "eff_prefill_tps": 1114.701878456791,
+    "prose_decode_tps": 79.6447206497112,
+    "prompt_tokens": 155157,
+    "hit": true,
+    "expected_cached": 147456,
+    "expected_ttft_2500": 1.4006116729077853
+   },
+   "prompt_tokens": 152339,
+   "cold_ttft": 85.34711265563965,
+   "cold_prefill_tps": 1784.9344314043833,
+   "code_decode_tps": 99.8543302550873,
+   "cache_verdict": "WORKING (append-to-user-message)",
+   "peak_ram_used_mb": 68942,
+   "min_ram_avail_mb": 102452,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23904,
+   "peak_vram1_mib": 11673
+  },
+  "200000": {
+   "depth": 200000,
+   "cold": [
+    {
+     "prompt_tokens": 199637,
+     "ttft": 112.45304775238037,
+     "prefill_tps": 1775.2920351220462,
+     "decode_tps": 89.33087009914159,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 199629,
+     "ttft": 111.2194573879242,
+     "prefill_tps": 1794.91075292438,
+     "decode_tps": 95.03068212916135,
+     "completion_tokens": 256
+    },
+    {
+     "prompt_tokens": 199622,
+     "ttft": 111.73069739341736,
+     "prefill_tps": 1786.6352278918182,
+     "decode_tps": 99.15201400359156,
+     "completion_tokens": 256
+    }
+   ],
+   "append": {
+    "structure": "append-to-user-message",
+    "ttft": 5.664102554321289,
+    "cached": 196608,
+    "new_tokens": 5616,
+    "eff_prefill_tps": 991.50747115541,
+    "prose_decode_tps": 77.67287729167474,
+    "prompt_tokens": 202224,
+    "hit": true,
+    "expected_cached": 196608,
+    "expected_ttft_2500": 1.399278353505843
+   },
+   "prompt_tokens": 199629,
+   "cold_ttft": 111.73069739341736,
+   "cold_prefill_tps": 1786.6352278918182,
+   "code_decode_tps": 95.03068212916135,
+   "cache_verdict": "WORKING (append-to-user-message)",
+   "peak_ram_used_mb": 78251,
+   "min_ram_avail_mb": 93143,
+   "peak_swap_mb": 0,
+   "peak_vram0_mib": 23906,
+   "peak_vram1_mib": 11673
+  },
+  "250000": {
+   "depth": 250000,
+   "cold": [],
+   "append": null
+  }
+ },
+ "needles": [],
+ "events": [
+  "depth 1000: cache miss with structure 'append-to-user-message' (cached=0, ttft=3.7s)",
+  "depth 1000: cache miss with structure 'multi-turn' (cached=975, ttft=3.6s)",
+  "depth 150000 cold run redone: redo-size (prompt 140746 vs target 150000)",
+  "depth 200000 cold run redone: redo-size (prompt 208385 vs target 200000)",
+  "cold d250000 run1: request failed (attempt 1): HTTP 400: {\"error\": {\"type\": \"invalid_request_error\", \"message\": \"prompt (280639 tokens) leaves no room to answer in the context (262144); requests are never truncated\"}}",
+  "cold d250000 run1: request failed (attempt 2): HTTP 400: {\"error\": {\"type\": \"invalid_request_error\", \"message\": \"prompt (280639 tokens) leaves no room to answer in the context (262144); requests are never truncated\"}}",
+  "PHASE STOPPED: cold d250000 run1: request failed twice"
+ ],
+ "max_context": 262144,
+ "base_swap_mb": 0,
+ "started": "2026-10-23 20:05:41",
+ "corpus_files": 3133,
+ "corpus_mb": 42.4,
+ "completed": false,
+ "stopped_reason": "cold d250000 run1: request failed twice",
+ "finished": "2026-10-23 20:21:03",
+ "peak_swap_overall_mb": 0
+}

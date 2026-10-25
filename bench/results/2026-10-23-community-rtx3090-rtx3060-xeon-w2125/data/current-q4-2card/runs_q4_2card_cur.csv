@@ -1,0 +1,20 @@
+label,depth,stage,run,status,structure,prompt_tokens,cached_usage,cached_log,completion_tokens,ttft_s,prefill_tps,decode_tps,finish,note
+q4_2card_cur,1000,cold,1,ok,,994,0,,256,2.259,440.0,61.8,length,
+q4_2card_cur,1000,cold,2,ok,,988,0,,256,2.234,442.3,83.6,length,
+q4_2card_cur,1000,cold,3,ok,,987,0,,256,2.24,440.6,85.0,length,
+q4_2card_cur,1000,append,1,ok,append-to-user-message,3001,0,,256,4.384,684.6,51.9,length,new_tokens=2014 hit=False
+q4_2card_cur,1000,append,1,ok,multi-turn,3270,0,,256,4.241,771.1,77.0,length,new_tokens=2283 hit=False
+q4_2card_cur,150000,cold,1,redo-size,,140731,0,,256,89.188,1577.9,59.6,length,prompt 140731 vs target 150000
+q4_2card_cur,150000,cold,1,ok,,152319,0,,256,95.163,1600.6,87.3,length,
+q4_2card_cur,150000,cold,2,ok,,152308,0,,256,96.575,1577.1,70.0,length,
+q4_2card_cur,150000,cold,3,ok,,152311,0,,256,95.507,1594.8,84.5,length,
+q4_2card_cur,150000,append,1,ok,append-to-user-message,155131,147456,,256,6.057,25611.7,52.1,length,new_tokens=7675 hit=True
+q4_2card_cur,200000,cold,1,redo-size,,208369,0,,256,133.819,1557.1,65.5,length,prompt 208369 vs target 200000
+q4_2card_cur,200000,cold,1,ok,,199633,0,,256,128.269,1556.4,84.9,length,
+q4_2card_cur,200000,cold,2,ok,,199626,0,,256,128.483,1553.7,76.6,length,
+q4_2card_cur,200000,cold,3,ok,,199621,0,,256,128.215,1556.9,81.2,length,
+q4_2card_cur,200000,append,1,ok,append-to-user-message,202223,196608,,256,5.909,34224.9,47.5,length,new_tokens=5615 hit=True
+q4_2card_cur,250000,cold,1,ok,,250972,0,,256,163.437,1535.6,67.4,length,
+q4_2card_cur,250000,cold,2,ok,,250968,0,,256,163.898,1531.2,74.7,length,
+q4_2card_cur,250000,cold,3,ok,,250962,0,,256,164.032,1530.0,83.3,length,
+q4_2card_cur,250000,append,1,ok,append-to-user-message,254792,245760,,256,9.768,26085.2,54.4,length,new_tokens=9032 hit=True
