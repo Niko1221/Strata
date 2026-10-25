@@ -631,7 +631,7 @@ Verifier::~Verifier() {
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
     if (tap_file_) std::fclose(tap_file_);
-    if (tap_dev_) cudaFree(tap_dev_);
+    if (tap_dev_ && tap_dev_owned_) cudaFree(tap_dev_);
     if (tap_scratch_) cudaFree(tap_scratch_);
     if (h_tap_) cudaFreeHost(h_tap_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
@@ -785,7 +785,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // DFlash2 taps: set_taps (the drafter) or STRATA_TAP_FILE (the research dump); off, and nothing is allocated or captured, otherwise
     const char* tap_path = std::getenv("STRATA_TAP_FILE");
     if (tap_path != nullptr && tap_path[0] == '\0') tap_path = nullptr;
-    if ((tap_path != nullptr || !tap_req_.empty()) && lb_ == 0 && le_ == g.n_layers) {
+    if ((tap_path != nullptr && lb_ == 0 && le_ == g.n_layers) ||
+        (!tap_req_.empty() && (tap_shared_ != nullptr || (lb_ == 0 && le_ == g.n_layers)))) {
         tap_layers_.clear();
         if (tap_path == nullptr) {
             for (int l : tap_req_) if (l >= 0 && l < g.n_layers - 1) tap_layers_.push_back(l);
@@ -803,7 +804,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         tap_slot_.assign((size_t) g.n_layers, -1);
         for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
         const size_t nt = tap_layers_.size();
-        if (nt == 0 || cudaMalloc((void**) &tap_dev_, (size_t) T * nt * N * 4) != cudaSuccess ||
+        const bool need_dev = (le_ == g.n_layers || tap_shared_ == nullptr);
+        if (nt == 0 || (need_dev && tap_dev_ == nullptr && cudaMalloc((void**) &tap_dev_, (size_t) T * nt * N * 4) != cudaSuccess) ||
             (tap_path != nullptr && (cudaMalloc((void**) &tap_scratch_, (size_t) HC * N * 4) != cudaSuccess ||
                                      !mapped((size_t) T * nt * N * 4, (void**) &h_tap_, (void**) &m_tap_)))) {
             err = "verify: the DFlash2 tap buffers could not be allocated";
@@ -1201,6 +1203,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         copy_from_mapped(R_, hin, (int64_t) T * HC * N, cs);
         copy_from_mapped(bo_, hin + (size_t) T * HC * N, (int64_t) T * N, cs);
         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
+        if (tap_on_ && !batch_rec_ && tap_shared_ != nullptr && tap_dev_ != nullptr) {
+            const int64_t nt = (int64_t) tap_layers_.size();
+            for (int t = 0; t < T; ++t)
+                for (size_t i = 0; i < tap_layers_.size(); ++i)
+                    if (tap_layers_[i] < lb_)
+                        copy_from_mapped(tap_dev_ + ((size_t) t * nt + i) * N,
+                                         tap_shared_ + ((size_t) t * nt + i) * N, N, cs);
+        }
     } else if (const NativeEmbed* ne = native_embed()) {       // plan v0.3 P6: the GGUF-form table
         ne->gather_dev(tok_, T, emb_, cs);
         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
@@ -2204,14 +2214,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of
             // the hc streams, all rows of the group in one launch
             const int64_t nt = (int64_t) tap_layers_.size();
+            float* tap_dst = (le_ < g.n_layers && tap_shared_ != nullptr) ? tap_shared_ : tap_dev_;
 #if defined(STRATA_HAVE_DFLASH2)
-            strata::kernels::df2_tap_gr(Rt(tb), HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, tap_dev_ + ((size_t) tb * nt + (size_t) tap_slot_[(size_t) l]) * N,
+            strata::kernels::df2_tap_gr(Rt(tb), HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, tap_dst + ((size_t) tb * nt + (size_t) tap_slot_[(size_t) l]) * N,
                                         nt * N, n, N, (int) HC, cs);
 #else   // builds without the DFlash2 kernels (Metal, SYCL): the research dump's per-row path
             for (int t = tb; t < te; ++t) {
                 cudaMemcpyAsync(tap_scratch_, Rt(t), (size_t) HC * N * 4, cudaMemcpyDeviceToDevice, cs);
                 gr_write(tap_scratch_, bo_ + t * N, inj2_ + t * HC, gs, tap_scratch_, cs);
-                hc_mean_streams(tap_scratch_, tap_dev_ + ((size_t) t * nt + (size_t) tap_slot_[(size_t) l]) * N, N, (int) HC, cs);
+                hc_mean_streams(tap_scratch_, tap_dst + ((size_t) t * nt + (size_t) tap_slot_[(size_t) l]) * N, N, (int) HC, cs);
             }
 #endif
         }

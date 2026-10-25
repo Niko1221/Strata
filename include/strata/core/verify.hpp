@@ -326,9 +326,14 @@ public:
     /// DFlash2 (before init): keep the completed outputs of these layers (zero-based; the mean of the hc streams) for every row of
     /// each window in a device buffer, tap_dev() = [max_t][n_taps][n_embd] floats, valid until the next window.  Single-stage
     /// verifiers only; STRATA_TAP_FILE (research dump) turns the same buffer on without this call.
-    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
-    const float* tap_dev() const { return tap_dev_; }
-    bool tapping() const { return tap_on_; }
+    void set_taps(const std::vector<int>& layers, float* shared_map = nullptr, float* ext_dev = nullptr) {
+        tap_req_ = layers;
+        tap_shared_ = shared_map;
+        tap_dev_ = ext_dev;
+        tap_dev_owned_ = (ext_dev == nullptr);
+    }
+    float* tap_dev() const { return next_ ? next_->tap_dev() : tap_dev_; }
+    bool tapping() const { return next_ ? next_->tapping() : tap_on_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -572,6 +577,8 @@ private:
     std::vector<int> tap_layers_;                 ///< the tapped layer ids (zero-based, completed outputs)
     std::vector<int> tap_slot_;                   ///< layer -> slot in tap_layers_, or -1
     float* tap_dev_ = nullptr;                    ///< [max_t][n_taps][n_embd]
+    bool tap_dev_owned_ = true;                   ///< whether this verifier owns tap_dev_
+    float* tap_shared_ = nullptr;                 ///< cross-stage portable mapped tap staging [max_t][n_taps][n_embd]
     float* tap_scratch_ = nullptr;                ///< one row's streams, [hc][n_embd]
     float* h_tap_ = nullptr;     float* m_tap_ = nullptr;       ///< the mapped copy of tap_dev_
     std::FILE* tap_file_ = nullptr;

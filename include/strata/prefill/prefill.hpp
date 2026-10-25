@@ -188,7 +188,10 @@ public:
     /// mean of the hc streams) for the prompt rows at positions >= `first_pos`, at most `cap_rows` rows per chunk (a staging buffer of
     /// cap_rows x layers x n_embd floats is allocated at the first chunk).  After each chunk that has such rows, on_taps(taps
     /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
-    void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
+    void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) {
+        tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows;
+        if (next_) next_->set_taps(layers, first_pos, cap_rows);
+    }
     void clear_taps();
     std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
@@ -266,6 +269,8 @@ private:
     std::vector<int> tap_layers_;
     int64_t tap_first_ = 0, tap_cap_ = 0;
     float* tap_dev_ = nullptr;
+    float* tap_hand_[2] = {nullptr, nullptr};
+    const float* tap_in_ = nullptr;
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)

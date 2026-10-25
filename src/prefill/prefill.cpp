@@ -1064,8 +1064,16 @@ void Prefill::clear_taps() {
         cudaFree(tap_dev_);
         tap_dev_ = nullptr;
     }
+    for (int i = 0; i < 2; ++i) {
+        if (tap_hand_[i] != nullptr) {
+            cudaFreeHost(tap_hand_[i]);
+            tap_hand_[i] = nullptr;
+        }
+    }
+    tap_in_ = nullptr;
     tap_layers_.clear();
     on_taps = nullptr;
+    if (next_) next_->clear_taps();
 }
 
 void Prefill::reset() {
@@ -2697,16 +2705,31 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     if (hand_in_ == nullptr) stopped_at_ = -1;
 #if defined(STRATA_HAVE_DFLASH2)
     std::vector<int> tap_slot;
-    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
-        if (tap_dev_ == nullptr &&
-            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
-            (void) cudaGetLastError();
-            tap_dev_ = nullptr;
-            err = "prefill: the DFlash2 tap staging does not fit in VRAM";
-            return false;
+    if (!tap_layers_.empty()) {
+        const size_t tap_bytes = (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4;
+        if (next_ == nullptr) {
+            if (tap_dev_ == nullptr && cudaMalloc((void**) &tap_dev_, tap_bytes) != cudaSuccess) {
+                (void) cudaGetLastError();
+                tap_dev_ = nullptr;
+                err = "prefill: the DFlash2 tap staging does not fit in VRAM";
+                return false;
+            }
+        } else {
+            for (int i = 0; i < 2; ++i) {
+                if (tap_hand_[i] == nullptr &&
+                    cudaHostAlloc((void**) &tap_hand_[i], tap_bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    tap_hand_[i] = nullptr;
+                    err = "prefill: the DFlash2 pinned tap staging allocation failed";
+                    return false;
+                }
+            }
         }
+        const int64_t t_le = stage_le_ < 0 ? g.n_layers : stage_le_;
         tap_slot.assign((size_t) g.n_layers, -1);
-        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+        for (size_t i = 0; i < tap_layers_.size(); ++i)
+            if (tap_layers_[i] >= stage_lb_ && tap_layers_[i] < t_le)
+                tap_slot[(size_t) tap_layers_[i]] = (int) i;
     }
 #endif
     for (int64_t c0 = 0; c0 < n; c0 += C) {
@@ -2722,9 +2745,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
 #if defined(STRATA_HAVE_DFLASH2)
         // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
-        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const bool tap_active = !tap_layers_.empty() && (tap_dev_ != nullptr || tap_hand_[0] != nullptr);
+        const int64_t tap_t0 = tap_active ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
         const int64_t tap_rows = T - tap_t0;
         if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
+        if (tap_rows > 0 && tap_in_ != nullptr) {
+            const size_t tb = (size_t) tap_rows * tap_layers_.size() * (size_t) N * 4;
+            if (next_ == nullptr && tap_dev_ != nullptr) {
+                if (cudaMemcpyAsync(tap_dev_, tap_in_, tb, cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
+                    err = "prefill: the layer split's DFlash2 tap upload failed";
+                    return false;
+                }
+            } else if (next_ != nullptr && tap_hand_[hand_buf_] != nullptr) {
+                std::memcpy(tap_hand_[hand_buf_], tap_in_, tb);
+            }
+        }
 #else
         const int64_t tap_t0 = 0, tap_rows = 0;
 #endif
@@ -4874,9 +4909,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
 #if defined(STRATA_HAVE_DFLASH2)
-                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
-                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0) {   // DFlash2: this layer's completed output, mean of the streams
+                    float* tap_dst = (next_ != nullptr ? tap_hand_[hand_buf_] : tap_dev_) + (size_t) tap_slot[(size_t) l] * N;
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dst, (int64_t) tap_layers_.size() * N, N,
                                                   (int) HC, (int) tap_rows, m.cs);
+                }
 #endif
             }
         }
@@ -4921,6 +4958,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
             next_err_.clear();
             next_->hand_in_ = h;
+            next_->tap_in_ = tap_rows > 0 ? tap_hand_[hand_buf_] : nullptr;
             next_->hand_ev_ = hp > 0 ? static_cast<const void*>(m.hand_ev[hand_buf_]) : nullptr;
             next_->hand_pieces_ = hp;
             next_->single_chunk_ = single_chunk;

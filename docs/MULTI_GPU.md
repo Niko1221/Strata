@@ -526,6 +526,41 @@ noted (reported by adambenhassen, #1447; not repeated on our boxes):
 The last row keeps most of the asynchronous tier's decode gain and the pipeline's +28% prefill; no stalls in any arm.
 These are opt-in settings on one rig, not defaults.
 
+## DFlash2 drafting when serving, on one card or a layer split (`--draft dflash2`, opt-in)
+
+`--serve --draft dflash2 --draft-model PACK` drafts with DFlash2 instead of the MTP layer, on one card and on a layer split
+of two or more cards, with or without `--pipeline-windows 2`. Before, `--draft dflash2` was for the CLI run on one card only,
+and a served model fell back to the MTP. Nothing changes without the flag.
+
+- **Where it runs.** The drafter lives on the last card, beside the head. It reads five layers' outputs (5, 15, 25, 35 and 45).
+  The ones a front card computes are written to a small mapped host buffer and copied into the last card's tap buffer at the
+  start of its part of the window. The prompt path hands its taps on the same way, chunk by chunk.
+- **The MTP layer is not loaded beside it.** Its VRAM goes to the expert cache. So if the drafter cannot start, the server
+  stops with `--draft dflash2: <reason> (start without --draft dflash2 for the MTP)`; it does not fall back. An early
+  refusal (no native pack, no `--draft-model`, `--batch`, a layer split on one GPU, or the CLI run on a layer split) still
+  falls back to the MTP with one line, as before.
+- **With `--pipeline-windows 2`.** The next window is guessed from the drafter's block for the window in flight. The drafter
+  can only read that window's taps once the last card has verified it, so the guess for the window after uses the tail of
+  the earlier block.
+- **Not with** `--batch` slots or a layer split with two stages on one GPU. The conversation cache does not save the
+  drafter's context: after a restore the drafter can look back at rows of the conversation it served before until new
+  windows replace them. Drafts are always verified, so this can cost acceptance, not correctness (read from the code,
+  not measured).
+
+Measured on 2x RTX 3090 24 GB, i9-9920X, Windows 11, Qwen3.8-Flash-Next IQ3_S, `--layer-split 25`,
+`--pipeline-windows 2 --spec 4 --spec-min-p 0.5`, drafter `incoai/Qwen3.8-Flash-Next-DFlash2` packed Q8 by
+`tools/dflash2_pack.py`. Three interleaved rounds (stock 0.1.48, this build with MTP, this build with DFlash2), each a fresh
+start, one warm-up request, then five prompts twice. Decode tok/s from the engine's log, mean of 6 runs:
+
+| | chat | code | reasoning | JSON | sampled (0.7) | mean |
+|---|---|---|---|---|---|---|
+| 0.1.48 release, MTP | 123.6 | 146.7 | 124.2 | 118.6 | 117.8 | 126.2 |
+| this build, MTP | 122.5 | 147.6 | 123.3 | 120.2 | 118.8 | 126.5 (+0.3%) |
+| this build, DFlash2 | 120.4 | 143.3 | 124.1 | 116.8 | 115.2 | 124.0 (-1.8%) |
+
+Draft acceptance was the same for both drafters here (59-84% by prompt). On this rig DFlash2 is a little slower than the MTP
+at every prompt type, so the MTP stays the default and DFlash2 stays a choice to measure on your own machine.
+
 ## Several conversations at once
 
 With a layer split, `--batch N --batch-groups G --trim-stage-weights` decodes several conversations together and
