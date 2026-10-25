@@ -1,0 +1,16 @@
+test_a_queued_stream_gets_keep_alives_then_its_answer (serve.test_queue_keepalive.QueueKeepAlive.test_a_queued_stream_gets_keep_alives_then_its_answer) ... /src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[strata] thinking limited to 24386 of max_tokens 32514 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 3 tokens in 0 s (14138.1 tok/s) (stop, cancel=False)
+ok
+test_a_request_cancelled_while_queued_never_takes_the_turn (serve.test_queue_keepalive.QueueKeepAlive.test_a_request_cancelled_while_queued_never_takes_the_turn) ... ok
+test_closing_a_queued_request_is_no_longer_queued (serve.test_queue_keepalive.QueueKeepAlive.test_closing_a_queued_request_is_no_longer_queued) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 1.683s
+
+OK

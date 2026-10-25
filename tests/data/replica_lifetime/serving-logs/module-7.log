@@ -1,0 +1,46 @@
+/src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+test_both_overflow_errors_are_recognizable_before_streaming (serve.test_context_overflow.ContextOverflow.test_both_overflow_errors_are_recognizable_before_streaming) ... [strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) + max tokens (16) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (1024 tokens) + max tokens (131072) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 130040 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) + max tokens (16) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (1024 tokens) + max tokens (131072) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 130040 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) + max tokens (16) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (1024 tokens) + max tokens (131072) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 130040 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] 400 invalid request: request exceeds the context window: prompt (150722 tokens) + max tokens (16) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] 400 invalid request: request exceeds the context window: prompt (1024 tokens) + max tokens (131072) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 130040 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+ok
+test_one_token_of_room_still_answers_but_zero_is_rejected (serve.test_context_overflow.ContextOverflow.test_one_token_of_room_still_answers_but_zero_is_rejected) ... [strata] done: 1 tokens in 0 s (7061.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] 400 invalid request: request exceeds the context window: prompt (131064 tokens) + max tokens (1) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] done: 1 tokens in 0 s (23563.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] 400 invalid request: request exceeds the context window: prompt (131064 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] done: 1 tokens in 0 s (18315.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] 400 invalid request: request exceeds the context window: prompt (131064 tokens) + max tokens (1) exceeds the context (131072); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add "fit_max_tokens": true to the model's strata-<model>.json to shorten it to the room left (#545)
+[strata] done: 1 tokens in 0 s (12787.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] 400 invalid request: request exceeds the context window: prompt (131064 tokens) leaves no room to answer in the context (131072); requests are never truncated
+[strata] done: 1 tokens in 0 s (5841.6 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 1 tokens in 0 s (7767.2 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_prepare_preserves_prompt_and_budget_limits (serve.test_context_overflow.ContextOverflow.test_prepare_preserves_prompt_and_budget_limits) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.672s
+
+OK

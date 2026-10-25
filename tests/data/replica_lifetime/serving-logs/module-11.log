@@ -1,0 +1,52 @@
+test_finish_reasons_and_block_order (serve.test_reasoning_tools.OverHttp.test_finish_reasons_and_block_order) ... /src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[strata] done: 121 tokens in 0 s (32987.4 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (26106.5 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (35095.1 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (25694.1 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (22102.2 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+ok
+test_a_call_in_the_answer_is_unchanged (serve.test_reasoning_tools.Parser.test_a_call_in_the_answer_is_unchanged) ... ok
+test_a_declared_call_in_the_reasoning_is_a_call (serve.test_reasoning_tools.Parser.test_a_declared_call_in_the_reasoning_is_a_call) ... ok
+test_a_partial_tag_is_held (serve.test_reasoning_tools.Parser.test_a_partial_tag_is_held) ... ok
+test_a_tag_that_never_closes_does_not_hold_the_thinking_back (serve.test_reasoning_tools.Parser.test_a_tag_that_never_closes_does_not_hold_the_thinking_back) ... ok
+test_an_undeclared_name_stays_reasoning (serve.test_reasoning_tools.Parser.test_an_undeclared_name_stays_reasoning) ... ok
+test_an_unfinished_call_is_never_a_call (serve.test_reasoning_tools.Parser.test_an_unfinished_call_is_never_a_call) ... ok
+test_no_tools_declared_is_unchanged (serve.test_reasoning_tools.Parser.test_no_tools_declared_is_unchanged) ... ok
+test_the_thinking_ending_inside_a_call_makes_it_text (serve.test_reasoning_tools.Parser.test_the_thinking_ending_inside_a_call_makes_it_text) ... ok
+test_a_call_quoted_after_it_is_not_run (serve.test_reasoning_tools.QuotedThinkEnd.test_a_call_quoted_after_it_is_not_run) ... ok
+test_a_quoted_tag_stays_reasoning (serve.test_reasoning_tools.QuotedThinkEnd.test_a_quoted_tag_stays_reasoning) ... ok
+test_an_output_that_ends_on_the_tag (serve.test_reasoning_tools.QuotedThinkEnd.test_an_output_that_ends_on_the_tag) ... ok
+test_the_end_after_a_quote_still_ends_the_thinking (serve.test_reasoning_tools.QuotedThinkEnd.test_the_end_after_a_quote_still_ends_the_thinking) ... ok
+test_a_call_cut_at_the_token_limit (serve.test_server.UnfinishedToolCall.test_a_call_cut_at_the_token_limit)
+The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call ... [strata] done: 119 tokens in 0 s (32062.8 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (21344.6 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (32040.2 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (22026.6 tok/s) (length, cancel=False)
+ok
+test_a_cut_call (serve.test_server.UnfinishedToolCall.test_a_cut_call) ... [strata] done: 120 tokens in 0 s (32608.8 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (18009.0 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (33394.1 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (20577.1 tok/s) (stop, cancel=False)
+ok
+test_a_whole_call (serve.test_server.UnfinishedToolCall.test_a_whole_call) ... [strata] done: 147 tokens in 0 s (29599.7 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (22448.2 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (29157.4 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (22797.7 tok/s) (stop, cancel=False)
+ok
+test_collect_keeps_calls_whose_arguments_parse (serve.test_server.UnfinishedToolCall.test_collect_keeps_calls_whose_arguments_parse) ... ok
+test_parser (serve.test_server.UnfinishedToolCall.test_parser) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 2.866s
+
+OK

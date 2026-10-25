@@ -1,0 +1,89 @@
+{
+  "status": "FOCUSED_CPU_SERVING_VALIDATION_PASS",
+  "upstream_main": "f57c0adcb31c00f3f216550c004dac4e713a9f70",
+  "release_baseline": "3d1fb48090e8f2cefc22d7b5845fb7f5b71f33fa",
+  "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "runs": [
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_replica_lifetime"
+      ],
+      "returncode": 0,
+      "tests": 18,
+      "seconds": 0.9060000001918525
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_replicas"
+      ],
+      "returncode": 0,
+      "tests": 19,
+      "seconds": 6.406999999890104
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_parallel"
+      ],
+      "returncode": 0,
+      "tests": 42,
+      "seconds": 82.03099999995902
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_request_accounting"
+      ],
+      "returncode": 0,
+      "tests": 10,
+      "seconds": 4.469000000040978
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_request_hardening"
+      ],
+      "returncode": 0,
+      "tests": 10,
+      "seconds": 0.796000000089407
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "-v",
+        "serve.test_queue_keepalive"
+      ],
+      "returncode": 0,
+      "tests": 3,
+      "seconds": 2.0
+    }
+  ],
+  "formal_lifetime_tests": 18,
+  "formal_lifetime_log": "run-1-runtime-deps.log",
+  "total_selected_tests": 102,
+  "initial_setup_failures": [
+    "Partial source extraction omitted unmodified strata_cli; import failed before integration tests.",
+    "Next import reached Service initialization but regex runtime dependency was absent. Added pinned regex2026.9.10 and aligned MarkupSafe3.0.3; no serving/test assertion change."
+  ],
+  "limits": "CPU fixtures and fake-engine HTTP only. No model/GPU execution/native builds/performance claim."
+}

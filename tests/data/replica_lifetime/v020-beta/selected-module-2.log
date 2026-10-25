@@ -1,0 +1,39 @@
+[strata] done: 10 tokens in 0 s (48.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.7 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (17.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (17.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (26.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (25.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (33.1 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (31.9 tok/s) (stop, cancel=False)
+test_a_number_cuts_the_gpu_list (serve.test_replicas.Config.test_a_number_cuts_the_gpu_list) ... ok
+test_cpu_sets_off (serve.test_replicas.Config.test_cpu_sets_off) ... ok
+test_mistakes_are_said (serve.test_replicas.Config.test_mistakes_are_said) ... ok
+test_named_groups (serve.test_replicas.Config.test_named_groups) ... ok
+test_replica_cfg (serve.test_replicas.Config.test_replica_cfg) ... ok
+test_a_conversation_goes_back_to_its_replica (serve.test_replicas.ReplicaService.test_a_conversation_goes_back_to_its_replica) ... ok
+test_a_replica_that_died_is_skipped (serve.test_replicas.ReplicaService.test_a_replica_that_died_is_skipped) ... ok
+test_engines_without_slots_run_one_each_at_once (serve.test_replicas.ReplicaService.test_engines_without_slots_run_one_each_at_once) ... ok
+test_metrics_and_status_see_all_slots (serve.test_replicas.ReplicaService.test_metrics_and_status_see_all_slots) ... ok
+test_requests_spread_over_both_and_answers_are_the_solo_answer (serve.test_replicas.ReplicaService.test_requests_spread_over_both_and_answers_are_the_solo_answer) ... ok
+test_terminal_telemetry_correlates_second_replica_without_global_sample_claim (serve.test_replicas.ReplicaService.test_terminal_telemetry_correlates_second_replica_without_global_sample_claim) ... ok
+test_a_dead_replica_is_skipped (serve.test_replicas.RouteChoice.test_a_dead_replica_is_skipped) ... ok
+test_a_long_prefix_outweighs_load (serve.test_replicas.RouteChoice.test_a_long_prefix_outweighs_load) ... ok
+test_batch_is_the_sum (serve.test_replicas.RouteChoice.test_batch_is_the_sum) ... ok
+test_least_loaded_then_affinity (serve.test_replicas.RouteChoice.test_least_loaded_then_affinity) ... ok
+test_nonfinite_forgets_the_replica (serve.test_replicas.RouteChoice.test_nonfinite_forgets_the_replica)
+#879: after DONE ... nonfinite the engine holds no conversation: the router forgets that replica. ... ok
+test_selected_replica_is_reported_for_solo_requests_too (serve.test_replicas.RouteChoice.test_selected_replica_is_reported_for_solo_requests_too) ... ok
+test_matched_prefix_per_replica (serve.test_replicas.Routing.test_matched_prefix_per_replica) ... ok
+test_the_index_is_bounded (serve.test_replicas.Routing.test_the_index_is_bounded) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 6.046s
+
+OK

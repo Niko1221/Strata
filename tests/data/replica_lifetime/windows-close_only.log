@@ -1,0 +1,39 @@
+test_native_pump_and_reader_with_real_os_pipes (serve.test_replica_lifetime.RealPipeContracts.test_native_pump_and_reader_with_real_os_pipes) ... ok
+test_real_pipe_queued_successor_keeps_output_and_statistics (serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics) ... FAIL
+test_caller_exception_closes_child_before_reusing_replica (serve.test_replica_lifetime.ReplicaContracts.test_caller_exception_closes_child_before_reusing_replica) ... ok
+test_cancel_while_queued_sends_no_new_gen_or_stale_done (serve.test_replica_lifetime.ReplicaContracts.test_cancel_while_queued_sends_no_new_gen_or_stale_done) ... ok
+test_client_disconnect_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_client_disconnect_drains_before_handoff) ... ok
+test_delayed_done_is_drained_without_fixed_sleep_workaround (serve.test_replica_lifetime.ReplicaContracts.test_delayed_done_is_drained_without_fixed_sleep_workaround) ... ok
+test_done_statistics_remain_request_owned_after_unlock (serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock) ... FAIL
+test_drain_failure_is_error_and_bad_engine_is_not_reused (serve.test_replica_lifetime.ReplicaContracts.test_drain_failure_is_error_and_bad_engine_is_not_reused) ... ok
+test_four_callers_many_turns_no_cross_output_or_stats (serve.test_replica_lifetime.ReplicaContracts.test_four_callers_many_turns_no_cross_output_or_stats) ... ok
+test_natural_exhaustion_accounts_for_exact_tokens (serve.test_replica_lifetime.ReplicaContracts.test_natural_exhaustion_accounts_for_exact_tokens) ... ok
+test_no_control_or_token_frame_crosses_requests (serve.test_replica_lifetime.ReplicaContracts.test_no_control_or_token_frame_crosses_requests) ... ok
+test_no_generation_starts_before_previous_ack (serve.test_replica_lifetime.ReplicaContracts.test_no_generation_starts_before_previous_ack) ... ok
+test_nonfinite_forgets_advertised_prefix (serve.test_replica_lifetime.ReplicaContracts.test_nonfinite_forgets_advertised_prefix) ... ok
+test_rejection_does_not_inherit_previous_done (serve.test_replica_lifetime.ReplicaContracts.test_rejection_does_not_inherit_previous_done) ... ok
+test_slow_consumer_can_close_a_large_buffered_reply (serve.test_replica_lifetime.ReplicaContracts.test_slow_consumer_can_close_a_large_buffered_reply) ... ok
+test_stop_string_like_early_close_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_stop_string_like_early_close_drains_before_handoff) ... ok
+test_successor_receives_its_own_tokens_after_eos (serve.test_replica_lifetime.ReplicaContracts.test_successor_receives_its_own_tokens_after_eos) ... ok
+test_two_replicas_make_progress_independently (serve.test_replica_lifetime.ReplicaContracts.test_two_replicas_make_progress_independently) ... ok
+
+======================================================================
+FAIL: test_real_pipe_queued_successor_keeps_output_and_statistics (serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<workspace>\strata-replica-pr-20261017\serve\test_replica_lifetime.py", line 408, in test_real_pipe_queued_successor_keeps_output_and_statistics
+    self.assertEqual(r['A']['last']['generated'], 13)
+AssertionError: 12 != 13
+
+======================================================================
+FAIL: test_done_statistics_remain_request_owned_after_unlock (serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<workspace>\strata-replica-pr-20261017\serve\test_replica_lifetime.py", line 263, in test_done_statistics_remain_request_owned_after_unlock
+    self.assertEqual(r['A']['last']['generated'], len(a['tokens']))
+AssertionError: 12 != 13
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.516s
+
+FAILED (failures=2)

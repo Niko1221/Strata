@@ -25,3 +25,8 @@ docker/compose/* text eol=lf
 
 # Apple tools (codesign, plutil) read these: LF only, wherever the repository is cloned
 *.plist text eol=lf
+
+# Synthetic replica failure/recovery evidence is hashed byte for byte.
+tests/data/replica_lifetime/** -text
+# The final empty SSE line is a protocol delimiter, preserved in raw evidence.
+tests/data/replica_lifetime/cases/*.sse whitespace=-blank-at-eof
