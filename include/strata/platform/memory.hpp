@@ -77,6 +77,15 @@ inline bool file_tier_prefers_direct(double held_fraction, double direct_bps, do
     return held_fraction < 0.3 ? ratio >= 1.3 : ratio >= 1.5;
 }
 
+/// Whether the expert arena (every expert copied into RAM) fits the `avail` bytes of RAM available at start with
+/// `floor` left beside it.  When it does not, the arena's read takes the RAM to zero and the start fails (a Strix Halo
+/// on Windows, 63.6 GiB visible beside a 64 GB carve-out: 36.2 GiB available, a 46.8 GiB arena, Windows refused an
+/// unbuffered read with error 1453 at layer 21), so the engine takes the resident low-RAM mode instead.  The floor is
+/// the memory guard's (2560 MiB): only a start that cannot fit changes, never one that fits with little to spare.
+inline bool arena_fits_ram(uint64_t avail, uint64_t arena_bytes, uint64_t floor = 2560ull << 20) {
+    return avail >= floor && avail - floor >= arena_bytes;
+}
+
 /// Whether `advise_willneed` asks the OS for anything: not on Windows, nor with STRATA_READ_AHEAD=0.
 bool read_ahead_enabled();
 /// Asks the OS to start reading [p, p + bytes) of a file mapping, without waiting.  Linux reads at most one
