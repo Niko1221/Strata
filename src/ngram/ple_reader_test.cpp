@@ -22,6 +22,24 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__) && defined(__GLIBC__)
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <atomic>
+
+// gather_batch's per-row MADV_WILLNEED cannot change a value, so on Linux with glibc the test counts the calls (#2281):
+// this definition replaces libc's madvise in this binary and passes every call on to the kernel.
+static std::atomic<long> g_willneed{0};
+extern "C" int madvise(void* addr, size_t len, int advice) noexcept {
+    if (advice == MADV_WILLNEED) g_willneed.fetch_add(1, std::memory_order_relaxed);
+    return (int) syscall(SYS_madvise, addr, len, advice);
+}
+#define PLE_HINTS_COUNTED 1
+#endif
+
 namespace ng = strata::ngram;
 namespace k = strata::kernels;
 using strata::platform::now_us;
@@ -38,6 +56,15 @@ int g_fail = 0;
             ++g_fail;                                            \
         }                                                        \
     } while (0)
+
+// The MADV_WILLNEED calls made so far, or -1 where they are not counted.
+long willneed_calls() {
+#ifdef PLE_HINTS_COUNTED
+    return g_willneed.load();
+#else
+    return -1;
+#endif
+}
 
 constexpr uint64_t HEADER = 192;   // the real shard's data offset, so rows are misaligned the same way
 
@@ -156,16 +183,22 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
     for (uint32_t i = 0; i < rows; ++i) want[i] = rng() % rows;
     want[0] = 0;
     want[1] = rows - 1;
-    for (k::PleIo mode : {k::PleIo::Direct, k::PleIo::Mmap}) {
-        const char* name = mode == k::PleIo::Direct ? "direct" : "mmap";
+    // "ram" is --ple-io ram: the mapped table locked at open, which gather_batch reads without the per-row hint (#2281)
+    for (int leg = 0; leg < 3; ++leg) {
+        const k::PleIo mode = leg == 0 ? k::PleIo::Direct : k::PleIo::Mmap;
+        const char* name = leg == 0 ? "direct" : leg == 1 ? "mmap" : "ram";
         k::PleTable t;
         std::string err;
         k::PleIoOptions io;
         io.mode = mode;
         io.max_inflight = 8;
         io.cache_rows = 0;
+        io.lock = leg == 2;
         CHECK(t.open(path, err, io), "%s: open in %s mode: %s", f.name, name, err.c_str());
         if (g_fail) break;
+        CHECK(leg == 2 || !t.locked(), "%s: %s: locked without --ple-io ram", f.name, name);
+        if (leg == 2 && !t.locked())   // mlock refused (a small RLIMIT_MEMLOCK): this leg reads the table unlocked
+            std::fprintf(stderr, "note: %s: mlock refused, the \"ram\" leg reads the table unlocked\n", f.name);
         CHECK(std::strcmp(t.format(), f.name) == 0, "%s: format() says \"%s\"", f.name, t.format());
         CHECK(t.rows() == rows, "%s: rows %llu, not %u", f.name, (unsigned long long) t.rows(), rows);
         std::vector<uint8_t> raw(f.row_bytes);
@@ -197,7 +230,13 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
             if (mode == k::PleIo::Mmap) br[5000] = rows + 7;   // out of range (mapped): zeros, as read_row gives
             std::vector<float> bo(nr * k::PLE_HEAD_DIM);
             std::string e2;
+            const long h0 = willneed_calls();
             CHECK(t.gather_batch(br.data(), nt, bo.data(), e2), "%s: %s: gather_batch: %s", f.name, name, e2.c_str());
+            // a mapped table that is not locked gets row hints (today one a row in range), a locked one none
+            const long hints = willneed_calls() - h0;
+            const bool hinted = mode == k::PleIo::Mmap && !t.locked();
+            CHECK(h0 < 0 || (hints > 0) == hinted, "%s: %s: gather_batch made %ld row hints (locked() %d)", f.name, name,
+                  hints, (int) t.locked());
             size_t bad = 0;
             for (size_t i = 0; i < nr && !g_fail; ++i) {
                 if (br[i] >= rows) {
@@ -321,10 +360,119 @@ void prefetched_keys_are_reused(const std::string& dir) {
     if (g_fail == 0) std::printf("ple prefetched-key reuse (reordered, duplicated, subset), Direct vs Mmap bytes: OK\n");
 }
 
+// #2281: gather_batch skips the row hint only when the lock succeeded.  A lock that was asked for and refused keeps
+// the hints, and so does the same table opened again without the lock.  VmLck, where /proc has it, says whether the
+// pages are locked, so locked() is checked against it.
+void row_hints_follow_the_lock(const std::string& dir) {
+#ifdef PLE_HINTS_COUNTED
+    const auto vmlck_kb = [] {
+        long kb = -1;
+        if (std::FILE* s = std::fopen("/proc/self/status", "r")) {
+            char line[256];
+            while (std::fgets(line, sizeof line, s))
+                if (std::sscanf(line, "VmLck: %ld", &kb) == 1) break;
+            std::fclose(s);
+        }
+        return kb;
+    };
+    const long vm0 = vmlck_kb();
+    if (vm0 < 0) std::fprintf(stderr, "note: no VmLck in /proc/self/status, locked() is not checked against it\n");
+    else {   // ASan and TSan replace mlock with a call that locks nothing and returns 0
+        alignas(4096) static char page[4096];
+        if (mlock(page, sizeof page) == 0) {
+            const bool real = vmlck_kb() > vm0;
+            munlock(page, sizeof page);
+            if (!real) {
+                std::fprintf(stderr, "note: mlock locks nothing here (a sanitizer?), the row hints are not tested\n");
+                return;
+            }
+        }
+    }
+    const k::PleFormatInfo& fmt = k::ple_format_info(k::PleFormat::IQ4_NL);
+    const uint32_t rows = 512;   // 45 KiB: lockable under the 64 KiB RLIMIT_MEMLOCK that older kernels and Docker give
+    const std::string path = write_format_table(dir, fmt, rows);
+    if (path.empty()) { CHECK(false, "cannot write the lock table"); return; }
+    std::vector<uint32_t> br(16 * 16);
+    for (size_t i = 0; i < br.size(); ++i) br[i] = (uint32_t) (i * 13 % rows);
+    std::vector<float> out(br.size() * k::PLE_HEAD_DIM);
+    const auto hints = [&](k::PleTable& t) {   // the row hints of one gather_batch, whose values are checked too
+        std::string err;
+        out.assign(out.size(), -12345.5f);   // no value left over from the previous gather
+        const long h0 = willneed_calls();
+        CHECK(t.gather_batch(br.data(), br.size() / 16, out.data(), err), "gather_batch: %s", err.c_str());
+        const long n = willneed_calls() - h0;
+        std::vector<uint8_t> raw(fmt.row_bytes);
+        float ref[k::PLE_HEAD_DIM];
+        size_t bad = 0;
+        for (size_t i = 0; i < br.size(); ++i) {
+            expected_row(br[i], fmt.row_bytes, raw.data());
+            fmt.dequant(raw.data(), 1.0f, ref);
+            bad += std::memcmp(out.data() + i * k::PLE_HEAD_DIM, ref, sizeof ref) != 0;
+        }
+        CHECK(bad == 0, "gather_batch differs in %zu rows (locked() %d)", bad, (int) t.locked());
+        return n;
+    };
+    k::PleIoOptions io;
+    io.mode = k::PleIo::Mmap;
+    io.lock = true;
+    k::PleTable t;
+    std::string err;
+    bool refused = false, locked = false;
+    struct rlimit old {};
+    if (getrlimit(RLIMIT_MEMLOCK, &old) != 0) {
+        CHECK(false, "getrlimit(RLIMIT_MEMLOCK) failed");
+    } else {
+        struct rlimit zero = old;
+        zero.rlim_cur = 0;
+        std::fprintf(stderr, "note: opening a table with RLIMIT_MEMLOCK at 0, an mlock failure here is expected\n");
+        CHECK(setrlimit(RLIMIT_MEMLOCK, &zero) == 0, "cannot set RLIMIT_MEMLOCK to 0");
+        CHECK(t.open(path, err, io), "open with the lock refused: %s", err.c_str());
+        CHECK(setrlimit(RLIMIT_MEMLOCK, &old) == 0, "cannot restore RLIMIT_MEMLOCK");
+        if (t.locked()) {   // only CAP_IPC_LOCK locks past the limit, and then the pages are locked
+            CHECK(vm0 < 0 || vmlck_kb() > vm0, "locked() with RLIMIT_MEMLOCK at 0, but VmLck did not grow");
+            std::fprintf(stderr, "note: locked with RLIMIT_MEMLOCK at 0 (CAP_IPC_LOCK), a refused lock is not tested\n");
+        } else {
+            CHECK(vm0 < 0 || vmlck_kb() == vm0, "not locked(), but VmLck grew by %ld kB", vmlck_kb() - vm0);
+            const long n = hints(t);
+            CHECK(n > 0, "a refused lock: gather_batch made no row hints");
+            refused = true;
+        }
+    }
+    CHECK(t.open(path, err, io), "open with the lock: %s", err.c_str());   // --ple-io ram
+    if (!t.locked()) {
+        CHECK(vm0 < 0 || vmlck_kb() == vm0, "not locked(), but VmLck grew by %ld kB", vmlck_kb() - vm0);
+        std::fprintf(stderr, "note: mlock refused (raise `ulimit -l`), a locked table is not tested\n");
+    } else {
+        CHECK(vm0 < 0 || vmlck_kb() >= vm0 + (long) (rows * fmt.row_bytes / 1024), "locked, but VmLck grew by %ld kB",
+              vmlck_kb() - vm0);
+        const long n = hints(t);
+        CHECK(n == 0, "a locked table: gather_batch made %ld row hints, not 0", n);
+        io.lock = false;
+        CHECK(t.open(path, err, io), "reopen without the lock: %s", err.c_str());
+        CHECK(!t.locked() && (vm0 < 0 || vmlck_kb() == vm0), "reopened without the lock: locked() %d, VmLck %ld kB, was %ld",
+              (int) t.locked(), vmlck_kb(), vm0);
+        const long m = hints(t);
+        CHECK(m > 0, "reopened without the lock: gather_batch made no row hints");
+        locked = true;
+    }
+    t.close();
+    std::filesystem::remove(path);
+    if (g_fail == 0 && (refused || locked)) {
+        std::string what = refused ? "kept on a refused lock" : "";
+        if (locked)
+            what += std::string(refused ? ", " : "") + "none on a locked table, back after reopening it without the lock";
+        std::printf("ple row hints (Linux): %s: OK\n", what.c_str());
+    }
+#else
+    (void) dir;
+#endif
+}
+
 void all_formats_round_trip(const std::string& dir) {
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
     bad_sizes_are_refused(dir);
     prefetched_keys_are_reused(dir);
+    row_hints_follow_the_lock(dir);
     CHECK(k::ple_format_count() > 0, "no formats");
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
