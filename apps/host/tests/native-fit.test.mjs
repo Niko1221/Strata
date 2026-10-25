@@ -37,10 +37,16 @@ test('unknown hardware gives no verdict instead of a made-up one', () => {
   assert.equal(fitOn(swift, { ram_gb: 0 }).known, false);
 });
 
-test('Recommended is the fixed four, in the owner\'s order; the groups are Swift, GSQ-RCO, NVFP4, Gyro (Unsloth for the rest)', () => {
+test('Recommended is the fixed four, in the owner\'s order; the groups are Swift, GSQ-RCO, NVFP4, Gyro, Unsloth and Signal', () => {
   assert.deepEqual(RECOMMENDED.map(r => `${r.family}:${r.model}`), ['gyro:Gyro-S', 'swift:IQ2_XS', 'qwen:IQ3_S', 'unsloth:UD-Q4_K_XL']);
-  assert.deepEqual(VERSION_GROUPS.map(g => g.title), ['Swift models', 'GSQ-RCO models', 'NVFP4 models', 'Gyro models', 'Unsloth models']);
+  assert.deepEqual(VERSION_GROUPS.map(g => g.title), ['Swift models', 'GSQ-RCO models', 'NVFP4 models', 'Gyro models', 'Unsloth models', 'Signal models']);
   assert.ok(RECOMMENDED.every(r => r.note.length > 0 && r.note.length < 40), 'one short note each');
+});
+
+test('a Signal version has a group of its own, instead of falling back to the Qwen3.6 one', () => {
+  const groups = VERSION_GROUPS.filter(g => g.families.includes('signal'));
+  assert.deepEqual(groups.map(g => [g.id, g.title, g.families]), [['signal', 'Signal models', ['signal']]],
+    'without it the picker lists Signal\'s two sizes under Qwen3.6 models');
 });
 
 test('the group of the running version can be collapsed (Gyro-M running, the Gyro group stayed open)', () => {
