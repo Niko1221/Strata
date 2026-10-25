@@ -1,0 +1,14 @@
+Machine: 2x NVIDIA RTX PRO 4500 Blackwell (32 GB each; the report header names one card), layer split across both. Linux, driver 595.91.07, CUDA 13.2.
+Release: Strata 0.2.6, Terminal 0.1.51, engine 0.1.50 (prebuilt cuda13 package from the release). Model files: official ISTA-DASLab IQ3_XXS (revision ed59f92082b1e93c0e96d60a8b11aab089b52f09).
+
+Server start (fresh process for this run, `strata bench run --url` against it, so results.json cannot record the engine options):
+
+  strata launch --family qwen --model iq3_xxs --model-path <models>/IQ3_XXS --data-dir <data> --tune skip --port 8088 --no-tui --yes
+
+Benchmark command:
+
+  strata bench run --url http://127.0.0.1:8088 --track default --track-notes "<see README>" --optional-concurrency --model-revision ed59f92082b1e93c0e96d60a8b11aab089b52f09 --quantization IQ3_XXS --background "rustdesk --server (idle remote-desktop service)" --background "GNOME desktop session (idle)" --out <new folder>
+
+The engine command line the launcher started is in engine-command-line.txt (paths shortened to <data>, <models>, <strata>).
+Engine log line for the batch groups: strata generate: --batch-groups auto: 1 group of 4 slots - serial windows (flag not given; this is the engine's choice on two NVIDIA cards)
+Other programs: none that use the GPU; the production Strata server on this machine was stopped for the measurement.
