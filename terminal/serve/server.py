@@ -326,7 +326,8 @@ from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_EN
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
 from serve import appendlog  # noqa: E402
-from serve.session_ladder import PARK_COST_KIB_PER_TOKEN, ConvEvent  # the session ladder's event intake (ConvCacheLog.drain_events)
+from serve.session_ladder import (LadderConfig, PARK_COST_KIB_PER_TOKEN, ConvEvent, SessionLadder,  # noqa: E402
+                                  extract_session_id)  # the session ladder: event intake (drain_events) + request-path hooks
 from serve import runconfig  # noqa: E402
 from serve import expert_heat  # noqa: E402
 from serve import commit_limit  # noqa: E402
@@ -791,7 +792,7 @@ class ConvCacheLog:
         self._pending.append(ConvEvent(kind=kind, tokens=tokens, byte_count=byte_count,
                                        evictions=ev, snapshot_mib=mib))
 
-    def drain_events(self) -> list:
+    def drain_events(self) -> list[ConvEvent]:
         """Consume the conversation-cache events poll() parsed since this log's last drain - each line exactly
         once, in order, drained even when it holds none.  The session ladder's intake (SessionLadder.on_conv_event
         joins these); the monitor card's poll() state is built identically whether or not anything is drained."""
@@ -4368,6 +4369,11 @@ class Service:
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
+        # Task 7: the session ladder on the request path.  Built disabled here (its config lives in main(), which
+        # replaces this with an enabled one once the config source lands); disabled, every hook below short-circuits
+        # and the request path is byte-for-byte the one without the ladder.
+        self.session_ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.slot_save_path,
+                                                         park_budget_mib=0))
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
@@ -5494,6 +5500,9 @@ class Service:
             engine["vision_note"] = self.vision.cpu_note
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:   # Task 7: the monitor's poll feeds
+            for ev in self.conv_log.drain_events():                                 # the ladder's intake too; drain
+                self.session_ladder.on_conv_event(ev)                               # consumes each line exactly once
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
@@ -5633,6 +5642,9 @@ class Service:
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
+        self.request_trace.prompt = prompt        # Task 7: the rendered text lives only here; the thread-local carries
+        # it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) - the ladder
+        # byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would drift).
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
@@ -6185,6 +6197,10 @@ class Service:
         image_prompt_tokens = 0                         # Inkling pictures: the prompt the engine read, with the pictures' tokens
         timed_out = False
         trace = getattr(self.request_trace, "record", None)
+        # Task 7: the ladder's per-request context, carried on the same thread-local channel as `trace` (E1 sets
+        # session_id in _post; encode_prompt stashes the rendered prompt) - both are read back at the FIFO-held hook.
+        session_id = getattr(self.request_trace, "session_id", None)
+        ladder_prompt = getattr(self.request_trace, "prompt", None)
         waiting = time.perf_counter()
         first_engine_token_s = None  # this request, from entering the engine queue; includes queue/prefill
         # #465: with "parallel" (the engine's batch slots) requests run at once: each keeps its own status and rate
@@ -6292,6 +6308,17 @@ class Service:
                     for ev in opening:
                         yield "event", ev
                     pass_n = 0      # (the passes of this request sent so far)
+                    if (self.session_ladder is not None and self.session_ladder.cfg.enabled
+                            and session_id and not par):
+                        # Task 7, FIFO held, the engine about to read this prompt: freshen the ladder's park state
+                        # from the engine log (the drain consumes each line exactly once, shared with metrics()'s
+                        # feed) and hand the conversation switch to the ladder: save the outgoing session when park
+                        # lost it, restore an incoming one that missed park while its saved prefix still matches.
+                        # A SessionRefused degrades inside the ladder to a plain prefill; an EngineDied propagates.
+                        self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+                        for ev in self.conv_log.drain_events():
+                            self.session_ladder.on_conv_event(ev)
+                        self.session_ladder.on_arrival(self, session_id, ladder_prompt or "")
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -6658,6 +6685,16 @@ class Service:
                                 # Inkling's pictures are ONE placeholder id each in `ids`; the engine expands them to the picture's tokens and its DONE line
                                 # counts those (the prompt it really read): that is the prompt_tokens a client is told
                                 image_prompt_tokens = int(last.get("prompt_tokens") or 0)
+                            if (self.session_ladder is not None and self.session_ladder.cfg.enabled
+                                    and session_id and not par):
+                                # Task 7: this turn's DONE figures to the ladder (byte_count 0: DONE carries no
+                                # byte figure, the ladder estimates), and a checkpointed session's saved prefix
+                                # re-anchored to the prompt this conversation just rendered (map §6: the request
+                                # path is the only place that text exists).
+                                self.session_ladder.on_turn_done(session_id, tokens=seen, byte_count=0,
+                                                                 reused=last.get("reused") or 0)
+                                if ladder_prompt:
+                                    self.session_ladder.record_saved_prefix(session_id, ladder_prompt)
                             self.history.append({
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
@@ -8061,6 +8098,9 @@ def make_handler(svc: Service):
                                        if path == "/v1/responses" else {"error": model_err})
                             return
                     self.record = svc.begin_request(path, req)
+                    svc.request_trace.session_id = extract_session_id(self.headers)   # Task 7: OpenCode's session
+                    # headers, read once per request on the same thread that later runs _run (thread-local precedent:
+                    # request_trace.record at 4633/5212); absent headers -> None, which skips the ladder entirely.
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
