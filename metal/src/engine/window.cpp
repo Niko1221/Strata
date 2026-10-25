@@ -947,7 +947,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
                       mtl::Arg::B(logits_), mtl::Arg::V(ga), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_),
                       mtl::Arg::V(a), mtl::Arg::B(rcounter_)};
             r.grid[0] = n_expert_ / 16;
-            r.tg[0] = n_expert_;
+            r.tg[0] = 512;   // 16 simdgroups to compute 16 rows per threadgroup, even when n_expert_ == 256
             nb_ = true;
         } else {
             r.p = P(lib_, "moe_route", {}, "moe_route");
@@ -1230,6 +1230,8 @@ double Window::run_ds(Cached& c) {
 
 namespace {
 Window* g_stream_window = nullptr;
+std::string g_shard1;
+std::string g_expert_profile;
 // What the process holds now, all of it (task_info TASK_VM_INFO): phys_footprint is its anonymous + wired + compressed memory
 // (not the clean file pages it only maps), resident_size is the RSS (those pages too).  Bytes; 0 when the call fails.
 struct ProcMem {
@@ -1305,7 +1307,11 @@ bool Window::stream_arena(std::string& err) {
     }
     std::string prof;
     if (const char* e = std::getenv("STRATA_METAL_EXPERT_PROFILE")) prof = e;
-    else prof = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
+    else if (!g_expert_profile.empty()) prof = g_expert_profile;
+    else {
+        const std::string name = n_expert_ == 256 ? "/expert-profile-coder.bin" : "/expert-profile.bin";
+        prof = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + name;
+    }
     std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena (the process holds %.2f GB, %.2f GB resident); "
                          "RAM %.1f GB (%.1f GB available, %.1f GB kept for macOS), GPU working set %.1f GB\n", used / gb,
                  pm0.footprint / gb, pm0.rss / gb, phys / gb, avail / gb, keep / gb, cx_->recommended_working_set() / gb);
@@ -2583,12 +2589,10 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
 }
 
 // ---------------------------------------------------------------------------------------------- the hook's entry points
-namespace {
-std::string g_shard1;
-}
 void window_register(void* w);
 bool mtp_load_pending(Window* w, std::string& err);
 void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
+void set_expert_profile(const char* prof) { g_expert_profile = prof ? prof : ""; }
 
 // One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
 namespace {
@@ -2696,6 +2700,18 @@ bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
     const bool m4 = g_window->supports_metal4();
+    static bool s_logged_path = false;
+    if (!s_logged_path) {
+        s_logged_path = true;
+        if (!windows && m4 && !g_window->streaming()) {
+            std::fprintf(stderr, "strata metal prompt: Metal 4 resident prefill path\n");
+        } else if (!windows && m4 && g_window->streaming()) {
+            std::fprintf(stderr, "strata metal prompt: Metal 4 streaming prefill path\n");
+        } else {
+            std::fprintf(stderr, "strata metal prompt: universal decode window prefill path%s\n",
+                         !m4 ? " (no Metal 4 on this OS/device)" : (windows ? " (STRATA_METAL_PROMPT=window)" : ""));
+        }
+    }
     if (!windows && m4 && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
     if (!windows && m4 && g_window->streaming()) {
         const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");

@@ -191,15 +191,22 @@ def stream_mtp(stream: bool, ram_gb: float) -> bool:
 
 
 def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
-                profile: Path | str | None = None) -> list[str]:
+                profile: Path | str = "data/expert-profile.bin") -> list[str]:
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
     Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
-    if profile is None or str(profile).endswith("expert-profile.bin"):
-        is_coder = any("coder" in str(s).lower() for s in shards) or (pack and "coder" in str(pack).lower())
-        pname = "expert-profile-coder.bin" if is_coder else "expert-profile.bin"
-        profile = (profile.parent / pname) if isinstance(profile, Path) else pname
+    if profile is None:
+        profile = "data/expert-profile.bin"
+    is_coder = any("coder" in str(s).lower() for s in shards) or (pack and "coder" in str(pack).lower())
+    if is_coder and str(profile).endswith("expert-profile.bin"):
+        pname = "expert-profile-coder.bin"
+        if isinstance(profile, Path):
+            profile = profile.parent / pname
+        elif "/" in str(profile):
+            profile = str(Path(profile).parent / pname)
+        else:
+            profile = pname
     mtp = stream_mtp(stream, ram_gb)
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
