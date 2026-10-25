@@ -119,17 +119,28 @@ class LadderArrival(unittest.TestCase):
         self.ladder.on_arrival(self.service, "ses-big", P1)  # the big mid is the active session
         self.ladder.on_turn_done("aux", 100, 0, 0)                # an aux-sized completed turn
         self.ladder.on_conv_event(parked_event(100, 100 * 41370))  # an aux park line: it matches no tracked
-        # fingerprint exactly (the estimate is 100 x 40.4 KiB = 4136960), so it joins nothing - join_event
-        # refuses to guess; the point stands: nothing churns
+        # fingerprint exactly (the estimate is 100 x 40.4 KiB = 4136960) and joins aux through the tolerant
+        # join (F1: a 40-byte gap, identical tokens) - either way the point stands: nothing churns
         self.ladder.on_arrival(self.service, "aux", "tiny question")  # switch to it: nothing churns
         self.assertEqual(self.calls, [])
         self.assertFalse(self.ladder.tracked["aux"].save_eligible)
 
-    def test_wiring_no_session_id_skips_ladder(self):
-        self.seen("ses-b", parked=True)                        # an active mid that a switch would otherwise save
-        self.ladder.on_arrival(self.service, None, P1)
-        self.assertEqual(self.calls, [])
-        self.assertTrue(self.ladder.tracked["ses-b"].parked)      # not even switched away
+    def test_wiring_no_session_id_switches_identity_without_touching_the_engine(self):
+        # F2 (final review): an enabled-ladder arrival with session_id None IS a switch - the engine's slot
+        # now holds a conversation the ladder cannot name.  Saving the previous last_active at the next
+        # switch-away would write that FOREIGN resident's engine state into llm-session-<last_active>.bin,
+        # destroying the real checkpoint's value.  The ladder notes the switch-away and forgets the identity:
+        # no save, no restore, last_active None until a header brings one back.
+        self.seen("ses-a")
+        self.seen("ses-b", parked=True)
+        self.ladder.on_arrival(self.service, "ses-b", P2)              # ses-b active (park holds it)
+        self.ladder.on_arrival(self.service, None, P1)                 # headerless request between two sessioned ones
+        self.assertEqual(self.calls, [])                                # ...no save, no restore...
+        self.assertIsNone(self.ladder.last_active)                      # ...identity forgotten...
+        self.assertFalse(self.ladder.tracked["ses-b"].parked)           # ...park state now unknown
+        self.seen("ses-a")
+        self.ladder.on_arrival(self.service, "ses-a", P1)              # next sessioned arrival: no outgoing known
+        self.assertEqual(self.calls, [])                                # nothing saved for the headerless resident
 
     def test_wiring_refused_restore_keeps_the_file(self):
         self.seen("ses-a")
@@ -180,6 +191,68 @@ class LadderArrival(unittest.TestCase):
             ladder.on_arrival(self.service, f"ses-{i}", f"HEAD {i}")
         self.assertEqual(list(ladder.last_prompts), ["ses-3", "ses-4", "ses-5"])  # the oldest prompts are
         # gone: retained text can never outrun the retention_max_files bound however many ids churn
+
+
+    def test_wiring_switch_save_skips_an_unchanged_checkpoint(self):
+        # F3 (final review): the switch-away save honors the dirty marker.  A session whose file the ladder
+        # itself saved and that completed no turn since (file_path set, dirty False) has engine state
+        # provably identical to that file - re-saving it is a 46-65 s identical rewrite.
+        self.seen("ses-a")
+        self.ladder.on_arrival(self.service, "ses-a", P1)         # ses-a active
+        self.ladder.on_arrival(self.service, "ses-b", P2)         # switch-away: ses-a saved (dirty -> clean)
+        self.assertEqual(self.actions("save"), ["save"])
+        self.ladder.on_arrival(self.service, "ses-a", P1)         # switch-back: restore, nothing dirties ses-a
+        self.assertEqual(self.actions("restore"), ["restore"])
+        self.ladder.on_arrival(self.service, "ses-b", P2)         # switch-away again: clean + filed -> skipped
+        self.assertEqual(self.actions("save"), ["save"])          # ...no identical re-save...
+        self.ladder.on_arrival(self.service, "ses-a", P1)         # back to ses-a (still clean)...
+        self.ladder.on_turn_done("ses-a", MID, 0, 0)              # ...a new turn dirties it...
+        self.ladder.on_arrival(self.service, "ses-b", P2)         # ...and earns the next switch-away save
+        self.assertEqual(self.actions("save"), ["save", "save"])
+
+
+    def test_wiring_engine_io_runs_outside_the_ladder_lock(self):
+        # F4 (final review): the ladder lock is held only for the decision and the ledger windows; the
+        # engine.session_file call (engine file I/O that can run for minutes) happens OUTSIDE it, so
+        # /metrics's on_conv_event never queues behind a save.  Probe: inside the engine call a
+        # non-blocking ladder._lock acquire must succeed.
+        probe = []
+
+        def session_file(action, path):
+            got = self.ladder._lock.acquire(blocking=False)
+            if got:
+                self.ladder._lock.release()
+            probe.append((action, got))
+            self.calls.append((action, path))
+            return {"tokens": MID}
+
+        self.engine.session_file = mock.Mock(side_effect=session_file)
+        self.seen("ses-a")
+        self.seen("ses-b")
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_arrival(self.service, "ses-b", P2)      # switch-away: save ses-a
+        self.assertEqual([a for a, _ in probe], ["save"])      # the probe fired at the engine call...
+        self.assertTrue(all(got for _, got in probe))          # ...and the ladder lock was free there
+
+    def test_refused_save_leaves_the_ledger_consistent(self):
+        # F4's regression guard after the lock restructure: a refused switch-away save records nothing
+        # anywhere - no phantom file on the session or in the LRU ledger, the session stays dirty (so a
+        # later save can still land), and no restore is ever issued against the file that was never written.
+        self.seen("ses-a")
+        self.seen("ses-b")
+        self.ladder.on_arrival(self.service, "ses-b", P1)      # ses-b active
+        self.engine.session_file = mock.Mock(side_effect=REFUSED_MEMORY)
+        self.ladder.on_arrival(self.service, "ses-a", P1)      # switch-away: ses-b's save refused...
+        s_b = self.ladder.tracked["ses-b"]
+        self.assertIsNone(s_b.file_path)                        # ...no phantom file state...
+        self.assertTrue(s_b.dirty)                              # ...still dirty...
+        self.assertEqual(self.ladder.saved_files, [])           # ...ledger empty...
+        self.assertEqual(self.actions("restore"), [])           # ...no restore issued for ses-b
+        self.engine.session_file = mock.Mock(side_effect=lambda a, p: (self.calls.append((a, p)),
+                                                                       {"tokens": MID})[1])
+        self.ladder.on_unload(self.service)                     # a later save can still land normally
+        self.assertEqual(s_b.file_path, str(Path(self.dir.name) / "llm-session-ses-b.bin"))
+        self.assertIn(s_b.file_path, self.ladder.saved_files)
 
 
 class LadderHarness(MockEngine):
@@ -271,10 +344,16 @@ class WiringHTTP(unittest.TestCase):
         self.assertEqual(svc.session_ladder.tracked, {})             # the ladder never saw a session
 
     def test_wiring_no_session_id_skips_ladder_over_http(self):
-        self.post(None, LONG + " first")
-        self.post(None, LONG + " second")                            # headerless requests: plain forwards
-        self.assertEqual(self.engine.calls, [])
-        self.assertEqual(self.svc.session_ladder.tracked, {})
+        self.post("ses-a", LONG + " first")                             # sessioned: the ladder knows ses-a
+        self.post(None, LONG + " second")                               # F2: a headerless request is an
+        # identity-unknown switch - the engine now holds a nameless conversation, and saving ses-a would
+        # write THAT conversation into ses-a's file: the ladder saves nothing and forgets the identity.
+        self.assertIsNone(self.svc.session_ladder.last_active)
+        self.post("ses-b", LONG + " third")                             # the next sessioned request: no known
+        # outgoing at its switch point either - a foreign checkpoint is never minted
+        self.assertEqual(self.engine.calls, [])                         # no save, no restore
+        self.assertTrue(self.svc.session_ladder.tracked["ses-a"])      # tracked state survives...
+        self.assertEqual(self.svc.session_ladder.last_active, "ses-b")  # ...and identity resumes with the header
 
     def test_wiring_batch_refuses_the_ladder(self):
         self.engine.batch = 2                    # parallel mode: the FIFO is not held, save/restore refused
