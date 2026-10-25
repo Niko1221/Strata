@@ -84,6 +84,18 @@ struct ConversationView {
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
 };
+/// STRATA_CKPT_PARK_REUSE (opt-in): where a park takes its checkpoints' running-state buffers from instead of copying
+/// the view's.  `harvest`: checkpoints of the parked copies this park supersedes (they are dropped anyway); one whose
+/// `capture` equals a view checkpoint's holds the same bytes, so its buffers are moved into the image.  `consume`:
+/// the view's own checkpoints (the same vector, same order), which the caller drops after the park (a parked
+/// conversation is restored next): their buffers are moved, not copied.  Every image checkpoint is then what a copy
+/// would be (ids, images, `used`, `pinned`, `capture`; no prompt plan, no stage parts), so the image is the same.
+/// `moved` / `moved_bytes`: what was moved instead of copied.
+struct ConversationParkSource {
+    std::vector<ConversationCheckpoint>* harvest = nullptr;
+    std::vector<ConversationCheckpoint>* consume = nullptr;
+    size_t moved = 0, moved_bytes = 0, copied = 0;
+};
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
                                  const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
@@ -130,7 +142,8 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
                                          size_t& bytes, std::string& error);
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
                                 const ModelGeometry& g, const QsaState* draft, std::string& error,
-                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,
+                                ConversationParkSource* source = nullptr);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
