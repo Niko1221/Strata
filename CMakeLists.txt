@@ -202,9 +202,11 @@ elseif(STRATA_ENABLE_CUDA)
         "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal sm_60 or Volta sm_70 build is "
         "-DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
     endif()
-    if(_base LESS 60)
+    # Maxwell sm_52 (GTX 970 / 980, Tesla M40) also takes the experimental build: the same two fallbacks cover
+    # it, and fp16 arithmetic (sm_53+) goes through fp32 where a kernel uses it
+    if(_base LESS 52)
       message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES '${CMAKE_CUDA_ARCHITECTURES}': even the experimental build "
-                          "needs compute capability 6.0 (sm_60) or newer")
+                          "needs compute capability 5.2 (sm_52) or newer")
     endif()
     # #220 / #224: RTX 50 engines built with CUDA 12.8 crashed in the prompt path on Linux (13.0 and newer did not)
     if(_base GREATER_EQUAL 120 AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
@@ -1820,6 +1822,13 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
   endif()
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
+  # STRATA_MMQ_Q23K (opt-in): Q2_K / Q3_K experts on MMQ - Unsloth's UD-IQ3_XXS of Qwen3.6-35B-A3B has one layer of each,
+  # and one layer without MMQ takes the streamed prompt path away from every layer
+  option(STRATA_MMQ_Q23K "MMQ prompt kernels for Q2_K / Q3_K experts (Qwen3.6 UD-IQ3_XXS)" OFF)
+  if(STRATA_MMQ_Q23K)
+    list(APPEND _strata_mmq_types q2_k q3_k)
+    add_compile_definitions(STRATA_MMQ_Q23K=1)
+  endif()
   # APR: the agention llama.cpp fork has MMQ instances for its trellis expert types (f62fdead0); any other ggml
   # tree leaves them to the FP16 prompt path
   if(STRATA_GGML_DIR AND EXISTS "${STRATA_GGML_DIR}/ggml/src/ggml-cuda/template-instances/mmq-instance-tqk6.cu")
