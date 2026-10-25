@@ -366,14 +366,22 @@ class LadderConfigFromJson(unittest.TestCase):
             cfg = ladder_config_of(off_cfg, engine, "/var/lib/strata/sessions")
             self.assertFalse(cfg.enabled)
             self.assertEqual(cfg.park_budget_mib, 0)  # the disabled ladder's budget today
-        # no --conversation-cache-mib argument: the INFO line names it instead (lazy-start order);
-        # neither: fallback 0 = LadderConfig's disabled default (and the engine's own "parking off"), documented.
+        # no --conversation-cache-mib argument: the INFO line names it instead (lazy-start order).
+        # Neither source: park_budget_mib stays None - faithful to conversation_slots() - and an enabled
+        # ladder whose budget resolves to None refuses to start (no silent 0: over_budget would be true
+        # for EVERY turn, so idle-save/unload would save aux checkpoints - the churn the design forbids).
         cfg = ladder_config_of({"session_ladder": {}}, _FakeEngine([], {"conversation_cache_mib": 4096}), "/d")
         self.assertTrue(cfg.enabled)
         self.assertEqual(cfg.park_budget_mib, 4096)
-        cfg = ladder_config_of({"session_ladder": {}}, _FakeEngine([]), "/d")
-        self.assertTrue(cfg.enabled)
-        self.assertEqual(cfg.park_budget_mib, 0)  # documented fallback: LadderConfig's disabled default
+        self.assertIsNone(ladder_config_of({"session_ladder": {}}, _FakeEngine([]), "/d").park_budget_mib)
+        from serve.server import start_ladder_of
+        with self.assertRaises(SystemExit) as cm:  # main()'s guard: refuse, like the slot_save_path one
+            start_ladder_of({"session_ladder": {"idle_save_s": 8.0, "retention_max_files": 16}},
+                            _FakeEngine([]), "/var/lib/strata/sessions")
+        self.assertIn("--conversation-cache-mib", str(cm.exception))  # the message names the flag
+        cfg = start_ladder_of({"session_ladder": {"idle_save_s": 8.0, "retention_max_files": 16}},
+                              engine, "/var/lib/strata/sessions")  # a resolvable budget passes
+        self.assertEqual(cfg.park_budget_mib, 8192)
         # a dict absent key keeps LadderConfig's pinned defaults
         cfg = ladder_config_of({"session_ladder": {}}, engine, "/d")
         self.assertEqual((cfg.idle_save_s, cfg.retention_max_files), (8.0, 16))
