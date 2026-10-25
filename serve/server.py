@@ -64,6 +64,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.session_ladder import PARK_COST_KIB_PER_TOKEN, ConvEvent  # the session ladder's event intake (ConvCacheLog.drain_events)
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -776,11 +777,21 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    which is the log): read on from where it was last read, from the start of the engine's current run.
+    The session ladder reads the same lines through drain_events(): poll() parses each cache line exactly once,
+    feeding the monitor card's state as before and buffering the event for drain_events() to consume."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
+    # drain's taxonomy helpers (the two regexes above stay exactly as poll()'s card used them): the park line's
+    # own per-conversation snapshot_bytes, and the engine's two skip-parking refusals (below the token minimum /
+    # over the byte budget - the latter names only a MiB figure, no conversation, no tokens).
+    SNAPSHOT = re.compile(r"conversation cache: (?:parked|skipped|restored) \d+ tokens.*?snapshot_bytes=(\d+)")
+    SKIP_MIN = re.compile(r"conversation cache: skip parking \((\d+) tokens, below the \d+ minimum; parked=\d+\)")
+    SKIP_BUDGET = re.compile(r"conversation cache: skip parking \(snapshot (\d+) MiB exceeds available budget\)")
+    PARK_KIB_PER_TOKEN = PARK_COST_KIB_PER_TOKEN        # measured park cost (the ladder's pinned 40.4); the estimate when a line carries no snapshot_bytes
+    PENDING_MAX = 4096                                  # if drain_events() is never called, the oldest buffered events age out
 
     def __init__(self):
         self.key, self.pos = None, 0
@@ -789,6 +800,7 @@ class ConvCacheLog:
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
                       "last_tokens": None, "last_at": None}
+        self._pending, self._ev_seen = [], 0            # buffered ConvEvents for drain_events(); the last evictions figure this run's lines carried
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -820,14 +832,53 @@ class ConvCacheLog:
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
+                    self._ev_seen = int(m.group(5))
                 if m.group(1) != "skipped":
                     st["parks" if m.group(1) == "parked" else "restores"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
+                self._feed(m.group(1), int(m.group(2)), line, int(m.group(5)) if m.group(5) is not None else None)
                 continue
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                self._feed("dropped", 0, line)
+                continue
+            m = self.SKIP_MIN.search(line)
+            if m:
+                self._feed("skipped_below_min", int(m.group(1)), line)
+                continue
+            m = self.SKIP_BUDGET.search(line)
+            if m:
+                self._feed("skipped_over_budget", 0, line, mib=int(m.group(1)))
         return dict(self.state)
+
+    def _feed(self, kind: str, tokens: int, line: str, evictions: int | None = None, mib: int = 0) -> None:
+        """Buffer one parsed cache line as a ConvEvent for drain_events().  byte_count is per-conversation -
+        the line's own snapshot_bytes, which is exactly the delta its cumulative bytes=B implies (P1: park at
+        bytes=1046081816 then bytes=2092276296 -> the second line's snapshot_bytes=1046194480), estimated at
+        40.4 KiB/token where an event line carries none, and 0 where the engine printed no conversation size
+        (the two skip refusals, the dropped line).  An evictions-less line inherits the last figure this
+        run's log carried.  The engine's put() refusal prints "skipped N tokens": that is the byte-budget
+        signature, so it enters the taxonomy as skipped_over_budget."""
+        if kind == "skipped":
+            kind = "skipped_over_budget"
+        snap = self.SNAPSHOT.search(line)
+        byte_count = int(snap.group(1)) if snap else (
+            int(tokens * self.PARK_KIB_PER_TOKEN * 1024) if kind in ("parked", "restored", "skipped_over_budget") and tokens else 0)
+        if kind == "skipped_below_min" or kind == "dropped":
+            byte_count = 0                              # the line names no conversation size (skip's parked= is the cache's count)
+        ev = self._ev_seen if evictions is None else evictions
+        if len(self._pending) >= self.PENDING_MAX:
+            del self._pending[0]
+        self._pending.append(ConvEvent(kind=kind, tokens=tokens, byte_count=byte_count,
+                                       evictions=ev, snapshot_mib=mib))
+
+    def drain_events(self) -> list:
+        """Consume the conversation-cache events poll() parsed since this log's last drain - each line exactly
+        once, in order, drained even when it holds none.  The session ladder's intake (SessionLadder.on_conv_event
+        joins these); the monitor card's poll() state is built identically whether or not anything is drained."""
+        out, self._pending = self._pending, []
+        return out
 
 
 def conversation_slots(engine) -> int | None:
