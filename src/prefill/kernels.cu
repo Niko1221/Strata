@@ -76,8 +76,8 @@ __device__ __forceinline__ uint16_t bf_to_hf_conv(uint16_t b) {
     else if (f < -65504.0f && !isinf(f)) f = -65504.0f;
     return __half_as_ushort(__float2half_rn(f));
 }
-// The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16, or FP16 where the GEMM library is fast
-// only in FP16 (prompt_f16() in gemm.cu: rocBLAS on gfx103x).  Set once per device before the first prompt.
+// The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16 by default, or FP16 on devices selected
+// by STRATA_HIP_PROMPT_F16 (prompt_f16() in gemm.cu). Set once per device before the first prompt.
 #if defined(__HIPCC__)   // HIP only (#835): the CUDA kernels stay exactly as they were, they never read the flag
 __device__ int g_act_f16 = 0;
 __device__ __forceinline__ uint16_t act16(float f) { return g_act_f16 ? hf_sat(f) : bf(f); }
