@@ -3515,8 +3515,8 @@ int main(int argc, char** argv) {
 #endif
         }
     }
-    // The expert arena copies every expert into RAM.  When the RAM available now cannot hold it beside the memory
-    // guard's floor, its read takes the RAM to zero and the start fails (a Strix Halo on Windows: 36.2 GiB available,
+    // The expert arena copies every expert into RAM.  When the RAM available now cannot hold it with 1 GiB to spare
+    // (platform::kArenaFitFloor), its read takes the RAM to zero and the start fails (a Strix Halo on Windows: 36.2 GiB available,
     // a 46.8 GiB arena, error 1453 at layer 21), so the resident low-RAM mode is taken instead (--resident-experts:
     // the GPU's cache keeps what it holds, only the rest is copied into RAM), or without a profile the experts are
     // read from the model's files (--mmap-experts).  Decided here, before anything that depends on the mode
@@ -3531,8 +3531,9 @@ int main(int argc, char** argv) {
             if (resident) take_resident_experts(o);
             else o.mmap_experts = true;
             std::fprintf(stderr, "strata generate: the experts (%.1f GiB) do not fit in RAM available now (%.1f GiB, "
-                                 "2.5 GiB kept free). Enabling `%s` mode to compensate.\n",
+                                 "%.1f GiB kept free). Enabling `%s` mode to compensate.\n",
                          (double) arena_b / 1073741824.0, (double) hm->available / 1073741824.0,
+                         (double) strata::platform::kArenaFitFloor / 1073741824.0,
                          resident ? "--resident-experts" : "--mmap-experts");
         }
     }

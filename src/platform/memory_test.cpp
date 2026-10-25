@@ -108,10 +108,10 @@ int arena_fits_ram_cases() {
     const Case cases[] = {
         {"Strix Halo, Windows: 36.2 available, IQ3_S's 46.8 arena", 36.2, 46.8, false},
         {"the same PC with 32 GB more visible: 68.2 available", 68.2, 46.8, true},
-        {"fits with just over the 2.5 GiB floor beside it", 49.4, 46.8, true},
-        {"just under the floor beside it", 49.2, 46.8, false},
-        {"a tight start that works today: 4 GiB to spare", 50.8, 46.8, true},
-        {"available under the floor", 2.0, 0.0, false},
+        {"fits with just over the 1 GiB floor beside it", 47.9, 46.8, true},
+        {"just under the floor beside it", 47.7, 46.8, false},
+        {"a tight start that works today: 2 GiB to spare", 48.8, 46.8, true},
+        {"available under the floor", 0.9, 0.0, false},
         {"nothing available", 0.0, 23.4, false},
     };
     int fail = 0;
