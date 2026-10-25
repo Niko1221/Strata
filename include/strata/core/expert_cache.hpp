@@ -22,6 +22,7 @@
 // (Written when nothing consumed the slots yet and `--expert-cache` defaulted to 0; setup's configs use `auto`.)
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -259,7 +260,9 @@ private:
     int64_t n_expert_ = 0;
     int64_t blob_ = 0;
     int64_t next_free_ = 0;
-    int64_t fills_ = 0;
+    /// The startup profile fill can fill from several threads at once (parallel_profile_fill in generate.cpp),
+    /// so the counter is atomic.
+    std::atomic<int64_t> fills_ = 0;
     /// R4.2g.  `per_layer_` off (the default) leaves `next_free_` as the only admission counter, so the
     /// pre-existing path is untouched.
     bool per_layer_ = false;

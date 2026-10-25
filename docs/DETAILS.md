@@ -402,6 +402,9 @@ resident RAM copy and the MTP draft files are asked for ahead of their reads (ma
 128 KiB steps), so the drive sees a deep queue instead of one page fault at a time. Measured on a Gen3 NVMe (RTX 5090,
 32 GB, Q2_0 resident at 262K): ready in 70 s instead of ~920 s; the fill went from 39 MB/s to 3.2 GB/s.
 `STRATA_READ_AHEAD=0` turns it off; `STRATA_FILL_AHEAD=N` sets how many fill pairs are asked for ahead (default 256).
+`STRATA_FILL_THREADS=N` fills the GPU cache from the profile with N threads at once (default 8; 0 or 1 keeps the
+one-thread loop): a pair's staged read and its copy to the card run in parallel, while slot admission stays
+single-threaded. The layer-split stages' fills, which had neither the read-ahead nor a timing line, get both.
 
 **How much came from where:** with `--stats` the engine prints the tiers of the decode (`expert tiers`: blobs from the
 RAM copy, blobs and MB from the files, the time spent reading them; `routing prefetch`: how many of the file reads had

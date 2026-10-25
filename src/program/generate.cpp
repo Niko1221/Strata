@@ -2306,6 +2306,83 @@ static void prime_hw_queues() {
 }
 #endif
 
+// ---- the startup profile fill, parallel (STRATA_FILL_THREADS) ------------------------------------------
+// The profile fill reads every cached expert in from the file tier once.  Done sequentially that is one
+// thread doing a blocking random ~1 MB read (or a staged copy) and a blocking H2D copy, pair after pair:
+// a profile in the tens of thousands takes minutes there while the pool workers sit idle, and on a cold
+// page cache the read is random so the drive's IOPS go unused too.  The per-pair work is thread-safe
+// against itself - `blob_stable` stages a pair under the source's own lock (it already waits when another
+// thread is filling the same one), and `fill_slot_blocking` writes one admitted slot that its job owns by
+// construction; the decode-time prompt refill does exactly this from several device threads.  `admit` is
+// the part that is NOT thread-safe (residency table, slot counters), so the callers admit their pairs
+// serially first and hand the ready jobs here.
+struct ProfileFillJob {
+    int64_t i = 0;         // index into the profile, for the failure message
+    int32_t layer = 0;
+    int32_t expert = 0;
+    int32_t slot = 0;
+    int64_t bytes = 0;
+};
+
+/// How many threads do the profile fills.  STRATA_FILL_THREADS, default 8; 0 or 1 keeps the sequential loop.
+int64_t profile_fill_threads()
+{
+    static const int64_t n = [] {
+        const char* v = std::getenv("STRATA_FILL_THREADS");
+        if (v == nullptr) return (int64_t) 8;
+        const long long want = std::atoll(v);
+        return want < 0 ? (int64_t) 0 : (want > 32 ? (int64_t) 32 : (int64_t) want);
+    }();
+    return n;
+}
+
+/// Fill `jobs` into `cache` from `src` with up to profile_fill_threads() workers.  `bad` comes back as the
+/// profile index of the first failed job (-1 when all filled) and `err` carries its message; once a job
+/// fails no new job starts, so the callers keep their own failure exit.  `device` >= 0 pins each worker to
+/// that card, as the stages do.  `STRATA_FILL_AHEAD`'s advise and the unbuffered tier's batched reads
+/// overlap less than this does, so the parallel path runs without either (the unbuffered tier keeps the
+/// sequential loop).
+void parallel_profile_fill(const std::vector<ProfileFillJob>& jobs, strata::core::ExpertCache& cache,
+                           strata::core::ExpertSource& src, int device, int64_t& filled, uint64_t& bytes,
+                           int64_t& bad, std::string& err)
+{
+    filled = 0; bytes = 0; bad = -1;
+    if (jobs.empty()) return;
+    std::atomic<size_t> next{0};
+    std::atomic<int64_t> done{0};
+    std::atomic<uint64_t> copied{0};
+    std::atomic<bool> failed{false};
+    std::mutex err_mu;
+    auto worker = [&] {
+        strata::aux_cpus::pin_current_thread();
+        std::unique_ptr<strata::core::OnDevice> on;   // a stage's cache lives on its own card
+        if (device >= 0) on.reset(new strata::core::OnDevice(device));
+        while (!failed.load(std::memory_order_relaxed)) {
+            const size_t k = next.fetch_add(1);
+            if (k >= jobs.size()) break;
+            const ProfileFillJob& j = jobs[k];
+            std::string e;
+            const uint8_t* b = src.blob_stable(j.layer, j.expert);
+            if (b == nullptr || !cache.fill_slot_blocking(j.slot, b, e, j.bytes)) {
+                if (!failed.exchange(true)) {
+                    std::lock_guard<std::mutex> g(err_mu);
+                    err = b == nullptr ? "the blob is null" : e;
+                    bad = j.i;
+                }
+                break;
+            }
+            copied.fetch_add((uint64_t) j.bytes, std::memory_order_relaxed);
+            done.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    std::vector<std::thread> pool;
+    for (int64_t t = 0; t < std::min<int64_t>(profile_fill_threads(), (int64_t) jobs.size()); ++t)
+        pool.emplace_back(worker);
+    for (auto& t : pool) t.join();
+    filled = done.load();
+    bytes = copied.load();
+}
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -6463,6 +6540,30 @@ int main(int argc, char** argv) {
         }
         const auto fill_t0 = std::chrono::steady_clock::now();
         uint64_t fill_bytes = 0;
+        // Several workers overlapping the reads and copies is what `fill_ahead` and the unbuffered batch
+        // loader each try to do one pair at a time, so the parallel path runs without them; an unbuffered
+        // source keeps its own batch loader and the sequential loop.  STRATA_FILL_THREADS<=1 = old path.
+        if (profile_fill_threads() >= 2 && !src.unbuffered()) {
+            const auto& flay = strata::kernels::cpu::expert_layout();
+            std::vector<ProfileFillJob> jobs;
+            jobs.reserve((size_t) want);
+            for (int64_t i = 0; i < want; ++i) {
+                const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
+                if (slot == strata::core::kNotResident) {
+                    if (per_layer) continue;
+                    break;
+                }
+                jobs.push_back(ProfileFillJob{ i, profile[(size_t) i].first, profile[(size_t) i].second, slot,
+                                               (int64_t) flay.blob_bytes(profile[(size_t) i].first) });
+            }
+            int64_t bad = -1;
+            parallel_profile_fill(jobs, xcache, *srcp, 0, prefilled, fill_bytes, bad, err);
+            if (bad >= 0) {
+                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
+                             (long long) bad, err.c_str());
+                return 1;
+            }
+        } else
         for (int64_t i = 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
@@ -6580,18 +6681,40 @@ int main(int argc, char** argv) {
             return 1;
         }
         int64_t filled = 0;
-        for (const auto& pr : st.profile) {
-            if (filled >= st.cache.slots()) break;
-            const int32_t slot = st.cache.admit(pr.first, pr.second);
-            if (slot == strata::core::kNotResident) break;
-            const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-            if (b == nullptr || !st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first))) {
+        const auto sfill_t0 = std::chrono::steady_clock::now();
+        uint64_t sfill_bytes = 0;
+        if (profile_fill_threads() >= 2 && !src.unbuffered()) {
+            // the same parallel fill as CUDA0's above; the stage's card is `st.dev`, which each worker pins to
+            std::vector<ProfileFillJob> jobs;
+            for (const auto& pr : st.profile) {
+                if ((int64_t) jobs.size() >= st.cache.slots()) break;
+                const int32_t slot = st.cache.admit(pr.first, pr.second);
+                if (slot == strata::core::kNotResident) break;
+                jobs.push_back(ProfileFillJob{ (int64_t) jobs.size(), pr.first, pr.second, slot,
+                                               (int64_t) lay.blob_bytes(pr.first) });
+            }
+            int64_t bad = -1;
+            parallel_profile_fill(jobs, st.cache, *srcp, st.dev, filled, sfill_bytes, bad, err);
+            if (bad >= 0) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
-                             st.dev, (long long) filled, err.c_str());
+                             st.dev, (long long) bad, err.c_str());
                 return 1;
             }
-            ++filled;
+        } else {
+            for (const auto& pr : st.profile) {
+                if (filled >= st.cache.slots()) break;
+                const int32_t slot = st.cache.admit(pr.first, pr.second);
+                if (slot == strata::core::kNotResident) break;
+                const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
+                if (b == nullptr || !st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first))) {
+                    std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
+                                 st.dev, (long long) filled, err.c_str());
+                    return 1;
+                }
+                ++filled;
+            }
         }
+        const double sfill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - sfill_t0).count();
         if (filled == 0 || !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
                                                  srcp->blob_stable(st.profile[0].first, st.profile[0].second), err,
                                                  (int64_t) lay.blob_bytes(st.profile[0].first))) {
@@ -6599,10 +6722,12 @@ int main(int argc, char** argv) {
                          filled == 0 ? "nothing filled" : err.c_str());
             return 1;
         }
+        // the timing was never printed here, which is why a slow stage fill is invisible in a startup log
         std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
-                             "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified\n",
+                             "(%.2f GiB), %lld of its %zu profiled pairs in %.1f s (%.0f MB/s); slot 0 verified\n",
                      st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
-                     (long long) filled, st.profile.size());
+                     (long long) filled, st.profile.size(), sfill_s,
+                     sfill_s > 0 ? (double) sfill_bytes / 1e6 / sfill_s : 0.0);
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
