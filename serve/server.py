@@ -824,6 +824,22 @@ def conversation_slots(engine) -> int | None:
     return slots if isinstance(slots, int) else None
 
 
+def conversation_key(messages) -> str | None:
+    """Auto sessions: which conversation a chat request continues - the text of its first user message, which
+    every later turn of the same chat carries unchanged (a client that rewrites it starts a new conversation, as
+    the prompt cache sees it too).  None when the request carries no user text: auto sessions leave it alone."""
+    for m in messages or []:
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):                 # the parts form (a message with pictures)
+            content = "".join(p.get("text") or "" for p in content
+                              if isinstance(p, dict) and p.get("type") in ("text", "input_text"))
+        if isinstance(content, str) and content.strip():
+            return hashlib.sha1(content.encode("utf-8", "replace")).hexdigest()[:16]
+    return None
+
+
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
@@ -3838,6 +3854,15 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        # opt-in (the config's "auto_sessions"): save the conversation the engine holds when a request starts a
+        # different one and restore that request's conversation from its file - a switch costs a file copy, not a
+        # prompt read.  Off by default; every failure is logged and leaves the request alone.
+        self.auto_sessions = False
+        self.auto_sessions_min_tokens = 16000         # conversations below this many prompt tokens are not saved
+        self.auto_sessions_keep = 12                  # newest auto-*.bin files kept (0: no count limit)
+        self.auto_sessions_max_gb = 100.0             # their total bytes cap (0: no cap)
+        self.auto_conv = None                         # the conversation the engine holds: {"key", "tokens"}
+        self.auto_tls = threading.local()             # this request's conversation key (set by prepare)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -4824,6 +4849,7 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        self.auto_tls.key = conversation_key(messages)   # auto sessions: this request's conversation (or None)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -5063,6 +5089,106 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
+    # ---- auto sessions (the config's "auto_sessions", off by default): disk parking around a switch -------------
+
+    def _auto_session_turn(self, ids):
+        """One request is about to run, the FIFO is held and the engine is between requests: when this request
+        starts a different conversation than the one the engine holds, save the held one to its file (once it is
+        worth a file) and restore this request's conversation from its file when one exists.  A failure is logged
+        and leaves the request alone - the engine then parks or reads its prompt as it always did."""
+        key = getattr(self.auto_tls, "key", None)
+        cur = self.auto_conv
+        if key is None:                               # a request with no user text: keep out of the way
+            self.auto_conv = None
+            return
+        if cur is not None and cur.get("key") == key:
+            cur["tokens"] = max(int(cur.get("tokens") or 0), len(ids))
+            return
+        try:
+            # A failed save normally skips the restore too: the held conversation is then still the engine's and
+            # parks in RAM as before - a restore would replace it with weaker and lose it for good.  A held
+            # conversation with nothing durable is the exception: a cancelled request's provisional state is
+            # refused by the engine (kind "invalid") and never has a file - it has no state worth protecting, so
+            # it may not block the incoming restore (minutes of re-read on a long conversation).
+            if cur is not None and int(cur.get("tokens") or 0) >= self.auto_sessions_min_tokens:
+                try:
+                    self._auto_session_save(cur["key"])
+                except SessionRefused as e:
+                    if e.kind != "invalid" and not cur.get("cancelled"):
+                        raise
+                    print(f"[strata] auto sessions: the held conversation has nothing durable ({e}); restoring "
+                          f"the incoming one anyway", flush=True)
+            self._auto_session_restore(key)
+        except Exception as e:                        # a cache must never fail the request
+            print(f"[strata] auto sessions: {e}", flush=True)
+        self.auto_conv = {"key": key, "tokens": len(ids)}
+
+    def _auto_session_save(self, key):
+        name = f"auto-{key}.bin"
+        r = self.engine.session_file("save", os.path.join(self.slot_save_path, name))
+        print(f"[strata] auto sessions: saved {r.get('tokens')} tokens ({r.get('bytes', 0) / 1e9:.2f} GB) to "
+              f"{name} in {float(r.get('ms') or 0):.0f} ms", flush=True)
+        self._auto_session_prune()
+
+    def _auto_session_restore(self, key):
+        name = f"auto-{key}.bin"
+        path = os.path.join(self.slot_save_path, name)
+        if not os.path.isfile(path):
+            return
+        r = self.engine.session_file("restore", path)
+        print(f"[strata] auto sessions: restored {r.get('tokens')} tokens from {name} in "
+              f"{float(r.get('ms') or 0):.0f} ms", flush=True)
+
+    def auto_session_shutdown_save(self):
+        """A normal stop must not lose the conversation the engine holds: save it as the auto-sessions file the next
+        start restores from.  Only when the service is idle - a running request's session is live, and saving it
+        would capture a partial state - and best effort: a failure is logged and never blocks the stop."""
+        cur = self.auto_conv
+        if not self.auto_sessions or cur is None or not self.slot_save_path:
+            return
+        if not self.fifo.acquire(blocking=False):
+            print("[strata] auto sessions: a request is running, so the held conversation is not saved at "
+                  "shutdown", flush=True)
+            return
+        try:
+            self._auto_session_save(cur["key"])
+        except Exception as e:                        # never block the stop
+            print(f"[strata] auto sessions: cannot save the held conversation at shutdown: {e}", flush=True)
+        finally:
+            self.fifo.release()
+
+    def _auto_session_prune(self):
+        """Keep the newest auto_sessions_keep files and at most auto_sessions_max_gb of them (0: no such limit).
+        Only auto-*.bin files are ever deleted: a file saved by hand through /slots/0 is not touched."""
+        keep = int(self.auto_sessions_keep or 0)
+        cap = int(float(self.auto_sessions_max_gb or 0) * (1 << 30))
+        try:
+            entries = []
+            with os.scandir(self.slot_save_path) as it:
+                for e in it:
+                    if e.is_file() and e.name.startswith("auto-") and e.name.endswith(".bin"):
+                        st = e.stat()
+                        entries.append((st.st_mtime, st.st_size, e.path))
+        except OSError as e:
+            print(f"[strata] auto sessions: cannot prune ({e})", flush=True)
+            return
+        entries.sort(reverse=True)                    # newest first
+        total = sum(size for _, size, _ in entries)
+        removed = 0
+        for i in range(len(entries) - 1, -1, -1):     # oldest first
+            beyond_count = keep > 0 and i >= keep     # 0: no count limit
+            over_cap = cap > 0 and total > cap        # 0: no size cap
+            if not (beyond_count or over_cap):
+                break
+            try:
+                os.unlink(entries[i][2])
+                total -= entries[i][1]
+                removed += 1
+            except OSError:
+                break
+        if removed:
+            print(f"[strata] auto sessions: pruned {removed} file(s), {total / 1e9:.1f} GB kept", flush=True)
+
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
             declared_only=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
@@ -5237,6 +5363,8 @@ class Service:
                     elif not (self.loaded() and not self._vision_down()):
                         with self._inference_fifo(deadline, cancel):
                             self.ensure_loaded()
+                    if self.auto_sessions and not par:    # opt-in: save the held conversation / restore this one
+                        self._auto_session_turn(ids)
                     with self.status_lock:
                         if par:
                             self.status["queued"] -= 1
@@ -5549,6 +5677,15 @@ class Service:
                             rate_txt = f"{rate:.1f} tok/s" if rate is not None else "no speed"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate_txt}) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            # auto sessions: remember whether this conversation's request was cancelled.  The
+                            # engine's session is then provisional (it can never be saved), so the next switch must
+                            # not let its failed save block the incoming restore; a finished request settles it.
+                            if self.auto_sessions and self.auto_conv is not None and \
+                                    self.auto_conv.get("key") == getattr(self.auto_tls, "key", None):
+                                if cancel.is_set():
+                                    self.auto_conv["cancelled"] = True
+                                else:
+                                    self.auto_conv.pop("cancelled", None)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
@@ -8546,6 +8683,32 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    # "auto_sessions" (opt-in): the server parks conversations on disk around a switch by itself; the limits
+    # below bound the auto-*.bin files it keeps.  All the validation runs before anything is wired.
+    for k in ("auto_sessions_min_tokens", "auto_sessions_keep"):
+        v = cfg.get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < 0):
+            raise SystemExit(f"[strata] config {k} must be a whole number (0 or more), not {v!r}")
+    v = cfg.get("auto_sessions_max_gb")
+    if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+        raise SystemExit(f"[strata] config auto_sessions_max_gb must be a number of GB (0: no cap), not {v!r}")
+    auto = cfg.get("auto_sessions")
+    if auto is not None and not isinstance(auto, bool):
+        raise SystemExit(f"[strata] config auto_sessions must be true or false, not {auto!r}")
+    if cfg.get("auto_sessions_min_tokens") is not None:
+        svc.auto_sessions_min_tokens = int(cfg["auto_sessions_min_tokens"])
+    if cfg.get("auto_sessions_keep") is not None:
+        svc.auto_sessions_keep = int(cfg["auto_sessions_keep"])
+    if cfg.get("auto_sessions_max_gb") is not None:
+        svc.auto_sessions_max_gb = float(cfg["auto_sessions_max_gb"])
+    if auto is True:
+        if not svc.slot_save_path:
+            print("[strata] auto_sessions is on, but slot_save_path is not set: auto sessions stay off", flush=True)
+        else:
+            svc.auto_sessions = True
+            print(f"[strata] auto sessions on: keep {svc.auto_sessions_keep} files, at most "
+                  f"{svc.auto_sessions_max_gb:g} GB, from {svc.auto_sessions_min_tokens} prompt tokens "
+                  f"(auto-*.bin in {svc.slot_save_path})", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
@@ -8685,6 +8848,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print(f"[strata] drain deadline expired; cancelling {cancelled} owned request(s) ...", flush=True)
                 svc.wait_for_drain(5)
                 drained = False
+        # a normal stop must not lose the conversation the engine holds: save it for the next start while the
+        # engine is still up (best effort - a failure never blocks the stop)
+        try:
+            svc.auto_session_shutdown_save()
+        except Exception as e:  # noqa: BLE001 - never block the exit
+            print(f"[strata] auto sessions: cannot save the held conversation at shutdown: {e}", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
                    hub.close if hub is not None else None]
         try:
