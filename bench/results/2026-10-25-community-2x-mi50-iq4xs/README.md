@@ -57,31 +57,16 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 
 | Configuration | Prompt tokens | Decode tok/s | Prompt tok/s | Runs | Note |
 | --- | ---: | ---: | ---: | ---: | --- |
-| IQ3_S, short chat | 80 | 61.0 | 55 | 5 | split 27 |
-| IQ3_S, 1.6K | 726 | 71.3 | 180 | 5 | split 27 |
-| IQ3_S, 31K | 31,446 | 73.7 | 691 | 2 | split 27 |
-| IQ4_XS, short chat | 80 | 58.6 | 53 | 5 | split 27, direct PLE reads |
-| IQ4_XS, 1.6K | 726 | 62.8 | 149 | 5 | split 27, direct PLE reads |
-| IQ4_XS, 31K, direct PLE reads | 31,446 | 57.5 | 533 | 2 | split 27 |
-| IQ4_XS, 31K | 31,446 | **70.3** | **556** | 5 | final: split 24, PLE in RAM |
-| IQ4_XS, 118K | 117,529 | 59.6 | **596** | 5 | final |
-| IQ4_XS, 140K | 140,908 | 59.0 | 546 | 1 | split 27, direct PLE reads, needle found |
 
 The final configuration on this machine is `--layer-split 24` with `--ple-io ram`: an even layer split and the 28.8 GB
 PLE table in RAM. The earlier rows keep the settings they were measured with, so the effect of each change stays
 visible instead of being averaged away.
-| IQ3_S, short chat | 80 | 61.0 | 55 | 5 |
-| IQ3_S, 1.6K | 726 | 71.3 | 180 | 5 |
-| IQ3_S, 31K | 31,446 | **73.7** | **691** | 2 |
-| IQ4_XS, short chat | 80 | 58.6 | 53 | 5 |
-| IQ4_XS, 1.6K | 726 | 62.8 | 149 | 5 |
-| IQ4_XS, 31K | 31,446 | **73.5** (57.5 before `--ple-io ram`) | 532 | 5 |
-| IQ4_XS, 140K | 140,908 | 59.0 | 546 | 1 |
 
 - Expert cache: IQ3_S 12,245 slots / 23.9 GiB, 98.0-99.7% hit; IQ4_XS 9,876 slots / 22.8 GiB, 90.4-94.0% hit
   (bigger experts, same VRAM). Experts in RAM: 46.8 GiB and 55.4 GiB.
-- Load to ready: 40 s (IQ3_S) and 48 s (IQ4_XS); switching models between the two takes that long.
-- Power under a 31K prompt: ~406 W peak for both cards, 49-54 C edge.
+- Load to ready: 40 s (IQ3_S) and 63 s (IQ4_XS with the PLE table locked in RAM; 48 s without it). Switching
+  models between the two takes that long, and both now start on the same 24/24 split.
+- Power under a 31K prompt: ~406 W peak for both cards, 49-54 C edge; during 118K prompt reading ~300 W steady.
 
 ### Layer split: an even 24/24 beats 27/21 on long prompts
 
