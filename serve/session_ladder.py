@@ -61,6 +61,10 @@ class TrackedSession:
     last_active: float
     evictions_at_last_switch: int
     byte_count: int = 0
+    dirty: bool = True                # Task 8: unsaved since this session's last turn.  on_turn_done
+    # dirties; a save the ladder itself routed (note_file_saved) cleans.  A save made outside the ladder
+    # (an image job's, a /v1/slot save) is not visible here: the session stays dirty and the next ladder
+    # save rewrites the file - a harmless duplicate, never a missed one (the pinned boundary).
 
 
 @dataclass
@@ -242,15 +246,7 @@ class SessionLadder:
         self.last_prompts.pop(session_id, None)         # re-inserting moves a known id to the recent end (LRU)
         self.last_prompts[session_id] = prompt          # what a save of this session will record next
         if outgoing is not None and should_save(outgoing, self.tracked, self.cfg):
-            path = os.path.join(self.cfg.slot_save_path, f"llm-session-{_safe_sid(outgoing.session_id)}.bin")
-            try:
-                service.engine.session_file("save", path)
-            except SessionRefused as e:
-                print(f"[strata] session ladder: the save of {outgoing.session_id} was refused "
-                      f"({e.kind}); this conversation continues as a cold prefill", flush=True)
-            else:
-                outgoing.saved_prefix = self.last_prompts.get(outgoing.session_id) or outgoing.saved_prefix
-                self._note_file_saved(outgoing.session_id, path)
+            self._save_session(service, outgoing)
         if incoming is not None and should_restore(incoming, self.cfg):
             path = os.path.join(self.cfg.slot_save_path, f"llm-session-{_safe_sid(session_id)}.bin")
             if prefix_fidelity(incoming.saved_prefix, prompt):
@@ -267,6 +263,79 @@ class SessionLadder:
         # matter how many ids churn in and out - the least-recently-arrived prompt goes first, and the cap
         # runs after the save branch consumed this request's outgoing prefix.
         self.last_active = session_id
+
+    def _save_session(self, service, s: TrackedSession) -> bool:
+        """The ladder's single save route (Task 8; on_arrival's switch-away uses it too): the pinned
+        `llm-session-<sid>.bin` name under cfg.slot_save_path, through engine.session_file, recorded with
+        note_file_saved (the LRU/ledger bookkeeping, which also flips the session's dirty marker clean).
+        A SessionRefused is swallowed with the ladder's log line and the file state records nothing; an
+        EngineDied propagates (the caller's engine is gone - the request path / unload handles it as it
+        always has).  Parallel/batch mode refuses save/restore at the engine (slot_action's precedent,
+        map §2): the ladder skips the save there too.  A plain inner: every caller holds the ladder lock."""
+        if getattr(service.engine, "batch", 0):
+            return False                              # batch mode: the engine refuses these commands
+        path = os.path.join(self.cfg.slot_save_path, f"llm-session-{_safe_sid(s.session_id)}.bin")
+        try:
+            service.engine.session_file("save", path)
+        except _refused_class() as e:
+            print(f"[strata] session ladder: the save of {s.session_id} was refused ({e.kind}); "
+                  "this conversation continues as a cold prefill", flush=True)
+            return False
+        s.saved_prefix = self.last_prompts.get(s.session_id) or s.saved_prefix
+        self._note_file_saved(s.session_id, path)
+        return True
+
+    def _on_idle(self, service, idle_seconds: float) -> None:
+        """Task 8's idle hook, called while the service FIFO is held (the unload path's hold), with the
+        same idle measurement the lazy-unload decision uses (time since last_request_at/started_at).
+        idle_seconds >= cfg.idle_save_s is the human-latency head start: before the engine's park is
+        possibly dropped by an idle unload, the last-active session is saved when it is save-eligible
+        and still dirty - unsaved since its last turn (a clean checkpoint already on disk is not
+        rewritten).  Nothing else is saved here: the switch path and on_unload own the other sessions."""
+        if not self.cfg.enabled or idle_seconds < self.cfg.idle_save_s:
+            return
+        s = self.tracked.get(self.last_active) if self.last_active is not None else None
+        if s is None or not s.save_eligible or not s.dirty:
+            return
+        self._save_session(service, s)
+
+    def _on_unload(self, service) -> None:
+        """Task 8's unload hook, called while the FIFO is held, immediately before engine.unload() drops
+        the engine - and with it every parked conversation.  Saves ALL tracked save-eligible sessions
+        (should_save's switch signals are moot: the whole cache is going away), each already-saved-and-
+        unchanged one (dirty False) skipped; an aux-sized session (not eligible) never churns.  A refused
+        save is swallowed and the loop continues: the unload proceeds either way."""
+        if not self.cfg.enabled:
+            return
+        for s in list(self.tracked.values()):
+            if s.save_eligible and s.dirty:
+                self._save_session(service, s)
+
+    def _on_start(self, service) -> None:
+        """Task 8's engine-start hook, called from ensure_loaded (the FIFO held, the engine just reached
+        READY).  A fresh engine parks nothing, so every `parked` flag resets - while the tracked entries
+        and their file_paths survive, which is what makes the next switch-back restore-eligible
+        (should_restore sees parked False).  Then the warm restore: when NO restore is already pending
+        (svc.restore_after_load is the image job's mechanism and already owns this start - it is never
+        overwritten or doubled) and the single last-active session has a checkpoint file that still exists
+        AND a saved_prefix a prefix_fidelity check could one day pass, that file is handed to
+        service.restore_after_load for the load path right below (images_api.restore_session issues the
+        session_file("restore") and removes the file).  Because the load path CONSUMES the checkpoint, the
+        ladder retires its ledger entry with the handoff (no restore attempt against a file that is gone);
+        no pending-restore check, no warm.  A last-active without a file (or prefix) earns nothing."""
+        if not self.cfg.enabled:
+            return
+        for s in self.tracked.values():
+            s.parked = False
+        if getattr(service, "restore_after_load", None):
+            return                                    # a pending restore owns this start: yield to it
+        s = self.tracked.get(self.last_active) if self.last_active is not None else None
+        if s is None or s.file_path is None or not s.saved_prefix or not os.path.exists(s.file_path):
+            return
+        path, s.file_path = s.file_path, None
+        if path in self.saved_files:
+            self.saved_files.remove(path)             # consumed by the restore below (it unlinks it)
+        service.restore_after_load = path
 
     def record_saved_prefix(self, session_id: str, prompt: str) -> None:
         """Task 7 re-anchors a checkpoint's prefix to the conversation as it now renders (the prompt text
@@ -308,6 +377,8 @@ class SessionLadder:
         s.last_active = time.time()
         over_budget = tokens * PARK_COST_KIB_PER_TOKEN / 1024.0 > self.cfg.park_budget_mib
         s.save_eligible = over_budget or tokens >= MIN_PARK_TOKENS
+        s.dirty = True                                # Task 8: a completed turn is unsaved until the
+        # ladder's next save of it (on_idle / on_unload / a switch-away save)
         if not s.save_eligible:
             self.last_prompts.pop(session_id, None)  # an aux-sized conversation earns no saves: no retained prefix
 
@@ -331,6 +402,7 @@ class SessionLadder:
         s = self.tracked.get(session_id)
         if s is not None:
             s.file_path = path
+            s.dirty = False                           # Task 8: the ladder's own save makes it clean
         while len(self.saved_files) > self.cfg.retention_max_files:
             old = self.saved_files.pop(0)
             for sid in [k for k, v in self.tracked.items() if v.file_path == old]:
@@ -360,3 +432,9 @@ class SessionLadder:
     note_file_saved = _locked(_note_file_saved)
     record_saved_prefix = _locked(record_saved_prefix)
     on_arrival = _locked(on_arrival)
+    # Task 8's lifecycle hooks (the same _locked pattern: their bodies are the plain inners, and a wrapped
+    # body never takes the ladder lock itself).  They are called from FIFO-held service regions (the unload
+    # path and ensure_loaded), so the ladder lock adds nothing beyond what Task 7's hooks needed.
+    on_idle = _locked(_on_idle)
+    on_unload = _locked(_on_unload)
+    on_start = _locked(_on_start)
