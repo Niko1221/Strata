@@ -189,9 +189,12 @@ static bool bit_at(const uint32_t* words, int id) {
 
 static void test_mask_ab(void) {
     GrammarVocab vocab;
-    vocab.pieces = { "a", "b", "<|im_end|>" };
-    vocab.control = { 0, 0, 1 };
-    vocab.eog = { 0, 0, 1 };
+    // id 3 rides a NUL piece (the byte-0x00 token once the GPT2 byte map is fully decoded) and id 4
+    // an invalid-UTF-8 piece (the same token before the map was complete): both must stay banned in
+    // every state - the accept walk stops at a NUL, so either would "match" as an empty piece
+    vocab.pieces = { "a", "b", "<|im_end|>", std::string("\x00", 1), "\xc4\x8a" };
+    vocab.control = { 0, 0, 1, 0, 0 };
+    vocab.eog = { 0, 0, 1, 0, 0 };
     grammar* g = grammar_init(nullptr, "root ::= \"ab\"\n", "root");
     assert(g != nullptr);
     const grammar_rules& rules = grammar_get_rules(g);
@@ -199,11 +202,13 @@ static void test_mask_ab(void) {
 
     grammar_build_mask(vocab, rules, grammar_stacks(g), words);
     assert(!bit_at(words, 0) && bit_at(words, 1) && bit_at(words, 2)); // only "a" rides
+    assert(bit_at(words, 3) && bit_at(words, 4));                      // NUL and broken pieces stay banned
     assert((words[0] & 0xFFFFFFF8u) == 0xFFFFFFF8u);                   // padding stays banned
 
     grammar_accept(g, (uint32_t) 'a');
     grammar_build_mask(vocab, rules, grammar_stacks(g), words);
     assert(bit_at(words, 0) && !bit_at(words, 1) && bit_at(words, 2)); // only "b"
+    assert(bit_at(words, 3) && bit_at(words, 4));
 
     grammar_accept(g, (uint32_t) 'b');
     grammar_build_mask(vocab, rules, grammar_stacks(g), words);
@@ -256,6 +261,7 @@ static void write_test_gguf(const std::string& path) {
             case 7: piece = "\xc3\xa4\xc2\xb8\xc5\x83"; break;
             case 8: piece = "\xc4\x8a"; break;
             case 9: piece = "\xc4\xa0the"; break;
+            case 10: piece = "\xc4\x80"; break;   // 'Ā' rides byte 0x00 itself
             default: piece = "t" + std::to_string(i); break;
         }
         str(piece);
@@ -300,6 +306,7 @@ static void test_load_grammar_vocab(void) {
     assert(hex(vocab.pieces[7]) == "e4b8ad" && "a CJK piece decodes to its own UTF-8 bytes");
     assert(hex(vocab.pieces[8]) == "0a" && "'Ċ' rides byte 0x0A");
     assert(hex(vocab.pieces[9]) == "20746865" && "'Ġthe' decodes to \" the\"");
+    assert(vocab.pieces[10] == std::string("\x00", 1) && "'Ā' decodes to the NUL byte itself");
     std::remove(path.c_str());
 }
 

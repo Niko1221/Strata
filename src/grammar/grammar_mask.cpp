@@ -40,8 +40,12 @@ void grammar_build_mask(const GrammarVocab& vocab, const grammar_rules& rules,
             continue; // Strata bans every control token (spec §5.1)
         }
         const std::string piece = vocab.token_to_piece(id);
-        if (piece.empty()) {
-            continue; // apply_impl: an empty piece is rejected
+        if (piece.empty() || piece.find('\0') != std::string::npos) {
+            // apply_impl bans an empty piece and one whose first byte is NUL; any embedded NUL joins
+            // it here: the accept walk stops at a NUL (the code_points terminator), so such a token
+            // would "match" every state as an empty piece and leak its byte into the output - the
+            // byte-0x00 token exactly (its piece IS a NUL once the GPT2 byte map is fully decoded).
+            continue;
         }
         auto decoded = decode_utf8(piece, partial_utf8{0, 0});
         storage[(size_t)id] = std::move(decoded.first);
