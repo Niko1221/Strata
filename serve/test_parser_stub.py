@@ -55,6 +55,21 @@ CASES = {
           "120000\n</parameter>\n</\n</parameter>\n</function>\n</tool_call>",
           [("Bash", {"command": "npx vitest run src/builds/mirror-sync.test.ts 2>&1 | tail -8",
                      "description": "Run mirror-sync tests after fix", "timeout": 120000})]),
+    # a lone tag line, then a closer (live raw 446ef0463298): the same empty stub; the damaged `<=NAME>` opener is the next parameter
+    "I": ("<tool_call>\n<function=Grep>\n<parameter=pattern>\npruneDist|prune-dist\n</parameter>\n<=output_mode>\n"
+          "files_with_matches\n</parameter>\n</head_after>\n\n</parameter>\n</function>\n</tool_call>",
+          [("Grep", {"pattern": "pruneDist|prune-dist", "output_mode": "files_with_matches"})]),
+    # a doubled bare closer after a value
+    "J": ("<tool_call>\n<function=Grep>\n<parameter=pattern>\nx\n</parameter>\n<parameter=output_mode>\n"
+          "files_with_matches\n</parameter>\n</parameter>\n</function>\n</tool_call>",
+          [("Grep", {"pattern": "x", "output_mode": "files_with_matches"})]),
+    "K": ("<tool_call>\n<function=Grep>\n<parameter=pattern>\nx\n</parameter>\n<=output_mode>\n"
+          "files_with_matches\n</parameter>\n</parameter>\n</function>\n</tool_call>",
+          [("Grep", {"pattern": "x", "output_mode": "files_with_matches"})]),
+    # a lone `>` line inside a number's value (live raw 97959, -A for -C: the test schema declares no -C): dropped before coercion
+    "L": ("<tool_call>\n<function=Grep>\n<parameter=pattern>\nx\n</parameter>\n<=output_mode>\ncontent\n</parameter>\n"
+          "<=-A>\n>\n2\n</parameter>\n</function>\n</tool_call>",
+          [("Grep", {"pattern": "x", "output_mode": "content", "-A": 2})]),
 }
 
 
@@ -65,7 +80,7 @@ def splits(text, how):
         return list(text)
     pieces, at = [], 0
     while at < len(text):          # cut so that "</parameter>\n<" and "<\n</parameter>" each arrive as one token
-        for tok in (PE + "\n" + LT + "/", PE + "\n" + LT, LT + "\n" + PE, PE + "\n" + PE):
+        for tok in (PE + "\n</head_after>\n\n" + PE, PE + "\n" + LT + "/", PE + "\n" + LT, LT + "\n" + PE, PE + "\n" + PE):
             if text.startswith(tok, at):
                 pieces.append(tok)
                 at += len(tok)
@@ -119,6 +134,13 @@ class StubTests(unittest.TestCase):
                 PE + "\n</function>\n</tool_call>")
         for how in ("whole", "char"):
             self.assertEqual(stream(text, how)[0], [("Write", {"file_path": "/t/a", "content": "a\n<\nb"})], how)
+
+    def test_value_that_holds_a_tag_line_then_text_stays(self):
+        """A tag line followed by text before the next closer is the value's own (not a stub)."""
+        text = ("<tool_call>\n<function=Write>\n<parameter=file_path>\n/t/a\n" + PE + "\n<parameter=content>\na\n" + PE +
+                "\n</div>\nb\n" + PE + "\n</function>\n</tool_call>")
+        for how in ("whole", "char"):
+            self.assertEqual(stream(text, how)[0], [("Write", {"file_path": "/t/a", "content": "a\n" + PE + "\n</div>\nb"})], how)
 
 
 if __name__ == "__main__":

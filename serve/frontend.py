@@ -725,7 +725,12 @@ FOLLOWERS = (FUNC_END, CALL_END, "<parameter=", "</<", "</invoke>", "<parameter 
 # (or a lone `<` line, left open: whatever follows it is the next opener or closer)
 # (or a stray further closer, or an opener cut before its `>`: `<parameter=NAME` + line break)
 # (the lone line is `<` or `</`)
-STUB = re.compile(r"(?:</parameter>\s*)+|</?(?:\s*</parameter>\s*|[ \t]*\n\s*(?:</parameter>\s*)?)")
+# (or a line of one tag, `<NAME>` `</NAME>` `<=NAME>`, any name, closed by a parameter closer)
+TAG_LINE = r"<[/=]?(?!(?:function|tool_call|parameter)>)[^<>\s=/]+>[ \t]*\n\s*</parameter>\s*"
+STUB = re.compile(r"(?:</parameter>\s*)+|" + TAG_LINE + r"|</?(?:\s*</parameter>\s*|[ \t]*\n\s*(?:</parameter>\s*)?)")
+
+
+TAG_START = re.compile(r"<[/=]?(?!(?:function|tool_call|parameter)>)[^<>\s=/]*(?:>(\s*(?:<(?:/(?:p\w*)?)?)?|[ \t]*\n\s*(?:</p\w*)?))?")
 
 
 def broken_opener(s: str) -> int:
@@ -749,6 +754,9 @@ def stub_follows(after: str):
 
 def stub_pending(text: str) -> bool:
     """`text` (no leading whitespace) is a stub still arriving: `<` or `</` and whitespace, then a prefix of the closer."""
+    tag = TAG_START.fullmatch(text)
+    if tag and (tag.group(1) is None or PARAM_END.startswith(tag.group(1).lstrip())):
+        return True
     rest = text[1:]
     if rest.startswith("/"):
         rest = rest[1:]
@@ -1079,6 +1087,8 @@ def coerce_param(value: str, declared) -> object:
     if declared == "string":
         return value
     text = value.strip()
+    if declared in ("integer", "number", "boolean"):      # lines of only stub punctuation are the model's, not the value's
+        text = "\n".join(l for l in text.split("\n") if l.strip() not in ("<", "</", ">")).strip()
     if declared == "boolean" and text.lower() in _BOOLS:
         return _BOOLS[text.lower()]
     try:
