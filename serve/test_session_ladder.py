@@ -17,13 +17,17 @@ import unittest
 from pathlib import Path
 
 from serve.session_ladder import (
+    JOIN_TOKEN_TOLERANCE,
+    JOIN_TOKEN_TOLERANCE_FLOOR,
     PARK_COST_KIB_PER_TOKEN,
+    SNAPSHOT_JOIN_TOLERANCE,
     ConvEvent,
     LadderConfig,
     TrackedSession,
     SessionLadder,
     extract_session_id,
     join_event,
+    join_event_tolerant,
     prefix_fidelity,
     should_restore,
     should_save,
@@ -144,12 +148,80 @@ class SessionLadderDecisions(unittest.TestCase):
         self.assertFalse(prefix_fidelity(saved, "completely different prompt"))
 
 
+class JoinTolerance(unittest.TestCase):
+    """F1 (final review): the tolerant join.  join_event's exact (tokens, byte_count) key never matches the
+    request-path figures - on_turn_done records the 40.4 KiB/token estimate while a park line carries the
+    engine's own snapshot_bytes and the generated turn's token delta (7 tokens in the 24.5k evidence pair) -
+    so after exact match the ladder joins the NEAREST session within SNAPSHOT_JOIN_TOLERANCE of the event's
+    bytes and a token band max(JOIN_TOKEN_TOLERANCE x s.tokens, JOIN_TOKEN_TOLERANCE_FLOOR) = max(1%, 256),
+    pinned here.  The near-tie consequence is benign: a mis-join only skips a save or defers a restore - both
+    degrade to today's cold prefill; prefix_fidelity still gates every restore, so a mis-join never restores
+    a wrong file."""
+
+    # the verbatim evidence pair: DONE "prompt 24504 tokens = 0 reused + 24504 read ..." -> the estimate
+    # int(24504 x 40.4 KiB) = 1013722009-ish; the park line 24511 tokens / snapshot_bytes=1046081816.
+    MID_ESTIMATE = int(24504 * PARK_COST_KIB_PER_TOKEN * 1024)
+
+    def test_fires_on_the_evidence_pair(self):
+        tracked = {"mid": session("mid", 24504, self.MID_ESTIMATE)}
+        ev = ConvEvent(kind="parked", tokens=24511, byte_count=1046081816, evictions=39)
+        joined = join_event_tolerant(ev, tracked)
+        self.assertIsNotNone(joined)                      # exact fails (24511 != 24504); tolerance lands it
+        self.assertEqual(joined.session_id, "mid")
+
+    def test_token_band_pinned_at_max_1_percent_256(self):
+        # the floor: a 24511-token session's band is 256 (1% would be 245): a 256-token delta joins, 257 does not
+        near = session("near", 24511, 1046081816)
+        self.assertIsNotNone(join_event_tolerant(ConvEvent(kind="parked", tokens=24511 + 256,
+                                                            byte_count=1046081816, evictions=1), {"near": near}))
+        self.assertIsNone(join_event_tolerant(ConvEvent(kind="parked", tokens=24511 + 257,
+                                                        byte_count=1046081816, evictions=1), {"near": near}))
+        # 1% takes over above 25600 tokens: a 30000-token session's band is 300
+        big = session("big", 30000, 1241088000)
+        self.assertIsNotNone(join_event_tolerant(ConvEvent(kind="parked", tokens=30300,
+                                                           byte_count=1241088000, evictions=1), {"big": big}))
+        self.assertIsNone(join_event_tolerant(ConvEvent(kind="parked", tokens=30301,
+                                                        byte_count=1241088000, evictions=1), {"big": big}))
+
+    def test_byte_band_is_the_snapshot_tolerance(self):
+        # 15% (SNAPSHOT_JOIN_TOLERANCE, the machinery skipped_over_budget's MiB join already pins) of the
+        # event's byte_count: a gap just inside joins, just outside joins nothing.
+        near = session("near", 24511, 1_000_000_000)
+        ev_in = ConvEvent(kind="parked", tokens=24600, byte_count=880_000_000, evictions=1)   # gap 120M <= 132M
+        self.assertIsNotNone(join_event_tolerant(ev_in, {"near": near}))
+        ev_out = ConvEvent(kind="parked", tokens=24600, byte_count=840_000_000, evictions=1)  # gap 160M > 126M
+        self.assertIsNone(join_event_tolerant(ev_out, {"near": near}))
+
+    def test_exact_match_keeps_precedence_and_ambiguity_still_refuses(self):
+        # Task 5's rules stand: a unique exact match wins over any nearer tolerant candidate; an ambiguous
+        # exact key joins nothing (the tolerant join's own tie refuses too - two candidates at equal gap).
+        mid = session("mid", 24511, 1046081816)
+        near = session("near", 24511, 1046081900)         # byte gap 84: inside tolerance
+        ev = ConvEvent(kind="parked", tokens=24511, byte_count=1046081816, evictions=9)
+        joined = join_event_tolerant(ev, {"mid": mid, "near": near})
+        self.assertIsNotNone(joined)                      # the exact-key session has gap 0: it wins outright
+        self.assertEqual(joined.session_id, "mid")
+        twin = session("twin", 24511, 1046081816)         # the P1 parked=3 fingerprint shared by two conversations
+        self.assertIsNone(join_event_tolerant(ev, {"mid": mid, "twin": twin}))   # tied gap 0: refuses to guess
+
+    def test_only_parked_skipped_and_restored_kinds_join_tolerantly(self):
+        near = session("near", 24511, 1046081816)
+        for kind in ("parked", "skipped_below_min", "restored"):
+            ev = ConvEvent(kind=kind, tokens=24518, byte_count=1046081900, evictions=1)
+            self.assertIsNotNone(join_event_tolerant(ev, {"near": near}))       # the token-delta kinds
+        for kind in ("dropped", "skipped_over_budget"):   # the no-figures line and the tokened budget refusal
+            ev = ConvEvent(kind=kind, tokens=24518, byte_count=1046081900, evictions=1)
+            self.assertIsNone(join_event_tolerant(ev, {"near": near}))          # keep exact-only semantics
+
+
 class SessionLadderIntake(unittest.TestCase):
     """Task 6's intake: ConvCacheLog.drain_events (the engine log's `conversation cache:` lines, one parse,
     consumed exactly once, the monitor card's poll() untouched) and SessionLadder's per-session bookkeeping."""
 
-    # verbatim engine lines (P1 fleet 20261025T0336, P2 restore-extend 20261025T0450), plus the brief's
-    # pinned big-put-failure line (`skipped 252953 tokens ... evictions=7`; engine: put() refused, prints "skipped").
+    # verbatim engine lines (P1 fleet 20261025T0336, P2 restore-extend 20261025T0450), plus SKIP252: NOT a
+    # verbatim evidence line - the committed evidence only carries `skip parking (snapshot N MiB ...)` shapes -
+    # this line is sourced from the pre-existing ConvCacheLog EVENT regex shape (F9 label), with the brief's
+    # pinned big-put-failure figures (`skipped 252953 tokens ... evictions=7`; engine: put() refused, prints "skipped").
     PARK1 = ("strata serve: conversation cache: parked 24511 tokens in 130.1 ms; parked=1 bytes=1046081816 "
              "evictions=39 snapshot_bytes=1046081816 reused_kv_bytes=0\n")
     PARK2 = ("strata serve: conversation cache: parked 24514 tokens in 130.1 ms; parked=2 bytes=2092276296 "
@@ -263,6 +335,27 @@ class SessionLadderIntake(unittest.TestCase):
         lad.on_conv_event(ConvEvent(kind="skipped_over_budget", tokens=0, byte_count=0, evictions=6,
                                     snapshot_mib=800))  # ~20.9% -> outside: no join, the counter is not recorded
         self.assertEqual(lad.track("mid-1").evictions_at_last_switch, 5)
+
+    def test_join_tolerance_fires_on_live_figures(self):
+        """F1's integration proof, driven with VERBATIM evidence figures: the request path feeds the ladder
+        the DONE figures (momo-fleet c1-1 / momo-restore-extend e2: "prompt 24504 tokens = 0 reused + 24504
+        read ..." -> byte_count 0 -> the 40.4 KiB/token estimate) and the park line that names the same mid
+        carries the engine's real snapshot (self.PARK1, "parked 24511 tokens ... snapshot_bytes=1046081816",
+        a 7-token delta) - in production the exact key NEVER matches, so the tolerant join must land this
+        pair, park the mid, and hold should_save back at the switch-away while an over-budget session still
+        saves."""
+        lad = self.ladder()
+        lad.on_turn_done("probe-c1-20261025T0341", 24504, 0, 0)      # the DONE figures as on_turn_done sees them
+        mid = lad.track("probe-c1-20261025T0341")
+        self.assertEqual(mid.byte_count, int(24504 * PARK_COST_KIB_PER_TOKEN * 1024))  # ~1,013,722,000 vs the line's 1,046,081,816
+        lad.on_turn_done("main-252953", 252953, 0, 0)                # ~9,980 MiB: beyond the 4096 MiB budget
+        for ev in self.drained(self.PARK1)[1]:
+            lad.on_conv_event(ev)                                     # the verbatim park line
+        self.assertTrue(mid.parked)                                   # the join landed: parked is set
+        self.assertEqual(mid.evictions_at_last_switch, 39)            # ...with the engine's counter recorded on the mid
+        self.assertEqual(lad.track("main-252953").evictions_at_last_switch, 0)   # the big main is not blamed for it
+        self.assertFalse(should_save(mid, lad.tracked, CFG))          # park holds the mid: no save at switch-away
+        self.assertTrue(should_save(lad.track("main-252953"), lad.tracked, CFG))  # the over-budget one still saves
 
     def test_note_switch_away_clears_parked_after_should_save(self):
         # Task 7's ordering (pinned by should_save's docstring): evaluate should_save while parked still
@@ -385,6 +478,31 @@ class LadderConfigFromJson(unittest.TestCase):
         # a dict absent key keeps LadderConfig's pinned defaults
         cfg = ladder_config_of({"session_ladder": {}}, engine, "/d")
         self.assertEqual((cfg.idle_save_s, cfg.retention_max_files), (8.0, 16))
+
+    def test_start_ladder_of_refuses_an_explicit_zero_budget(self):
+        # F5 (final review): `park_budget_mib is None` let an explicit --conversation-cache-mib 0 start an
+        # enabled budget-0 ladder: over_budget is then true for EVERY turn, so the aux churn the design
+        # forbids is exactly what it would do.  Same refusal as the None budget, same message naming the flag.
+        from serve.server import ladder_config_of, start_ladder_of
+        zero = _FakeEngine(["--conversation-cache-mib", "0"])
+        with self.assertRaises(SystemExit) as cm:
+            start_ladder_of({"session_ladder": {"idle_save_s": 8.0, "retention_max_files": 16}}, zero,
+                            "/var/lib/strata/sessions")
+        self.assertIn("--conversation-cache-mib", str(cm.exception))
+        # a DISABLED ladder still carries budget 0 (what Service.__init__ builds); the guard is for enabled ones
+        self.assertEqual(ladder_config_of({"session_ladder": False}, zero, "/d").park_budget_mib, 0)
+        self.assertFalse(ladder_config_of({"session_ladder": False}, zero, "/d").enabled)
+
+    def test_ladder_config_of_names_a_malformed_dict_value(self):
+        # F6 (final review): a malformed strata.json value ("idle_save_s": "eight") raised a bare ValueError
+        # at startup.  The conversions are wrapped: SystemExit names the bad key AND the bad value.
+        from serve.server import ladder_config_of
+        engine = _FakeEngine(["--conversation-cache-mib", "8192"])
+        for key, bad in (("idle_save_s", "eight"), ("retention_max_files", "many")):
+            with self.assertRaises(SystemExit) as cm:
+                ladder_config_of({"session_ladder": {key: bad}}, engine, "/d")
+            self.assertIn(key, str(cm.exception))            # names the bad key...
+            self.assertIn(bad, str(cm.exception))            # ...and the value that failed to convert
 
 
 if __name__ == "__main__":

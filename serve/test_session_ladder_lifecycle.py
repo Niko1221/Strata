@@ -91,6 +91,56 @@ class Lifecycle(unittest.TestCase):
         self.ladder.on_unload(self.service)             # all clean now: no churn
         self.assertEqual(len(self.actions("save")), 2)
 
+    def test_idle_save_then_switch_away_does_not_re_save(self):
+        # F3 (final review): the switch-away save honors the dirty marker - an idle-save already wrote this
+        # session's checkpoint and nothing dirtied it since, so the switch must not rewrite the identical file.
+        self.seen("ses-a")
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_idle(self.service, 8.0)                # idle save: checkpoint written, session clean
+        self.assertEqual(self.actions("save"), ["save"])
+        self.ladder.on_arrival(self.service, "ses-b", P2)     # switch-away: clean + filed -> skipped
+        self.assertEqual(self.actions("save"), ["save"])
+
+    def test_a_consumed_checkpoint_re_saves_on_the_next_switch(self):
+        # F3's documented half: a session whose file was CONSUMED by a warm restore (the start hook's
+        # handoff retires file_path) re-saves at its next switch-away even while dirty is False - engine
+        # park does not hold over-budget mains and the file is gone, so the next save is the protection
+        # that keeps a checkpoint available.  Pinned as intended behavior.
+        self.seen("ses-a")
+        self.ladder.on_arrival(self.service, "ses-a", P1)     # ses-a active
+        self.ladder.on_arrival(self.service, "ses-b", P2)     # switch-away: checkpointed, clean
+        self.assertEqual(self.actions("save"), ["save"])
+        self.ladder.on_arrival(self.service, "ses-a", P1)     # back: ses-a is last active again, prefix intact
+        self.ladder.on_start(self.service)                    # the warm handoff consumes the file...
+        self.assertIsNone(self.ladder.tracked["ses-a"].file_path)
+        self.assertFalse(self.ladder.tracked["ses-a"].dirty)  # ...still clean from its own save
+        self.ladder.on_arrival(self.service, "ses-b", P2)     # switch-away: file gone -> re-save anyway
+        self.assertEqual(self.actions("save"), ["save", "save"])
+
+    def test_lifecycle_engine_io_runs_outside_the_ladder_lock(self):
+        # F4 (final review): the idle save and the unload save-all also run their engine.session_file calls
+        # outside the ladder lock (decision + ledger windows take it, the engine I/O between them does not).
+        probe = []
+
+        def session_file(action, path):
+            got = self.ladder._lock.acquire(blocking=False)
+            if got:
+                self.ladder._lock.release()
+            probe.append((action, got))
+            self.calls.append((action, path))
+            if action == "save":
+                Path(path).write_bytes(b"checkpoint")
+            return {"tokens": MID}
+
+        self.engine.session_file = mock.Mock(side_effect=session_file)
+        self.seen("ses-a")
+        self.seen("ses-b")
+        self.ladder.on_arrival(self.service, "ses-a", P1)      # ses-a active (last_active)
+        self.ladder.on_idle(self.service, 8.0)                 # idle save of ses-a...
+        self.ladder.on_unload(self.service)                    # ...then the unload save-all (ses-b, dirty)
+        self.assertEqual([a for a, _ in probe], ["save", "save"])
+        self.assertTrue(all(got for _, got in probe))          # lock free at both engine calls
+
     def _two_checkpoints(self):
         """ses-a and ses-b both checkpointed by real switches; ses-b is the last-active session with a
         valid file and a fidelity-able prefix - the state a warm restore is queued for."""
