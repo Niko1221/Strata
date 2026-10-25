@@ -771,6 +771,8 @@ def param_end(text: str, final: bool = False, names=None) -> int:
         elif names and "\n" not in after and ">" not in after and any(
                 t.startswith(after) for n in names for t in ("<%s>" % n, "</%s>" % n)):
             follows = None                  # a bare `<NAME>` / `</NAME>` opener still arriving
+        elif stray_follows(after) is not False:
+            follows = stray_follows(after)  # a stray closer that stands where `</function>` belongs
         else:
             follows = False
         if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
@@ -781,6 +783,21 @@ def param_end(text: str, final: bool = False, names=None) -> int:
             return at if final else -2
         at = text.find(PARAM_END, at + 1)
     return inner_end if final else -1
+
+
+_STRAY = re.compile(r"</(?!parameter>)[^<>\s=/]+>\s*")
+
+
+def stray_follows(after: str):
+    """`after` (no leading whitespace) is a closing tag that is not the call format's own, then `</tool_call>`: True
+    (it stands where `</function>` belongs); None while that has not all arrived; False otherwise."""
+    m = _STRAY.match(after)
+    if not m:
+        return None if re.fullmatch(r"</(?!parameter>)[^<>\s=/]*", after) else False
+    rest = after[m.end():]
+    if rest.startswith(CALL_END):
+        return True
+    return None if not rest or CALL_END.startswith(rest) else False
 
 
 def held_from(text: str, names=None) -> int:
@@ -1117,6 +1134,64 @@ def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
     return buf[:0].join(out) + buf[last:] if out else buf
 
 
+_ELEM_FOLLOW = re.compile(r"\s*(?:<parameter=|<=|</function>|</tool_call>|</invoke>|<([^<>\s=/]+)>|</[^<>\s=/]+>\s*</tool_call>)")
+
+
+_ELEM_OPEN = re.compile(r"(<function=[^>\n]*>\s*)<([^<>\s=/]+)>")
+_ELEM_CLOSE = re.compile(r"</([^<>\s=/]+)>")
+
+
+def _closes_element(after: str, props) -> bool:
+    """`after` (what follows a `</NAME>`) is where the next parameter or the call's end stands."""
+    m = _ELEM_FOLLOW.match(after)
+    return bool(m) and (m.group(1) is None or m.group(1) in props)
+
+
+def fix_elements(buf: str, schemas: dict, start: int = 0) -> str:
+    """recover: a declared parameter written as an XML element, `<NAME>value</NAME>` (seen from Coder-L, mixed with
+    `<parameter=NAME>` ones), is `<parameter=NAME>value</parameter>` - the value verbatim; an undeclared tag stays.
+    `</NAME>` closes a parameter NAME opened and not closed yet when the next parameter or the call's end follows it;
+    a `<NAME>` right after the function opener is its opener when such a closer follows.  A closing tag that is not
+    the call format's own, between the last `</parameter>` and `</tool_call>`, is the call's `</function>`.  Only text
+    from `start` on is rewritten."""
+    def props_of(i):
+        f = buf.rfind(FUNC_START, 0, i)
+        return f, (((schemas.get(func_name(buf[f + len(FUNC_START):])) or {}).get("parameters") or {}).get("properties") or {}) if f >= 0 else {}
+    text = buf
+    out, last = [], 0
+    for m in _ELEM_OPEN.finditer(buf, max(0, buf.rfind(FUNC_START, 0, start + 1))):
+        n, (_, props) = m.group(2), props_of(m.end())
+        c = buf.find("</%s>" % n, m.end())
+        if m.start(2) - 1 >= start and n in props and c >= 0 and _closes_element(buf[c + len(n) + 3:], props):
+            out += [buf[last:m.start(2) - 1], PARAM_START + n + ">"]
+            last = m.end()
+    if out:
+        text = "".join(out) + buf[last:]
+    out, last = [], 0
+    for m in _ELEM_CLOSE.finditer(text, start):
+        f, props = props_of(m.start())
+        n = m.group(1)
+        if n not in props or not _closes_element(text[m.end():], props):
+            continue
+        o = text.rfind(PARAM_START + n + ">", max(f, 0), m.start())
+        if o >= 0 and PARAM_END not in text[o:m.start()]:
+            out += [text[last:m.start()], PARAM_END]
+            last = m.end()
+    if out:
+        text = "".join(out) + text[last:]
+    return text[:start] + re.sub(r"(</parameter>\s*)</(?!parameter>|function>|tool_call>)[^<>\s=/]+>(\s*</tool_call>)",
+                                 r"\1</function>\2", text[start:])
+
+
+def fix_forms(buf: str, schemas: dict, start: int = 0) -> str:
+    """fix_param_openers and fix_elements, repeated while they rewrite: an element's closer opens the next one."""
+    while True:
+        fixed = fix_elements(fix_param_openers(buf, schemas, start), schemas, start)
+        if fixed == buf:
+            return buf
+        buf = fixed
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -1125,8 +1200,12 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
     name = func_name(body[len("<function="):])      # `<function= capture>`: the model's stray space
-    rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    if props:       # a declared name written as an element; a stray closer where `</function>` belongs
+        tail = "\n" + CALL_END if re.search(r"</[^<>\s]+>\s*$", body) else ""      # the wrapper's closer, as a call has it
+        body = fix_forms(body + tail, {name: schema}).removesuffix(tail)
+        body = re.sub(r"(</parameter>\s*)</(?!parameter>|function>)[^<>\s=/]+>\s*$", r"\1</function>", body)
+    rest = body[body.index(">") + 1:]
     args = {}
     if rest.lstrip().startswith(ARGS_START):          # recover: the arguments as one JSON object
         got = json_args(rest.lstrip())
@@ -1520,6 +1599,9 @@ class OutputParser:
                 done = max((len(t) for t in tags[1:] if text.endswith(t)), default=0)
                 safe = rest.find(PARAM_END) if end == -2 else (
                     len(text) - done if done else len(rest) - self._hold(rest, tags))
+                pending = re.search(r"</%s>\s*(?:<[^<>]*|</[^<>]*>\s*<?[^<>]*)?$" % re.escape(self.spname), rest)
+                if pending:                     # a `</NAME>` that may close the element, its follower not here yet
+                    safe = min(safe, pending.start())
                 if self.recover:                # a second call may begin in the value (split_second_call)
                     safe = min(safe, rest.find(CALL_START) if CALL_START in rest else len(rest) - self._hold(rest, (CALL_START,)))
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
@@ -1827,8 +1909,8 @@ class OutputParser:
                 self.state, self.lead = "content", call is not None
             else:
                 drop = None
-                if self.recover and ("<=" in self.buf or PARAM_END in self.buf):
-                    self.buf = fix_param_openers(self.buf, self.schemas, self.sp if self.stream_tools else 0)
+                if self.recover and ("<=" in self.buf or "</" in self.buf):
+                    self.buf = fix_forms(self.buf, self.schemas, self.sp if self.stream_tools else 0)
                 if self.recover and CALL_START in self.buf[self.sp:]:
                     self.buf = split_second_call(self.buf)
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
@@ -1959,6 +2041,8 @@ class OutputParser:
                 raise ValueError("whitespace tool name is not declared")
             call = parse_tool_call(body, self.schemas.get(name))
             call.name = name
+            if self.recover and not call.arguments and ((self.schemas.get(name) or {}).get("parameters") or {}).get("required"):
+                raise ValueError("tool call without arguments: " + body[:80])     # a stub alone is not a call
         except ValueError:
             if not self.recover:
                 raise
