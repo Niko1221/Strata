@@ -156,6 +156,7 @@ class Install(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.calls = []
+        self.github_up = True
         self.cfg = {}
         self.exe = self.root / "engine" / ("strata-dsv41.exe" if setup.WIN else "strata-dsv41")
         eng = self.root / "engine"
@@ -172,6 +173,7 @@ class Install(unittest.TestCase):
         patches = [mock.patch.object(setup, "download", lambda url, dst, what=None: self.calls.append(("get", url, dst))),
                    mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.calls.append(("sha", s.name, own))),
                    mock.patch.object(setup, "free_gb", lambda p: 900.0),
+                   mock.patch.object(setup, "github_reachable", lambda timeout=10.0: self.github_up),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
                    mock.patch.object(setup, "engine_step", engine_step),
                    mock.patch.object(setup, "run", lambda cmd, **k: self.calls.append(("run", cmd))),
@@ -227,7 +229,7 @@ class Install(unittest.TestCase):
         rc, out = self.install(engine=False)
         self.assertEqual(rc, 1, out)
         self.assertIn("DeepSeek's engine is not available for this computer yet", out)
-        self.assertIn("RTX 30", out)
+        self.assertIn("RTX 30, 40 and 50", out)
         self.assertNotIn("cmake", out)
         self.assertNotIn("STRATA_DSV41_EXE", out)
         self.assertIn("Nothing has been downloaded", out)
@@ -332,6 +334,64 @@ class Catalog(unittest.TestCase):
 
 ISTA = "IST-DAS-2.00bpw"
 RTX5070 = {"index": 0, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 12.0, "vendor": "nvidia"}
+
+
+class NoNetwork(Install):
+    """GitHub cannot be reached (a connection that is never answered): one plain line at once, not minutes of retries; and the Strata engine is not used."""
+
+    def test_unreachable_github_is_one_plain_line_before_anything_is_downloaded(self):
+        self.github_up = False
+        rc, out = self.install(engine=False)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Strata can't reach GitHub to download the DeepSeek engine.", out)
+        self.assertIn("Check the internet connection and run the same command again.", out)
+        self.assertFalse([c for c in self.calls if c[0] == "get"])
+
+    def test_a_local_feed_needs_no_github(self):
+        """A run on a local feed (a folder, a loopback address) downloads nothing from GitHub: a slow or down GitHub must not stop it."""
+        self.github_up = False
+        with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": str(self.root / "feed")}):
+            rc, out = self.install(engine=False)
+        self.assertNotIn("can't reach GitHub", out)
+
+    def test_a_package_the_person_has_needs_no_github(self):
+        self.github_up = False
+        self.install(engine=False)                                    # (the first run only creates the folders)
+        pk = self.root / "engine-dsv41"
+        pk.mkdir(exist_ok=True)
+        (pk / "strata-dsv41-0.1.49-x.tar.gz").write_bytes(b"x")
+        with mock.patch.object(setup.dsv41_engine_module if hasattr(setup, "dsv41_engine_module") else __import__("strata_control.dsv41_engine", fromlist=["x"]),
+                               "install_package", lambda *a, **k: None):
+            rc, out = self.install(engine=False)
+        self.assertNotIn("can't reach GitHub", out)
+
+    def test_the_strata_engine_is_not_part_of_a_deepseek_install(self):
+        rc, out = self.install()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse([c for c in self.calls if c[0] == "engine"])        # engine_step is not called any more
+        self.assertIn("DeepSeek engine", out)
+
+
+class GithubCheck(unittest.TestCase):
+    def test_github_reachable_answers_quickly_in_both_directions(self):
+        import urllib.error
+        with mock.patch.object(setup, "_urlopen", side_effect=urllib.error.URLError("timed out")):
+            self.assertFalse(setup.github_reachable(1))
+        with mock.patch.object(setup, "_urlopen", side_effect=OSError("unreachable")):
+            self.assertFalse(setup.github_reachable(1))
+        with mock.patch.object(setup, "_urlopen", side_effect=urllib.error.HTTPError("https://github.com", 403, "no", {}, None)):
+            self.assertTrue(setup.github_reachable(1))                       # any answer means it is reachable
+        with mock.patch.object(setup, "_urlopen", return_value=mock.MagicMock()):
+            self.assertTrue(setup.github_reachable(1))
+
+    def test_a_local_feed_is_told_from_the_signed_one(self):
+        for feed in ("C:/feeds/f", "/tmp/feed", "file:///tmp/feed", "http://127.0.0.1:8099/feed.json", "https://localhost/f"):
+            self.assertTrue(setup.local_feed(feed), feed)
+        for feed in (None, "", "https://github.com/Niko1221/Strata/releases/latest/download/feed.json"):
+            with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": ""}):
+                self.assertFalse(setup.local_feed(feed), feed)
+        with mock.patch.dict("os.environ", {"STRATA_UPDATE_FEED": "/tmp/x"}):
+            self.assertTrue(setup.local_feed())                              # the environment names it when --feed does not
 
 
 class OfficialSets(unittest.TestCase):

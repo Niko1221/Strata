@@ -22,6 +22,15 @@ type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
     return; event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=radio]')); const current = items.indexOf(event.target as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (current + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + items.length) % items.length; items[next]?.focus(); items[next]?.click(); }
 const steps = ['Welcome', 'Your model', 'Prepare', 'Make it yours'];
+/** What a person is told before choosing DeepSeek: the size, where it runs, how fast, what it needs. Every line is a warning or a fact; nothing here stops the download. */
+function DeepSeekNote({ version, plan }: { version: NonNullable<ReturnType<typeof nativeCatalogModels>[number]['sizes'][number]>; plan: Record<string, any> | null }) {
+    void plan;   // the plan's own disk line repeats what the version says in on_this_pc
+    return <div className="engine-warning" role="status"><Icon name="info" size={18}/><div>
+        <p>{tr("This is a very large model. The download is {0} GB and it needs about as much free disk space. It runs on one 12 GB graphics card with 46 to 64 GB of RAM, slowly: about 5 to 7 words a second. What does not fit in memory is read from your SSD, so an NVMe drive matters.", [Math.round(version.download_gb)])}</p>
+        {version.on_this_pc ? <p className="small muted">{version.on_this_pc}</p> : null}
+        <p className="small muted">{tr("You can stop the download and continue later; it picks up where it stopped. Strata warns you here but never blocks you.")}</p>
+    </div></div>;
+}
 export function GuidedSetup() {
     const native = useNative(), setup = useStore(s => s.setup), hardware = useStore(s => s.hardware);
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
@@ -132,7 +141,8 @@ export function GuidedSetup() {
         setTuneJobId(tuneJob.id);
         void persist(4, { tuneJobId: tuneJob.id }).catch(e => setError(e.message));
     } }, [step, installJob?.id, tuneJob?.id]);
-    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context, vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
+    const fixedContext = version?.multi_file ? 8192 : null;      // the one context DeepSeek's engine was checked at
+    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context: fixedContext ?? context, vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
     async function review() {
         await perform(async () => {
             setInstallJobId('');
@@ -154,7 +164,7 @@ export function GuidedSetup() {
     }
     async function tune() {
         await perform(async () => {
-            const result = await nativeAction<NativeJob>('operations', { kind: 'tune', args: { guided: true, model: version?.id, profile, calibrate, vision: version?.images && vision ? 'yes' : 'no', multiple: false } });
+            const result = await nativeAction<NativeJob>('operations', { kind: 'tune', args: { guided: true, model: version?.id, profile, calibrate: calibrate && !version?.multi_file, vision: version?.images && vision ? 'yes' : 'no', multiple: false } });
             setTuneJobId(result.id);
             await persist(4, { tuneJobId: result.id });
         });
@@ -201,9 +211,10 @@ export function GuidedSetup() {
    <div className="onboard-stage-heading"><h1 ref={titleRef} tabIndex={-1} data-initial-focus>{tr(title)}</h1>{tr(step === 2 ? <p>{tr("You can always change your models later.")}</p> : step === 4 && tuneJob?.state === 'running' ? <p>{tr("We\u2019re measuring, applying your preference, and getting ready to chat.")}</p> : null)}</div>
    {tr(step === 2 ? <div className="onboard-model-stage">
     {tr(selectedFamily ? <>
-     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(context)} options={(native?.catalog?.contexts ?? [32768]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => setContext(Number(value))}/></div></div>
+     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(version?.multi_file ? 8192 : context)} options={(version?.multi_file ? [8192] : native?.catalog?.contexts ?? [32768]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => setContext(Number(value))}/></div></div>
      <OnboardingMemory hardware={hardware} native={native?.hardware}/>{tr(!version || version.needsNewerEngine ? <p className="small muted">{tr("This model needs a newer engine. Update your engine or import a local GGUF for this model.")}</p> : null)}
      <div className="onboard-version-heading"><strong>{tr("Choose a version")}</strong><span>{tr(version ? `${catalogVersionLabel(version)} selected` : '')}</span></div>
+     {tr(version?.multi_file ? <DeepSeekNote version={version} plan={plan}/> : null)}
      <div className="onboard-versions" role="radiogroup" aria-label={tr("Model version")} onKeyDown={radioKeys}>{tr(cards.map(v => versionCard(v)))}</div>
      {tr(others.length ? <div className="onboard-more-versions"><VersionPicker versions={others} selectedId={version?.id ?? ''} hardware={hardware ? { ram_gb: native?.hardware?.ram_gb ?? hardware.memory.totalGb, vram_gb: Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb)) } : null} downloaded={readyIds} showRecommended={false} moreLabel="More versions" onSelect={id => { setSize(id); setPlan(null); }} onOwnGguf={() => void ownModel()}/></div> : null)}
      <div className="onboard-folder"><Icon name="folder" size={20}/><div><strong>{tr(directory ? 'Your model folder' : 'Already downloaded the model?')}</strong><small>{tr(directory || "Choose the folder and we'll start your models with Strata.")}</small></div><Btn size="sm" onClick={() => setFolderOpen(v => !v)}>{tr(folderOpen ? 'Close' : directory ? 'Change' : 'Choose folder')}</Btn></div>

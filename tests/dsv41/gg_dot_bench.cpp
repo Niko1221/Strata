@@ -8,6 +8,8 @@
 #include "ds4_gguf_cpu.hpp"
 
 #include "ggml-cpu.h"
+#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/iq_avx512.hpp"
 #include "ggml.h"
 
 #include <algorithm>
@@ -122,8 +124,9 @@ static int run_expert(int tg, int td, int threads, long mb, int nt, int reps) {
 int main(int argc, char** argv) {
     int type = 18, threads = 32, nt = 1, reps = 3;
     long mb = 3072;
-    bool exact = false, expert = false;
+    bool exact = false, expert = false, k512 = false;
     int dtype = -1;
+    std::string dump;   // --dump FILE: ggml-cpu's results (nt x rows floats) written raw - compare two builds with cmp
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto val = [&] { return i + 1 < argc ? std::atol(argv[++i]) : 0L; };
@@ -134,7 +137,9 @@ int main(int argc, char** argv) {
         else if (a == "--reps") reps = (int) val();
         else if (a == "--exact") exact = true;
         else if (a == "--expert") expert = true;
+        else if (a == "--k512") k512 = true;
         else if (a == "--dtype") dtype = (int) val();
+        else if (a == "--dump" && i + 1 < argc) dump = argv[++i];
     }
     if (expert) return run_expert(type, dtype < 0 ? type : dtype, threads, mb, nt, reps);
     ggml_cpu_init();
@@ -171,6 +176,25 @@ int main(int argc, char** argv) {
         gg_cpu_quant(f.gu_act, x.data(), n, a[(size_t) t].data());
         ap[(size_t) t] = a[(size_t) t].data();
     }
+    if (k512) {   // --k512: Strata's AVX-512 rows (iq512x_rows) called directly against ggml-cpu's dot, bit for bit: no dispatcher in between
+        const bool cpu_ok = strata::kernels::cpu::cpu_avx512_ok(), sup = strata::kernels::cpu::iq512x_supported(type);
+        std::printf("k512: type %d nt %d: cpu_avx512_ok %d, iq512x_supported %d%s\n", type, nt, (int) cpu_ok, (int) sup,
+                    cpu_ok && sup ? "" : "  -> the AVX-512 rows cannot run here");
+        if (!cpu_ok || !sup) return 3;
+        const ggml_type_traits_cpu* tc = ggml_get_type_traits_cpu((ggml_type) type);
+        std::vector<std::vector<float>> r0v((size_t) nt, std::vector<float>((size_t) rows)), r1v = r0v;
+        std::vector<float*> q1;
+        for (int t = 0; t < nt; ++t) q1.push_back(r1v[(size_t) t].data());
+        for (long r = 0; r < rows; ++r)
+            for (int t = 0; t < nt; ++t) tc->vec_dot(n, &r0v[(size_t) t][(size_t) r], 0, w.data() + (size_t) r * rb, 0, ap[(size_t) t], 0, 1);
+        strata::kernels::cpu::iq512x_rows(type, w.data(), rb, n, ap.data(), nt, q1.data(), 0, (int) rows);
+        long dif = 0;
+        for (int t = 0; t < nt; ++t)
+            for (long r = 0; r < rows; ++r)
+                if (std::memcmp(&r0v[(size_t) t][(size_t) r], &r1v[(size_t) t][(size_t) r], 4) != 0) ++dif;
+        std::printf("k512: iq512x_rows against ggml-cpu's dot: %ld of %ld differ in bits\n%s\n", dif, (long) nt * rows, dif == 0 ? "OK" : "FAIL");
+        return dif == 0 ? 0 : 1;
+    }
     std::vector<std::vector<float>> o0((size_t) nt, std::vector<float>((size_t) rows)), o1 = o0;
     std::vector<float*> p0, p1;
     for (int t = 0; t < nt; ++t) { p0.push_back(o0[(size_t) t].data()); p1.push_back(o1[(size_t) t].data()); }
@@ -204,6 +228,12 @@ int main(int argc, char** argv) {
 
     const double t_gg = pass(0, p0.data());
     const double t_own = pass(1, p1.data());
+    if (!dump.empty()) {
+        if (std::FILE* df = std::fopen(dump.c_str(), "wb")) {
+            for (int t = 0; t < nt; ++t) std::fwrite(o0[(size_t) t].data(), 4, (size_t) rows, df);
+            std::fclose(df);
+        }
+    }
     long bad = 0, differ = 0;
     double worst = 0, worst_ref = 0, absmax = 0, absdiff = 0;
     for (int t = 0; t < nt; ++t)

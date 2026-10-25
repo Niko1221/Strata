@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.49.1 LANGUAGES CXX)
+project(strata VERSION 0.1.51 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -888,6 +888,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_executable(ds4_slot_test tests/dsv41/slot_test.cpp)
       target_include_directories(ds4_slot_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
       target_compile_features(ds4_slot_test PRIVATE cxx_std_17)
+      add_executable(ds4_experts_rule_test tests/dsv41/experts_rule_test.cpp)
+      target_include_directories(ds4_experts_rule_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+      target_compile_features(ds4_experts_rule_test PRIVATE cxx_std_17)
+      add_executable(ds4_pick_rule_test tests/dsv41/pick_rule_test.cpp)
+      target_include_directories(ds4_pick_rule_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+      target_compile_features(ds4_pick_rule_test PRIVATE cxx_std_17)
     endif()
     if(STRATA_ENABLE_HIP)
       foreach(_t strata_dsv41_kernels strata-dsv41)
@@ -1538,6 +1544,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
   add_test(NAME arch_defaults_test COMMAND arch_defaults_test)
+  add_executable(adapt_async_default_test src/core/adapt_async_default_test.cpp)
+  target_include_directories(adapt_async_default_test PRIVATE include)
+  add_test(NAME adapt_async_default_test COMMAND adapt_async_default_test)
   add_executable(uma_cache_test src/core/uma_cache_test.cpp)
   target_include_directories(uma_cache_test PRIVATE include)
   add_test(NAME uma_cache_test COMMAND uma_cache_test)
@@ -1667,6 +1676,13 @@ if(STRATA_NATIVE_EXPERTS)
     foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
       set(${_f} ON CACHE BOOL "" FORCE)
     endforeach()
+    # The DeepSeek engine (STRATA_BUILD_DSV41) builds ggml-cpu with BMI2 OFF: ggml's IQ1_S / IQ1_M dots use _pdep_u64 with it, and AMD
+    # Zen 1/2 run PDEP in microcode (EPYC 7452, IQ1_M one-token dot 1.8 GB/s against 32 GB/s without it; IQ1_S 2.3 against 37). The
+    # results are bit-identical either way (ds4_gg_bench --dump, types 19 and 29, 1-16 tokens). Other engines keep BMI2 until their
+    # next rebuild is looked at: no Qwen package changes with this commit.
+    if(STRATA_BUILD_DSV41)
+      set(GGML_BMI2 OFF CACHE BOOL "" FORCE)
+    endif()
   elseif(STRATA_ISA_FLOOR)
     # the experimental older-CPU build (STRATA_ISA_FLOOR above): one ggml-cpu for the floor, ggml's "sandybridge"
     # feature set (SSE4.2 + AVX) or SSE4.2 alone - not the build host's, which may be newer than the PC it runs on.
@@ -1773,6 +1789,14 @@ if(STRATA_NATIVE_EXPERTS)
   # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
   add_executable(iq_avx2_parity src/kernels/cpu/iq_avx2_parity.cpp)
   target_link_libraries(iq_avx2_parity PRIVATE strata_kernels_cpu)
+  # the 512-bit i-quant rows against ggml-cpu's dot: the exact rows bit for bit at 1-4 tokens, the engine's multi-token rows to float
+  # rounding, with the grid lookups as scalar loads and as gathers (SKIP without AVX-512)
+  add_executable(iq512_gather_parity src/kernels/cpu/iq512_gather_parity.cpp)
+  target_link_libraries(iq512_gather_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME iq512_gather_parity_scalar COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=0 $<TARGET_FILE:iq512_gather_parity>)
+    add_test(NAME iq512_gather_parity_gather COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=1 $<TARGET_FILE:iq512_gather_parity>)
+  endif()
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)

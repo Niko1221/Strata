@@ -1308,5 +1308,16 @@ class RuntimeTests(unittest.TestCase):
             os.close(exclusive)
 
 
+class StartWaitLimit(unittest.TestCase):
+    def test_a_start_may_wait_up_to_thirty_minutes_for_a_big_model(self):                    # #3949
+        from strata_control import runtime as rt, profiles as pr
+        self.assertEqual(rt.MAX_START_WAIT, 1800)
+        with self.assertRaisesRegex(pr.ProfileError, "start wait must be 0..1800"):
+            rt.start("x", wait=1801)
+        with mock.patch.object(rt, "_name", side_effect=pr.ProfileError("reached")):
+            with self.assertRaisesRegex(pr.ProfileError, "reached"):
+                rt.start("x", wait=1800)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 /** Physical topology and GPU sensors; unavailable values stay null. */
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { probe, round } from './util.mjs';
+import { windowsGpuReading } from './windows-gpu.mjs';
 
 /** Unified GPUs share one system memory pool; dedicated GPUs each have their own. */
 export function gpuMemoryTotals(devices, readings) {
@@ -83,6 +84,10 @@ export async function readGpuTelemetry(gpus) {
   return Promise.all(gpus.map(async gpu=>{
     let reading=nvidia.get(gpu.id)??{id:gpu.id??`${gpu.vendor}:${gpu.index}`,temperatureC:null,utilizationPct:null,memoryUsedGb:null,powerW:null,powerLimitW:null,pcieGen:null,pcieGenMax:null,pcieWidth:null,pcieRxMbs:null};
     if(gpu.vendor==='nvidia')reading={...reading,pcieRxMbs:transfer.get(gpu.sensorIndex??gpu.index)??null};
+    if(gpu.luid&&!nvidia.has(gpu.id)) {
+      const counters=windowsGpuReading(gpu.luid);
+      if(counters)reading={...reading,utilizationPct:counters.utilizationPct,memoryUsedGb:round(counters.memoryUsedGb,2)};
+    }
     if(gpu.sensorPath&&!nvidia.has(gpu.id)) {
       let temperature=null,power=null,powerLimit=null;
       for(const hwmon of await list(`${gpu.sensorPath}/hwmon`)) {
