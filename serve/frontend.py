@@ -748,17 +748,26 @@ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
-def param_end(text: str, final: bool = False) -> int:
-    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
-    `<parameter=` or `</function>` - the same text inside a value (a file that documents the call format, #210) is
-    part of the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+def param_end(text: str, final: bool = False, name: str | None = None) -> int:
+    """Where a parameter value in `text` ends: the first PARAM_END followed (after whitespace) by the next
+    PARAM_START or FUNC_END - the same text inside a value (a file that documents the call format, #210) is
+    part of the value.  #4078: a close inside a call the value itself quotes (more FUNC_START than FUNC_END before
+    it), or one followed by the same parameter `name` again, is part of the value too.  `text` starts at the value.
+    -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at = text.find(PARAM_END)
     while at >= 0:
-        after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith(("<parameter=", FUNC_END)):
-            return at
-        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
-            return at if final else -2
+        if text.count(FUNC_START, 0, at) <= text.count(FUNC_END, 0, at):
+            after = text[at + len(PARAM_END):].lstrip()
+            if after.startswith(PARAM_START):
+                gt = after.find(">")
+                if gt < 0:
+                    return at if final else -2
+                if name is None or after[len(PARAM_START):gt].strip() != name:
+                    return at
+            elif after.startswith(FUNC_END):
+                return at
+            elif not after or PARAM_START.startswith(after) or FUNC_END.startswith(after):
+                return at if final else -2
         at = text.find(PARAM_END, at + 1)
     return -1
 
@@ -783,7 +792,7 @@ def call_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -865,7 +874,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -918,7 +927,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         pname = rest[:rest.index(">")]
         rest = rest[rest.index(">") + 1:]
-        end = param_end(rest, final=True)
+        end = param_end(rest, final=True, name=pname.strip())
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         if value.startswith("\n"):
@@ -1175,6 +1184,8 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.spname = None
+        self.svstart = 0
 
     def _wrapped_call_end(self) -> int:
         # Without a closing tag the structural walk cannot finish. Search only
@@ -1227,6 +1238,7 @@ class OutputParser:
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
+                    self.spname = pname.strip()
                     if self.sdeclared.get(pname) == "string":
                         args('"')
                         self.ss, self.sval_started = "str", False
@@ -1245,7 +1257,10 @@ class OutputParser:
                         self.sp += 1
                         rest = rest[1:]
                     self.sval_started = True
-                end = param_end(rest)
+                    self.svstart = self.sp
+                # the walk starts at the value (a quoted call's opener counts); only a close in the new text can end it
+                end = param_end(self.buf[self.svstart:], name=self.spname) if PARAM_END in rest else -1
+                end = end - (self.sp - self.svstart) if end >= 0 else end
                 if end >= 0:
                     value = rest[:end]
                     if value.endswith("\n"):
@@ -1263,7 +1278,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = param_end(rest)
+                end = param_end(rest, name=self.spname)
                 if end < 0:
                     return out
                 value = rest[:end]
