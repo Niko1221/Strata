@@ -1327,11 +1327,9 @@ class UnfinishedToolCall(unittest.TestCase):
         return out
 
     def test_a_cut_call(self):
-        cut = '{"path":"notes.txt","content":"first half of the fi'
-        self.assertEqual(self.answers(self.CUT), {
-            ("openai", False): ("stop", []), ("openai", True): ("stop", cut),    # whole answers leave the cut
-            ("anthropic", False): ("end_turn", []),                      # call out: it has no arguments to give
-            ("anthropic", True): ("end_turn", cut)})
+        self.assertEqual(self.answers(self.CUT), {      # a call the parser drops sends nothing, streamed or whole
+            ("openai", False): ("stop", []), ("openai", True): ("stop", ""),
+            ("anthropic", False): ("end_turn", []), ("anthropic", True): ("end_turn", "")})
 
     def test_quoted_incomplete_wrapper_is_not_a_call(self):
         text = "Format: " + self.WHOLE[len("</think>\n\n"):].removesuffix("</tool_call>") + "and then I explain it."

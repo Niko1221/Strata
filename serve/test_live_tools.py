@@ -80,7 +80,29 @@ class LiveTools(unittest.TestCase):
                         blocks.append((d["index"], d["content_block"]["name"]))
                     elif name == "content_block_delta" and d["delta"]["type"] == "input_json_delta":
                         parts.setdefault(d["index"], []).append(d["delta"]["partial_json"])
+        self.assertTrue(all(len(parts.get(i, [])) == 1 for i, _ in blocks), parts)   # one whole delta per call
         return [(n, json.loads("".join(parts.get(i, [])))) for i, n in blocks]
+
+    def test_a_call_the_parser_drops_is_not_streamed(self):
+        """Raw id 5bfe6a8da2e1: an Edit written with element forms (<replace_all> ... </parameter>), ended by a bare
+        `</`.  The stream had opened the tool_use block and sent `{"file_path":` before the parser dropped the call."""
+        old = "  const a = 1;\n  // old\n"
+        text = ("<tool_call>\n<function=Edit>\n<replace_all>\nfalse\n" + PE + "\n<parameter=file_path>\n/x/prune.mjs\n" + PE +
+                "\n<old_string>\n" + old + "\n</old_string>\n<new_string>\n  const a = 1;\n\n</new_string>\n</<|im_end|>")
+        ids = self.tok.encode(text, parse_special=True)
+        self.engine.script, self.engine.scripts = ids, [ids]
+        got = self.inputs(text)
+        self.assertIn(got, ([], [("Edit", {"replace_all": False, "file_path": "/x/prune.mjs", "old_string": old,
+                                           "new_string": "  const a = 1;\n"})]))
+
+    def test_each_block_is_the_parsed_call_whole(self):
+        from serve.frontend import OutputParser
+        text = call("Read", ("file_path", "/x/a.py"), ("limit", "2000")) + call("Bash", ("command", "ls"))
+        p = OutputParser(thinking=False, tools=TOOLS, recover=True)
+        evs = p.feed(text) + p.finish("stop")
+        want = [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"]
+        self.assertEqual(len(want), 2)
+        self.assertEqual(self.inputs(text), want)
 
     def test_declared_closer_opens_the_parameter(self):
         text = ("<tool_call>\n<function=Grep>\n<parameter=path>\n/x/src\n" + PE + "\n</output_mode>\ncontent\n" + PE +

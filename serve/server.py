@@ -5848,8 +5848,6 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
 
     yield chunk({"role": "assistant", "content": ""})
     calls = 0
-    streamed = {}                                  # tool call id -> index, for calls sent piece by piece
-    finished = set()                               # ... and the ones whose final tool_call came (#211)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
@@ -5866,24 +5864,13 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 yield chunk({"reasoning_content": ev.text})
             elif ev.kind == "content" and ev.text:
                 yield chunk({"content": ev.text})
-            elif ev.kind == "tool_start":
-                streamed[ev.call.id] = calls
-                calls += 1
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
-                                             "function": {"name": ev.call.name, "arguments": ""}}]})
-            elif ev.kind == "tool_args":
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
-            elif ev.kind == "tool_call" and ev.call.id in streamed:
-                finished.add(ev.call.id)
-            elif ev.kind == "tool_call":
+            elif ev.kind == "tool_call":     # sent once, whole, when the parser has finalised it
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
-            # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
-            whole = calls and streamed.keys() <= finished
-            finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
+            finish = "tool_calls" if calls and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
@@ -5977,26 +5964,17 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     def close():
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             yield None
             continue
         if kind == "event":
             ev: Event = x
-            if ev.kind == "tool_args":
-                yield "content_block_delta", {"type": "content_block_delta", "index": index,
-                                              "delta": {"type": "input_json_delta", "partial_json": ev.text}}
+            if ev.kind in ("tool_start", "tool_args"):
+                continue                            # a call is sent once, whole, when the parser has finalised it
+            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use"}[ev.kind]
+            if ev.kind != "tool_call" and not ev.text:
                 continue
-            if ev.kind == "tool_call" and ev.call.id in streamed:
-                finished.add(ev.call.id)
-                continue
-            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
-            if ev.kind not in ("tool_call", "tool_start") and not ev.text:
-                continue
-            if ev.kind == "tool_start":
-                streamed.add(ev.call.id)
-                used_tool = True
             if open_kind != want or want == "tool_use":
                 if open_kind is not None:
                     yield close()
@@ -6013,8 +5991,6 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             elif want == "text":
                 yield "content_block_delta", {"type": "content_block_delta", "index": index,
                                               "delta": {"type": "text_delta", "text": ev.text}}
-            elif ev.kind == "tool_start":
-                pass                                # its input follows as tool_args pieces
             else:
                 used_tool = True
                 yield "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {
@@ -6023,7 +5999,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             if open_kind is not None:
                 yield close()
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
-                "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
+                "tool_use" if used_tool and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts (message_start could only say the whole prompt): what was read now stays for the next
             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
