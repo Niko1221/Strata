@@ -852,7 +852,7 @@ void usage() {
                  "                       session file (default 2560)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
-                 "                       default 512), so the command `VRAM <reserve_mib> [device]` (the server's POST\n"
+                 "                       default 512), so the command `VRAM <reserve_mib|- [device]` (the server's POST\n"
                  "                       /v1/vram) can give VRAM back to other programs between requests and take it back\n"
                  "                       later; the segmented cache is CUDA-only, so this port refuses it\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
@@ -9190,21 +9190,30 @@ int main(int argc, char **argv) try {
             try {
             // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib), on every GPU of the run;
             // `VRAM <reserve_mib> [device]`: that reserve on one GPU (the engine's number, 0 = the main card, the
-            // same numbers as --split-device).  The syntax is the CUDA engine's; the resize itself is CUDA-only.
-            char *end = nullptr;
-            const bool bare = cmd.find_first_not_of(' ', 4) == std::string::npos;
-            const long long reserve = bare ? (long long) o.vram_reserve_mib : std::strtoll(cmd.c_str() + 4, &end, 10);
-            if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib [device]]"; return false; }
+            // same numbers as --split-device).  `VRAM - [device]`: the start's reserve named so a device can
+            // follow it.  The dash is the only way to say "the start's reserve, on this one card": a number in the
+            // first slot IS the reserve, so the server's `reserve_mib: null` with a `gpu` used to send `VRAM 1` and
+            // set a 1 MiB reserve on EVERY card.  The syntax is the CUDA engine's; the resize itself is CUDA-only.
+            const long long start_reserve = (long long) o.vram_reserve_mib;
+            const char* p = cmd.c_str() + 4;
+            while (*p == ' ') ++p;
+            long long reserve = start_reserve;
             int want_dev = -1;   // -1: every GPU of this run
-            if (!bare && end != nullptr) {
-                const char* p = end;
+            if (*p != '\0') {
+                if (*p == '-' && (p[1] == '\0' || p[1] == ' ')) ++p;
+                else {
+                    char* end = nullptr;
+                    reserve = std::strtoll(p, &end, 10);
+                    if (end == p || reserve < 0) { e = "expected: VRAM [reserve_mib|- [device]]"; return false; }
+                    p = end;
+                }
                 while (*p == ' ') ++p;
                 if (*p != '\0') {
                     char* q = nullptr;
                     const long long d = std::strtoll(p, &q, 10);
                     while (q != nullptr && *q == ' ') ++q;
                     if (q == p || q == nullptr || *q != '\0' || d < 0) {
-                        e = "expected: VRAM [reserve_mib [device]]";
+                        e = "expected: VRAM [reserve_mib|- [device]]";
                         return false;
                     }
                     want_dev = (int) d;
