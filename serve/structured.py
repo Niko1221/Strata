@@ -152,7 +152,10 @@ def prepare_format(response_format, messages, with_tools=False):
     return messages, validator
 
 
-def _extract_json(text: str) -> str:
+def extract_json(text: str) -> str:
+    """The first JSON object in `text`: a ```-fenced block's inside when there is one, else the text
+    from its first `{`.  Empty when there is nothing to take.  The server's json_schema logprobs
+    alignment reads the model's own JSON form with it."""
     s = (text or "").strip()
     if not s:
         return ""
@@ -204,7 +207,7 @@ def validated_json(text, validator, finish):
     if finish != "stop":
         raise StructuredOutputError(f"structured output was incomplete (finish_reason={finish}); increase the output budget")
     try:
-        value = json.loads(_extract_json(text), object_pairs_hook=pairs, parse_constant=constant)
+        value = json.loads(extract_json(text), object_pairs_hook=pairs, parse_constant=constant)
         canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (ValueError, TypeError) as exc:
         raise StructuredOutputError(f"model did not return valid JSON: {exc}") from exc

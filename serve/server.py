@@ -80,8 +80,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
-from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
-from serve.structured import _extract_json  # noqa: E402
+from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
@@ -6236,7 +6235,7 @@ def _structured_logprobs(choice: dict, content: str):
     span = logprob_span(raw, content, entries)
     if span is not None:
         return content, _with_reasoning(lps, span)
-    inner = _extract_json(raw) if _extract_json else ""
+    inner = extract_json(raw)
     if inner and _same_json(inner, content):
         span = logprob_span(raw, inner, entries)
         if span is not None:
