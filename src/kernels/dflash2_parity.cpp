@@ -257,7 +257,7 @@ void selector(bool timing) {
     using namespace strata::kernels;
     const int vocab = 67;
     int reranked = 0;
-    for (int rank : {1,3,256,1024})
+    for (int rank : {1,3,4,12,256,260,1024})
     for (int rows : {2, 3, 8}) for (int top_k : {1, 3, 16, 17, 32, 64}) {
         std::vector<float> logits(rows * vocab), hidden(rows * rank), prev(vocab * rank), next(prev.size());
         for (size_t i = 0; i < logits.size(); ++i) logits[i] = ((int)(i % 7) - 3) * 0.05f + (i % vocab) * 0.00037f;
@@ -301,6 +301,28 @@ void selector(bool timing) {
             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
                 throw std::runtime_error("BF16 and FP32 codebook selector results differ");
             if (rows==8 && top_k==16 && rank==256 && probabilities) {
+                auto shifted_p = p16, shifted_n = n16;
+                auto shifted_h = hidden;
+                shifted_p.insert(shifted_p.begin(), 0); shifted_n.insert(shifted_n.begin(), 0);
+                shifted_h.insert(shifted_h.begin(), 0);
+                Device<uint16_t> misaligned_p(shifted_p), misaligned_n(shifted_n);
+                Device<float> misaligned_h(shifted_h);
+                dflash2_select_bf16(ids.p,du.p,misaligned_h.p+1,misaligned_p.p+1,misaligned_n.p+1,
+                    anchor.p,output.p,confidence.p,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
+                if(output.read(rows-1)!=got || confidence.read(rows-1)!=prob)
+                    throw std::runtime_error("unaligned selector fallback changed output");
+                auto nan_h = hidden; nan_h[rank] = NAN;
+                Device<float> invalid_h(nan_h);
+                Device<int32_t> invalid_anchor(std::vector<int32_t>{-1});
+                for (bool negative : {false, true}) {
+                    dflash2_select_bf16(ids.p,du.p,negative ? dh.p : invalid_h.p,dp16.p,dn16.p,
+                        negative ? invalid_anchor.p : anchor.p,output.p,confidence.p,rows,top_k,rank,
+                        nullptr,false,lattice.p,lattice_bytes);
+                    for (auto id : output.read(rows-1)) if (id != -1)
+                        throw std::runtime_error("vector selector accepted an invalid transition");
+                    for (auto value : confidence.read(rows-1)) if (value != 0)
+                        throw std::runtime_error("invalid vector selector confidence is not zero");
+                }
                 checked(cudaMemset(lattice.p,0xa5,lattice_bytes));
                 dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
                     confidence.p,rows,top_k,rank,nullptr,false,lattice.p,1);
@@ -325,6 +347,24 @@ void selector(bool timing) {
                 checked(cudaEventElapsedTime(&ms,a,b));
                 std::printf("BF16 selector rows=8 rank=256 k=16 confidence=%d: %.6f ms/pass\n",probabilities,ms/100);
                 cudaEventDestroy(a);cudaEventDestroy(b);
+                cudaStream_t stream; checked(cudaStreamCreate(&stream));
+                cudaGraph_t graph; cudaGraphExec_t exec;
+                checked(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+                for(int i=0;i<10;++i)dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                    probabilities?confidence.p:nullptr,rows,top_k,rank,stream,false,lattice.p,lattice_bytes);
+                checked(cudaStreamEndCapture(stream,&graph)); checked(cudaGraphInstantiate(&exec,graph,0));
+                for(int i=0;i<20;++i)checked(cudaGraphLaunch(exec,stream));
+                checked(cudaEventCreate(&a)); checked(cudaEventCreate(&b));
+                for(int round=0;round<8;++round) {
+                    checked(cudaEventRecord(a,stream));
+                    for(int i=0;i<100;++i)checked(cudaGraphLaunch(exec,stream));
+                    checked(cudaEventRecord(b,stream)); checked(cudaEventSynchronize(b));
+                    checked(cudaEventElapsedTime(&ms,a,b));
+                    std::printf("selector graph confidence=%d round=%d: %.6f ms/call\n",probabilities,round,ms/1000);
+                }
+                checked(cudaEventDestroy(a)); checked(cudaEventDestroy(b));
+                checked(cudaGraphExecDestroy(exec)); checked(cudaGraphDestroy(graph));
+                checked(cudaStreamDestroy(stream));
             }
             // The runtime may omit every anchor-row head operation. Poison
             // that row and fill only the proposal slices; picks AND confidence
@@ -652,6 +692,11 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
+    if (argc > 1 && std::strcmp(argv[1], "--selector-bench") == 0) {
+        try { selector(true); checked(cudaDeviceSynchronize()); }
+        catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "--topk-smoke") == 0) {
         try { topk_tile_edges(true); checked(cudaDeviceSynchronize()); }
         catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

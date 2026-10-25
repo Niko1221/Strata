@@ -297,9 +297,25 @@ __global__ void select_kernel(const int32_t* ids, const float* unary, const floa
     }
 }
 
+// Load four rank values at once, preserving the four serial FMA updates.
+// Dispatch requires whole aligned vectors; other shapes retain scalar reads.
+__device__ float selector_vector_sum(const uint16_t* p, const uint16_t* n,
+                                     const float* h, int rank) {
+    float score = 0;
+    for (int j = 0; j < rank; j += 4) {
+        const uint2 pv = *(const uint2*)(p + j), nv = *(const uint2*)(n + j);
+        const float4 hv = *(const float4*)(h + j);
+        score += (f32_from_bf16(uint16_t(pv.x)) * hv.x) * f32_from_bf16(uint16_t(nv.x));
+        score += (f32_from_bf16(uint16_t(pv.x >> 16)) * hv.y) * f32_from_bf16(uint16_t(nv.x >> 16));
+        score += (f32_from_bf16(uint16_t(pv.y)) * hv.z) * f32_from_bf16(uint16_t(nv.y));
+        score += (f32_from_bf16(uint16_t(pv.y >> 16)) * hv.w) * f32_from_bf16(uint16_t(nv.y >> 16));
+    }
+    return score;
+}
 // Candidates are independent within a row. Keep each candidate's rank sum in
 // its original serial order, and let lane 0 retain the original tie handling
 // and confidence sum. Only the work between candidates is parallelized.
+template<bool Vector = false>
 __global__ void select_bf16_parallel(const int32_t* ids, const float* unary, const float* hidden,
                                     const uint16_t* prev, const uint16_t* next, const int32_t* anchor,
                                     int32_t* out, float* confidence, int rows, int top_k, int rank) {
@@ -314,9 +330,13 @@ __global__ void select_bf16_parallel(const int32_t* ids, const float* unary, con
             float score = -INFINITY;
             if (valid && token >= 0) {
                 score = 0;
+                if constexpr (Vector) score = selector_vector_sum(prev + (size_t)predecessor * rank,
+                    next + (size_t)token * rank, hidden + row * rank, rank);
+                else {
                 for (int j = 0; j < rank; ++j)
                     score += (codebook_value(prev, (size_t) predecessor * rank + j) * hidden[row * rank + j]) *
                              codebook_value(next, (size_t) token * rank + j);
+                }
                 score += unary[row * top_k + t];
             }
             scores[t] = score;
@@ -348,6 +368,7 @@ __global__ void select_bf16_parallel(const int32_t* ids, const float* unary, con
 }
 // A row after the first can follow any candidate in the preceding row.
 // Precompute that small lattice in parallel, retaining each rank sum's order.
+template<bool Vector = false>
 __global__ void selector_lattice(const int32_t* ids,const float* unary,const float* hidden,
     const uint16_t* prev,const uint16_t* next,const int32_t* anchor,float* scores,int top_k,int rank) {
     const int row=blockIdx.x+1, predecessor_slot=blockIdx.y, candidate=threadIdx.x;
@@ -357,9 +378,13 @@ __global__ void selector_lattice(const int32_t* ids,const float* unary,const flo
     float score=-INFINITY;
     if(predecessor>=0 && token>=0) {
         score=0;
+        if constexpr (Vector) score = selector_vector_sum(prev + (size_t)predecessor * rank,
+            next + (size_t)token * rank, hidden + row * rank, rank);
+        else {
         for(int j=0;j<rank;++j)
             score+=(codebook_value(prev,(size_t)predecessor*rank+j)*hidden[row*rank+j])*
                     codebook_value(next,(size_t)token*rank+j);
+        }
         score+=unary[row*top_k+candidate];
     }
     scores[((row-1)*top_k+predecessor_slot)*top_k+candidate]=score;
@@ -510,9 +535,17 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
         const char* value=std::getenv("STRATA_DFLASH2_LATTICE_SELECTOR");
         return value && value[0]=='1';
     }();
+    static const bool vector_enabled = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_VECTOR_SELECTOR");
+        return value && value[0] == '1';
+    }();
+    const bool vector = !reference && vector_enabled && rank % 4 == 0 &&
+        ((uintptr_t(prev) | uintptr_t(next)) & 7) == 0 && (uintptr_t(hidden) & 15) == 0;
     const size_t needed=(size_t)(rows-1)*top_k*top_k*sizeof(float);
     if(lattice && !serial && !reference && scratch && scratch_bytes>=needed) {
-        selector_lattice<<<dim3(rows-1,top_k),64,0,(cudaStream_t)stream>>>(
+        if (vector) selector_lattice<true><<<dim3(rows-1,top_k),64,0,(cudaStream_t)stream>>>(
+            ids,unary,hidden,prev,next,anchor,(float*)scratch,top_k,rank);
+        else selector_lattice<false><<<dim3(rows-1,top_k),64,0,(cudaStream_t)stream>>>(
             ids,unary,hidden,prev,next,anchor,(float*)scratch,top_k,rank);
         selector_lattice_walk<<<1,1,0,(cudaStream_t)stream>>>(
             ids,(float*)scratch,anchor,out,confidence,rows,top_k);
@@ -520,7 +553,9 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
     }
     if (serial || reference) select_kernel<<<1, 1, 0, (cudaStream_t)stream>>>(
         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
-    else select_bf16_parallel<<<1, 64, 0, (cudaStream_t)stream>>>(
+    else if (vector) select_bf16_parallel<true><<<1, 64, 0, (cudaStream_t)stream>>>(
+        ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
+    else select_bf16_parallel<false><<<1, 64, 0, (cudaStream_t)stream>>>(
         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
 }
 namespace {

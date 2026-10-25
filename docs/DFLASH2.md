@@ -92,8 +92,9 @@ execution of the same weights. They do not replace the checkpoint or the target 
 | `STRATA_DFLASH2_BF16_TILE` | Uses measured row tiles for small BF16 projections | Official 2560-input, 256/640-output shapes with seven or eight rows. Values 2/4 select fixed tiles for experiments. |
 | `STRATA_DFLASH2_WARP_TOPK` | Uses warp reductions for parallel top-k | Preserves finite-value filtering and smaller-token tie breaking. |
 | `STRATA_DFLASH2_MERGE_TOPK` | Merges sorted tile lists using their current heads | Uses the existing tiled workspace, with at most 64 vocabulary tiles. Other cases retain the previous merge. |
+| `STRATA_DFLASH2_VECTOR_SELECTOR` | Loads four BF16 selector rank values at once | Rank divisible by four and aligned buffers. Other shapes, reference and serial modes retain scalar reads. Also works with the existing lattice selector. |
 
-The last option can be combined with the existing
+The merge option can be combined with the existing
 `STRATA_DFLASH2_REGISTER_TOPK=1` tile kernel. Each component can be measured
 separately. Component gains are not additive, and do not establish a faster full
 request. The measurements so far are from one RTX 4070 Ti SUPER / Ryzen 9 5900X PC.
