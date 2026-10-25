@@ -884,6 +884,11 @@ def call_end(text: str, schemas: dict | None = None, final: bool = False) -> int
             pos += stub.end()
         elif broken_opener(s):
             pos += broken_opener(s)
+        elif s.startswith(ARGS_START):
+            got = json_args(s)
+            if not got:
+                return -1
+            pos += got[1]
         elif s.startswith("<parameter="):
             gt = text.find(">", pos)
             if gt < 0:
@@ -898,7 +903,7 @@ def call_end(text: str, schemas: dict | None = None, final: bool = False) -> int
             if s.startswith(CALL_END):
                 return pos + len(FUNC_END) + len(rest) - len(s)
             return -1 if CALL_END.startswith(s) else text.find(CALL_END, pos)
-        elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s) or stub_pending(s):
+        elif not s or "<parameter=".startswith(s) or ARGS_START.startswith(s) or FUNC_END.startswith(s) or stub_pending(s):
             return -1
         else:
             return text.find(CALL_END, pos)
@@ -949,6 +954,28 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 
 
 PARAM_START = "<parameter="
+ARGS_START = "<arguments>"
+
+
+def json_args(text: str):
+    """recover: `<arguments>` + a JSON object (+ `</arguments>`, or the stray `</parameter>` the model closes it with) at the
+    start of `text` -> (the object, the length of text it covers); None while the object is not whole (cut, or not a
+    JSON object)."""
+    body = text[len(ARGS_START):]
+    t = body.lstrip()
+    try:
+        obj, end = json.JSONDecoder().raw_decode(t)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    rest = t[end:]
+    r = rest.lstrip()
+    for closer in ("</arguments>", PARAM_END):
+        if r.startswith(closer):
+            end += len(rest) - len(r) + len(closer)
+            break
+    return obj, len(ARGS_START) + len(body) - len(t) + end
 
 
 def function_end(text: str, schemas: dict | None = None, final: bool = False) -> int:
@@ -972,6 +999,11 @@ def function_end(text: str, schemas: dict | None = None, final: bool = False) ->
             pos += stub.end()
         elif broken_opener(s):
             pos += broken_opener(s)
+        elif s.startswith(ARGS_START):
+            got = json_args(s)
+            if not got:
+                return -1
+            pos += got[1]
         elif s.startswith(PARAM_START):
             gt = text.find(">", pos)
             if gt < 0:
@@ -1096,6 +1128,12 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
+    if rest.lstrip().startswith(ARGS_START):          # recover: the arguments as one JSON object
+        got = json_args(rest.lstrip())
+        if not got:
+            raise ValueError("malformed tool call: " + body[:80])
+        args.update(got[0])
+        rest = rest.lstrip()[got[1]:]
     while "<parameter=" in rest:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         gt = rest.find(">")
@@ -1417,6 +1455,15 @@ class OutputParser:
                     self.sp += stub.end()
                 elif broken_opener(stripped):
                     self.sp += broken_opener(stripped)
+                elif stripped.startswith(ARGS_START):
+                    got = json_args(stripped)
+                    if not got:
+                        return out          # the object is not whole: nothing of it goes out
+                    schema = {"parameters": {"properties": {k: {"type": t} for k, t in self.sdeclared.items()}}}
+                    done = json.dumps(coerce_args(got[0], schema), ensure_ascii=False)[1:-1]
+                    args(done)
+                    self.sfirst = self.sfirst and not done
+                    self.sp += got[1]
                 elif stripped.startswith("<parameter="):
                     b = stripped.find(">")
                     if b < 0:
@@ -1437,7 +1484,7 @@ class OutputParser:
                 elif stripped.startswith("</function>"):
                     self.sp += len("</function>")
                     self.ss = "function_done"
-                elif any(t.startswith(stripped) for t in (PARAM_START, FUNC_END, PARAM_END, "<")):
+                elif any(t.startswith(stripped) for t in (PARAM_START, ARGS_START, FUNC_END, PARAM_END, "<")):
                     return out          # a tag still arriving: wait
                 else:                   # text no parameter owns (a bare `<NAME>`, `</invoke>`): read over, as parse_tool_call does
                     at = [i for i in (stripped.find(PARAM_START, 1), stripped.find(FUNC_END, 1)) if i >= 0]
