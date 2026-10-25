@@ -387,6 +387,12 @@ move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case rea
   as 0.1.39). `STRATA_PREFILL_EQUAL=1` (#693): a prompt segment is read in chunks of equal size, not full chunks and a
   short last one (changes the rounding). `STRATA_OWNED_PRICE=exact` (#796): the cache sizing prices the prompt path's
   own buffers by their real allocation instead of 0.1.39's rule.
+- `STRATA_PF_GROUP_SCRATCH=1`: the MMQ prompt path's gate/up output, SwiGLU and q8_1 copy hold one expert group's
+  rows instead of the whole chunk's (a group larger than the cap runs as sub-ranges; `STRATA_PF_GROUP_CAP=<rows>` is a
+  test knob). `STRATA_PF_HC_REGION=1`: the hyper-connection read's scratch shares the attention/MoE region. Both are
+  bitwise and only free prompt buffers, so `--prefill auto` finds a bigger chunk and a streamed expert crosses PCIe
+  fewer times: RTX 2060 SUPER, IQ3_XXS, both on, 3840 -> 5888 tokens, prompt 4K +18%, 16K +24%, 32K +21%.
+  GROUP_SCRATCH is only taken on a layout whose every layer runs MMQ (no fused experts, no FP16 fallback).
 - `STRATA_Q2_BITPLANE=1`: a bit-plane row kernel for Q2_0 on CPUs with AVX2 and no AVX-512 (changes the last bits).
   `STRATA_NO_AVXVNNI=1` turns the AVX-VNNI forms of the i-quant, IQ4_NL and Q2_0 rows off on CPUs that have them
   (Alder Lake, Sapphire Rapids and later); they give the same bits as the AVX2 forms, 4-25% faster rows.
