@@ -327,7 +327,7 @@ from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, THINK_EN
 from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # noqa: E402
 from serve import appendlog  # noqa: E402
 from serve.session_ladder import (LadderConfig, PARK_COST_KIB_PER_TOKEN, ConvEvent, SessionLadder,  # noqa: E402
-                                  extract_session_id)  # the session ladder: event intake (drain_events) + request-path hooks
+                                  extract_session_id, register_refused_class)  # the session ladder: event intake (drain_events) + request-path hooks
 from serve import runconfig  # noqa: E402
 from serve import expert_heat  # noqa: E402
 from serve import commit_limit  # noqa: E402
@@ -5642,9 +5642,11 @@ class Service:
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
-        self.request_trace.prompt = prompt        # Task 7: the rendered text lives only here; the thread-local carries
-        # it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) - the ladder
-        # byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would drift).
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+            self.request_trace.prompt = prompt    # Task 7: the rendered text lives only here; the thread-local
+        # carries it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) -
+        # the ladder byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would
+        # drift).  Behind cfg.enabled so the disabled path writes nothing at all.
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
@@ -8098,9 +8100,13 @@ def make_handler(svc: Service):
                                        if path == "/v1/responses" else {"error": model_err})
                             return
                     self.record = svc.begin_request(path, req)
-                    svc.request_trace.session_id = extract_session_id(self.headers)   # Task 7: OpenCode's session
-                    # headers, read once per request on the same thread that later runs _run (thread-local precedent:
-                    # request_trace.record at 4633/5212); absent headers -> None, which skips the ladder entirely.
+                    if svc.session_ladder is not None and svc.session_ladder.cfg.enabled:
+                        # Task 7: OpenCode's session headers, read once per request on the same thread that later
+                        # runs _run (thread-local precedent: request_trace.record at 4633/5212); absent headers ->
+                        # None, which skips the ladder entirely.  Unconditional while enabled, so a headerless
+                        # keep-alive request clears the previous request's id; behind cfg.enabled so the disabled
+                        # path writes nothing at all.
+                        svc.request_trace.session_id = extract_session_id(self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
