@@ -808,12 +808,15 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
     }
 }
 
+// (crt/mma.h declares nvcuda::wmma only for sm_70 and newer: the wmma body sits under an arch guard inside the kernel, the
+// device passes below 700 compile an empty one, and tc_ok() keeps those cards on set_kernel's F32 path - gdn_chunk.cu's pattern)
 #if !defined(STRATA_USE_HIP)
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
-namespace wm = nvcuda::wmma;
-constexpr int kLdT = 40;
 template <int T, bool GATE_UP>
 __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
+    namespace wm = nvcuda::wmma;
+    constexpr int kLdT = 40;
     struct Tiles {
         __half x[BM][kLdT], wg[BN][kLdT], wu[GATE_UP ? BN : 1][kLdT];
     };
@@ -893,6 +896,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
         if (GATE_UP) a.h[lr * a.ldo + c0 + c] = __half_as_ushort(__float2half_rn(swiglu(O.g[r][c], O.u[r][c], a.limit)));
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
+#endif
 }
 #endif
 
