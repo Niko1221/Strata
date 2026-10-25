@@ -550,6 +550,15 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `--parallel`, only a `max_tokens` 1 request gets them: it is the one a batch slot decodes through the single-token
   path, which writes an LP line. A longer reply there is a 400, since the slot's `BT` lines carry none -- entries for
   a prefix only, which a client cannot tell from the model's own answer.
+- **logprobs on `/v1/completions` (vLLM's shape).** `"logprobs": N` (0..20, or `true` with `top_logprobs`) adds
+  `choices[0].logprobs` with `tokens`, `token_logprobs`, `top_logprobs` (one `{token: logprob}` per token) and
+  `text_offset`. Every generated token is listed, the stop token too, so a one-token read whose most likely token is
+  the stop still has its distribution. `"allowed_token_ids"` lists those ids with their full-vocabulary logprobs, not
+  renormalised (unlike chat), so a caller can tell how much of the mass its labels hold;
+  `"return_tokens_as_token_ids": true` keys every token as `token_id:<id>`. The prompt may also be a list of token
+  ids. This is what a decision client reads from `vllm serve`: a typed choice from one next-token distribution
+  (AnyJev's `StrataBackend`). The rules are the chat ones (no cap of its own on `max_tokens`; with `--parallel`, only
+  `max_tokens` 1), and one of its own: logprobs are not streamed on this route, `stream: true` with them is a 400.
 - `STRATA_SPEC_PROB=1` with the default `--spec-min-p` gate: the gate tests the token the draft head drew from its distribution
   q. A draft that fails the gate still counts as a proposal. The verifier keeps q's mass on the tokens that pass the gate
   (not renormalised; call it mu), accepts an offered token D with probability min(1, p(D)/mu(D)), and draws the replacement
