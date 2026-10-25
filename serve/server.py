@@ -920,18 +920,31 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
     enables the ladder with its values - idle_save_s and retention_max_files, absent keys keeping LadderConfig's
     pinned defaults - and the slot save directory the service resolved.  Absent, false, or any non-dict leaves it
-    disabled exactly as Service.__init__ builds it.  park_budget_mib is the engine's own cache budget:
+    disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value today's disabled ladder carries;
+    nothing consults it while disabled).  An enabled ladder's park_budget_mib is the engine's own cache budget:
     --conversation-cache-mib read exactly like conversation_slots() reads --conversation-cache-slots (spawn args
-    first, the INFO line after a start), so the ladder never plans a save the cache itself would refuse; the
-    fallback when neither names it is 0 - LadderConfig's disabled default, which Service.__init__ passes today
-    and which the engine itself reads as "parking off"."""
+    first, the INFO line after a start) - and stays None when neither names it, faithful to
+    conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to 0, because a 0 budget
+    makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the ladder exists to avoid)."""
     block = cfg.get("session_ladder")
     if not isinstance(block, dict):
         return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
     return LadderConfig(enabled=True, slot_save_path=slot_save_path,
-                        park_budget_mib=conversation_cache_mib(engine) or 0,
+                        park_budget_mib=conversation_cache_mib(engine),
                         idle_save_s=float(block.get("idle_save_s", 8.0)),
                         retention_max_files=int(block.get("retention_max_files", 16)))
+
+
+def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
+    """main()'s session_ladder gate (Task 9 review round 1): the enabled LadderConfig of ladder_config_of,
+    or a refusal to start when its park budget resolves to None - the same posture as the slot_save_path
+    guard beside it.  An enabled ladder without a real budget would save every turn, aux sizes included."""
+    ladder = ladder_config_of(cfg, engine, slot_save_path)
+    if ladder.enabled and ladder.park_budget_mib is None:
+        raise SystemExit('[strata] config "session_ladder" needs the engine\'s park budget: neither a '
+                         "--conversation-cache-mib argument in the engine args nor the engine's INFO line "
+                         "names one; without a real budget every turn would look save-worthy")
+    return ladder
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
@@ -9320,12 +9333,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
     # Task 9: the config's `session_ladder` block (a dict) turns the ladder on with its values and this save
     # dir; absent or false leaves the disabled one Service.__init__ built - the request path unchanged.
-    # park_budget_mib comes from the engine's own --conversation-cache-mib (ladder_config_of).
+    # park_budget_mib comes from the engine's own --conversation-cache-mib (ladder_config_of), and an enabled
+    # ladder whose budget cannot be resolved refuses to start (start_ladder_of, Task 9 review round 1).
     if isinstance(cfg.get("session_ladder"), dict):
         if svc.slot_save_path is None:
             raise SystemExit('[strata] config "session_ladder" needs slot_save_path: the ladder saves and '
                              "restores through the engine's slot save directory")
-        svc.session_ladder = SessionLadder(ladder_config_of(cfg, engine, svc.slot_save_path))
+        svc.session_ladder = SessionLadder(start_ladder_of(cfg, engine, svc.slot_save_path))
         lcfg = svc.session_ladder.cfg
         print(f"[strata] session ladder on: idle save after {lcfg.idle_save_s:g} s, park budget "
               f"{lcfg.park_budget_mib} MiB (--conversation-cache-mib), retention "
