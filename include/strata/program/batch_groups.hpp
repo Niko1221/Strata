@@ -28,7 +28,7 @@ struct Input {
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
     bool nv_serial_faster = false;   ///< PROPOSED (0.2.1, owner decides): NVIDIA build, STRATA_BATCH_GROUPS_NV_SERIAL not 0 - two cards run faster in serial windows (z440 2x A4000, aggregate tok/s: +16% at 2 slots, +12% at 4, +15% at 8)
-    bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too, when each group is one slot
+    bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too (each group carries its slots' rows)
 };
 
 struct Result {
@@ -65,12 +65,14 @@ inline Result resolve(const Input& in) {
             if (r.serial != Serial::None) r.groups = 1;
         }
     }
-    // STRATA_PIPED_MTP: one slot per group (the slots as many as the stages) pipelines AND drafts.
+    // STRATA_PIPED_MTP: the pipelined groups draft too.  A group's window carries each of its slots' rows - the slot's
+    // token and that slot's own proposals - so any number of slots per group drafts (the one slot per group of the
+    // first version, and two slots per group since: more rows in a window amortise the weights over more of them).
     // NOTE (0.1.49.2 port): this must NOT live inside the `!in.set` block above.  With --batch-groups given
     // explicitly (a number or `auto`) the operator has already asked for those groups, and the drafts can
     // run in them; the PR had the assignment inside, so the feature silently did nothing for everyone who
     // passed --batch-groups -- which is the documented way to configure a layer split.
-    r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.would_be == in.batch;
+    r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.groups > 1;
     r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
     return r;
 }

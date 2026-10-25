@@ -59,16 +59,17 @@ int main() {
               "STRATA_BATCH_MTP_SERIAL: one group, because of --batch-mtp");
         check(bg::serial_what(r.serial)[0] == '-', "the reason names the feature");
     }
-    {   // STRATA_PIPED_MTP: one slot per group pipelines AND drafts
+    {   // STRATA_PIPED_MTP: the pipelined groups draft too, with any number of slots per group
         bg::Input i = in(4, 3);
         i.batch_mtp = true;
         i.mtp_piped = true;
         auto r = bg::resolve(i);
         check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
               "STRATA_PIPED_MTP, 4 slots on 4 GPUs: 4 groups of 1 slot, and the drafts stay");
-        i.batch = 8;   // two slots per group: the pipelined path drafts only for one slot per group
+        i.batch = 8;   // two slots per group: the group's window carries both slots' rows, each with its own drafts
         r = bg::resolve(i);
-        check(r.groups == 4 && !r.mtp_piped && r.mtp_dropped, "STRATA_PIPED_MTP, 8 slots on 4 GPUs: dropped as before");
+        check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
+              "STRATA_PIPED_MTP, 8 slots on 4 GPUs: 4 groups of 2 slots, and the drafts stay");
         i.batch = 4;
         i.mtp_serial = true;   // asked for the serial windows: those win
         r = bg::resolve(i);
@@ -78,6 +79,11 @@ int main() {
         i.batch_mtp = false;
         r = bg::resolve(i);
         check(r.groups == 4 && !r.mtp_piped && !r.mtp_dropped, "STRATA_PIPED_MTP without --batch-mtp: nothing to draft");
+        i.batch_mtp = true;
+        i.set = true;
+        i.given = 1;   // one group: the serial windows, where --batch-mtp's own drafts run
+        r = bg::resolve(i);
+        check(r.groups == 1 && !r.mtp_piped && r.mtp_dropped, "STRATA_PIPED_MTP, --batch-groups 1: the serial path");
     }
     {   // 0.1.49.2 port: --batch-groups given EXPLICITLY (a number or `auto`) must not silently
         // drop the drafts: the operator asked for those groups, and one slot per group still drafts.
@@ -94,10 +100,10 @@ int main() {
         r = bg::resolve(i);
         check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
               "STRATA_PIPED_MTP, --batch-groups 4 given: 4 groups of 1 slot, and the drafts stay");
-        i.given = 2;           // two slots per group: the pipelined path drafts only for one slot per group
+        i.given = 2;           // two slots per group: the group's window carries both slots' rows
         r = bg::resolve(i);
-        check(r.groups == 2 && !r.mtp_piped && r.mtp_dropped,
-              "STRATA_PIPED_MTP, --batch-groups 2 given: dropped as before");
+        check(r.groups == 2 && r.mtp_piped && !r.mtp_dropped,
+              "STRATA_PIPED_MTP, --batch-groups 2 given: 2 groups of 2 slots, and the drafts stay");
     }
     {
         bg::Input i = in(2, 1);
