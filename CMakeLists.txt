@@ -682,6 +682,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(expert_cache_slot_guard_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
   endif()
   if(STRATA_BUILD_CONVERSATION_TESTS)
+    # The real copy helper with host mocks: no GPU initialization or allocation.
+    add_executable(conversation_copy_lifetime_test src/core/conversation_copy_lifetime_test.cpp)
+    target_link_libraries(conversation_copy_lifetime_test PRIVATE strata_engine)
+    add_test(NAME conversation_copy_lifetime_test COMMAND conversation_copy_lifetime_test)
+    set_tests_properties(conversation_copy_lifetime_test PROPERTIES TIMEOUT 60)
     add_executable(conversation_snapshot_test src/core/conversation_snapshot_test.cpp)
     target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
     add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
@@ -695,7 +700,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
       target_link_options(conversation_transfer_test PRIVATE
         -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaStreamSynchronize
-        -Wl,--wrap=cudaGetDevice -Wl,--wrap=cudaStreamCreateWithFlags
+        -Wl,--wrap=cudaGetDevice -Wl,--wrap=cudaSetDevice -Wl,--wrap=cudaStreamCreateWithFlags
+        -Wl,--wrap=cudaStreamDestroy
         -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
       target_link_libraries(conversation_transfer_test PRIVATE strata_engine)
       add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
