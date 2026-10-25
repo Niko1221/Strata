@@ -451,6 +451,23 @@ class DeleteModelTests(unittest.TestCase):
         described = self.s.describe_config(self.root / "strata-iq3_s.json")
         self.assertGreater(described["disk_bytes"], 10000)
 
+    def test_files_strata_downloaded_into_another_models_folder_are_deleted_too(self):
+        # The app installs into its own Models folder while settings.json names another data folder (#3716).
+        other = Path(self.tmp.name) / "Documents" / "Strata"
+        shard = self.make(other / "Models" / "IQ3" / "m-00001.gguf", 5000)
+        self.make(shard.with_name(shard.name + ".done"), 1)
+        pack = other / "packs" / "iq3"
+        self.make(pack / "dense.bin", 300)
+        self.make(pack / "conversions.json", 2)
+        mine = self.make(Path(self.tmp.name) / "mine" / "own.gguf", 99)
+        (self.root / "strata-iq3x.json").write_text(json.dumps({"exe": "component:strata-engine", "args": [
+            "--pack", str(pack), "--native", str(shard), "--ple-gguf", str(mine)]}), encoding="utf-8")
+        result = self.tools.strata_remove(model="iq3x", confirm=True)
+        self.assertEqual(result["failed"], [])
+        self.assertFalse(shard.exists())
+        self.assertFalse(pack.exists())
+        self.assertTrue(mine.is_file(), "a file the person brought stays")
+
 
 class LocalGgufInstallTests(unittest.TestCase):
     def test_a_plan_from_a_local_folder_adopts_the_files_and_needs_no_download_space(self):

@@ -8,6 +8,7 @@
 // Build: tools\dsv41\win\build_umaprobe.bat (ROCm clang, gfx1151).  Internal tool, not shipped.
 #include <hip/hip_runtime.h>
 #include <windows.h>
+#include <psapi.h>
 #include <dxgi1_4.h>
 #include <chrono>
 #include <cstdint>
@@ -171,6 +172,32 @@ static void regchunk(int gib, int chunk) {
     for (void* p : v) { hipHostUnregister(p); VirtualFree(p, 0, MEM_RELEASE); }
 }
 
+
+// regsub: the engine's store pattern: one big VirtualAlloc(MEM_RESERVE), committed in chunks of N MiB (untouched or touched), each registered mapped
+static void regsub(int chunk_mib, int nchunks, int touch) {
+    info();
+    const size_t C = (size_t) chunk_mib << 20;
+    uint8_t* base = (uint8_t*) VirtualAlloc(nullptr, C * (size_t) nchunks, MEM_RESERVE, PAGE_READWRITE);
+    if (!base) { std::printf("reserve failed\n"); return; }
+    std::vector<void*> dev;
+    for (int i = 0; i < nchunks; ++i) {
+        uint8_t* p = base + C * (size_t) i;
+        if (!VirtualAlloc(p, C, MEM_COMMIT, PAGE_READWRITE)) { std::printf("commit failed at %d\n", i); break; }
+        if (touch) std::memset(p, 7, C);
+        hipError_t e = hipHostRegister(p, C, hipHostRegisterPortable | hipHostRegisterMapped);
+        void* dp = nullptr;
+        if (e == hipSuccess) e = hipHostGetDevicePointer(&dp, p, 0);
+        std::printf("chunk %d: register+devptr %s, dev %p host %p\n", i, hipGetErrorString(e), dp, (void*) p);
+        if (e != hipSuccess) { (void) hipGetLastError(); break; }
+        dev.push_back(dp);
+        if (!touch) std::memset(p, 7, C);   // (the store's reads fill it after the registration)
+    }
+    for (size_t i = 0; i < dev.size(); ++i) {
+        std::printf("GPU read chunk %zu: %.1f GB/s\n", i, gpu_read_gbps(dev[i], C));
+        std::fflush(stdout);
+    }
+}
+
 static void hostalloc(int gib) {
     info();
     void* p = nullptr;
@@ -203,12 +230,94 @@ static void copy() {
     }
 }
 
+// ver: which amdhip64 this process really loaded (path, file version), the HIP runtime / driver versions
+static void ver() {
+    int rv = 0, dv = 0; hipRuntimeGetVersion(&rv); hipDriverGetVersion(&dv);
+    std::printf("hipRuntimeGetVersion %d, hipDriverGetVersion %d\n", rv, dv);
+    HMODULE h = GetModuleHandleA("amdhip64_7.dll");
+    if (!h) h = GetModuleHandleA("amdhip64.dll");
+    char path[MAX_PATH] = {0};
+    if (h) GetModuleFileNameA(h, path, MAX_PATH);
+    std::printf("loaded amdhip64: %s\n", path);
+    DWORD hd = 0, sz = path[0] ? GetFileVersionInfoSizeA(path, &hd) : 0;
+    if (sz) {
+        std::vector<char> b(sz);
+        VS_FIXEDFILEINFO* fi = nullptr; UINT n = 0;
+        if (GetFileVersionInfoA(path, 0, sz, b.data()) && VerQueryValueA(b.data(), "\\", (void**) &fi, &n) && fi)
+            std::printf("file version %u.%u.%u.%u\n", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS), HIWORD(fi->dwFileVersionLS), LOWORD(fi->dwFileVersionLS));
+    }
+    hipDeviceProp_t p{}; hipGetDeviceProperties(&p, 0);
+    std::printf("device %s %s\n", p.name, p.gcnArchName);
+    info();
+}
+
+__global__ void sum_kernel(const unsigned long long* __restrict__ p, size_t n, unsigned long long* out) {
+    unsigned long long acc = 0;
+    for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x * blockDim.x) acc += p[i];
+    atomicAdd(out, acc);
+}
+static void m1_line(const char* what, int seg, double secs, double avail0, size_t reg_total) {
+    PROCESS_MEMORY_COUNTERS_EX pm{}; pm.cb = sizeof pm; GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*) &pm, sizeof pm);
+    const double avail = ram_avail_gib();
+    std::printf("M1 %s seg %d: %.2fs | registered %.1f GiB | avail %.1f GiB (fell %.1f = %.2fx the registered) | private %.1f GiB ws %.1f GiB faults %lu\n", what, seg, secs,
+                reg_total / 1073741824.0, avail, avail0 - avail, reg_total ? (avail0 - avail) / (reg_total / 1073741824.0) : 0.0, pm.PrivateUsage / 1073741824.0,
+                pm.WorkingSetSize / 1073741824.0, pm.PageFaultCount);
+    dxgi_line("   ");
+    std::fflush(stdout);
+}
+// m1 <segment MiB> <total GiB> <mapped|coarse|plain>: reserve total, then per segment commit + touch (a known pattern), register (flags per mode),
+// device pointer, a checksum kernel that reads every page and compares with the pattern's sum; every step logs DXGI, RAM, commit, faults.
+// 'coarse' = hipHostRegisterMapped | hipExtHostRegisterCoarseGrained; 'plain' = portable only (no map).  A fresh process per arm, a watchdog outside.
+static void m1(int seg_mib, int total_gib, const std::string& mode) {
+    ver();
+    const size_t S = (size_t) seg_mib << 20, T = (size_t) total_gib << 30;
+    const int nseg = (int) (T / S);
+    uint8_t* base = (uint8_t*) VirtualAlloc(nullptr, T, MEM_RESERVE, PAGE_READWRITE);
+    if (!base) { std::printf("reserve failed\n"); return; }
+    unsigned flags = hipHostRegisterPortable;
+    if (mode == "mapped") flags |= hipHostRegisterMapped;
+    if (mode == "coarse") flags |= hipHostRegisterMapped | hipExtHostRegisterCoarseGrained;
+    unsigned long long* dsum = nullptr; CK(hipMalloc(&dsum, 8));
+    const double avail0 = ram_avail_gib();
+    m1_line("start", 0, 0, avail0, 0);
+    size_t reg = 0;
+    for (int i = 0; i < nseg; ++i) {
+        uint8_t* p = base + S * (size_t) i;
+        double t0 = now();
+        if (!VirtualAlloc(p, S, MEM_COMMIT, PAGE_READWRITE)) { std::printf("commit failed at segment %d\n", i); break; }
+        unsigned long long* w = (unsigned long long*) p; const size_t nw = S / 8;
+        unsigned long long expect = 0;
+        for (size_t k = 0; k < nw; ++k) { w[k] = (unsigned long long) i * 1000003ull + k; expect += w[k]; }
+        const double tt = now() - t0;
+        t0 = now();
+        hipError_t e = hipHostRegister(p, S, flags);
+        void* dp = p;
+        if (e == hipSuccess && (flags & hipHostRegisterMapped)) { e = hipHostGetDevicePointer(&dp, p, 0); }
+        const double tr = now() - t0;
+        if (e != hipSuccess) { std::printf("M1 register segment %d FAILED: %s (after %.2fs)\n", i, hipGetErrorString(e), tr); (void) hipGetLastError(); m1_line("failed", i, tr, avail0, reg); break; }
+        reg += S;
+        unsigned long long zero = 0; CK(hipMemcpy(dsum, &zero, 8, hipMemcpyHostToDevice));
+        t0 = now();
+        sum_kernel<<<2048, 256>>>((const unsigned long long*) dp, nw, dsum);
+        hipError_t ek = hipDeviceSynchronize();
+        const double tk = now() - t0;
+        unsigned long long got = 0; hipMemcpy(&got, dsum, 8, hipMemcpyDeviceToHost);
+        std::printf("M1 segment %d: touch %.2fs register %.2fs read %.3fs (%.0f GB/s) checksum %s\n", i, tt, tr, tk, S / 1e9 / (std::max)(tk, 1e-9), ek != hipSuccess ? hipGetErrorString(ek) : (got == expect ? "OK" : "MISMATCH"));
+        if (ek != hipSuccess) { m1_line("kernel fault", i, tk, avail0, reg); break; }
+        if (i % (std::max)(1, nseg / 8) == 0 || i == nseg - 1) m1_line("step", i, tr, avail0, reg);
+    }
+    m1_line("end", nseg, 0, avail0, reg);
+}
+
 int main(int argc, char** argv) {
     const std::string m = argc > 1 ? argv[1] : "";
+    if (m == "ver") { ver(); return 0; }
+    if (m == "m1") { m1(argc > 2 ? std::atoi(argv[2]) : 1024, argc > 3 ? std::atoi(argv[3]) : 8, argc > 4 ? argv[4] : "mapped"); return 0; }
     if (m == "info") info();
     else if (m == "alloc") alloc(argc > 2 ? std::atoi(argv[2]) : 80);
     else if (m == "reg") reg(argc > 2 ? std::atoi(argv[2]) : 8, argc > 3 ? std::atoi(argv[3]) : 0);
     else if (m == "regchunk") regchunk(argc > 2 ? std::atoi(argv[2]) : 32, argc > 3 ? std::atoi(argv[3]) : 4);
+    else if (m == "regsub") regsub(argc > 2 ? std::atoi(argv[2]) : 660, argc > 3 ? std::atoi(argv[3]) : 8, argc > 4 ? std::atoi(argv[4]) : 0);
     else if (m == "hostalloc") hostalloc(argc > 2 ? std::atoi(argv[2]) : 8);
     else if (m == "copy") copy();
     else std::printf("usage: umaprobe info|alloc N|reg GiB|hostalloc GiB|copy\n");

@@ -457,6 +457,17 @@ class StartPathSignature(UpdaterCase):
                 ec.verify_signature(ec.read_manifest(folder), {ec.ENV_REQUIRE_SIGNED: "1"})
 
 
+class LightTestStart(unittest.TestCase):
+    def test_the_test_start_drops_the_big_context_and_the_picture_reader(self):                # #3842
+        args = ["--serve", "--pack", "p", "--max-context", "262144", "--kv", "int8", "--kv-resident", "32768", "--vision",
+                "--vision-tokens", "768", "--spec", "4"]
+        self.assertEqual(updater.light_test_args(args), ["--serve", "--pack", "p", "--max-context", "4096", "--kv", "int8", "--spec", "4"])
+        self.assertEqual(updater.light_test_args(["--max-context", "2048", "--vision", "cpu", "--mtp", "x"]),
+                         ["--max-context", "2048", "--mtp", "x"])
+        self.assertEqual(updater.light_test_args(["--vision"]), [])
+        self.assertEqual(updater.light_test_args(["--max-context", "abc"]), ["--max-context", "abc"])
+
+
 class LazyModel(UpdaterCase):
     """A server that is "ready" with its model unloaded has not generated anything yet; the test start forces the load and the probe."""
 

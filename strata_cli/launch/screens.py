@@ -30,11 +30,33 @@ STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
 
 
+STEP_LABELS = {**dict(STEPS), "speed": "Speed"}
+
+
+def speed_choice_available(ctx) -> bool:
+    """The Speed step is an active choice only when the DeepSeek engine launch will run takes --experts (0.1.50 or newer); otherwise it is not
+    there, with no error. Asked once per run of the screens (the engine files are looked up once)."""
+    cached = getattr(ctx, "_speed_ok", None)
+    if cached is None:
+        try:
+            from strata_cli.launch.runner import Runner
+            cached = bool(Runner(ctx.settings, catalog=ctx.catalog, emit=lambda e: None).speed_engine_ok())
+        except Exception:                                    # noqa: BLE001
+            cached = False
+        try:
+            ctx._speed_ok = cached
+        except AttributeError:
+            pass
+    return cached
+
+
 def flow_for(ctx) -> list[str]:
-    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used."""
+    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Speed step only for DeepSeek."""
     ids = [sid for sid, _ in STEPS]
     if len(ctx.computer.usable_gpus) < 2:
         ids.remove("cards")
+    if getattr(getattr(ctx, "settings", None), "family", None) == "deepseek41" and speed_choice_available(ctx):
+        ids.insert(ids.index("context") + 1, "speed")
     return ids
 
 
@@ -111,7 +133,7 @@ class Base(Screen):
         out.append("STRATA  ", style=f"bold {ACCENT}")
         out.append(f"{self.title_line}", style=f"bold {ACCENT}")
         if self.step_id in flow:
-            labels = dict(STEPS)
+            labels = STEP_LABELS
             n = flow.index(self.step_id)
             if self.width() >= 118:
                 out.append("   ")
@@ -387,7 +409,7 @@ class ModelScreen(Base):
         w = self.width()
         if w >= 100:
             return [("Model", 42), ("Download", 10), ("Needs (RAM + VRAM)", 20), ("On this computer", 0)]
-        return [("Model", 41), ("Download", 9), ("Needs (RAM+VRAM)", 17), ("On this computer", 0)]
+        return [("Model", 41), ("Size", 8), ("Needs", 7), ("Fits?", 0)]      # 80 columns: the verdict column keeps room (the long words are below the list)
 
     def build_menu(self, initial: bool = False) -> None:
         s = self.ctx.settings
@@ -402,7 +424,11 @@ class ModelScreen(Base):
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
             need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
             ssd = f" · SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
-            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell((r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag, col)], key=(r.family, r.model)))
+            verdict = (r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag
+            if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
+                extra = " (recommended)" if r.recommended else " (installed)" if r.installed else " [experimental]" if r.experimental else ""
+                verdict = {"fits": "fits", "tight": "tight", "no": "too big"}[r.verdict] + extra
+            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(verdict, col)], key=(r.family, r.model)))
             if (s.family, s.model) == (r.family, r.model):
                 sel = i
         m = self.query_one(Menu)
@@ -1019,6 +1045,44 @@ class PicturesScreen(Base):
         self.ctx.settings.vision = key
 
 
+# ------------------------------------------------------------------------------------------------ DeepSeek: speed
+
+class SpeedScreen(Base):
+    step_id = "speed"
+    help_text = ("DeepSeek picks 6 experts for every word it writes. Faster uses 5 of them: answers come sooner, with a small quality change that is "
+                 "usually not noticeable. Full quality uses all 6. Faster is the default on a PC whose graphics cards total 16 GB or less, and on an integrated GPU such as Strix Halo (the engine decides the same way).")
+
+    def body(self) -> ComposeResult:
+        yield Static(Text("Speed or full quality?", style=f"bold {ACCENT}"), markup=False)
+        yield Menu(id="menu")
+
+    def default_faster(self) -> bool:
+        from strata_cli.launch.runner import faster_by_default
+        return faster_by_default(self.ctx.computer, self.ctx.settings)
+
+    def on_mount(self) -> None:
+        s = self.ctx.settings
+        faster_default = self.default_faster()
+        here = Cell("default on this PC", "")
+        items = [Item(["Faster", here if faster_default else Cell("", "")], key="faster"),
+                 Item(["Full quality", here if not faster_default else Cell("", "")], key="full")]
+        sel = 0 if (s.speed or ("faster" if faster_default else "full")) == "faster" else 1
+        self.query_one(Menu).columns = [("", 24), ("", 0)]
+        self.query_one(Menu).set_items(items, sel)
+        self.paint()
+
+    def explain(self) -> Text:
+        key = self.menu().current.key if self.menu() and self.menu().current else "faster"
+        if key == "faster":
+            return Text(S.FASTER_NOTE + " It is the default on a PC with 16 GB of graphics memory or less.", style=MUTE)
+        return Text("Full quality uses all 6 experts per word. Answers are a little slower; pick it when the last bit of quality matters more.", style=MUTE)
+
+    def commit(self) -> None:
+        key = self.menu().current.key
+        default = "faster" if self.default_faster() else "full"
+        self.ctx.settings.speed = None if key == default else key        # the default stays "the default for this PC" in a saved preset
+
+
 # ------------------------------------------------------------------------------------------------ 6 parallel
 
 class ParallelScreen(Base):
@@ -1328,7 +1392,8 @@ class AccessScreen(Base):
     step_id = "access"
     hints = "↑↓ choose   Enter next   p port   k new key   t key on/off   Esc back   ? help"
     help_text = ("Who can use the model. 'This computer only' is the safe default and never needs a key. Beyond it Strata makes an API key "
-                 "for you (recommended); press t if you would rather have no key: it still starts, but anyone who can reach it can use it.")
+                 "for you (recommended); press t if you would rather have no key: it still starts, but anyone who can reach it can use it. "
+                 "To see the key later: strata launch --show-key. To use a key of your own: strata launch --api-key YOUR-KEY (or --api-key-env NAME).")
 
     BINDINGS = Base.BINDINGS + [Binding("p", "port", show=False), Binding("k", "newkey", show=False), Binding("t", "keytoggle", show=False)]
 
@@ -1484,9 +1549,12 @@ class SaveScreen(Base):
     def summary_lines(self) -> list[tuple[str, str]]:
         s = self.ctx.settings
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        from strata_cli.launch.runner import faster_by_default
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),
                  ("Context", S.context_label(s.context) + f", memory {s.kv or 'int8'}"),
                  ("Pictures", "on" if s.vision != "off" else "off"),
+                 *([("Speed", S.speed_words(s.speed or ("faster" if faster_by_default(self.ctx.computer, s) else "full"),
+                                            s.speed is None))] if s.family == "deepseek41" and speed_choice_available(self.ctx) else []),
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
                  ("Tuning", ({"quick": "quick (about 5-10 min)", "thorough": "thorough (about 10-15 min)", "skip": "skipped"} if s.family == "deepseek41"
                               else {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"})[s.tune]),

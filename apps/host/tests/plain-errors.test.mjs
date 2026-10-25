@@ -102,3 +102,8 @@ test('missing model files are named, in every language, with a next step (#3478)
   setTranslationLanguage('en');
   assert.equal(plainFailure(missingFilesError('m', []).message).kind, 'plain', 'with no names the old sentence is left as it was');
 });
+
+test('the engine component is named in words, once (#3900)', async () => {
+  const { missingNames } = await import('../server/missing-files.mjs');
+  assert.deepEqual(missingNames([{ part: 'engine', file: 'component:strata-engine' }], ['component:strata-engine']), ['the engine program']);
+});

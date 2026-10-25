@@ -234,3 +234,55 @@ export async function installBundledEngine({ bundleDir, components, platform = n
     return { action: 'refused', reason: error?.message ?? String(error) };
   }
 }
+
+/**
+ * After an update from an installer that carried an engine (a per-GPU build), its `engine-bundle` folder is still in the install folder
+ * (about 570 MB) although the engine was copied to the engine store long ago. It is removed only when EVERY package in it exists complete in
+ * the store (every file there with the size and SHA-256 its manifest lists); otherwise it stays and one line says why.
+ * Returns { removed: bool, reason?: string, packages?: number }; never throws.
+ */
+export async function removeVerifiedBundle({ bundleDir, components, log = () => {} } = {}) {
+  try {
+    if (!bundleDir || !components || !existsSync(bundleDir)) return { removed: false, reason: 'no bundle' };
+    // Files inside a signed macOS app must stay intact after installation.
+    if (process.platform === 'darwin' && resolve(bundleDir).split(sep).some(part => part.toLowerCase().endsWith('.app'))) return keepBundle(log, 'macOS app bundles must remain unchanged after signing');
+    const packages = [];
+    for (const entry of await readdir(bundleDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const folder = join(bundleDir, entry.name);
+      const manifest = await readManifest(folder);
+      packages.push({ folder, manifest, name: entry.name });
+    }
+    if (!packages.length) return { removed: false, reason: 'nothing in the bundle' };
+    const store = join(components, 'engine');
+    const stored = existsSync(store) ? (await readdir(store, { withFileTypes: true })).filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => join(store, e.name)) : [];
+    for (const pkg of packages) {
+      if (!pkg.manifest) return keepBundle(log, `${pkg.name} has no readable manifest`);
+      let found = false;
+      for (const candidate of stored) {
+        const theirs = await readManifest(candidate);
+        if (!theirs || theirs.version !== pkg.manifest.version || theirs.platform !== pkg.manifest.platform || theirs.backend !== pkg.manifest.backend
+          || (theirs.variant ?? '') !== (pkg.manifest.variant ?? '') || (theirs.build_id ?? '') !== (pkg.manifest.build_id ?? '')) continue;
+        if (await packageIsWhole(candidate, pkg.manifest, { deep: true })) { found = true; break; }
+      }
+      if (!found) return keepBundle(log, `${pkg.name} is not (or not completely) in the engine store`);
+    }
+    for (const pkg of packages) await rm(pkg.folder, { recursive: true, force: true });
+    log(`engine bundle: the copy that came with the installer (${packages.map(p => p.name).join(', ')}) was removed; the same engine is complete in the engine store`);
+    return { removed: true, packages: packages.length };
+  } catch (error) {
+    return keepBundle(log, `could not be checked (${error?.message ?? error})`);
+  }
+}
+function keepBundle(log, why) {
+  log(`engine bundle: kept in the install folder (${why})`);
+  return { removed: false, reason: why };
+}
+
+/**
+ * What the host does once its engine step has settled: for an engine that is (or was) there, look at the install folder's leftover bundle.
+ * The lines go to the host's output (console.log), which the desktop shell copies to its log file (`[host] engine bundle: ...`).
+ */
+export function cleanupAfterInstall(settled, { bundleDir, components, log = line => console.log(line) } = {}) {
+  return Promise.resolve(settled).then(result => (['installed', 'kept', 'repaired'].includes(result?.action) ? removeVerifiedBundle({ bundleDir, components, log }) : null), () => null);
+}

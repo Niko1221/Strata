@@ -1,8 +1,11 @@
 # Terminal quick start
 
-New here? `strata launch` sets up a model, serves it and opens the monitor in one guided flow: [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md).
+This page is for people who already have a model and want to read a running server, rerun it from a saved profile, or measure it.
+To set up and serve a new model, use [`strata launch`](TERMINAL_LAUNCH.md).
 
-These commands use the `strata` command that the one-line Terminal install puts on your PATH ([how to install](TERMINAL_LAUNCH.md#install-one-line)). The Terminal carries its own Python, so there is nothing else to install. In a source checkout, type `python strata.py` (or `python3 strata.py`) in place of `strata`, from the repository root. The commands below read, prepare and rerun a model you already have; they do not download one. The complete options, permissions and limits are in [TERMINAL.md](TERMINAL.md).
+The commands use the `strata` command from the [Terminal install](INSTALL.md#the-terminal), which carries its own Python.
+In a source checkout, type `python strata.py` in place of `strata`, from the repository root. These commands read, prepare
+and rerun a model you already have; they do not download one. All options, permissions and limits are in [TERMINAL.md](TERMINAL.md).
 
 ## Read a running server
 
@@ -18,7 +21,7 @@ The interactive monitor comes with the installed Terminal. Open the one-screen O
 strata monitor --url http://127.0.0.1:8080
 ```
 
-The Overview puts serving state, prompt and answer speed, batch/queue pressure, four selected GPU rows, requests and activity on one screen. Press `1`–`6` for detail (`1`–`7` in the monitor that `strata launch` opens, where `7` is the Connect view), `Space` to freeze the display, `r` to refresh, and `q` to detach. Detach leaves the server running. On a machine without a terminal, use `status --json` or `monitor --once --json`.
+The Overview puts serving state, prompt and answer speed, batch/queue pressure, four selected GPU rows, requests and activity on one screen. Press `1`–`7` for the views (`7` is Connect), `Space` to freeze the display, `r` to refresh, and `q` to detach. Detach leaves the server running. On a machine without a terminal, use `status --json` or `monitor --once --json`.
 
 For a remote server, use HTTPS or a local SSH tunnel. A saved connection stores only the credential environment variable's **name**:
 

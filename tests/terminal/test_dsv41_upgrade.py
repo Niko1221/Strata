@@ -159,5 +159,19 @@ class LaunchChoice(unittest.TestCase):
             self.assertEqual(self.runner().upgrade_dsv41_engine(found), new)
 
 
+class SetupPathLines(unittest.TestCase):
+    """The upgrade lines setup prints are shown by strata launch, the failure one especially (0.2.5 list)."""
+
+    def test_the_failure_line_is_a_warning_and_the_success_line_is_news(self):
+        from strata_cli.launch.runner import deepseek_engine_note
+        bad = deepseek_engine_note("  A newer DeepSeek engine is available but could not be installed: no space left; still using 0.1.49.")
+        self.assertEqual(bad[0], "warn")
+        self.assertTrue(bad[1].endswith("still using 0.1.49."))
+        self.assertEqual(deepseek_engine_note("[!] A newer DeepSeek engine may be available but could not be checked (OSError); still using 0.1.49.")[0], "warn")
+        good = deepseek_engine_note("  DeepSeek engine updated from 0.1.49 to 0.1.49.2.")
+        self.assertEqual(good, ("info", "DeepSeek engine updated from 0.1.49 to 0.1.49.2."))
+        self.assertIsNone(deepseek_engine_note("  checking model.gguf (SHA-256, 5 GB) ..."))
+
+
 if __name__ == "__main__":
     unittest.main()
