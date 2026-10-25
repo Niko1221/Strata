@@ -358,7 +358,7 @@ class Calibrate(unittest.TestCase):
 
 
 class VisionLifetime(unittest.TestCase):
-    def run_case(self, gpu=True, failure=None, custom=False):
+    def run_case(self, gpu=True, failure=None, custom=False, vision=None, top=None):
         events, instances, engines = [], [], []
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -369,7 +369,8 @@ class VisionLifetime(unittest.TestCase):
                    "cwd": str(root / "cwd"), "log": str(root / "calibration.log")}
             if gpu is not None:
                 cfg["vision"] = {"exe": "vision-bin", "model": "weights/model.gguf",
-                                 "mmproj": "weights/projector.gguf", "gpu": gpu}
+                                 "mmproj": "weights/projector.gguf", "gpu": gpu, **(vision or {})}
+            cfg.update(top or {})
             env = {"CUDA_VISIBLE_DEVICES": "2"}
             vision_env = {"CUDA_VISIBLE_DEVICES": "2", "VISION": "1"}
 
@@ -430,16 +431,16 @@ class VisionLifetime(unittest.TestCase):
                     self.assertFalse(engines)
             else:
                 self.assertFalse(instances)
-            return events
+            return events, instances
 
     def test_gpu_encoder_stays_resident_through_restarts(self):
-        self.assertEqual(self.run_case(), ["vision", "engine", "engine", "shutdown"])
+        self.assertEqual(self.run_case()[0], ["vision", "engine", "engine", "shutdown"])
 
     def test_cpu_vision_uses_the_same_lifetime(self):
-        self.assertEqual(self.run_case(gpu=False), ["vision", "engine", "engine", "shutdown"])
+        self.assertEqual(self.run_case(gpu=False)[0], ["vision", "engine", "engine", "shutdown"])
 
     def test_text_configuration_does_not_start_an_encoder(self):
-        self.assertEqual(self.run_case(gpu=None), ["engine", "engine"])
+        self.assertEqual(self.run_case(gpu=None)[0], ["engine", "engine"])
 
     def test_failed_engine_and_measurement_release_vision(self):
         for failure in ("engine", "measure"):
@@ -449,8 +450,14 @@ class VisionLifetime(unittest.TestCase):
     def test_failed_vision_closes_log_and_never_starts_engine(self):
         self.run_case(failure="vision")
 
+    def test_elastic_follows_the_servers_vram_elastic_rule(self):
+        _, instances = self.run_case(vision={"elastic": True})
+        self.assertIs(instances[0].config["elastic"], False)    # serving starts this encoder with the model
+        _, instances = self.run_case(vision={"elastic": True}, top={"vram_elastic": True})
+        self.assertIs(instances[0].config["elastic"], True)
+
     def test_supplied_factory_keeps_its_own_resource_lifetime(self):
-        self.assertEqual(self.run_case(custom=True), ["engine", "engine"])
+        self.assertEqual(self.run_case(custom=True)[0], ["engine", "engine"])
 
 
 class SetupIntegration(unittest.TestCase):

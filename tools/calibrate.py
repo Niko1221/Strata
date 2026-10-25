@@ -235,6 +235,8 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
                 vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                             if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                         for k, v in cfg["vision"].items()}
+                if vcfg.get("elastic") is True and cfg.get("vram_elastic") is not True:
+                    vcfg["elastic"] = False     # as serving: without "vram_elastic" the encoder starts with the model
                 log = resources.enter_context(open(cfg["log"], "a", encoding="utf-8")) if cfg.get("log") else None
                 vision = Vision(vcfg, log=log, env=vision_env(cfg, env))
                 resources.callback(vision.shutdown)
