@@ -124,3 +124,4 @@ Observations:
 
 - `data/<run>/`: `runs_*.csv` (every run), `summary_*.json`, `samples_*.csv` (resource samples), `bench.log`, `version.txt`, `config_redacted.json`, `free_*.txt`, `vram_*.txt`, `swap_counters.txt`, `log_findings.txt`, `dmesg_oom.txt`, `health.txt`, `server.log` (client-side server output; the engine log is not attached).
 - `tools/`: `bench.py`, `bench.py.orig`, `bench_one.sh`.
+- `RAM-history.md`: summaries of earlier test sessions on this machine, grouped by installed RAM (40 GB to 176 GB). Background only; the measurements in this report are in the tables above.
