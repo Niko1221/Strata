@@ -62,7 +62,7 @@ class DamagedOpenerTests(unittest.TestCase):
 
     def test_damaged_opener_needs_the_name_whole_on_one_line(self):
         # a newline before ">", a space after "<=", or no ">" at all: not a call, held or released as text
-        for text in ("<tool_call>\n<=Read\nmore\n</tool_call>"):
+        for text in ("<tool_call>\n<=Read\nmore\n</tool_call>",):
             self.assertEqual(calls(run(text, True)), [])
 
 
