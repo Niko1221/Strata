@@ -24,6 +24,13 @@ TOOLS = [
     {"name": "Read", "description": "read", "input_schema": {
         "type": "object", "required": ["file_path"], "properties": {
             "file_path": {"type": "string"}, "limit": {"type": "number"}, "offset": {"type": "number"}}}},
+    {"name": "Edit", "description": "edit", "input_schema": {
+        "type": "object", "required": ["file_path", "old_string", "new_string"], "properties": {
+            "file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"},
+            "replace_all": {"type": "boolean"}}}},
+    {"name": "Write", "description": "write", "input_schema": {
+        "type": "object", "required": ["file_path", "content"], "properties": {
+            "file_path": {"type": "string"}, "content": {"type": "string"}}}},
     {"name": "Bash", "description": "run", "input_schema": {
         "type": "object", "required": ["command"], "properties": {
             "command": {"type": "string"}, "timeout": {"type": "number"}, "description": {"type": "string"}}}}]
@@ -105,6 +112,26 @@ class LiveTools(unittest.TestCase):
         for text in ("<tool_call>\n<function=Grep>\n", call("Grep", ("pattern", "p"), close=False)):
             for n, args in self.inputs(text):
                 self.assertIsInstance(args, dict)
+
+    def test_streamed_block_carries_the_parsed_arguments(self):
+        """2026-10-25 04:00:57 UTC (raw log, path shortened): an Edit opened with a bare `<replace_all>` line reached
+        the client as a tool_use with the input `{}`: the stream's reader stopped at the line, the parser read past it."""
+        old = ("  const sameBuild = manifest && manifest.stamp === stamp;\n  if (process.env.PRUNE_DIST_DEBUG === \"1\") "
+               "console.error(\"DBG sameBuild:\", sameBuild, \"stamp:\", stamp, \"manStamp:\", manifest && manifest.stamp);")
+        new = "  const sameBuild = manifest && manifest.stamp === stamp;"
+        path = "/x/prune-dist-rerun/scripts/prune-dist.mjs"
+        text = ("The instrumented trace shows the fix works correctly: p3 (same build) is idempotent, p4 (new build) "
+                "rotates. Let me remove the debug line and run the tests.\n\n<tool_call>\n<function=Edit>\n"
+                "<replace_all>\nfalse\n" + PE + "\n<parameter=file_path>\n" + path + "\n" + PE +
+                "\n<parameter=old_string>\n" + old + "\n" + PE + "\n<parameter=new_string>\n" + new + "\n" + PE +
+                "\n</function>\n</tool_call>")
+        got = self.inputs(text)
+        self.assertEqual(got, [("Edit", {"file_path": path, "old_string": old, "new_string": new})])
+        for _, args in got:
+            self.assertTrue(args)
+
+    def test_cut_before_a_parameter_opens_no_block(self):
+        self.assertEqual(self.inputs("<tool_call>\n<function=Edit>\n<replace_all>\nfalse\n"), [])
 
 
 if __name__ == "__main__":

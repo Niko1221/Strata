@@ -13,9 +13,7 @@ from serve.test_live_tools import TOOLS, LiveTools  # noqa: E402
 
 PE = "</parameter>"
 LT = "<"
-SCHEMAS = [{"name": t["name"], "parameters": t["input_schema"]} for t in TOOLS] + [
-    {"name": "Write", "parameters": {"type": "object", "required": ["file_path", "content"], "properties": {
-        "file_path": {"type": "string"}, "content": {"type": "string"}}}}]
+SCHEMAS = [{"name": t["name"], "parameters": t["input_schema"]} for t in TOOLS]
 GREP_PATH_ARGS = {"pattern": "effectiveMainConfig|loadConfigDefaults|computedDefaults", "path": "/x/src",
                   "output_mode": "content"}
 CMD = 'ls src/builds/ && grep -rn "defaultConfigReader\\|readConfig" src/builds/*.ts src/cli/commands/build.ts | head -20'

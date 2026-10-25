@@ -1355,6 +1355,9 @@ class OutputParser:
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
         self.ss = "name"             # name -> between -> str|raw -> ... -> function_done -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
+        self.sjson = ""              # the JSON of its arguments as streamed: the client's view of them
+        self.sstarted = False        # "tool_start" went out: held until the call has a parameter (or is closed whole),
+                                     # so a call cut before that never leaves an empty block behind
         self.sfirst = True
         self.sval_started, self.sval_at = False, 0
         self.sdeclared = {}
@@ -1380,6 +1383,12 @@ class OutputParser:
 
         def args(s):
             if s:
+                if not self.sstarted:
+                    self.sstarted = True
+                    out.append(Event("tool_start", call=self.scall))
+                    self.sjson = "{"
+                    out.append(Event("tool_args", "{", call=self.scall))
+                self.sjson += s
                 out.append(Event("tool_args", s, call=self.scall))
         while True:
             rest = self.buf[self.sp:]
@@ -1396,8 +1405,6 @@ class OutputParser:
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
-                out.append(Event("tool_start", call=self.scall))
-                args("{")
                 self.sp += b + 1
                 self.ss = "between"
             elif self.ss == "between":
@@ -1430,8 +1437,13 @@ class OutputParser:
                 elif stripped.startswith("</function>"):
                     self.sp += len("</function>")
                     self.ss = "function_done"
-                else:
-                    return out          # a tag still arriving (or trailing text): wait
+                elif any(t.startswith(stripped) for t in (PARAM_START, FUNC_END, PARAM_END, "<")):
+                    return out          # a tag still arriving: wait
+                else:                   # text no parameter owns (a bare `<NAME>`, `</invoke>`): read over, as parse_tool_call does
+                    at = [i for i in (stripped.find(PARAM_START, 1), stripped.find(FUNC_END, 1)) if i >= 0]
+                    if not at:
+                        return out
+                    self.sp += min(at)
             elif self.ss == "str":
                 if not self.sval_started:
                     if not rest:
@@ -1492,12 +1504,16 @@ class OutputParser:
         out = []
         if self.scall is None or self.ss == "done":
             return out
+        if not self.sstarted:                   # nothing of the call went out: there is no block to close
+            self.ss = "done"
+            return out
         tail = ""
         if self.ss == "str":
             tail += '"'
         elif self.ss == "raw":
             tail += json.dumps(self.buf[self.sp:].strip("\n"))
         tail += "}"
+        self.sjson += tail
         out.append(Event("tool_args", tail, call=self.scall))
         self.ss = "done"
         return out
@@ -1858,11 +1874,12 @@ class OutputParser:
                     return out + self._finish_call(body)
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if (self.recover and self.ss == "between" and reason in (None, "stop")) or (
-                    self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop")):
+            if self.sstarted and ((self.recover and self.ss == "between" and reason in (None, "stop")) or (
+                    self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"))):
                 # every parameter is whole and only junk (`<parameter name=`) follows, or a natural end immediately
                 # after </function>: native streaming recovery
                 out += self._close_scan()
+                self.scall.arguments = json.loads(self.sjson)       # as the client has it
                 out.append(Event("tool_call", call=self.scall))
             elif self.ss == "function_done":
                 out.append(Event("content", self._track(CALL_START + self.buf)))
