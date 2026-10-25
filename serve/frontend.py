@@ -717,29 +717,19 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 
 
 def param_end(text: str, final: bool = False, names=None) -> int:
-    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by `</function>` or
-    by the opener of another parameter of this tool (`<parameter=NAME>`, NAME among `names`; any name when `names` is
-    empty) - the same text inside a value (a file that documents the call format, #210) is part of the value, even
-    a whole call written there: a `<function=` in the value that is not closed yet owns the next closer.
+    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by a tag-shaped
+    opener - `<parameter=` (with or without its `>`, any name), a damaged `<=NAME>`, a bare `<NAME>`, `</function>`,
+    `</tool_call>`, a garbled `</<` - or by the end of the text when `final`.  Plain text after it (not starting with
+    `<`) keeps it inside the value: a file that documents the call format (#210) is part of the value, even a whole
+    call written there: a `<function=` in the value that is not closed yet owns the next closer.
     -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at, inner_end = text.find(PARAM_END), -1
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        follows = None                      # True: a parameter/function follows; None: not decided yet
-        if after.startswith(FUNC_END):
-            follows = True
-        elif after.startswith("<parameter="):
-            gt = after.find(">")
-            follows = (not names or after[len("<parameter="):gt] in names) if gt >= 0 else (
-                None if "\n" not in after else False)
-        elif not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
-            follows = None
-        elif after.startswith("<=") and ">" not in after.split("\n", 1)[0] and "\n" not in after:
-            follows = None                  # a damaged `<=NAME>` opener still arriving
-        elif names and "\n" not in after and ">" not in after and any(("<%s>" % n).startswith(after) for n in names):
-            follows = None                  # a bare `<NAME>` opener still arriving
+        if not after or after == "<":
+            follows = None                  # the follower has not arrived
         else:
-            follows = False
+            follows = after[0] == "<" and (after[1].isalpha() or after[1] in "=/")
         if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
             inner_end, follows = at, False  # closes the parameter of a call written inside the value
         if follows:
@@ -748,6 +738,32 @@ def param_end(text: str, final: bool = False, names=None) -> int:
             return at if final else -2
         at = text.find(PARAM_END, at + 1)
     return inner_end if final else -1
+
+
+NOT_PARAMS = ("function", "think", "parameter")
+
+
+def param_name(opener: str, names=None) -> str | None:
+    """The parameter a `<parameter=` opener names (`opener`: the text between `=` and `>`): cut at the first
+    whitespace, `<` or `>`.  None - the parameter is dropped - when that is empty, one of the call's own tags
+    (NOT_PARAMS), or not among `names` (when there are any)."""
+    name = re.split(r"[\s<>]", opener, 1)[0]
+    if not name or name in NOT_PARAMS or (names and name not in names):
+        return None
+    return name
+
+
+def trim_value(value: str, name: str | None, names=None) -> str:
+    """A parameter value as written: the newline before the closer is not part of it; nor is a closer `</NAME>` of
+    the parameter (or of a declared one) written instead of `</parameter>`.  (The newline after the opener is the
+    caller's: the streaming parser has skipped it already.)"""
+    if value.endswith("\n"):
+        value = value[:-1]
+    for n in {name, *(names or ())} - {None}:
+        if value.endswith("</%s>" % n):
+            value = value[:-len(n) - 3]
+            return value[:-1] if value.endswith("\n") else value
+    return value
 
 
 def _names_of(schemas, head: str) -> set:
@@ -984,16 +1000,13 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         gt = rest.find(">")
         if gt < 0:      # cut inside the parameter name: drop the opener, keep the complete parameters
             break
-        pname = rest[:gt]
+        pname = param_name(rest[:gt], props)
         rest = rest[gt + 1:]
         end = param_end(rest, final=True, names=set(props))
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
-        if value.startswith("\n"):
-            value = value[1:]
-        if value.endswith("\n"):
-            value = value[:-1]
-        args[pname] = value
+        if pname:
+            args[pname] = trim_value(value.removeprefix("\n"), pname, props)
     return ToolCall(name=name, arguments=coerce_args(args, schema))
 
 
@@ -1288,11 +1301,14 @@ class OutputParser:
                     b = stripped.find(">")
                     if b < 0:
                         return out
-                    pname = stripped[11:b]
-                    args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
-                    self.sfirst = False
+                    pname = param_name(stripped[11:b], self.sdeclared)
                     self.sp += b + 1
                     self.spname = pname
+                    if pname is None:
+                        self.ss = "drop"        # no parameter of this call: its value is read and left out
+                        continue
+                    args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
+                    self.sfirst = False
                     if self.sdeclared.get(pname) == "string":
                         args('"')
                         self.ss, self.sval_started = "str", False
@@ -1313,15 +1329,17 @@ class OutputParser:
                     self.sval_started = True
                 end = param_end(rest, names=set(self.sdeclared))
                 if end >= 0:
-                    value = rest[:end]
-                    if value.endswith("\n"):
-                        value = value[:-1]
+                    value = trim_value(rest[:end], self.spname, self.sdeclared)
                     args(json.dumps(value)[1:-1] + '"')
                     self.sp += end + len(PARAM_END)
                     self.ss = "between"
                     continue
                 # an undecided </parameter> (-2) is held from its start, like a tag still arriving
-                safe = rest.find(PARAM_END) if end == -2 else len(rest) - self._hold(rest, (PARAM_END,))
+                tags = (PARAM_END, *("</%s>" % n for n in self.sdeclared))
+                text = rest.rstrip()        # a `</NAME>` closer may be complete and wait for its `</parameter>`
+                done = max((len(t) for t in tags[1:] if text.endswith(t)), default=0)
+                safe = rest.find(PARAM_END) if end == -2 else (
+                    len(text) - done if done else len(rest) - self._hold(rest, tags))
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
                     safe -= 1
                 if safe > 0:
@@ -1332,13 +1350,15 @@ class OutputParser:
                 end = param_end(rest, names=set(self.sdeclared))
                 if end < 0:
                     return out
-                value = rest[:end]
-                if value.startswith("\n"):
-                    value = value[1:]
-                if value.endswith("\n"):
-                    value = value[:-1]
+                value = trim_value(rest[:end].removeprefix("\n"), self.spname, self.sdeclared)
                 v = coerce_param(value, self.sdeclared.get(self.spname))
                 args(json.dumps(v, ensure_ascii=False))
+                self.sp += end + len(PARAM_END)
+                self.ss = "between"
+            elif self.ss == "drop":
+                end = param_end(rest, names=set(self.sdeclared))
+                if end < 0:
+                    return out
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
             else:

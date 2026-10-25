@@ -28,17 +28,17 @@ class BareOpenerTests(unittest.TestCase):
             for step in (None, 1, 3, 7, 29):
                 self.assertEqual(calls(READ, step, stream), WANT, (stream, step))
 
-    def test_undeclared_tags_in_a_value_stay_verbatim(self):
-        for content in ("a</parameter>\n<b>bold</b>", "<div>\n<p>x</p>\n</div>", "x\n</parameter>\n<div>y"):
+    def test_plain_text_after_a_closer_stays_in_the_value(self):
+        for content in ("a</parameter>\nbold", "<div>\n<p>x</p>\n</div>", "x\n</parameter>\ny <div>y"):
             text = ("<tool_call>\n<function=Write>\n<parameter=file_path>\n/a.html\n</parameter>\n"
                     "<parameter=content>\n%s\n</parameter>\n</function>\n</tool_call>" % content)
             for step in (None, 1, 7):
                 self.assertEqual(calls(text, step), [("Write", {"file_path": "/a.html", "content": content})], step)
 
-    def test_already_set_name_is_not_reopened(self):
+    def test_a_tag_after_a_closer_ends_the_value(self):
         text = ("<tool_call>\n<function=Write>\n<parameter=file_path>\n/a\n</parameter>\n<parameter=content>\n"
                 "x\n</parameter>\n<content>\ny\n</parameter>\n</function>\n</tool_call>")
-        self.assertEqual(calls(text), [("Write", {"file_path": "/a", "content": "x\n</parameter>\n<content>\ny"})])
+        self.assertEqual(calls(text), [("Write", {"file_path": "/a", "content": "x"})])
 
 
 if __name__ == "__main__":

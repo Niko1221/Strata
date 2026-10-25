@@ -78,10 +78,10 @@ class ParserTests(unittest.TestCase):
             for stream, step, got in self.each(text):
                 self.assertEqual(got, [want], (stream, step))
 
-    def test_undeclared_name_stays_text(self):
+    def test_undeclared_name_is_dropped(self):
         text = call(("pattern", "x")).replace("</function>", "<=bogus>\nv\n</parameter>\n</function>")
         for stream, step, got in self.each(text):
-            self.assertEqual(got, [{"pattern": "x\n</parameter>\n<=bogus>\nv"}], (stream, step))
+            self.assertEqual(got, [{"pattern": "x"}], (stream, step))
 
     def test_well_formed_unchanged(self):
         text = call(("pattern", "a"), ("head_limit", "5"), ("glob", '["*.py"]'))
