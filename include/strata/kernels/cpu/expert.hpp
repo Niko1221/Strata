@@ -181,6 +181,10 @@ void s2_expert_vnni_multi(const uint8_t* blob, const ActQ* const* a1, int n_toke
 /// per row, `nblocks` blocks each) against `nt` activations: out[t][r].
 void q2_0_gguf_rows_multi(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
                           float* const* out, int r0, int r1);
+/// The same arithmetic, bit for bit, with the eight-block groups split into a fixed-trip inner loop.
+/// The original above stays callable so the two can be compared on identical inputs.
+void q2_0_gguf_rows_multi_v2(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                             float* const* out, int r0, int r1);
 /// The same two for CPUs without AVX-512 (src/kernels/cpu/q2_avx2.cpp, compiled for AVX2 only).
 void q2_0_gguf_rows_multi_avx2(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
                                float* const* out, int r0, int r1);
