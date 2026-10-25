@@ -1,0 +1,9 @@
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=0 ms=0.053310461
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=1 ms=0.053325824
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=2 ms=0.053171199
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=3 ms=0.053200383
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=4 ms=0.053669378
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=5 ms=0.053822771
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=6 ms=0.053498369
+TOPK_GRAPH rows=7 vocab=248320 k=16 rep=7 ms=0.053413216
+PASS: top-k edges and full-vocabulary CPU oracle

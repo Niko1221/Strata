@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata/build
+Test project /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata/build
+    Start  65: dflash_taps_test
+1/6 Test  #65: dflash_taps_test .................   Passed    0.21 sec
+    Start  66: dflash_head_bf16_test
+2/6 Test  #66: dflash_head_bf16_test ............   Passed    0.23 sec
+    Start  67: dflash_rope_parity
+3/6 Test  #67: dflash_rope_parity ...............   Passed    0.22 sec
+    Start  68: dflash_owned_kv_test
+4/6 Test  #68: dflash_owned_kv_test .............   Passed    0.38 sec
+    Start 117: dflash_policy_test
+5/6 Test #117: dflash_policy_test ...............   Passed    0.01 sec
+    Start 118: dflash_load_test
+6/6 Test #118: dflash_load_test .................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   1.05 sec

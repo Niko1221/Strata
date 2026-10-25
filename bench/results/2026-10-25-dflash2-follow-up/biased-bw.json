@@ -1,0 +1,74 @@
+[
+  {
+    "nt": 2,
+    "rep": 0,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 97.9 ms for 1536 experts -> 43.4 GB/s, 701.3 us/expert/thread\n"
+  },
+  {
+    "nt": 2,
+    "rep": 1,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 97.4 ms for 1536 experts -> 43.6 GB/s, 697.3 us/expert/thread\n"
+  },
+  {
+    "nt": 2,
+    "rep": 2,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 99.1 ms for 1536 experts -> 42.8 GB/s, 710.0 us/expert/thread\n"
+  },
+  {
+    "nt": 2,
+    "rep": 3,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 98.0 ms for 1536 experts -> 43.3 GB/s, 702.0 us/expert/thread\n"
+  },
+  {
+    "nt": 4,
+    "rep": 0,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 102.0 ms for 1536 experts -> 41.6 GB/s, 730.7 us/expert/thread\n"
+  },
+  {
+    "nt": 4,
+    "rep": 1,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 102.0 ms for 1536 experts -> 41.6 GB/s, 730.3 us/expert/thread\n"
+  },
+  {
+    "nt": 4,
+    "rep": 2,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 99.8 ms for 1536 experts -> 42.6 GB/s, 714.8 us/expert/thread\n"
+  },
+  {
+    "nt": 4,
+    "rep": 3,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 99.8 ms for 1536 experts -> 42.6 GB/s, 714.5 us/expert/thread\n"
+  },
+  {
+    "nt": 8,
+    "rep": 0,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 160.5 ms for 1536 experts -> 26.5 GB/s, 1149.1 us/expert/thread\n"
+  },
+  {
+    "nt": 8,
+    "rep": 1,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 171.2 ms for 1536 experts -> 24.8 GB/s, 1226.3 us/expert/thread\n"
+  },
+  {
+    "nt": 8,
+    "rep": 2,
+    "mode": 1,
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 162.1 ms for 1536 experts -> 26.2 GB/s, 1161.0 us/expert/thread\n"
+  },
+  {
+    "nt": 8,
+    "rep": 3,
+    "mode": 0,
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 142.1 ms for 1536 experts -> 29.9 GB/s, 1017.4 us/expert/thread\n"
+  }
+]

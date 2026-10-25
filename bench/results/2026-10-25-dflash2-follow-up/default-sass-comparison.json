@@ -1,0 +1,26 @@
+{
+  "native_mmvq_multi_kernel": {
+    "baseline_functions": 414,
+    "candidate_functions": 414,
+    "same": 414,
+    "same_text_bytes": 5528960,
+    "different": [],
+    "missing": []
+  },
+  "topk_parallel_kernel": {
+    "baseline_functions": 1,
+    "candidate_functions": 1,
+    "same": 1,
+    "same_text_bytes": 9856,
+    "different": [],
+    "missing": []
+  },
+  "provenance": {
+    "architecture": "sm_89",
+    "tool": "CUDA13.4 cuobjdump --extract-text; normalize only the added false template argument",
+    "baseline_native": "strata-prompt-batch-v2",
+    "baseline_topk": "strata-grid-selector-v3",
+    "candidate": "strata-topk-v4",
+    "note": "Static instruction-byte comparison at V4; runtime/source hashes will be reconfirmed for the final submitted executable."
+  }
+}

@@ -1,0 +1,51 @@
+dflash2: prompt context groups up to 512 rows, matrix-major projections
+dflash2: prompt context groups up to 512 rows, matrix-major projections
+ACCOUNTED_VRAM before=868307936 after=868307936 delta=0
+prompt fusion pos=0 rows=1: all five KV layers bit-identical
+prompt fusion pos=1 rows=7: all five KV layers bit-identical
+prompt fusion pos=8 rows=8: all five KV layers bit-identical
+prompt fusion pos=16 rows=9: all five KV layers bit-identical
+prompt fusion pos=25 rows=63: all five KV layers bit-identical
+prompt fusion pos=88 rows=64: all five KV layers bit-identical
+prompt fusion pos=152 rows=65: all five KV layers bit-identical
+prompt fusion pos=217 rows=127: all five KV layers bit-identical
+prompt fusion pos=344 rows=128: all five KV layers bit-identical
+prompt fusion pos=472 rows=129: all five KV layers bit-identical
+prompt fusion pos=601 rows=255: all five KV layers bit-identical
+prompt fusion pos=856 rows=256: all five KV layers bit-identical
+prompt fusion pos=1112 rows=257: all five KV layers bit-identical
+prompt fusion pos=1369 rows=511: all five KV layers bit-identical
+prompt fusion pos=1880 rows=512: all five KV layers bit-identical
+prompt fusion pos=2392 rows=513: all five KV layers bit-identical
+prompt fusion pos=2905 rows=1024: all five KV layers bit-identical
+prompt fusion pos=3929 rows=2049: all five KV layers bit-identical
+prompt fusion pos=5978 rows=512: all five KV layers bit-identical
+prompt fusion pos=6490 rows=512: all five KV layers bit-identical
+prompt fusion pos=262141 rows=512: all five KV layers bit-identical
+prompt fusion pos=263679 rows=513: all five KV layers bit-identical
+context graphs: original=4 candidate=4
+BENCH rep=0 rows=512 original_ms=9.774725 batched_ms=7.899738
+BENCH rep=1 rows=512 original_ms=9.383170 batched_ms=8.077562
+BENCH rep=2 rows=512 original_ms=9.552248 batched_ms=7.696146
+BENCH rep=3 rows=512 original_ms=9.401074 batched_ms=7.856106
+BENCH rep=4 rows=512 original_ms=9.670830 batched_ms=7.790593
+BENCH rep=5 rows=512 original_ms=9.311326 batched_ms=7.876695
+BENCH rep=6 rows=512 original_ms=10.100516 batched_ms=8.165767
+BENCH rep=7 rows=512 original_ms=9.485182 batched_ms=8.114691
+BENCH rep=8 rows=512 original_ms=9.686279 batched_ms=7.929915
+BENCH rep=9 rows=512 original_ms=9.510209 batched_ms=7.798228
+BENCH rep=10 rows=512 original_ms=9.357352 batched_ms=7.890180
+BENCH rep=11 rows=512 original_ms=9.661743 batched_ms=7.711204
+BENCH rep=12 rows=512 original_ms=9.596109 batched_ms=8.025283
+BENCH rep=13 rows=512 original_ms=10.594973 batched_ms=7.668584
+BENCH rep=14 rows=512 original_ms=9.828025 batched_ms=9.022915
+BENCH rep=15 rows=512 original_ms=10.627524 batched_ms=8.952793
+BENCH rep=16 rows=512 original_ms=9.377670 batched_ms=7.739598
+BENCH rep=17 rows=512 original_ms=9.300816 batched_ms=7.703320
+BENCH rep=18 rows=512 original_ms=9.346001 batched_ms=7.753995
+BENCH rep=19 rows=512 original_ms=9.464052 batched_ms=7.754075
+BENCH rep=20 rows=512 original_ms=9.486434 batched_ms=7.744967
+BENCH rep=21 rows=512 original_ms=9.395694 batched_ms=7.712537
+BENCH rep=22 rows=512 original_ms=9.590890 batched_ms=7.900309
+BENCH rep=23 rows=512 original_ms=9.305415 batched_ms=7.691637
+PASS: 928153600 bytes compared, graphs=on, 3 contiguous physical KV wraps, distant=yes

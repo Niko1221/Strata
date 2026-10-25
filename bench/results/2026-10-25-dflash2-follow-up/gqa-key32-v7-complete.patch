@@ -1,0 +1,569 @@
+diff --git a/include/strata/core/dflash.hpp b/include/strata/core/dflash.hpp
+index c8e57c49..cea5eb72 100644
+--- a/include/strata/core/dflash.hpp
++++ b/include/strata/core/dflash.hpp
+@@ -246,6 +246,7 @@ private:
+     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
+     bool graph_prob_ = false;
+     bool context_graphs_ = false;
++    bool prompt_grid_ = false;
+     bool reference_mode_ = false;
+     int64_t context_floor_ = 0;
+     void clear_graphs();
+diff --git a/include/strata/kernels/native_mmvq.hpp b/include/strata/kernels/native_mmvq.hpp
+index 808b103d..b82b8b75 100644
+--- a/include/strata/kernels/native_mmvq.hpp
++++ b/include/strata/kernels/native_mmvq.hpp
+@@ -45,6 +45,10 @@ int native_mmvq_b6_rows();
+ // Direct BF16 activation input; same Q8_1 blocks as conversion to FP32 then quantization.
+ // Unlike MMVQ, quantization can process more than eight rows (bounded by INT32_MAX total elements).
+ void native_quantize_bf16_q8_1(const uint16_t* x, void* out, int n_in, int ncols, void* stream);
++// Prompt groups of eight, in one grid. Returns false for unsupported types/layouts.
++// Each output retains the original exact eight-row projection arithmetic.
++bool native_prompt_mmvq(int type, const void* weights, const void* activation, float* out,
++                         int width, int outputs, int rows, void* stream);
+ void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols,
+                           void* stream);
+ 
+diff --git a/src/core/dflash_runtime.cpp b/src/core/dflash_runtime.cpp
+index 4ff19cfa..880c6a21 100644
+--- a/src/core/dflash_runtime.cpp
++++ b/src/core/dflash_runtime.cpp
+@@ -274,6 +274,7 @@ void DFlashDrafter::clear_graphs() {
+ void DFlashDrafter::release() {
+     reference_mode_ = false;
+     context_graphs_ = false;
++    prompt_grid_ = false;
+     if (device_ >= 0) cudaSetDevice(device_);
+     if (cs_) cudaStreamSynchronize(cs_);
+     // Also cover partial execution failures before the normal joins.
+@@ -379,6 +380,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int
+         return false;
+     }
+     DFlashSection::df_stream() = cs_;
++    const char* prompt_grid = std::getenv("STRATA_DFLASH2_PROMPT_GRID");
++    prompt_grid_ = dg.is_dflash2() && prompt_grid && prompt_grid[0] == '1';
+     const char* context_graph = std::getenv("STRATA_DFLASH2_CONTEXT_GRAPH");
+     context_graphs_ = dg.is_dflash2() && context_graph && context_graph[0] == '1';
+     if (std::getenv("STRATA_DF_EVENTS") != nullptr && std::getenv("STRATA_DF_EVENTS")[0] == '1') {
+@@ -897,6 +900,8 @@ bool DFlashDrafter::prompt_fusion_rows(int64_t pos0, int rows, std::string& err)
+     auto matrix = [&](const uint16_t* input, const uint16_t* w, float* output, int width, int outputs) {
+         int type = 30;
+         for (const auto& entry : quant_types_) if (entry.first == w) { type = entry.second; break; }
++        if (prompt_grid_ && type != 30 &&
++            native_prompt_mmvq(type, w, prompt_q8_, output, width, outputs, rows, cs_)) return;
+         // Preserve the original <=8-column projections and reduction order.
+         // Finish this matrix for every input group before reading the next one.
+         for (int r = 0; r < rows; r += 8) {
+@@ -1527,6 +1532,18 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+         const bool head_il = dg.is_dflash2() && !reference && head_il_enabled && !head_ids_ &&
+             native_mmvq_il_supported(head_->type(), head_rows, vocab);
+         void* head_interleaved = xq_ + native_q8_1_bytes((int) N, (int) max_rows_);
++#ifdef STRATA_ENABLE_DFLASH2
++        const char* selector_parallel_env = std::getenv("STRATA_DFLASH2_PARALLEL_SELECTOR");
++        const bool parallel_selector = parallel_projections && selector_parallel_env && selector_parallel_env[0] == '1';
++        // Selector features depend only on the final hidden rows, not on the
++        // vocabulary head. Its branch joins after top-k, before the path walk.
++        if (parallel_selector) {
++            if (!projection_fork(1)) return false;
++            f32_to_bf16_bulk(head_input, xn16_, (int64_t)head_rows * N, projection_streams_[0]);
++            project(xn16_, wp("selector.hidden"), selector_hidden_ + head_begin * dg.selector_rank,
++                    (int)N, (int)dg.selector_rank, head_rows, projection_streams_[0]);
++        }
++#endif
+         {
+             DFlashSection s("out.quantize");
+             if (head_il && head_rows >= 2) {
+@@ -1558,13 +1575,16 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+         }
+ #ifdef STRATA_ENABLE_DFLASH2
+         if (dg.is_dflash2()) {
+-            f32_to_bf16_bulk(head_input, xn16_, (int64_t) head_rows * N, cs_);
+-            project(xn16_, wp("selector.hidden"), selector_hidden_ + head_begin * dg.selector_rank,
+-                    (int) N, (int) dg.selector_rank, head_rows, cs_);
++            if (!parallel_selector) {
++                f32_to_bf16_bulk(head_input, xn16_, (int64_t) head_rows * N, cs_);
++                project(xn16_, wp("selector.hidden"), selector_hidden_ + head_begin * dg.selector_rank,
++                        (int) N, (int) dg.selector_rank, head_rows, cs_);
++            }
+             dflash2_topk(head_output, selector_ids_ + head_begin * dg.selector_top_k,
+                         selector_unary_ + head_begin * dg.selector_top_k,
+                         head_rows, vocab, (int) dg.selector_top_k, cs_, reference ? nullptr : selector_scratch_,
+                         reference ? 0 : dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
++            if (parallel_selector && !projection_join(1)) return false;
+             dflash2_select_bf16(selector_ids_, selector_unary_, selector_hidden_, wp("selector.predecessor"),
+                            wp("selector.successor"), tok_, out_, probs ? (float*) (out_ + max_rows_) : nullptr,
+                            K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference,
+diff --git a/src/kernels/cuda/dflash2_extension.cu b/src/kernels/cuda/dflash2_extension.cu
+index 82d7ae15..751c31bf 100644
+--- a/src/kernels/cuda/dflash2_extension.cu
++++ b/src/kernels/cuda/dflash2_extension.cu
+@@ -142,6 +142,7 @@ __global__ void topk_register_kernel(const float* logits, int32_t* ids, float* u
+         __syncthreads();
+     }
+ }
++template<bool WarpReduce = false>
+ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candidates, int32_t* ids, float* unary,
+                                     int vocab, int top_k, int tile_width, int tiles) {
+     const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
+@@ -152,6 +153,8 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
+     const int begin = tile * tile_width, end = begin + min(vocab - begin, tile_width);
+     __shared__ float score[256];
+     __shared__ int token[256];
++    __shared__ float winner_score;
++    __shared__ int winner_id;
+     float upper = INFINITY;
+     int upper_id = -1;
+     for (int k = 0; k < top_k; ++k) {
+@@ -163,6 +166,34 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
+             if (candidate < 0 || !isfinite(v) || v > upper || (v == upper && candidate <= upper_id)) continue;
+             if (id < 0 || v > best || (v == best && candidate < id)) { best = v; id = candidate; }
+         }
++        if constexpr (WarpReduce) {
++            for (int offset = 16; offset; offset >>= 1) {
++                const float value = __shfl_down_sync(0xffffffffu, best, offset);
++                const int other = __shfl_down_sync(0xffffffffu, id, offset);
++                if (other >= 0 && (id < 0 || value > best || (value == best && other < id))) {
++                    best = value; id = other;
++                }
++            }
++            if ((t & 31) == 0) { score[t / 32] = best; token[t / 32] = id; }
++            __syncthreads();
++            if (t < 32) {
++                best = t < 8 ? score[t] : -INFINITY;
++                id = t < 8 ? token[t] : -1;
++                for (int offset = 16; offset; offset >>= 1) {
++                    const float value = __shfl_down_sync(0xffffffffu, best, offset);
++                    const int other = __shfl_down_sync(0xffffffffu, id, offset);
++                    if (other >= 0 && (id < 0 || value > best || (value == best && other < id))) {
++                        best = value; id = other;
++                    }
++                }
++                if (!t) { winner_score = best; winner_id = id; }
++            }
++            __syncthreads();
++            // Separate winner storage is not overwritten by the next warp
++            // reduction. Its first barrier protects every reader of this winner.
++            upper = winner_score; upper_id = winner_id;
++            if (!t) { ids[k] = upper_id; unary[k] = upper; }
++        } else {
+         score[t] = best; token[t] = id;
+         __syncthreads();
+         for (int offset = 128; offset; offset >>= 1) {
+@@ -179,6 +210,53 @@ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candida
+         upper = score[0]; upper_id = token[0];
+         if (!t) { ids[k] = upper_id; unary[k] = upper; }
+         __syncthreads();
++        }
++    }
++}
++// Each vocabulary tile supplies a sorted list. Only its head can be the next
++// global winner, so keep two list heads per lane instead of rescanning all K.
++__global__ void topk_merge_heads(const int32_t* candidates, const float* scores,
++                                 int32_t* ids, float* unary, int tiles, int top_k) {
++    const int row = blockIdx.x, lane = threadIdx.x;
++    int cursor[2] = {}, head[2];
++    float value[2];
++#pragma unroll
++    for (int part = 0; part < 2; ++part) {
++        const int tile = lane + part * 32;
++        const size_t at = ((size_t)row * tiles + tile) * top_k;
++        head[part] = tile < tiles ? candidates[at] : -1;
++        value[part] = tile < tiles ? scores[at] : -INFINITY;
++    }
++    for (int k = 0; k < top_k; ++k) {
++        int id = -1;
++        float best = -INFINITY;
++#pragma unroll
++        for (int part = 0; part < 2; ++part) {
++            const int other = head[part]; const float score = value[part];
++            if (other >= 0 && isfinite(score) && (id < 0 || score > best || (score == best && other < id))) {
++                best = score; id = other;
++            }
++        }
++        for (int offset = 16; offset; offset >>= 1) {
++            const float score = __shfl_down_sync(0xffffffffu,best,offset);
++            const int other = __shfl_down_sync(0xffffffffu,id,offset);
++            if (other >= 0 && (id < 0 || score > best || (score == best && other < id))) {
++                best = score; id = other;
++            }
++        }
++        best = __shfl_sync(0xffffffffu,best,0);
++        id = __shfl_sync(0xffffffffu,id,0);
++        if (!lane) { ids[(size_t)row*top_k+k]=id; unary[(size_t)row*top_k+k]=best; }
++#pragma unroll
++        for (int part = 0; part < 2; ++part) {
++            if (id >= 0 && head[part] == id) {
++                ++cursor[part];
++                const int tile = lane + part * 32;
++                const size_t at = ((size_t)row * tiles + tile) * top_k + cursor[part];
++                head[part] = cursor[part] < top_k ? candidates[at] : -1;
++                value[part] = cursor[part] < top_k ? scores[at] : -INFINITY;
++            }
++        }
+     }
+ }
+ __device__ float codebook_value(const float* p, size_t i) { return p[i]; }
+@@ -372,6 +450,19 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
+         const char* value = std::getenv("STRATA_DFLASH2_TILED_TOPK");
+         return !value || value[0] != '0';
+     }();
++    static const bool warp_reduce = [] {
++        const char* value = std::getenv("STRATA_DFLASH2_WARP_TOPK");
++        return value && value[0] == '1';
++    }();
++    auto parallel = [&](const float* source, const int32_t* candidates, int32_t* output_ids,
++                        float* output_scores, int width, int tile_width, int tiles, dim3 grid) {
++        if (warp_reduce)
++            topk_parallel_kernel<true><<<grid,256,0,(cudaStream_t)stream>>>(
++                source,candidates,output_ids,output_scores,width,top_k,tile_width,tiles);
++        else
++            topk_parallel_kernel<false><<<grid,256,0,(cudaStream_t)stream>>>(
++                source,candidates,output_ids,output_scores,width,top_k,tile_width,tiles);
++    };
+     if (serial) topk_kernel<<<rows, 1, 0, (cudaStream_t) stream>>>(logits, ids, unary, vocab, top_k);
+     else if (tiled && scratch && vocab > kTopkTile && rows <= 65535 &&
+              (vocab + kTopkTile - 1LL) / kTopkTile <= 65535) {
+@@ -386,12 +477,15 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
+             topk_register_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
+                 logits, local_ids, local_scores, vocab, top_k, tiles);
+         else
+-            topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
+-                logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
+-        topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
+-            local_scores, local_ids, ids, unary, tiles * top_k, top_k, tiles * top_k, 1);
+-    } else topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
+-        logits, nullptr, ids, unary, vocab, top_k, vocab, 1);
++            parallel(logits,nullptr,local_ids,local_scores,vocab,kTopkTile,tiles,dim3(rows,tiles));
++        static const bool merge_heads = [] {
++            const char* value = std::getenv("STRATA_DFLASH2_MERGE_TOPK");
++            return value && value[0] == '1';
++        }();
++        if (merge_heads && tiles <= 64)
++            topk_merge_heads<<<rows,32,0,(cudaStream_t)stream>>>(local_ids,local_scores,ids,unary,tiles,top_k);
++        else parallel(local_scores,local_ids,ids,unary,tiles*top_k,tiles*top_k,1,dim3(rows));
++    } else parallel(logits,nullptr,ids,unary,vocab,vocab,1,dim3(rows));
+ }
+ void dflash2_select(const int32_t* ids, const float* unary, const float* hidden,
+                     const float* prev, const float* next, const int32_t* anchor,
+@@ -502,6 +596,67 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
+     else dst[t] = acc;
+     if (!t) { dst[128] = m; dst[129] = sum; }
+ }
++// Four query heads share one KV head. Stage the key tile once for
++// those heads; each head keeps the original QK and ordered PV arithmetic.
++template<int PageShift>
++__global__ void attention128_shared_gqa(const float* q, const uint16_t* k, const uint16_t* v,
++                                        const int32_t* table, const int32_t* steps, float* scratch,
++                                        int rows, int chunks, int window) {
++    constexpr int Heads=32,KV=8,HD=128;
++    const int chunk=blockIdx.x,kv_head=blockIdx.y,row=blockIdx.z;
++    const int t=threadIdx.x,local=t%64,group=t/64,head=kv_head*4+group;
++    const int lane=local&31,warp=local/32;
++    const int end=steps[row*4+1],position=end-rows+row;
++    const int first=window?max(0,end-rows-window+1):0;
++    const int begin=first+chunk*64;
++    __shared__ uint16_t keys[32*HD];
++    __shared__ size_t poolrows[64];
++    __shared__ float scores[4][64],probabilities[4][64];
++    for(int tile=0;tile<64;tile+=32) {
++    for(int i=t;i<32*HD;i+=4*64) {
++        const int cell=begin+tile+i/HD,d=i%HD;
++        const bool visible=cell<end&&(!window||abs(cell-position)<window);
++        uint16_t key=0;
++        size_t poolrow=0;
++        if(visible) {
++            poolrow=((size_t)table[cell>>PageShift]*KV+kv_head)*(1<<PageShift)+
++                                  (cell&((1<<PageShift)-1));
++            key=k[poolrow*HD+d];
++        }
++        keys[i]=key;
++        if(!d)poolrows[tile+i/HD]=poolrow;
++    }
++    __syncthreads();
++    for(int c=tile+warp;c<tile+32;c+=2) {
++        const int cell=begin+c;
++        const bool visible=cell<end&&(!window||abs(cell-position)<window);
++        float dot=0;
++        if(visible) {
++            for(int d=lane;d<HD;d+=32)
++                dot+=q[(row*Heads+head)*HD+d]*__half2float(__ushort_as_half(keys[(c-tile)*HD+d]));
++            for(int offset=16;offset;offset>>=1)dot+=__shfl_xor_sync(0xffffffffu,dot,offset);
++        }
++        if(!lane)scores[group][c]=visible?dot*0.08838834764831845f:-INFINITY;
++    }
++    __syncthreads();
++    }
++    float maximum=-INFINITY;
++    for(int c=0;c<64;++c)maximum=fmaxf(maximum,scores[group][c]);
++    if(local<64&&scores[group][local]!=-INFINITY)
++        probabilities[group][local]=expf(scores[group][local]-maximum);
++    __syncthreads();
++    float sum=0,acc=0,acc1=0;
++    for(int c=0;c<64;++c) {
++        if(scores[group][c]==-INFINITY)continue;
++        const float probability=probabilities[group][c];
++        sum+=probability;
++        const float2 value=__half22float2(reinterpret_cast<const __half2*>(v+poolrows[c]*HD)[local]);
++        acc+=probability*value.x;acc1+=probability*value.y;
++    }
++    float* destination=scratch+((row*Heads+head)*chunks+chunk)*130;
++    destination[2*local]=acc;destination[2*local+1]=acc1;
++    if(!local){destination[128]=maximum;destination[129]=sum;}
++}
+ __global__ void attention128_merge(const float* scratch, float* out, int chunks) {
+     const int h = blockIdx.x, d = threadIdx.x;
+     const float* src = scratch + h * chunks * 130;
+@@ -536,10 +691,20 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
+         const char* value = std::getenv("STRATA_DFLASH2_SMALL_PAGE_ATTENTION");
+         return value && value[0] == '1';
+     }();
++    static const bool shared_gqa = [] {
++        const char* value=std::getenv("STRATA_DFLASH2_SHARED_GQA");
++        return value&&value[0]=='1';
++    }();
+     // The official geometry uses power-of-two pages and four Q heads per KV
+     // head. Its addresses need shifts, not runtime integer divisions. Other
+     // geometries keep the general indexing path.
+-    if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
++    if (shared_gqa && heads==32 && kv_heads==8 && active_cells>=512 && (page_size==4||page_size==64) &&
++        reinterpret_cast<std::uintptr_t>(v)%alignof(__half2)==0) {
++        if(page_size==4)attention128_shared_gqa<2><<<dim3(chunks,8,rows),256,0,(cudaStream_t)stream>>>(
++            q,k,v,table,steps,scratch,rows,chunks,window);
++        else attention128_shared_gqa<6><<<dim3(chunks,8,rows),256,0,(cudaStream_t)stream>>>(
++            q,k,v,table,steps,scratch,rows,chunks,window);
++    } else if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
+         if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
+             attention128_kernel<true, true, 2><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+         else
+diff --git a/src/kernels/cuda/native_mmvq.cu b/src/kernels/cuda/native_mmvq.cu
+index d87acf5f..28793aab 100644
+--- a/src/kernels/cuda/native_mmvq.cu
++++ b/src/kernels/cuda/native_mmvq.cu
+@@ -1172,7 +1172,7 @@ static bool s26_tsum_on() {
+ 
+ // S26 STRATA_LFUSE (PAIR): blocks n_out.. compute the same rows of w2 into y2 (two matrices of one shape on one
+ // input in one launch; each output's code is the single matrix's)
+-template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false, bool INDEXED = false>
++template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false, bool INDEXED = false, bool PROMPT = false>
+ __launch_bounds__(NW * WARP, (ROWS <= 2 ? 4 : 1))
+ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w, const Q81Block* x_, float* y_,
+                                          int n_in, int n_out,
+@@ -1181,6 +1181,13 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
+     const Q81Block* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
+     float* STRATA_PDL_RESTRICT y = y_;
+ 
++    if constexpr (PROMPT) {
++        // Each y tile is the original NCOLS-row invocation, with the same
++        // dot products and reductions. Only scheduling across groups changes.
++        x += std::size_t(blockIdx.y) * NCOLS * (n_in / Q8K);
++        y += std::size_t(blockIdx.y) * NCOLS * n_out;
++    }
++
+     constexpr int BPI = F::BPI * NW / WARPS;           // blocks per iteration scale with the warp count
+     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
+     int bxi = int(blockIdx.x);
+@@ -2941,6 +2948,43 @@ void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
+     small_mmvq<Q80Block, 8>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
+ }
+ 
++namespace {
++template<typename F>
++void prompt_mmvq_launch(const void* weights, const void* activation, float* out,
++                         int width, int outputs, int rows, cudaStream_t stream) {
++    constexpr int NC = 8;
++    const dim3 grid((unsigned(outputs) + 1) / 2, unsigned(rows / NC));
++    launch_pdl(native_mmvq_multi_kernel<F, NC, WARPS, 2, false, false, false, true>,
++               grid, dim3(WARP, WARPS), 0, stream,
++               (const typename F::Block*)weights, (const Q81Block*)activation, out,
++               width, outputs, (const typename F::Block*)nullptr, (float*)nullptr, (const int32_t*)nullptr);
++}
++}
++bool native_prompt_mmvq(int type, const void* weights, const void* activation, float* out,
++                         int width, int outputs, int rows, void* stream) {
++#if defined(STRATA_HIP_GFX906)
++    // gfx906 uses the separate wave64 dispatch; retain that layout.
++    return false;
++#else
++    if (!g_multi_exact || rows < 16 || rows > 512 || outputs < 1 ||
++        (type != 2 && type != 6 && type != 8)) return false;
++    validate_shape(width, 8);
++    validate_pointer(weights); validate_pointer(activation); validate_pointer(out); validate_stream(stream);
++    const auto cuda_stream = static_cast<cudaStream_t>(stream);
++    switch (type) {
++    case 2: prompt_mmvq_launch<SmallTraits<Q40Block,4>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
++    case 6: prompt_mmvq_launch<SmallTraits<Q50Block,4>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
++    case 8: prompt_mmvq_launch<SmallTraits<Q80Block,8>>(weights,activation,out,width,outputs,rows,cuda_stream); break;
++    }
++    launch_check();
++    const int complete = rows / 8 * 8;
++    if (complete < rows)
++        native_mmvq(type, weights, (const uint8_t*)activation + std::size_t(complete) * (width / 32) * 36,
++                    out + std::size_t(complete) * outputs, width, outputs, rows - complete, stream);
++    return true;
++#endif
++}
++
+ void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,
+                       float* y, int n_in, int n_out, int ncols, void* stream) {
+     small_f32<Q80Block, 8>(weights, x, scratch_q8_1, y, n_in, n_out, ncols, stream);
+diff --git a/src/kernels/dflash2_parity.cpp b/src/kernels/dflash2_parity.cpp
+index 54619dad..afed52a9 100644
+--- a/src/kernels/dflash2_parity.cpp
++++ b/src/kernels/dflash2_parity.cpp
+@@ -87,6 +87,42 @@ void direct_bf16_quantization(bool timing) {
+     }
+     checked(cudaStreamDestroy(stream));
+ }
++void prompt_projection_grid() {
++    using namespace strata::kernels;
++    cudaStream_t stream;
++    checked(cudaStreamCreate(&stream));
++    for (int type : {2,6,8}) for (int width : {96,2560,7680}) {
++        const int outputs = width == 7680 ? 2560 : 257;
++        const int block_bytes = type == 2 ? 18 : type == 6 ? 22 : 34;
++        std::vector<uint8_t> weights((size_t)(width / 32) * outputs * block_bytes);
++        for (size_t b = 0; b < weights.size() / block_bytes; ++b) {
++            const uint16_t scale = __half_as_ushort(__float2half(((int)(b % 19) - 9) * 0.015625f));
++            std::memcpy(weights.data() + b * block_bytes, &scale, 2);
++            for (int j = 2; j < block_bytes; ++j)
++                weights[b * block_bytes + j] = (uint8_t)(b * 17 + j * 23);
++        }
++        Device<uint8_t> w(weights);
++        for (int rows : {16,17,64,129,512}) {
++            std::vector<uint16_t> features((size_t)width * rows);
++            for (size_t j = 0; j < features.size(); ++j)
++                features[j] = bf16_from_f32(((int)(j % 109) - 54) * 0.03125f);
++            Device<uint16_t> x(features);
++            Device<uint8_t> q8((size_t)rows * (width / 32) * 36);
++            Device<float> expected((size_t)rows * outputs), got((size_t)rows * outputs);
++            native_quantize_bf16_q8_1(x.p,q8.p,width,rows,stream);
++            for (int row = 0; row < rows; row += 8)
++                native_mmvq(type,w.p,q8.p + (size_t)row * (width / 32) * 36,
++                            expected.p + (size_t)row * outputs,width,outputs,std::min(8,rows-row),stream);
++            if (!native_prompt_mmvq(type,w.p,q8.p,got.p,width,outputs,rows,stream))
++                throw std::runtime_error("prompt grid unexpectedly declined supported geometry");
++            checked(cudaStreamSynchronize(stream));
++            const auto a=expected.read((size_t)rows*outputs), b=got.read((size_t)rows*outputs);
++            if (std::memcmp(a.data(),b.data(),a.size()*sizeof(float)))
++                throw std::runtime_error("prompt grid changed projection bits");
++        }
++    }
++    checked(cudaStreamDestroy(stream));
++}
+ void bf16_projection_tiles(bool timing) {
+     using namespace strata::kernels;
+     cudaStream_t stream;
+@@ -516,9 +552,36 @@ void full_vocabulary_topk(bool timing) {
+     }
+ }
+ 
+-void topk_tile_edges() {
++void topk_graph_benchmark() {
+     using namespace strata::kernels;
+-    for (int rows : {1,3,7}) for (int vocab : {4095,4096,4097,8193}) for (int top : {1,16,64}) {
++    constexpr int rows=7,vocab=248320,top=16,replays=200,calls=10;
++    std::vector<float> logits((size_t)rows*vocab);
++    for (size_t i=0;i<logits.size();++i) logits[i]=((int)((i*73)%10007)-5003)*0.0625f;
++    Device<float> input(logits),unary(rows*top);Device<int32_t> ids(rows*top);
++    Device<uint8_t> scratch(dflash2_topk_scratch_bytes(rows,vocab,top));
++    cudaStream_t stream;checked(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
++    checked(cudaDeviceSynchronize());
++    cudaGraph_t graph=nullptr;cudaGraphExec_t exec=nullptr;
++    checked(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
++    for(int i=0;i<calls;++i) dflash2_topk(input.p,ids.p,unary.p,rows,vocab,top,stream,scratch.p,
++                                         dflash2_topk_scratch_bytes(rows,vocab,top));
++    checked(cudaStreamEndCapture(stream,&graph));checked(cudaGraphInstantiate(&exec,graph,0));
++    for(int i=0;i<20;++i)checked(cudaGraphLaunch(exec,stream));
++    cudaEvent_t a,b;checked(cudaEventCreate(&a));checked(cudaEventCreate(&b));
++    for(int rep=0;rep<8;++rep) {
++        checked(cudaEventRecord(a,stream));
++        for(int i=0;i<replays;++i)checked(cudaGraphLaunch(exec,stream));
++        checked(cudaEventRecord(b,stream));checked(cudaEventSynchronize(b));float ms;
++        checked(cudaEventElapsedTime(&ms,a,b));
++        std::printf("TOPK_GRAPH rows=%d vocab=%d k=%d rep=%d ms=%.9f\n",rows,vocab,top,rep,ms/(replays*calls));
++    }
++    checked(cudaEventDestroy(a));checked(cudaEventDestroy(b));
++    checked(cudaGraphExecDestroy(exec));checked(cudaGraphDestroy(graph));checked(cudaStreamDestroy(stream));
++}
++void topk_tile_edges(bool compact = false) {
++    using namespace strata::kernels;
++    for (int rows : {1,3,7}) for (int vocab : {4095,4096,4097,8193,262144,262145}) for (int top : {1,16,64}) {
++        if (compact && (rows != 3 || (vocab != 4097 && vocab != 262144) || top != 16)) continue;
+         std::vector<float> logits(rows*vocab);
+         for (size_t i=0;i<logits.size();++i) logits[i]=(int)(i%97)-48;
+         // All-invalid rows, fewer finite values than K, exact ties (including
+@@ -584,7 +647,23 @@ int main(int argc, char** argv) {
+     int devices = 0;
+     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
+-    try { direct_bf16_quantization(timing); bf16_projection_tiles(timing); invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
++    if (argc > 1 && std::strcmp(argv[1], "--attention-bench") == 0) {
++        try { target_features_and_attention(); invalid_model_values(); attention_benchmark(argc>2?argv[2]:nullptr); checked(cudaDeviceSynchronize()); }
++        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
++        std::puts("PASS: attention geometry and FP64 oracle"); return 0;
++    }
++    if (argc > 1 && std::strcmp(argv[1], "--topk-smoke") == 0) {
++        try { topk_tile_edges(true); checked(cudaDeviceSynchronize()); }
++        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
++        std::puts("PASS: compact top-k edge checks"); return 0;
++    }
++    if (argc > 1 && std::strcmp(argv[1], "--topk-bench") == 0) {
++        try { topk_tile_edges(); full_vocabulary_topk(false); topk_graph_benchmark(); checked(cudaDeviceSynchronize()); }
++        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
++        std::puts("PASS: top-k edges and full-vocabulary CPU oracle");
++        return 0;
++    }
++    try { prompt_projection_grid(); direct_bf16_quantization(timing); bf16_projection_tiles(timing); invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
+     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
+     return 0;
+diff --git a/tests/core/dflash_prompt_fusion_parity.cpp b/tests/core/dflash_prompt_fusion_parity.cpp
+index f55f5acf..fd5f711b 100644
+--- a/tests/core/dflash_prompt_fusion_parity.cpp
++++ b/tests/core/dflash_prompt_fusion_parity.cpp
+@@ -95,14 +95,17 @@ int main(int argc, char** argv) {
+         flag("STRATA_DF_PARITY", nullptr); flag("STRATA_DF_DBG", nullptr); flag("STRATA_DF_EVENTS", nullptr);
+         flag("STRATA_DFLASH2_CONTEXT_GRAPH", "0"); flag("STRATA_DFLASH2_DIRECT_QUANT", "0");
+         flag("STRATA_DFLASH2_BF16_TILE", "0");
+-        bool graphs = true, distant = false, timing = false, context_only = false;
++        bool graphs = true, distant = false, timing = false, context_only = false, grid = false;
+         for (int i = 2; i < argc; ++i) {
+             if (std::string(argv[i]) == "--no-graphs") graphs = false;
+             else if (std::string(argv[i]) == "--long") distant = true;
+             else if (std::string(argv[i]) == "--bench") timing = true;
+             else if (std::string(argv[i]) == "--context-only") context_only = true;
+-            else throw std::runtime_error("expected --no-graphs, --long, --bench or --context-only");
++            else if (std::string(argv[i]) == "--grid") grid = true;
++            else throw std::runtime_error("expected --no-graphs, --long, --bench, --context-only or --grid");
+         }
++        if (grid && context_only) throw std::runtime_error("choose --grid or --context-only");
++        flag("STRATA_DFLASH2_PROMPT_GRID", "0");
+         flag("STRATA_DFLASH_GRAPH", graphs ? "1" : "0");
+         const int64_t capacity = distant ? 327680 : 16384;
+         ModelGeometry geometry;
+@@ -113,12 +116,13 @@ int main(int argc, char** argv) {
+         std::string error;
+         if (!before.load(argv[1], error) || !after.load(argv[1], error)) throw std::runtime_error(error);
+         if (!before.artifact().geom().is_dflash2()) throw std::runtime_error("expected a DFlash2 artifact");
+-        flag("STRATA_DFLASH2_PROMPT_BATCH", "0");
++        flag("STRATA_DFLASH2_PROMPT_BATCH", grid ? "1" : "0");
+         if (!before.upload(geometry, session, 0, capacity, -1, error)) throw std::runtime_error(error);
+         flag("STRATA_DFLASH2_PROMPT_BATCH", context_only ? "0" : "1");
+         flag("STRATA_DFLASH2_CONTEXT_GRAPH", context_only ? "1" : "0");
++        flag("STRATA_DFLASH2_PROMPT_GRID", grid ? "1" : "0");
+         if (!after.upload(geometry, session, 0, capacity, -1, error)) throw std::runtime_error(error);
+-        if (!context_only && after.vram_bytes() <= before.vram_bytes())
++        if (!context_only && !grid && after.vram_bytes() <= before.vram_bytes())
+             throw std::runtime_error("prompt batching was not enabled in the candidate");
+         const auto& dg = before.artifact().geom();
+         int64_t position = 0;
+@@ -156,7 +160,7 @@ int main(int argc, char** argv) {
+             const int cap = strata::spec::dflash_prompt_batch_rows(std::min(capacity, physical_cells));
+             for (int rows : {64,128,256,512}) expected_graphs += rows <= cap;
+         }
+-        if (before.context_graph_count() != 0 || after.context_graph_count() != expected_graphs)
++        if (before.context_graph_count() != (grid ? expected_graphs : 0) || after.context_graph_count() != expected_graphs)
+             throw std::runtime_error("context graph capture silently fell back or used an unexpected cache key");
+         std::printf("context graphs: original=%d candidate=%d\n", before.context_graph_count(), after.context_graph_count());
+         if (timing) {

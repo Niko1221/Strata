@@ -1,0 +1,146 @@
+[
+  {
+    "tokens": 1,
+    "rep": 0,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 99.7 ms for 1536 experts -> 42.6 GB/s, 714.1 us/expert/thread\n"
+  },
+  {
+    "tokens": 1,
+    "rep": 1,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 99.9 ms for 1536 experts -> 42.5 GB/s, 715.6 us/expert/thread\n"
+  },
+  {
+    "tokens": 1,
+    "rep": 2,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 98.3 ms for 1536 experts -> 43.2 GB/s, 703.9 us/expert/thread\n"
+  },
+  {
+    "tokens": 1,
+    "rep": 3,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 97.0 ms for 1536 experts -> 43.8 GB/s, 694.6 us/expert/thread\n"
+  },
+  {
+    "tokens": 1,
+    "rep": 4,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 98.5 ms for 1536 experts -> 43.1 GB/s, 705.7 us/expert/thread\n"
+  },
+  {
+    "tokens": 1,
+    "rep": 5,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 1  prefetch 2048: 98.8 ms for 1536 experts -> 43.0 GB/s, 707.9 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 0,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 99.0 ms for 1536 experts -> 42.9 GB/s, 709.0 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 1,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 99.4 ms for 1536 experts -> 42.7 GB/s, 711.9 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 2,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 98.3 ms for 1536 experts -> 43.2 GB/s, 703.8 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 3,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 98.4 ms for 1536 experts -> 43.2 GB/s, 704.4 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 4,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 99.1 ms for 1536 experts -> 42.8 GB/s, 709.8 us/expert/thread\n"
+  },
+  {
+    "tokens": 2,
+    "rep": 5,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 2  prefetch 2048: 101.2 ms for 1536 experts -> 42.0 GB/s, 724.7 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 0,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 102.6 ms for 1536 experts -> 41.4 GB/s, 734.6 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 1,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 101.3 ms for 1536 experts -> 41.9 GB/s, 725.4 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 2,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 102.6 ms for 1536 experts -> 41.4 GB/s, 735.0 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 3,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 99.6 ms for 1536 experts -> 42.7 GB/s, 713.0 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 4,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 104.7 ms for 1536 experts -> 40.6 GB/s, 750.0 us/expert/thread\n"
+  },
+  {
+    "tokens": 4,
+    "rep": 5,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 4  prefetch 2048: 103.8 ms for 1536 experts -> 40.9 GB/s, 743.4 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 0,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 142.4 ms for 1536 experts -> 29.8 GB/s, 1019.4 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 1,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 142.1 ms for 1536 experts -> 29.9 GB/s, 1017.9 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 2,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 141.1 ms for 1536 experts -> 30.1 GB/s, 1010.2 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 3,
+    "kind": "nta",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 141.5 ms for 1536 experts -> 30.0 GB/s, 1013.1 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 4,
+    "kind": "l2",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 142.0 ms for 1536 experts -> 29.9 GB/s, 1016.7 us/expert/thread\n"
+  },
+  {
+    "tokens": 8,
+    "rep": 5,
+    "kind": "baseline",
+    "output": "avx2  threads 11  tokens 8  prefetch 2048: 144.0 ms for 1536 experts -> 29.5 GB/s, 1031.1 us/expert/thread\n"
+  }
+]

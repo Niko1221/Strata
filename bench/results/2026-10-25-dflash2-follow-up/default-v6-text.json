@@ -1,0 +1,35 @@
+{
+  "architecture": "sm_89",
+  "executables": {
+    "baseline_native": {
+      "name": "strata-prompt-batch-v2",
+      "sha256": "0a3d3a5e9a1ff75947533de2df2429b8f9ea6ea67b2d8ae9e043432b74047520"
+    },
+    "baseline_topk": {
+      "name": "strata-grid-selector-v3",
+      "sha256": "8dff202104269a2ecc92eb0486990bb7b8b0554c52fcbc169e74364ed0f80744"
+    },
+    "candidate": {
+      "name": "strata-production-v6",
+      "sha256": "b45f954e3f2a96cdb61869a5c73fa9170c0f22b9b7c0258a25a64133954ff487"
+    }
+  },
+  "kernels": {
+    "native_mmvq_multi_kernel": {
+      "baseline_functions": 414,
+      "candidate_functions": 414,
+      "missing": [],
+      "different": [],
+      "identical_functions": 414,
+      "identical_bytes": 5528960
+    },
+    "topk_parallel_kernel": {
+      "baseline_functions": 1,
+      "candidate_functions": 1,
+      "missing": [],
+      "different": [],
+      "identical_functions": 1,
+      "identical_bytes": 9856
+    }
+  }
+}

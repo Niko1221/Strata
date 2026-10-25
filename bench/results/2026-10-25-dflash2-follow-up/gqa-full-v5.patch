@@ -1,0 +1,99 @@
+--- a/src/kernels/cuda/dflash2_extension.cu
++++ b/src/kernels/cuda/dflash2_extension.cu
+@@ -596,6 +596,61 @@
+     else dst[t] = acc;
+     if (!t) { dst[128] = m; dst[129] = sum; }
+ }
++// Four query heads share one KV head. Stage each key/value tile once for
++// those heads; each head keeps the original QK and ordered PV arithmetic.
++template<int PageShift>
++__global__ void attention128_shared_gqa(const float* q, const uint16_t* k, const uint16_t* v,
++                                        const int32_t* table, const int32_t* steps, float* scratch,
++                                        int rows, int chunks, int window) {
++    constexpr int Heads=32,KV=8,HD=128;
++    const int chunk=blockIdx.x,kv_head=blockIdx.y,row=blockIdx.z;
++    const int t=threadIdx.x,local=t%HD,group=t/HD,head=kv_head*4+group;
++    const int lane=local&31,warp=local/32;
++    const int end=steps[row*4+1],position=end-rows+row;
++    const int first=window?max(0,end-rows-window+1):0;
++    const int begin=first+chunk*64;
++    __shared__ uint16_t keys[64*HD],values[64*HD];
++    __shared__ float scores[4][64],probabilities[4][64];
++    for(int i=t;i<64*HD;i+=4*HD) {
++        const int cell=begin+i/HD,d=i%HD;
++        const bool visible=cell<end&&(!window||abs(cell-position)<window);
++        uint16_t key=0,value=0;
++        if(visible) {
++            const size_t poolrow=((size_t)table[cell>>PageShift]*KV+kv_head)*(1<<PageShift)+
++                                  (cell&((1<<PageShift)-1));
++            key=k[poolrow*HD+d];value=v[poolrow*HD+d];
++        }
++        keys[i]=key;values[i]=value;
++    }
++    __syncthreads();
++    for(int c=warp;c<64;c+=4) {
++        const int cell=begin+c;
++        const bool visible=cell<end&&(!window||abs(cell-position)<window);
++        float dot=0;
++        if(visible) {
++            for(int d=lane;d<HD;d+=32)
++                dot+=q[(row*Heads+head)*HD+d]*__half2float(__ushort_as_half(keys[c*HD+d]));
++            for(int offset=16;offset;offset>>=1)dot+=__shfl_xor_sync(0xffffffffu,dot,offset);
++        }
++        if(!lane)scores[group][c]=visible?dot*0.08838834764831845f:-INFINITY;
++    }
++    __syncthreads();
++    float maximum=-INFINITY;
++    for(int c=0;c<64;++c)maximum=fmaxf(maximum,scores[group][c]);
++    if(local<64&&scores[group][local]!=-INFINITY)
++        probabilities[group][local]=expf(scores[group][local]-maximum);
++    __syncthreads();
++    float sum=0,acc=0;
++    for(int c=0;c<64;++c) {
++        if(scores[group][c]==-INFINITY)continue;
++        const float probability=probabilities[group][c];
++        sum+=probability;
++        acc+=probability*__half2float(__ushort_as_half(values[c*HD+local]));
++    }
++    float* destination=scratch+((row*Heads+head)*chunks+chunk)*130;
++    destination[local]=acc;
++    if(!local){destination[128]=maximum;destination[129]=sum;}
++}
+ __global__ void attention128_merge(const float* scratch, float* out, int chunks) {
+     const int h = blockIdx.x, d = threadIdx.x;
+     const float* src = scratch + h * chunks * 130;
+@@ -630,10 +685,19 @@
+         const char* value = std::getenv("STRATA_DFLASH2_SMALL_PAGE_ATTENTION");
+         return value && value[0] == '1';
+     }();
++    static const bool shared_gqa = [] {
++        const char* value=std::getenv("STRATA_DFLASH2_SHARED_GQA");
++        return value&&value[0]=='1';
++    }();
+     // The official geometry uses power-of-two pages and four Q heads per KV
+     // head. Its addresses need shifts, not runtime integer divisions. Other
+     // geometries keep the general indexing path.
+-    if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
++    if (shared_gqa && heads==32 && kv_heads==8 && active_cells>=512 && (page_size==4||page_size==64)) {
++        if(page_size==4)attention128_shared_gqa<2><<<dim3(chunks,8,rows),512,0,(cudaStream_t)stream>>>(
++            q,k,v,table,steps,scratch,rows,chunks,window);
++        else attention128_shared_gqa<6><<<dim3(chunks,8,rows),512,0,(cudaStream_t)stream>>>(
++            q,k,v,table,steps,scratch,rows,chunks,window);
++    } else if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
+         if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
+             attention128_kernel<true, true, 2><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+         else
+--- a/src/kernels/dflash2_parity.cpp
++++ b/src/kernels/dflash2_parity.cpp
+@@ -647,6 +647,11 @@
+     int devices = 0;
+     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
++    if (argc > 1 && std::strcmp(argv[1], "--attention-bench") == 0) {
++        try { target_features_and_attention(); invalid_model_values(); attention_benchmark(argc>2?argv[2]:nullptr); checked(cudaDeviceSynchronize()); }
++        catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
++        std::puts("PASS: attention geometry and FP64 oracle"); return 0;
++    }
+     if (argc > 1 && std::strcmp(argv[1], "--topk-smoke") == 0) {
+         try { topk_tile_edges(true); checked(cudaDeviceSynchronize()); }
+         catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

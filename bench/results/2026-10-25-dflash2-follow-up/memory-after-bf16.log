@@ -1,0 +1,2 @@
+dflash2: prompt context groups up to 512 rows, matrix-major projections
+ACCOUNTED_VRAM before=1267937760 after=1288933856 delta=20996096

@@ -1,0 +1,24 @@
+dflash2: prompt context groups up to 512 rows, matrix-major projections
+ACCOUNTED_VRAM before=666350560 after=694719456 delta=28368896
+prompt fusion pos=0 rows=1: all five KV layers bit-identical
+prompt fusion pos=1 rows=7: all five KV layers bit-identical
+prompt fusion pos=8 rows=8: all five KV layers bit-identical
+prompt fusion pos=16 rows=9: all five KV layers bit-identical
+prompt fusion pos=25 rows=63: all five KV layers bit-identical
+prompt fusion pos=88 rows=64: all five KV layers bit-identical
+prompt fusion pos=152 rows=65: all five KV layers bit-identical
+prompt fusion pos=217 rows=127: all five KV layers bit-identical
+prompt fusion pos=344 rows=128: all five KV layers bit-identical
+prompt fusion pos=472 rows=129: all five KV layers bit-identical
+prompt fusion pos=601 rows=255: all five KV layers bit-identical
+prompt fusion pos=856 rows=256: all five KV layers bit-identical
+prompt fusion pos=1112 rows=257: all five KV layers bit-identical
+prompt fusion pos=1369 rows=511: all five KV layers bit-identical
+prompt fusion pos=1880 rows=512: all five KV layers bit-identical
+prompt fusion pos=2392 rows=513: all five KV layers bit-identical
+prompt fusion pos=2905 rows=1024: all five KV layers bit-identical
+prompt fusion pos=3929 rows=2049: all five KV layers bit-identical
+prompt fusion pos=5978 rows=512: all five KV layers bit-identical
+prompt fusion pos=6490 rows=512: all five KV layers bit-identical
+context graphs: original=0 candidate=4
+PASS: 843776000 bytes compared, graphs=on, 3 contiguous physical KV wraps, distant=no
