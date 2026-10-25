@@ -292,6 +292,25 @@ void full_session(int fmt, int mode, int experts) {
               "a layer split's image is refused by the whole-session form");
         ConversationKvReuse wrong{a.kv,65,65,{}};
         check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
+        // the QsaState* overload of conversation_snapshot_sources: a later stage's sources, no draft ring
+        SavedConversation meta_s; std::vector<SessionKvSource> srcs_stage, srcs_full;
+        check(conversation_snapshot_sources(meta_s, srcs_stage, view, ss, g, nullptr, err),
+              "stage sources captured with a null draft");
+        check(srcs_stage.size() == stage.kv.size(), "a later stage's sources are its own layers only, no draft");
+        check(conversation_snapshot_sources(meta_s, srcs_full, view, ss, g, &draft.state, err),
+              "whole-session sources captured with a draft");
+        check(srcs_full.size() == srcs_stage.size() + 1, "the whole-session form adds the draft source");
+        // the per-stage limits helper reproduces the whole-session limits for stage 0, and drops the draft for a later stage
+        SessionReadLimits whole;
+        check(conversation_session_read_limits(whole, ss, g, draft.state, 100000, 8, err), "whole-session read limits");
+        SessionReadLimits::SessionStageLimits sl_full, sl_stage;
+        check(conversation_stage_read_limits(sl_full, ss, g, &draft.state, 100000, err), "stage 0 limits with a draft");
+        check(sl_full.layer_range == whole.layer_range && sl_full.max_state_bytes == whole.max_state_bytes &&
+              sl_full.max_kv_bytes == whole.max_kv_bytes, "the per-stage helper matches the whole-session limits");
+        check(conversation_stage_read_limits(sl_stage, ss, g, nullptr, 100000, err), "later-stage limits with a null draft");
+        const std::vector<std::array<uint64_t, 5>> drop_draft(whole.max_kv_bytes.begin(), whole.max_kv_bytes.end() - 1);
+        check(sl_stage.layer_range == whole.layer_range && sl_stage.max_state_bytes == whole.max_state_bytes &&
+              sl_stage.max_kv_bytes == drop_draft, "a later stage's limits drop the draft layer");
     }
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
