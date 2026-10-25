@@ -39,9 +39,9 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 - Flags, identical for both models:
 
 ```text
---max-context <131072|262144> --kv int8 --kv-resident 32768 --layer-split 27
+--max-context <131072|262144> --kv int8 --kv-resident 32768 --layer-split 24
 --spec 3 --spec-min-p 0.9 --prefill 2048 --vram-reserve-mib 1024
---pipeline-windows 2 --trim-stage-weights --vision
+--pipeline-windows 2 --trim-stage-weights --vision --ple-io ram
 ```
 
 ## Method
@@ -55,8 +55,21 @@ check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM
 
 ## Results
 
-| Configuration | Prompt tokens | Decode tok/s | Prompt tok/s | Runs |
-| --- | ---: | ---: | ---: | ---: |
+| Configuration | Prompt tokens | Decode tok/s | Prompt tok/s | Runs | Note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| IQ3_S, short chat | 80 | 61.0 | 55 | 5 | split 27 |
+| IQ3_S, 1.6K | 726 | 71.3 | 180 | 5 | split 27 |
+| IQ3_S, 31K | 31,446 | 73.7 | 691 | 2 | split 27 |
+| IQ4_XS, short chat | 80 | 58.6 | 53 | 5 | split 27, direct PLE reads |
+| IQ4_XS, 1.6K | 726 | 62.8 | 149 | 5 | split 27, direct PLE reads |
+| IQ4_XS, 31K, direct PLE reads | 31,446 | 57.5 | 533 | 2 | split 27 |
+| IQ4_XS, 31K | 31,446 | **70.3** | **556** | 5 | final: split 24, PLE in RAM |
+| IQ4_XS, 118K | 117,529 | 59.6 | **596** | 5 | final |
+| IQ4_XS, 140K | 140,908 | 59.0 | 546 | 1 | split 27, direct PLE reads, needle found |
+
+The final configuration on this machine is `--layer-split 24` with `--ple-io ram`: an even layer split and the 28.8 GB
+PLE table in RAM. The earlier rows keep the settings they were measured with, so the effect of each change stays
+visible instead of being averaged away.
 | IQ3_S, short chat | 80 | 61.0 | 55 | 5 |
 | IQ3_S, 1.6K | 726 | 71.3 | 180 | 5 |
 | IQ3_S, 31K | 31,446 | **73.7** | **691** | 2 |
