@@ -4,7 +4,7 @@
 //   expert_parity [--gu Q2_0] [--dn Q2_0] [--ntok 1..8] [--gucfg L,R,S] [--dncfg L,R,S]     parity (synthetic)
 //   expert_parity --bench [--gu ..] [--dn ..] [--ntok N] [--layers 8] [--reps 96] [--sweep]  speed
 //
-// Gyro (agentionai's trellis experts, TQ2_T / TQK6 / TQK7):
+// Gyro (agentionai's trellis experts, TQ2_T / TQK6 / TQK7, and the pair trellis TQP5 / TQP6 / TQP7):
 //   expert_parity --gu TQK6 --dn TQK7 [--had-pack <pack dir>]       synthetic blocks; with a pack, the Hadamard rotation of
 //                                                                   x (CPU) and of h (the Metal had128 kernel) is part of it
 //   expert_parity --gguf <Gyro file> --layer L [--had-pack <pack dir>] [--ntok N] [--seed S]   REAL experts of layer L (64 of
@@ -49,7 +49,7 @@ struct MoeArgs {
 };
 
 int type_of(const std::string& s) {
-    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
+    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::TQP5, ref::TQP6, ref::TQP7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
         if (s == ref::type_name(t)) return t;
     std::fprintf(stderr, "unknown type %s\n", s.c_str());
     std::exit(2);

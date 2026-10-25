@@ -13,7 +13,7 @@
 namespace strata::kernels {
 namespace {
 // agentionai's trellis types (Gyro): TQ2_T (144), TQK6 (145), TQK7 (146); 128 weights a block
-bool is_tq(int t) { return t == 144 || t == 145 || t == 146; }
+bool is_tq(int t) { return t == 144 || t == 145 || t == 146 || (t >= 147 && t <= 149); }
 bool is_iq(int t) {
     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
            t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8;   // 14: Q6_K (Unsloth's Q5/Q6 gate/up)
@@ -23,7 +23,7 @@ int gu_qk(int t) {
     switch (t) {
         case 16: case 17: case 18: case 21: case 22: case 23: case 29: case 12: case 13: case 14: return 256;
         case 42: return 64;
-        case 144: case 145: return 128;   // TQ2_T / TQK6 gate/up (the CUDA engine's STRATA_GU_FMTS)
+        case 144: case 145: case 147: case 148: case 149: return 128;   // TQ2_T / TQK6 / TQP5-7 gate/up (the CUDA engine's STRATA_GU_FMTS)
         case 6: case 2: case 3: case 8: return 32;
         default: return 0;
     }
@@ -32,7 +32,7 @@ int d_qk(int t) {
     switch (t) {
         case 23: return 256;
         case 42: return 64;
-        case 144: case 146: return 128;   // TQ2_T / TQK7 down
+        case 144: case 146: case 147: case 148: case 149: return 128;   // TQ2_T / TQK7 / TQP5-7 down
         case 20: case 7: case 6: case 2: case 3: case 8: return 32;
         default: return 0;
     }
@@ -65,6 +65,9 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 144: return (size_t) (n / 128) * sizeof(block_tq2_t);
         case 145: return (size_t) (n / 128) * sizeof(block_tqk6);
         case 146: return (size_t) (n / 128) * sizeof(block_tqk7);
+        case 147: return (size_t) (n / 128) * sizeof(block_tqp5);
+        case 148: return (size_t) (n / 128) * sizeof(block_tqp6);
+        case 149: return (size_t) (n / 128) * sizeof(block_tqp7);
         case 30: return (size_t) n * 2;
         default: return 0;
     }

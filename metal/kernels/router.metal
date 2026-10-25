@@ -9,20 +9,20 @@ static inline void route_body(device const float* logits, device int* ids, devic
                               constant MoeArgs& a, ushort tid, ushort nth, ushort sg, ushort lane, threadgroup int* s_grp,
                               threadgroup int* s_ent) {
     if (sg < a.n_tok) {
-        device const float* l = logits + sg * 512;
-        float v[16];
-        for (int i = 0; i < 16; ++i) v[i] = l[lane + 32 * i];
+        device const float* l = logits + sg * STRATA_NEXP;
+        float v[STRATA_NEXP / 32];
+        for (int i = 0; i < STRATA_NEXP / 32; ++i) v[i] = l[lane + 32 * i];
         float mx = -INFINITY;
-        for (int i = 0; i < 16; ++i) mx = max(mx, v[i]);
+        for (int i = 0; i < STRATA_NEXP / 32; ++i) mx = max(mx, v[i]);
         for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
         float sum = 0.0f;
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < STRATA_NEXP / 32; ++i) {
             v[i] = exp(v[i] - mx);
             sum += v[i];
         }
         for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
         const float rcp = 1.0f / sum;
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < STRATA_NEXP / 32; ++i) {
             v[i] *= rcp;
             if (isnan(v[i])) v[i] = -FLT_MAX;
         }
@@ -30,7 +30,7 @@ static inline void route_body(device const float* logits, device int* ids, devic
         for (int rank = 0; rank < 10; ++rank) {
             float best = v[0];
             int ex = lane;
-            for (int i = 1; i < 16; ++i)
+            for (int i = 1; i < STRATA_NEXP / 32; ++i)
                 if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
             for (ushort m = 16; m > 0; m >>= 1) {
                 const float ob = simd_shuffle_xor(best, m);

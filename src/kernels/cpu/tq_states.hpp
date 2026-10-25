@@ -60,6 +60,27 @@ inline void tq_states(const uint8_t* qs, uint32_t* st) {
     }
 }
 
+/// The 64 pair-trellis states of one TQP5 / TQP6 / TQP7 block (ggml types 147-149): the same window rule as
+/// tq_state<KB>, over the 8*K-byte stream of 64 steps - the 16 bits from bit (63 - t)*K, LSB first, circular
+/// modulo 64*K bits, masked to 15 bits (the fork's tqp_state in ggml-common.h).  Step t gives weights 2t and
+/// 2t+1: the FIRST codebook pair of the state, lut[x >> 21] (no second pair - V = 2).
+template <int KB>
+inline void tqp_states(const uint8_t* qs, uint32_t* st) {
+    constexpr int NB = 8 * KB;
+    // the last four bytes followed by the first four, for the windows that run past the end (t = 0 and 1)
+    const uint64_t wrap = (uint64_t) tq_ld32(qs + NB - 4) | ((uint64_t) tq_ld32(qs) << 32);
+#if defined(__GNUC__)
+#pragma GCC unroll 64
+#endif
+    for (int t = 0; t < 64; ++t) {
+        const int off = (63 - t) * KB, b = off >> 3;
+        // b + 4 <= NB reads four bytes inside the stream; the last in-range window ends at byte NB - 1
+        // (b == NB - 4), so b >= NB - 3 is exactly the wrap case (same rule as tq_state<KB>)
+        const uint32_t v = b <= NB - 4 ? tq_ld32(qs + b) >> (off & 7) : (uint32_t) (wrap >> (off - 8 * (NB - 4)));
+        st[t] = v & kTqStateMask;
+    }
+}
+
 /// fp16 bits -> float, exact (the block scales and the Q8_0 activation scales).
 inline float tq_half_to_float(uint16_t h) {
     const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
