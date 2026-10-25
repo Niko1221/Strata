@@ -1553,7 +1553,10 @@ def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -
                 out.append({"path": str(folder / S.model_file(fam, model, i)), "bytes": None, "role": "model"})
         if vision:                                      # beside the model folders, not inside them (setup step 5)
             size = (fam.get("mmproj_sha256") or (None,))[0] or DEFAULT_MMPROJ_BYTES
-            out.append({"path": str(Path(models_dir) / fam.get("mmproj", S.MMPROJ)), "bytes": size, "role": "vision"})
+            # a family that renames the reader on the way to disk (Signal's mmproj_as) must be counted under the name it is
+            # written with, not the name its repository ships it under: the other name never appears and the part waits forever
+            out.append({"path": str(Path(models_dir) / fam.get("mmproj_as", fam.get("mmproj", S.MMPROJ))),
+                        "bytes": size, "role": "vision"})
     except Exception:                                   # noqa: BLE001 - progress is a convenience: never break the install
         return []
     return out

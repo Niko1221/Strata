@@ -286,6 +286,28 @@ class InstallerServerTests(unittest.TestCase):
         # not a download once setup prepares the files
         self.assertNotIn("download", self.mcp.combined_progress({"step": "6/7: preparing the model for Strata", "download": {"x": 1}}, job))
 
+    def test_a_family_that_renames_its_picture_reader_is_counted_under_that_name(self):
+        """Signal's repository ships `mmproj-F16.gguf` and setup writes it as `mmproj_as` (its reader would otherwise sit beside
+        every other family's under the same name). The progress has to look for the name on disk: looking for the downloaded name
+        left the picture-reader part waiting forever, so a finished install never read as finished."""
+        S = self.mcp.Strata(self.root, ROOT).setup_module()
+        fam = S.FAMILIES["signal"]
+        self.assertIn("mmproj_as", fam, "Signal renames its reader on the way to disk")
+        files = self.mcp.expected_files(S, "signal", "AP-Q4_K_XL", self.root / "models", True)
+        self.assertEqual([f["role"] for f in files], ["model", "vision"], "its one file, then the reader")
+        self.assertEqual(Path(files[0]["path"]).name, "Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf")
+        vision = Path(files[1]["path"])
+        self.assertEqual(vision.name, fam["mmproj_as"])
+        self.assertNotEqual(vision.name, fam["mmproj"], "the name it downloads under is not the name it is written under")
+        folder = Path(files[0]["path"]).parent
+        folder.mkdir(parents=True)
+        Path(files[0]["path"]).write_bytes(b"x" * 2_000_000)
+        vision.write_bytes(b"x" * 4096)               # a part is done when the file is there, whatever its size here
+        job = {"folder": str(folder), "total_gb": 0.004, "files": files}
+        done = self.mcp.combined_progress({"step": "5/7: downloading Signal 3.8 Flash Next AP-Q4_K_XL"}, job)
+        self.assertTrue(all(x["state"] == "done" for x in done["parts"]),
+                        "the reader setup writes is the reader the progress counts")
+
     def test_a_pack_with_many_files_reports_the_whole_pack(self):
         S = self.mcp.Strata(self.root, ROOT).setup_module()
         files = self.mcp.expected_files(S, "nvfp4", "NVFP4", self.root / "models", False)
