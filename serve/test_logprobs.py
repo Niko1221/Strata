@@ -301,18 +301,19 @@ class Api(unittest.TestCase):
             self.assertEqual(choice["message"]["content"], text)
             self.assertEqual("".join(e["token"] for e in choice["logprobs"]["content"]), text, key)
 
-    def test_logprobs_need_a_bounded_reply(self):
-        # a reply that is not streamed holds its entries (token, bytes, up to 20 alternatives) until it ends
-        for max_tokens in (0, -1, 5000):                   # 0 / -1: "the rest of the context"
-            with self.assertRaises(urllib.error.HTTPError) as cm:
-                self.post({"logprobs": True, "max_tokens": max_tokens})
-            self.assertEqual(cm.exception.code, 400)
-        self.assertIn("logprobs", self.post({"logprobs": True, "max_tokens": 4096})["choices"][0])
+    def test_logprobs_take_any_max_tokens(self):
+        # No cap of our own: the reply is already bounded by max_tokens (the rest of the context when it is not
+        # sent), which is the only bound OpenAI and vLLM put on it too -- openai-node's max_tokens is optional
+        # and vLLM's defaults to 16 or None, neither tying it to logprobs.
+        for max_tokens in (200, 5000, 0, -1, None):        # 0 / -1: "the rest of the context"; None: not sent
+            choice = self.post({"logprobs": True, "top_logprobs": 1, "max_tokens": max_tokens})["choices"][0]
+            self.assertEqual("".join(e["token"] for e in choice["logprobs"]["content"]),
+                             "Café costs €5.", max_tokens)
         self.assertNotIn("logprobs", self.post({"max_tokens": 0})["choices"][0])   # not asked: as before
 
     def test_a_streamed_reply_needs_no_bound(self):
-        # A streamed reply hands each entry out with its chunk and keeps none, so the cap above has no reason to
-        # apply: OpenAI itself bounds a reply only by the model's context, and its SDKs send no max_tokens by
+        # A streamed reply hands each entry out with its chunk and keeps none, so it is bounded by the reply's own
+        # length.  OpenAI itself bounds a reply only by the model's context, and its SDKs send no max_tokens by
         # default.  5000 and "the rest of the context" must both be answered, as they are without logprobs.
         for max_tokens in (5000, 0, None):                 # None: the field is not sent at all
             chunks = self.post({"logprobs": True, "max_tokens": max_tokens}, stream=True)
@@ -322,13 +323,20 @@ class Api(unittest.TestCase):
             self.assertEqual(text, "Café costs €5.", max_tokens)
             self.assertEqual("".join(toks), text, max_tokens)   # an entry for every token, streamed or not
 
-    def test_a_streamed_json_schema_reply_is_still_bounded(self):
-        # structured_chunks buffers the whole reply to validate it, logprobs included: that reply is not
-        # streamed in the sense above, so the cap stays
-        for max_tokens in (0, 5000):
-            with self.assertRaises(urllib.error.HTTPError) as cm:
-                self.post({"logprobs": True, "max_tokens": max_tokens, "response_format": SCHEMA}, stream=True)
-            self.assertEqual(cm.exception.code, 400)
+    def test_a_json_schema_reply_takes_any_max_tokens(self):
+        # structured_chunks buffers the reply to validate it, logprobs included: it holds the entries until the
+        # end, as a reply that is not streamed does.  That memory is bounded by max_tokens, not by a cap of ours.
+        written = '```json\n{"rent": "$1,250", "quote": "x"}\n```'
+        self.engine = self.svc.engine = LpEngine(self.tok, written)
+        content = '{"rent": "$1,250", "quote": "x"}'
+        for max_tokens in (200, 0, 5000):
+            choice = self.post({"logprobs": True, "max_tokens": max_tokens, "response_format": SCHEMA})["choices"][0]
+            self.assertEqual(choice["message"]["content"], content, max_tokens)
+            self.assertEqual("".join(e["token"] for e in choice["logprobs"]["content"]), content, max_tokens)
+            chunks = self.post({"logprobs": True, "max_tokens": max_tokens, "response_format": SCHEMA}, stream=True)
+            toks = [e["token"] for c in chunks if c.get("choices")
+                    for e in (c["choices"][0].get("logprobs") or {}).get("content", [])]
+            self.assertEqual("".join(toks), content, (max_tokens, "streamed"))
 
     def test_logprobs_are_refused_on_the_batch_path(self):
         # --parallel/--batch: the engine's batched loop prints "BT <slot> <id>" and never calls emit_lp_line

@@ -3777,13 +3777,6 @@ def allowed_ids(req: dict) -> list:
 
 NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
 
-# A reply with logprobs keeps every entry (its token, bytes and up to 20 alternatives) until it ends when it is not
-# streamed or answers a json_schema (structured_chunks buffers it to validate), and spell() matches text against the
-# entries still pending: a bounded reply keeps that memory and work bounded.  A streamed reply hands each entry out
-# with its chunk and drops it, so it is bounded by the reply's own length and needs no such cap -- the same reason
-# OpenAI itself only bounds a reply by the model's context.
-LOGPROBS_MAX_TOKENS = 4096
-
 
 def stop_strings(req: dict) -> list[str]:
     """The request's stop strings: OpenAI's `stop` (a string or a list of up to 4) or Anthropic's `stop_sequences`
@@ -7432,11 +7425,10 @@ def make_handler(svc: Service):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
-            kept = not req.get("stream") or validator is not None    # its entries are held until the reply ends
-            if top_logprobs(req) is not None and kept and not 0 < max_req <= LOGPROBS_MAX_TOKENS:
-                raise ValueError(f"logprobs: max_tokens (or max_completion_tokens) 1..{LOGPROBS_MAX_TOKENS} is "
-                                 f"required when the reply holds its entries until it ends (not streamed, or a "
-                                 f"json_schema); a streamed reply takes any length")
+            # No cap of our own on the reply's length when logprobs are asked for: the reply is already bounded by
+            # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
+            # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
+            # alternatives) until it ends, so a long one holds a lot: streaming hands each entry out with its chunk.
             if top_logprobs(req) is not None and getattr(svc.engine, "batch", 0):
                 # --parallel/--batch: the batched loop prints "BT <slot> <id>" and never calls emit_lp_line, so no
                 # LP line ever reaches the server there (src/program/generate.cpp).  Refused rather than answered

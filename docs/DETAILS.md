@@ -509,10 +509,10 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `/v1/chat/completions`, streamed or not, adds `choices[0].logprobs.content[]` to the reply (`token`, `logprob`,
   `bytes`, `top_logprobs`); with thinking on, the thinking's entries come under `reasoning_content` instead. The
   tokens, joined, spell the reply exactly (a character split across two tokens lands in the one that finishes it).
-  A reply that asks for logprobs and is not streamed -- or that answers a `json_schema`, which is buffered to be
-  validated -- needs `max_tokens` or `max_completion_tokens` of 1 to 4,096 and gets a 400 without it, because such
-  a reply holds every entry until it ends. A streamed one hands each entry out with its chunk and keeps none, so it
-  is bounded only by the context, as on OpenAI. `"allowed_token_ids": [ids]`
+  A reply is bounded by `max_tokens` -- or by the rest of the context when it is not sent -- and by no cap of our
+  own, as on OpenAI and vLLM, neither of which ties a length limit to logprobs. A reply that is not streamed, or
+  that answers a `json_schema` (buffered to be validated), does hold every entry until it ends, so a long one holds
+  a lot of them; a streamed reply hands each entry out with its chunk and keeps none. `"allowed_token_ids": [ids]`
   keeps only those ids in `top_logprobs`, most likely first, renormalised to sum to 1; the chosen token is one of
   them when it was named (vLLM's field, but vLLM masks generation with it, while here it filters what is reported,
   so a token outside the named ids keeps its own `logprob` and an empty list). An id past the model's vocabulary is
