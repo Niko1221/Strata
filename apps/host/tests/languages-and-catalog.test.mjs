@@ -52,6 +52,14 @@ test('the Gyro sizes join the Qwen3.8 group as their own edition, without images
  assert.equal(groups[1].sizes.length,0);
 });
 
+test('the Signal sizes join the Qwen3.8 group as their own edition, and keep their picture reader',()=>{
+ setTranslationLanguage('en');
+ const groups=nativeCatalogModels([family('qwen','Qwen3.8-Flash-Next',true,[size('q2_0','Q2_0')]),family('signal','Signal 3.8 Flash Next',true,[size('signal-ap-q4_k_xl','AP-Q4_K_XL')])]);
+ assert.deepEqual(groups[0].sizes.map(item=>[item.sourceFamily,item.model,item.edition,item.images]),[['qwen','Q2_0','',true],['signal','AP-Q4_K_XL','Signal',true]]);
+ assert.equal(catalogVersionLabel(groups[0].sizes[1]),'Signal');
+ assert.equal(groups[1].sizes.length,0);
+});
+
 test('empty default chat titles follow the interface language while chosen names stay verbatim',()=>{
  setTranslationLanguage('de');const empty={title:'New conversation',messages:[]};assert.notEqual(sessionTitle(empty),'New conversation');assert.equal(sessionTitle({...empty,defaultTitle:false}),'New conversation');assert.equal(sessionTitle({title:'Ready',messages:[]}), 'Ready');assert.equal(sessionTitle({...empty,messages:[{role:'user',content:'hello'}]}),'New conversation');setTranslationLanguage('en');
 });
