@@ -32,7 +32,8 @@ import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
  */
 import http from 'node:http';
 import { homedir } from 'node:os';
-import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { statfsSync, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -61,7 +62,7 @@ import { createForkTimeskip } from './timeskip-fork.mjs';
 import { prepareOversized } from './oversize.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
-import { checkUpdates, checkComponentUpdates } from './updates.mjs';
+import { checkUpdates, checkComponentUpdates, engineFirstRun } from './updates.mjs';
 import { plainNoModel } from './no-model-text.mjs';
 import { createAppUi } from './app-ui.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -69,7 +70,7 @@ import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
 import { createNativeControl } from './native-control.mjs';
 import { nativeUnloadPlan } from './storage-check.mjs';
-import { installBundledEngine } from './bundled-engine.mjs';
+import { installBundledEngine, cleanupAfterInstall } from './bundled-engine.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -130,6 +131,9 @@ const appUpdater = appUi.updater;
 const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   ? installBundledEngine({ bundleDir: process.env.STRATA_ENGINE_BUNDLE_DIR || resolve(HERE, '..', '..', 'engine-bundle'), components: componentsDirectory(), log: line => console.log(line) })
   : Promise.resolve({ action: 'none' });
+const engineBundleDir = process.env.STRATA_ENGINE_BUNDLE_DIR || resolve(HERE, '..', '..', 'engine-bundle');
+/* An update from a per-GPU installer leaves its engine-bundle behind; it goes only when the same engine is complete in the store (sizes and hashes). */
+cleanupAfterInstall(bundledEngine, { bundleDir: engineBundleDir, components: componentsDirectory() });
 let bundledEngineSettled = !(control && !process.env.STRATA_NO_BUNDLED_ENGINE);
 bundledEngine.then(() => { bundledEngineSettled = true; }, () => { bundledEngineSettled = true; });
 /* A build made for another make of graphics card is not unpacked; Control's answer then carries the plain sentence (with the right download) instead of its own. */
@@ -1022,11 +1026,11 @@ async function api(req, res, path, method, url) {
   if(nativeOperation&&method==='POST')return json(res,200,await native.cancel(nativeOperation[1]));
   const nativeInstance=/^\/api\/native\/instances\/([a-z0-9-]+)\/(unload|default)$/.exec(path);
   if(nativeInstance&&method==='POST')return json(res,200,nativeInstance[2]==='unload'?await native.unload(nativeInstance[1]):native.setDefault(nativeInstance[1]));
-  const nativeSettings=/^\/api\/native\/models\/([a-z0-9_-]+)\/settings$/.exec(path);
+  const nativeSettings=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings$/.exec(path);
   /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
   if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}
   if(nativeSettings&&method==='PATCH')return json(res,200,native.save(nativeSettings[1],await readBody(req)));
-  const nativeSettingsFile=/^\/api\/native\/models\/([a-z0-9_-]+)\/settings-file$/.exec(path);
+  const nativeSettingsFile=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings-file$/.exec(path);
   if(nativeSettingsFile&&method==='GET')return json(res,200,native.settingsFile(nativeSettingsFile[1]));
   if(nativeSettingsFile&&method==='POST')return json(res,200,await native.openSettingsFile(nativeSettingsFile[1]));
 
@@ -1327,6 +1331,27 @@ async function api(req, res, path, method, url) {
   }
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
+  if (path === '/api/engine/first-run' && method === 'GET') {
+    if (!control?.updateCheck) return json(res, 200, { status: 'unavailable', gpus: [] });
+    const info = await engineFirstRun({ control, gpus: hardware.cachedHardware()?.gpus ?? [] });
+    try { let at = componentsDirectory(); while (at && !existsSync(at) && dirname(at) !== at) at = dirname(at); const f = statfsSync(at); info.freeBytes = Number(f.bavail) * Number(f.bsize); } catch { /* unknown: no warning */ }
+    return json(res, 200, info);
+  }
+  if (path === '/api/engine/job' && method === 'GET') {
+    // The newest engine download / file install, read without waiting for the native snapshot to connect (the first-run card needs it before that).
+    const kinds = ['update-engine', 'install-engine-file'];
+    return json(res, 200, { job: native.state().jobs.filter(j => kinds.includes(j.kind)).slice(-1)[0] ?? null });
+  }
+  if (path === '/api/engine/from-file' && method === 'POST') {
+    // The person chose an engine package in the page (the offline path). The bytes come here; Control checks and installs them.
+    const name = String(req.headers['x-file-name'] ?? 'engine.tar.gz').replace(/[^A-Za-z0-9._-]/g, '_').slice(-120);
+    if (!/\.(tar\.gz|tgz|tar\.xz|zip)$/i.test(name)) return error(res, 400, 'This is not a Strata engine package. Choose the .tar.gz or .zip file from the release page.');
+    const folder = join(store.DATA_DIR, 'incoming-engine');
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const target = join(folder, name);
+    await pipeline(req, createWriteStream(target, { mode: 0o600 }));
+    return json(res, 202, native.operation('install-engine-file', { path: target }));
+  }
   if (path === '/api/updates/check' && method === 'GET' && control?.updateCheck) return json(res, 200, await checkComponentUpdates({ control, appUpdater, appVersion: process.env.STRATA_APP_VERSION || null }));
   if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:appVersionToShow(setupState().app.version,native.state().version), engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
 

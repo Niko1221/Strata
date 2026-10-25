@@ -8,6 +8,8 @@ export interface SoftwareUpdate {
   releaseUrl?: string;
   canInstall: boolean;
   message: string;
+  /** The technical reason behind `message`, shown only behind the Details disclosure. */
+  details?: string;
 }
 export interface UpdateCheckResult { checkedAt: string; strata: SoftwareUpdate; engine: SoftwareUpdate }
 

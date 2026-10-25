@@ -71,7 +71,7 @@ export function SettingsUpdates() {
         const labels: Record<SoftwareUpdate['status'], string> = { available: 'Update available', current: 'Up to date', unavailable: 'Check unavailable', error: 'Check failed', 'no-releases': 'No release yet' };
         return <div className="settings-version" data-update={update?.status}>
       <Icon name={name === 'Strata' ? 'layers' : 'engine'} size={20}/>
-      <span><strong>{tr(name)}</strong><small>{tr(version ?? 'Version unavailable')}</small>{tr(!checking && update ? <small className="settings-version__message">{tr(update.message)}</small> : null)}</span>
+      <span><strong>{tr(name)}</strong><small>{tr(version ?? 'Version unavailable')}</small>{tr(!checking && update ? <small className="settings-version__message">{tr(update.message)}</small> : null)}{tr(!checking && name === 'Strata' && update?.details ? <details className="native-settings-diagnostic"><summary className="small">{tr("Details")}</summary><p className="small muted">{update.details}</p></details> : null)}</span>
       {tr(!checking && update?.status === 'available' ? (native?.available ? <Btn size="sm" variant="primary" disabled={!!active || (name === 'Engine' && !native.installed?.models.length && !native.capabilities.componentUpdates)} onClick={() => setConfirm(name === 'Strata' ? 'update-strata' : 'update-engine')}>{tr("Update available")}</Btn> : update.releaseUrl ? <a className="st-btn st-btn--secondary st-btn--sm" href={update.releaseUrl} target="_blank" rel="noreferrer" title={tr("Open the release page to update this installation")}>{tr("Update available")}<Icon name="download" size={15}/></a> : <span className="settings-version__label">{tr(labels[update.status])}</span>) : <span className="settings-version__label">{tr(checking ? 'Checking…' : update ? labels[update.status] : version === 'Not installed' ? 'Not installed' : 'Installed')}</span>)}
     </div>;
     }
@@ -95,7 +95,7 @@ export function SettingsUpdates() {
   </>;
 }
 
-/** "Strata 0.2.3 · Engine 0.1.48": the app's own version first, the engine's beside it (About). */
+/** "Strata 0.2.5 · Engine 0.1.50": the app's own version first, the engine's beside it (About). */
 export function AboutVersions() {
     const native = useNative();
     const app = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);

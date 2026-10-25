@@ -1580,7 +1580,7 @@ def named_gpus(gpu, gpus) -> list:
         return []
 
 
-def cuda_choice(archs, cuda=None):
+def cuda_choice(archs, cuda=None, driver=None):
     """The CUDA toolkit of one model's engine: (12 or 13, why).  13 (the ready-made engine) unless a card is older
     than CUDA 13 supports (Pascal / Volta: CUDA 13 cannot compile for them) - one engine runs per model, so its oldest
     card decides.  `cuda` (--cuda 12|13) overrides it; setup recommends, it does not refuse (the caller warns)."""
@@ -1595,6 +1595,9 @@ def cuda_choice(archs, cuda=None):
     if old:
         return 12, (f"sm_{old[0]} is older than CUDA 13 supports (it dropped Pascal and Volta): this model runs the "
                     "experimental CUDA 12 engine")
+    if driver and CUDA12_MIN_DRIVER <= int(driver) < MIN_DRIVER:      # #3843: a driver too old for CUDA 13 still runs the CUDA 12 engine
+        return 12, (f"the NVIDIA driver {driver} is older than CUDA 13 needs ({MIN_DRIVER}): this model runs the CUDA 12 engine "
+                    f"(it works with driver {CUDA12_MIN_DRIVER} or newer; a newer driver from https://www.nvidia.com/drivers gives the CUDA 13 engine)")
     return 13, None
 
 
@@ -2090,29 +2093,50 @@ def find_vcvars(cuda_v=None):
     args = [str(vswhere), "-latest", "-products", "*"]
     if cuda_v is not None:
         upper = "19.0" if tuple(cuda_v) >= (13, 3) else "18.0"
-        args += ["-version", f"[16.0,{upper})"]
+        args += ["-version", f"[17.0,{upper})"]      # 17 = Visual Studio 2022: the sources are C++20, and nvcc silently drops -std=c++20 under 2019 (#3566)
     args += ["-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"]
     p = out(args).strip()
     v = Path(p) / "VC/Auxiliary/Build/vcvars64.bat" if p else None
     return v if v and v.exists() else None
 
 
+CMAKE_MIN = (3, 24)                    # CMakeLists.txt: cmake_minimum_required(VERSION 3.24)
+
+
+def _tool_version(path, name):
+    """(ok, version tuple) of `path --version`: ok False when it does not run (a pip launcher whose Python is gone)."""
+    try:
+        done = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False, ()
+    if done.returncode != 0:
+        return False, ()
+    found = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", done.stdout or "")
+    return True, tuple(int(x) for x in found.groups() if x) if found else ()
+
+
 def find_tool(name):
-    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).  A PATH copy that does not run
-    (a pip launcher whose Python is gone) is skipped for the one next to this Python."""
-    p = shutil.which(name)
-    if p:
-        try:
-            if subprocess.run([p, "--version"], capture_output=True, timeout=30).returncode == 0:
-                return p
-        except (OSError, subprocess.SubprocessError):
-            pass
-    for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent,
-              Path.home() / ".local" / "bin"):
-        c = d / (name + (".exe" if WIN else ""))
-        if c.exists():
-            return str(c)
-    return None
+    """The tool the build uses (cmake, ninja): the one pip installed next to THIS Python first (the virtualenv's own, #3822), then PATH,
+    then ~/.local/bin.  One that does not run (a pip launcher whose Python is gone) is skipped, and so is a cmake older than the
+    one CMakeLists.txt needs while another is found; with only an older one it is returned and the build says so."""
+    exe = name + (".exe" if WIN else "")
+    candidates = [str(d / exe) for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent) if (d / exe).exists()]
+    on_path = shutil.which(name)
+    if on_path and on_path not in candidates:
+        candidates.append(on_path)
+    local = Path.home() / ".local" / "bin" / exe
+    if local.exists() and str(local) not in candidates:
+        candidates.append(str(local))
+    older = None
+    for c in candidates:
+        runs, version = _tool_version(c, name)
+        if not runs:
+            continue
+        if name == "cmake" and version and version[:2] < CMAKE_MIN:
+            older = older or c
+            continue
+        return c
+    return older
 
 
 def free_gb(path):
@@ -2519,6 +2543,27 @@ def _piece_worker(src: _Source, st: _Pieces, todo: list, part: Path):
         st.stop.set()
 
 
+class StallNote:
+    """A download that gets no byte for a while says so (#3567): "stalled at 69%" instead of a silent line that never moves. `check` is called
+    often with the bytes so far; it answers a sentence at most once a minute while nothing arrives, and None otherwise."""
+
+    AFTER = 120.0
+
+    def __init__(self, now: float = 0.0):
+        self.have, self.since, self.said = -1, now, 0.0
+
+    def check(self, have: int, total: int, now: float) -> str | None:
+        if have != self.have:
+            self.have, self.since, self.said = have, now, 0.0
+            return None
+        idle = now - self.since
+        if idle < self.AFTER or now - self.said < 60:
+            return None
+        self.said = now
+        return (f"no data for {int(idle // 60)} min at {100 * have // max(1, total)}%: the connection is stuck. It keeps trying; to stop, press Ctrl+C, "
+                "and run the same command again: the download continues where it stopped")
+
+
 def parallel_download(url: str, part: Path, total: int, label: str, conns: int, name: str) -> bool:
     """Fill `part` (total bytes) over `conns` ranged connections.  True when every byte is there; False when the server
     does not do ranges (the caller reads the file in one stream)."""
@@ -2538,6 +2583,7 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
     if not part.with_name(part.name + ".chunks").is_file() and not _save_pieces(part, total, done):
         return False                                    # no piece list can be kept here: the pieces would not be told from holes
     last_print = last_save = 0.0
+    stall = StallNote(time.time())
 
     def report(force=False):
         nonlocal last_print, last_save
@@ -2546,6 +2592,10 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
             last_print = now
             have = st.have()
             print(f"\r  {label}: {have / 1e9:6.2f} / {total / 1e9:.2f} GB ({100 * have / total:.0f}%)   ", end="", flush=True)
+            note = stall.check(have, total, now)
+            if note:
+                print()
+                warn(note)
         if now - last_save > DL_SAVE_EVERY:
             last_save = now
             _save_pieces(part, total, st.snapshot())
@@ -2975,6 +3025,16 @@ def _hash_file(s: Path, size: int) -> str:
     return h.hexdigest()
 
 
+def own_gguf_is_whole(path: Path) -> bool:
+    """The person's own GGUF reads as a whole file: its header parses and every tensor lies inside the file (a cut-short copy fails this)."""
+    try:
+        from strata_control import gguf_preflight
+        gguf_preflight.inspect_metadata(Path(path))
+        return True
+    except Exception:                                  # noqa: BLE001 - anything unreadable is "not whole"
+        return False
+
+
 def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
@@ -2984,6 +3044,11 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
     if m.exists() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace"):
         return
     have = s.stat().st_size if s.exists() else -1
+    if own and have > 0 and have != size and own_gguf_is_whole(s):
+        # a fine-tune or another build with the layout of the published file (#3777: 96 bytes apart): recommend, never refuse
+        warn(f"{s.name} is {have:,} bytes; the published file is {size:,}. It is a complete GGUF file, so Strata uses it as it is; "
+             "it may be another version or a fine-tune, so check a few answers before you rely on it")
+        return
     if have != size:
         if own:                                        # --gguf-dir: the person's own file is never deleted by setup
             fail(f"{s.name} is {have:,} bytes; the published file is {size:,}",
@@ -3000,6 +3065,10 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
         else:
             say("  The damaged parts could not be found this way.")
     if digest != sha:
+        if own and own_gguf_is_whole(s):
+            warn(f"{s.name} is not the published file (SHA-256 {digest[:12]}..., expected {sha[:12]}...) but it is a complete GGUF file, so "
+                 "Strata uses it as it is; it may be another version or a fine-tune, so check a few answers before you rely on it")
+            return
         if own:
             fail(f"{s.name} does not match the published file (SHA-256 {digest}, expected {sha})",
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
@@ -3292,6 +3361,20 @@ def control_missing_packages() -> list:
             if importlib.util.find_spec(m) is None]
 
 
+def pip_stamp_is_ours(stamp: Path) -> bool:
+    """The list of installed packages was written for THIS system (#3634). A .venv on a disk that Windows and Linux both start from keeps
+    the stamp of the other one, which then says "already installed" about packages this Python does not have. A marker beside the stamp
+    names the system that wrote it; an older stamp without a marker is believed only while the packages every run needs can be imported."""
+    marker = stamp.with_name(stamp.name + ".os")
+    try:
+        if marker.exists():
+            return marker.read_text(encoding="utf-8").strip() == sys.platform
+    except OSError:
+        return False
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None for m in ("numpy", "jinja2", "regex", "yaml"))
+
+
 def pip_install(packages, what, extra=()):
     """pip install into .venv, skipped when the same list was installed before.  An install from before the pinned
     requirements (#214) recorded bare names: those packages are kept as they are (nothing is reinstalled), and the
@@ -3303,7 +3386,7 @@ def pip_install(packages, what, extra=()):
         ok(f"{what}: bundled with the app")
         return
     stamp = Path(sys.prefix) / ".strata-pip.json"
-    have = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else []
+    have = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() and pip_stamp_is_ours(stamp) else []
     bare = {p.lower() for p in have if req_name(p) == p.lower()}
     need = [p for p in packages if p not in have and req_name(p) not in bare
             and not (bare and "==" in p and _installed(req_name(p)))]
@@ -3314,6 +3397,7 @@ def pip_install(packages, what, extra=()):
     say(f"  Installing {what} ...")
     run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *extra, *need])
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
+    stamp.with_name(stamp.name + ".os").write_text(sys.platform, encoding="utf-8")
     ok(f"{what} installed")
 
 
@@ -5461,13 +5545,24 @@ def install_build_tools(gpu, yes):
     return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
+def tool_usable(name):
+    """find_tool found one that runs and (cmake) is new enough: an older system cmake counts as missing, so pip puts the right one in the venv."""
+    found = find_tool(name)
+    if found is None:
+        return False
+    if name == "cmake":
+        runs, version = _tool_version(found, name)
+        return runs and (not version or version[:2] >= CMAKE_MIN)
+    return True
+
+
 def ensure_build_tools():
     """cmake and ninja for a local compile, installed from requirements-build.txt when missing (#3403: the Mac setup
     compiles without cmake_build(), so it calls this too).  Returns (cmake, ninja)."""
     # The ready-made engine path never calls this function. Keep build helpers out of
     # the normal serving environment, and use already installed tools offline.
     build_packages = requirement_lines(BUILD_REQUIREMENTS) if BUILD_REQUIREMENTS.exists() else BUILD_PACKAGES
-    missing = [package for package in build_packages if find_tool(req_name(package)) is None]
+    missing = [package for package in build_packages if not tool_usable(req_name(package))]
     if missing:
         pip_install(missing, "CMake and Ninja build tools")
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
@@ -5486,8 +5581,9 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
     if WIN:
         if vcvars is None:                             # #881: the build needs MSVC's environment
-            fail("the Visual Studio C++ build tools were not found",
-                 "install them (Visual Studio 2019 or 2022, workload 'Desktop development with C++') and run setup again")
+            fail("the Visual Studio 2022 C++ build tools were not found (Visual Studio 2019 is too old: the sources are C++20)",
+                 "install Visual Studio 2022 Build Tools (workload 'Desktop development with C++'), then run setup again; a ready-made engine "
+                 "needs no compiler: `strata update` fetches it")
         bat = ROOT / bat_name
         q = lambda c: " ".join(f'"{x}"' if " " in str(x) else str(x) for x in c)  # noqa: E731
         bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{q(conf)} || exit /b 1\r\n{q(build)} && exit /b 0\r\n'
@@ -6704,8 +6800,15 @@ def update_install(have: list, a) -> int:
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
     ver = engine_version(Path(json.loads(have[0].read_text(encoding="utf-8-sig"))["exe"]))
     say()
+    start = "START-HERE.bat" if WIN else "./setup.sh"
+    if any(ver) and tuple(ver) < MIN_ENGINE:             # #3653: the engine step failed above; "updated" would be untrue
+        warn(f"Strata's files are updated, but the engine was NOT: it is still {'.'.join(map(str, ver))} and this Strata wants "
+             f"{'.'.join(map(str, MIN_ENGINE))} or newer. The model still starts with the old engine.")
+        say(f"  Next step: check the internet connection (and that the model window is closed), then run {'UPDATE.bat' if WIN else './update.sh'} again; "
+            "the line above this one says why the engine was not fetched.")
+        return 0
     ok("Strata is updated" + (f" (engine {'.'.join(map(str, ver))})" if any(ver) else "") +
-       ". Start the model with " + ("START-HERE.bat" if WIN else "./setup.sh") + " when you want it.")
+       f". Start the model with {start} when you want it.")
     return 0
 
 
@@ -6975,6 +7078,7 @@ UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estima
 UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
 UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
+KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
 UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13)
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
@@ -8054,7 +8158,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         if os.environ.get("STRATA_VERBOSE") == "1" or "--verbose" in sys.argv:
             say("  Details for developers: build it with cmake -DSTRATA_BUILD_DSV41=ON and point STRATA_DSV41_EXE at it.")
         fail("DeepSeek's engine is not available for this computer yet",
-             "Supported graphics cards: NVIDIA RTX 30 and RTX 50 series, and the Radeon AI PRO R9700. " + dsv41_manual_steps(eng)
+             "Supported graphics cards: NVIDIA RTX 30, 40 and 50 series, and the Radeon AI PRO R9700. " + dsv41_manual_steps(eng)
              + " Or update Strata later (a newer version may add your card), or pick another model. Nothing has been downloaded.")
     ok(f"engine: {exe}")
 
@@ -8245,6 +8349,9 @@ def mac_control_setup(a) -> int:
     info = MF.mac_info()
     ram = float(info["ram_gb"] or ram_gb())
     ok(f"{info['chip']}, {ram:.0f} GB unified memory, macOS {info['macos'] or '?'}")
+    if info.get("rosetta_python"):
+        say("  (the Python that runs this is an Intel build running through Rosetta: Strata works, and the Apple Silicon Python "
+            "from python.org or Homebrew in /opt/homebrew is a little faster to start)")
     problems = MF.mac_problems(info, need_compiler=False)       # the app compiles nothing: no Command Line Tools needed
     for p in problems:
         warn(p)
@@ -8433,9 +8540,9 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor (default: the final context over the trained 262144, at least 1 - "
                          "1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4"],
+    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
-                         "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
+                         "precise) k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
                          "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
@@ -8801,15 +8908,13 @@ def main() -> int:
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
         ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
-        cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
+        cuda_tk, why = cuda_choice(gpu["archs"], a.cuda, driver_major(gpu))   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
         min_driver = CUDA12_MIN_DRIVER if cuda_tk == 12 else MIN_DRIVER
         if driver_major(gpu) < min_driver:
             fail(f"the NVIDIA driver is too old ({gpu['driver']}; {min_driver} or newer is needed)",
-                 "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again" +
-                 ("" if cuda_tk == 12 else f" (or --cuda 12: the experimental CUDA 12 engine runs with driver "
-                                           f"{CUDA12_MIN_DRIVER} or newer, docs/OLDER_GPUS.md)"))
+                 "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
     if gpu["vram_gb"] < 11:
         warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
              + ": Strata will run, but most experts stay on the CPU and it will be slow")
@@ -9104,7 +9209,7 @@ def main() -> int:
         say("             documents; long-context lookups (needle tests) still pass")
         kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
     if ctx > 8192:
-        ok(f"KV cache: {'8-bit' if kv == 'int8' else '4-bit (Hadamard-rotated)'}")
+        ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL
         vision = "none"
         if a.vision not in (None, "no", "none"):

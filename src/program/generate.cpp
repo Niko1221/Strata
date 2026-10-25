@@ -16,6 +16,7 @@
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
 #include "strata/platform/memory.hpp"
+#include "strata/core/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
@@ -700,6 +701,8 @@ struct Options {
     /// windows on a helper thread instead of one window waiting for a whole round (see the tier in the --serve block).
     /// Not bit-exact run to run.  0 = the blocking tier.
     int adapt_async = 0;
+    int adapt_async_given = -1;      ///< --adapt-async on the command line (-1: not given; then the engine may decide, adapt_async_default.hpp)
+    bool adapt_async_self = false;   ///< the engine measures and chooses the asynchronous tier during the session (adapt_async_default.hpp)
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
@@ -1071,10 +1074,12 @@ void usage() {
                  "                       does not fit.  Same answers as --mmap-experts for the same placement.\n"
                  "  --adapt-min-gain F   the adaptive tier swaps an expert in only when its decayed routing count beats\n"
                  "                       the one it replaces by more than F (default 1.5; higher = fewer, surer swaps)\n"
-                 "  --adapt-async 1      --serve with the resident RAM mode or the arena (one GPU; opt-in): the adaptive\n"
+                 "  --adapt-async 0|1    --serve with the resident RAM mode or the arena (one GPU): the adaptive\n"
                  "                       tier's swaps advance between verify windows instead of a window waiting for a\n"
-                 "                       whole round (the arena: copy-in only).  Not bit-exact run to run.  0 (default)\n"
-                 "                       = the blocking tier.\n");
+                 "                       whole round (the arena: copy-in only).  Not bit-exact run to run.  Without the flag,\n"
+                 "                       the expert arena on one CUDA GPU (no --batch) starts blocking and tries it for a\n"
+                 "                       while when the swaps hold the windows up, keeping it only if it is faster; 0 = the\n"
+                 "                       blocking tier always (also STRATA_ADAPT_ASYNC=0); 1 = always on.\n");
 }
 
 // --lookup-chain: the context's last tokens for the draft sources (at most 64), the MTP's pending drafts last
@@ -2626,7 +2631,7 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_every_given = true; }
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-min-gain") o.adapt_min_gain = (float) std::atof(next("--adapt-min-gain"));
-        else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
+        else if (a == "--adapt-async") { o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0; o.adapt_async_given = o.adapt_async; }
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
@@ -8074,6 +8079,27 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --adapt-async 1 is off (%s): the blocking adaptive tier\n", why);
         o.adapt_async = 0;
     };
+    // Where the asynchronous tier could run on its own (CUDA, one GPU, the expert arena, no batch slots), the engine measures
+    // and chooses during the session: see include/strata/core/adapt_async_default.hpp.  --adapt-async 0 or
+    // STRATA_ADAPT_ASYNC=0 keep the blocking tier; --adapt-async 1 keeps its old meaning.
+    if (o.adapt_async_given < 0) {
+        strata::core::AdaptAsyncAuto aa;
+        aa.flag = o.adapt_async_given;
+        aa.env = strata::core::adapt_async_env();
+#if !defined(STRATA_USE_HIP)
+        aa.cuda = true;
+#endif
+        aa.serve = o.serve;
+        aa.adaptive = o.adapt_every > 0 && o.adapt_swaps > 0;
+        aa.arena = srcp == &arena_src;
+        aa.multi_gpu = multi_gpu;
+        aa.pipeline_windows = o.pipeline_windows >= 2;
+        aa.batch = o.batch > 0;
+        aa.peer = peer.valid();
+        aa.remote_opt = remote_opt != nullptr;
+        aa.adapt_overlap = adapt_overlap();
+        o.adapt_async_self = strata::core::adapt_async_self_decides(aa);
+    }
     if (o.adapt_async) {
         static const bool pl_async = [] {
             const char* v = std::getenv("STRATA_PIPELINE_ADAPT_ASYNC");
@@ -10541,15 +10567,25 @@ int main(int argc, char** argv) {
         const bool a_inline = a_arena && a_env("STRATA_ADAPT_PICK_INLINE", 1) != 0;
         const bool a_wait = a_arena && a_env("STRATA_ADAPT_ASYNC_WAIT", 1) != 0;
         const size_t a_batch = a_arena ? (size_t) std::max(0, a_env("STRATA_ADAPT_ASYNC_BATCH", 0)) : 0;
-        if (o.adapt_async && !drive.d.usage.empty() &&
+        // o.adapt_async_self (arena, one GPU, nothing explicit): the homes are set up, the job thread is created only when the
+        // session's measurement turns the asynchronous tier on (asw_*, in the decode loop)
+        const bool a_self = o.adapt_async_self && !o.adapt_async && a_arena && !drive.d.usage.empty();
+        if ((o.adapt_async || a_self) && !drive.d.usage.empty() &&
             ((src.complement_ready() && src.exchange_capacity() >= 2 * a_cap) || a_arena)) {
             ahomes.push_back({&xcache, adapt_stream, adapt_ev, 0, false});
             for (auto& st : stages) ahomes.push_back({&st->cache, st->adapt_stream, st->adapt_ev, st->dev, false});
-            ajob = std::make_unique<JobThread>();
-            std::fprintf(stderr, "strata serve: adaptive tier asynchronous (--adapt-async 1): up to %lld swaps per round, "
-                                 "a round every %d windows%s\n", (long long) a_cap, o.adapt_every,
-                         a_arena ? " (arena: copy-in only)" : "");
+            if (o.adapt_async) {
+                ajob = std::make_unique<JobThread>();
+                std::fprintf(stderr, "strata serve: adaptive tier asynchronous (--adapt-async 1): up to %lld swaps per round, "
+                                     "a round every %d windows%s\n", (long long) a_cap, o.adapt_every,
+                             a_arena ? " (arena: copy-in only)" : "");
+            } else {
+                std::fprintf(stderr, "strata serve: adaptive tier: blocking, and the asynchronous tier is tried once the session "
+                                     "shows the swaps hold the windows up (--adapt-async 0 or STRATA_ADAPT_ASYNC=0: never)\n");
+            }
         }
+        strata::core::AdaptAsyncSelf asw;   // the session's choice between the two tiers (adapt_async_default.hpp)
+        if (a_self && !ahomes.empty()) asw.arm();
         // the pipelined loop's side (see above): whether stage `st` has no window in flight; per home, the copies back
         // and in to queue at its next gap, the RAM fence still to pass and the gaps seen
         std::function<bool(int)> a_pl_idle;
@@ -14934,6 +14970,8 @@ int main(int argc, char** argv) {
                 // expert ran on the GPU or the CPU (they round differently) depended on the copy's timing
                 // (STRATA_ADAPT_NOWAIT=1: 0.1.37's non-blocking query, the A/B)
                 const Clock::time_point taw0 = Clock::now();
+                const bool asw_skip = first_window || merged;   // the session's tier choice counts steady decode windows only
+                double asw_wait_ms = 0;
                 if (adapt_nowait()) apply_pending(false);
                 else if (aov && !pending.empty() && !aflipped) {
                     // 0.1.43 STRATA_ADAPT_OVERLAP: the tables take the swaps now, exactly where the wait would have ended;
@@ -15062,7 +15100,8 @@ int main(int argc, char** argv) {
                     std::printf("ERR an adaptive refill failed\n");
                     return 1;
                 }
-                dt_adapt_wait += std::chrono::duration<double, std::milli>(Clock::now() - taw0).count();
+                asw_wait_ms = std::chrono::duration<double, std::milli>(Clock::now() - taw0).count();
+                dt_adapt_wait += asw_wait_ms;
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
@@ -15177,11 +15216,35 @@ int main(int argc, char** argv) {
                 if (adapt_thr.joinable()) {
                     const Clock::time_point taj0 = Clock::now();
                     adapt_thr.join();
-                    dt_adapt_join += std::chrono::duration<double, std::milli>(Clock::now() - taj0).count();
+                    const double asw_join = std::chrono::duration<double, std::milli>(Clock::now() - taj0).count();
+                    dt_adapt_join += asw_join;
+                    asw_wait_ms += asw_join;
                 }
                 if (!adapt_ok) {
                     std::printf("ERR an adaptive refill failed\n");
                     return 1;
+                }
+                // the session's choice of the adaptive tier (adapt_async_default.hpp): ~64 windows on the blocking tier, then
+                // ~64 on the asynchronous one if the swaps held the windows up, kept only if the decode got faster
+                if (!asw_skip && (asw.phase() == strata::core::AdaptAsyncSelf::Phase::Measure || asw.trialing())) {
+                    const bool was_trial = asw.trialing();
+                    const double asw_ms = std::chrono::duration<double, std::milli>(Clock::now() - taw0).count();
+                    const auto act = asw.window(asw_ms, asw_wait_ms, a + 1);
+                    if (act == strata::core::AdaptAsyncSelf::Action::ToAsync) {
+                        ajob = std::make_unique<JobThread>();
+                        std::fprintf(stderr, "strata serve: adaptive tier: the swaps held the windows up by %.1f%% (%.2f ms per "
+                                             "token): trying the asynchronous tier for a while\n",
+                                     100.0 * asw.wait_fraction(), asw.measure_ms_per_token());
+                    } else if (act == strata::core::AdaptAsyncSelf::Action::ToBlocking) {
+                        adapt_quiesce();
+                        ajob.reset();
+                        std::fprintf(stderr, "strata serve: adaptive tier: the asynchronous tier was slower (%.2f against "
+                                             "%.2f ms per token): back to the blocking tier for this session\n",
+                                     asw.trial_ms_per_token(), asw.measure_ms_per_token());
+                    } else if (was_trial && asw.kept()) {
+                        std::fprintf(stderr, "strata serve: adaptive tier: the asynchronous tier stays on (%.2f against %.2f ms "
+                                             "per token)\n", asw.trial_ms_per_token(), asw.measure_ms_per_token());
+                    }
                 }
                 if (!drafted) {
                     std::printf("ERR %s\n", err.c_str());

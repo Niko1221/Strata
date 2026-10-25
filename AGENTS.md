@@ -1,20 +1,35 @@
 # AGENTS.md
 
-Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5, Unsloth, Gyro and NVFP4
-variants, and Qwen3.6-35B-A3B) on a normal PC: one NVIDIA or AMD graphics card plus system RAM on Windows or Linux,
-or an Apple Silicon Mac. Version 0.2.3, engine 0.1.48. It has three parts:
+Version 0.2.5, engine 0.1.50. The public model families are DeepSeekV4.1-Flash-1017,
+Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. DeepSeek V4.1-Flash runs in the app and in the Terminal
+(`strata launch --family deepseek41 --model ist-das-2.00bpw`; sets in
+[docs/MODELS.md](docs/MODELS.md#deepseek-v41-flash)). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
+source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
+
+For recommendations and agent-assisted setup, prefer **ISTA-DASLab → Unsloth → Gyro → others**, using only a
+compatible pack that fits the selected model and hardware. ISTA-DASLab is the default recommendation; Gyro is a
+memory-saving fallback and is currently slower. Honor an explicit user choice. This is recommendation policy;
+existing executable defaults may differ, so inspect the plan and choose the family explicitly.
+
+Strata has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
-  not want a terminal. The installer has the engine inside.
+  not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
+  `Strata-0.2.5-windows-x64-setup.exe`, `Strata-0.2.5-linux-x86_64.AppImage`, `Strata-0.2.5-macos-arm64.dmg`.
+  The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
+  start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
   it and watches it. Agents use this part.
 - **The engine and the server** (`src/`, `include/`, `metal/`, `sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
   `serve/` for the Python server with an OpenAI- and Anthropic-compatible API and a web page). `setup.py`, started by
-  `START-HERE.bat` or `setup.sh`, is the older one-click installer from source.
+  `START-HERE.bat` or `setup.sh`, is setup from a source checkout, for developers. The release paths are the
+  installer and `strata launch`.
 
 ## Installing Strata for a user
 
-Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For an agent that has a shell, the short version is:
+Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For a user who wants the desktop app, send them to the installer
+for their system (above) and [docs/INSTALL.md](docs/INSTALL.md). For an agent that has a shell, use the Terminal; the
+short version is:
 
 1. Install the Terminal. It needs no administrator rights.
 
@@ -27,27 +42,28 @@ Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For an agent that has a shell, 
 2. Check what would happen. Nothing is changed:
 
    ```sh
-   strata launch --plan --model q2_0
+   strata launch --plan --family qwen --model q2_0
    ```
 
 3. Set up and serve without questions. It downloads the engine for the card and the model (tens of GB), starts the
    server, prints the addresses and returns. The server keeps running.
 
    ```sh
-   strata launch --model q2_0 --yes --no-tui
+   strata launch --family qwen --model q2_0 --yes --no-tui
    ```
 
    Useful flags (all of them: `strata launch --help`): `--family`, `--model-path` (files the user already has),
    `--data-dir`, `--context 32k|64k|128k`, `--vision off|on|gpu|cpu`, `--parallel N`, `--gpu 0,1`,
    `--access local|lan|cloudflare|tailscale`, `--port`, `--api-key-env NAME`, `--new-key`, `--save-preset NAME`,
-   `--output json`. `strata launch --status` shows what is serving, `strata launch --stop` stops it, and
+   `--speed faster|full` (DeepSeek), `--output json`. `strata launch --status` shows what is serving, `strata launch --stop` stops it, and
    `strata launch --show-key` prints the API key.
 4. Connect the user's apps: `strata connect` lists them, `strata connect <app> --check` sends one prompt and one tool
    call the way that app does.
 
-Keep the server on `127.0.0.1` unless the user asks for more. Beyond it an API key is recommended: `--access lan` makes one for you, and `--no-api-key` serves without one (a warning, never a refusal; on a public tunnel the warning is stronger). The old route (clone
-the repository and run `START-HERE.bat --yes` or `./setup.sh --yes`) still works and is the fallback when the
-Terminal cannot run. Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.md)) offers the same steps as tools.
+Keep the server on `127.0.0.1` unless the user asks for more. Beyond it an API key is recommended: `--access lan` makes one for you, and `--no-api-key` serves without one (a warning, never a refusal; on a public tunnel the warning is stronger). Source setup (`START-HERE.bat`, `setup.sh`) is the fallback for a developer or for a system with no release package; it is
+documented in [docs/SOURCE_INSTALL.md](docs/SOURCE_INSTALL.md). Those wrappers exist in a source checkout, not in the
+released app. Do not tell an app user to find a `.bat` file.
+Source setup does not make an unsupported model or backend compatible. Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.md)) offers the same steps as tools.
 
 ## Working on the code
 
