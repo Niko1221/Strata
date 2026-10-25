@@ -574,21 +574,9 @@ class Assembler:
             self.item["content"][0]["text"] += ev.text
             out.append(self.event("response.output_text.delta", item_id=self.item["id"], output_index=self.index,
                                   content_index=0, delta=ev.text, logprobs=[]))
-        elif kind == "tool_start":
-            out += self.close()
-            out += self._call_started()
-            out += self._open(self._call_item(ev))
-        elif kind == "tool_args":
-            item = self.item
-            if item is None or item.get("call_id") != ev.call.id:
-                return out
-            if item["type"] == "function_call":         # a custom tool's input is sent whole, at its end
-                item["arguments"] += ev.text
-                out.append(self.event("response.function_call_arguments.delta", item_id=item["id"],
-                                      output_index=self.index, delta=ev.text))
         elif kind == "tool_call":
             item = self.item
-            if item is None or item.get("call_id") != ev.call.id:     # a call that was not announced while written
+            if item is None or item.get("call_id") != ev.call.id:     # a call is sent once, whole, when finalised
                 out += self.close()
                 out += self._call_started()
                 out += self._open(self._call_item(ev))
