@@ -313,6 +313,10 @@ def _timeout_env(name: str, default: float) -> float | None:
 # still working is never ended by this, only reported once (the recommendation: engine_silence_s, or this variable).
 # STRATA_ENGINE_STALL_S overrides it (0 = off).  Needs psutil (setup installs it); without it nothing is ended.
 ENGINE_STALL_S = _timeout_env("STRATA_ENGINE_STALL_S", 90.0)
+# chunked decoding (docs/DSV41_BATCHING.md, Path B2): tokens per GEN pass, and whether a pass
+# that hits the cap continues with prompt+generated instead of ending the reply (off unless asked)
+BURST = max(0, int(os.environ.get("STRATA_BURST") or 0))
+BURST_CONTINUE = os.environ.get("STRATA_BURST_CONTINUE") == "1"
 # --batch: new requests take the control lines (one prompt read at a time) short prompts first: a prompt of at most
 # STRATA_ADMIT_SHORT_FIRST tokens goes before longer ones (opt-in; unset or 0: whoever gets the lock first), and a
 # longer one that waited STRATA_ADMIT_MAX_WAIT_S (default 30) counts as short.  A chat question then waits for the one
@@ -5259,8 +5263,11 @@ class Service:
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        per_pass = max_new - n
+                        if BURST > 0:
+                            per_pass = min(per_pass, BURST)
+                        gen = self.engine.generate(prompt, per_pass, sampling, cancel, embeddings=emb) if emb \
+                            else self.engine.generate(prompt, per_pass, sampling, cancel)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
@@ -5441,6 +5448,11 @@ class Service:
                                 prompt = prompt + seg + extra
                                 finish = "length"
                                 continue
+                        if (BURST_CONTINUE and BURST > 0 and per_pass >= BURST and n < max_new
+                                and not cancel.is_set() and finish != "stop"):
+                            # the pass hit the chunk cap and the model did not stop: continue from what it wrote
+                            prompt = list(ids) + raw_ids
+                            continue
                         if not (wrap or opens) or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
