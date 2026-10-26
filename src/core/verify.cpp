@@ -914,6 +914,30 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     cudaMemset(arena_, 0, count.used);
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+    // Keep logprobs buffers separate from the arena, but fail allocation at startup.
+    // Unsupported vocabularies allocate nothing and retain the decoder's CPU path.
+    const size_t scratch_bytes = n_vocab_ <= std::numeric_limits<int>::max()
+        ? strata::kernels::logprobs_scratch_bytes(
+              max_t_, (int) n_vocab_, std::min(strata::kernels::kLogprobsMaxTop, (int) n_vocab_))
+        : 0;
+    if (scratch_bytes != 0) {
+        auto failed = [&](const char* step, cudaError_t code) {
+            err = std::string("verify: logprobs ") + step + ": " + cudaGetErrorString(code);
+            return false;
+        };
+        cudaError_t rc = cudaSuccess;
+        if (!logprobs_scratch_ && (rc = cudaMalloc(&logprobs_scratch_, scratch_bytes)) != cudaSuccess)
+            return failed("scratch allocation", rc);
+        if (!logprobs_chosen_ && (rc = cudaMalloc((void**) &logprobs_chosen_, (size_t) max_t_ * sizeof(int32_t))) != cudaSuccess)
+            return failed("chosen-token allocation", rc);
+        if (!logprobs_out_ &&
+            (rc = cudaMalloc((void**) &logprobs_out_, (size_t) max_t_ *
+                                                   (strata::kernels::kLogprobsMaxTop + 1) *
+                                                   sizeof(strata::kernels::LogprobItem))) != cudaSuccess)
+            return failed("result allocation", rc);
+    }
+#endif
     if (hflag_out_d_ != nullptr && hcount_d_ == nullptr) {   // the overlapped split's hand-off counter
         if (cudaMalloc((void**) &hcount_d_, 64) != cudaSuccess) { err = "verify: hand-off counter allocation failed"; return false; }
         cudaMemset(hcount_d_, 0, 64);
@@ -4171,6 +4195,7 @@ bool Verifier::logprobs(int rows, const int32_t* chosen, int top_k,
     const size_t scratch_bytes = strata::kernels::logprobs_scratch_bytes(
         max_t_, (int) n_vocab_, std::min(strata::kernels::kLogprobsMaxTop, (int) n_vocab_));
     if (scratch_bytes == 0) {
+        // Unreachable from the decoder: its GPU gate selects CPU scoring for this case.
         err = "verify: logprobs vocabulary is outside the supported range";
         return false;
     }
@@ -4180,15 +4205,6 @@ bool Verifier::logprobs(int rows, const int32_t* chosen, int top_k,
         return false;
     };
     cudaError_t rc = cudaSuccess;
-    if (!logprobs_scratch_ && (rc = cudaMalloc(&logprobs_scratch_, scratch_bytes)) != cudaSuccess)
-        return failed("scratch allocation", rc);
-    if (!logprobs_chosen_ && (rc = cudaMalloc((void**) &logprobs_chosen_, (size_t) max_t_ * sizeof(int32_t))) != cudaSuccess)
-        return failed("chosen-token allocation", rc);
-    if (!logprobs_out_ &&
-        (rc = cudaMalloc((void**) &logprobs_out_, (size_t) max_t_ *
-                                               (strata::kernels::kLogprobsMaxTop + 1) *
-                                               sizeof(strata::kernels::LogprobItem))) != cudaSuccess)
-        return failed("result allocation", rc);
     if ((rc = cudaMemcpyAsync(logprobs_chosen_, chosen, (size_t) rows * sizeof(int32_t),
                               cudaMemcpyHostToDevice, cs_)) != cudaSuccess)
         return failed("chosen-token upload", rc);
