@@ -18459,6 +18459,10 @@ int main(int argc, char** argv) {
                         ver.ms_commit / rounds,
                         (double) (drive.d.multi_misses - misses0) / (double) (rounds * g.n_layers),
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
+        {   // STRATA_HOST_TIMELINE=1 (Step 0): the host's own per-phase split; empty when off
+            const std::string htl = ver.host_timeline_report();
+            if (!htl.empty()) std::printf("host timeline (STRATA_HOST_TIMELINE=1):\n%s", htl.c_str());
+        }
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
                         "CPU pool call %.3f ms/round", "pool multi", pool.ms_multi_gu / rounds,
