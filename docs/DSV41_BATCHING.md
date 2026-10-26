@@ -128,6 +128,34 @@ What one launch over T sequences still needs, in the order it has to be built:
 Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
 throughput.
 
+### The per-row `layer()` branch: the twelve sites and what each becomes (spec, 2026-10-27)
+
+The step's lean host is `layer()`'s own buffers (one set, allocated once), not the prompt flow's run.  `layer()` reads a
+row's position in twelve places; with `step != nullptr` each becomes the row's own, and nothing else changes (the
+projections, the norms, the hyper-connections and the MoE are row-generic already):
+
+| site | now | with `step` |
+|---|---|---|
+| the q finish (9443) | `fr.pos = p0` | `fr.pos_rows = step->pos` |
+| the window rows (9451) | one `ring_to_ext(..., p0, win)` into `d.ext` | a row's `[ring rows][token]` block at `t * (win + 1)` rows, `ring_to_ext(win_of(l, seq[t]), d.ext + t * blk, pos[t], win)` |
+| the K/V finish (9456) | `fk.pos = p0`, `dst = ext + win * HD`, stride `HD` | `fk.pos_rows = step->pos`, stride `(win + 1) * HD` |
+| back to the ring (9462) | one `ext_to_ring(..., p0, win, T)` | a row at a time: `ext_to_ring(d.ext + t * blk + win * HD, win_of(l, seq[t]), pos[t], win, 1)` |
+| the window's `ar` (9467-9472) | `first = max(win - p0, t + 1)` | `nr = min(win - 1, pos[t])`, `win0[t] = t * (win + 1) + (win - nr)`, `nwin[t] = nr + 1` |
+| the groups (9482-9483) | `g_first = p0 / R`, `ng` | a row at a time: completed rows where `(pos[t] + 1) % R == 0`, at `pos[t] / R` |
+| the compressor (9500) | one `compress_win(..., p0, T)` | a row: `compress_win(d.ckr + t * HD, d.cgr + t * HD, comp_kv(l, seq[t]), comp_sc(l, seq[t]), R, pos[t], 1, ..., d.latent + t * HD)` |
+| the indexer's counts (9506) | `lim.n[t] = (p0 + t + 1) / R` | `lim.n[t] = (step->pos[t] + 1) / R` (the plan already computes these) |
+| the ik finish (9533) | `fi.pos = p0`, one call a slab | a row: `fi.pos = pos[t]`, `finish(d.iq, ix_heads, ...)` a row |
+| the topk (9508/9522) | `rows_add_i(..., kv_base(sr))` | a row: `rows_add_i(tk + t * stride, 1, stride, kv_base(sr, seq[t]))` |
+| the compressed write (9529-9535) | `fc.pos = g_first * R`, `pos_step = R`, one call | a row: `fc.pos = (pos[t] / R) * R`, `pdst = ckv_at(sr, pos[t] / R, seq[t])`, `finish(d.latent + t * HD, 1, ...)` |
+| the o finish (9620) | `fo.pos = p0` | `fo.pos_rows = step->pos` |
+
+Two more things the branch needs, both mechanical: `d.ext` grows from `(win + W) * HD` to `(win + W + nseq * (win + 1)) * HD`
+(a few MB), and `l.mtp`/`spec_win` (the drafter) are refused with a step (a step runs the trunk alone).  The acceptance is
+the harness that proved the chunk path: `STRATA_DS4_STEPROWS=2` extended to the window path - the same window through both
+on the same state, compared byte for byte - and then the serve loop's step, which is where the 0.6-1.2 tok/s of the chunk
+host has to become the turn path's ~20-30.
+
+
 **The first serve-loop step was tried and is not in the tree (2026-10-27).**  `STRATA_DS4_STEP=1` made the loop take every
 live slot's pending token through one `forward_rows` (two rows), sample each row with its slot's parameters and print the
 `BT` lines, and the rest of the turn's bookkeeping stayed `run_advance`'s.  It is **functionally right - every client
