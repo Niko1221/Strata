@@ -995,6 +995,9 @@ struct Model::Impl {
     struct StepRows {
         const int* pos = nullptr;   // row t's position
         const int* seq = nullptr;   // row t's sequence
+        // the same positions where a kernel may read them (a finish's pos_rows): the caller's array is pageable host
+        // memory, so the rows go through a host-mapped copy first
+        const int* pos_dev = nullptr;
     };
     std::vector<uint32_t> prof;       // [nl][n_exp] routed-expert hits
     Stats st;
@@ -1378,6 +1381,14 @@ struct Model::Impl {
         }
         host_allocs.push_back(v);
         p = (T*) v;
+        return true;
+    }
+    // a step's row positions where a kernel can read them: finish's pos_rows must not point at pageable host memory
+    int* h_step_pos = nullptr;
+    bool step_pos_mapped(const int* pos, int T, std::string& err) {
+        if (h_step_pos == nullptr && !hmap(h_step_pos, (size_t) kWin, err)) return false;
+        T = std::min(T, kWin);
+        for (int t = 0; t < T; ++t) h_step_pos[t] = (int) pos[t];
         return true;
     }
 
@@ -7396,7 +7407,7 @@ struct Model::Impl {
                 fk.pos = (int) p0;
                 fk.dst_stride = HD;
             } else {
-                fk.pos_rows = step->pos;
+                fk.pos_rows = step->pos_dev;
                 fk.dst_stride = (long long) blk;
             }
             finish(c.kvr, T, HD, HD, fk, s);
@@ -7409,8 +7420,9 @@ struct Model::Impl {
                 ext_to_ring(c.ext, win_of(l), p0, g.win, T, HD, s, nullptr);
             } else {
                 for (int t = 0; t < T; ++t)
-                    ext_to_ring(c.ext + (size_t) t * blk + (size_t) g.win * HD, win_of(l, step->seq[t]), step->pos[t],
-                                g.win, 1, HD, s, nullptr);
+                    // (the kernel reads the token's row at +win itself: the block's base is the source)
+                    ext_to_ring(c.ext + (size_t) t * blk, win_of(l, step->seq[t]), step->pos[t], g.win, 1, HD, s,
+                                nullptr);
             }
         }
         const uint8_t* ckv = nullptr;
@@ -7656,7 +7668,7 @@ struct Model::Impl {
             fr.vpp = NHL;
             fr.freqs = freqs;
             if (step == nullptr) fr.pos = (int) (p0 + a0);
-            else fr.pos_rows = step->pos + a0;
+            else fr.pos_rows = step->pos_dev + a0;
             finish(c.q, na * NHL, HD, HD, fr, s);
             prof_mark(d, 8);
             AttnRows ar;
@@ -7691,7 +7703,7 @@ struct Model::Impl {
             fo.inverse = 1;
             fo.quant = 1;
             if (step == nullptr) fo.pos = (int) (p0 + a0);
-            else fo.pos_rows = step->pos + a0;
+            else fo.pos_rows = step->pos_dev + a0;
             finish(c.o, na * NHL, HD, HD, fo, s);
             x3::rows_f16(c.o, HQ, nullptr, na, HQ, c.o16, s);
             const int per = HQ / OG;
@@ -7926,6 +7938,8 @@ struct Model::Impl {
             seq[t] = vseq;
         }
         StepRows sr{pos, seq};
+        if (!step_pos_mapped(pos, T, err)) return false;
+        sr.pos_dev = h_step_pos;
         if (rows_env == 1) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only, &sr);
         return chunk_ab(L0, mi, p0, T, wp, S, err, kv_only, sr);   // (rows_env 2: the in-process A/B)
     }
@@ -8763,6 +8777,8 @@ struct Model::Impl {
             std::memcpy(h_emb + (size_t) t * g.dim, emb_row(st.pos, tk[t]), (size_t) g.dim * 2);
         }
         StepRows rows{pos, seq};
+        if (!step_pos_mapped(pos, T, err)) return false;
+        rows.pos_dev = h_step_pos;
         if (!forward_chunks(tk, T, T, err, -1, &rows)) return false;
         for (int t = 0; t < T; ++t) seqs[(size_t) seq[t]].pos += 1;
         return true;
