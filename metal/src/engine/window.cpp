@@ -1150,13 +1150,21 @@ void Window::moe_block(std::vector<mtl::Dispatch>& ds, int l, const std::string&
         // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
         const bool tq_ = tg_.type >= 144;
         int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        // the M1/M2's K-family experts: 8 lanes a row, 2 groups read (expert_parity --bench --sweep, M1 Max
+        // 2026-10-26: gu 8,1,2 117 us a layer against 327 for 32,1,4 at one token; 8,1,2 PASSes parity;
+        // live A/B 21.7-22.3 tok/s for 8,1,2 against 19.6-21.05 for 32,1,4).
+        if (!tq_ && gemv_m12_ && (tg_.type == ref::Q4_K || tg_.type == ref::Q5_K || tg_.type == ref::Q6_K))
+            gl = 8, gs = 2;
         if (const char* e = std::getenv("STRATA_METAL_MOE_TILE"))   // A/B tiles on M1 (gl,gr,gs,ds); default = M5's pick
             std::sscanf(e, "%d,%d,%d,%d", &gl, &gr, &gs, &ds_);
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4;
+        int dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        // the M1/M2's Q5_1 down, the 4,2 tile (STRATA_METAL_MOE_DN2=1 to try): the bench sweep gives 4,2,4 6%
+        // over 4,1,4 at 4+ tokens and a wash at 1-3 (expert_parity --bench --sweep, M1 Max, 2026-10-26).
+        if (gemv_m12_ && !dq2 && td.type == ref::Q5_1 && std::getenv("STRATA_METAL_MOE_DN2")) dr = 2;
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
@@ -2773,12 +2781,16 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         a.d_stride = (uint64_t) a.d_row * N;
         a.n_embd = N; a.n_ff = NFF; a.n_tok = 1; a.topk = TOPK; a.n_expert = NEXP;
         const bool dq2 = td.type == ref::Q2_0;
-        const int gl = 32, gr = 1, gs = 4, ds_ = 4;
+        int gl = 32, gr = 1, gs = 4, ds_ = 4;
+        // the M1/M2's K-family experts: see the decode window's note (8,1,2 measured faster both ways)
+        if (gemv_m12_ && (tgu.type == ref::Q4_K || tgu.type == ref::Q5_K || tgu.type == ref::Q6_K))
+            gl = 8, gs = 2;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4;
+        int dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        if (gemv_m12_ && !dq2 && td.type == ref::Q5_1 && std::getenv("STRATA_METAL_MOE_DN2")) dr = 2;   // see the decode window
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;

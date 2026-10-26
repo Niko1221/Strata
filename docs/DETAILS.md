@@ -122,6 +122,25 @@ opt-out anchors at 29.97-30.49 vs 19.21-19.90, gap/results/1018-1545; `STRATA_ME
 0.8 ms/miss law held in every arm; `gap/gap.sh` pins `STRATA_METAL_ARENA_GB=33` so the dynamic file-cache floor
 (`sysctl vm.vm_page_filecache_min`) cannot move the arena between arms.
 
+The same box serving the Unsloth UD-Q4_K_XL pack (82.5 GB, the Huihui calibration) runs `--context 204800`, raised
+from 162,144 on 2026-10-26 with the same streaming settings (33 GB arena, 2048-token chunks, `mpp` + `scan_v`).
+Decode holds at depth: probes at 90-101K tokens decode 21.7-22.3 tok/s, live sessions 18-20; a 100,887-token cold
+prompt prefills at ~276 tok/s net, and a needle at the front of a 100K prompt is recalled exactly. Parking and
+sessions scale too: 108,665 tokens save to 1.78 GB and restore in 645 ms, and a continuation of a parked 100K
+conversation re-prefills 40 of 100,922 tokens.
+
+Where the Q4_K decode time goes on this box (`STRATA_METAL_KPROF=1`, T=1 windows, 2026-10-26): 36 ms of GPU busy
+time out of the 47-55 ms wall a token takes - the rest is read-miss stalls and the per-cut handshakes. The routed
+expert GEMMs are 30.5% of the busy time (gate/up 7.2 ms + down 4.2 ms over 47/43 layers) and run at only
+~103 GB/s, while the dense GEMVs reach 260-280 GB/s. For the K-family gate/up the M1 Max prefers the 8-lane,
+2-group tile: 8,1,2 is 2.8x the M5's 32,1,4 pick in the compute-bound bench (117 us a layer against 327 at one
+token, `expert_parity --bench --sweep`) and 2-5% live (21.7-22.3 against 19.6-21.05 tok/s, three arms each), so
+the engine now picks it on M1/M2 for Q4_K/Q5_K/Q6_K gate/up; parity holds (rel L2 2e-7). The matching down tile
+(4,2,4, 6% over the 4,1,4 default in the bench at 4+ tokens) is a wash live at the 1-3-token decode windows
+(21.98 against 21.51 tok/s) and stays the opt-in `STRATA_METAL_MOE_DN2=1`. Everything else on this pack
+measured flat within the +/-5% band: read-ahead depths 8/20, `PREFETCH2=6`, `IO_THREADS=4/9`, a 35 GB arena,
+the 32,2,4 gate/up tile, and `GEMV` retunes - the shipped defaults stay.
+
 IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
