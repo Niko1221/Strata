@@ -1187,8 +1187,16 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
+        log = getattr(self, "log", None)                # retain this process's log across a restart
         line = None
         for line in proc.stdout:
+            # stderr already reaches the log; native ERR diagnostics use the protocol pipe.
+            if line.startswith("ERR ") and log not in (None, subprocess.DEVNULL):
+                try:
+                    log.write(f"[strata] {time.strftime('%Y-%m-%d %H:%M:%S')} native {line.rstrip()}\n")
+                    log.flush()
+                except (OSError, ValueError):          # a closed/full log must not prevent EOF publication
+                    pass
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
                 # release_gpu_waits invalidates the verifier, even if the native
