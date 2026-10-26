@@ -918,6 +918,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_executable(ds4_batch_attn_test tests/dsv41/batch_attn_test.cpp)
       target_include_directories(ds4_batch_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
       target_compile_features(ds4_batch_attn_test PRIVATE cxx_std_17)
+      # the attention kernel with T queries over disjoint regions against the same queries one at a time (M2); GPU
+      set_source_files_properties(tests/dsv41/attn_batch_test.cpp PROPERTIES LANGUAGE ${_ds4_test_lang})
+      add_executable(ds4_attn_batch_test tests/dsv41/attn_batch_test.cpp src/dsv41/ds4_kernels.cu)
+      target_include_directories(ds4_attn_batch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${_strata_gpu_include_directories})
+      target_link_libraries(ds4_attn_batch_test PRIVATE ${_strata_gpu_runtime_target} Threads::Threads)
+      target_compile_definitions(ds4_attn_batch_test PRIVATE STRATA_DSV41_TQ_CPU=1)
     endif()
     if(STRATA_ENABLE_HIP)
       foreach(_t strata_dsv41_kernels strata-dsv41)

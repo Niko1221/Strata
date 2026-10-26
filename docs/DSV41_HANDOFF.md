@@ -100,6 +100,10 @@ M2's first code is in: `src/dsv41/ds4_batch_attn.hpp` (with `tests/dsv41/batch_a
 table - a sequence's window base and compressed-row region, the rows its position can select, the indexer's picks into
 the shared table (refused outside its region) and a disjointness check.  Not wired into the model yet.
 
+The kernel-side property M2 stands on is now tested on the GPU: `ds4_attn_batch_test` runs `sparse_attn` with T = 2, each
+query on its own window rows ([0,8) and [8,16)) and its own compressed rows ([0,4) and [16,20) of the table), then runs
+the same two queries one at a time - every output value is identical.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
