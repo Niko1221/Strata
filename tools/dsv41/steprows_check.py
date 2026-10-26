@@ -20,7 +20,8 @@ import time
 
 class Engine:
     def __init__(self, argv, env):
-        self.p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        self.err = open('/data/works/steprows_engine.log', 'ab')
+        self.p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
                                   text=True, bufsize=1, env=env)
         self.q = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
@@ -80,7 +81,7 @@ def run(exe, pack, steprows, prompt, n, timeout, tp=4):
     env = dict(os.environ)
     env['STRATA_PREFILL_CPU_SHARE'] = '0'   # (the CPU prefill share makes small chunks non-deterministic)
     if steprows:
-        env["STRATA_DS4_STEPROWS"] = "1"
+        env["STRATA_DS4_STEPROWS"] = str(steprows)
     e = Engine(argv, env)
     try:
         e.start(timeout)
@@ -95,6 +96,7 @@ def main() -> int:
     ap.add_argument("--pack", required=True)
     ap.add_argument("--tokens", type=int, default=12)
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--steprows", type=int, default=1, help="1: the per-row path; 2: the in-process A/B")
     ap.add_argument("--tp", type=int, default=4, help="tensor-parallel group size (4: one group of the four cards)")
     a = ap.parse_args()
     prompt = [20000 + (i * 37) % 4096 for i in range(300)]
@@ -102,8 +104,8 @@ def main() -> int:
     ref = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout, a.tp)
     print("contiguous rows again (is the engine deterministic?): loading", flush=True)
     ref2 = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout, a.tp)
-    print("per-row (STEPROWS): loading", flush=True)
-    got = run(a.exe, a.pack, True, prompt, a.tokens, a.timeout, a.tp)
+    print("per-row (STEPROWS=%d): loading" % a.steprows, flush=True)
+    got = run(a.exe, a.pack, a.steprows, prompt, a.tokens, a.timeout, a.tp)
     print(("ok   " if ref == ref2 else "note ") + "the contiguous path against itself" +
           (" (deterministic)" if ref == ref2 else " (NOT deterministic: %s vs %s)" % (ref[:8], ref2[:8])), flush=True)
     ok = ref == got and ref == ref2

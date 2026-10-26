@@ -122,19 +122,21 @@ What one launch over T sequences still needs, in the order it has to be built:
 Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
 throughput.
 
-**The per-row chunk path was tried (2026-10-27) and is not in the tree.**  `StepRows` - a position and a sequence a row -
-went through `layer_chunk`: the window block a row (`[the ring's rows][the token]` at `t * (win + 1)`), the compressor
-and the ik/ckv writes a sequence, the indexer a row, `AttnRows` in its explicit form (one launch; the picks absolute).
-It compiles, and `STRATA_DS4_STEPROWS=1` routed every chunk through it for an A/B against the contiguous path.  Two things
-came out of it: the window rule a row is **`win - 1` ring rows and the token's** (or `p` and it when the position is
-younger than the ring) - not `win` and it; and the chunk scratch has to hold `t * (win + 1)` rows, not `win + C`, or
-the per-row blocks run off its end.  The A/B itself is not trustworthy: at `--prefill-chunk 8` two *identical* contiguous runs differ
-(tokens 3 to 6, depending on the run), and it is not the tensor-parallel split - the same happens at `--tp 4`, one group -
-so the engine is not deterministic in that shape and a bit-exact comparison against it proves nothing (the same prompt at
-the default chunk sizes is byte-identical run to run: the three-client check has compared it with production all along).
-The code stays out until the test can be in-process: snapshot the layer's state (its rows, the ring, the compressors'
-group and the table rows the chunk writes), run the contiguous call, restore, run the per-row one, and compare the rows
-and the written bytes directly.  That harness is the next thing to write.
+**The per-row chunk path is in and validated in process (2026-10-27).**  `StepRows` - a position and a sequence a row -
+goes through `layer_chunk`: the window block a row (`[the ring's rows][the token]` at `t * (win + 1)`), the compressor
+and the ik/ckv writes a sequence's (its own group, its own completed group), the indexer a row (its own scan, its picks
+made absolute), `AttnRows` in its explicit form (one launch).  The window rule a row is **`win - 1` ring rows and the
+token's** (or `p` and it when the position is younger than the ring), and the chunk scratch holds `t * (win + 1)` rows,
+not `win + C` - both found by getting it wrong first.
+
+The check that says so is **in process** (`STRATA_DS4_STEPROWS=2`): the same chunk through both paths on the same state -
+the layer's rows, its ring, the compressors' group and the table rows the chunk writes snapshotted and restored between
+the runs - with the rows and the written bytes compared directly.  A black-box A/B cannot do it: at `--prefill-chunk 8`
+two *identical* contiguous runs differ (tokens 3 to 6), at `--tp 4` too, so the engine is not deterministic in that shape
+(the same prompt at the default chunk sizes is byte-identical run to run: the three-client check has compared it with
+production all along).  On a 300-token prompt read in chunks of 8 - 38 chunks through every layer - the harness reports
+**no difference**: the rows, the compressed KV and the index keys are bit-identical, and both paths write the same 12
+greedy tokens.
 
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;

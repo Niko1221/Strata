@@ -987,6 +987,13 @@ struct Model::Impl {
     std::vector<State> seqs = std::vector<State>((size_t) nseq);
     State& state() { return seqs[(size_t) vseq]; }
     const State& state() const { return seqs[(size_t) vseq]; }
+    // M2's single-launch step: the rows a layer pass works on when they are one token each of several sequences - each
+    // row its own position, its own ring and its own region of the compressed tables (nullptr: a chunk of one sequence
+    // at p0 .. p0 + T - 1, the default)
+    struct StepRows {
+        const int* pos = nullptr;   // row t's position
+        const int* seq = nullptr;   // row t's sequence
+    };
     std::vector<uint32_t> prof;       // [nl][n_exp] routed-expert hits
     Stats st;
     int cur_topk_n[kWin] = {}, cur_cand_n[kWin] = {};   // what the latest indexer / candidate source left, per query
@@ -2868,19 +2875,27 @@ struct Model::Impl {
     // a sequence's rows of a source's compressed table (ds4_batch_attn.hpp's Layout::kv_base): its region is s.cap rows
     // from seq * s.cap, so with one sequence - the default - the base is 0 and the offsets below are the g_first rows the
     // compressor's writes and the cross-device copies always used
-    int64_t kv_base(const Src& s) const { return (int64_t) vseq * s.cap; }
+    int64_t kv_base(const Src& s) const { return kv_base(s, vseq); }
+    int64_t kv_base(const Src& s, int seq) const { return (int64_t) seq * s.cap; }
     void use_seq(int seq) { vseq = std::max(0, std::min(seq, nseq - 1)); }
     int seq_count() const { return nseq; }
-    size_t ckv_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ckv_rb(); }
-    size_t ik_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ik_rb(); }
+    size_t ckv_at(const Src& s, int64_t row) const { return ckv_at(s, row, vseq); }
+    size_t ckv_at(const Src& s, int64_t row, int seq) const { return (size_t) (kv_base(s, seq) + row) * ckv_rb(); }
+    size_t ik_at(const Src& s, int64_t row) const { return ik_at(s, row, vseq); }
+    size_t ik_at(const Src& s, int64_t row, int seq) const { return (size_t) (kv_base(s, seq) + row) * ik_rb(); }
     // the same tables at row 0 of the pass's sequence: what the indexer scans, the attention reads and the slot/park
     // paths copy (one sequence: the buffer's own base, as before)
     uint8_t* ckv_rows(const Src& s, size_t di) const { return s.ckv[di] ? s.ckv[di] + (size_t) kv_base(s) * ckv_rb() : nullptr; }
-    uint8_t* ik_rows(const Src& s, size_t di) const { return s.ik[di] ? s.ik[di] + (size_t) kv_base(s) * ik_rb() : nullptr; }
+    uint8_t* ik_rows(const Src& s, size_t di) const { return ik_rows(s, di, vseq); }
+    uint8_t* ik_rows(const Src& s, size_t di, int seq) const {
+        return s.ik[di] ? s.ik[di] + (size_t) kv_base(s, seq) * ik_rb() : nullptr;
+    }
     // a layer's compressors' partial group (ratio > 1), the pass's sequence's: l.c_kv and l.c_score hold nseq of them,
     // ratio x hd floats each
-    float* comp_kv(const Layer& l) const { return l.c_kv + (size_t) vseq * (size_t) l.ratio * (size_t) g.hd; }
-    float* comp_sc(const Layer& l) const { return l.c_score + (size_t) vseq * (size_t) l.ratio * (size_t) g.hd; }
+    float* comp_kv(const Layer& l) const { return comp_kv(l, vseq); }
+    float* comp_kv(const Layer& l, int seq) const { return l.c_kv + (size_t) seq * (size_t) l.ratio * (size_t) g.hd; }
+    float* comp_sc(const Layer& l) const { return comp_sc(l, vseq); }
+    float* comp_sc(const Layer& l, int seq) const { return l.c_score + (size_t) seq * (size_t) l.ratio * (size_t) g.hd; }
     size_t ckv_rb() const { return kv_row_bytes(kKvFp4, g.hd); }
     size_t ik_rb() const { return kv_row_bytes(kKvFp4p, g.ix_hd); }
 
@@ -2995,7 +3010,8 @@ struct Model::Impl {
                       dalloc(d, c.qr16, C * g.q_lora, err) && dalloc(d, c.kvr, C * HD, err) &&
                       dalloc(d, c.ckr, C * HD, err) && dalloc(d, c.cgr, C * HD, err) &&
                       dalloc(d, c.latent, (C + 2) * HD, err) && dalloc(d, c.lat16, (C + 2) * HD, err) &&
-                      dalloc(d, c.ikr, (C + 2) * g.ix_hd, err) && dalloc(d, c.ext, ((size_t) g.win + C) * HD, err) &&
+                      dalloc(d, c.ikr, (C + 2) * g.ix_hd, err) &&
+                    dalloc(d, c.ext, ((size_t) g.win + C + (size_t) nseq * ((size_t) g.win + 1)) * HD, err) &&
                       dalloc(d, c.q, A * HQ, err) && dalloc(d, c.o, A * HQ, err) && dalloc(d, c.o16, A * HQ, err) &&
                       dalloc(d, c.oa, A * OG * g.o_lora, err) && dalloc(d, c.oa16, A * OG * g.o_lora, err) &&
                       dalloc(d, c.iq, AI * g.ix_heads * g.ix_hd, err) && dalloc(d, c.iw, C * 64, err) &&
@@ -7278,7 +7294,7 @@ struct Model::Impl {
     // place, the CPU lane's streamed in batches).  kv_only (a long prompt's first pass, Run::stop): only what the layers
     // after it read of these rows - its compressed KV and index keys - and nothing of its own attention or experts
     bool layer_chunk(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err,
-                     bool kv_only = false) {
+                     bool kv_only = false, const StepRows* step = nullptr) {
         Layer& l = member(L0, mi);
         Dev& d = devs[(size_t) l.dev];
         Chunk& c = *chunks[(size_t) l.dev];
@@ -7326,29 +7342,147 @@ struct Model::Impl {
             finish(c.qr, T, g.q_lora, g.q_lora, fq, s);
             x3::rows_f16(c.qr, g.q_lora, nullptr, T, g.q_lora, c.qr16, s);
             // the window rows: the ring's (positions p0 - win ..) then the chunk's
-            ring_to_ext(win_of(l), c.ext, p0, g.win, HD, s);
+            // M2's step: each row its own window block - [the sequence's ring rows][its token] - at t * (win + 1) rows
+            const size_t blk = step != nullptr ? (size_t) (g.win + 1) * HD : (size_t) 0;
+            if (step == nullptr) {
+                ring_to_ext(win_of(l), c.ext, p0, g.win, HD, s);
+            } else {
+                for (int t = 0; t < T; ++t)
+                    ring_to_ext(win_of(l, step->seq[t]), c.ext + (size_t) t * blk, step->pos[t], g.win, HD, s);
+            }
             Finish fk;
             fk.w = l.kv_norm;
             fk.eps = g.eps;
             fk.rd = g.rd;
-            fk.pos = (int) p0;
             fk.freqs = freqs;
             fk.quant = 1;
             fk.dst = c.ext + (size_t) g.win * HD;
-            fk.dst_stride = HD;
+            if (step == nullptr) {
+                fk.pos = (int) p0;
+                fk.dst_stride = HD;
+            } else {
+                fk.pos_rows = step->pos;
+                fk.dst_stride = (long long) blk;
+            }
             finish(c.kvr, T, HD, HD, fk, s);
             // feed_mark's checkpoint: the ring as it was before row snap_t - the old ring, then the chunk's rows before it
-            if (snap) {
+            if (snap && step == nullptr) {
                 CK(cudaMemcpyAsync(L0.snap_win, win_of(L0), (size_t) g.win * win_rb(), cudaMemcpyDeviceToDevice, s));
                 if (wp.snap_t > 0) ext_to_ring(c.ext, L0.snap_win, p0, g.win, wp.snap_t, HD, s, nullptr);
             }
-            ext_to_ring(c.ext, win_of(l), p0, g.win, T, HD, s, nullptr);
+            if (step == nullptr) {
+                ext_to_ring(c.ext, win_of(l), p0, g.win, T, HD, s, nullptr);
+            } else {
+                for (int t = 0; t < T; ++t)
+                    ext_to_ring(c.ext + (size_t) t * blk + (size_t) g.win * HD, win_of(l, step->seq[t]), step->pos[t],
+                                g.win, 1, HD, s, nullptr);
+            }
         }
         const uint8_t* ckv = nullptr;
         const long long ss = (long long) o.max_context + 64;
         if (l.ratio > 0) {
             Src& sr = srcs[(size_t) l.src];
             const int R = l.ratio;
+            if (step != nullptr) {
+                // M2's step: one token a sequence - its own compressors' group, its own completed group (or none), its
+                // own rows of the tables.  The cross-group hand-off is not wired for a step yet.
+                if (sr.remote) {
+                    err = "the batched step has no cross-group hand-off yet (run one tensor-parallel group)";
+                    return false;
+                }
+                if (l.kv_src) {
+                    if (R == 1) {
+                        Finish fc;
+                        fc.w = l.c_norm;
+                        fc.eps = g.eps;
+                        finish(c.ckr, T, HD, HD, fc, s);
+                    } else {
+                        for (int t = 0; t < T; ++t)
+                            compress_win(c.ckr + (size_t) t * HD, c.cgr + (size_t) t * HD, comp_kv(l, step->seq[t]),
+                                         comp_sc(l, step->seq[t]), R, (int) step->pos[t], 1, HD, l.c_norm, g.eps,
+                                         c.latent + (size_t) t * HD, s);
+                    }
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        if ((p + 1) % R != 0) continue;                      // (its token completed no group)
+                        const int64_t row = p / R;
+                        float* lat = R == 1 ? c.ckr + (size_t) t * HD : c.latent + (size_t) t * HD;
+                        Finish fw;
+                        fw.rd = 0;
+                        fw.pos = p;
+                        fw.quant = 2;
+                        fw.pdst = sr.ckv[(size_t) l.dev] + ckv_at(sr, row, step->seq[t]);
+                        finish(lat, 1, HD, HD, fw, s);
+                        if (l.owns_k && l.ix_src) {
+                            Src& ks = srcs[(size_t) l.ik_src];
+                            x3::rows_f16(lat, HD, nullptr, 1, HD, c.lat16, s);
+                            if (!gemm(d, c, l.i_wk, c.lat16, HD, 1, c.ikr, g.ix_hd, 0.0f, err)) return false;
+                            Finish fi;
+                            fi.w = l.ik_norm;
+                            fi.eps = g.eps;
+                            fi.rd = g.rd;
+                            fi.pos = (int) (row * R);
+                            fi.freqs = freqs;
+                            fi.quant = 3;
+                            fi.pdst = ks.ik[(size_t) l.dev] + ik_at(ks, row, step->seq[t]);
+                            finish(c.ikr, 1, g.ix_hd, g.ix_hd, fi, s);
+                        }
+                    }
+                }
+                if (l.ix_src && !kv_only) {
+                    Src& ks = srcs[(size_t) l.ik_src];
+                    if (!gemm_f16w(c, l.i_wproj, g.ix_heads, D, c.x16, D, T,
+                                   1.0f / std::sqrt((float) g.ix_hd) / std::sqrt((float) g.ix_heads), c.iw, 64, err))
+                        return false;
+                    for (int t = 0; t < T; ++t) {
+                        const int64_t p = step->pos[t];
+                        const int nlast = (int) ((p + 1) / R);
+                        if (nlast <= 0) continue;
+                        if (!gemm(d, c, l.i_wq_b, c.qr16 + (size_t) t * g.q_lora, g.q_lora, 1, c.iq,
+                                  g.ix_heads * g.ix_hd, 0.0f, err))
+                            return false;
+                        Finish fi;
+                        fi.rd = g.rd;
+                        fi.pos = (int) p;
+                        fi.vpp = g.ix_heads;
+                        fi.freqs = freqs;
+                        fi.quant = 3;
+                        finish(c.iq, g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
+                        Rows lim;
+                        lim.gen = 1;
+                        lim.p0 = p;
+                        lim.R = R;
+                        lim.kcap = g.ix_topk;
+                        lim.ccap = g.cand_topk;
+                        lim.blk = std::max(1, g.cand_blk);
+                        int* tk = c.topk + (size_t) t * topk_stride();
+                        int* cd = c.cand + (size_t) t * cand_stride();
+                        const float* iw = c.iw + (size_t) t * 64;
+                        const int kbase = (int) kv_base(sr, step->seq[t]);
+                        if (l.uses_cand && (nlast + g.cand_blk - 1) / g.cand_blk > g.cand_topk) {
+                            Rows cl = lim;
+                            cl.gen = 2;
+                            index_score(c.iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
+                                        g.cand_topk * g.cand_blk, cd, (int) cand_stride(), g.cand_blk, cl, c.scores, ss, s);
+                            Rows tr = lim;
+                            tr.gen = 3;
+                            topk(c.scores, ss, 1, tr, cd, (int) cand_stride(), g.cand_blk, tk, (int) topk_stride(), s);
+                        } else {
+                            index_score(c.iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
+                                        nlast, nullptr, 0, 1, lim, c.scores, ss, s);
+                            if (l.cand_src) {
+                                Rows cr = lim;
+                                cr.kcap = g.cand_topk;
+                                cand_blocks(c.scores, ss, 1, cr, g.cand_blk, c.bm, (long long) bm_stride(), cd,
+                                            (int) cand_stride(), s);
+                            }
+                            topk(c.scores, ss, 1, lim, nullptr, 0, 1, tk, (int) topk_stride(), s);
+                        }
+                        rows_add_i(tk, 1, (int) topk_stride(), kbase, s);   // (absolute rows: one table)
+                    }
+                }
+                ckv = sr.ckv[(size_t) l.dev];
+            } else {
             const int64_t g_first = p0 / R, g_end = (p0 + T) / R;
             const int ng = (int) std::max<int64_t>(0, g_end - g_first);
             const float* latent = c.latent;
@@ -7473,6 +7607,7 @@ struct Model::Impl {
                 }
             }
             ckv = sr.ckv[(size_t) l.dev];   // (the picks are absolute rows of the one table: rows_add_i above)
+            }
         }
         if (kv_only) return true;
         prof_mark(d, 7);
@@ -7483,28 +7618,45 @@ struct Model::Impl {
             if (!gemm(d, c, l.wq_b, c.qr16 + (size_t) a0 * g.q_lora, g.q_lora, na, c.q, HQ, 0.0f, err)) return false;
             Finish fr;
             fr.rd = g.rd;
-            fr.pos = (int) (p0 + a0);
             fr.vpp = NHL;
             fr.freqs = freqs;
+            if (step == nullptr) fr.pos = (int) (p0 + a0);
+            else fr.pos_rows = step->pos + a0;
             finish(c.q, na * NHL, HD, HD, fr, s);
             prof_mark(d, 8);
             AttnRows ar;
-            ar.gen = 1;
-            ar.p0 = p0;
-            ar.t0 = a0;
-            ar.win = g.win;
-            ar.R = l.ratio;
-            ar.kcap = g.ix_topk;
+            if (step == nullptr) {
+                ar.gen = 1;
+                ar.p0 = p0;
+                ar.t0 = a0;
+                ar.win = g.win;
+                ar.R = l.ratio;
+                ar.kcap = g.ix_topk;
+            } else {
+                // the step's own table: query t reads row (t * (win + 1)) + its valid ring rows, then its token's row,
+                // and the compressed rows its position selects (absolute in the one table)
+                ar.gen = 0;
+                for (int t = 0; t < T; ++t) {
+                    // the window of position p is p - win + 1 .. p: win - 1 ring rows and the token's, or p ring rows
+                    // and the token's when the position is younger than the ring (the kernel's gen rule, made a row)
+                    const int p = (int) step->pos[t];
+                    const int nr = (int) std::min<int64_t>(g.win - 1, p);
+                    ar.win0[t] = (int) ((size_t) t * (size_t) (g.win + 1) + (size_t) (g.win - nr));
+                    ar.nwin[t] = nr + 1;
+                    ar.nsel[t] = (int) std::min<int64_t>(g.ix_topk, l.ratio > 0 ? (p + 1) / l.ratio : 0);
+                }
+            }
             sparse_attn(c.q, c.ext, ckv, c.topk + (size_t) a0 * topk_stride(), (int) topk_stride(), ar, l.sink, NHL, HD,
                         na, 1.0f / std::sqrt((float) HD), c.o, s, kKvFp4, 0, &d.attn_scr);   // (a short last slab)
             prof_mark(d, 9);
             Finish fo;
             fo.rd = g.rd;
-            fo.pos = (int) (p0 + a0);
             fo.vpp = NHL;
             fo.freqs = freqs;
             fo.inverse = 1;
             fo.quant = 1;
+            if (step == nullptr) fo.pos = (int) (p0 + a0);
+            else fo.pos_rows = step->pos + a0;
             finish(c.o, na * NHL, HD, HD, fo, s);
             x3::rows_f16(c.o, HQ, nullptr, na, HQ, c.o16, s);
             const int per = HQ / OG;
@@ -7719,15 +7871,120 @@ struct Model::Impl {
     };
     // layer L0 over chunk k per a long prompt's skip (Run): its kv_only, or its rows from Run::r0 on - the chunk's
     // buffers seen from that row (the yoco layer: its kv_only over the rows before it first)
+    // a chunk's call as M2's step describes it - the same rows, one by one (STRATA_DS4_STEPROWS=1: the self-check that the
+    // per-row path answers exactly what the contiguous one does, run by every window and prompt of the gates)
+    bool chunk_rows(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err,
+                    bool kv_only) {
+        static const int rows_env = [] {
+            const char* e = std::getenv("STRATA_DS4_STEPROWS");
+            return e != nullptr ? std::atoi(e) : 0;
+        }();
+        if (rows_env == 0 || T <= 0 || T > kWin) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only);
+        int pos[kWin], seq[kWin];
+        for (int t = 0; t < T; ++t) {
+            pos[t] = (int) (p0 + t);
+            seq[t] = vseq;
+        }
+        StepRows sr{pos, seq};
+        if (rows_env == 1) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only, &sr);
+        return chunk_ab(L0, mi, p0, T, wp, S, err, kv_only, sr);   // (rows_env 2: the in-process A/B)
+    }
+    // STRATA_DS4_STEPROWS=2 (a test): the same chunk through both paths, on the same state, compared bit for bit.  The
+    // engine at small chunks is not deterministic run to run (two identical runs differ), so the only trustworthy check
+    // is in one process: snapshot the layer's rows, its ring, the compressors' group and the table rows the chunk writes,
+    // run the contiguous call, restore, run the per-row one, and compare.
+    bool chunk_ab(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err, bool kv_only,
+                  const StepRows& rows) {
+        Layer& l = member(L0, mi);
+        Dev& d = devs[(size_t) l.dev];
+        Chunk& c = *chunks[(size_t) l.dev];
+        cudaSetDevice(d.id);
+        cudaStream_t s = d.st;
+        const int R = std::max(1, l.ratio);
+        const int64_t g0 = p0 / R;
+        const bool has_c = l.c_kv != nullptr && l.ratio > 0;
+        const bool has_tab = l.ratio > 0 && srcs[(size_t) l.src].ckv[(size_t) l.dev] != nullptr;
+        const bool has_ik = l.ratio > 0 && l.ix_src && l.owns_k &&
+                            srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr;
+        const size_t hbytes = (size_t) T * (size_t) g.hc * (size_t) g.dim * sizeof(float);
+        std::vector<uint8_t> h0(hbytes), ha(hbytes), hb(hbytes), ring0((size_t) g.win * win_rb()),
+            ck0(has_tab ? (size_t) T * ckv_rb() : 0), cka(ck0.size()), ckb(ck0.size()),
+            ik0(has_ik ? (size_t) T * ik_rb() : 0), ika(ik0.size()), ikb(ik0.size());
+        std::vector<float> kv0(has_c ? (size_t) l.ratio * g.hd : 0), sc0(kv0.size());
+        Src* const srp = l.ratio > 0 ? &srcs[(size_t) l.src] : nullptr;
+        Src* const ksp = l.ix_src ? &srcs[(size_t) l.ik_src] : nullptr;
+        const auto snap = [&] {
+            CK(cudaMemcpyAsync(h0.data(), c.h, hbytes, cudaMemcpyDeviceToHost, s));
+            CK(cudaMemcpyAsync(ring0.data(), win_of(l), ring0.size(), cudaMemcpyDeviceToHost, s));
+            if (has_c) {
+                CK(cudaMemcpyAsync(kv0.data(), comp_kv(l), kv0.size() * 4, cudaMemcpyDeviceToHost, s));
+                CK(cudaMemcpyAsync(sc0.data(), comp_sc(l), sc0.size() * 4, cudaMemcpyDeviceToHost, s));
+            }
+            if (has_tab) CK(cudaMemcpyAsync(ck0.data(), srp->ckv[(size_t) l.dev] + ckv_at(*srp, g0), ck0.size(),
+                                            cudaMemcpyDeviceToHost, s));
+            if (has_ik) CK(cudaMemcpyAsync(ik0.data(), ksp->ik[(size_t) l.dev] + ik_at(*ksp, g0), ik0.size(),
+                                           cudaMemcpyDeviceToHost, s));
+            CK(cudaStreamSynchronize(s));
+        };
+        const auto restore = [&] {
+            CK(cudaMemcpyAsync(c.h, h0.data(), hbytes, cudaMemcpyHostToDevice, s));
+            CK(cudaMemcpyAsync(win_of(l), ring0.data(), ring0.size(), cudaMemcpyHostToDevice, s));
+            if (has_c) {
+                CK(cudaMemcpyAsync(comp_kv(l), kv0.data(), kv0.size() * 4, cudaMemcpyHostToDevice, s));
+                CK(cudaMemcpyAsync(comp_sc(l), sc0.data(), sc0.size() * 4, cudaMemcpyHostToDevice, s));
+            }
+            if (has_tab) CK(cudaMemcpyAsync(srp->ckv[(size_t) l.dev] + ckv_at(*srp, g0), ck0.data(), ck0.size(),
+                                            cudaMemcpyHostToDevice, s));
+            if (has_ik) CK(cudaMemcpyAsync(ksp->ik[(size_t) l.dev] + ik_at(*ksp, g0), ik0.data(), ik0.size(),
+                                           cudaMemcpyHostToDevice, s));
+            CK(cudaStreamSynchronize(s));
+        };
+        snap();
+        if (!layer_chunk(L0, mi, p0, T, wp, S, err, kv_only)) return false;
+        CK(cudaMemcpyAsync(ha.data(), c.h, hbytes, cudaMemcpyDeviceToHost, s));
+        if (has_tab) CK(cudaMemcpyAsync(cka.data(), srp->ckv[(size_t) l.dev] + ckv_at(*srp, g0), cka.size(),
+                                        cudaMemcpyDeviceToHost, s));
+        if (has_ik) CK(cudaMemcpyAsync(ika.data(), ksp->ik[(size_t) l.dev] + ik_at(*ksp, g0), ika.size(),
+                                       cudaMemcpyDeviceToHost, s));
+        CK(cudaStreamSynchronize(s));
+        restore();
+        if (!layer_chunk(L0, mi, p0, T, wp, S, err, kv_only, &rows)) return false;
+        CK(cudaMemcpyAsync(hb.data(), c.h, hbytes, cudaMemcpyDeviceToHost, s));
+        if (has_tab) CK(cudaMemcpyAsync(ckb.data(), srp->ckv[(size_t) l.dev] + ckv_at(*srp, g0), ckb.size(),
+                                        cudaMemcpyDeviceToHost, s));
+        if (has_ik) CK(cudaMemcpyAsync(ikb.data(), ksp->ik[(size_t) l.dev] + ik_at(*ksp, g0), ikb.size(),
+                                       cudaMemcpyDeviceToHost, s));
+        CK(cudaStreamSynchronize(s));
+        int bad = -1;
+        size_t first = 0;
+        for (size_t i = 0; i < hbytes; ++i)
+            if (ha[i] != hb[i]) {
+                bad = 0;
+                first = i;
+                break;
+            }
+        const bool tab_eq = cka == ckb, ik_eq = ika == ikb;
+        if (!tab_eq) bad = bad < 0 ? 1 : bad;
+        if (!ik_eq) bad = bad < 0 ? 2 : bad;
+        if (bad >= 0 || !tab_eq || !ik_eq) {
+            std::fprintf(stderr,
+                         "ds4 steprows: layer %d member %d at p0 %lld T %d: %s%s%s (h first byte %zu of %zu)\n",
+                         l.il, mi, (long long) p0, T, bad == 0 ? "rows differ" : "rows equal",
+                         tab_eq ? "" : ", the compressed rows differ", ik_eq ? "" : ", the index keys differ", first,
+                         hbytes);
+            return false;
+        }
+        return true;
+    }
     bool run_layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err,
                    const Run& run, int k, int il) {
-        if (run.kv_only(k, il)) return layer_chunk(L0, mi, p0, T, wp, S, err, true);
+        if (run.kv_only(k, il)) return chunk_rows(L0, mi, p0, T, wp, S, err, true);
         const int r0 = run.r0(k, il);
-        if (r0 <= 0) return layer_chunk(L0, mi, p0, T, wp, S, err);
+        if (r0 <= 0) return chunk_rows(L0, mi, p0, T, wp, S, err, false);
         if (il == run.yoco) {
             WinPlan w0 = wp;
             w0.snap_t = -1;
-            if (!layer_chunk(L0, mi, p0, r0, w0, S, err, true)) return false;
+            if (!chunk_rows(L0, mi, p0, r0, w0, S, err, true)) return false;
         }
         Chunk& c = *chunks[(size_t) member(L0, mi).dev];
         float* const h0 = c.h;
@@ -7736,7 +7993,7 @@ struct Model::Impl {
         c.pre += (size_t) r0 * 8;
         WinPlan w1 = wp;
         w1.snap_t = wp.snap_t >= r0 ? wp.snap_t - r0 : -1;
-        const bool ok = layer_chunk(L0, mi, p0 + r0, T - r0, w1, S, err);
+        const bool ok = chunk_rows(L0, mi, p0 + r0, T - r0, w1, S, err, false);
         c.h = h0;
         c.pre = pre0;
         return ok;

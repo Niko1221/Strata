@@ -40,8 +40,9 @@ done
 cd "$CD" || exit 1
 say "the per-row chunk path against the contiguous one (300-token prompt, --prefill-chunk 8)"
 timeout 1500 .venv/bin/python tools/dsv41/steprows_check.py --exe "$CD/build/strata-dsv41.batch" \
-  --pack /data/works/Strata-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw --tokens 12 --timeout 1800 >> "$LOG" 2>&1
+  --pack /data/works/Strata-data/packs/deepseek-v4.1-flash-ist-das-2.25bpw --tokens 12 --timeout 1800 --steprows 2 >> "$LOG" 2>&1
 say "steprows rc=$?"
+tail -6 /data/works/steprows_engine.log >> "$LOG" 2>/dev/null
 pkill -f 'strata-dsv41.batch' 2>/dev/null || true
 sleep 6
 say "window done"
