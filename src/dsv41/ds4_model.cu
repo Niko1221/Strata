@@ -925,6 +925,20 @@ struct Model::Impl {
     std::vector<std::unique_ptr<Pool>> pools;   // one per NUMA node, its workers on that node's cores
     std::vector<std::vector<int>> cores;        // each node's physical cores
     int NH = 1;                                 // the CPU lane's parts of an expert (the NUMA nodes)
+    bool band_numa = false;                     // --numa-experts bands: no parts — every 128-row band (the formats'
+                                                // finest legal split, the same bound the NH guard uses) of every
+                                                // matrix is placed on node (band + expert) % NN and computed there:
+                                                // one copy, every node's cores and local bandwidth serve the lane,
+                                                // near-exact balance (the rotation by expert spreads each matrix's
+                                                // remainder bands over the nodes)
+    int NN = 1;                                 // the CPU lane's NUMA placements: NH, or the node count when band_numa
+    // band_numa's layout: per layer, one region per node sized for a slot's worst node share of every matrix; slot's
+    // band b of matrix r (r < 2: ff / 128 bands, r == 2: dim / 128) at ram_part[slot][(b + e) % NN] + band_lay[layer][r]
+    // + (b / NN) * band bytes — the (b + e) rotation makes one node's bands of an expert an arithmetic progression
+    // with step NN, so the position is b / NN for every expert
+    std::vector<std::array<size_t, 4>> band_lay;   // layer -> [gate, up, down, per-slot] byte offsets (same on every node)
+    static constexpr int kMaxNuma = 8;          // placements band_numa spreads over (a region a node; two sockets of
+                                                // NPS4 is the most libnuma reports on a host today)
     // the CPU lane's experts read in place from the model's files (one part, the files' layout; the page cache keeps
     // what fits) instead of copied into RAM, and how much of them the load reads ahead (the most-routed first)
     bool file_experts = false;
@@ -1106,7 +1120,9 @@ struct Model::Impl {
 #endif
     }
     bool copy_mode = false;
-    std::vector<std::array<uint8_t*, 2>> ram_part;   // slot -> its parts
+    // slot -> its parts (part X's base on node X; band_numa: the slot's region base on each node). The non-dispatch
+    // readers (mx_mat, read_mx, GPU staging, the swaps) want entry X = 0 / the part they name.
+    std::vector<std::array<uint8_t*, kMaxNuma>> ram_part;
     std::vector<std::array<size_t, 4>> cp_lay;       // layer -> part offsets of gate, up, down rows; a part's bytes
     std::vector<int> copy_spare;                      // layer -> its spare slot (-1: none)
     std::mutex sw_mu;
@@ -1710,32 +1726,61 @@ struct Model::Impl {
     // (copy_mode) matrix r's rows, and the rows of one NUMA part of it
     int mx_n(int r) const { return r < 2 ? g.ff : g.dim; }
     size_t mx_row_b(const Layer& l, int r) const { return mx_part_bytes(l, r) / (size_t) mx_n(r); }
-    // part X's rows [X n / NH, ..) of expert e's matrix r: its copy's part on node X, else where the file has them
+    // part X's rows [X n / NH, ..) of expert e's matrix r: its copy's part on node X, else where the file has them.
     const uint8_t* mx_part_ptr(const Layer& l, int e, int r, int X) const {
         if (copy_mode && l.ram[(size_t) e] >= 0)
             return ram_part[(size_t) l.ram[(size_t) e]][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r];
         return mx_mat(l, e, r) + (size_t) X * (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
     }
+    // band_numa: matrix r's band b (128 whole rows) of expert e — on node (b + e) % NN in its copy (its (b / NN)-th
+    // band there), or where the file has it
+    const uint8_t* band_ptr(const Layer& l, int e, int r, int b) const {
+        const size_t rb = mx_row_b(l, r);
+        if (copy_mode && l.ram[(size_t) e] >= 0)
+            return ram_part[(size_t) l.ram[(size_t) e]][(size_t) ((b + e) % NN)] + band_lay[(size_t) l.il][(size_t) r] +
+                   (size_t) (b / NN) * (size_t) 128 * rb;
+        return mx_mat(l, e, r) + (size_t) b * (size_t) 128 * rb;
+    }
     // a copy's NH parts -> the blob, and back (each matrix's rows of part X at X n / NH rows into the blob's matrix)
-    void ram_to_blob(const Layer& l, int s, uint8_t* blob) const {
+    void ram_to_blob(const Layer& l, int e, int s, uint8_t* blob) const {
         for (int r = 0; r < 3; ++r) {
+            if (band_numa) {   // the copy is band-scattered: gather band by band into the blob's whole-matrix layout
+                const size_t bb = (size_t) 128 * mx_row_b(l, r);
+                const int bands = mx_n(r) / 128;
+                for (int b = 0; b < bands; ++b)
+                    std::memcpy(blob + l.lay.trellis[r] + (size_t) b * bb, band_ptr_l(l, s, r, b, e), bb);
+                continue;
+            }
             const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
             for (int X = 0; X < NH; ++X)
                 std::memcpy(blob + l.lay.trellis[r] + (size_t) X * nb, ram_part[(size_t) s][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r], nb);
         }
     }
-    void blob_to_ram(const Layer& l, const uint8_t* blob, int s) const {
+    void blob_to_ram(const Layer& l, int e, const uint8_t* blob, int s) const {
         for (int r = 0; r < 3; ++r) {
+            if (band_numa) {   // scatter the blob's whole-matrix rows band by band onto their nodes
+                const size_t bb = (size_t) 128 * mx_row_b(l, r);
+                const int bands = mx_n(r) / 128;
+                for (int b = 0; b < bands; ++b)
+                    std::memcpy(band_ptr_l(l, s, r, b, e), blob + l.lay.trellis[r] + (size_t) b * bb, bb);
+                continue;
+            }
             const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
             for (int X = 0; X < NH; ++X)
                 std::memcpy(ram_part[(size_t) s][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r], blob + l.lay.trellis[r] + (size_t) X * nb, nb);
         }
     }
+    // band_numa: the SLOT's band — these swap paths know the slot and the expert id (the rotation term)
+    uint8_t* band_ptr_l(const Layer& l, int s, int r, int b, int e) const {
+        const size_t rb = mx_row_b(l, r);
+        return ram_part[(size_t) s][(size_t) ((b + e) % NN)] + band_lay[(size_t) l.il][(size_t) r] +
+               (size_t) (b / NN) * (size_t) 128 * rb;
+    }
     // expert e (from the file) -> its blob; and member m of nm's part of a blob (gate / up rows [m n_ff / nm, ..), down
     // inputs of the same range: in each row the blocks [m n_ff / nm / 32, ..)) and back
     bool read_mx(const Layer& l, int e, uint8_t* blob) const {   // (from its RAM-tier slot or copy when it has one)
         if (!l.ram.empty() && l.ram[(size_t) e] >= 0) {
-            if (copy_mode) ram_to_blob(l, l.ram[(size_t) e], blob);
+            if (copy_mode) ram_to_blob(l, e, l.ram[(size_t) e], blob);
             else std::memcpy(blob, ram_slots[(size_t) l.ram[(size_t) e]], l.blob);
             return true;
         }
@@ -3320,7 +3365,10 @@ struct Model::Impl {
             it.src[r] = sb + (in_ram || hit ? 0 : off % os::kDirectAlign);
             sb += flow_region(r);
         }
-        it.left.store(in_ram && copy_mode && store_blob == nullptr ? 3 * NH : 3, std::memory_order_relaxed);
+        it.left.store(in_ram && copy_mode && store_blob == nullptr
+                          ? (band_numa ? mx_n(0) / 128 + mx_n(1) / 128 + mx_n(2) / 128 : 3 * NH)
+                          : 3,
+                      std::memory_order_relaxed);
         ++(in_ram ? c.it_ram : hit ? c.it_lc : c.it_file);
     }
     // the likely experts of (chunk k, layer il) for T tokens, first in its stream: the CPU lane's experts whose chance
@@ -3433,7 +3481,9 @@ struct Model::Impl {
     // into its ring slot once that slot's last use is queued: the copy stream waits for it) as far as they can go now
     bool flow_pump(Chunk& c, std::string& err) {
         const size_t end = c.base + c.items.size();
-        IoQueue::Job jobs[6];
+        // parts: a part's three matrices a DMA; band_numa: one DMA a 128-row band, in whole-matrix order
+        std::vector<IoQueue::Job> jobs(band_numa ? (size_t) (mx_n(0) / 128 + mx_n(1) / 128 + mx_n(2) / 128)
+                                                 : (size_t) 3 * (size_t) NH);
         while (c.n_read < end) {
             Chunk::Item& it = fit(c, c.n_read);
             if (it.after >= 0) {   // layer-major: a slot's expert copied out of it once its reader is done; a slot
@@ -3463,7 +3513,23 @@ struct Model::Impl {
                 const int cs = copy_mode && it.ram != nullptr ? l.ram[(size_t) it.e] : -1;   // (a copy's slot)
                 int nj = 0;
                 for (int r = 0; r < 3; ++r) {
-                    if (cs >= 0) {   // a copy: each matrix's NH parts of rows, side by side into staging
+                    if (cs >= 0) {   // a copy: each matrix's rows into staging — parts side by side, or (band_numa)
+                        // band by band from their nodes, landing in whole-matrix order
+                        if (band_numa) {
+                            const size_t bb = (size_t) 128 * mx_row_b(l, r);
+                            const int bands = mx_n(r) / 128;
+                            for (int b = 0; b < bands; ++b) {
+                                IoQueue::Job& j = jobs[nj++];
+                                j = IoQueue::Job{};
+                                j.len = bb;
+                                j.dst = sb + (size_t) b * bb;
+                                j.left = &it.left;
+                                j.bad = &it.bad;
+                                j.mem = band_ptr_l(l, cs, r, b, it.e);
+                            }
+                            sb += flow_region(r);
+                            continue;
+                        }
                         const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
                         for (int X = 0; X < NH; ++X) {
                             IoQueue::Job& j = jobs[nj++];
@@ -3491,7 +3557,7 @@ struct Model::Impl {
                     j.keep = it.keep != nullptr ? it.keep + l.lay.trellis[r] : nullptr;
                     sb += flow_region(r);
                 }
-                c.io->push(jobs, nj);
+                c.io->push(jobs.data(), nj);
             }
             ++c.n_read;
         }
@@ -4300,7 +4366,32 @@ struct Model::Impl {
             nh = std::atoi(v) >= 2 ? 2 : 1;
         if (g.ff % nh != 0 || g.dim % nh != 0) nh = 1;
         NH = nh;
+        // --numa-experts bands: no parts — every 128-row band of every matrix is placed on node (band + expert) % NN
+        // and computed there. One copy (no more RAM than the parts take), every node's cores and local bandwidth
+        // serve the lane, and the rotation by expert keeps the balance near exact (whole 128-row bands a node; the
+        // per-node region is sized for the worst share). 128 whole rows are the formats' finest legal split — the
+        // same bound the NH guard above uses. Declines to the part layout, with a note, otherwise.
+        band_numa = false;
+        NN = NH;
+        if (o.numa_experts != 0) {
+            int nodes = o.numa_experts > 0 ? o.numa_experts : (int) std::min(cores.size(), (size_t) kMaxNuma);
+            if (o.numa_experts > nodes)
+                std::fprintf(stderr, "ds4: --numa-experts bands=%d: %d nodes serve (the host has %zu NUMA node%s)\n",
+                             o.numa_experts, nodes, cores.size(), cores.size() == 1 ? "" : "s");
+            if (!pk.gguf)
+                std::fprintf(stderr, "ds4: --numa-experts bands: off (not a GGUF pack; the EXL3 CPU lane keeps its layout)\n");
+            else if (nodes < 2)
+                std::fprintf(stderr, "ds4: --numa-experts bands: off (one NUMA node)\n");
+            else if (g.ff % 128 != 0 || g.dim % 128 != 0)
+                std::fprintf(stderr, "ds4: --numa-experts bands: off (n_ff %d or dim %d not a multiple of 128 rows)\n", g.ff, g.dim);
+            else {
+                band_numa = true;
+                NH = 1;
+                NN = nodes;
+            }
+        }
         cp_lay.assign(L.size(), {0, 0, 0, 0});
+        band_lay.assign(L.size(), {0, 0, 0, 0});
         for (const Layer& l : L) {
             size_t off = 0;
             for (int r = 0; r < 3; ++r) {
@@ -4308,6 +4399,23 @@ struct Model::Impl {
                 off += align256((size_t) (mx_n(r) / NH) * mx_row_b(l, r));
             }
             cp_lay[(size_t) l.il][3] = off;
+            if (band_numa) {
+                // one slot-stride per layer, same on every node: each matrix sized for its WORST node share
+                // (ceil of bands / NN — the per-expert rotation leaves the remainder nodes one band short; the
+                // slack is ~2 bands of 76). Band b of matrix r of expert e: node (b + e) % NN, at band_lay[r] +
+                // (b / NN) * band bytes — the (b + e) rotation makes the owned bands of one node an arithmetic
+                // progression with step NN, so the position is b / NN for every expert.
+                std::array<size_t, 4> bl = {0, 0, 0, 0};
+                size_t o = 0;
+                for (int r = 0; r < 3; ++r) {
+                    const size_t bands = ((size_t) mx_n(r) + 127) / 128;
+                    o = align256(o);
+                    bl[(size_t) r] = o;
+                    o += (bands + (size_t) NN - 1) / (size_t) NN * ((size_t) 128 * mx_row_b(l, r));
+                }
+                bl[3] = align256(o);
+                band_lay[(size_t) l.il] = bl;
+            }
         }
         // the hottest that fit the budget (a layer's first one brings its spare)
         std::vector<int> n_copy(L.size(), 0);
@@ -4320,18 +4428,20 @@ struct Model::Impl {
             used += add;
             ++n_copy[(size_t) l.il];
         }
-        // each layer's slots: one block per node of (copies + spare) parts
+        // each layer's slots: one block per node of (copies + spare) parts — or, band_numa, one region per node of
+        // ns slot-strides (the bands scattered inside; the same commit ceiling covers the single copy)
         std::vector<int> first(L.size(), -1);
         copy_spare.assign(L.size(), -1);
         for (Layer& l : L) {
             l.ram.assign((size_t) l.n_exp, -1);
             const int ns = n_copy[(size_t) l.il] + (n_copy[(size_t) l.il] > 0 ? spare_of(l) : 0);
             if (ns == 0) continue;
-            const size_t part = cp_lay[(size_t) l.il][3], bytes = (size_t) ns * part;
-            std::array<uint8_t*, 2> base = {nullptr, nullptr};
+            const size_t part = band_numa ? band_lay[(size_t) l.il][3] : cp_lay[(size_t) l.il][3];
+            const size_t bytes = (size_t) ns * part;
+            std::array<uint8_t*, kMaxNuma> base = {};
             bool ok = true;
-            for (int X = 0; X < NH && ok; ++X) {
-                base[(size_t) X] = (uint8_t*) node_map(bytes, X, NH);
+            for (int X = 0; X < NN && ok; ++X) {   // placement X on node X: a part's, or a band region's
+                base[(size_t) X] = (uint8_t*) node_map(bytes, X, NN);
                 ok = base[(size_t) X] != nullptr;
                 if (ok) {
                     ram_chunks.push_back(base[(size_t) X]);
@@ -4340,13 +4450,16 @@ struct Model::Impl {
             }
             if (!ok) {
                 std::fprintf(stderr, "ds4: no RAM for layer %d's %d copied experts (%.1f GB): they stay in place\n", l.il,
-                             ns, (double) bytes * NH / 1e9);
+                             ns, (double) bytes * NN / 1e9);
                 n_copy[(size_t) l.il] = 0;
                 continue;
             }
             first[(size_t) l.il] = (int) ram_part.size();
-            for (int i = 0; i < ns; ++i)
-                ram_part.push_back({base[0] + (size_t) i * part, NH > 1 ? base[1] + (size_t) i * part : nullptr});
+            for (int i = 0; i < ns; ++i) {
+                std::array<uint8_t*, kMaxNuma> a = {};
+                for (int X = 0; X < NN; ++X) a[(size_t) X] = base[(size_t) X] + (size_t) i * part;
+                ram_part.push_back(a);
+            }
             if (spare_of(l)) copy_spare[(size_t) l.il] = first[(size_t) l.il] + ns - 1;
         }
         struct Job {
@@ -4376,11 +4489,26 @@ struct Model::Impl {
                     const Job& j = jobs[i];
                     const Layer& l = L[(size_t) j.layer];
                     for (int r = 0; r < 3; ++r) {
-                        const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
-                        for (int X = 0; X < NH; ++X)
-                            if (!pk.read_at(l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) X * nb, nb,
-                                            ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]))
-                                bad.store(true);
+                        const size_t rb = mx_row_b(l, r);
+                        if (band_numa) {
+                            // band b of expert e to node (b + e) % NN, its (b / NN)-th band there
+                            const int bands = mx_n(r) / 128;
+                            for (int b = 0; b < bands; ++b) {
+                                const size_t bb = (size_t) 128 * rb;
+                                if (!pk.read_at(l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] +
+                                                                 (uint64_t) b * bb,
+                                                bb, ram_part[(size_t) j.slot][(size_t) ((b + j.e) % NN)] +
+                                                        band_lay[(size_t) l.il][(size_t) r] + (size_t) (b / NN) * bb))
+                                    bad.store(true);
+                            }
+                        } else {
+                            const size_t nb = (size_t) (mx_n(r) / NH) * rb;
+                            for (int X = 0; X < NH; ++X)
+                                if (!pk.read_at(l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] +
+                                                             (uint64_t) X * nb,
+                                                nb, ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]))
+                                    bad.store(true);
+                        }
                     }
                     const int64_t db = done_b.fetch_add((int64_t) l.blob) + (int64_t) l.blob;
                     if (o.verbose && i % 2048 == 0)
@@ -4395,11 +4523,33 @@ struct Model::Impl {
         }
         for (const Job& j : jobs) L[(size_t) j.layer].ram[(size_t) j.e] = j.slot;
         copy_mode = true;
+        if (band_numa) {   // self-check: sampled bands of the scattered copy against the model file, byte for byte
+            uint64_t rng = 12345;   // (a tiny LCG; <random> is a heavy include for a few hundred draws)
+            auto next = [&rng](uint32_t m) { rng = rng * 6364136223846793005ull + 1442695040888963407ull; return (uint32_t) ((rng >> 33) % m); };
+            int chk = 0, badc = 0;
+            std::vector<uint8_t> tmp;
+            for (int t = 0; t < 256 && badc == 0; ++t) {   // every layer's regions share one layout, so a sample of
+                const Job& j = jobs[(size_t) next((uint32_t) jobs.size())];   // bands trips any placement mistake
+                const Layer& l = L[(size_t) j.layer];
+                const int r = (int) next(3), bands = mx_n(r) / 128;
+                const int b = (int) next((uint32_t) bands);
+                const size_t bb = (size_t) 128 * mx_row_b(l, r);
+                tmp.assign(bb, 0);
+                if (!pk.read_at(l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) b * bb, bb,
+                                 tmp.data()) ||
+                    std::memcmp(band_ptr_l(l, j.slot, r, b, j.e), tmp.data(), bb) != 0)
+                    ++badc;
+                ++chk;
+            }
+            std::fprintf(stderr, "ds4: --numa-experts bands: %d sampled bands %s\n", chk,
+                         badc ? "DIFFER from the model file" : "match the model file");
+        }
         ram_held = (int) jobs.size();
         double cb = 0;
         for (const Job& j : jobs) cb += (double) L[(size_t) j.layer].blob;
-        std::fprintf(stderr, "ds4: %zu of the CPU lane's %zu experts copied into RAM (%.1f GB, %d NUMA part%s) in %.1f s%s\n",
-                     jobs.size(), hot.size(), cb / 1e9, NH, NH > 1 ? "s" : "", (now_ms() - t0) / 1000.0,
+        std::fprintf(stderr, "ds4: %zu of the CPU lane's %zu experts copied into RAM (%.1f GB, %d NUMA placement%s%s) in %.1f s%s\n",
+                     jobs.size(), hot.size(), cb / 1e9, NN, NN > 1 ? "s" : "",
+                     band_numa ? ", the bands striped over every node" : "", (now_ms() - t0) / 1000.0,
                      jobs.size() < hot.size() ? "; the others read in place" : "");
         return true;
     }
@@ -4554,15 +4704,15 @@ struct Model::Impl {
         char line[200];
         if (copy_mode)
             std::snprintf(line, sizeof line, "ds4: %d routed experts on the CPU lane (%.1f GB): %d copied into RAM (%d NUMA "
-                                             "parts), the rest in place in the model's files; %d threads\n",
-                          nh, hb_ / 1e9, ram_held, NH, cpu_threads());
+                                             "placements%s), the rest in place in the model's files; %d threads\n",
+                          nh, hb_ / 1e9, ram_held, NN, band_numa ? ", the bands striped over every node" : "", cpu_threads());
         else if (file_experts)
             std::snprintf(line, sizeof line,
                           "ds4: %d routed experts on the CPU lane (%.1f GB, in place in the model's files), %d threads\n",
                           nh, hb_ / 1e9, cpu_threads());
         else
-            std::snprintf(line, sizeof line, "ds4: %d routed experts on the CPU lane (%.1f GB of RAM, %d NUMA parts), %d threads\n", nh,
-                          hb_ / 1e9, NH, cpu_threads());
+            std::snprintf(line, sizeof line, "ds4: %d routed experts on the CPU lane (%.1f GB of RAM, %d NUMA placements%s), %d threads\n", nh,
+                          hb_ / 1e9, NN, band_numa ? ", the bands striped over every node" : "", cpu_threads());
         s << line;
         return s.str();
     }
@@ -4829,8 +4979,8 @@ struct Model::Impl {
         for (const auto& pl : pools) n += pl->size() - 1;
         return n + 1;
     }
-    // the CPU lane's workers: a pool per NUMA node (NH of them) on its cores; in place with one part, one pool over
-    // every node's cores (the pages lie where the cache put them)
+    // the CPU lane's workers: a pool a NUMA placement (NN of them — the parts', or every node's under band_numa) on
+    // its cores; in place with one part, one pool over every node's cores (the pages lie where the cache put them)
     void make_pools() {
         std::vector<std::vector<int>> cs = cores;
         if ((int) cs.size() < NH && !cs.empty()) {   // (DS4_COPY_NUMA=2 on one node, a test: its cores split in NH)
@@ -4845,10 +4995,10 @@ struct Model::Impl {
         size_t lane_cpus = 0;
         for (const auto& v : cs) lane_cpus += v.size();
         const bool lane_takes_all = lane_cpus >= (size_t) std::max(1u, std::thread::hardware_concurrency());
-        for (int X = 0; X < (int) cs.size() && X < std::max(NH, 1); ++X) {
+        for (int X = 0; X < (int) cs.size() && X < std::max(NN, 1); ++X) {
             std::vector<int> c = cs[(size_t) X];
-            if (file_experts && NH == 1)
-                for (size_t Y = 1; Y < cs.size(); ++Y) c.insert(c.end(), cs[Y].begin(), cs[Y].end());
+            if (file_experts && NH == 1 && !band_numa)   // (in place with one part the pages lie where the cache
+                for (size_t Y = 1; Y < cs.size(); ++Y) c.insert(c.end(), cs[Y].begin(), cs[Y].end());   // put them)
             if (X == 0 && !c.empty()) c.erase(c.begin());   // the host thread's core (it helps node 0's pool)
             // cores of the first pool left free beside the host thread's, for the thread that launches the decode's kernels
             // (and waits on the device) and whatever else the PC runs: with a worker spinning on every other logical CPU
@@ -4858,7 +5008,8 @@ struct Model::Impl {
             if (X == 0 && o.cpu_threads <= 0 && lane_free > 0 && (int) c.size() > lane_free + 1 && lane_takes_all)
                 c.resize(c.size() - (size_t) lane_free);
             int nw = (int) c.size();
-            if (o.cpu_threads > 0) nw = std::max(X == 0 ? 0 : 1, std::min(nw, o.cpu_threads / NH - (X == 0 ? 1 : 0)));
+            if (o.cpu_threads > 0)
+                nw = std::max(X == 0 ? 0 : 1, std::min(nw, o.cpu_threads / NN - (X == 0 ? 1 : 0)));
             pools.push_back(std::make_unique<Pool>(nw, c, 20000));   // spin through a token's layers (20 ms)
         }
         (void) gg::mx_tier();   // (measured here, not on the first token)
@@ -5623,10 +5774,18 @@ struct Model::Impl {
     static int ent_cap(const Layer& l) {
         return l.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(l.lay) ? kEntMax : kc::kExl3CpuMaxN;
     }
-    void run_nodes(int n, const std::function<void(int)>* f) {
-        for (int X = 0; X < NH; ++X) pools[(size_t) X]->start(n, f[X]);
+    // f's entries take (item, pool): band_numa's ownership filter lives in the lambda (it needs the item's expert,
+    // which only the item's own arithmetic knows); every other mode ignores the pool argument.
+    void run_nodes(int n, const std::function<void(int, int)>* f) {
+        // w[] must outlive the waits (Pool::start keeps a pointer into the caller's objects) — it does.
+        std::function<void(int)> w[kMaxNuma];
+        const int np = band_numa ? NN : NH;
+        for (int p = 0; p < np; ++p) {   // band_numa: every pool sees every item and keeps the ones whose bands live
+            w[(size_t) p] = [fe = f[band_numa ? 0 : p], p](int j) { fe(j, p); };   // on its node — a skipped ticket
+            pools[(size_t) p]->start(n, w[(size_t) p]);   // costs one CAS, nothing beside the job it guards
+        }
         pools[0]->help();
-        for (int X = 0; X < NH; ++X) pools[(size_t) X]->wait();
+        for (int p = 0; p < np; ++p) pools[(size_t) p]->wait();
     }
 
     // a GGUF's MXFP4 experts on the CPU lane, read from the file's mapping or their copy in RAM (mx_part_ptr): each
@@ -5675,10 +5834,15 @@ struct Model::Impl {
                     gg::mx_quant(x + (size_t) t * ldx, E, (void*) x_act(en, i));
                 }
         }
-        std::function<void(int)> f[4];
-        for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+        std::function<void(int, int)> f[kMaxNuma];
+        for (int pl = 0; pl < NH; ++pl)
+            f[pl] = [&, X = pl](int j, int p) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / GB] : j / GB)];
+                // band_numa: this 64-row job is half of the 128-row band (j % GB) >> 1; keep only the jobs whose
+                // band lives on this pool's node (every pool sees every item; the others are one CAS and a return)
+                const int hb = (j % GB) >> 1;
+                if (band_numa && ((hb + en.e) % NN) != p) return;
+                const size_t hro = (size_t) ((j % GB) & 1) * 64 * mx_row_b(l, 0);
                 const int r0 = X * FFh + (j % GB) * RB, r1 = std::min(X * FFh + FFh, r0 + RB);
                 const void* ap[gg::kMxCpuMaxN];
                 float yg[gg::kMxCpuMaxN][RB], yu[gg::kMxCpuMaxN][RB];
@@ -5688,9 +5852,13 @@ struct Model::Impl {
                     gp[i] = yg[i];
                     up[i] = yu[i];
                 }
-                // (part X's rows, from where they are: a copy's part on node X, or the file's)
-                gg::mx_rows(mx_part_ptr(l, en.e, 0, X), gr, E, r0 - X * FFh, r1 - X * FFh, ap, en.n, gp);
-                gg::mx_rows(mx_part_ptr(l, en.e, 1, X), gr, E, r0 - X * FFh, r1 - X * FFh, ap, en.n, up);
+                // (part X's rows, from where they are: its copy's part on node X, or the file's)
+                // band_numa: the base IS this 64-row run — the kernels walk rows from the base themselves, so
+                // the range is [0, RB) relative to it (the part path passes rows relative to the part the same way)
+                gg::mx_rows(band_numa ? band_ptr(l, en.e, 0, hb) + hro : mx_part_ptr(l, en.e, 0, X), gr, E,
+                            band_numa ? 0 : r0 - X * FFh, band_numa ? (r1 - r0) : (r1 - X * FFh), ap, en.n, gp);
+                gg::mx_rows(band_numa ? band_ptr(l, en.e, 1, hb) + (size_t) ((j % GB) & 1) * 64 * mx_row_b(l, 1) : mx_part_ptr(l, en.e, 1, X), gr, E,
+                            band_numa ? 0 : r0 - X * FFh, band_numa ? (r1 - r0) : (r1 - X * FFh), ap, en.n, up);
                 for (int i = 0; i < en.n; ++i) {
                     float* h = band_q ? yg[i] : c_xhd.data() + (size_t) (en.slot0 + i) * FF + r0;
                     for (int r = r0; r < r1; ++r) {
@@ -5709,9 +5877,12 @@ struct Model::Impl {
             for (const Ent& en : ents)
                 for (int i = 0; i < en.n; ++i)
                     gg::mx_quant(c_xhd.data() + (size_t) (en.slot0 + i) * FF, FF, hq + (size_t) (en.slot0 + i) * ha);
-        for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+        for (int pl = 0; pl < NH; ++pl)
+            f[pl] = [&, X = pl](int j, int p) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / DB] : j / DB)];
+                const int hb = (j % DB) >> 1;
+                if (band_numa && ((hb + en.e) % NN) != p) return;
+                const size_t hro = (size_t) ((j % DB) & 1) * 64 * mx_row_b(l, 2);
                 const int r0 = X * Eh + (j % DB) * RB, r1 = std::min(X * Eh + Eh, r0 + RB);
                 const void* ap[gg::kMxCpuMaxN];
                 float* yp[gg::kMxCpuMaxN];
@@ -5719,7 +5890,8 @@ struct Model::Impl {
                     ap[i] = hq + (size_t) (en.slot0 + i) * ha;
                     yp[i] = c_yd.data() + (size_t) (en.slot0 + i) * E + r0;
                 }
-                gg::mx_rows(mx_part_ptr(l, en.e, 2, X), dr, FF, r0 - X * Eh, r1 - X * Eh, ap, en.n, yp);
+                gg::mx_rows(band_numa ? band_ptr(l, en.e, 2, hb) + hro : mx_part_ptr(l, en.e, 2, X), dr, FF,
+                            band_numa ? 0 : r0 - X * Eh, band_numa ? (r1 - r0) : (r1 - X * Eh), ap, en.n, yp);
             };
         run_nodes(ne * DB, f);
     }
@@ -5770,21 +5942,25 @@ struct Model::Impl {
                 }
         }
         const double tp1 = now_ms();
-        std::function<void(int)> f[4];
-        for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+        std::function<void(int, int)> f[kMaxNuma];
+        for (int pl = 0; pl < NH; ++pl)
+            f[pl] = [&, X = pl](int j, int p) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / GB] : j / GB)];
+                const int hb = (j % GB) >> 1;
+                if (band_numa && ((hb + en.e) % NN) != p) return;
+                const size_t hro = (size_t) ((j % GB) & 1) * 64 * mx_row_b(l, 0);
                 const int r0 = X * FFh + (j % GB) * RB, r1 = std::min(X * FFh + FFh, r0 + RB);
                 const void* ap[kEntMax];
                 float* hp[kEntMax];
                 for (int i = 0; i < en.n; ++i) {
                     ap[i] = x_act(en, i);
-                    hp[i] = c_xhd.data() + (size_t) (en.slot0 + i) * FF + (size_t) X * FFh;   // (part X's rows of h)
+                    hp[i] = c_xhd.data() + (size_t) (en.slot0 + i) * FF + (size_t) (band_numa ? r0 : X * FFh);   // (part X's rows of h; band: pre-offset, the kernel gets row 0)
                 }
-                // (part X's rows, from where they are: a copy's part on node X, or the file's - whole rows, so any
-                // block size of the type)
-                gg::iq_cpu_gate_up(fm, mx_part_ptr(l, en.e, 0, X), mx_part_ptr(l, en.e, 1, X), ap, en.n, hp,
-                                   r0 - X * FFh, r1 - X * FFh, lim);
+                // (part X's rows, from where they are: its copy's part on node X, or the file's
+                // - whole rows, so any block size of the type)
+                gg::iq_cpu_gate_up(fm, band_numa ? band_ptr(l, en.e, 0, hb) + hro : mx_part_ptr(l, en.e, 0, X),
+                              band_numa ? band_ptr(l, en.e, 1, hb) + (size_t) ((j % GB) & 1) * 64 * mx_row_b(l, 1) : mx_part_ptr(l, en.e, 1, X), ap, en.n, hp,
+                                   band_numa ? 0 : r0 - X * FFh, band_numa ? (r1 - r0) : (r1 - X * FFh), lim);
             };
         run_nodes(ne * GB, f);
         const double tp2 = now_ms();
@@ -5793,17 +5969,21 @@ struct Model::Impl {
                 gg::iq_cpu_quant(fm.d_act, c_xhd.data() + (size_t) (en.slot0 + i) * FF, FF,
                                  aq + (size_t) (kWin + en.slot0 + i) * E * 4);
         const double tp3 = now_ms();
-        for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+        for (int pl = 0; pl < NH; ++pl)
+            f[pl] = [&, X = pl](int j, int p) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / DB] : j / DB)];
+                const int hb = (j % DB) >> 1;
+                if (band_numa && ((hb + en.e) % NN) != p) return;
+                const size_t hro = (size_t) ((j % DB) & 1) * 64 * mx_row_b(l, 2);
                 const int r0 = X * Eh + (j % DB) * RB, r1 = std::min(X * Eh + Eh, r0 + RB);
                 const void* hp[kEntMax];
                 float* yp[kEntMax];
                 for (int i = 0; i < en.n; ++i) {
                     hp[i] = aq + (size_t) (kWin + en.slot0 + i) * E * 4;
-                    yp[i] = c_yd.data() + (size_t) (en.slot0 + i) * E + (size_t) X * Eh;   // (part X's rows of it)
+                    yp[i] = c_yd.data() + (size_t) (en.slot0 + i) * E + (size_t) (band_numa ? r0 : X * Eh);   // (part X's rows of it; band: pre-offset)
                 }
-                gg::iq_cpu_down(fm, mx_part_ptr(l, en.e, 2, X), hp, en.n, yp, r0 - X * Eh, r1 - X * Eh);
+                gg::iq_cpu_down(fm, band_numa ? band_ptr(l, en.e, 2, hb) + hro : mx_part_ptr(l, en.e, 2, X), hp, en.n, yp,
+                                band_numa ? 0 : r0 - X * Eh, band_numa ? (r1 - r0) : (r1 - X * Eh));
             };
         run_nodes(ne * DB, f);
         {   // DS4_PROF: where the CPU lane's time goes (act prep + prefetch, gate/up, h quant, down), summed
@@ -5922,9 +6102,9 @@ struct Model::Impl {
         auto xhd = [&](int sl) { return c_xhd.data() + (size_t) sl * FF; };
         auto xsd = [&](int sl) { return c_xsd.data() + (size_t) sl * FB; };
         auto accd = [&](int X, int sl, int q) { return c_accd.data() + ((size_t) (X * kSlots + sl) * DQ + q) * Eh; };
-        std::function<void(int)> f[4];
+        std::function<void(int, int)> f[kMaxNuma];
         for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+            f[X] = [&, X](int j, int pool) { (void) pool;
                 const Ent& en = ents[(size_t) (j / (2 * GQ))];
                 const int r = (j / GQ) % 2, q = j % GQ;
                 const kc::Exl3Part p = part(en.e, X, r);
@@ -5943,7 +6123,7 @@ struct Model::Impl {
             };
         run_nodes(ne * 2 * GQ, f);
         for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+            f[X] = [&, X](int j, int pool) { (void) pool;
                 const Ent& en = ents[(size_t) (j / GB)];
                 const int b = j % GB;
                 const kc::Exl3Part pg = part(en.e, X, 0), pu = part(en.e, X, 1), pd = part(en.e, X, 2);
@@ -5974,7 +6154,7 @@ struct Model::Impl {
             };
         run_nodes(ne * GB, f);
         for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+            f[X] = [&, X](int j, int pool) { (void) pool;
                 const Ent& en = ents[(size_t) (j / DQ)];
                 const int q = j % DQ;
                 const kc::Exl3Part p = part(en.e, X, 2);
@@ -5989,7 +6169,7 @@ struct Model::Impl {
             };
         run_nodes(ne * DQ, f);
         for (int X = 0; X < NH; ++X)
-            f[X] = [&, X](int j) {
+            f[X] = [&, X](int j, int pool) { (void) pool;
                 const Ent& en = ents[(size_t) (j / DB)];
                 const int b = j % DB;
                 const kc::Exl3Part pd = part(en.e, X, 2);
@@ -6153,7 +6333,7 @@ struct Model::Impl {
                       cudaStreamSynchronize(cs) == cudaSuccess;
                 if (got && l.nm > 1) half_to_blob(l, sw_h, m, sw_b);
             }
-            if (got) blob_to_ram(l, sw_b, sw.ram);
+            if (got) blob_to_ram(l, sw.out, sw_b, sw.ram);
             else sw.ram = -1;   // (back to the file's pages then)
         }
         if (check_swaps) {   // DS4_CHECK_SWAPS: the slot (and `out`'s RAM copy) against the model file, byte for byte
@@ -6171,7 +6351,7 @@ struct Model::Impl {
             bool ok_out = true;
             if (sw.ram >= 0) {
                 ok_out = read_mx_file(l, sw.out, file.data());
-                ram_to_blob(l, sw.ram, dev.data());
+                ram_to_blob(l, sw.out, sw.ram, dev.data());
                 for (int r = 0; r < 3 && ok_out; ++r)
                     ok_out = std::memcmp(dev.data() + l.lay.trellis[r], file.data() + l.lay.trellis[r], mx_part_bytes(l, r)) == 0;
             }

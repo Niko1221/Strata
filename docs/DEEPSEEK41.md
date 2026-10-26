@@ -24,6 +24,19 @@ With less memory than that, part of the CPU's experts are read from the SSD whil
 that cannot hold its share of the dense weights (about 4 GB each on four cards, 16 GB on one) can make the engine stop at the start
 with an out-of-memory message. Both are said before anything is downloaded.
 
+## Computers with several NUMA nodes
+
+On a computer with two or more NUMA nodes (two sockets, or a ThreadRipper/EPYC whose memory access is split between chip
+groups), the experts the CPU computes are split into at most two parts — whole rows of each matrix per part, on the first
+two nodes — and only those nodes' cores and memory serve them. On a 4-node computer, half the machine stands idle while it
+answers. `--numa-experts bands` spreads them instead: every 128 rows of every expert matrix go to the node their number and
+their expert's number together name. Still one copy of the model in RAM, and every node's cores and its own memory serve.
+Measured on a ThreadRipper Pro 5965WX (4 NUMA nodes, Zen 3, 24 CPU threads) with one RTX 5090 and the 2.25-bpw set, every
+expert in RAM: 30.2 tokens/s with the default parts, 44.8 with bands — the same RAM, and the same answers (compared token
+for token at temperature 0). `--numa-experts bands=N` uses N nodes. It needs n_ff and dim to be multiples of 128 rows (the
+official sets are) and turns itself off with a note in the log when they are not, or on a one-node computer, or with an
+EXL3 pack. The parts layout is the default and stays it.
+
 ## The official 2-bit versions (the ones for a normal PC)
 
 Setup offers three official sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, pinned): **IQ1_M, 1.75 bpw** (`ist-das-1.75bpw`, 121 GB, slightly lower quality; setup recommends it where 2.00 is tight in memory or disk), **IQ2_XXS, 2.00 bpw** (138 GB) and **IQ2_XS, 2.25 bpw** (155 GB). All use the
