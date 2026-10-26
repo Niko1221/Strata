@@ -118,6 +118,10 @@ The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `w
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
 
+The fuzz was re-run on the final tree (with `STRATA_DS4_NSEQ` in it): 12 rounds of 2-4 concurrent requests, a third
+abandoned mid-stream, a canary after each - every round answered, the canary 0.29-0.46 s, no engine ERR line and no server
+traceback, both slots decoding.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
