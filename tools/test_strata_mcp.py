@@ -811,11 +811,50 @@ class MixedGraphics(unittest.TestCase):
         self.assertTrue(by["nvidia"]["usable"])
         self.assertFalse(by["amd"]["usable"])
         self.assertIn("NVIDIA card", by["amd"]["problem"])
+        # the RTX and the Ryzen iGPU both say index 0 (each make counts from 0), so the report gives each a stable id of its own
+        self.assertEqual((by["nvidia"]["index"], by["amd"]["index"]), (0, 0))
+        self.assertEqual(sorted(g["id"] for g in hw["gpus"]), ["amd:0", "nvidia:0"])
         rec = s.recommend({**hw, "ram_gb": 92.0})
         self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
         # with no NVIDIA card the integrated GPU stays what it was
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+    def test_two_gtx_1080_are_a_working_pc_on_the_cuda_12_engine(self):
+        """#3655: Pascal cards were flagged 'not supported' and both started Off, so the app said no card was usable. When Pascal is all the PC has
+        (and no AMD card), setup runs them with the CUDA 12 engine, and the hardware report now says so; a newer card keeps the old behaviour."""
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        pascal = [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"},
+                  {"index": 1, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"}]
+        igpu = [{"index": 0, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5, "arch": "gfx90c", "uma": True}]
+        patches = (mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),
+                   mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]), mock.patch.object(S, "amd_problem", lambda g: "integrated graphics"),
+                   mock.patch.dict(M.os.environ, {"STRATA_EXPERIMENTAL_SM60": ""}), mock.patch.object(S, "OLD_GPUS", None))
+        with mock.patch.object(S, "gpus", lambda: [dict(g) for g in pascal]):
+            for p in patches:
+                p.start()
+            try:
+                hw = s._hardware()
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        nv = [g for g in hw["gpus"] if g["vendor"] == "nvidia"]
+        self.assertEqual([(g["usable"], g["problem"], g.get("engine_variant")) for g in nv], [(True, None, "cuda12")] * 2)
+        # a newer card in the PC: Pascal stays an opt-in, the ready-made engine is recommended
+        mixed = [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"},
+                 {"index": 1, "name": "NVIDIA GeForce RTX 3060", "vram_gb": 12.0, "arch": "86", "driver": "581.15"}]
+        with mock.patch.object(S, "gpus", lambda: [dict(g) for g in mixed]):
+            for p in patches:
+                p.start()
+            try:
+                hw = s._hardware()
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        by = {g["name"]: g for g in hw["gpus"] if g["vendor"] == "nvidia"}
+        self.assertFalse(by["NVIDIA GeForce GTX 1080"]["usable"])
+        self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
 
     def test_an_amd_card_the_installed_engine_has_no_code_for_is_not_usable(self):
         """#3203: the engine package lists its GPU code; a card outside it is flagged unusable with the plain reason, so no list offers it."""

@@ -236,6 +236,24 @@ class ModelStep(Base):
             self.assertIn("The n-gram table stays on your SSD", t)
         self.run_app(case)
 
+    def test_the_verdict_column_is_not_cut_off_at_80_columns(self):                       # 0.2.5 list
+        ctx = make_ctx()
+        app = LaunchApp(ctx)
+
+        async def go():
+            async with app.run_test(size=(80, 34)) as pilot:
+                await pilot.pause(0.2)
+                await press(pilot, "enter")
+                t = text_of(app)
+                self.assertIn("Fits?", t)
+                rec = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S " in l)
+                self.assertIn("fits (recommended)", rec)
+                for model in ("Q2_0", "NVFP4 ", "UD-Q5_K_XL"):
+                    row = next(l for l in t.splitlines() if model in l and "GB" in l)
+                    self.assertTrue(any(w in row for w in ("fits", "tight", "too big")), row)
+                self.assertTrue(all(len(l) <= 80 for l in t.splitlines()))
+        asyncio.run(go())
+
     def test_choosing_a_model_and_going_on(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "up", "up", "up", "enter")
@@ -315,14 +333,14 @@ class FolderStep(Base):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Where should the model files be stored?", t)
-            self.assertIn("Not downloaded yet: about 84 GB", t)
+            self.assertIn("Not downloaded yet: about 90 GB", t)
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, "D:/Strata-data")
-            self.assertEqual(f.value, "D:/Strata-data")
+            await typed(pilot, str(self.home.base / "Strata-data"))
+            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, "D:/Strata-data")
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -333,13 +351,14 @@ class FolderStep(Base):
             (old / "models" / "Q2_0" / "x.gguf").write_text("x")
             with mock.patch.object(type(ctx.catalog), "data_dir", return_value=old):
                 await press(pilot, "enter", "enter")
-                self.assertNotIn("are moved into this folder", text_of(app))
+                self.assertNotIn("stay there and keep working", text_of(app))
                 f = app.screen.query_one("#folderpath")
                 f.value = ""
                 await typed(pilot, str(self.home.base / "new-data"))
                 t = " ".join(text_of(app).replace("\n", " ").split())
             self.assertIn("Model files Strata already keeps in", t)
-            self.assertIn("are moved into this folder when you start", t)
+            self.assertIn("stay there and keep working", t)
+            self.assertNotIn("are moved into this folder", t)
         self.run_app(case)
 
     def test_keeping_the_default_stores_nothing(self):

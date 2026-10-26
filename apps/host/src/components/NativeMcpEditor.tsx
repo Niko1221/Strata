@@ -1,6 +1,7 @@
 import { tr } from '../lib/i18n';
 import { useState } from 'react';
 import { Btn, Dialog, ErrorNotice, IconBtn, Select } from './ui';
+import { MCP_NAME_HELP, validMcpName } from '../lib/mcp-names';
 export function NativeMcpEditor({ text, onChange }: {
     text: string;
     onChange: (text: string) => void;
@@ -19,8 +20,8 @@ export function NativeMcpEditor({ text, onChange }: {
     function open(id: string) { const server = servers[id] ?? {}; setEditing(id); setName(id); setTransport(server.url ? 'url' : 'command'); setAddress(server.url ?? server.command ?? ''); setArgs((server.args ?? []).join('\n')); setAdvanced(JSON.stringify(Object.fromEntries(Object.entries(server).filter(([k]) => !['url', 'command', 'args', 'disabled'].includes(k))), null, 2)); setError(''); }
     function save() {
         try {
-            if (!/^[a-z0-9_-]{1,64}$/i.test(name))
-                throw new Error('Use a simple server name: letters, numbers, hyphens or underscores.');
+            if (!validMcpName(name))
+                throw new Error(MCP_NAME_HELP);
             if (!address.trim())
                 throw new Error('Enter the server URL or program.');
             if (name !== editing && servers[name])

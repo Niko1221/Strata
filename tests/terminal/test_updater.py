@@ -180,6 +180,7 @@ class EngineUpdate(UpdaterCase):
         ran = (self.root / "ran.txt").read_text().splitlines()[0]
         self.assertIn(os.sep + ".s" + os.sep, ran)
         phases = [e.get("phase") for e in events if e.get("event") == "phase"]
+        phases = [p for i, p in enumerate(phases) if i == 0 or p != "test" or phases[i - 1] != "test"]     # progress lines of the test start repeat it
         self.assertEqual(phases, ["feed", "download", "verify", "verify", "test", "switch", "done"])
         progress = [e for e in events if e.get("event") == "progress"]
         self.assertTrue(progress and progress[-1]["percent"] == 100 and progress[-1]["done"] == progress[-1]["total"])
@@ -217,8 +218,10 @@ class EngineUpdate(UpdaterCase):
         out = updater.run_update(self.ctx(), control=False)
         result = out["results"][0]
         self.assertEqual((out["exit_code"], result["status"]), (6, "failed"), out)
-        self.assertIn("did not pass its test start", result["error"])
+        self.assertIn("did not start correctly on this computer", result["error"])
         self.assertIn("unchanged", result["error"])
+        self.assertNotIn("server_exited", result["error"], "the engine's own words stay out of the sentence")
+        self.assertIn("strata update --force", result["error"])
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13"], "the failed engine was never put in the live folder")
         self.assertEqual(sorted(p.name for p in (self.components / ".s").iterdir()), [])
@@ -454,10 +457,21 @@ class StartPathSignature(UpdaterCase):
                 ec.verify_signature(ec.read_manifest(folder), {ec.ENV_REQUIRE_SIGNED: "1"})
 
 
+class LightTestStart(unittest.TestCase):
+    def test_the_test_start_drops_the_big_context_and_the_picture_reader(self):                # #3842
+        args = ["--serve", "--pack", "p", "--max-context", "262144", "--kv", "int8", "--kv-resident", "32768", "--vision",
+                "--vision-tokens", "768", "--spec", "4"]
+        self.assertEqual(updater.light_test_args(args), ["--serve", "--pack", "p", "--max-context", "4096", "--kv", "int8", "--spec", "4"])
+        self.assertEqual(updater.light_test_args(["--max-context", "2048", "--vision", "cpu", "--mtp", "x"]),
+                         ["--max-context", "2048", "--mtp", "x"])
+        self.assertEqual(updater.light_test_args(["--vision"]), [])
+        self.assertEqual(updater.light_test_args(["--max-context", "abc"]), ["--max-context", "abc"])
+
+
 class LazyModel(UpdaterCase):
     """A server that is "ready" with its model unloaded has not generated anything yet; the test start forces the load and the probe."""
 
-    def run_default(self, started, verified):
+    def run_default(self, started, verified, tail=None):
         from strata_control import runtime
         self.install_current()
         folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
@@ -466,7 +480,8 @@ class LazyModel(UpdaterCase):
         shutil.copytree(folder, stage / "engine" / folder.name)
         component = ec.read_manifest(stage / "engine" / folder.name)
         with mock.patch.object(runtime, "start", return_value=started), mock.patch.object(runtime, "verify", return_value=verified) as verify,                 mock.patch.object(runtime, "stop", return_value={}):
-            result = updater.default_test_start(stage, component, self.ctx())
+            with mock.patch.object(updater, "_log_tail", return_value=tail or ""):
+                result = updater.default_test_start(stage, component, self.ctx())
         return result, verify
 
     def test_an_unloaded_ready_server_is_made_to_answer_before_the_engine_passes(self):
@@ -476,8 +491,53 @@ class LazyModel(UpdaterCase):
         self.assertEqual(verify.call_args.kwargs["load"], True)
 
     def test_an_engine_that_cannot_answer_does_not_pass(self):
-        with self.assertRaisesRegex(updater.TestStartFailed, "one-token probe"):
+        with self.assertRaisesRegex(updater.TestStartFailed, "before it answered a test question"):
             self.run_default({"ok": True, "state": "ready", "generation_ready": False}, {"ok": False, "state": "failed", "error": "probe_generation_no_tokens"})
+    def expired(self, phase, words, busy):
+        # #3683: the engine log always mentions VRAM, so a wait that expired used to be blamed on a busy graphics card
+        tail = " | strata serve: 358 MiB of VRAM free with everything loaded"
+        with self.assertRaises(updater.TestStartFailed) as raised:
+            self.run_default({"ok": False, "state": "starting", "error": "startup_wait_expired", "phase": phase}, {}, tail=tail)
+        text = str(raised.exception)
+        self.assertIn(words, text)
+        self.assertEqual(raised.exception.busy, busy)
+        self.assertNotIn("graphics card or memory looks busy", text)
+        self.assertNotIn("358 MiB", text)
+        self.assertIn("test-start-", text)                                # where the kept log is
+
+    def test_an_expired_start_with_the_model_loaded_says_it_did_not_answer(self):
+        self.expired("verifying_generation", "did not answer one token", False)
+
+    def test_an_expired_start_with_an_unmatched_ready_file_says_so(self):
+        self.expired("ready_file_not_matched", "could not match it to the engine process", False)
+
+    def test_an_expired_start_that_was_still_loading_says_so(self):
+        self.expired("loading", "still loading the model", True)
+
+    def test_the_test_start_shows_progress_while_it_waits(self):
+        self.install_current()
+        folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        events = []
+        ctx = self.ctx()
+        ctx.emit = events.append
+
+        def fake_start(name, **kw):
+            for status in ({"state": "starting", "phase": "loading"}, {"state": "starting", "phase": "loading"},
+                           {"state": "starting", "phase": "verifying_generation"}, {"state": "ready"}):
+                kw["on_status"](status)
+            return {"ok": True, "state": "ready", "generation_ready": True}
+
+        from strata_control import runtime
+        with mock.patch.object(runtime, "start", side_effect=fake_start), mock.patch.object(runtime, "stop", return_value={}):
+            updater.default_test_start(stage, component, ctx)
+        lines = [e["message"] for e in events if e.get("phase") == "test"]
+        self.assertEqual(len(lines), 2)                                       # one per phase change, not one per poll
+        self.assertIn("loading the model", lines[0])
+        self.assertIn("answer one token", lines[1])
 
 
 class OtherComponents(UpdaterCase):

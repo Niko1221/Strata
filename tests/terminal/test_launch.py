@@ -109,6 +109,9 @@ class CatalogRules(unittest.TestCase):
             models, families, contexts, source = cat.tables()
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
+                if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3}[r.model], delta=0.1)
+                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
@@ -353,6 +356,26 @@ class SetupArgs(unittest.TestCase):
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
 
+    def test_an_arc_b_series_card_is_allowed_with_pictures_on_the_cpu_reader_and_one_plain_line(self):
+        """Owner decision 2026-10-22: Arc B-series (Battlemage) runs like any Arc. An Arc Pro B70 (32 GB) gets pictures on, with the CPU reader (the GPU
+        reader has not run on a 24 GB+ Arc), and a warn-level note that it is new and how to report a problem. An A-series card gets no such note."""
+        from strata_cli.launch import cmd
+        for name, vram, note in (("Intel Arc Pro B70", 32.0, True), ("Intel Arc B580", 12.0, True), ("Intel Arc A750", 8.0, False)):
+            hw = {"ram_gb": 64.0, "os": "Linux", "cpu": {"avx2": True, "name": "x"},
+                  "gpus": [{"index": 0, "name": name, "vendor": "intel", "vram_gb": vram, "usable": True}]}
+            with Home():
+                from strata_cli.launch.catalog import Computer
+                cat = catalog(hw)
+                comp = Computer(ram_gb=64.0, gpus=hw["gpus"], disk_free_gb=500.0, os="Linux", avx2=True, raw=hw, engine_vendor="intel")
+                with mock.patch.object(type(cat), "reader_state", lambda self: "present"), mock.patch.object(type(cat), "computer", lambda self, fresh=False: comp):
+                    self.assertEqual(cat.picture_default(True), "cpu", name)
+                self.assertEqual(bool(comp.new_card_note), note, name)
+                if note:
+                    text, nxt = comp.new_card_note
+                    self.assertIn("new to Strata", text)
+                    self.assertIn("--vision off", nxt)
+                    self.assertIn("github.com/Niko1221/Strata/issues", nxt)
+
     def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
         for gb in (16.0, 32.0, 128.0):
             hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
@@ -506,9 +529,10 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(cfg)
             self.assertTrue(any("prepared pack" in p for p in problems))
             self.assertTrue(any("tokenizer" in p for p in problems))
-            cfg, problems = adopt.plan(family="gyro", model="Gyro-S", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+            cfg, problems = adopt.plan(family="unsloth", model="UD-Q4_K_XL", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
+            self.assertNotIn("..", problems[0] + ".")                           # round 8, N11: the caller adds the full stop
 
     def test_pictures_on_is_setups_yes_and_setup_picks_the_encoder(self):
         with Home() as h:
@@ -787,10 +811,10 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):
-        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", "/data/x",
+        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", str(self.home.base / "data-x"),
                       "--set", "prefill=65536", "--set", "STRATA_PIN_BY_NEED=1", "--tune-allow-small")
         s = p["settings"]
-        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], "/data/x", True))
+        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], str(self.home.base / "data-x"), True))
         self.assertEqual(s["extra"], {"--prefill": "65536", "STRATA_PIN_BY_NEED": "1"})
         self.assertIn("--set prefill=65536", p["flags"])
 
@@ -928,6 +952,24 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("Nothing was changed.", out)
         self.assertEqual(store.list_presets(), [])
 
+    def test_the_access_help_names_the_flags_for_showing_and_setting_a_key(self):             # #3713 #3951
+        from strata_cli.launch import screens
+        self.assertIn("strata launch --show-key", screens.AccessScreen.help_text)
+        self.assertIn("--api-key YOUR-KEY", screens.AccessScreen.help_text)
+
+    def test_the_summary_says_where_the_engine_log_is(self):                                  # #3656
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "x.json"
+            cfg.write_text(json.dumps({"log": str(Path(d) / "office.engine.log"), "args": []}), encoding="utf-8")
+            fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080"], key=None, tune_word=None, notices=[], config=str(cfg))
+            with mock.patch.object(Runner, "run", return_value=fake):
+                code, out, err = run_cli(["launch", "--no-tui", "--model", "q2_0"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Engine log", out)
+        self.assertIn("office.engine.log", out)
+        self.assertIn("strata logs --follow", out)
+
     def test_run_without_screens_prints_the_address_and_saves_the_preset(self):
         fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080", "http://192.168.1.5:8080"], key="sk-strata-abcdefghijkl",
                       tune_word=None, notices=[], config="/x")
@@ -945,6 +987,17 @@ class FlagsCommand(unittest.TestCase):
         code, out, _ = run_cli(["launch", "--show-key", "--preset", "Office"])
         self.assertEqual(code, 0)                                              # the preset's own key
         self.assertTrue(out.strip().startswith("sk-strata-"))
+
+    def test_a_setup_line_joined_after_the_model_could_not_be_installed_starts_with_a_capital(self):
+        from strata_cli.launch.runner import setup_failure
+        e = setup_failure([], "the model does not answer sensibly after the preparation: no answer", "", None, False)
+        self.assertTrue(e.text.startswith("The model could not be installed. The model does not answer sensibly"), e.text)
+
+    def test_a_reason_joined_after_a_sentence_starts_with_a_capital(self):
+        from strata_cli.launch.runner import capital
+        self.assertEqual(capital("the update feed could not be read: no route"), "The update feed could not be read: no route")
+        self.assertEqual(capital("Already fine."), "Already fine.")
+        self.assertEqual(capital(""), "")
 
     def test_launch_error_is_one_plain_sentence(self):
         from strata_cli.launch.runner import LaunchError
@@ -1201,7 +1254,19 @@ class ConnectCommand(unittest.TestCase):
     def test_context_flag_reaches_the_config(self):
         code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
         self.assertIn('"contextWindow": 65536', out)
-        self.assertIn('"reserveTokens": 50536', out)
+        self.assertIn('"reserveTokens": 33394', out)             # 65536 - 32142: the tested 52.3% share, not a flat 15K
+
+    def test_the_compaction_point_scales_with_the_window(self):
+        """A wider server must not be summarised every 15,000 tokens: the share the tested 32K configs used carries over."""
+        wide = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 262144)
+        self.assertEqual(harness.compact_at(wide), 135000)                     # 52.3% of the 258048 input limit
+        cfg = json.loads(self.render("opencode", context=262144)["files"][0]["text"])
+        self.assertEqual(wide.input_limit - cfg["compaction"]["buffer"], 135000)
+        self.assertIn("model_auto_compact_token_limit = 135000", self.render("codex", context=262144)["files"][0]["text"])
+        self.assertIn("thresholdTokens: 135000", self.render("omp", context=262144)["files"][1]["text"])
+        # the window every config was tested on keeps exactly the value it was tested at
+        tested = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 32768)
+        self.assertEqual(harness.compact_at(tested), 15000)
 
 
 class GpuRolesFlag(unittest.TestCase):
