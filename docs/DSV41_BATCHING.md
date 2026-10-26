@@ -156,6 +156,17 @@ on the same state, compared byte for byte - and then the serve loop's step, whic
 host has to become the turn path's ~20-30.
 
 
+**The window-path step was built and measured (2026-10-27), and stalls with several slots.**  `layer()`'s per-row branch
+(the twelve sites of the table below, written and compiling), the window entry (`forward_rows_win`: each row's token in
+its sequence, its embedding, the Engram rows per row, one `plan_window` over the rows, then `forward_par/serial` with the
+descriptor) and the serve loop's step (`STRATA_DS4_STEP=1`) together run: **a solo client decoded at 47.0 tok/s** - faster
+than the turn path's ~30 - while the two clients whose tokens went through the step ran at **0.6 and 1.2 tok/s, about two
+seconds a step** for two rows.  The solo case proves the per-row pass itself is cheap (it is the window path, one set of
+buffers); the multi-slot stall is in the step's surroundings - the inter-group hand-off's flags/acks (`wp.win`, the
+allreduce slots) are advanced by the turn path's own rounds and the step does not keep them in step - and that is the
+hypothesis to test next (a step that reuses `round`'s window bookkeeping instead of bypassing it).  The experiment is not
+in the tree.
+
 **The first serve-loop step was tried and is not in the tree (2026-10-27).**  `STRATA_DS4_STEP=1` made the loop take every
 live slot's pending token through one `forward_rows` (two rows), sample each row with its slot's parameters and print the
 `BT` lines, and the rest of the turn's bookkeeping stayed `run_advance`'s.  It is **functionally right - every client
