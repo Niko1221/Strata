@@ -161,6 +161,16 @@ The fuzz was re-run on the final tree (with `STRATA_DS4_NSEQ` in it): 12 rounds 
 abandoned mid-stream, a canary after each - every round answered, the canary 0.29-0.46 s, no engine ERR line and no server
 traceback, both slots decoding.
 
+**Concurrency at the production 1M context (2026-10-27, real runs).**  Every request asked `max_tokens: 262144` (256K)
+and left after its share of tokens (thinking off).  Three clients: the stock engine (no `--batch`) took 14.55 s of wall
+with first tokens at 0.50/5.81/10.84 s and 2 handovers (it runs them one after the other); the branch (`--batch 3`, a
+slot per sequence) 14.43 s with first tokens within 0.74 s and 167 handovers - and the same aggregate, 61.9 against 62.4
+tok/s, because each slot still runs its own pass.  More slots at the same context all loaded and answered: 6 (58.7
+tok/s), 8 (54.3), 10 (54.1), 12 (54.3), **16 (51.5) - sixteen concurrent requests at 1M context**, 17 sequences, 0.59 GB a
+GPU left.  Each extra sequence's compressed KV is ~0.54 GB a GPU (~2.2 GB in all) taken from the experts: 4224 of 4224
+experts stayed in VRAM with one sequence, 3662 at 13 and 3441 at 17, and that displacement is where the 62 -> 51 tok/s
+comes from.  Capping a slot's context (the design's 32K) is the lever that would raise both the count and the aggregate.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

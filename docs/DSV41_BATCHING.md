@@ -117,6 +117,40 @@ workload whose prompts are much closer (one agent template, short answers) could
 with these prompts the read side - where the time is - hardly moves.  Raising the overlap itself (grouping requests that
 share a prompt, or a scheduler that pairs them) is a cheaper lever than the kernel, and worth measuring first.
 
+## Concurrency at the production context (measured, 2026-10-27)
+
+The box's production configuration is 1M tokens of context; these are real runs in it, three to sixteen clients at once,
+each request asking `max_tokens: 262144` (256K) and leaving after it has read its share (thinking off, so the tokens
+counted are the answer's).  The stock engine is the one without `--batch`; "this branch" is `--batch N` with each slot's
+state in its own sequence (M2).
+
+| clients | engine | wall | first token per client | handovers | aggregate |
+|---:|---|---:|---|---:|---:|
+| 3 | stock (no `--batch`, the server's FIFO) | 14.55 s | 0.50 / 5.81 / 10.84 s | 2 / 900 | 61.9 tok/s |
+| 3 | this branch, `--batch 3` | 14.43 s | 0.31 / 0.76 / 1.04 s | 167 / 900 | 62.4 tok/s |
+| 6 | `--batch 6` | 20.46 s | within 1.44 s | 181 / 1200 | 58.7 tok/s |
+| 8 | `--batch 8` | 14.74 s | within 1.96 s | 119 / 800 | 54.3 tok/s |
+| 10 | `--batch 10` | 18.50 s | within 2.50 s | 133 / 1000 | 54.1 tok/s |
+| 12 | `--batch 12` | 22.12 s | within 2.95 s | 167 / 1200 | 54.3 tok/s |
+| 16 | `--batch 16` | 31.08 s | within 4.15 s | 219 / 1600 | 51.5 tok/s |
+
+The two things this says:
+
+* **Concurrency is latency and fairness, not throughput.**  The stock engine runs the three answers one after the other -
+  the third client's first token waits for the first client's whole answer (10.84 s) - while the branch admits all three
+  at once (first tokens within 0.74 s) and interleaves them (167 handovers against 2).  The aggregate is the same (61.9
+  against 62.4 tok/s): each slot still runs its own pass, so the weights are read once a sequence; the single-launch step
+  (M2's remainder) and the grouped MoE (M3) are what would move the aggregate, and the routing measurements above bound
+  that at 1.15-1.28x on this box.
+* **Sixteen concurrent requests fit at 1M context** (17 sequences: the slots and the solo one).  The price is expert
+  residency: a sequence's compressed KV is ~0.54 GB a GPU (~2.2 GB in all) taken from the experts, so the cards hold 4224
+  of 4224 experts with one sequence, 3662 at 13 sequences and 3441 at 17 - and the aggregate falls from ~62 to ~51 tok/s
+  as the displaced experts are read from RAM.  The first-token latency stays within 0.7-4.2 s at every count.  Capping
+  what one slot may hold (the design's 32K a slot, a few hundred MB) is the lever that would raise both.
+* **The same 16 slots at a 32K context keep every expert in VRAM** (4224 of 4224, the tables 0.30 GB against 9.14 at
+  1M) and score 57.2 tok/s aggregate on the same workload - so of the 62 -> 51 tok/s, the expert displacement is about
+  half and the other half is what sixteen sequences' passes and cache working sets cost by themselves.
+
 ## Where a token's time goes (measured, 2026-10-26)
 
 Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at
