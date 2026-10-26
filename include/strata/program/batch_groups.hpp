@@ -28,6 +28,7 @@ struct Input {
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
     bool nv_serial_faster = false;   ///< PROPOSED (0.2.1, owner decides): NVIDIA build, STRATA_BATCH_GROUPS_NV_SERIAL not 0 - two cards run faster in serial windows (z440 2x A4000, aggregate tok/s: +16% at 2 slots, +12% at 4, +15% at 8)
+    bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too (each group carries its slots' rows)
 };
 
 struct Result {
@@ -36,6 +37,7 @@ struct Result {
     Serial serial = Serial::None;      ///< `auto` would have pipelined, but this feature needs the serial windows
     int would_be = 1;                  ///< what `auto` would have picked without it (== groups unless `serial`)
     bool mtp_dropped = false;          ///< --batch-mtp met the default pipeline: the pipeline wins, --batch-mtp is off
+    bool mtp_piped = false;            ///< STRATA_PIPED_MTP: --batch-mtp's drafts run in the pipelined groups
 };
 
 /// The most groups, at most one per stage of the layer split (`later_stages` + 1 GPUs), that divide `batch`.
@@ -52,17 +54,26 @@ inline Result resolve(const Input& in) {
     r.groups = in.given;
     r.would_be = in.given;
     const bool defaulted = !in.set && in.later_stages > 0 && in.batch > 1;   // the 0.1.41 default
-    if (!in.auto_given && !defaulted) return r;
-    r.from_auto = true;
-    r.would_be = auto_groups(in.later_stages, in.batch);
-    r.groups = r.would_be;
-    if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
-        if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
-        else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
-        else if (in.adapt_async) r.serial = Serial::AdaptAsync;
-        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None;
-        if (r.serial != Serial::None) r.groups = 1;
+    if (in.auto_given || defaulted) {
+        r.from_auto = true;
+        r.would_be = auto_groups(in.later_stages, in.batch);
+        r.groups = r.would_be;
+        if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
+            if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
+            else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
+            else if (in.adapt_async) r.serial = Serial::AdaptAsync;
+            if (r.serial != Serial::None) r.groups = 1;
+        }
     }
+    // STRATA_PIPED_MTP: the pipelined groups draft too.  A group's window carries each of its slots' rows - the slot's
+    // token and that slot's own proposals - so any number of slots per group drafts (the one slot per group of the
+    // first version, and two slots per group since: more rows in a window amortise the weights over more of them).
+    // NOTE (0.1.49.2 port): this must NOT live inside the `!in.set` block above.  With --batch-groups given
+    // explicitly (a number or `auto`) the operator has already asked for those groups, and the drafts can
+    // run in them; the PR had the assignment inside, so the feature silently did nothing for everyone who
+    // passed --batch-groups -- which is the documented way to configure a layer split.
+    r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.groups > 1;
+    r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
     return r;
 }
 

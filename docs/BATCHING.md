@@ -390,6 +390,47 @@ compares the tier as a whole, not "batch windows only": the solo decode speed mo
 more varied workload the gain may be smaller (not measured). Upstream main runs no tier in batch windows, and this
 was not measured against an upstream binary.
 
+## MTP drafts in the pipelined groups (`STRATA_PIPED_MTP`, opt-in)
+
+The pipelined groups run no drafts, and `--batch-mtp` with serial windows leaves all but one card waiting: on four
+stages it lost 30-40% of the four streams' total against the pipelined default. `STRATA_PIPED_MTP=N` (with
+`--batch-mtp`) keeps the pipeline and drafts in it: each group's window carries its slot's token and up to N MTP
+proposals (at most `--spec` - 1; the first always, each further one while the draft layer was at least `--spec-min-p`
+sure of the one before, the solo path's rule). It needs one slot per group - as many slots as stages, which is what
+`--batch-groups auto` gives for that count - and is left off (said at start) otherwise.
+
+How many rows to keep is known only when the LAST stage has picked, and by then the earlier stages run other groups'
+windows, which reuse the scratch the commit replays from. So right behind each window a small save graph copies those
+rows (each GDN layer's conv and recurrence inputs, each QSA layer's raw indexer keys, the PLE history snapshot) to the
+group's own hand-off rows of a per-stage buffer, and after the verdict every stage queues the commit of the kept rows on
+its stream (`Verifier::batch_launch_rows` / `batch_commit_rows`): it runs before that group's next window on the stage,
+and the GDN state and indexer tail are untouched until then. The slot's drafter then catches up on the window's final
+rows and drafts the next proposals as an asynchronous chain (`MtpDrafter::chain_launch`); the rows are copied on the
+last stage's stream, ahead of its next window, and a group whose chain has not landed lets another group start first.
+A drain waits for the queued commits, so an admission, a parked conversation or the solo path taking a slot back sees
+the final state. With it on, the stages keep the window size they have without `--batch-mtp` (`--batch-mtp` alone
+sizes them for 8-row serial windows, which also lets a lone request's windows grow: a lone file edit then measured 160
+against 178 tok/s here).
+
+Exact: `tools/batch_test.py` (4 slots, 200 and 300 tokens, with the settings of [Exactness](#exactness)) gives every
+slot the tokens it decodes alone for N = 1, 2 and 3. Measured on 4x RTX 3090 (PCIe 3.0 x8, no P2P), UD-Q4_K_XL, split
+11,24,36, `--trim-stage-weights`, `"parallel": 4` (4 groups of 1), `--spec 4 --spec-min-p 0.70`, FP16 K/V; four
+concurrent 900-token answers through the HTTP server, reasoning off, total output tok/s:
+
+| | pipelined groups (default) | `STRATA_PIPED_MTP=1` | `=2` | `=3` |
+| --- | ---: | ---: | ---: | ---: |
+| code (median of 3) | 203 | 244-269 (2 runs) | 270 | 259 (1 run) |
+| prose (median of 3) | 209 | 230-240 (2 runs) | 216 | 215 (1 run) |
+| a file returned with one rename (1 run; mostly its 3K-token prompts) | 129 | 140-142 | 144 | 153 |
+| one request alone (solo path): code / edit / prose | 134 / 175 / 96 | unchanged | unchanged | unchanged |
+
+Proposals kept with N = 1: code 88%, the edit 97%, prose 62%. A two-row window costs this rig about 1.5x a one-row
+window (the routed experts of two tokens, and the host's plan on the stages that miss experts), which is why prose
+gains little. Cost: the saved rows (25 MiB per stage at N = 1 and 4 slots, 51 MiB at N = 3), the slot drafters as
+`--batch-mtp` has them, and each slot's window, save and commit graphs per row count.
+
+Not run: AMD (HIP), the draft layer on the first stage, helper expert caches, more than one slot per group.
+
 ## Exactness
 
 A batch row's arithmetic is the single-token window's, so with greedy decoding **every conversation of a batch
@@ -423,8 +464,9 @@ counter-based draw (Philox(seed, position)).
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
 - `--batch-mtp` uses one proposal per slot. With a layer split it needs each stage on its own GPU, does not combine
-  with `--batch-groups` above 1 (pipelined slot groups run no drafts, #1413) and has not been run with helper expert
-  caches.
+  with `--batch-groups` above 1 (pipelined slot groups run no drafts, #1413) unless `STRATA_PIPED_MTP` is set with
+  one slot per group ([above](#mtp-drafts-in-the-pipelined-groups-strata_piped_mtp-opt-in)), and has not been run
+  with helper expert caches.
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
