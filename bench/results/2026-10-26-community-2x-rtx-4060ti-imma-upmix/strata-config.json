@@ -1,0 +1,64 @@
+{
+ "exe": "<home>/strata-026/engine/strata",
+ "args": [
+  "--pack",
+  "<home>/Strata-data/packs/unsloth-ud-iq4_xs",
+  "--native",
+  "<home>/qwen-flash-next/unsloth/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "--expert-profile",
+  "<home>/strata-0144/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--mtp",
+  "<home>/Strata-data/mtp/rt-iten",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--remote-expert-opt",
+  "--pcie-frac",
+  "0.00",
+  "--spec-min-p",
+  "0.50",
+  "--kv-resident",
+  "32768",
+  "--vision",
+  "--vram-reserve-mib",
+  "700",
+  "--conversation-cache-mib",
+  "8192",
+  "--conversation-cache-slots",
+  "4"
+ ],
+ "cwd": "<home>/strata-026",
+ "tokenizer": "<home>/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer",
+ "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+ "log": "<home>/strata-026/strata-unsloth-ud-iq4_xs.log",
+ "lib_dirs": [
+  "/usr/local/cuda-12.6/bin",
+  "/usr/local/cuda-12.6/lib64"
+ ],
+ "port": 8080,
+ "gpu": [
+  0,
+  1
+ ],
+ "gpus_asked": true,
+ "layer_split": "auto",
+ "vision": {
+  "exe": "<home>/strata-026/engine/strata-vision",
+  "mmproj": "<home>/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "<home>/qwen-flash-next/unsloth/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "gpu": false,
+  "max_tokens": 1536,
+  "threads": 32
+ },
+ "api_key": "<removed>",
+ "sampling": {
+  "presence_penalty": 0
+ }
+}

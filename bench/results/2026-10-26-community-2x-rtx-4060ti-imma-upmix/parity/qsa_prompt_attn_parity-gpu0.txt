@@ -1,0 +1,16 @@
+NEWHASH 7ababa539cff2e15
+PASS int8 IMMA ctx 32768, 2048 queries: vs FP64 2.6e-06 (v2 6.15e-06, FP32 2.37e-06); IMMA vs v2 7.87e-06 (2.1e-06 of scale); v2 9.773 -> IMMA 6.800 ms per chunk (1.44x)
+PASS int8 ctx 32768, 2048 queries: vs FP64 old 2.37e-06 new 6.15e-06 (output scale 3.62); new vs old 8.94e-06 (2.4e-06 of scale); 56.014 -> 9.490 ms per chunk (5.90x); new output checksum 7ababa539cff2e15
+NEWHASH fb9f39954dfc448d
+PASS fp16 ctx 32768, 2048 queries: vs FP64 old 1.86e-06 new 5.05e-06 (output scale 3.53); new vs old 5.48e-06 (1.3e-06 of scale); 48.966 -> 34.313 ms per chunk (1.43x); new output checksum fb9f39954dfc448d
+NEWHASH 0a53f4144d90b2ae
+PASS q4_0 ctx 32768, 2048 queries: vs FP64 old 4.06e-06 new 8.11e-06 (output scale 7.8); new vs old 1.45e-05 (1.8e-06 of scale); 53.540 -> 14.730 ms per chunk (3.63x); new output checksum 0a53f4144d90b2ae
+NEWHASH ff7e3c7e51cd696d
+PASS q4_0 ctx 1500, 1500 queries: vs FP64 old 3.32e-06 new 8.33e-06 (output scale 7.59); new vs old 1.36e-05 (1.7e-06 of scale); 14.966 -> 3.932 ms per chunk (3.81x); new output checksum ff7e3c7e51cd696d
+NEWHASH dc619269aa998d6a
+PASS int8 IMMA ctx 1500, 1500 queries: vs FP64 2.49e-06 (v2 4.5e-06, FP32 1.79e-06); IMMA vs v2 6.44e-06 (1.7e-06 of scale); v2 2.685 -> IMMA 1.934 ms per chunk (1.39x)
+PASS int8 ctx 1500, 1500 queries: vs FP64 old 1.79e-06 new 4.5e-06 (output scale 3.57); new vs old 7.27e-06 (2e-06 of scale); 14.331 -> 2.606 ms per chunk (5.50x); new output checksum dc619269aa998d6a
+NEWHASH dda4b0037582e0b5
+PASS int8 IMMA ctx 2100, 256 queries: vs FP64 2.89e-06 (v2 3.83e-06, FP32 2.03e-06); IMMA vs v2 6.56e-06 (1.8e-06 of scale); v2 1.184 -> IMMA 0.837 ms per chunk (1.41x)
+PASS int8 ctx 2100, 256 queries: vs FP64 old 2.03e-06 new 3.83e-06 (output scale 3.61); new vs old 6.2e-06 (1.7e-06 of scale); 6.098 -> 1.185 ms per chunk (5.15x); new output checksum dda4b0037582e0b5
+FAILURES: 0

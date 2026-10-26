@@ -1,0 +1,65 @@
+Quick speed check. For results other people can compare with (the standard benchmark, a few minutes), run: .venv/bin/python strata.py bench run
+
+Using the Strata server already running at http://127.0.0.1:8080.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 73.5 tok/s, first token 0.647 s, 100 tokens
+  run 1 q2: decode 52.0 tok/s, first token 0.585 s, 100 tokens
+  run 1 q3: decode 51.7 tok/s, first token 0.608 s, 100 tokens
+  run 2 q1: decode 75.7 tok/s, first token 0.631 s, 100 tokens
+  run 2 q2: decode 57.3 tok/s, first token 0.555 s, 100 tokens
+  run 2 q3: decode 48.5 tok/s, first token 0.586 s, 100 tokens
+  run 3 q1: decode 72.9 tok/s, first token 0.665 s, 100 tokens
+  run 3 q2: decode 51.6 tok/s, first token 0.555 s, 100 tokens
+  run 3 q3: decode 47.6 tok/s, first token 0.588 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 872.0 tok/s (0 reused), first token 4.644 s
+  run 2: 4019 tokens, prompt 882.7 tok/s (0 reused), first token 4.588 s
+  run 3: 4019 tokens, prompt 879.2 tok/s (0 reused), first token 4.607 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 1761.8 tok/s (0 reused), first token 9.159 s
+  run 2: 16058 tokens, prompt 1758.0 tok/s (0 reused), first token 9.179 s
+  run 3: 16058 tokens, prompt 1758.6 tok/s (0 reused), first token 9.178 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 3.263 s
+  run 1 turn 1: prompt 3217, reused 638, read 2579, first token 4.604 s
+  run 1 turn 2: prompt 4750, reused 3210, read 1540, first token 4.348 s
+  run 1 turn 3: prompt 7994, reused 4814, read 3180, first token 4.896 s
+  run 1 turn 4: prompt 10011, reused 8047, read 1964, first token 4.44 s
+  run 1 turn 5: prompt 12743, reused 10037, read 2706, first token 4.582 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 3.537 s
+  run 2 turn 1: prompt 3211, reused 633, read 2578, first token 4.404 s
+  run 2 turn 2: prompt 4744, reused 3275, read 1469, first token 4.157 s
+  run 2 turn 3: prompt 7988, reused 4737, read 3251, first token 4.809 s
+  run 2 turn 4: prompt 10016, reused 8051, read 1965, first token 4.247 s
+  run 2 turn 5: prompt 12743, reused 10037, read 2706, first token 4.451 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 3.465 s
+  run 3 turn 1: prompt 3211, reused 633, read 2578, first token 4.394 s
+  run 3 turn 2: prompt 4744, reused 3275, read 1469, first token 4.119 s
+  run 3 turn 3: prompt 7988, reused 4808, read 3180, first token 4.625 s
+  run 3 turn 4: prompt 10016, reused 8052, read 1964, first token 4.22 s
+  run 3 turn 5: prompt 12773, reused 10067, read 2706, first token 4.44 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 2028.9 tok/s (0 reused), first token 15.858 s
+  run 2: 32049 tokens, prompt 2054.2 tok/s (0 reused), first token 15.664 s
+  run 3: 32049 tokens, prompt 2043.3 tok/s (0 reused), first token 15.744 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     52.00   (47.60 - 75.70, n=9)
+  chat first token (s)                   0.59   (0.56 - 0.67, n=9)
+  4K prompt tok/s                      879.20   (872.00 - 882.70, n=3)
+  4K first token (s)                     4.61   (4.59 - 4.64, n=3)
+  16K prompt tok/s                    1758.60   (1758.00 - 1761.80, n=3)
+  16K first token (s)                    9.18   (9.16 - 9.18, n=3)
+  32K prompt tok/s                    2043.30   (2028.90 - 2054.20, n=3)
+  32K first token (s)                   15.74   (15.66 - 15.86, n=3)
+  agent cache hit %                     69.08   (69.07 - 69.28, n=3)
+  agent re-read tokens/session          73.00   (1.00 - 73.00, n=3)
+  agent turn first token (s)             4.44   (4.12 - 4.90, n=15)
+  agent decode tok/s                    59.80   (53.70 - 70.40, n=15)
+
+Report: bench/results/2026-10-26-community-2x-rtx-4060-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs-2/README.md
+Share it: open a pull request that adds the folder bench/results/2026-10-26-community-2x-rtx-4060-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs-2 (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).
