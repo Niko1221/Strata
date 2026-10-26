@@ -128,6 +128,16 @@ What one launch over T sequences still needs, in the order it has to be built:
 Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
 throughput.
 
+**The first serve-loop step was tried and is not in the tree (2026-10-27).**  `STRATA_DS4_STEP=1` made the loop take every
+live slot's pending token through one `forward_rows` (two rows), sample each row with its slot's parameters and print the
+`BT` lines, and the rest of the turn's bookkeeping stayed `run_advance`'s.  It is **functionally right - every client
+answered, 100 tokens each - and far too slow**: 0.6-1.2 tok/s against ~20-30 for the turn path, 82 s and 162 s of wall for
+the two clients that went through the step, five handovers in 300 tokens.  The chunk flow's per-call setup (its run's
+events and streams, the chunk buffers, the layer-major decision) dominates at one or two rows: the step needs the lean
+per-window path (`layer()`'s own buffers, sized once) or that setup amortised over many steps, not the prompt flow.  The
+plumbing (`Run::rows`, `chunk_rows`, `forward_chunks`, the per-row Engram reads, `forward_rows`, the per-row sampler) stays -
+it is what the leaner step will call.
+
 **The decode side's plumbing is in (2026-10-27).**  `Run` carries the step's descriptor (`StepRows`: a position and a
 sequence a row); `chunk_rows` takes it (the per-row path that is already proved in process), `run_layer` passes it on,
 and `forward_chunks` builds one chunk of T rows from it - no prompt token bookkeeping (each row's token goes into its own
