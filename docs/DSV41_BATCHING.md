@@ -161,3 +161,18 @@ the client: the same `T` lines stream out, only later.
 
 Harness: `python -m serve.server --engine mock --port 8099` runs the whole server with a scripted engine and no
 GPU, so two concurrent clients can prove the interleaving without touching the production model.
+
+## M4 protocol: what the engine must speak for batch_slots > 0
+
+The server already implements the batched path (`Engine.generate_batched`, serve/server.py:1772); it turns on
+when the engine's INFO block reports `batch_slots`, and it speaks:
+
+* `BGEN <slot> <max_new><keys> <ids>` - one step for that slot (keys are `temperature=... top_p=...` etc.);
+* `BGENI <slot> <max_new><keys> <pictures> <ids>` - the same with a DSI1 pictures file;
+* the reply is the existing stream (`PP ...`, `T <id>`, `DONE ...`), tagged the way the server already reads it;
+* `STOP <slot>` cancels one slot; `QUIT` ends the engine.
+
+A slot is a conversation the engine holds between calls (its tokens, KV, samplers).  Advertising
+`batch_slots N` **before** BGEN works would break every request: the server would send BGEN and the engine would
+answer `ERR unsupported command`.  So the order is: BGEN for one slot first (behaviour identical to GEN), then
+advertise `batch_slots 1`, then widen to N - which needs per-sequence KV (M2).
