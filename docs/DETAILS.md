@@ -404,7 +404,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | The same for Prometheus with vLLM's metric names | `GET /metrics` with `Accept: text/plain` or `?format=prometheus` |
 | Request totals in llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
-| API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests` |
+| API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests`, `GET /api/context` |
 
 ```python
 from openai import OpenAI
@@ -679,11 +679,45 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 ### API request monitor
 
 Off by default, because it keeps prompts and answers in memory. Turn it on with `"api_monitor": true` or
-`serve/server.py --api-monitor`; otherwise the two endpoints answer 404. `/api-monitor` shows the model state, load and unload
+`serve/server.py --api-monitor`; otherwise its endpoints answer 404. `/api-monitor` shows the model state, load and unload
 controls, active and queued requests, request bodies, output, separate reasoning and response bodies, with load, queue,
 first-token and decode timings. `GET /api/requests` returns summaries and `GET /api/requests?id=<id>` one request. The
 monitor keeps the newest 100 requests in memory until restart, 262,144 characters per field, with visible truncation flags.
 Headers are not recorded. Treat the history as sensitive when Strata is reachable from a network, and set an API key.
+
+Its **Context in VRAM** panel shows the tokens the engine keeps for the next request: the last prompt and the answer to
+it. The last token of the answer is not in the cache, because the engine never feeds it back. With `"parallel"`
+(`--batch`) there is a list for the solo session, where a request runs while it is the only one, and one for each slot;
+the panel opens on the one a request used last. **Plain text** shows the tokens as text. **Colored tokens** gives each
+token its own background. The colour comes from the token's id, so the same token always has the same colour. Hover a
+token to see its position and id. It shows 8,000 tokens at a time, starting with the newest; **Earlier** and **Later**
+move between pages. The colours come from a fixed palette of 4,096 per theme, sampled evenly over every colour that
+keeps a contrast of at least 7:1 with the text (OKLab lightness 0.68-0.93 in the light theme, 0.25-0.47 in the dark
+one), so muted colours, which take up less of that space, come up less often. **Save .txt** saves the text. Tick **with
+token ids** next to it, and the ids follow the text as 32-bit little-endian numbers: a line gives their count N, and
+they are the file's last 4 × N bytes.
+
+The list is what the server sent to the engine and read back from it. It is not a copy of the GPU's memory. Where the
+two can differ:
+
+- With draft tokens (MTP, lookup), an answer that ends inside a run of accepted drafts leaves a few more tokens in the
+  cache than the list shows.
+- After a disk session is restored, or a request is stopped while its prompt is read, the list is not known until the
+  next request.
+- A `--batch` slot that is in use shows its list when its request ends.
+- With `--batch`, Qwen3.8-Flash-Next's engine keeps a session of its own next to the slots, so `--batch 2` holds three,
+  each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
+  `--kv int8` (on a Radeon 8060S, Strix Halo); its own session is allocated the same way and is not in that figure. A
+  request that is alone runs in that session, and every request is read there before it is copied into its slot.
+  Qwen3.6-35B-A3B's engine has no session of its own: a request that is alone runs in one of the slots' sessions, so the
+  list of that slot may already have been replaced by it.
+- Conversations the engine has parked in RAM are not shown.
+
+`GET /api/context` returns `{"available", "loaded", "max_context", "slots": [{"name", "slot", "state", "tokens",
+"pieces", "unknown", "used"}]}`. `slot` is `null` for the session outside the batch slots, and `used` is when a request
+last ended on it (Unix time). `pieces` is each token's text; joined, they give the whole text. When `tokens` is `null`,
+`unknown` says why: `busy`, `stopped`, `restored`, `dropped` (non-finite logits) or `ended`. When the monitor is on, the
+main page's Sampling panel and Monitor tab link to `/api-monitor`.
 
 ---
 
