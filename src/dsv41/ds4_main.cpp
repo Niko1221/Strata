@@ -120,6 +120,18 @@ struct Lines {
             cv.notify_all();
         }).detach();
     }
+    bool try_next(std::string& l) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (q.empty()) return false;
+        l = q.front();
+        q.pop_front();
+        return true;
+    }
+    void push_front(const std::deque<std::string>& more) {
+        std::lock_guard<std::mutex> lk(mu);
+        for (auto it = more.rbegin(); it != more.rend(); ++it) q.push_front(*it);
+        cv.notify_all();
+    }
     bool next(std::string& l) {
         std::unique_lock<std::mutex> lk(mu);
         cv.wait(lk, [&] { return !q.empty() || eof; });
@@ -313,6 +325,41 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
         else if (k == "dspark_cum" || k == "spec_cum") r.cum = std::strtof(v.c_str(), nullptr);
     }
     return !r.ids.empty() && (!geni || !r.file.empty());
+}
+
+// M1 of docs/DSV41_BATCHING.md: a queued shorter prompt goes before the current one.  The engine still runs one
+// request at a time; this only decides which of the lines already waiting is read next (the server's
+// STRATA_ADMIT_SHORT_FIRST rule, at the engine).  STRATA_DS4_ADMIT_SHORT_FIRST=0 turns it off.
+static int64_t gen_prompt_len(const std::string& line, bool& is_gen) {
+    const bool geni = line.rfind("GENI ", 0) == 0;
+    is_gen = geni || line.rfind("GEN ", 0) == 0;
+    if (!is_gen) return 0;
+    Req r;
+    if (!parse_gen(line, r, geni)) return -1;
+    return (int64_t) r.ids.size();
+}
+
+static void admit_short_first(Lines& in, std::string& line) {
+    static const int64_t kShort = []() {
+        const char* e = std::getenv("STRATA_DS4_ADMIT_SHORT_FIRST");
+        return e != nullptr ? std::atoll(e) : (int64_t) 2048;
+    }();
+    if (kShort <= 0) return;
+    bool is_gen = false;
+    const int64_t cur = gen_prompt_len(line, is_gen);
+    if (!is_gen || cur < 0) return;
+    std::deque<std::string> rest;
+    std::string l;
+    std::string best = line;
+    int64_t bestn = cur;
+    while (in.try_next(l)) {
+        bool g = false;
+        const int64_t n = gen_prompt_len(l, g);
+        if (g && n >= 0 && n < bestn) { rest.push_back(best); best = l; bestn = n; }
+        else rest.push_back(l);
+    }
+    in.push_front(rest);
+    line = best;
 }
 
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
@@ -645,6 +692,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     }
     while (in.next(line)) {
         if (line == "QUIT") break;
+        admit_short_first(in, line);
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
             std::printf("ERR unsupported command '%s' (GEN, GENI, STOP and QUIT)\n", line.substr(0, line.find(' ')).c_str());
