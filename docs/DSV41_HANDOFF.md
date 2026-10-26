@@ -90,6 +90,12 @@ share **32.7 %** of their six experts (unrelated prompts: 25.5 %), i.e. 1.20x on
 M3's ceiling on this box is therefore ~1.2-1.3x, not 2-3x - the kernel program (4-8 weeks by the design's own estimate)
 would buy that much unless the routing overlap itself can be raised.
 
+M2 is smaller than the design assumed: `AttnRows` already describes T queries with per-query window offsets and counts
+(`ds4_kernels.cuh:154`), and `sparse_attn`/`attn_split` run them in one launch (`blockIdx.z` = query), which is how
+DSpark's verify works.  So M2 is per-sequence KV *regions* plus a per-step table, not a new attention kernel; the memory
+for the per-slot KV (a capped context a slot, not 1M) is the design decision.  The first thing to write is the parity test
+that runs the kernel with T = 2 over two disjoint regions and compares it with two T = 1 calls.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

@@ -7,6 +7,32 @@ they are what turns the present interleaving of requests into real throughput.  
 the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
 2.25 bpw pack (274 GB, 1M context).
 
+## M2, re-scoped: the attention kernel already takes several queries (2026-10-26)
+
+The design assumed M2 needed a new "varlen attention" kernel.  Reading the code it does not: `AttnRows` already describes
+**T queries**, each with its own window offset and counts (`ds4_kernels.cuh:154-160`: `win0[t]`, `nwin[t]`, `nsel[t]`, and
+`sparse_attn(..., int T, ...)` takes the selection table with a per-query stride), and
+`ds4_attn_split.cuh` runs them in one launch (`const int t = blockIdx.z; ... ar.nwin[t] ... ar.nsel[t]`).  That is how
+DSpark's verify (T = 2..5) already works.  The queries' window rows come from one buffer at a per-query offset, and their
+compressed rows are indexed per query into one compressed-KV buffer.
+
+So M2 is not a new kernel: it is **per-sequence KV regions and a per-step table**, i.e.:
+
+* each sequence's window ring at `seq * kWin` rows of the one window buffer (the ring arithmetic keeps the sequence's own
+  position, so `pos % kWin` becomes `seq * kWin + pos % kWin`);
+* each source's compressed KV and index keys in disjoint row ranges of their buffers (`seq * cap` rows), the compressor
+  kernels writing at `base + pos / ratio`, the indexer selecting within the sequence's range;
+* a per-step `AttnRows`: `T` = the sequences decoding this step, `win0[t]`/`nwin[t]`/`nsel[t]` from each sequence's state,
+  and the selection table built per sequence;
+* the model's `pos` (and `toks`, the checkpoints) per sequence instead of one - the `Run` in the serve loop already holds
+  that half.
+
+The cost that decides the design is **memory**: the compressed KV is ~2.5 GB at a 1M-token context, so the per-slot KV has
+to be capped (e.g. 32K tokens a slot: a few hundred MB for 2-3 slots) - the batch's context budget, not the whole
+`--max-context`.  With that, M2 is bookkeeping in the model around buffers the kernels already address, and the risk is
+the one the design names: a row counted wrong does not crash, it answers subtly wrong - hence a parity test against the
+present per-query calls is the first thing to write.
+
 ## What a batched MoE can expect (measured, 2026-10-26)
 
 M3 assumes the expert weights are read once for the tokens of a step, which pays only when those tokens route to the same
