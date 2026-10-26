@@ -41,6 +41,7 @@ Intel engines are unchanged.
 | Q2_0 | 37.6 GB | 46 GB | 64 GB |
 | IQ3_XXS | 47.0 GB | 55 GB | 74 GB (where IQ3_S does not fit) |
 | IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
+- **The engine's own memory grows with the context.** Beside the mapped file, the engine holds its buffers and the decode window's K/V for the whole `--max-context`. Measured on the M5 Max with Qwen3.8-Flash-Next IQ3_S (phys_footprint 5 s after the engine is ready): 7.68 GiB at 64K context and 10.61 GiB at 262K. Before this version the engine also kept an unused second copy of the K/V in the session buffer, resident in full: 9.27 GiB at 64K and 16.99 GiB at 262K.
 | UD-Q4_K_XL (Unsloth; higher quality) | 82.6 GB | 91 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | streams from the SSD on 128 GB | 128 GB, streamed |
 | Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that |
@@ -204,6 +205,34 @@ dense-weight tiles off). Prompt of 4,065 tokens: **109 tok/s**. The engine held 
 the same Gyro-S file (5 text segments, 4,995 positions, RTX 3060) the Mac is as far from either CUDA run as the two CUDA runs are
 from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0186.
 
+### Sampling
+
+A request's sampling settings work as on the PC: `temperature`, `top_p`, `top_k` (1-64; 0 or more than 64 keeps 64),
+`min_p`, `seed`, the penalties and `logit_bias`, in the PC engine's order (logit_bias, penalties, top_k, top_p, min_p,
+temperature) with one Philox draw per token keyed by the seed and the token's position, so a request with a fixed seed
+gives the same text again. Temperature 0, or none, is greedy and gives the same tokens as before. The server's default
+sampling (the model card's, when neither the request nor the config sets one) reaches the Mac engine too; send
+`temperature: 0` for greedy answers (and `presence_penalty: 0`: the card's presence penalty is added to a
+temperature-0 request too, and on the Mac it now applies).
+
+- The MTP drafts stay greedy, and a draft is kept when the sampled token equals it (as on the PC), so fewer drafts are
+  kept than with greedy decoding.
+- The Mac picks the token on the CPU from the window's logits (unified memory, no copy): 9-46 µs per token row,
+  11 µs at temperature 0.7, top_p 0.95, top_k 20 (`metal/tests/engine/host_sampler_parity --bench`, 248,320 logits).
+
+Measured on the M5 Max (128 GB) with Qwen3.8-Flash-Next IQ3_S at 262K context, 2026-10-20 (`tools/metal_sampling_test.py
+--bench`: 4 short prompts with MTP, 256 tokens each; sampled = temperature 0.7, top_p 0.95, top_k 20; 3 runs on a Mac
+that had been running tests for about an hour; a cool Mac decodes faster): greedy 76.3 / 83.3 /
+78.3 tok/s, sampled 74.8 / 72.9 / 68.8 tok/s (mean of the 4 prompts); drafts kept 0.72 greedy, 0.70 sampled. The
+sampled rate is lower because fewer drafts are kept and the sampled texts are other texts.
+
+Checked with `tools/metal_sampling_test.py` (13 checks, all pass; 0.2.0 without this change fails 11 of them): the same
+seed gives the same text twice and in a second engine process, another seed another text; 208 one-token requests drew
+exactly the token a reference sampler (written in the test from the PC engine's sampler code) draws from the same
+logits, with top_k, top_p, min_p, penalties and a logit_bias. With temperature 0 the tokens equal 0.2.0's (a 28-, a
+2,257- and a 16,180-token prompt). Not ported: the opt-in draft schemes `STRATA_SPEC_COUPLED`, `STRATA_SPEC_PROB` and
+`STRATA_SPEC_GUMBEL` (the Mac drafts greedily). Not measured: other Macs and models.
+
 ## Limits (this version)
 
 - **Images (vision):** on by default. The app and the Terminal use the `strata-vision` that sits beside `strata` in the engine
@@ -220,9 +249,21 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
   | 260 tokens (640x400) | 0.45 s | 50.7 s |
   | 972 tokens (1600x1200) | 2.4 s | 194 s |
 
-- **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
-  be set, but it is not measured.
-- **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
+  `--vision cpu` is still allowed and prints that note. The CPU reader is slow because ggml has no vector kernel for BF16 on ARM (a build
+  for newer chips, with the BF16 and int8 instructions, took the same 50.7 s). If the GPU reader cannot start, the server prints one line
+  and starts the same program on the CPU. With Q2_0 streaming from the SSD on that M4, the STRATA 42 test picture (red circle, blue square,
+  green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
+- **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
+- **Requests together (`--parallel`, batch slots): experimental, opt-in.** The Mac engine runs the batch slots in a batch window of its own: one dispatch batch, up to 8 rows, and each row reads and writes its own conversation's
+  parked state (its own region of the arena). The per-slot state stays byte-exact (checked byte for byte at every
+  admission), but a batched row does not byte-replay the solo window: kernels that batch rows in one dispatch
+  round differently, and the measured drift enters at the batched PLE block and rides every later fold. A greedy
+  or sampled token can then differ from the solo run where two openings are a near tie (measured on M1 Max:
+  two slots identical, greedy and sampled; four slots two of four, all answers coherent).
+  Turn it on with `"parallel": N` in the run settings (or `--batch N` on the engine); several clients without it still
+  queue, one at a time, as before.
+  `tools/metal_batch_try.sh` compares solo against batched on your Mac (same prompts; add `--keys
+  "temperature=0.7 seed=7"` for the sampled rows): numbers on M1 Max in BATCHING.md's "On Apple Silicon" section.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming** is measured at 32 GB only.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Setup repacks
@@ -261,6 +302,8 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_WIRE_ARENA=0` | Streaming, 64 GB or more: leave the filled arena pageable (default: wired) |
 | `STRATA_METAL_IGNORE_REPACK=1` | Start although a model repack or setup's preparation is running (the engine refuses by default) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2 to 3 GB) |
+| `STRATA_METAL_PROMPT_MOE=mpp` | Streaming prompt experts: each batch's experts are decoded to fp16 slabs once per chunk, and gate/up and down are single dynamic-K matmuls over them (the matrix units run at 6.2 TFLOP/s against the K-loop's 2.9). M1 Max, IQ3_S/IQ4_NL, interleaved with same-session anchors: a 4096-token chunk's GPU time 12243 -> 8818 ms (-28%), warm 4096 prefill 225.9 -> 256.6 tok/s (+13.6%). A short chunk loses a little (356 tokens 60.0 -> 55.8 tok/s): the decode pays whole experts, and a long chunk is where the saved dequantizing wins |
+| `STRATA_METAL_PROMPT_MOE_BATCH=N` | mpp: experts per slab batch, so the fp16 copy of the weights kept in the arena region (default 64 = 5.1 GB of buffers; 128 = 5.8). Untouched experts are never decoded, so a short chunk decodes only what it routes to |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 
 ## How it works

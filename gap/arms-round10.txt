@@ -1,0 +1,9 @@
+# round 10: prefill scan variants (mpp path) + last decode tiles
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+Z_0|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|
+Z_r8|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scanr_8|t2048.txt|2|262144|
+Z_48|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scanr_4_8|t2048.txt|2|262144|
+Z_v|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scan_v|t2048.txt|2|262144|
+Z_0b|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|
+Z_dGU82|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_MOE_TILE=8,2,4,4|t357.txt|128|40960|
+Z_dBIG8|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_GEMV_TILE=6144,-1,8,1,8,1|t357.txt|128|40960|

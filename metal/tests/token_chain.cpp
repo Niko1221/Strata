@@ -95,7 +95,11 @@ int main(int argc, char** argv) {
         for (size_t o = 0; o < f.file_bytes; o += 16384) s += ((const uint8_t*)f.map)[o];
         std::printf("file touched in %.1f s\n", mtl::now_s() - t0);
     }
-    mtl::Buffer W = cx.wrap(f.map, f.map_bytes);
+    // a file past the device's maxBufferLength wraps as overlapping chunks, each holding any tensor's full
+    // range (Context::wrap), the way the engine's weight files do; a 47 GB shard on a 64 GB M1 Max needs it
+    uint64_t max_bytes = 0;
+    for (const auto& t : f.tensors) max_bytes = std::max(max_bytes, t.second.bytes);
+    mtl::Buffer W = cx.wrap(f.map, f.map_bytes, (size_t)max_bytes);
     auto T = [&](const std::string& name) -> const gguf::Tensor& {
         const gguf::Tensor* t = f.find(name);
         if (!t) { std::fprintf(stderr, "missing tensor %s\n", name.c_str()); std::exit(2); }
@@ -427,7 +431,8 @@ int main(int argc, char** argv) {
             d.args = {mtl::Arg::B(gst[gi]), mtl::Arg::B(ghist[gi]), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                       mtl::Arg::B(z), mtl::Arg::B(W, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T(b + "ssm_dt.bias").offset),
                       mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse ? XY.b : yg),
-                      mtl::Arg::V(a), mtl::Arg::B(ghist2[gi])};
+                      mtl::Arg::V(a), mtl::Arg::B(ghist2[gi]),
+                      mtl::Arg::B(fuse ? XY.b : yg, fuse ? XY.plane_bytes() * 4 : 0)};
             d.grid[0] = 48;
             d.tg[0] = 512;
             push(d, "gdn step", 2.0 * 4 * 128 * 48 * 128);

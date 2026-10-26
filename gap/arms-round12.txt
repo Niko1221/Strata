@@ -1,0 +1,7 @@
+# round 12: is decode GPU-bound or dispatch-bound? PROFILE breakdown + gemv marginal, interleaved anchors
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+P_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_tg_skipgemv|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROFILE=1 STRATA_METAL_SKIP=gemv|t357.txt|128|40960|
+P_tg_nospec|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_PROFILE=1|t357.txt|128|40960|--spec 0
+D_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|

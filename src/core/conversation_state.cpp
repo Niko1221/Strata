@@ -62,11 +62,25 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
         const auto& st = owned(ss, j);
         const auto block = strata::kernels::qsa_real_shapes().idx_block;
         size_t pooled_bytes = 0;
+#if defined(STRATA_GPU_METAL)
+        // Metal (upstream 8311d8af): the session's QSA states carry no K/V pools and no pooled indexer keys -
+        // the decode window (or one of the batch regions) keeps its own, sized by the same max cells - so
+        // `idx_pooled` is null and `idx_pooled_rows` is 0 here by design.  The clauses that read pooled rows
+        // describe bytes a Metal park never touches: the copy side (conversation_snapshot.cpp `valid`)
+        // replaces them with the window's own pools and re-checks every payload against the window's capacity,
+        // and window_checkpoint_restore revalidates every buffer size.  The tail, the spare dead key and the
+        // block position DO live in the session, so their presence and extent checks stand.
+        (void) block; (void) pooled_bytes;
+        if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos ||
+            st.max_cells < 0 || tokens > (uint64_t) st.max_cells)
+            return fail(error, "invalid indexer running-state target");
+#else
         if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled ||
             st.max_cells < 0 || tokens > (uint64_t) st.max_cells ||
             (tokens && tokens / (uint64_t) block >= (uint64_t) std::max<int64_t>(0, st.idx_pooled_rows)) ||
             !product(pooled_bytes, {tokens / (uint64_t) block + 1, (uint64_t) g.idx_key_dim, sizeof(float)}))
             return fail(error, "invalid indexer running-state target");
+#endif
     }
     return true;
 }
@@ -145,10 +159,20 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
     const size_t layers = owned_qsa(ss);
+    (void) layers;
+#if defined(STRATA_GPU_METAL)
+    // on Metal the running state lives in the decode window: its save (metal/src/engine/window.cpp) writes the
+    // window's own layout - no per-layer block_pos, since the indexer derives the block position from the token
+    // count - and its restore revalidates every buffer size.  The session's CPU-side byte counts describe a
+    // payload this engine never produces; only the image and prefix invariants are checked here.
+    if (!image_keys(c.imgs, c.ids.size())) return fail(error, "invalid checkpoint image keys");
+    return true;
+#else
     if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
         c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
         c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
         return fail(error, "invalid checkpoint running-state payload");
+#endif
     return true;
 }
 
@@ -156,8 +180,8 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
 }  // namespace strata::core
 namespace strata::metal_engine {
 // the running state lives in the Metal decode window (metal/src/engine/window.cpp), not in the session's buffers
-bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& error);
-bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& error);
+bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& error);
+bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& error);
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
@@ -165,8 +189,10 @@ namespace strata::core {
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
 #if defined(STRATA_GPU_METAL)
-    (void) ss; (void) g;
-    return strata::metal_engine::window_checkpoint_save(c, error);
+    (void) g;
+    // `ss` names the window side to read: the stage's own session or one batch slot's region (window.cpp);
+    // a session with no region (batch never started) is parked through the main window, as before
+    return strata::metal_engine::window_checkpoint_save(c, &ss, error);
 #endif
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
@@ -188,7 +214,7 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
                                      const ModelGeometry& g, std::string& error) {
 #if defined(STRATA_GPU_METAL)
     (void) g;
-    if (!strata::metal_engine::window_checkpoint_restore(c, error)) return false;
+    if (!strata::metal_engine::window_checkpoint_restore(c, &ss, error)) return false;
     ss.ple_prev[0] = c.ids.size() >= 2 ? c.ids[c.ids.size() - 2] : -1;
     ss.ple_prev[1] = c.ids.size() >= 1 ? c.ids[c.ids.size() - 1] : -1;
     return true;
@@ -221,6 +247,18 @@ bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, co
     // sessions carved alike on the same device (a stage's own session and its batch slots): the same bytes into
     // the same places, through copy() like the restore (the private non-blocking stream, complete on return unless
     // `queued`: then the caller synchronizes the device).
+    //
+    // Metal: the running state lives in the window (the main session's window bytes, or one batch slot's region);
+    // the session's own CUDA-shaped buffers are not it.  The copy is the save and the restore, through a host
+    // checkpoint of the window's own byte order; `ids` drives the slot's ple_prev in the restore.
+#if defined(STRATA_GPU_METAL)
+    (void) queued;
+    ConversationCheckpoint c;
+    c.ids = ids;
+    if (!conversation_checkpoint_save(c, from, g, error)) return false;
+    if (!conversation_checkpoint_restore(c, to, g, error)) return false;
+    return true;
+#endif
     ConversationStateSizes zf, zt;
     if (!checkpoint_targets(from, g, ids.size(), zf, error) || !checkpoint_targets(to, g, ids.size(), zt, error))
         return false;
@@ -358,8 +396,22 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     const size_t layers = owned_qsa(ss);
     if ((owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
     size_t tails = 0, dead = 0, block_pos = 0;
+#if defined(STRATA_GPU_METAL)
+    // a Metal session file carries the decode window's own checkpoint payload (Window::checkpoint_save,
+    // metal/src/engine/window.cpp): its indexer tail keeps a whole block of keys per QSA layer
+    // (idx_block rows x idx_key_dim floats, not idx_block - 1), and it writes no per-layer block position
+    // (the window's indexer derives the block from the token count). The GDN rows, the PLE history and the
+    // dead keys match the CPU-side counts byte for byte. window_checkpoint_restore is the gate that matches
+    // these payload bytes to the window's buffers; a CPU-size tail limit would refuse the engine's own file.
+    size_t window_tail = 0;
+    if (!product(window_tail, {(uint64_t) strata::kernels::qsa_real_shapes().idx_block, (uint64_t) g.idx_key_dim,
+                               sizeof(float)}) ||
+        !product(tails, {layers, window_tail}) || !product(dead, {layers, z.dead}) ||
+        !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+#else
     if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
         !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+#endif
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
