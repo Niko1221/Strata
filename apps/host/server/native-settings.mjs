@@ -11,6 +11,7 @@ export const NATIVE_FIELDS=[
  {id:'mtp',label:'Draft layer (MTP)',group:'Serving',type:'boolean',hint:'The draft layer guesses several words ahead, which makes answers faster, and costs about 1 GB of graphics memory and some RAM. Turn it off if the model stops while it starts, or the card is small: the expert cache gets that memory back and answers are slower. Default is on.'},
  {id:'drafting',label:'Drafting',group:'Serving',type:'enum',choices:['auto','mtp','dflash2','off'],hint:'Which drafter guesses words ahead to make answers faster. Auto (recommended) lets Strata pick from what it measured on cards like yours; today that is the MTP. DFlash2 is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If DFlash2 cannot run, the MTP is used and Details says why. Off turns the draft layer off.'},
  {id:'batchMtp',label:'MTP per request',group:'Serving',type:'boolean',hint:'Each concurrent request uses the draft layer. Left alone, Strata turns it on for one graphics card with 24 GB or more and several requests at once, and off otherwise; choose on or off here to decide yourself.'},
+ {id:'ds_experts',label:'Speed (DeepSeek)',group:'Serving',type:'enum',choices:['5','6'],forModel:'deepseek',hint:'Faster uses 5 of 6 experts per word: a small quality change, usually not noticeable. Full quality uses all 6. Left alone, the engine picks Faster on a PC whose graphics cards total 16 GB or less.'},
  {id:'parallel',label:'Concurrent requests',group:'Serving',type:'number',min:1,max:8,hint:'More slots need more memory and can slow each response.'},
  {id:'engine_silence_s',label:'Engine stall timeout (seconds)',group:'Recovery',type:'number',min:10,max:3600},
  {id:'api_monitor',label:'Keep API request metadata',group:'Recovery',type:'boolean'},
@@ -26,7 +27,7 @@ export const NATIVE_FIELDS=[
  {id:'mcp_max_result_chars',label:'Maximum tool result characters',group:'Tools',type:'number',min:100,max:1000000},
 ];
 /** Settings the app itself applies when it starts a model (they are not read from the engine's source, so the engine's text never says it supports them). */
-export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting'];
+export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting','ds_experts'];
 /** The engine arguments without the draft layer: --mtp <folder or count>, --spec-min-p <p> (its confidence threshold) and --batch-mtp. --spec stays: prompt lookup still uses its windows. Same rule as strata_control/draft_layer.py. */
 export function withoutDraftLayer(args){
  const out=[];const list=(args??[]).map(String);

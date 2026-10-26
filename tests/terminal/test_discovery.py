@@ -229,6 +229,25 @@ class GuiLayout(unittest.TestCase):
         self.assertEqual(plan["candidate_selection"]["model"], "Gyro-S")
         self.assertEqual(payload, 124)
 
+    def test_a_fine_tune_with_the_layout_of_a_known_build_is_used_not_refused(self):        # #3651 #3777
+        folder = self.base / "finetune"
+        folder.mkdir()
+        (folder / "Qwen3.8-Flash-Next-Gyro-S-abliterated-TQ1_0.gguf").write_bytes(gyro_s_bytes())
+        fake_root = self.base / "fake-root2"
+        (fake_root / "data").mkdir(parents=True)
+        table = {"gyro/Gyro-S": {"arch": "qwen4exp", "tensors": 2, "bytes": 999_999, "expert_bytes": {"TQK6": 52, "TQK7": 60},
+                                 "files": [GYRO_S], "repo": "x"},
+                 "gyro/Gyro-M": {"arch": "qwen4exp", "tensors": 2, "bytes": 888_888, "expert_bytes": {"TQ2_T": 40},
+                                 "files": [GYRO_S], "repo": "x"}}
+        (fake_root / "data" / "gguf_fingerprints.json").write_text(json.dumps(table))
+        with mock.patch.object(models, "ROOT", fake_root):
+            plan = models.plan_import(str(folder))
+        self.assertEqual(plan["issues"], [])
+        self.assertEqual(plan["candidate_selection"]["basis"], "same_layout_other_build")
+        self.assertEqual(plan["candidate_selection"]["model"], "Gyro-S")           # the closest by expert formats
+        self.assertTrue(any("not exactly a build Strata has tested" in m for m in plan["messages"]))
+        self.assertIn("unrecognized_or_unsupported_model_variant", models.plan_import(str(folder))["issues"])   # the real table has 1224 tensors
+
     # ---- T05: where it is, what is missing
     def test_the_folder_defaults_to_where_the_model_is(self):
         cat = self.catalog()

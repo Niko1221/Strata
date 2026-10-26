@@ -3,6 +3,7 @@
  * Setup writes --mtp, --spec-min-p and --vision into the arguments every time it runs; the host applies the saved choices on every
  * load. Nothing here starts an engine; Control is a fake that records what the host saved and asked it to start.
  */
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,7 +46,7 @@ test('withoutDraftLayer takes out --mtp, --spec-min-p and --batch-mtp and keeps 
 
 test('"Draft layer (MTP)" is a setting of the app, not frozen, and "MTP per request" is not frozen either', async () => {
   assert.ok(NATIVE_FIELDS.some(f => f.id === 'mtp' && f.type === 'boolean'));
-  assert.deepEqual(APP_OWNED_FIELDS.sort(), ['batchMtp', 'drafting', 'mtp']);
+  assert.deepEqual(APP_OWNED_FIELDS.sort(), ['batchMtp', 'drafting', 'ds_experts', 'mtp']);
   const f = fixture();
   try {
     await f.native.refresh(true);

@@ -183,6 +183,12 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (failed) throw Object.assign(new ControlError(failed.error, { exitCode: failed.exit_code ?? result.code, output: result.json }), { code: result.code === 7 ? 'engine_serving' : 'update_failed' });
       throw failure(result, 'The update failed.');
     },
+    /** Install an engine package the person downloaded and chose (the offline path): no network; Control checks the package's own signature. */
+    async installEngineFile(path, { onEvent = null, signal = null } = {}) {
+      const result = await call(['components', 'install-file', path, '--output', 'jsonl'], { timeoutMs: 3600_000, onLine: onEvent ?? (() => {}), signal });
+      if (result.json?.ok) return { ok: true, results: [result.json] };
+      throw failure(result, 'This file could not be installed.');
+    },
     async rollbackEngine() {
       const result = await call(['components', 'rollback', '--output', 'json'], { timeoutMs: 120_000 });
       if (result.json?.ok) return result.json;

@@ -1,3 +1,4 @@
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
