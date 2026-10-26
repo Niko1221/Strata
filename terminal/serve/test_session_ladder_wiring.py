@@ -324,6 +324,18 @@ class WiringHTTP(unittest.TestCase):
         self.assertEqual(self.actions("restore"), ["restore"])
         self.assertEqual(self.engine.calls[-1], ("restore", str(Path(self.dir.name) / "llm-session-ses-a.bin")))
 
+    def test_wiring_restores_a_grown_single_message_session(self):
+        # The momo dormancy shape end-to-end (recheck 2026-10-26): a growing single user message re-renders
+        # with the saved turn's closing marker now in the middle of the new text, so the strict byte-prefix
+        # was never true for such a session and its switch-backs stayed permanently dormant (the x-2..x-5
+        # probe rows: file=y, prefix anchored, restore=n at every gate-open arrival).  The engine serves
+        # this shape fine - checkpoint blocks align under the growth - so the switch-back must restore.
+        self.post("ses-a", LONG + " first")
+        self.post("ses-b", LONG + " second")                 # switch away: ses-a checkpointed
+        self.post("ses-a", LONG + " first and more text")    # switch back with the message grown
+        self.assertEqual(self.actions("restore"), ["restore"])
+        self.assertEqual(self.engine.calls[-1], ("restore", str(Path(self.dir.name) / "llm-session-ses-a.bin")))
+
     def test_wiring_disabled_leaves_the_request_path_inert(self):
         svc = Service(LadderHarness(ByteTokenizer(), "Answer.", max_context=32768), ByteTokenizer(),
                       ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
