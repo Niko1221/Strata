@@ -1,5 +1,4 @@
 #include "strata/core/conversation_file.hpp"
-#include "strata/core/conversation_snapshot.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -680,7 +679,6 @@ void put_kv_header(Out& o, int format, int64_t cells, int64_t heads, int64_t hea
 }
 
 void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
-    conversation_checkpoint_join(c.gdn.data());
     o.vec(c.ids);
     o.u64(c.imgs.size());
     for (const auto& k : c.imgs) { o.i64(k.start); o.u64(k.hash); }
@@ -689,7 +687,6 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 }
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
-    conversation_park_join();
     for (int64_t g : s.geometry) o.i64(g);
     o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
     put_checkpoint(o, s.live);

@@ -12018,6 +12018,10 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
+                // the background copies of the last turn checkpoint and park (STRATA_CKPT_ASYNC, STRATA_PARK_ASYNC) land
+                // before anything below copies, frees or writes the checkpoints and parked images
+                strata::core::conversation_checkpoint_join(nullptr);
+                strata::core::conversation_park_join();
                 if (path.empty()) { refuse("missing path"); continue; }
                 if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
