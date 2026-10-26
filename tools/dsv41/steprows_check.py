@@ -74,9 +74,9 @@ class Engine:
             self.p.kill()
 
 
-def run(exe, pack, steprows, prompt, n, timeout):
+def run(exe, pack, steprows, prompt, n, timeout, tp=4):
     argv = [exe, "--pack", pack, "--serve", "--max-context", "8192", "--eos", "999999", "--dspark", "off",
-            "--tp", "2", "--prefill-chunk", "8"]
+            "--tp", str(tp), "--prefill-chunk", "8"]
     env = dict(os.environ)
     env['STRATA_PREFILL_CPU_SHARE'] = '0'   # (the CPU prefill share makes small chunks non-deterministic)
     if steprows:
@@ -95,14 +95,15 @@ def main() -> int:
     ap.add_argument("--pack", required=True)
     ap.add_argument("--tokens", type=int, default=12)
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--tp", type=int, default=4, help="tensor-parallel group size (4: one group of the four cards)")
     a = ap.parse_args()
     prompt = [20000 + (i * 37) % 4096 for i in range(300)]
     print("contiguous rows: loading", flush=True)
-    ref = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout)
+    ref = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout, a.tp)
     print("contiguous rows again (is the engine deterministic?): loading", flush=True)
-    ref2 = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout)
+    ref2 = run(a.exe, a.pack, False, prompt, a.tokens, a.timeout, a.tp)
     print("per-row (STEPROWS): loading", flush=True)
-    got = run(a.exe, a.pack, True, prompt, a.tokens, a.timeout)
+    got = run(a.exe, a.pack, True, prompt, a.tokens, a.timeout, a.tp)
     print(("ok   " if ref == ref2 else "note ") + "the contiguous path against itself" +
           (" (deterministic)" if ref == ref2 else " (NOT deterministic: %s vs %s)" % (ref[:8], ref2[:8])), flush=True)
     ok = ref == got and ref == ref2

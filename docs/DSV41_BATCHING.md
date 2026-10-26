@@ -111,7 +111,10 @@ What one launch over T sequences still needs, in the order it has to be built:
    new rows travel today through the staged host-mapped hand-off (one block a chunk, a flag and acks a window).  For T
    rows at T different offsets that becomes: one copy of the step's T latent rows to an owning group (`T x hd` floats),
    then each reader's own `finish` into its copy - the pack's quantization is deterministic, so the copies stay
-   bit-identical - about 32 KB a layer a step, ~8 MB a step in all, which PCIe pays in ~0.3 ms;
+   bit-identical - about 32 KB a layer a step, ~8 MB a step in all, which PCIe pays in ~0.3 ms.  **Or the step runs in one
+   tensor-parallel group** (`--tp 4` on this box), where no source is remote and the hand-off is not needed at all: measured
+   on 2026-10-27, the probe with two slots (every check) and three clients over HTTP (100 tokens each, 5.26 s of wall, 52
+   handovers) are green at `--tp 4`, 8K context.  That is a route to land the step first and measure what one group costs;
 3. **the serve loop**: one step over every active slot (the live mode is in, so nothing is parked), then a `BT` a slot;
 4. **the measurement**: `route_overlap` bounds what the shared expert reads can save at 1.15-1.28x, so the step's wall
    at sixteen slots should land below the stock engine's 27.35 s (the one-pass-per-slot live mode is 31.08 s).
@@ -125,10 +128,13 @@ and the ik/ckv writes a sequence, the indexer a row, `AttnRows` in its explicit 
 It compiles, and `STRATA_DS4_STEPROWS=1` routed every chunk through it for an A/B against the contiguous path.  Two things
 came out of it: the window rule a row is **`win - 1` ring rows and the token's** (or `p` and it when the position is
 younger than the ring) - not `win` and it; and the chunk scratch has to hold `t * (win + 1)` rows, not `win + C`, or
-the per-row blocks run off its end.  The A/B itself is not trustworthy yet: at `--prefill-chunk 8` two *identical*
-contiguous runs differ by the sixth token, so the engine is not deterministic in that shape and a bit-exact comparison
-against it proves nothing (the same prompt at the default chunk sizes is byte-identical run to run - the three-client
-check has compared it with production all along).  The code stays out until a deterministic shape can carry the test.
+the per-row blocks run off its end.  The A/B itself is not trustworthy: at `--prefill-chunk 8` two *identical* contiguous runs differ
+(tokens 3 to 6, depending on the run), and it is not the tensor-parallel split - the same happens at `--tp 4`, one group -
+so the engine is not deterministic in that shape and a bit-exact comparison against it proves nothing (the same prompt at
+the default chunk sizes is byte-identical run to run: the three-client check has compared it with production all along).
+The code stays out until the test can be in-process: snapshot the layer's state (its rows, the ring, the compressors'
+group and the table rows the chunk writes), run the contiguous call, restore, run the per-row one, and compare the rows
+and the written bytes directly.  That harness is the next thing to write.
 
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
