@@ -269,6 +269,23 @@ from this number (and from what the switch costs, which is the burst's tuning), 
 count is a memory bound: the protocol's slots and the scheduler bound it too, and at a chat context the memory is not what
 limits it.
 
+### The slot's context, measured and carried to the next load (M5, 2026-10-27)
+
+`--max-context` sizes *every* sequence's tables, so how many a box holds is decided by a number in the config.  The engine
+closes the loop: at the end of a load it computes the context at which the sequences in place would leave the experts the
+room they have (`per_seq`, the free room and `nseq` are all measured), writes it beside the pack
+(`batch-plan.txt`), and with `STRATA_DS4_AUTO=1` the next load sizes a slot's tables from it - it only shrinks, so the
+chain converges instead of oscillating.  This box, seventeen sequences:
+
+| load | a slot's context | tables a sequence | room left | experts in VRAM |
+|---|---:|---:|---:|---:|
+| first, at the pack's 1M | 1048576 | 964 MB | 9.75 GB | 13190 / 15360 (86 %) |
+| second, the plan applied | 373521 | 344 MB | 11.9 GB | 14809 / 15360 (96 %) |
+
+The same seventeen slots keep almost every expert once each may hold 373K tokens instead of the pack's million - the
+number the sixteen-slot runs asked for, measured and applied rather than picked by hand, with the count that room allows
+(`batch_fit_half`) rising from 22 to 34 with it.
+
 ### The slot's burst, measured (M5, 2026-10-27)
 
 `--slot-burst K` - how many tokens a slot decodes before another gets the model - was a number in every script (8, 16,

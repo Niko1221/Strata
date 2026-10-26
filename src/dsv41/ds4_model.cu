@@ -958,6 +958,8 @@ struct Model::Impl {
         const char* e = std::getenv("STRATA_DS4_VSEQ");
         return e != nullptr ? std::max(0, std::atoi(e)) : 0;
     }();
+    // the context one conversation may hold (a slot's region of the tables is sized from it); 0 until the load sets it
+    int64_t slot_tokens = 0;
     // how many sequences' KV the window buffer and the compressed tables hold (docs/DSV41_BATCHING.md, M2): 1 until the
     // batched step is wired; a sequence's ring is g.win rows of the same buffer (win_of), its compressed rows cap rows
     // of the table (kv_base).  A sequence other than 0's brings its own space along
@@ -2107,6 +2109,27 @@ struct Model::Impl {
                 if (!expert_layout(l, err)) return false;
                 continue;
             }
+            // the context a conversation may hold: a measured plan's, when one was written by an earlier load and
+            // STRATA_DS4_AUTO asked for it, else the pack's whole maximum (M5's feedback: measure, write, apply)
+            if (slot_tokens <= 0) {
+                slot_tokens = o.max_context;
+                if (std::getenv("STRATA_DS4_AUTO") != nullptr) {
+                    int64_t planned = 0;
+                    std::ifstream f(o.pack + "/batch-plan.txt");
+                    std::string k;
+                    while (f >> k) {
+                        int64_t v = 0;
+                        f >> v;
+                        if (k == "slot_context" && v >= 8192) planned = v;
+                    }
+                    if (planned > 0) {
+                        slot_tokens = std::min<int64_t>(planned, o.max_context);
+                        if (o.verbose)
+                            std::fprintf(stderr, "ds4: a measured plan: %lld tokens a slot (the pack's %lld)\n",
+                                         (long long) slot_tokens, (long long) o.max_context);
+                    }
+                }
+            }
             l.kv_src = std::find(g.kv_src.begin(), g.kv_src.end(), il) != g.kv_src.end();
             l.ix_src = std::find(g.ix_src.begin(), g.ix_src.end(), il) != g.ix_src.end();
             l.owns_k = l.kv_src;
@@ -2116,7 +2139,7 @@ struct Model::Impl {
                 Src s;
                 s.layer = il;
                 s.ratio = l.ratio;
-                s.cap = (o.max_context + l.ratio - 1) / l.ratio + 1;
+                s.cap = (slot_tokens + l.ratio - 1) / l.ratio + 1;
                 srcs.push_back(s);
                 last_src = (int) srcs.size() - 1;
             }
@@ -2860,6 +2883,7 @@ struct Model::Impl {
         if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - t0) / 1000.0, describe().c_str());
         if (chunk > 0) (void) pick_flow_min();   // (the startup line)
         reset();
+        write_batch_plan();   // (M5: what this load measured, for the next one's STRATA_DS4_AUTO)
         start_warm();
         return true;
     }
@@ -9843,6 +9867,30 @@ struct Model::Impl {
         p.fit_half = p.per_seq > 0 ? nseq + (int) ((p.room / 2) / p.per_seq) : nseq;
         return p;
     }
+    // M5's feedback: the plan this load measured, written beside the pack - a slot's context for the next load, shrunk
+    // (never grown) to where the sequences' tables leave the experts the room.  STRATA_DS4_AUTO=1 applies it.
+    void write_batch_plan() const {
+        const BatchPlan p = batch_plan();
+        if (p.per_seq == 0 || slot_tokens <= 0) return;
+        const double per = (double) p.per_seq;
+        const int64_t ctx = (int64_t) ((double) slot_tokens * (per + (double) p.room / 2.0) / ((double) nseq * per));
+        const int64_t planned = std::max<int64_t>(8192, std::min<int64_t>(ctx, slot_tokens));
+        std::ofstream f(o.pack + "/batch-plan.txt", std::ios::trunc);
+        if (!f) return;
+        f << "slot_context " << planned << "\n";
+        f << "max_context " << o.max_context << "\n";
+        f << "nseq " << nseq << "\n";
+        f << "tables_mb_per_seq " << (long long) (p.per_seq / 1000000) << "\n";
+        f << "room_mb " << (long long) (p.room / 1000000) << "\n";
+        f << "experts " << p.experts << "\n";
+        f << "experts_vram " << p.in_vram << "\n";
+        if (o.verbose)
+            std::fprintf(stderr,
+                         "ds4: batch plan: %lld tokens a slot at %d sequences (%lld MB of tables each, %lld MB free, "
+                         "%d of %d experts in VRAM)\n",
+                         (long long) planned, nseq, (long long) (p.per_seq / 1000000),
+                         (long long) (p.room / 1000000), p.in_vram, p.experts);
+    }
     std::vector<std::string> info_lines() const {
         std::vector<std::string> v;
         int nh = 0;
@@ -9858,8 +9906,9 @@ struct Model::Impl {
             const BatchPlan bp = batch_plan();
             std::snprintf(b, sizeof b,
                           "INFO batch_nseq=%d batch_table_mb_per_seq=%.0f batch_room_mb=%.0f batch_fit_half=%d "
-                          "batch_experts=%d batch_experts_vram=%d",
-                          nseq, (double) bp.per_seq / 1e6, (double) bp.room / 1e6, bp.fit_half, bp.experts, bp.in_vram);
+                          "batch_experts=%d batch_experts_vram=%d batch_slot_context=%lld",
+                          nseq, (double) bp.per_seq / 1e6, (double) bp.room / 1e6, bp.fit_half, bp.experts, bp.in_vram,
+                          (long long) slot_tokens);
             v.push_back(b);
         }
         if (commit_kept > 0) {   // (Windows, an integrated GPU: the commit kept experts off the GPU - the server says so)
@@ -9958,7 +10007,7 @@ bool Model::verify(int y, const std::vector<int>& d, float t, float tp, int tk, 
 void Model::use_seq(int seq) { p_->use_seq(seq); }
 int Model::seq_count() const { return p_->seq_count(); }
 int64_t Model::pos() const { return p_->state().pos; }
-int64_t Model::max_context() const { return p_->o.max_context; }
+int64_t Model::max_context() const { return p_->slot_tokens > 0 ? p_->slot_tokens : p_->o.max_context; }
 int Model::vocab() const { return p_->g.vocab; }
 const std::vector<int32_t>& Model::tokens() const { return p_->state().toks; }
 void Model::reset() { p_->reset(); }
