@@ -18536,6 +18536,11 @@ int main(int argc, char** argv) {
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,
                         (double) mtp.vram_bytes() / 1048576.0);
+        if (use_mtp) mtp.profile_flush();   // STRATA_DRAFT_TIMING / STRATA_MTP_PROFILE: the summary-time flush
+    {   // v4: the GPU stage report (STRATA_VERIFY_PROFILE) - the batch path prints it, the one-shot path did not
+        const std::string pr = ver.profile_report();
+        if (!pr.empty()) std::fprintf(stderr, "per-stage (ms/window):%s\n", pr.c_str());
+    }
     }
 
     if (dump != nullptr && std::fclose(dump) != 0) {
