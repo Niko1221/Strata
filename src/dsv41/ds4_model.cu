@@ -1086,6 +1086,8 @@ struct Model::Impl {
     std::thread cc_th;
     cudaStream_t cc_cs = nullptr;     // the refills' copy stream on CUDA1
     bool cc_fill = false;             // (DS4_CACHE_CARD_FILL=0: a freed slot stays empty)
+    int cc_inflight = 0;              // refills queued or being copied
+    static constexpr int kMaxCardMoves = 8;   // CUDA1's swaps in flight at most (the freed slots' refills not counted)
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
@@ -6637,6 +6639,7 @@ struct Model::Impl {
             done.swap(cc_done);
         }
         for (const CardFill& f : done) {
+            --cc_inflight;
             Layer& l = L[(size_t) f.layer];
             if (l.slot[(size_t) f.in] >= 0) {   // (the main card took it meanwhile)
                 l.cc[(size_t) f.in] = -1;
@@ -6659,16 +6662,39 @@ struct Model::Impl {
                 ++i;
                 continue;
             }
-            l.cc[(size_t) best] = -2;
-            {
-                std::lock_guard<std::mutex> lk(cc_mu);
-                cc_queue.push_back({l.il, s, best});
-            }
+            card_queue(l, s, best);
             queued = true;
             cc_free[i] = cc_free.back();
             cc_free.pop_back();
         }
+        // a layer's coldest CUDA1 expert out for its hottest CPU-lane one, past the expert cache's margin
+        for (Layer& l : L) {
+            if (cc_inflight >= kMaxCardMoves) break;
+            if (l.mtp || l.cc.empty()) continue;
+            int cold = -1, best = -1;
+            for (int e = 0; e < l.n_exp; ++e) {
+                const int c = l.cc[(size_t) e];
+                if (c >= 0) {
+                    if (cold < 0 || l.heat[(size_t) e] < l.heat[(size_t) cold]) cold = e;
+                } else if (c == -1 && l.slot[(size_t) e] < 0 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best])) {
+                    best = e;
+                }
+            }
+            if (cold < 0 || best < 0 || !(l.heat[(size_t) best] > l.heat[(size_t) cold] * c_margin + c_bonus)) continue;
+            const int s = l.cc[(size_t) cold];
+            l.cc[(size_t) cold] = -1;
+            card_tab(l, cold, 0ull);
+            card_queue(l, s, best);
+            queued = true;
+        }
         if (queued) cc_cv.notify_one();
+    }
+    // expert e of l on its way into CUDA1's slot s (cc_th copies it; card_tick puts it into the tables)
+    void card_queue(Layer& l, int s, int e) {
+        l.cc[(size_t) e] = -2;
+        ++cc_inflight;
+        std::lock_guard<std::mutex> lk(cc_mu);
+        cc_queue.push_back({l.il, s, e});
     }
 
     std::string describe() const {
