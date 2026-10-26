@@ -1,0 +1,42 @@
+[
+  {
+    "label": "target",
+    "source_sha256": "acba44a1eb26e8e63342e3841127565b0f77eb7fd693cb7bfdb2e49eb3100e4d"
+  },
+  {
+    "label": "baseline-a-retry",
+    "source_sha256": "00040d19a08ed1314ddc9c9d055603a77ba43a0d169ae696eca13ebb441d9191"
+  },
+  {
+    "label": "query-a",
+    "source_sha256": "0dc415d955c7962b741d111fb0623b0ac5c02af3a150ad592eb7017feff5074a"
+  },
+  {
+    "label": "mtp-a",
+    "source_sha256": "b4c31ac64d95210db1df1c07f972634d7e47f19389ab01659612de8cef26aa3d"
+  },
+  {
+    "label": "query-b",
+    "source_sha256": "11332aa5e36c56636539a63c43f604416df43f86e2956fc8059dd23af6ed3db9"
+  },
+  {
+    "label": "baseline-b",
+    "source_sha256": "3742f5c983fe79cb7db54a373091e0c9dbf354ce4957aab8c36fe769058a2673"
+  },
+  {
+    "label": "mtp-b",
+    "source_sha256": "de6f90144882cad80ef41c8e0acdfa88e23edfa99f74f8f94889bf35bf12c9e7"
+  },
+  {
+    "label": "baseline-a-failed.json",
+    "source_sha256": "24f7296ba2c6cd7f43a7ca692f5e5f4ae94b09ead10436de5474f9c5b3073e73"
+  },
+  {
+    "label": "manifest.json",
+    "source_sha256": "76162309659a83e85e344f950892302e10745c09ebe6d35b46aebae82008f686"
+  },
+  {
+    "label": "retry-manifest.json",
+    "source_sha256": "0f1ce95c722f95f401a6beaac27fe623e3023e2b318ba90937ab76d11a952ba5"
+  }
+]

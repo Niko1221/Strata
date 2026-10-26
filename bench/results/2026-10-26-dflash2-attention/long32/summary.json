@@ -1,0 +1,114 @@
+[
+  {
+    "label": "target",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 113619.7,
+    "decode_ms": 12415.4,
+    "tok_s": 30.929329703432835,
+    "wall_ms": 126040.1004359992,
+    "startup_free_mib": 2064,
+    "accepted": 0,
+    "offered": 0,
+    "swap_pages": {
+      "pswpin": 0,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "baseline-a-retry",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 114086.5,
+    "decode_ms": 9259.2,
+    "tok_s": 41.4722654224987,
+    "wall_ms": 123350.49714900015,
+    "startup_free_mib": 1218,
+    "accepted": 247,
+    "offered": 314,
+    "swap_pages": {
+      "pswpin": 15,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "query-a",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 114044.7,
+    "decode_ms": 9251.5,
+    "tok_s": 41.5067826838891,
+    "wall_ms": 123301.15140299677,
+    "startup_free_mib": 1220,
+    "accepted": 247,
+    "offered": 314,
+    "swap_pages": {
+      "pswpin": 32,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "mtp-a",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 113769.5,
+    "decode_ms": 8890.6,
+    "tok_s": 43.1916856005219,
+    "wall_ms": 122665.33470599825,
+    "startup_free_mib": 940,
+    "accepted": 249,
+    "offered": 285,
+    "swap_pages": {
+      "pswpin": 10,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "query-b",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 114053.6,
+    "decode_ms": 9322.7,
+    "tok_s": 41.18978407542879,
+    "wall_ms": 123381.5999819999,
+    "startup_free_mib": 1224,
+    "accepted": 247,
+    "offered": 314,
+    "swap_pages": {
+      "pswpin": 2,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "baseline-b",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 114095.5,
+    "decode_ms": 9259.4,
+    "tok_s": 41.471369635181546,
+    "wall_ms": 123359.75371399763,
+    "startup_free_mib": 1224,
+    "accepted": 247,
+    "offered": 314,
+    "swap_pages": {
+      "pswpin": 1,
+      "pswpout": 0
+    }
+  },
+  {
+    "label": "mtp-b",
+    "input_tokens": 32512,
+    "output_tokens": 384,
+    "prompt_ms": 113658.1,
+    "decode_ms": 8896.1,
+    "tok_s": 43.164982408021494,
+    "wall_ms": 122560.24064900339,
+    "startup_free_mib": 944,
+    "accepted": 249,
+    "offered": 285,
+    "swap_pages": {
+      "pswpin": 0,
+      "pswpout": 0
+    }
+  }
+]

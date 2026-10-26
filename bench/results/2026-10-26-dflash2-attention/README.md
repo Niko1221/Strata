@@ -38,7 +38,7 @@ samples are retained separately. They are not pooled into the final table.
 These are hot synthetic component timings, not request throughput. No percentage
 is added to an earlier component gain or presented as a larger advantage over MTP.
 The completed full-model decode screen below does not establish an increased
-advantage over MTP. A separate 32K prompt comparison is running at this snapshot.
+advantage over MTP. The completed 32K comparison below also does not establish that gain.
 
 ## Full-model decode screen
 
@@ -90,6 +90,38 @@ paths become `${REPO}` / `${STRATA_DATA}`. Full commands and environment flags
 are retained. The source runner is the existing
 `bench/results/2026-10-21-dflash2-long-goal/run.py`.
 
+## 32K prompt comparison
+
+The prompt contains 32,512 tokens (the first 32,000 and last 512 tokens of the
+tracked 256K code fixture). Context is 65,536, actual resident KV is 32,768 and
+expert cache is 2700 slots. Each fresh process performs one 64-token short warmup,
+then one measured 384-token completion. Other settings match the short screen,
+with `--dflash-window 0` to allow the full sequence. Baseline here means the tuned
+bundle; query adds the query cache. Every sequence matches the separate genuine
+target-only control; all placement and routing-profile checks pass.
+
+| Arm | Decode tok/s | Prompt ms | Request wall ms |
+| --- | ---: | ---: | ---: |
+| target | 30.929 | 113619.7 | 126040.1 |
+| baseline-a-retry | 41.472 | 114086.5 | 123350.5 |
+| query-a | 41.507 | 114044.7 | 123301.2 |
+| mtp-a | 43.192 | 113769.5 | 122665.3 |
+| query-b | 41.190 | 114053.6 | 123381.6 |
+| baseline-b | 41.471 | 114095.5 | 123359.8 |
+| mtp-b | 43.165 | 113658.1 | 122560.2 |
+
+MTP is faster on this fixture at this fixed cache size. The query cache is neutral
+within process variation. DFlash2 accepted/offered counts are 247/314; MTP counts
+are 249/285. Prompt processing dominates wall time. These two samples per variant
+are not independent hardware trials. System swap-out deltas are zero; swap-in
+deltas range from zero to 32 pages, retained in `long32/summary.json`.
+
+The first DFlash2 attempt omitted the unlimited drafter-window flag and failed
+its capacity check before long generation. `baseline-a-failed.json` and its
+manifest are retained separately; it contributes no timing sample. The corrected
+fresh process has the explicit `-retry` label. `long32/` preserves exact prompt
+IDs, raw completed results, failed-attempt evidence and original JSON hashes.
+
 ## Validation
 
 Passed:
@@ -110,7 +142,7 @@ Passed:
 Not run: other GPUs, Windows, Metal, multi-GPU, concurrent requests or vision.
 DFlash2 in this tree requires the NVIDIA CUDA backend; HIP/SYCL execution is not
 claimed. The short full-model token and speed screen completed as described
-above; the separate 32K comparison is pending in this snapshot.
+above; the separate 32K comparison completed as described above.
 
 Reproduce the component check in an enabled CUDA build:
 

@@ -1,0 +1,12 @@
+[
+  {
+    "label": "target",
+    "mode": "target",
+    "returncode": 0
+  },
+  {
+    "label": "baseline-a",
+    "mode": "baseline",
+    "returncode": 1
+  }
+]

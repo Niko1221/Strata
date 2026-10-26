@@ -1,0 +1,32 @@
+[
+  {
+    "label": "baseline-a-retry",
+    "mode": "baseline",
+    "returncode": 0
+  },
+  {
+    "label": "query-a",
+    "mode": "query",
+    "returncode": 0
+  },
+  {
+    "label": "mtp-a",
+    "mode": "mtp",
+    "returncode": 0
+  },
+  {
+    "label": "query-b",
+    "mode": "query",
+    "returncode": 0
+  },
+  {
+    "label": "baseline-b",
+    "mode": "baseline",
+    "returncode": 0
+  },
+  {
+    "label": "mtp-b",
+    "mode": "mtp",
+    "returncode": 0
+  }
+]
