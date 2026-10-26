@@ -74,6 +74,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-26: 4x NVIDIA CMP 170HX 40 GB (sm_80, unlocked from 10 GB; x16 restored by the capacitor mod, PCIe **Gen2 x16**), 2x Xeon E5-2690 v4, 247.5 GiB RAM](../bench/results/2026-10-26-standard-cmp-170hx-dc6a8de7/README.md):
+  Strata **0.1.50** official CUDA engine (release build `1aff6d14117b`), original Flash-Next **IQ3_S**, 1,048,576-token context, `--kv q4_0 --kv-resident 20480`, `--pipeline-windows 2`, MTP `--spec 4`, 4 slots on 2 cards. Standard benchmark (`strata-qwen38-thinking-v1-draft.1`) marked **nonconforming** for one reason only: this install carries no git commit. 21/21 required requests, **sanity 12/12**. Short-prompt decode **90.7 tok/s**; at 4K/16K prompts **1,466 / 2,445 prompt tok/s**, decode **78.2 / 77.0 tok/s**, TTFT **2.87 / 6.79 s**; four simultaneous requests **111 tok/s** aggregate. The card modifications are documented in [HARDWARE-NOTES.md](../bench/results/2026-10-26-standard-cmp-170hx-dc6a8de7/HARDWARE-NOTES.md).
+
 ## Run the standard benchmark
 
 ```sh
