@@ -157,6 +157,29 @@ The two things this says:
   25.93 s against 4.15 s at worst.  So the branch's honest claim at this size is *waiting*, and the aggregate only comes
   with the single-launch step.
 
+### Where the sixteen-slot run's extra 3.7 s goes (measured, 2026-10-27)
+
+The engine says it itself at load: with one sequence "the experts VRAM leaves over (~0.0 GB) are read in place from the
+model's files"; with the sixteen slots' seventeen sequences "~13.8 GB".  The 1M-context compressed KV is 9.14 GB a GPU
+for them against 0.54 GB for one, and the experts it displaces are read per token.  The 32K control (all 4224 experts
+resident, the tables 0.30 GB) takes 28.0 s for the same sixteen clients against the stock engine's 27.35 s: **+2.4 % is
+the interleaving itself, ~+11 % is the spill**.  Three knobs were measured against the 31.08 s baseline on the same
+workload:
+
+| 16 slots, 1M context | wall | aggregate | note |
+|---|---:|---:|---|
+| stock engine (one at a time) | 27.35 s | 58.5 tok/s | no concurrency |
+| `--batch 16` (baseline) | 31.08 s | 51.5 tok/s | 13.8 GB of experts outside VRAM |
+| `--slot-burst 32` | 31.14 s | 51.4 tok/s | no gain, and the first token worsens (9.45 s against 4.15) |
+| `STRATA_DS4_BATCH_NOSPEC=1` (drafter off) | 36.52 s | 43.8 tok/s | the drafter is worth 5.4 s even here - keep it on |
+| `--experts 5` | **28.67 s** | **55.8 tok/s** | 17 % less expert traffic a token recovers nearly all of it |
+
+So the levers, in the order they pay: the **single-launch step** (amortise the weights over the sequences, M2's
+remainder), a **per-slot context cap** (the tables are what displace the experts - the 32K control is 2.4 % from the
+stock engine), and `--experts 5` when throughput matters more than the last expert.  Warming does not help the steady
+state - the deficit is permanent VRAM, not a cold cache - but it does help the *first* tokens, which pay the pack's cold
+reads and the empty RAM store after a load.
+
 ### The other model family: Qwen3.8-Flash-Next (measured, 2026-10-27)
 
 The same questions on the Qwen path (`strata`, the ISTA-DASLab IQ2_XS pack, 69 GB on the same box), which already decodes
