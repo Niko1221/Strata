@@ -51,6 +51,11 @@ The kernel side is ready (above).  In `ds4_model.cu` the per-sequence base threa
    `feed`/`step`/`sample` take the sequence they work on - this is the `Run` the serve loop already keeps, moved into the
    model.
 
+Sites found for the compressed rows (the next step): `compress_win` is called at ~7224, ~7335 and ~9124 with the layer's
+`l.c_kv`/`l.c_score` and a latent scratch (`c.latent`, `d.latent`), and the finished group's row is written into the
+source's `ckv`/`ik` afterwards - that write (and the indexer's reads, `index_score`) is where a sequence's `kv_base` goes,
+not the compress call itself.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
