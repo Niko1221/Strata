@@ -39,6 +39,40 @@ bool tq_rows_own(int type) {
     return type >= (int) GGML_TYPE_COUNT || traits(type) == nullptr || traits(type)->vec_dot == nullptr;
 }
 
+// 0.2.5: the 512-bit exact rows (iq512x_rows) take one token of an IQ3_XXS / IQ3_S expert only if this build's ggml-cpu dot gives
+// the same bits on synthetic blocks of that type (a ggml built for AVX-512 may carry another summation order): checked once a type.
+bool x512_one_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr && iq512x_supported(type)) {
+        constexpr int n = 2560, rows = 24;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_K, n));
+        uint32_t seed = 12345u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }   // d = ~0.1 (f16)
+        std::vector<float> x(n);
+        for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+        t8->from_float(x.data(), act.data(), n);
+        std::vector<float> got((size_t) rows), want((size_t) rows);
+        const void* ap[1] = {act.data()};
+        float* op[1] = {got.data()};
+        iq512x_rows(type, w.data(), rb, n, ap, 1, op, 0, rows);
+        for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the 512-bit exact one-token rows of type %d differ from this ggml-cpu's dot: not used\n", type);
+    }
+    memo[type] = ok;
+    return ok;
+}
+
 void init_once() {
     static std::once_flag once;
     std::call_once(once, [] { ggml_cpu_init(); });
@@ -297,6 +331,25 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         static std::once_flag announced;
         std::call_once(announced, [] { std::fprintf(stderr, "strata ab: GATE=STRATA_CPU_IQ_ALL_EXACT1 active=1\n"); });
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
+        return;
+    }
+    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later): ONE token of an IQ3_XXS / IQ3_S expert on the
+    // 512-bit exact rows, ggml-cpu's single-token AVX2 dot bit for bit with the grid words gathered: 1.3x ggml's dot on a Xeon 8468
+    // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
+    // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.
+    static const bool x512_one = avx512 && iq512_gather_on() && std::getenv("STRATA_NO_IQ512X1") == nullptr;
+    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && (f.gu_type == 18 || f.gu_type == 21) &&
+        x512_one_ok(f.gu_type)) {
+        const int n1 = (int) f.n_embd;
+        float g[64], u[64];
+        float* gp[1] = {g};
+        float* up[1] = {u};
+        for (int c0 = r0; c0 < r1; c0 += 64) {
+            const int c1 = std::min(r1, c0 + 64);
+            iq512x_rows(f.gu_type, blob + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, gp, 0, c1 - c0);
+            iq512x_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, up, 0, c1 - c0);
+            for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
+        }
         return;
     }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152

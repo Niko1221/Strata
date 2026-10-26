@@ -10,6 +10,9 @@
 #if defined(STRATA_USE_HIP)
 
 namespace hipk {
+// test hooks: force_mode -1 = the default rules, 0 = never, 1 = on wherever the device has the WMMA tiles (gfx11 / gfx12); launches counts the tiles taken
+inline std::atomic<int>& force_mode() { static std::atomic<int> f{-1}; return f; }
+inline std::atomic<long long>& launches() { static std::atomic<long long> n{0}; return n; }
 constexpr int kStH = 72;   // halves a shared row: 64 + 8 (the pad spreads the banks; rows stay 16-byte aligned)
 using hv2 = _Float16 __attribute__((ext_vector_type(2)));
 using hv8 = _Float16 __attribute__((ext_vector_type(8)));
@@ -22,6 +25,20 @@ constexpr bool kTypes = T == kIQ2_XXS || T == kIQ2_XS || T == kIQ2_S || T == kIQ
 __device__ __forceinline__ fv8 wmma16(hv8 a, hv8 b, fv8 c) {
 #if defined(__gfx1200__) || defined(__gfx1201__)
     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#else
+    return c;
+#endif
+}
+using hv16 = _Float16 __attribute__((ext_vector_type(16)));
+// RDNA3 / RDNA3.5 (gfx11): the same v_wmma_f32_16x16x16_f16 on wave32, but a lane holds ALL 16 k of its row / column (the two
+// half-waves the same values) and the D rows a lane holds are 2 q + hi (gfx12: 8 hi + q).  DS4_HIPK_G11 is set in the device pass only.
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
+    defined(__gfx1151__) || defined(__gfx1152__)
+#define DS4_HIPK_G11 1
+#endif
+__device__ __forceinline__ fv8 wmma16g11(hv16 a, hv16 b, fv8 c) {
+#if defined(DS4_HIPK_G11)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
 #else
     return c;
 #endif
@@ -219,16 +236,49 @@ __global__ void __launch_bounds__(256) set_kernel(const SetArgs a, int dbg) {
 
 inline bool ok_device() {   // gfx12 unless STRATA_DS4_HIPK=0
     static std::atomic<int> state[16];
+    static std::atomic<int> capable[16];   // 1: gfx11 / gfx12
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev < 0 || dev >= 16) return false;
+    if (const int f = force_mode().load(std::memory_order_relaxed); f >= 0) {
+        if (f == 0) return false;
+        int c = capable[dev].load(std::memory_order_relaxed);
+        if (c == 0) {
+            cudaDeviceProp pr{};
+            const bool g = cudaGetDeviceProperties(&pr, dev) == cudaSuccess && (std::strncmp(pr.gcnArchName, "gfx12", 5) == 0 || std::strncmp(pr.gcnArchName, "gfx11", 5) == 0);
+            c = g ? 1 : 2;
+            capable[dev].store(c, std::memory_order_relaxed);
+        }
+        return c == 1;
+    }
     int v = state[dev].load(std::memory_order_relaxed);
     if (v == 0) {
         cudaDeviceProp prop{};
-        const bool gfx12 = cudaGetDeviceProperties(&prop, dev) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx12", 5) == 0;
+        const bool ok = cudaGetDeviceProperties(&prop, dev) == cudaSuccess;
+        const bool gfx12 = ok && std::strncmp(prop.gcnArchName, "gfx12", 5) == 0;
+        const bool gfx11 = ok && std::strncmp(prop.gcnArchName, "gfx11", 5) == 0;
         const char* e = std::getenv("STRATA_DS4_HIPK");
         v = gfx12 && !(e != nullptr && e[0] == '0') ? 1 : 2;   // (on by default on gfx12; STRATA_DS4_HIPK=0 off)
+        // gfx11: the register-weights tiles only.  On by default on gfx1151 (Strix Halo: prompts +22..29% at the same KL, measured), opt-in
+        // (STRATA_DS4_HIPK=1) on the other gfx11 parts, which were not measured; STRATA_DS4_HIPK=0 turns it off everywhere
+        if (gfx11) {
+            const bool halo = std::strncmp(prop.gcnArchName, "gfx1151", 7) == 0;
+            v = (e != nullptr ? e[0] == '1' : halo) ? 3 : 2;
+        }
         state[dev].store(v, std::memory_order_relaxed);
+    }
+    return v == 1 || v == 3;
+}
+inline bool is_g11() {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceProp prop{};
+    static std::atomic<int> g[16];
+    if (dev < 0 || dev >= 16) return false;
+    int v = g[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
+        v = cudaGetDeviceProperties(&prop, dev) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx11", 5) == 0 ? 1 : 2;
+        g[dev].store(v, std::memory_order_relaxed);
     }
     return v == 1;
 }
@@ -239,6 +289,7 @@ inline bool run(const SetArgs& a, cudaStream_t s) {
     const dim3 grid((unsigned) ((a.max_rows + BM - 1) / BM), (unsigned) (N / BN), (unsigned) a.n_exp);
     static const int dbg = std::getenv("HIPK_DBG") ? std::atoi(std::getenv("HIPK_DBG")) : 0;
     set_kernel<T, GU, BM, BN, WM, WN><<<grid, 256, 0, s>>>(a, dbg);
+    launches().fetch_add(1, std::memory_order_relaxed);
     return cudaPeekAtLastError() == cudaSuccess;
 }
 // false: not taken (the caller's tiles do it)
@@ -252,6 +303,7 @@ inline bool launch(const SetArgs& a, cudaStream_t s) {
         if (K % 256 != 0 || N % 64 != 0 || a.ldx % 8 != 0 || a.ldo % 2 != 0) return false;
         if (((uintptr_t) (GU ? (const void*) a.xf : (const void*) a.xh) & 15) != 0) return false;
         static const int var = std::getenv("STRATA_DS4_HIPK") ? std::atoi(std::getenv("STRATA_DS4_HIPK")) : 0;
+        if (is_g11() && var == 2) return false;   // (the shared-memory weights kernel is gfx12 only)
         if (var != 2) {   // 2: the shared-memory weights kernel
             static const int cfg = std::getenv("HIPK_CFG") ? std::atoi(std::getenv("HIPK_CFG")) : 0;
             if (cfg == 1 && a.max_rows <= 32) return runr<T, GU, 32, 4, 1>(a, s);

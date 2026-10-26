@@ -156,17 +156,35 @@ def _remember_date(response) -> None:
         pass
 
 
+FIRST_TRY_SECONDS = 12.0
+
+
+def _open_small(request, timeout: float, limit: int) -> bytes:
+    with _opener.open(request, timeout=timeout) as response:
+        _remember_date(response)
+        return response.read(limit + 1)
+
+
 def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) -> bytes:
-    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated."""
+    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated.
+    A web address gets one more try when the first one times out or the connection fails: about one request in 25 to github.com hung for the whole
+    timeout on a PC whose next 24 answered in half a second (measured on a 3060 PC: the first-run card said "offline" a moment before the install's
+    own read worked). The first try therefore waits at most 12 s; the second the full `timeout`."""
     kind = kind_of(location)
     _SERVER_DATE.clear()                                 # only the answer of this read counts
     try:
         if kind in ("http", "https"):
             check_url_policy(location)
             request = urllib.request.Request(location, headers={"User-Agent": _USER_AGENT, "Cache-Control": "no-cache"})
-            with _opener.open(request, timeout=timeout) as response:
-                _remember_date(response)
-                data = response.read(limit + 1)
+            try:
+                data = _open_small(request, min(timeout, FIRST_TRY_SECONDS), limit)
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, OSError, TimeoutError) as first:
+                if tls.is_certificate_error(first):
+                    raise
+                _SERVER_DATE.clear()
+                data = _open_small(request, timeout, limit)
         else:
             path = _local_path(location)
             if path.stat().st_size > limit:

@@ -413,6 +413,14 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
         return None, reasons
     best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
                                        ec.hip_preference(p.archs) if p.backend == "hip" else 1))
+    kept = str(hardware.get("installed_variant") or "")
+    if best.backend == "cuda" and kept and best.variant != kept:
+        # An update never switches the CUDA build (#3835): a model on the CUDA 12 engine (its card is one CUDA 13 has no code for) must not
+        # be given CUDA 13 because ANOTHER card in the PC fits it. The same version of the build that runs here is kept when the feed has it.
+        same = [p for p in fitting if p.backend == "cuda" and p.variant == kept and version_key(p.version) == version_key(best.version)]
+        if same:
+            reasons.append(f"the installed {kept} build is kept; {best.variant} would also fit another card in this PC")
+            best = same[0]
     return best, reasons
 
 

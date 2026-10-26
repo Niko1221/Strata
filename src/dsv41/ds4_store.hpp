@@ -143,34 +143,43 @@ public:
     /// caller releases them.  False if a read failed or no slot could be had for one (ok[i] says which are fine; the caller
     /// reads the others another way).
     bool ensure(int layer, const int* es, int n, std::vector<char>& ok) {
+        std::vector<int> sl;
+        begin(layer, es, n, ok, sl);
+        return wait_slots(sl, ok, 0, n);
+    }
+    /// The first half of ensure(): the experts' slots found or their reads started (pinned), no waiting.  sl[i] is the slot or -1.
+    void begin(int layer, const int* es, int n, std::vector<char>& ok, std::vector<int>& sl) {
         ok.assign((size_t) n, 0);
-        if (layer < 0 || layer >= (int) geo_.size()) return false;
-        std::vector<int> sl((size_t) n, -1);
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            for (int i = 0; i < n; ++i) {
-                const int e = es[i];
-                touch_heat(layer, e);
-                int s = where_[(size_t) layer][(size_t) e];
-                if (s >= 0) {
-                    Slot& sp = slots_[(size_t) s];
-                    try_ready(sp);
-                    if (sp.state.load() == kReady && !sp.prefetch) st_.hits.fetch_add(1, std::memory_order_relaxed);
-                    if (sp.prefetch) st_.prefetch_used.fetch_add(1, std::memory_order_relaxed);
-                    sp.prefetch = false;
-                    sp.pin++;
-                    sp.tick = ++clock_;
-                    sl[(size_t) i] = s;
-                    continue;
-                }
-                st_.misses.fetch_add(1, std::memory_order_relaxed);
-                s = start_fill(layer, e, true);
+        sl.assign((size_t) n, -1);
+        if (layer < 0 || layer >= (int) geo_.size()) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        for (int i = 0; i < n; ++i) {
+            const int e = es[i];
+            touch_heat(layer, e);
+            int s = where_[(size_t) layer][(size_t) e];
+            if (s >= 0) {
+                Slot& sp = slots_[(size_t) s];
+                try_ready(sp);
+                if (sp.state.load() == kReady && !sp.prefetch) st_.hits.fetch_add(1, std::memory_order_relaxed);
+                if (sp.prefetch) st_.prefetch_used.fetch_add(1, std::memory_order_relaxed);
+                sp.prefetch = false;
+                sp.pin++;
+                sp.tick = ++clock_;
                 sl[(size_t) i] = s;
+                continue;
             }
+            st_.misses.fetch_add(1, std::memory_order_relaxed);
+            s = start_fill(layer, e, true);
+            sl[(size_t) i] = s;
         }
+    }
+    /// True when the reads of slot sl (from begin) are all done.
+    bool loaded(int s) const { return s >= 0 && slots_[(size_t) s].left.load(std::memory_order_acquire) <= 0; }
+    /// The second half: waits for the slots sl[a..b) and marks ok[i] for the good ones.  False if any failed or had no slot.
+    bool wait_slots(std::vector<int>& sl, std::vector<char>& ok, int a, int b) {
         const auto t0 = std::chrono::steady_clock::now();
         bool all = true;
-        for (int i = 0; i < n; ++i) {
+        for (int i = a; i < b; ++i) {
             const int s = sl[(size_t) i];
             if (s < 0) {
                 all = false;
@@ -375,7 +384,13 @@ public:
 
 private:
     static constexpr int kFree = 0, kLoading = 1, kReady = 2, kFailed = 3;
-    static constexpr size_t kChunk = 64;   // slots a chunk of the arena
+    // slots a chunk of the arena (the unit the GPU mapping registers; DS4_STORE_CHUNK_SLOTS: a test knob for the registration segment size)
+    static size_t chunk_slots() {
+        const char* e = std::getenv("DS4_STORE_CHUNK_SLOTS");
+        const long v = e ? std::atol(e) : 0;
+        return v >= 8 && v <= 4096 ? (size_t) v : 64;
+    }
+    const size_t kChunk = chunk_slots();
     struct Slot {
         uint8_t* base = nullptr;   // the blob's first byte
         int layer = -1, expert = -1, pin = 0;
