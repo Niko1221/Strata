@@ -930,7 +930,7 @@ struct Layer {
     unsigned long long* vram_tab = nullptr;     // device [n_exp]
     std::vector<uint8_t> zc;                    // (the RAM store) expert -> 1: its store slot is GPU-visible, the device computes it over PCIe
     unsigned long long* zc_tab = nullptr;       // device [n_exp]: those slots' device addresses (0: none) - the decode token's zc_stage reads it
-    std::vector<int> cc;                        // (--expert-cache-device1) expert -> its slot on CUDA1 (-1: none)
+    std::vector<int> cc;                        // (--expert-cache-device1) expert -> its slot on CUDA1 (-1: none, -2: on its way)
     unsigned long long* cc_tab = nullptr;       // device [n_exp] on CUDA1: those slots' addresses (0: none)
     std::vector<std::array<x3::Mat, 3>> vm;     // expert -> its gate, up, down as EXL3 views of its VRAM blob
     std::vector<uint64_t> region_off;           // expert -> file region (offset, bytes, file)
@@ -1072,6 +1072,20 @@ struct Model::Impl {
     float *cc_x = nullptr, *cc_h = nullptr, *cc_out = nullptr, *cc_out_h = nullptr;
     unsigned long long* cc_plan = nullptr;
     bool cc_live = false;             // decode hands CUDA1 its picks (DS4_CACHE_CARD=0: never)
+    std::vector<uint8_t*> cc_ptr;     // CUDA1's slot -> its address
+    std::vector<int> cc_lay;          // CUDA1's slot -> the layer whose experts it is sized for
+    // the refills: a slot whose expert the main card took gets the layer's hottest CPU-lane expert, copied in by cc_th
+    struct CardFill {
+        int layer = 0, slot = -1, in = -1;
+    };
+    std::vector<int> cc_free;         // slots waiting for a refill
+    std::deque<CardFill> cc_queue;
+    std::vector<CardFill> cc_done;
+    std::mutex cc_mu;
+    std::condition_variable cc_cv;
+    std::thread cc_th;
+    cudaStream_t cc_cs = nullptr;     // the refills' copy stream on CUDA1
+    bool cc_fill = false;             // (DS4_CACHE_CARD_FILL=0: a freed slot stays empty)
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
@@ -1956,6 +1970,11 @@ struct Model::Impl {
         for (std::thread& t : cache_ths)
             if (t.joinable()) t.join();
         if (ram_th.joinable()) ram_th.join();
+        {
+            std::lock_guard<std::mutex> lk(cc_mu);
+        }
+        cc_cv.notify_all();
+        if (cc_th.joinable()) cc_th.join();
         for (size_t i = 0; i < ram_chunks.size(); ++i) {
             if (ram_pinned || (i < zc_chunk.size() && zc_chunk[i] == 1)) (void) cudaHostUnregister(ram_chunks[i]);
             os::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
@@ -1977,6 +1996,7 @@ struct Model::Impl {
         if (ccd.st != nullptr) {
             cudaSetDevice(ccd.id);
             for (void* p : ccd.allocs) cudaFree(p);
+            if (cc_cs) cudaStreamDestroy(cc_cs);
             cudaStreamDestroy(ccd.st);
             if (ccd.ev) cudaEventDestroy(ccd.ev);
         }
@@ -3683,7 +3703,7 @@ struct Model::Impl {
         if (!lane_alloc(err)) return false;
         if (!place_experts(err)) return false;
         if (!load_experts(err)) return false;
-        if (ccd.st != nullptr && (!load_cache_card(err) || !card_buffers(err))) return false;
+        if (ccd.st != nullptr && (!load_cache_card(err) || !card_buffers(err) || !card_fill_start(err))) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
             // the CPU lane's parts pinned (the chunks stream them to the GPUs by DMA), each layer's virtual slots
@@ -6499,11 +6519,14 @@ struct Model::Impl {
         for (Layer& l : L) l.cc.assign((size_t) l.n_exp, -1);
         uint8_t* base = nullptr;
         if (bytes > 0 && !dalloc(ccd, base, bytes, err, &ccd.experts)) return false;
-        std::vector<uint8_t*> dst(take.size());
+        std::vector<uint8_t*>& dst = cc_ptr;
+        dst.assign(take.size(), nullptr);
+        cc_lay.assign(take.size(), -1);
         size_t off = 0;
         for (size_t i = 0; i < take.size(); ++i) {
             L[(size_t) take[i].layer].cc[(size_t) take[i].e] = (int) i;
             dst[i] = base + off;
+            cc_lay[i] = take[i].layer;
             off += align256(L[(size_t) take[i].layer].blob);
             cc_share += take[i].share / std::max(1, trunk);
         }
@@ -6562,6 +6585,90 @@ struct Model::Impl {
         const char* v = std::getenv("DS4_CACHE_CARD");
         cc_live = v == nullptr || v[0] != '0';
         return true;
+    }
+    bool card_fill_start(std::string& err) {
+        const char* v = std::getenv("DS4_CACHE_CARD_FILL");
+        cc_fill = cc_live && (v == nullptr || v[0] != '0');
+        if (!cc_fill) return true;
+        CK(cudaSetDevice(ccd.id));
+        CK(cudaStreamCreateWithFlags(&cc_cs, cudaStreamNonBlocking));
+        cc_th = std::thread([this] { card_fill_loop(); });
+        return true;
+    }
+    // cc_th: each queued refill's expert from the model file into its CUDA1 slot (the slot is in no table meanwhile)
+    void card_fill_loop() {
+        cudaSetDevice(ccd.id);
+        size_t maxb = 0;
+        for (const Layer& l : L) maxb = std::max(maxb, l.blob);
+        uint8_t* stage = nullptr;
+        if (cudaHostAlloc((void**) &stage, maxb, cudaHostAllocPortable) != cudaSuccess) stage = nullptr;
+        for (;;) {
+            CardFill f;
+            {
+                std::unique_lock<std::mutex> lk(cc_mu);
+                cc_cv.wait(lk, [&] { return quit.load() || !cc_queue.empty(); });
+                if (quit.load()) break;
+                f = cc_queue.front();
+                cc_queue.pop_front();
+            }
+            const Layer& l = L[(size_t) f.layer];
+            if (stage == nullptr || !read_mx_file(l, f.in, stage) ||
+                cudaMemcpyAsync(cc_ptr[(size_t) f.slot], stage, l.blob, cudaMemcpyHostToDevice, cc_cs) != cudaSuccess ||
+                cudaStreamSynchronize(cc_cs) != cudaSuccess)
+                card_fail("refilling a slot failed");
+            std::lock_guard<std::mutex> lk(cc_mu);
+            cc_done.push_back(f);
+        }
+        if (stage) cudaFreeHost(stage);
+    }
+    // CUDA1's table entry of expert e of l (0: not there); called between windows, the caller's device kept
+    void card_tab(Layer& l, int e, unsigned long long v) {
+        int cur = 0;
+        cudaGetDevice(&cur);
+        cudaSetDevice(ccd.id);
+        if (cudaMemcpy(l.cc_tab + e, &v, 8, cudaMemcpyHostToDevice) != cudaSuccess) card_fail("updating its table failed");
+        cudaSetDevice(cur);
+    }
+    // between windows: the refills that landed into the tables, then a refill queued for each free slot
+    void card_tick() {
+        std::vector<CardFill> done;
+        {
+            std::lock_guard<std::mutex> lk(cc_mu);
+            done.swap(cc_done);
+        }
+        for (const CardFill& f : done) {
+            Layer& l = L[(size_t) f.layer];
+            if (l.slot[(size_t) f.in] >= 0) {   // (the main card took it meanwhile)
+                l.cc[(size_t) f.in] = -1;
+                cc_free.push_back(f.slot);
+                continue;
+            }
+            l.cc[(size_t) f.in] = f.slot;
+            card_tab(l, f.in, (unsigned long long) cc_ptr[(size_t) f.slot]);
+            ++st.card_fills;
+        }
+        bool queued = false;
+        for (size_t i = 0; i < cc_free.size();) {
+            const int s = cc_free[i];
+            Layer& l = L[(size_t) cc_lay[(size_t) s]];
+            int best = -1;
+            for (int e = 0; e < l.n_exp; ++e)
+                if (l.slot[(size_t) e] < 0 && l.cc[(size_t) e] == -1 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best]))
+                    best = e;
+            if (best < 0) {
+                ++i;
+                continue;
+            }
+            l.cc[(size_t) best] = -2;
+            {
+                std::lock_guard<std::mutex> lk(cc_mu);
+                cc_queue.push_back({l.il, s, best});
+            }
+            queued = true;
+            cc_free[i] = cc_free.back();
+            cc_free.pop_back();
+        }
+        if (queued) cc_cv.notify_one();
     }
 
     std::string describe() const {
@@ -8999,6 +9106,7 @@ struct Model::Impl {
     void cache_tick_swaps(int T) {
         if (!o.expert_cache || cache_ths.empty()) return;
         cache_switch();
+        if (cc_fill) card_tick();
         decay_tokens += T;
         if (decay_tokens >= 256) {   // older use counts less: x0.9 every 256 tokens
             decay_tokens = 0;
@@ -9419,6 +9527,11 @@ struct Model::Impl {
                 cudaSetDevice(dm.id);   // (stream order: before the next window)
                 cudaMemcpyAsync(x.vram_tab + sw.in, &l.tab_pin[2 * m], 8, cudaMemcpyHostToDevice, dm.st);
                 cudaMemcpyAsync(x.vram_tab + sw.out, &l.tab_pin[2 * m + 1], 8, cudaMemcpyHostToDevice, dm.st);
+            }
+            if (cc_fill && l.cc[(size_t) sw.in] >= 0) {   // (CUDA1's copy of it: its slot for another)
+                cc_free.push_back(l.cc[(size_t) sw.in]);
+                l.cc[(size_t) sw.in] = -1;
+                card_tab(l, sw.in, 0ull);
             }
             l.swap_pending = false;
             l.sw_in = -1;
