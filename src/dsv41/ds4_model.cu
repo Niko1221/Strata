@@ -6689,6 +6689,19 @@ struct Model::Impl {
         }
         if (queued) cc_cv.notify_one();
     }
+    // expert e the main card evicted from l: into CUDA1 in place of the layer's coldest there, when e is hotter
+    void card_demote(Layer& l, int e) {
+        if (cc_inflight >= kMaxCardMoves) return;
+        int cold = -1;
+        for (int x = 0; x < l.n_exp; ++x)
+            if (l.cc[(size_t) x] >= 0 && (cold < 0 || l.heat[(size_t) x] < l.heat[(size_t) cold])) cold = x;
+        if (cold < 0 || !(l.heat[(size_t) e] > l.heat[(size_t) cold])) return;
+        const int s = l.cc[(size_t) cold];
+        l.cc[(size_t) cold] = -1;
+        card_tab(l, cold, 0ull);
+        card_queue(l, s, e);
+        cc_cv.notify_one();
+    }
     // expert e of l on its way into CUDA1's slot s (cc_th copies it; card_tick puts it into the tables)
     void card_queue(Layer& l, int s, int e) {
         l.cc[(size_t) e] = -2;
@@ -9559,6 +9572,7 @@ struct Model::Impl {
                 l.cc[(size_t) sw.in] = -1;
                 card_tab(l, sw.in, 0ull);
             }
+            if (cc_fill && l.cc[(size_t) sw.out] == -1) card_demote(l, sw.out);
             l.swap_pending = false;
             l.sw_in = -1;
             --sw_inflight;
