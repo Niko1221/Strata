@@ -263,3 +263,34 @@ loop's one step over all active slots, and the measurement that should put sixte
   8099 is taken.
 * Production on 10.188.27.29 runs the stock binary (no burst env, no `--batch`) and is healthy; restarts are allowed
   on request.
+
+## The step's real blocker, found by rebuilding it (2026-10-27, 06:00-07:00)
+
+The serve-loop step is not in the tree (it was measured and dropped), so it was rebuilt here: `STRATA_DS4_STEP=1` with
+the live slots - each active slot's pending token printed (its admission's DONE/BADM on the first, exactly as a turn
+does), then one `forward_rows` over every active slot's token, then `m.sample(..., row)` a row.  It went through the
+chunk host, since `forward_rows` is the per-row path that is already in the tree.  Three things came out:
+
+1. **Two bugs in the per-row chunk path.**  The per-row `finish` handed the kernel the *host* `step->pos` array as
+   `pos_rows` - pageable memory a device must not dereference; the rows now go through a host-mapped copy.  And the
+   per-row `ext_to_ring` added `win * HD` to a source the kernel already offsets by `win` itself, so it read the
+   wrong rows (and past the block for a later row).  Both were fixed while measuring.
+2. **With those fixed, the step stops on a plain, explicit refusal.**  `layer_chunk`'s per-row branch answers "the
+   batched step has no cross-group hand-off yet (run one tensor-parallel group)" the moment a layer's compressed rows
+   are owned by a layer on another device (`sr.remote`) - and on this box every multi-device run is that case: both
+   `--tp 2` and `--tp 4` collapse to "tensor parallel N -> 1, each GPU its own layers", so layer 7 reads the rows
+   layer 6 wrote on device 0, a hand-off per layer a step.  The step cannot run here until that hand-off is written
+   (the design note's item 2: one copy of the step's T latent rows to the owning group, ~32 KB a layer a step).
+3. **The per-row chunk path's own A/B failed on this tree.**  `STRATA_DS4_STEPROWS=2` (one sequence, a 300-token
+   prompt in chunks of 8) ended with an illegal memory access, so "the per-row chunk path is bit-identical in process"
+   holds for the tree it was measured on, not for every tree after it - re-run that A/B before building the step on it.
+
+**What the earlier numbers mean.**  The 0.6-1.2 tok/s of the two step attempts is *client-visible*.  The engine's own
+log of that window says `slot 0 ended: 4095 tokens in 79774 ms` and `slot 1 ended: 4096 tokens in 79845 ms` - both
+slots decoded at ~51 tok/s while the third client waited 80 s for admission and the first saw its tokens only when a
+slot ended.  So that stall was the serve loop's admission/BSTOP bookkeeping around the step, not the step's arithmetic:
+a step that keeps `advance_head`'s protocol (the admission's DONE/BADM before its first BT, the BSTOP check a token)
+and reads its input line between two steps is the shape to build, and the hand-off above is what it still needs on four
+GPUs.
+
+The experiment is not in the tree: it was reverted after measuring, so `6aa4878` is what the branch holds.
