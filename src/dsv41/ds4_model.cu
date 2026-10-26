@@ -960,21 +960,28 @@ struct Model::Impl {
     // the sequence this pass serves: its ring (win_of) and its rows of each source's compressed table (kv_base).  0 - one
     // sequence - until the batched step sets it per pass; every write below then lands where it did before
     int vseq = 0;
-    int64_t pos = 0;
-    std::vector<int32_t> toks, ctoks;
     struct Check {                    // the state at a position: every window ring, the compressors' partial groups
         int64_t pos = -1;
         std::vector<std::vector<uint8_t>> win;
         std::vector<std::vector<float>> comp;
     };
     static constexpr int kChecks = 4;
-    Check ck[kChecks];                // the end of the last prompt, the position before it, the anchor (the position
+    // one sequence's state (M2): what the model kept for its one conversation - the position, the tokens, the
+    // checkpoints, and whether a slot holds it - nseq times over, the pass working on seqs[vseq]
+    struct State {
+        int64_t pos = 0;
+        std::vector<int32_t> toks, ctoks;
+        Check ck[kChecks];            // the end of the last prompt, the position before it, the anchor (the position
                                       // before the end of the first prompt of the run of prompts that each continued
                                       // the last in place: a chat template that drops earlier turns' reasoning at a new
                                       // user message re-renders the history from about there) and the prefix (where the
                                       // server said the prompt's shared start - system prompt and tools - ends: another
                                       // agent behind the same start goes back to it)
-    bool slot_held = false;           // slot_save took this state and nothing has changed it since
+        bool slot_held = false;       // slot_save took this state and nothing has changed it since
+    };
+    std::vector<State> seqs = std::vector<State>((size_t) nseq);
+    State& state() { return seqs[(size_t) vseq]; }
+    const State& state() const { return seqs[(size_t) vseq]; }
     std::vector<uint32_t> prof;       // [nl][n_exp] routed-expert hits
     Stats st;
     int cur_topk_n[kWin] = {}, cur_cand_n[kWin] = {};   // what the latest indexer / candidate source left, per query
@@ -4897,11 +4904,11 @@ struct Model::Impl {
     }
 
     void reset() {
-        pos = 0;
-        toks.clear();
-        ctoks.clear();
-        slot_held = false;
-        for (Check& c0 : ck) c0.pos = -1;
+        state().pos = 0;
+        state().toks.clear();
+        state().ctoks.clear();
+        state().slot_held = false;
+        for (Check& c0 : state().ck) c0.pos = -1;
         for (Layer& l0 : L)
             for (int m = 0; m < l0.nm; ++m) {
                 Layer& l = member(l0, m);
@@ -4920,8 +4927,8 @@ struct Model::Impl {
     // the state at pos into checkpoint `slot` (the window rings and the compressors' partial groups: the rest of the
     // state is indexed by position, and what lies past a restored position is written again)
     void checkpoint(int slot) {
-        Check& c = ck[slot & (kChecks - 1)];
-        c.pos = pos;
+        Check& c = state().ck[slot & (kChecks - 1)];
+        c.pos = state().pos;
         c.win.resize(L.size());
         c.comp.resize(L.size() * 2);
         for (size_t i = 0; i < L.size(); ++i) {
@@ -4948,23 +4955,23 @@ struct Model::Impl {
     int best_check(int64_t limit) const {
         int b = -1;
         for (int i = 0; i < kChecks; ++i)
-            if (ck[i].pos >= 0 && ck[i].pos <= limit && ck[i].pos <= pos && (b < 0 || ck[i].pos > ck[b].pos)) b = i;
+            if (state().ck[i].pos >= 0 && state().ck[i].pos <= limit && state().ck[i].pos <= state().pos && (b < 0 || state().ck[i].pos > state().ck[b].pos)) b = i;
         return b;
     }
     int64_t restorable(int64_t limit) const {
         const int b = best_check(limit);
-        return b < 0 ? -1 : ck[b].pos;
+        return b < 0 ? -1 : state().ck[b].pos;
     }
 
     // checkpoint 1 (the position before the last prompt's end) becomes the anchor too
     void pin() {
-        if (ck[1].pos > 0) ck[2] = ck[1];
+        if (state().ck[1].pos > 0) state().ck[2] = state().ck[1];
     }
     // the checkpoints the state can go back to (what a slot of it keeps), latest first
     std::vector<int64_t> check_positions() const {
         std::vector<int64_t> v;
-        for (const Check& c : ck)
-            if (c.pos > 0 && c.pos <= pos && c.win.size() == L.size() &&
+        for (const Check& c : state().ck)
+            if (c.pos > 0 && c.pos <= state().pos && c.win.size() == L.size() &&
                 std::find(v.begin(), v.end(), c.pos) == v.end())
                 v.push_back(c.pos);
         std::sort(v.rbegin(), v.rend());
@@ -4974,7 +4981,7 @@ struct Model::Impl {
     std::vector<int> slot_checks() const {
         std::vector<int> v;
         for (int i = 0; i < kChecks; ++i)
-            if (ck[i].pos > 0 && ck[i].pos <= pos && ck[i].win.size() == L.size()) v.push_back(i);
+            if (state().ck[i].pos > 0 && state().ck[i].pos <= state().pos && state().ck[i].win.size() == L.size()) v.push_back(i);
         return v;
     }
     size_t check_bytes() const {
@@ -4986,7 +4993,7 @@ struct Model::Impl {
     bool restore(int64_t limit) {
         const int b = best_check(limit);
         if (b < 0) return false;
-        const Check& c = ck[b];
+        const Check& c = state().ck[b];
         for (size_t i = 0; i < L.size(); ++i)
             for (int m = 0; m < L[i].nm; ++m) {   // (a group's members hold the same state: the lead's copy)
                 Layer& l = member(L[i], m);
@@ -5003,12 +5010,12 @@ struct Model::Impl {
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
         }
-        pos = c.pos;
-        toks.resize((size_t) pos);
-        ctoks.resize((size_t) pos);
-        slot_held = false;
-        for (Check& o2 : ck)   // a later checkpoint saw tokens the state no longer has
-            if (o2.pos > pos) o2.pos = -1;
+        state().pos = c.pos;
+        state().toks.resize((size_t) state().pos);
+        state().ctoks.resize((size_t) state().pos);
+        state().slot_held = false;
+        for (Check& o2 : state().ck)   // a later checkpoint saw tokens the state no longer has
+            if (o2.pos > state().pos) o2.pos = -1;
         return true;
     }
 
@@ -5022,11 +5029,11 @@ struct Model::Impl {
     // is not a slot (the Engram history's rows are the tokens' again, no -1 among them).
     static constexpr uint64_t kSlotMagic = 0x31544f4c53345344ull;   // "DS4SLOT1" (little endian)
 
-    int64_t src_rows(const Src& s) const { return pos / std::max(1, s.ratio); }
+    int64_t src_rows(const Src& s) const { return state().pos / std::max(1, s.ratio); }
 
     // the slot's bytes: the header, the tokens, every layer's ring and partial group, every source's rows, the end
     size_t slot_bytes() const {
-        size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) pos * 4;
+        size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) state().pos * 4;
         for (const Layer& l : L) n += 8 + (size_t) g.win * win_rb() + 8 + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
         for (const Src& s : srcs) n += 8 + (size_t) src_rows(s) * (ckv_rb() + ik_rb());
         n += 8 + slot_checks().size() * check_bytes();   // (the checkpoints: what the slot can be taken back at)
@@ -5034,15 +5041,15 @@ struct Model::Impl {
     }
 
     uint64_t slot_save(std::vector<uint8_t>& out, std::string& err) {
-        if (slot_held) {
+        if (state().slot_held) {
             err = "it is already set aside";
             return 0;
         }
-        if (pos <= 0) {
+        if (state().pos <= 0) {
             err = "there is no conversation";
             return 0;
         }
-        if ((int64_t) toks.size() != pos) {
+        if ((int64_t) state().toks.size() != state().pos) {
             err = "the state's tokens do not match its position";
             return 0;
         }
@@ -5058,12 +5065,12 @@ struct Model::Impl {
             std::memcpy(p + off, s, b);
             off += b;
         };
-        const uint64_t il = id.size(), n = (uint64_t) pos;
+        const uint64_t il = id.size(), n = (uint64_t) state().pos;
         put(&kSlotMagic, 8);
         put(&il, 8);
         put(id.data(), (size_t) il);
         put(&n, 8);
-        put(toks.data(), (size_t) n * 4);
+        put(state().toks.data(), (size_t) n * 4);
         for (Dev& d : devs) {   // (the devices' work ends before their state is read)
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
@@ -5116,7 +5123,7 @@ struct Model::Impl {
             const uint64_t nc = cs.size();
             put(&nc, 8);
             for (int k : cs) {
-                const Check& c = ck[k];
+                const Check& c = state().ck[k];
                 const uint64_t role = (uint64_t) k, cp = (uint64_t) c.pos;
                 put(&role, 8);
                 put(&cp, 8);
@@ -5134,7 +5141,7 @@ struct Model::Impl {
             return 0;
         }
         put(&kSlotMagic, 8);
-        slot_held = true;
+        state().slot_held = true;
         return (uint64_t) off;
     }
 
@@ -5329,14 +5336,14 @@ struct Model::Impl {
             err = "the slot does not end where it should";
             return false;
         }
-        pos = n_pos;
-        toks.swap(toks_in);
-        ctoks.resize((size_t) pos);
-        for (size_t i = 0; i < (size_t) pos; ++i)
-            ctoks[i] = toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i]] : 0;
-        for (int k = 0; k < kChecks; ++k) ck[k] = std::move(got[k]);   // (the slot's own; the old ones held the state
+        state().pos = n_pos;
+        state().toks.swap(toks_in);
+        state().ctoks.resize((size_t) state().pos);
+        for (size_t i = 0; i < (size_t) state().pos; ++i)
+            state().ctoks[i] = state().toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) state().toks[i]] : 0;
+        for (int k = 0; k < kChecks; ++k) state().ck[k] = std::move(got[k]);   // (the slot's own; the old ones held the state
                                                                // this one replaced)
-        slot_held = false;
+        state().slot_held = false;
         ok = true;
         return true;
     }
@@ -5417,7 +5424,7 @@ struct Model::Impl {
             err = "no such park";
             return 0;
         }
-        if (pos <= 0 || (int64_t) toks.size() != pos) {
+        if (state().pos <= 0 || (int64_t) state().toks.size() != state().pos) {
             err = "there is no conversation";
             return 0;
         }
@@ -5426,7 +5433,7 @@ struct Model::Impl {
             return 0;
         }
         std::vector<size_t> need(devs.size(), 0);
-        state_segments(pos, [&](int d, void*, size_t b) { need[(size_t) d] += b; });
+        state_segments(state().pos, [&](int d, void*, size_t b) { need[(size_t) d] += b; });
         for (size_t di = 0; di < devs.size(); ++di) {
             if (need[di] <= p->cap[di]) continue;
             cudaSetDevice(devs[di].id);
@@ -5450,7 +5457,7 @@ struct Model::Impl {
         std::vector<size_t> off(devs.size(), 0);
         bool ok = true;
         std::string first;
-        state_segments(pos, [&](int d, void* src, size_t b) {
+        state_segments(state().pos, [&](int d, void* src, size_t b) {
             if (b == 0) return;
             const size_t di = (size_t) d;
             if (!ok) {
@@ -5473,9 +5480,9 @@ struct Model::Impl {
             err = "parking the state: " + first;
             return 0;
         }
-        p->pos = pos;
-        p->toks = toks;
-        for (int k = 0; k < kChecks; ++k) p->ck[k] = ck[k];
+        p->pos = state().pos;
+        p->toks = state().toks;
+        for (int k = 0; k < kChecks; ++k) p->ck[k] = state().ck[k];
         p->used = need;
         p->bytes = 0;
         for (size_t di = 0; di < devs.size(); ++di) p->bytes += need[di];
@@ -5503,15 +5510,15 @@ struct Model::Impl {
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
         }
-        pos = p->pos;
-        toks = p->toks;
-        ctoks.resize((size_t) pos);
-        for (size_t i = 0; i < (size_t) pos; ++i) ctoks[i] = toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i]] : 0;
-        for (int k = 0; k < kChecks; ++k) ck[k] = p->ck[k];
+        state().pos = p->pos;
+        state().toks = p->toks;
+        state().ctoks.resize((size_t) state().pos);
+        for (size_t i = 0; i < (size_t) state().pos; ++i) state().ctoks[i] = state().toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) state().toks[i]] : 0;
+        for (int k = 0; k < kChecks; ++k) state().ck[k] = p->ck[k];
         std::vector<size_t> off(devs.size(), 0);
         bool ok = true;
         std::string first;
-        state_segments(pos, [&](int d, void* dst, size_t b) {
+        state_segments(state().pos, [&](int d, void* dst, size_t b) {
             if (b == 0) return;
             const size_t di = (size_t) d;
             if (!ok) {
@@ -5535,7 +5542,7 @@ struct Model::Impl {
             reset();
             return false;
         }
-        slot_held = false;
+        state().slot_held = false;
         return true;
     }
 
@@ -5676,7 +5683,7 @@ struct Model::Impl {
         const uint16_t* r = tk == img_tok ? image_row(p) : nullptr;
         return r != nullptr ? r : embed_pinned + (size_t) tk * g.dim;
     }
-    bool in_image(int64_t p) const { return img_tok >= 0 && toks[(size_t) p] == img_tok && image_row(p) != nullptr; }
+    bool in_image(int64_t p) const { return img_tok >= 0 && state().toks[(size_t) p] == img_tok && image_row(p) != nullptr; }
     // the Engram's compressed id of token tk at p (-1: a picture's, which no n-gram spans)
     int32_t ctok(int64_t p, int tk) const {
         if (tk == img_tok && image_row(p) != nullptr) return -1;
@@ -5719,15 +5726,15 @@ struct Model::Impl {
                 const int64_t p = p0 + t;
                 uint8_t* rows = dst != nullptr ? dst + (size_t) t * per : h_eg + ((size_t) li * eg_cap + t) * per;
                 uint8_t* scales = rows + (size_t) cols * hd;
-                if (ctoks[(size_t) p] < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
+                if (state().ctoks[(size_t) p] < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
                     std::memset(rows, 0, per);
                     continue;
                 }
                 int64_t prod[8];
                 bool blocked = false;
                 for (int s = 0; s < pk.eg_ngram; ++s) {   // (the look-back stops at the start and at a picture)
-                    blocked = blocked || p < s || ctoks[(size_t) (p - s)] < 0;
-                    const int64_t tk = blocked ? pk.eg_pad : ctoks[(size_t) (p - s)];
+                    blocked = blocked || p < s || state().ctoks[(size_t) (p - s)] < 0;
+                    const int64_t tk = blocked ? pk.eg_pad : state().ctoks[(size_t) (p - s)];
                     prod[s] = tk * pk.eg_mult[(size_t) li * pk.eg_ngram + s];
                 }
                 int64_t rolling = prod[0];
@@ -6960,7 +6967,7 @@ struct Model::Impl {
         out.clear();
         conf.clear();
         const int T = g.d_block, D = g.dim, H = g.hc, V = g.vocab, R = g.d_rank;
-        const int64_t p0 = pos;
+        const int64_t p0 = state().pos;
         if (g.n_mtp == 0 || T < 1 || T > kWin || p0 + T > o.max_context) return true;
         int tk[kWin];
         tk[0] = y;
@@ -7132,7 +7139,7 @@ struct Model::Impl {
                 uint64_t seed, uint64_t counter, int& accepted, int& next, std::string& err) {
         const int n = (int) std::min<size_t>(drafts.size(), (size_t) kWin - 1);
         const int T = n + 1, V = g.vocab;
-        const int64_t p0 = pos;
+        const int64_t p0 = state().pos;
         int tk[kWin];
         tk[0] = y;
         for (int i = 0; i < n; ++i) tk[i + 1] = drafts[(size_t) i];
@@ -7236,10 +7243,10 @@ struct Model::Impl {
                                  g.hd, l.c_norm, g.eps, d.latent, d.st);
                 }
             }
-        pos = p0 + keep;
-        toks.resize((size_t) pos);
-        ctoks.resize((size_t) pos);
-        slot_held = false;
+        state().pos = p0 + keep;
+        state().toks.resize((size_t) state().pos);
+        state().ctoks.resize((size_t) state().pos);
+        state().slot_held = false;
     }
 
     // ---- a window: T tokens at positions pos .. pos + T - 1 through every layer; the logits of its last `logits` rows
@@ -7767,7 +7774,7 @@ struct Model::Impl {
                 if (li == 0) {   // the chunk's input: its embedding rows
                     if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
                     for (int t = 0; t < T; ++t)
-                        std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, toks[(size_t) (p0 + t)]),
+                        std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, state().toks[(size_t) (p0 + t)]),
                                     (size_t) D * 2);
                     CK(cudaMemcpyAsync(c.emb, c.emb_host[slot], (size_t) T * D * 2, cudaMemcpyHostToDevice, s));
                     CK(cudaEventRecord(c.emb_ev[slot], s));
@@ -7932,7 +7939,7 @@ struct Model::Impl {
                     if (il == 0) {
                         if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
                         for (int t = 0; t < T; ++t)
-                            std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, toks[(size_t) (p0 + t)]),
+                            std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, state().toks[(size_t) (p0 + t)]),
                                         (size_t) D * 2);
                         CK(cudaMemcpyAsync(c.emb, c.emb_host[slot], (size_t) T * D * 2, cudaMemcpyHostToDevice, s));
                         CK(cudaEventRecord(c.emb_ev[slot], s));
@@ -8414,7 +8421,7 @@ struct Model::Impl {
         if (n < 1) return true;
         flow_used.store(true);
         std::lock_guard<std::mutex> warm_lk(warm_mu);   // (the warm-up, if it is running, finishes first)
-        if (pos + n > o.max_context) {
+        if (state().pos + n > o.max_context) {
             err = "the context is full";
             return false;
         }
@@ -8442,7 +8449,7 @@ struct Model::Impl {
         const int nc = (n + chunk - 1) / chunk, per = (n + nc - 1) / nc;
         Run run;
         for (int x = 0; x < n; x += per) {
-            run.p0.push_back(pos + x);
+            run.p0.push_back(state().pos + x);
             run.T.push_back(std::min(per, n - x));
             run.seq.push_back(++win_seq);
         }
@@ -8454,12 +8461,12 @@ struct Model::Impl {
         logits_all = logits_rows > kWin;
         if (logits_all) chunk_logits.resize((size_t) n * g.vocab);
         for (int t = 0; t < n; ++t) {
-            toks.push_back(tk[t]);
-            ctoks.push_back(ctok(pos + t, tk[t]));
+            state().toks.push_back(tk[t]);
+            state().ctoks.push_back(ctok(state().pos + t, tk[t]));
         }
         plan_streams();
         if (snap_slot >= 0) {   // feed_mark: the state before the run's last row, kept by its layers on the way
-            run.snap_pos = pos + n - 1;
+            run.snap_pos = state().pos + n - 1;
             for (int il = 0; il < g.nl; ++il) {
                 Layer& l = L[(size_t) il];
                 Dev& d = devs[(size_t) l.dev];
@@ -8638,7 +8645,7 @@ struct Model::Impl {
             if (!tp) pm_learn(n, picked);
         }
         if (logits_all) n_logits = (T_last - 1) % kWin + 1;   // (sample() takes the last row of d.logits)
-        pos += n;
+        state().pos += n;
         st.tokens += n;
         cache_tick(n);
         if (lm_end_.on) {   // (the layer cache's RAM back before the store and the swaps want it)
@@ -8647,10 +8654,10 @@ struct Model::Impl {
         }
         cache_settle();
         const int nr = std::min(T_last, tap_cap);
-        if (!seed_drafter(pos - nr, nr, 0, err)) return false;
+        if (!seed_drafter(state().pos - nr, nr, 0, err)) return false;
         if (snap_slot >= 0) {   // checkpoint `snap_slot` from what the layers kept (the drafter's blocks: as they are -
             // the next feed seeds them again from its own rows, past this position)
-            Check& ckp = ck[snap_slot & 1];
+            Check& ckp = state().ck[snap_slot & 1];
             ckp.pos = run.snap_pos;
             ckp.win.resize(L.size());
             ckp.comp.resize(L.size() * 2);
@@ -8803,7 +8810,7 @@ struct Model::Impl {
             err = "a window of " + std::to_string(T) + " tokens";
             return false;
         }
-        if (pos + T > o.max_context) {
+        if (state().pos + T > o.max_context) {
             err = "the context is full";
             return false;
         }
@@ -8812,11 +8819,11 @@ struct Model::Impl {
                 err = "token " + std::to_string(tk[t]) + " out of range";
                 return false;
             }
-        const int64_t p0 = pos;
-        slot_held = false;   // (the state grows now: what slot_save took is no longer the conversation)
+        const int64_t p0 = state().pos;
+        state().slot_held = false;   // (the state grows now: what slot_save took is no longer the conversation)
         for (int t = 0; t < T; ++t) {
-            toks.push_back(tk[t]);
-            ctoks.push_back(ctok(pos + t, tk[t]));
+            state().toks.push_back(tk[t]);
+            state().ctoks.push_back(ctok(state().pos + t, tk[t]));
         }
         // the Engram rows asked for now (the first Engram layer's first), collected right before their layer: what is
         // left of their reads by then is the window's Engram time
@@ -8849,7 +8856,7 @@ struct Model::Impl {
         CK(cudaStreamSynchronize(d.st));
         st.head_ms += now_ms() - th;
         prof_collect();
-        pos += T;
+        state().pos += T;
         st.tokens += T;
         cache_tick(T);
         if (seed_rows != 0 && !seed_drafter(p0, seed_rows < 0 ? T : seed_rows, 0, err)) return false;
@@ -9632,10 +9639,10 @@ bool Model::verify(int y, const std::vector<int>& d, float t, float tp, int tk, 
                    int& accepted, int& next, std::string& err) {
     return p_->verify(y, d, t, tp, tk, mp, seed, counter, accepted, next, err);
 }
-int64_t Model::pos() const { return p_->pos; }
+int64_t Model::pos() const { return p_->state().pos; }
 int64_t Model::max_context() const { return p_->o.max_context; }
 int Model::vocab() const { return p_->g.vocab; }
-const std::vector<int32_t>& Model::tokens() const { return p_->toks; }
+const std::vector<int32_t>& Model::tokens() const { return p_->state().toks; }
 void Model::reset() { p_->reset(); }
 void Model::checkpoint(int slot) { p_->checkpoint(slot); }
 bool Model::restore(int64_t limit) { return p_->restore(limit); }
