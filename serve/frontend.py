@@ -748,15 +748,19 @@ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
+# a quoted call's opener in a value: `<function=NAME>` and its first parameter or close; a bare FUNC_START is text
+_QUOTED_OPEN = re.compile(r"<function=[^<>\s]+>\s*(?:<parameter=|</function>)")
+
+
 def param_end(text: str, final: bool = False, name: str | None = None) -> int:
     """Where a parameter value in `text` ends: the first PARAM_END followed (after whitespace) by the next
     PARAM_START or FUNC_END - the same text inside a value (a file that documents the call format, #210) is
-    part of the value.  #4078: a close inside a call the value itself quotes (more FUNC_START than FUNC_END before
+    part of the value.  #4078: a close inside a call the value itself quotes (more _QUOTED_OPEN than FUNC_END before
     it), or one followed by the same parameter `name` again, is part of the value too.  `text` starts at the value.
     -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at = text.find(PARAM_END)
     while at >= 0:
-        if text.count(FUNC_START, 0, at) <= text.count(FUNC_END, 0, at):
+        if len(_QUOTED_OPEN.findall(text, 0, at)) <= text.count(FUNC_END, 0, at):
             after = text[at + len(PARAM_END):].lstrip()
             if after.startswith(PARAM_START):
                 gt = after.find(">")

@@ -15,6 +15,8 @@ VALUES = {
     "quoted call at the end": f"example transcript:\n{QUOTED}",
     "heredoc": f"python3 - <<'PY'\nprint('''{QUOTED}''')\nPY",
     "repeated parameter": f"head part\n{PARAM_END}\n{PARAM_START}content>\ntail part",
+    "unclosed opener in prose": f"A call starts with `{FUNC_START}NAME>` and its parameters follow.",
+    "unclosed opener in code": f'opener = "{FUNC_START}"\n',
 }
 
 
