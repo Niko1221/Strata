@@ -27,6 +27,8 @@ class ElasticVision:
         self.rows = self.dir / "img.sve"
         self.rows.write_bytes(b"rows")
 
+    batch = staticmethod(contextlib.nullcontext)
+
     def alive(self):
         return self.up
 
