@@ -261,12 +261,11 @@ __global__ void __launch_bounds__(kThreads) hc_mix_kernel(const float* __restric
     if (threadIdx.x == 0) mixes[(size_t) t * 32 + m] = acc * rsqrtf(ss / (float) hcdim + eps);
 }
 
-// a warp a token: lane j * hc + k holds comb[j][k] (hc <= 4: lanes 0..15; wider streams fall back to lane 0 alone)
-__global__ void hc_split_kernel(const float* __restrict__ mixes, const float* __restrict__ scale,
-                                const float* __restrict__ base, int hc, int iters, float eps, float* pre, float* post,
-                                float* comb) {
-    const int t = blockIdx.x, lane = threadIdx.x;
-    const float* mx = mixes + (size_t) t * 32;
+// a warp a token: lane j * hc + k holds comb[j][k] (hc <= 4: lanes 0..15; wider streams fall back to lane 0 alone).  The body is
+// a device function (hc_mix_kernel's last block runs it too); mx is the token's 32 mixes
+__device__ __forceinline__ void hc_split_body(const float* mx, int t, int lane, const float* __restrict__ scale,
+                                              const float* __restrict__ base, int hc, int iters, float eps, float* pre,
+                                              float* post, float* comb) {
     pre += (size_t) t * 8;
     post += (size_t) t * 8;
     comb += (size_t) t * 64;
@@ -333,6 +332,50 @@ __global__ void hc_split_kernel(const float* __restrict__ mixes, const float* __
     }
     for (int j = 0; j < hc; ++j)
         for (int k = 0; k < hc; ++k) comb[j * hc + k] = c[j][k];
+}
+__global__ void hc_split_kernel(const float* __restrict__ mixes, const float* __restrict__ scale,
+                                const float* __restrict__ base, int hc, int iters, float eps, float* pre, float* post,
+                                float* comb) {
+    const int t = blockIdx.x;
+    hc_split_body(mixes + (size_t) t * 32, t, threadIdx.x, scale, base, hc, iters, eps, pre, post, comb);
+}
+
+// hc_mix_kernel with hc_split_kernel behind it: the block that finishes the token's last mix (an atomic count, reset by it) runs
+// the split on warp 0 - the same arithmetic as the two launches, one launch less and no round trip through the launch gap
+__global__ void __launch_bounds__(kThreads) hc_mix_split_kernel(const float* __restrict__ h, const float* __restrict__ fn,
+                                                                int hcdim, float eps, float* mixes, unsigned* cnt,
+                                                                const float* __restrict__ scale,
+                                                                const float* __restrict__ base, int hc, int iters,
+                                                                float hc_eps, float* pre, float* post, float* comb) {
+    const int m = blockIdx.x, t = blockIdx.y;
+    const float* w = fn + (size_t) m * hcdim;
+    const float* x = h + (size_t) t * hcdim;
+    float acc = 0.0f, ss = 0.0f;
+    for (int k = threadIdx.x * 4; k < hcdim; k += kThreads * 4) {
+        const float4 hv = *(const float4*) (x + k);
+        const float4 wv = *(const float4*) (w + k);
+        acc += hv.x * wv.x + hv.y * wv.y + hv.z * wv.z + hv.w * wv.w;
+        ss += hv.x * hv.x + hv.y * hv.y + hv.z * hv.z + hv.w * hv.w;
+    }
+    acc = block_sum(acc);
+    ss = block_sum(ss);
+    __shared__ unsigned last;
+    __shared__ float smx[32];
+    if (threadIdx.x == 0) {
+        mixes[(size_t) t * 32 + m] = acc * rsqrtf(ss / (float) hcdim + eps);
+        __threadfence();
+        last = atomicAdd(cnt + t, 1u) == gridDim.x - 1 ? 1u : 0u;
+    }
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    if (threadIdx.x < 32) {
+        const int n = gridDim.x;   // the mixes of the token (n_mix <= 32); read past the L1
+        smx[threadIdx.x] = threadIdx.x < n ? *(const volatile float*) (mixes + (size_t) t * 32 + threadIdx.x) : 0.0f;
+        __syncwarp();
+        hc_split_body(smx, t, threadIdx.x, scale, base, hc, iters, hc_eps, pre, post, comb);
+    }
+    if (threadIdx.x == 0) cnt[t] = 0u;
 }
 
 __global__ void __launch_bounds__(1024) hc_pre_norm_kernel(const float* __restrict__ h, const float* __restrict__ mix,
@@ -1883,6 +1926,12 @@ void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cud
 
 void hc_mix(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, cudaStream_t s) {
     hc_mix_kernel<<<dim3(n_mix, T), kThreads, 0, s>>>(h, fn, hcdim, eps, mixes);
+}
+void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, unsigned* cnt,
+                  const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre, float* post,
+                  float* comb, cudaStream_t s) {
+    hc_mix_split_kernel<<<dim3(n_mix, T), kThreads, 0, s>>>(h, fn, hcdim, eps, mixes, cnt, scale, base, hc, iters, hc_eps, pre,
+                                                            post, comb);
 }
 void hc_split(const float* mixes, const float* scale, const float* base, int hc, int iters, float hc_eps, int T,
               float* pre, float* post, float* comb, cudaStream_t s) {

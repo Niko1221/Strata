@@ -17,10 +17,21 @@ GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
 ARCH=${ARCH:-86-real;120}
 JOBS=${JOBS:-6}
 export PATH=$CUDA/bin:$PATH
+# the build id: the commit, 9 characters.  A git checkout gives it to CMake itself; a tarball has no .git, so COMMIT=<hex> is required there and goes to BUILD_ID.
+# (The id is baked in when cmake configures: a stale build dir is configured again, and a stale binary is deleted first.)
+if [ ! -e "$SRC/.git" ] && [ ! -f "$SRC/BUILD_ID" ]; then
+  [ -n "${COMMIT:-}" ] || { echo "build_dsv41_cuda.sh: $SRC has no .git and no BUILD_ID: set COMMIT=<hex> so the engine can print its commit" >&2; exit 2; }
+  printf '%s\n' "${COMMIT:0:9}" > "$SRC/BUILD_ID"
+fi
+rm -f "$B/CMakeCache.txt" "$B/strata-dsv41"
 cmake -G Ninja -S "$SRC" -B "$B" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=$ARCH" -DCMAKE_CUDA_COMPILER="$CUDA/bin/nvcc" \
   -DCUDAToolkit_ROOT="$CUDA" -DSTRATA_GGML_DIR="$GG" -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_SKIP_BUILD_RPATH=OFF \
   '-DCMAKE_INSTALL_RPATH=$ORIGIN'
 ninja -j "$JOBS" -C "$B" strata-dsv41
 [ -x "$B/strata-dsv41" ] || { echo "no $B/strata-dsv41" >&2; exit 1; }
+if [ -n "${COMMIT:-}" ]; then
+  grep -aq "${COMMIT:0:9}" "$B/strata-dsv41" || { echo "build_dsv41_cuda.sh: strata-dsv41 does not carry the build id ${COMMIT:0:9}" >&2; exit 1; }
+  echo "build id ${COMMIT:0:9} is in $B/strata-dsv41" >&2
+fi
 echo "$B/strata-dsv41"
