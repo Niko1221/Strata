@@ -4,14 +4,13 @@ sequences decoding at the same time pick the same experts.
 
     python3 route_overlap.py /data/works/route.trace
 
-The trace is one record a route request: u8 layer, u8 T, then T x k_exp int16 expert ids (DS4_TRACE_AHEAD unset).  A
-record with T = 1 is a decode step; T > 1 a prompt chunk.  With --slot-burst 1 a two-slot engine alternates whole tokens
-(one record a layer, layers 0..N-1), so the decode records group into tokens by their layer cycle and the two slots
-alternate.
+Two record kinds share the file: a decode (or DSpark verify) step's - u8 layer, u8 T, T x k_exp int16 expert ids - and a
+prompt chunk's: u8 (layer | 0x80), u16 T, T x k_exp int16.  Only the decode records with T = 1 are tokens; with
+--slot-burst 1 a two-slot engine alternates whole tokens (one record a layer, layers 0..N-1), so they group by their
+layer cycle and the two slots alternate.
 
 The read side of a batched MoE is  N*k  expert rows for N tokens of k experts; with the sets sharing s of their k it is
-N*k - (N-1)*s, so the speedup on that side is  N*k / (N*k - (N-1)*s).  The trace's last record may be cut short (the file
-is buffered and a killed engine does not flush it): the parse stops there.
+N*k - (N-1)*s, so the speedup on that side is  N*k / (N*k - (N-1)*s).
 """
 from __future__ import annotations
 
@@ -21,14 +20,20 @@ import sys
 def parse(data: bytes, k: int):
     recs, off = [], 0
     while off + 2 <= len(data):
-        layer, t = data[off], data[off + 1] & 0x7F
-        if t < 1 or t > 128:
+        b0 = data[off]
+        if b0 & 0x80:                      # a prompt chunk's record: layer | 0x80, u16 T
+            if off + 3 > len(data):
+                break
+            layer, t, head, kind = b0 & 0x7F, int.from_bytes(data[off + 1:off + 3], "little"), 3, "c"
+        else:                              # a decode (or verify) step's: u8 layer, u8 T
+            layer, t, head, kind = b0, data[off + 1] & 0x7F, 2, "d"
+        if t < 1 or t > 4096:
             return None
-        need = 2 + t * k * 2
+        need = head + t * k * 2
         if off + need > len(data):
             break
-        ids = [int.from_bytes(data[off + 2 + 2 * i:off + 4 + 2 * i], "little", signed=True) for i in range(t * k)]
-        recs.append((layer, t, ids))
+        ids = [int.from_bytes(data[off + head + 2 * i:off + head + 2 + 2 * i], "little", signed=True) for i in range(t * k)]
+        recs.append((layer, t, ids, kind))
         off += need
     return recs
 
@@ -48,9 +53,9 @@ def main() -> int:
         print("not a routing trace (or another k_exp):", len(data), "bytes")
         return 2
     k, recs = best
-    t1 = [r for r in recs if r[1] == 1]
-    n_layers = max(r[0] for r in recs) + 1
-    print("trace: %d records (%d decode, %d prompt chunks), k_exp %d, %d layers, %d bytes" % (
+    t1 = [r for r in recs if r[1] == 1 and r[3] == "d"]
+    n_layers = max(r[0] for r in recs if r[3] == "d") + 1
+    print("trace: %d records (%d decode steps, %d prompt chunks), k_exp %d, %d layers, %d bytes" % (
         len(recs), len(t1), len(recs) - len(t1), k, n_layers, len(data)))
     tokens, cur = [], []
     for r in t1:
@@ -63,7 +68,7 @@ def main() -> int:
     full = [t for t in tokens if len(t) == n_layers and all(r[0] == i for i, r in enumerate(t))]
     print("decode tokens with every layer in order: %d (of %d groups)" % (len(full), len(tokens)))
     if len(full) < 2:
-        print("not enough decode tokens to compare (run two requests with --slot-burst 1)")
+        print("not enough decode tokens to compare (two requests with --slot-burst 1)")
         return 1
     a = full[0::2]
     b = full[1::2]

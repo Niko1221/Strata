@@ -1154,7 +1154,14 @@ struct Model::Impl {
     std::FILE* xin_f = std::getenv("DS4_XIN_DUMP") != nullptr ? std::fopen(std::getenv("DS4_XIN_DUMP"), "wb") : nullptr;
     int xin_n = std::getenv("DS4_XIN_N") ? std::atoi(std::getenv("DS4_XIN_N")) : 1024;
     std::array<int, 64> xin_got{};
-    std::FILE* trace_f = std::getenv("DS4_TRACE") != nullptr ? std::fopen(std::getenv("DS4_TRACE"), "wb") : nullptr;
+    // (unbuffered: a measurement's trace survives the engine being killed)
+    std::FILE* trace_f = [] {
+        const char* p = std::getenv("DS4_TRACE");
+        if (p == nullptr) return (std::FILE*) nullptr;
+        std::FILE* f = std::fopen(p, "wb");
+        if (f != nullptr) std::setvbuf(f, nullptr, _IONBF, 0);
+        return f;
+    }();
     struct ProfMark {
         const Dev* d;
         cudaEvent_t ev;

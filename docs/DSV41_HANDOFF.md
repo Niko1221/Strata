@@ -85,6 +85,11 @@ reads 10.5 expert rows instead of 12 (1.15x) and three read 14.9 instead of 18 (
 the routing statistics say.  The lever with more room is the overlap itself (pairing requests that share a prompt), not
 the kernel; `tools/dsv41/route_overlap.py` measures both.
 
+A shared prompt does not change the picture much (21:30-21:32): two requests with a 1.3K-token system prompt in common
+share **32.7 %** of their six experts (unrelated prompts: 25.5 %), i.e. 1.20x on the reads for 2 tokens and 1.28x for 3.
+M3's ceiling on this box is therefore ~1.2-1.3x, not 2-3x - the kernel program (4-8 weeks by the design's own estimate)
+would buy that much unless the routing overlap itself can be raised.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

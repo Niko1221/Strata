@@ -16,7 +16,9 @@ T x k_exp int16 expert ids), and `tools/dsv41/route_overlap.py` measures it.  Tw
 of one sequence share 22.1 %.
 
 Batching two tokens therefore reads 10.5 expert rows instead of 12 (**1.15x**), three tokens 14.9 instead of 18
-(**1.20x**) - not the 2-3x the design assumed.  A batched MoE still saves the launches and a little dispatch, and a
+(**1.20x**) - not the 2-3x the design assumed.  Pairing the requests by a shared prompt helps only a little: two requests
+with a 1.3K-token system prompt in common share **32.7 %** of their experts (1.96 of 6), so 2 tokens still read 10.0 rows
+instead of 12 (**1.20x**) and 3 read 14.1 instead of 18 (**1.28x**).  A batched MoE still saves the launches and a little dispatch, and a
 workload whose prompts are much closer (one agent template, short answers) could route together better, but on this box
 with these prompts the read side - where the time is - hardly moves.  Raising the overlap itself (grouping requests that
 share a prompt, or a scheduler that pairs them) is a cheaper lever than the kernel, and worth measuring first.
