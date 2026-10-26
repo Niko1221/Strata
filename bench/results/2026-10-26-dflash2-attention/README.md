@@ -122,6 +122,70 @@ manifest are retained separately; it contributes no timing sample. The corrected
 fresh process has the explicit `-retry` label. `long32/` preserves exact prompt
 IDs, raw completed results, failed-attempt evidence and original JSON hashes.
 
+## Selector tables in system RAM
+
+`STRATA_DFLASH2_HOST_CODEBOOKS=1` maps pinned BF16 predecessor/successor tables
+from system RAM instead of storing them in device weights. Value 2 first gathers
+the candidate rows into a compact GPU buffer, runs the existing selector, and
+maps chosen IDs back to vocabulary IDs. Both are opt-in. Allocation failure
+reports an error and releases partial allocations. Graphs are destroyed and all
+streams joined before pinned memory is freed.
+
+The official Q8_0 artifact's two tables contain 254,279,680 bytes (242.5 MiB).
+The actual upload fixture reports that much less accounted VRAM for value 1.
+Value 2 uses 132,672 bytes of staging at eight rows, top-K 16 and rank 256, for
+254,147,008 bytes (242.373 MiB) less accounted VRAM. Driver allocation granularity
+can differ. The extra pinned system RAM remains allocated for the drafter lifetime.
+
+All fixed-cache arms below use the same `strata-host-stage-v4` executable, tuned
+bundle plus query cache, 2900 expert slots, the same three prompts and the same
+warmup/repeat policy as the short screen. Only the host-codebook mode changes.
+Every token sequence, including warmups and same-process controls, matches the
+same genuine external target control. `host-fixed/` retains commands, environment,
+raw sequences, logs and timing ranges.
+
+| Arm | Short code tok/s | Long code tok/s | Cache tok/s | Startup free MiB |
+| --- | ---: | ---: | ---: | ---: |
+| GPU tables a | 44.983 | 43.280 | 45.412 | 1093 |
+| Mapped RAM a | 45.027 | 43.328 | 45.479 | 1334 |
+| Staged RAM a | 45.087 | 43.316 | 45.214 | 1334 |
+| Staged RAM b | 45.059 | 43.335 | 45.331 | 1334 |
+| Mapped RAM b | 45.057 | 43.286 | 45.483 | 1337 |
+| GPU tables b | 44.932 | 43.337 | 45.364 | 1090 |
+
+At fixed expert count, these runs establish recovered memory and token parity,
+not increased request speed. A separate one-request staged-RAM smoke also passes
+with 384 identical output tokens; it is not pooled into the six-arm table.
+
+A standalone selector experiment uses the full 248,320-token tables, rank 256,
+top-K 16, changing random candidate IDs, and exact GPU-baseline comparisons for
+every ID and confidence bit. A 256 MiB high-entropy device read precedes each
+timed selector graph; that read is excluded from timing and is not a guarantee
+of perfect cache eviction. Six alternating forward/reverse rounds each contain
+50 candidate sets per row count. These are component samples in one process,
+not independent trials. Vector selector is enabled; lattice selector is disabled.
+
+| Rows | GPU tables | Direct mapped RAM | Staged RAM |
+| --- | ---: | ---: | ---: |
+| 2 | 13.312 µs | 20.480 µs | 16.384 µs |
+| 4 | 34.816 µs | 55.424 µs | 37.888 µs |
+| 8 | 76.800 µs | 125.952 µs | 79.872 µs |
+
+All 2700 timed outputs and confidence vectors are bit-identical. Staging reduces
+the mapped-RAM selector penalty in this experiment; this is not a claim of faster
+full-model generation. Source, all samples, build logs and memory measurements
+are in `host-validation/`. Eight GPU/mapped × scalar/vector × parallel/lattice
+unit combinations pass. Final Memcheck and Initcheck report zero errors;
+Racecheck reports zero errors and warnings. Initcheck includes the runtime's
+intentionally unwritten anchor-row head IDs. Existing 45 DFlash2 kernel sections
+retain identical SM89 instruction bytes (391,936 bytes) versus the query-cache
+binary; only new staging kernels are added. Both enabled and disabled DFlash2
+CUDA builds pass. Other backends/hardware are not tested.
+
+The next comparison measures whether spending the recovered VRAM on additional
+GPU experts improves generation at similar remaining device headroom. It is
+pending at this snapshot; no throughput gain is claimed from memory accounting.
+
 ## Validation
 
 Passed:

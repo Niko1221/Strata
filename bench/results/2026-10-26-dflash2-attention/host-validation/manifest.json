@@ -1,0 +1,94 @@
+{
+  "engine": "strata-host-stage-v4",
+  "engine_sha256": "ac77e2d0c9bd90f28c91b44594d54b4a5d3e590992d4a721386eda6d24fc6514",
+  "files": [
+    {
+      "file": "host-selector-final-memcheck.log",
+      "original_sha256": "372a82ddb9ebfe51e60a86b435836458b31c7b73fca81ff752760d5c51d23b32"
+    },
+    {
+      "file": "host-selector-final-racecheck.log",
+      "original_sha256": "395da37b21a7b68472d6daebdba91c8535a0b6e4bdc921b6c95ac56ca3c62769"
+    },
+    {
+      "file": "host-selector-initcheck.log",
+      "original_sha256": "372a82ddb9ebfe51e60a86b435836458b31c7b73fca81ff752760d5c51d23b32"
+    },
+    {
+      "file": "host-codebooks-memory.log",
+      "original_sha256": "5a693ec88d6ea1079fc7744338d50e7256f0b5eb63f29dc3155d7bb85ad4117f"
+    },
+    {
+      "file": "staged-codebooks-memory.log",
+      "original_sha256": "5961c6c06161653d769d3fd69fbfb580b854c197c0aa3a411937d087497467d3"
+    },
+    {
+      "file": "host-existing-kernel-text.json",
+      "original_sha256": "3496a56864c5193b130c22adb6518e6007217f6fcdb81968ffc07bcd61b449a8"
+    },
+    {
+      "file": "compare_existing_extension.py",
+      "original_sha256": "bf0dbf7d99735e80b2cef19f20c5e1cf489fac6c8d9537766caa4c9c4f42e6ba"
+    },
+    {
+      "file": "build-host-on.log",
+      "original_sha256": "fb25bb8720e83ac2720762ef5b6584805bc91d6afc31fbf93db8e3cf464dbe4b"
+    },
+    {
+      "file": "build-host-off.log",
+      "original_sha256": "101a36bb5b4bcd66f52995d71ad654afb045e7ab35534389fed6978d8a9a634d"
+    },
+    {
+      "file": "build-host-anchor-fix.log",
+      "original_sha256": "dd655db3c84dcfd53516a16e5b675c6e1e56b9adab068825a3c7dd7a50c56e8e"
+    },
+    {
+      "file": "build-host-v4.log",
+      "original_sha256": "f709fb7e97d87a338cd978adb5ef50dce4215751b26a57c0bbe76f8ba3bdf4d2"
+    },
+    {
+      "file": "selector_transfer_bench.cu",
+      "original_sha256": "c14f559dc77ef8bbf049757398b6a5840faac01fe8967e08a8cd3eb08d384bc7"
+    },
+    {
+      "file": "selector-transfer-vector.log",
+      "original_sha256": "7874bd20deea8f502200ba48402f41bea91b3b587c5964d904e10943a4490b26"
+    },
+    {
+      "file": "selector-transfer-vector.json",
+      "original_sha256": "5755601997c28b4b0169296515452191f12f5714a1a56e3594da4b5ab9cfd977"
+    },
+    {
+      "file": "host-selector-m0-v0-l0.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m0-v0-l1.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m0-v1-l0.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m0-v1-l1.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m1-v0-l0.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m1-v0-l1.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m1-v1-l0.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    },
+    {
+      "file": "host-selector-m1-v1-l1.log",
+      "original_sha256": "1e089e992ba9b79fcde74b55e4ee7d5e347520a762d3b5567a4b6f077bd630c0"
+    }
+  ]
+}

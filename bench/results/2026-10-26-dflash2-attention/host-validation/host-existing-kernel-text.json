@@ -1,0 +1,9 @@
+{
+  "architecture": "sm_89",
+  "baseline_sha256": "0e91f283a0068dd6f355d0ddcb78d7fab498c8477f7a878da1cb70f6b777bf2c",
+  "candidate_sha256": "ac77e2d0c9bd90f28c91b44594d54b4a5d3e590992d4a721386eda6d24fc6514",
+  "baseline_sections": 45,
+  "candidate_sections": 45,
+  "identical_bytes": 391936,
+  "different": []
+}

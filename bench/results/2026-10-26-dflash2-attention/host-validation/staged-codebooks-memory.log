@@ -1,0 +1,3 @@
+dflash2: host-mapped selector codebooks: 242.500 MiB host RAM, same VRAM bytes saved
+ACCOUNTED_VRAM before=838382560 after=584235552 delta=-254147008
+HOST_CODEBOOKS accounted VRAM saved=254147008

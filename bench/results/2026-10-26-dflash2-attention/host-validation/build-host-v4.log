@@ -1,0 +1,3 @@
+[1/3] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash_runtime.cpp.o
+[2/3] Linking CXX static library libstrata_engine.a
+[3/3] Linking CXX executable strata

@@ -1,0 +1,5 @@
+{
+  "profiles": 7,
+  "all_sequences_match_own_placement_control": true,
+  "tokens_equal_across_placement_controls": true
+}

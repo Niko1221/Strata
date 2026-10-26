@@ -1,0 +1,35 @@
+[1/11] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash2.cpp.o
+[2/11] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dflash2.cu.o
+${REPO}/src/kernels/cuda/dflash2.cu(521): warning #550-D: variable "win" was set but never used
+                int win;
+                    ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+${REPO}/src/kernels/cuda/dflash2.cu(312): warning #128-D: loop is not reachable
+          for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+          ^
+          detected during instantiation of "void strata::kernels::<unnamed>::gemm8_kernel<WARPS,COMPUTE,UNR>(strata::kernels::<unnamed>::Df2Segs, const int8_t *, const float *, int, int) [with WARPS=2, COMPUTE=false, UNR=2]" at line 733
+
+${REPO}/src/kernels/cuda/dflash2.cu(312): warning #128-D: loop is not reachable
+          for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+          ^
+          detected during instantiation of "void strata::kernels::<unnamed>::gemm8_kernel<WARPS,COMPUTE,UNR>(strata::kernels::<unnamed>::Df2Segs, const int8_t *, const float *, int, int) [with WARPS=4, COMPUTE=false, UNR=2]" at line 739
+
+[3/11] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash.cpp.o
+[4/11] Linking CXX static library libstrata_kernels.a
+[5/11] Building CXX object CMakeFiles/strata_engine.dir/src/core/verify.cpp.o
+${REPO}/src/core/verify.cpp: In static member function ‘static void strata::core::Verifier::raise_flag(uint32_t*, uint32_t)’:
+${REPO}/src/core/verify.cpp:3287:20: warning: unused variable ‘f’ [-Wunused-variable]
+ 3287 |     volatile long* f = (volatile long*) flag;
+      |                    ^
+[6/11] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash_runtime.cpp.o
+[7/11] Linking CXX static library libstrata_engine.a
+[8/11] Building CXX object CMakeFiles/strata_prefill.dir/src/prefill/prefill.cpp.o
+[9/11] Linking CXX static library libstrata_prefill.a
+[10/11] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+${REPO}/src/program/generate.cpp: In lambda function:
+${REPO}/src/program/generate.cpp:12212:30: warning: unused variable ‘w’ [-Wunused-variable]
+12212 |                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+      |                              ^
+[11/11] Linking CXX executable strata
