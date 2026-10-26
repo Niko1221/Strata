@@ -177,6 +177,9 @@ async function pictureRefusal(connection, model) {
 }
 const agent = createAgentBridge({
   tools: () => agentTools.profileView(),
+  // Opt-in (Settings -> Tools): let the agent ask the person a question mid-task. Off by default, so the
+  // question tool stays out of the preset and a `user-questions/request` is dismissed exactly as before.
+  askUser: () => agentTools.profileView().askUserQuestions === true,
   skillsDir: () => AGENT_SKILLS,
   onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
   // The person's Response settings (thinking budget, Expert sampling) reach the agent's model through this host's own forwarding endpoint.
@@ -1920,7 +1923,10 @@ async function api(req, res, path, method, url) {
     const params = new URL(req.url, 'http://x').searchParams;
     // No chat named: every chat with an approval waiting (the task board lists them without opening each chat).
     if (!params.has('chatId')) return json(res, 200, { chats: agent.pendingAll() });
-    return json(res, 200, { pending: agent.pendingFor(params.get('chatId') ?? '') });
+    const chatId = params.get('chatId') ?? '';
+    // `questions` is added only when the agent has asked one (opt-in), so the default response is unchanged.
+    const questions = agent.questionsFor(chatId);
+    return json(res, 200, questions.length ? { pending: agent.pendingFor(chatId), questions } : { pending: agent.pendingFor(chatId) });
   }
   /* Approve / Deny a tool the agent asked about. The answer reaches the Harness approval for exactly
      that chat and call; a stale or foreign id is refused. */
@@ -1929,6 +1935,15 @@ async function api(req, res, path, method, url) {
     if (typeof b.sessionId !== 'string' || typeof b.toolId !== 'string' || !['approve', 'deny'].includes(b.decision)) return error(res, 400, 'sessionId, toolId and decision (approve or deny) are required');
     try { return json(res, 200, await agent.approve({ chatId: b.sessionId, callId: b.toolId, decision: b.decision })); }
     catch (e) { return error(res, e.code === 'approval-gone' ? 409 : 400, e.message); }
+  }
+  /* Answer a question the agent asked (opt-in; see askUserQuestions). `answers` is one { question, answer }
+     per question asked. The answer reaches the Harness for exactly that chat and call; a stale or foreign id is refused. */
+  if (path === '/api/chat/answer' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || typeof b.questionId !== 'string') return error(res, 400, 'sessionId and questionId are required');
+    const answers = Array.isArray(b.answers) ? b.answers.filter(a => a && typeof a === 'object') : [];
+    try { return json(res, 200, await agent.answerQuestion({ chatId: b.sessionId, callId: b.questionId, answers })); }
+    catch (e) { return error(res, e.code === 'question-gone' ? 409 : 400, e.message); }
   }
   /* The person changed the chat's mode while a turn runs: it applies to the next tool call, goal and helpers included. */
   if (path === '/api/chat/mode' && method === 'POST') {

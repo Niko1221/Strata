@@ -52,7 +52,7 @@ export const AGENT_PROMPT = [
  * @param {{platform?: string, search?: boolean}} [options]
  * @returns {object} the `config` of the `preset-standard` row
  */
-export function standardPreset({ platform = process.platform, search = false, off = new Set(), skillsDir = null, compaction = [] } = {}) {
+export function standardPreset({ platform = process.platform, search = false, off = new Set(), skillsDir = null, compaction = [], askUser = false } = {}) {
   const windows = platform === 'win32';
   const plugins = [
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
@@ -88,6 +88,11 @@ export function standardPreset({ platform = process.platform, search = false, of
         { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
       ],
     },
+    // The agent's own question tool. Off by default (the app has no answerer surface unless the person turns it
+    // on in Settings -> Tools); when on, the bridge holds the question and the page answers it back.
+    // UNCONFIRMED: the plugin name follows the Harness's `@deepseek-ai/dsh-tool-*` pattern but is not verified
+    // against the pinned Harness in this repo. See the scope issue before enabling by default.
+    ...(askUser ? [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }] : []),
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
     { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: !off.has('fetch'), search: search && !off.has('search'), searchTimeoutMs: 60000 } },
     { id: 'present', name: '@deepseek-ai/dsh-tool-present' },

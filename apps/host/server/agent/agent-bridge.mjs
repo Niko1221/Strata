@@ -32,6 +32,7 @@ import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
+import { parseQuestions, answerWire } from './user-questions.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -117,7 +118,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500, askUser = () => false }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -157,6 +158,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const queues = new Map();
   const queueView = chatId => (queues.get(chatId) ?? []).map(({ id, text, at, deliverAt }) => ({ id, text, at, deliverAt }));
   const pending = new Map();       // `${sessionId}:${callId}` -> { eventId, sessionId, callId, at }
+  /** `${sessionId}:${callId}` -> { eventId, sessionId, callId, questions, at, clientId }. Only filled when `askUser()` is on. */
+  const pendingQuestions = new Map();
   const idleWaiters = new Set();
 
   const chat = id => { let c = chats.get(id); if (!c) { c = { id, turn: null, route: null, routeGeneration: -1 }; chats.set(id, c); } return c; };
@@ -275,11 +278,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (!r.callId) return;
       pending.set(`${value.agentId}:${r.callId}`, { eventId: value.eventId, sessionId: value.agentId, callId: r.callId, tool: r.toolName, reason: r.reason ?? null, at: Date.now(), clientId: runtime.clientId });
     } else if (value.type === 'waterfall' && value.event === 'user-questions/request') {
-      // The app has no surface for the agent's own questions yet. Declaring that nobody can answer makes
+      const r = value.request ?? {};
+      // Opt-in (askUser): hold the question so the page can show it and answer it back. Without a `callId`
+      // there is nothing to answer against, so fall through to the dismiss path rather than hang the turn.
+      if (askUser() && r.callId) {
+        pendingQuestions.set(`${value.agentId}:${r.callId}`, { eventId: value.eventId, sessionId: value.agentId, callId: r.callId, questions: parseQuestions(r).questions, at: Date.now(), clientId: runtime.clientId });
+        return;
+      }
+      // Default: the app has no surface for the agent's own questions. Declaring that nobody can answer makes
       // the tool return an error the model reads and carries on from, instead of a turn that waits forever.
       void runtime.gw.answerEvent({ clientId: runtime.clientId, eventId: value.eventId, outcome: 'next' }).catch(() => {});
     } else if (value.type === 'cancel') {
       for (const [k, v] of pending) if (v.eventId === value.eventId) pending.delete(k);
+      for (const [k, v] of pendingQuestions) if (v.eventId === value.eventId) pendingQuestions.delete(k);
     }
   }
 
@@ -1325,6 +1336,41 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     return Object.keys(sessionMap).map(chatId => ({ chatId, folder: sessionMap[chatId]?.cwd ?? null, pending: pendingFor(chatId) })).filter(c => c.pending.length);
   }
 
+  /** The agent's own questions waiting for an answer in this chat (empty unless `askUser()` is on). Same ownership rule as pendingFor. */
+  function questionsFor(chatId) {
+    if (!pendingQuestions.size) return [];
+    const sessionId = sessionMap[chatId]?.sessionId;
+    const helpers = chats.get(chatId)?.turn?.children;
+    return [...pendingQuestions.values()].filter(q => q.sessionId === sessionId || helpers?.has(q.sessionId))
+      .map(q => (q.sessionId === sessionId ? q : { ...q, callId: `${q.sessionId}:${q.callId}` }))
+      .map(({ callId, questions, at }) => ({ callId, questions, at }));
+  }
+
+  /**
+   * Answer one pending agent question. `answers` is `[{ question, answer }]`, one per question asked; an empty
+   * or missing answer is sent as an empty string so the model reads "no answer" rather than hanging.
+   */
+  async function answerQuestion({ chatId, callId, answers = [] }) {
+    const sessionId = sessionMap[chatId]?.sessionId;
+    const [maybeChild] = String(callId).split(':');
+    const ownHelper = callId.includes(':') && chats.get(chatId)?.turn?.children.has(maybeChild);
+    const key = ownHelper ? callId : `${sessionId}:${callId}`;
+    let entry = sessionId ? pendingQuestions.get(key) : null;
+    for (let i = 0; !entry && sessionId && i < 40; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      entry = pendingQuestions.get(key);
+    }
+    if (!entry) throw new AgentUnavailable('That question is no longer waiting for an answer.', 'question-gone');
+    if (!rt?.hp.running) throw new AgentUnavailable('That question expired because the coding assistant restarted. Ask again.', 'question-gone');
+    pendingQuestions.delete(key);
+    try {
+      await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome: 'answered', value: answerWire(answers) });
+    } catch (e) {
+      throw new AgentUnavailable('Your answer could not be delivered. Ask again.', 'question-gone', e.message);
+    }
+    return { ok: true };
+  }
+
   async function close() {
     const r = rt; rt = null;
     if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
@@ -1333,7 +1379,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, questionsFor, answerQuestion, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
