@@ -1,0 +1,15 @@
+{
+  "baseline_commit": "3f08f4c20ba3cb6b3fd39b6fc80cfe072226a37d",
+  "baseline_engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+  "candidate_engine_sha256": "0e91f283a0068dd6f355d0ddcb78d7fab498c8477f7a878da1cb70f6b777bf2c",
+  "source_sha256": {
+    "src/kernels/cuda/dflash2_extension.cu": "bf64191cc17085f0a1007ceb0fcc13ffab5e17b3dc976b130df6237aef53a1ad",
+    "src/kernels/dflash2_parity.cpp": "06fed1dd50b714cd4027f6d84680eceb250c43326af4541361873bf6be89984a"
+  },
+  "prompt_sha256": "a7420fa682a5598757a7c33fa78b7d8189b9f6e77a52e18baee6f7130ad775ba",
+  "notes": [
+    "Sanitizers ran before the fixture added rows1 to the existing rows2/4/8 oracle; no device algorithm changed afterward.",
+    "Final ordinary FP64 oracle includes rows1/2/4/8.",
+    "Raw output dumps remain local; their hashes and per-case fingerprints are recorded. No binaries or model weights are committed."
+  ]
+}

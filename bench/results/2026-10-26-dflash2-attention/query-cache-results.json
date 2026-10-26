@@ -1,0 +1,58 @@
+[
+  {
+    "small_page": 0,
+    "rep": 0,
+    "cached_query": 0,
+    "log": "query-cache-small0-rep0-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 0,
+    "rep": 1,
+    "cached_query": 1,
+    "log": "query-cache-small0-rep1-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 0,
+    "rep": 2,
+    "cached_query": 1,
+    "log": "query-cache-small0-rep2-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 0,
+    "rep": 3,
+    "cached_query": 0,
+    "log": "query-cache-small0-rep3-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 1,
+    "rep": 0,
+    "cached_query": 0,
+    "log": "query-cache-small1-rep0-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 1,
+    "rep": 1,
+    "cached_query": 1,
+    "log": "query-cache-small1-rep1-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 1,
+    "rep": 2,
+    "cached_query": 1,
+    "log": "query-cache-small1-rep2-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "small_page": 1,
+    "rep": 3,
+    "cached_query": 0,
+    "log": "query-cache-small1-rep3-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "rep": 0,
+    "cached_query": 0,
+    "log": "query-final-0-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "rep": 1,
+    "cached_query": 1,
+    "log": "query-final-1-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "rep": 2,
+    "cached_query": 1,
+    "log": "query-final-2-cache1.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  {
+    "rep": 3,
+    "cached_query": 0,
+    "log": "query-final-3-cache0.log",
+    "output_sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  }
+]
