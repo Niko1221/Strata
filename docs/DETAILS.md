@@ -569,7 +569,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   grammar-constrained decoding when the engine takes token masks and `llguidance` is installed (below); one generation
   per request. `jsonschema` is used when installed (`python -m pip install "jsonschema>=4.23,<5"`);
   without it the answer is only checked to be one JSON object. Malformed output returns **502** with
-  `error.code: structured_output_failed`, an invalid schema **400**. JSON formats combined with tools or MCP are refused.
+  `error.code: structured_output_failed`, an invalid schema **400**. Combined with `tools` the pair answers too
+  (#782: a tool-call turn passes through, the schema binds the final answer); with `strata_mcp` the token masks
+  must be live (**400** otherwise).
   Streaming buffers the answer and emits content only after validation. Math answers often hold LaTeX such as `\alpha`, which is
   not a valid JSON escape. Add `"repair_latex_escapes": true` to the `response_format` (or to `text.format` on `/v1/responses`) and,
   only after the strict parse failed, the server doubles the backslashes that are not valid escapes and checks the answer again.
@@ -662,13 +664,29 @@ run one at a time, the ordinary batch of unconstrained requests is untouched. Wi
 the server says so once and validation after the turn is all there is. Either way one generation is made per
 request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
 duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
-`error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
-tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
+`error.code: structured_output_failed`; invalid request schemas return **400**. While the masks are live the
+chat route also takes `tools` (and `strata_mcp: true`) together with a JSON format: the grammar has two
+branches, so a turn that calls a tool comes back as the call, unchecked against the schema, and only the final
+answer is masked to the schema and validated after the turn. A forced `tool_choice` does not arm the mask; such
+a request answers under schema prompting and the validation after the turn. Where the masks are not live, a
+JSON format combined with `strata_mcp` returns **400**; with plain `tools` the pair still answers (#782) - the
+call passes through and the schema binds the final answer. Without `response_format`, ordinary text and
+tool behavior stays the same, unless `STRATA_TOOL_MASK=1` is set in the environment: then bare tool calls are
+grammar-constrained too - the choice is the call or prose, prose just cannot start with a `<` (a `<tool_call`
+tag, special token or plain text, can only arrive through the call branch, where the tool name sits behind
+`STRATA_TOOL_NAME_ENUM`'s enumeration and the separator after the name frees the turn for the body); a `<`
+later in the prose stays free. The bare-call grammar applies on every API that offers tools and carries no
+JSON format: `/v1/chat/completions`, `/v1/responses` (without `text.format`) and `/v1/messages` (Anthropic -
+its sampling carries no response_format, so bare calls are the only calls the grammar can see there). The
+bare-call grammar is opt-in and off by default, and like every mask
+setting it needs an engine with `token_mask` and the `llguidance` package; without them the request is
+unconstrained exactly as before.
 
 Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior; its
-`constrained_decoding` says whether the token masks are live for this server.
+`constrained_decoding` says whether the token masks are live for this server, and its `tools_with_json` says
+whether this server takes tools together with a JSON format on `/v1/chat/completions`.
 
 ### Context and limits
 
