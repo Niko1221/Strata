@@ -2340,7 +2340,8 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
     check("gr_mix_r");
 }
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
-              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream) {
+              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream,
+              const uint8_t* w_up_q8) {
 #if defined(__HIPCC__)
     static const bool gfx11 = [] {
         int dev = 0;
@@ -2348,14 +2349,14 @@ bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const 
         if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
         return strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
     }();
-    if (!gfx11 || T <= 0) return false;
+    if (!gfx11 || T <= 0 || w_up == nullptr || w_up_q8 != nullptr) return false;
     gr_upmix_kernel<<<dim3(N / UM_D, (unsigned) ((T + UM_T - 1) / UM_T)), 256, 0, (cudaStream_t) stream>>>(
         lo16, w_up, R, rs, w_norm, mixed, mixed16, mixed_h, T);
     check("gr_upmix");
     return true;
 #else
     (void) lo16; (void) w_up; (void) R; (void) rs; (void) w_norm; (void) mixed; (void) mixed16; (void) mixed_h;
-    (void) T; (void) stream;
+    (void) T; (void) stream; (void) w_up_q8;
     return false;
 #endif
 }
