@@ -112,6 +112,9 @@ public:
     /// Feeds n tokens (windows of up to 16, or a long run in chunks of prefill_chunk); the last `logits_rows` of them get
     /// logits (logits_rows > 16: only a run of one chunk or window).
     bool feed(const int* tokens, int n, int logits_rows, std::string& err);
+    // M2's batched step: T rows, a token of a sequence each, its position from that sequence's state (the logits land in
+    // the head device's rows 0 .. T-1)
+    bool forward_rows(const int* pos, const int* seq, const int* tokens, int T, std::string& err);
     /// feed() of a prompt's end that also keeps the state before its last token in checkpoint `slot` (a prompt's
     /// last token then rides along in the run of chunks instead of a window of its own); the same as
     /// feed(n - 1), checkpoint(slot), feed(1)

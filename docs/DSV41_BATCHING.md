@@ -128,6 +128,14 @@ What one launch over T sequences still needs, in the order it has to be built:
 Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
 throughput.
 
+**The decode side's plumbing is in (2026-10-27).**  `Run` carries the step's descriptor (`StepRows`: a position and a
+sequence a row); `chunk_rows` takes it (the per-row path that is already proved in process), `run_layer` passes it on,
+and `forward_chunks` builds one chunk of T rows from it - no prompt token bookkeeping (each row's token goes into its own
+sequence) and no long-prompt skip - with the Engram rows read per row (`eg_issue`/`engram_rows` take the descriptor:
+each row its own position and its own sequence's n-grams).  `forward_rows` is the entry: note each row's token in its
+sequence, put its embedding in `h_emb`, run the one chunk, advance the sequences.  The prompt paths are untouched (the
+descriptor is null there): the probe and the three-client HTTP check pass on the build.
+
 **The per-row chunk path is in and validated in process (2026-10-27).**  `StepRows` - a position and a sequence a row -
 goes through `layer_chunk`: the window block a row (`[the ring's rows][the token]` at `t * (win + 1)`), the compressor
 and the ik/ckv writes a sequence's (its own group, its own completed group), the indexer a row (its own scan, its picks

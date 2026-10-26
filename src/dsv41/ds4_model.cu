@@ -5766,7 +5766,8 @@ struct Model::Impl {
     // [hd] codes then the scales; nullptr: h_eg).  eg_issue serves the rows already fetched from the row cache (and a
     // row the window needs twice from one read) and hands the rest to the reader's threads; eg_finish waits for them,
     // copies the repeats and keeps the new rows in the cache.  The rows are the file's bytes either way.
-    void eg_issue(int64_t p0, int T, int li, uint8_t* dst, EgBatch& b) {
+    // `rows` (M2's batched step): each row its own position and its own sequence's n-grams instead of p0 + t
+    void eg_issue(int64_t p0, int T, int li, uint8_t* dst, EgBatch& b, const StepRows* rows = nullptr) {
         const int cols = (pk.eg_ngram - 1) * pk.eg_heads, hd = pk.eg_hd;
         const size_t per = (size_t) cols * (hd + hd / 32);
         b.clear();
@@ -5782,19 +5783,24 @@ struct Model::Impl {
         int64_t hits = 0;
         {
             std::lock_guard<std::mutex> lk(eg_cache_mu);
+            const auto ctok = [&](int t, int64_t q) -> int32_t {
+                return rows != nullptr ? seqs[(size_t) rows->seq[t]].ctoks[(size_t) q]
+                                       : state().ctoks[(size_t) q];
+            };
             for (int t = 0; t < T; ++t) {
-                const int64_t p = p0 + t;
-                uint8_t* rows = dst != nullptr ? dst + (size_t) t * per : h_eg + ((size_t) li * eg_cap + t) * per;
+                const int64_t p = rows != nullptr ? rows->pos[t] : p0 + t;
+                uint8_t* rows_ = dst != nullptr ? dst + (size_t) t * per : h_eg + ((size_t) li * eg_cap + t) * per;
+                uint8_t* rows = rows_;
                 uint8_t* scales = rows + (size_t) cols * hd;
-                if (state().ctoks[(size_t) p] < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
+                if (ctok(t, p) < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
                     std::memset(rows, 0, per);
                     continue;
                 }
                 int64_t prod[8];
                 bool blocked = false;
                 for (int s = 0; s < pk.eg_ngram; ++s) {   // (the look-back stops at the start and at a picture)
-                    blocked = blocked || p < s || state().ctoks[(size_t) (p - s)] < 0;
-                    const int64_t tk = blocked ? pk.eg_pad : state().ctoks[(size_t) (p - s)];
+                    blocked = blocked || p < s || ctok(t, p - s) < 0;
+                    const int64_t tk = blocked ? pk.eg_pad : ctok(t, p - s);
                     prod[s] = tk * pk.eg_mult[(size_t) li * pk.eg_ngram + s];
                 }
                 int64_t rolling = prod[0];
@@ -5893,9 +5899,9 @@ struct Model::Impl {
         st.eg_cache_cap = (int64_t) eg_cache.capacity();
     }
     // the chunked prompt path: rows of Engram layer `only` into dst, now (a helper thread, a chunk ahead)
-    void engram_rows(int64_t p0, int T, int only, uint8_t* dst) {
+    void engram_rows(int64_t p0, int T, int only, uint8_t* dst, const StepRows* rows = nullptr) {
         EgBatch b;
-        eg_issue(p0, T, only, dst, b);
+        eg_issue(p0, T, only, dst, b, rows);
         eg_finish(b);
     }
 
@@ -7889,6 +7895,9 @@ struct Model::Impl {
         // the layers before `yoco`, that layer as layer_chunk's kv_only and none after it; chunk cut_k's rows before
         // cut_r the same, its rows from cut_r on and the chunks after it through every layer (yoco -1: no skip)
         int yoco = -1, cut_k = 0, cut_r = 0;
+        // M2's batched step: one chunk whose rows are one token each of several sequences, described one by one (the
+        // serve loop sets it; a prompt's chunks leave it null and the chunk's own p0 + t is the row's position)
+        const StepRows* rows = nullptr;
         bool runs(int k, int il) const { return yoco < 0 || k >= cut_k || il <= yoco; }
         bool kv_only(int k, int il) const { return yoco >= 0 && k < cut_k && il == yoco; }
         int r0(int k, int il) const { return yoco >= 0 && k == cut_k && il >= yoco ? cut_r : 0; }   // the first row
@@ -7898,12 +7907,14 @@ struct Model::Impl {
     // a chunk's call as M2's step describes it - the same rows, one by one (STRATA_DS4_STEPROWS=1: the self-check that the
     // per-row path answers exactly what the contiguous one does, run by every window and prompt of the gates)
     bool chunk_rows(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err,
-                    bool kv_only) {
+                    bool kv_only, const StepRows* rows = nullptr) {
         static const int rows_env = [] {
             const char* e = std::getenv("STRATA_DS4_STEPROWS");
             return e != nullptr ? std::atoi(e) : 0;
         }();
-        if (rows_env == 0 || T <= 0 || T > kWin) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only);
+        if (T <= 0 || T > kWin) rows = nullptr;
+        if (rows != nullptr) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only, rows);   // (M2's step)
+        if (rows_env == 0) return layer_chunk(L0, mi, p0, T, wp, S, err, kv_only);
         int pos[kWin], seq[kWin];
         for (int t = 0; t < T; ++t) {
             pos[t] = (int) (p0 + t);
@@ -8002,13 +8013,13 @@ struct Model::Impl {
     }
     bool run_layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, Streamer& S, std::string& err,
                    const Run& run, int k, int il) {
-        if (run.kv_only(k, il)) return chunk_rows(L0, mi, p0, T, wp, S, err, true);
+        if (run.kv_only(k, il)) return chunk_rows(L0, mi, p0, T, wp, S, err, true, run.rows);
         const int r0 = run.r0(k, il);
-        if (r0 <= 0) return chunk_rows(L0, mi, p0, T, wp, S, err, false);
+        if (r0 <= 0) return chunk_rows(L0, mi, p0, T, wp, S, err, false, run.rows);
         if (il == run.yoco) {
             WinPlan w0 = wp;
             w0.snap_t = -1;
-            if (!chunk_rows(L0, mi, p0, r0, w0, S, err, true)) return false;
+            if (!chunk_rows(L0, mi, p0, r0, w0, S, err, true, run.rows)) return false;
         }
         Chunk& c = *chunks[(size_t) member(L0, mi).dev];
         float* const h0 = c.h;
@@ -8017,7 +8028,8 @@ struct Model::Impl {
         c.pre += (size_t) r0 * 8;
         WinPlan w1 = wp;
         w1.snap_t = wp.snap_t >= r0 ? wp.snap_t - r0 : -1;
-        const bool ok = chunk_rows(L0, mi, p0 + r0, T - r0, w1, S, err, false);
+        const bool ok = chunk_rows(L0, mi, p0 + r0, T - r0, w1, S, err, false,
+                                   run.rows != nullptr && r0 > 0 ? nullptr : run.rows);   // (a step's rows are never split)
         c.h = h0;
         c.pre = pre0;
         return ok;
@@ -8207,7 +8219,8 @@ struct Model::Impl {
         auto read_eg = [this, &c, &run, &egs, eg_per](int k) {
             if (k >= 2) cudaEventSynchronize(c.eg_ev[k % 2]);
             for (int li : egs)
-                engram_rows(run.p0[(size_t) k], run.T[(size_t) k], li, c.eg_host[k % 2] + (size_t) li * c.C * eg_per);
+                engram_rows(run.p0[(size_t) k], run.T[(size_t) k], li, c.eg_host[k % 2] + (size_t) li * c.C * eg_per,
+                            run.rows);   // (a step's rows: each its own position and sequence)
         };
         std::future<void> eg_next;
         if (!egs.empty()) eg_next = std::async(std::launch::async, read_eg, 0);
@@ -8720,7 +8733,40 @@ struct Model::Impl {
 
     // n tokens at positions pos .. in chunks of equal size (at most `chunk`), pipelined over the groups; the logits of
     // the last min(logits_rows, 16) rows (logits_rows > 16: a run of one chunk, every row's into chunk_logits)
-    bool forward_chunks(const int* tk, int n, int logits_rows, std::string& err, int snap_slot = -1) {
+    // M2's batched step: one pass over T rows, a token of a sequence each - each row's position from its sequence, its
+    // token noted in that sequence, its embedding in h_emb; the logits land in the head device's rows 0 .. T-1
+    bool forward_rows(const int* pos, const int* seq, const int* tk, int T, std::string& err) {
+        if (T < 1 || T > kWin) {
+            err = "a step of " + std::to_string(T) + " rows";
+            return false;
+        }
+        for (int t = 0; t < T; ++t) {
+            const State& st = seqs[(size_t) seq[t]];
+            if (st.pos + 1 > o.max_context) {
+                err = "the context is full";
+                return false;
+            }
+            if (tk[t] < 0 || tk[t] >= g.vocab) {
+                err = "token " + std::to_string(tk[t]) + " out of range";
+                return false;
+            }
+        }
+        for (int t = 0; t < T; ++t) {   // (each row's token in its own sequence, its embedding per row)
+            State& st = seqs[(size_t) seq[t]];
+            st.toks.push_back(tk[t]);
+            st.ctoks.push_back(ctok(st.pos, tk[t]));
+            std::memcpy(h_emb + (size_t) t * g.dim, emb_row(st.pos, tk[t]), (size_t) g.dim * 2);
+        }
+        StepRows rows{pos, seq};
+        if (!forward_chunks(tk, T, T, err, -1, &rows)) return false;
+        for (int t = 0; t < T; ++t) seqs[(size_t) seq[t]].pos += 1;
+        return true;
+    }
+    // `step` (M2's batched step): the run is one chunk of n rows, a token of a sequence each - the descriptor carries
+    // their positions and sequences, the caller has put their embeddings in h_emb and their tokens in each state - instead
+    // of a prompt's tokens at state().pos
+    bool forward_chunks(const int* tk, int n, int logits_rows, std::string& err, int snap_slot = -1,
+                        const StepRows* step = nullptr) {
         if (n < 1) return true;
         flow_used.store(true);
         std::lock_guard<std::mutex> warm_lk(warm_mu);   // (the warm-up, if it is running, finishes first)
@@ -8741,7 +8787,7 @@ struct Model::Impl {
         // kv_only, the cut's chunk through those over all its rows and through the rest from the cut on (Run::r0, a
         // view of its buffers), the chunks after it through every layer - each layer's experts read as without the
         // skip.  One GPU (DS4_YOCO=1; 0: off); not with every row's logits (tests)
-        const int yl = logits_rows > kWin ? -1 : yoco_layer();
+        const int yl = step != nullptr ? -1 : (logits_rows > kWin ? -1 : yoco_layer());
         // (DS4_YOCO_KEEP=<rows>: fewer - DeepSeek's own serving replays the last 128 tokens through those layers
         //  (DeepInfer's "SWA bounded replay"), which shifts the answers a little; at least one window)
         static const int keep_env = std::getenv("DS4_YOCO_KEEP") ? std::atoi(std::getenv("DS4_YOCO_KEEP")) : 0;
@@ -8751,6 +8797,12 @@ struct Model::Impl {
         const int a = yl > 0 && n - keep >= kYocoMin ? n - keep : 0;
         const int nc = (n + chunk - 1) / chunk, per = (n + nc - 1) / nc;
         Run run;
+        run.rows = step;
+        if (step != nullptr) {   // (a step: one chunk, its rows described one by one)
+            run.p0.push_back(0);
+            run.T.push_back(n);
+            run.seq.push_back(++win_seq);
+        } else
         for (int x = 0; x < n; x += per) {
             run.p0.push_back(state().pos + x);
             run.T.push_back(std::min(per, n - x));
@@ -8761,8 +8813,9 @@ struct Model::Impl {
             run.cut_k = a / per;
             run.cut_r = a - run.cut_k * per;
         }
-        logits_all = logits_rows > kWin;
+        logits_all = step == nullptr && logits_rows > kWin;
         if (logits_all) chunk_logits.resize((size_t) n * g.vocab);
+        if (step == nullptr)   // (a step's tokens belong to their own sequences: the caller has noted them)
         for (int t = 0; t < n; ++t) {
             state().toks.push_back(tk[t]);
             state().ctoks.push_back(ctok(state().pos + t, tk[t]));
@@ -10010,6 +10063,9 @@ void Model::use_seq(int seq) { p_->use_seq(seq); }
 int Model::seq_count() const { return p_->seq_count(); }
 int64_t Model::pos() const { return p_->state().pos; }
 int64_t Model::max_context() const { return p_->slot_tokens > 0 ? p_->slot_tokens : p_->o.max_context; }
+bool Model::forward_rows(const int* pos, const int* seq, const int* tk, int T, std::string& err) {
+    return p_->forward_rows(pos, seq, tk, T, err);
+}
 int Model::vocab() const { return p_->g.vocab; }
 const std::vector<int32_t>& Model::tokens() const { return p_->state().toks; }
 void Model::reset() { p_->reset(); }
