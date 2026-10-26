@@ -106,6 +106,15 @@ const HOST_DIR = fileURLToPath(new URL('../..', import.meta.url));
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+/** An explicit local-only allowance; absent configuration retains the existing watchdog. */
+export function localSilenceLimit(value, fallback) {
+  if (value == null || value === '') return fallback;
+  if (!/^\d+$/.test(String(value))) throw new Error('STRATA_LOCAL_STALL_MS must be a positive integer in milliseconds (at most 86400000).');
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 86_400_000) throw new Error('STRATA_LOCAL_STALL_MS must be a positive integer in milliseconds (at most 86400000).');
+  return limit;
+}
+
 /**
  * @param {object} options
  * @param {string} options.dataDir                      the host's data directory (agent state lives in `<dataDir>/agent`)
@@ -119,6 +128,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  */
 export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
+  const localStallMs = localSilenceLimit(env.STRATA_LOCAL_STALL_MS, stallMs);
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
@@ -451,7 +461,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     turn.watchdog = setInterval(() => {
       if (turn.finished || turn.stopping) return;
       const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
-      const limit = toolRunning ? stallToolMs : stallMs;
+      const limit = toolRunning ? stallToolMs : turn.route?.kind === 'local' ? localStallMs : stallMs;
       // A local engine reading a long prompt sends the Harness nothing for minutes (#3623). Its /metrics progress counts as activity,
       // for at most engineGraceMs after the Harness last spoke: progress for another chat cannot keep a lost turn alive forever.
       if (turn.route?.kind === 'local' && Date.now() - turn.heard < engineGraceMs) {

@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## A local reply stops after several quiet minutes
+
+The app's agent watchdog normally stops a turn after four minutes without activity.
+Engine progress can keep a local prompt read alive, but some local servers do not
+report that progress. To allow a longer quiet interval, set `STRATA_LOCAL_STALL_MS`
+in the environment before starting the app. For example, `1800000` allows thirty
+minutes. Restart the app after changing it. The value must be a positive whole
+number of milliseconds, up to `86400000` (one day).
+
+This is opt-in. Remote-model and running-tool limits do not change, and Stop
+remains available. The allowance is an inactivity limit, not a guarantee that a
+model will finish. Leave the variable unset to keep the existing behaviour.
+
 This page is for anyone whose install or startup fails. Find your symptom below. Each entry gives one fix.
 Start from the route you installed: [desktop app or Terminal](INSTALL.md), or [source checkout](SOURCE_INSTALL.md).
 The normal release uses the app or `strata launch` and needs no `.bat` file. Detailed engine errors are in the
