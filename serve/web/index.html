@@ -137,7 +137,9 @@
         </div>
         <div class="st-card req-card">
           <div class="req-head"><span class="card-title">Recent requests</span>
-            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
+            <span class="req-actions"><a class="st-btn st-btn--secondary" id="req-monitor" href="api-monitor" target="_blank"
+              rel="noopener" hidden>API monitor</a>
+            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></span></div>
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
               <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
@@ -258,6 +260,8 @@
       <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
       <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>
     </div>
+    <a class="st-btn st-btn--secondary drawer-link" id="api-monitor-link" href="api-monitor" target="_blank"
+       rel="noopener" hidden><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Open the API monitor</a>
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>

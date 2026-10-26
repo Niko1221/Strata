@@ -404,6 +404,41 @@ class FakeEngineCase(unittest.TestCase):
         return res
 
 
+class ContextView(FakeEngineCase):
+    """The API monitor's Context view with --batch: a request alone runs on the engine's single-stream session (the
+    solo path), so that session is listed with the slots - before it was missing, and the view showed empty slots."""
+
+    REPLY = list(b"ok, done.")                        # the fake engine's reply; its end token (257) is never fed
+
+    def view(self):
+        return {e["name"]: e for e in self.svc.context_view()["slots"]}
+
+    def test_a_request_alone_is_in_the_solo_session(self):
+        self.start(2)
+        self.assertEqual(self.chat("hello")["choices"][0]["message"]["content"], "ok, done.")
+        v = self.view()
+        self.assertEqual(list(v), ["Solo session", "Slot 0", "Slot 1"])
+        solo = v["Solo session"]
+        self.assertEqual((solo["state"], solo["unknown"]), ("idle", None))
+        self.assertEqual(solo["tokens"][-len(self.REPLY):], self.REPLY)
+        self.assertTrue("".join(solo["pieces"]).endswith("ok, done."))
+        self.assertGreater(solo["used"], v["Slot 0"]["used"])
+        self.assertEqual((v["Slot 0"]["tokens"], v["Slot 1"]["tokens"]), ([], []))
+
+    def test_requests_at_once_are_in_the_slots(self):
+        self.start(2)
+        out = self._two_at_once("second one")
+        self.assertEqual((out["a"][0], out["b"][0]), ("ok", "ok"), out)
+        time.sleep(0.3)                                 # (a slot is freed at its BDONE, in the background)
+        v = self.view()
+        held = [e["tokens"] for name, e in v.items() if name.startswith("Slot")]
+        self.assertTrue(any(t and t[-len(self.REPLY):] == self.REPLY for t in held), held)
+        # every admission is read in the engine's own session first, then copied into its slot: that session holds the
+        # last admitted prompt, the start of what its slot holds now
+        solo = v["Solo session"]["tokens"]
+        self.assertTrue(solo and any(t[:len(solo)] == solo and len(t) > len(solo) for t in held), (solo, held))
+
+
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in serve/test_parallel_yield.py (this file alone ran past 100 s)."""

@@ -43,7 +43,9 @@ class MonitorOff(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=10) as r:
                 self.assertEqual(r.status, 200)
             self.assertEqual(len(svc.api_requests), 0)
-            for path in ("/api/requests", "/api-monitor"):
+            with urllib.request.urlopen(base + "/health", timeout=10) as r:
+                self.assertNotIn("api_monitor", json.loads(r.read()))   # the default answer is unchanged
+            for path in ("/api/requests", "/api-monitor", "/api/context"):
                 with self.assertRaises(urllib.error.HTTPError) as e:
                     urllib.request.urlopen(base + path, timeout=10)
                 self.assertEqual(e.exception.code, 404, path)
@@ -187,6 +189,32 @@ class Monitor(unittest.TestCase):
         self.assertLess(records[1]["load_s"], records[0]["load_s"])
         self.assertTrue(all(r["state"] == "completed" for r in records))
 
+    def test_context_of_an_engine_that_does_not_report_it(self):
+        code, body = self.request("/api/context")
+        self.assertEqual(code, 200)
+        self.assertEqual((body["available"], body["slots"]), (False, []))
+        self.assertTrue(self.request("/health")[1]["api_monitor"])
+
+    def test_context_tokens_and_their_text(self):
+        # "é" is two bytes, one token each: the first token's piece is empty, the second completes it
+        ids = [256, *"hi é".encode(), 999, 257]
+        self.engine.context_view = lambda: [{"name": "Slot 0", "slot": 0, "state": "idle", "tokens": list(ids)},
+                                            {"name": "Slot 1", "slot": 1, "state": "idle", "tokens": None}]
+        code, body = self.request("/api/context")
+        self.assertEqual(code, 200)
+        a, b = body["slots"]
+        self.assertEqual(a["tokens"], ids)
+        self.assertEqual(a["pieces"][:6], ["<|im_start|>", "h", "i", " ", "", "é"])
+        self.assertEqual(len(a["pieces"]), len(ids))
+        self.assertEqual(a["pieces"][-1], "<|im_end|>")
+        self.assertEqual(b["pieces"], None)                 # not known (a disk session was restored)
+        self.assertEqual(body["max_context"], self.svc.reported_ctx())
+
+    def test_context_needs_the_key(self):
+        self.svc.api_key = "k"
+        self.assertEqual(self.request("/api/context")[0], 401)
+        self.assertEqual(self.request("/api/context", headers={"Authorization": "Bearer k"})[0], 200)
+
     def test_page_and_relative_assets_are_served(self):
         code, html = self.request("/api-monitor")
         self.assertEqual(code, 200)
@@ -195,7 +223,107 @@ class Monitor(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("textContent", script)
         self.assertNotIn("innerHTML", script)
+        for el in ("ctx-view", "ctx-refresh", "ctx-save", "ctx-binary", "ctx-slot", "ctx-sum", "ctx-note", "ctx-pager",
+                   "ctx-prev", "ctx-next", "ctx-range"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', script)
+
+    def test_the_main_page_links_to_the_monitor(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("api-monitor-link", "req-monitor"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', js)
+        self.assertIn('href="api-monitor"', html)
         self.assertEqual(self.request("/web/../server.py")[0], 404)
+
+
+class HeldTokens(unittest.TestCase):
+    """The Context view's tokens without --batch: what the engine keeps after a GEN, from the lines it printed."""
+
+    @staticmethod
+    def bare(lines, held=(), batch=0):
+        """A StrataEngine without a process: its output lines are queued up front."""
+        import io
+        import queue
+        from types import SimpleNamespace
+        from serve.server import StrataEngine
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
+        engine.lines, engine.can_stop, engine.max_context, engine.batch = queue.Queue(), True, 4096, batch
+        engine.held, engine.held_note, engine.held_busy = list(held), None, False
+        for line in lines:
+            engine.lines.put(line)
+        return engine
+
+    def held(self, engine):
+        (slot,) = engine.context_view()
+        return slot["tokens"], slot["unknown"]
+
+    def test_the_engine_keeps_the_prompt_and_all_but_the_last_token(self):
+        engine = self.bare(["RESUME 2", "T 7", "T 8", "T 9", "DONE 3 3 1 1 stop 0 0 1"])
+        gen = engine.generate([1, 2, 3], 8, {}, threading.Event())
+        self.assertEqual(next(gen), 7)
+        self.assertEqual(engine.context_view()[0]["state"], "busy")      # live while the request runs
+        self.assertEqual(self.held(engine)[0], [1, 2, 3, 7])
+        self.assertEqual(list(gen), [8, 9])
+        self.assertEqual(engine.context_view()[0]["state"], "idle")
+        self.assertEqual(self.held(engine), ([1, 2, 3, 7, 8], None))     # 9 was printed, never fed
+
+    def test_a_stop_counts_the_tokens_decoded_after_it(self):
+        # the client stops after the first token; the engine had decoded two more before it saw the STOP
+        engine = self.bare(["T 7", "T 8", "T 9", "DONE 3 3 1 1 cancel 0 0 0"])
+        gen = engine.generate([1, 2, 3], 8, {}, threading.Event())
+        self.assertEqual(next(gen), 7)
+        gen.close()
+        self.assertIn("STOP", engine.proc.stdin.getvalue())
+        self.assertEqual(self.held(engine), ([1, 2, 3, 7, 8], None))
+
+    def test_deepseek_has_fed_every_token_it_printed_when_stopped(self):
+        engine = self.bare(["T 7", "T 8", "DONE 2 3 1 1 cancel 0 0 0"])
+        engine.stop_feeds_last = True                     # set_family("deepseek41")
+        gen = engine.generate([1, 2, 3], 8, {}, threading.Event())
+        next(gen)
+        gen.close()
+        self.assertEqual(self.held(engine), ([1, 2, 3, 7, 8], None))
+        engine = self.bare(["T 7", "T 8", "DONE 2 3 1 1 stop 0 0 0"])  # an end token: not fed, as the others
+        engine.stop_feeds_last = True
+        list(engine.generate([1, 2, 3], 8, {}, threading.Event()))
+        self.assertEqual(self.held(engine), ([1, 2, 3, 7], None))
+
+    def test_a_stop_while_the_prompt_is_read_is_not_known(self):
+        engine = self.bare(["PP 512 4096 100", "DONE 0 4096 100 0 cancel 0 0 0"])
+        cancel = threading.Event()
+        gen = engine.generate(list(range(4096)), 8, {}, cancel)
+        self.assertIsNone(next(gen))                      # a prompt chunk: a heartbeat
+        cancel.set()
+        self.assertEqual(list(gen), [])
+        self.assertEqual(self.held(engine), (None, "stopped"))
+
+    def test_an_error_leaves_the_cache_as_it_was(self):
+        engine = self.bare(["ERR bad request"], held=[5, 6])
+        with self.assertRaises(ValueError):
+            list(engine.generate([1, 2, 3], 8, {}, threading.Event()))
+        self.assertEqual(self.held(engine), ([5, 6], None))
+
+    def test_non_finite_logits_drop_it(self):
+        from serve.server import EngineNonFinite
+        engine = self.bare(["T 7", "DONE 1 3 1 1 nonfinite 0 0 0"])
+        with self.assertRaises(EngineNonFinite):
+            list(engine.generate([1, 2, 3], 8, {}, threading.Event()))
+        self.assertEqual(self.held(engine), (None, "dropped"))
+
+    def test_a_busy_batch_slot_is_shown_when_it_ends(self):
+        engine = self.bare([], held=[9], batch=2)
+        engine.slot_held, engine.slot_busy, engine.slot_used = [[1, 2], []], [False, True], [5.0, 6.0]
+        engine.slot_live = [None, {"state": "decoding"}]
+        view = [{k: e[k] for k in ("name", "state", "tokens", "unknown")} for e in engine.context_view()]
+        self.assertEqual(view, [
+            {"name": "Solo session", "state": "idle", "tokens": [9], "unknown": None},   # a request alone runs here
+            {"name": "Slot 0", "state": "idle", "tokens": [1, 2], "unknown": None},
+            {"name": "Slot 1", "state": "decoding", "tokens": None, "unknown": "busy"}])
+        engine.own_solo_session = False                   # the Qwen3.6 path: a request alone runs in a slot's session
+        self.assertEqual(engine.context_view()[0]["name"], "Last request alone (in one of the slots' sessions)")
 
 
 class ConversationCacheCard(unittest.TestCase):

@@ -1001,6 +1001,7 @@ class StrataEngine:
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
+        self.held, self.held_note, self.held_busy = [], None, False   # a new engine keeps nothing (context_view)
         self.silent_note = None
         self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
@@ -1542,12 +1543,13 @@ class StrataEngine:
         f = (getattr(self, "_last_done", None) or "").split()
         return f[5] if len(f) > 5 else None
 
-    def _drain_control(self, until: str, timeout: float = 300.0, born: int | None = None):
+    def _drain_control(self, until: str, timeout: float = 300.0, born: int | None = None, on_token=None):
         """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
         request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered).
         `born`: the engine process (self.gen) the request started on; once that one is gone there is nothing to
         drain - its end line was read already (by the request's own EngineDied), and waiting for another one held
-        a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it."""
+        a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it.
+        `on_token`: called with each `T` id read on the way (the Context view counts what the engine decoded)."""
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if born is not None and (self.gen != born or not self.alive()):
@@ -1558,6 +1560,8 @@ class StrataEngine:
                 continue
             if line is None:
                 return None
+            if on_token is not None and line.startswith("T "):
+                on_token(int(line[2:]))
             if line.startswith("DONE"):
                 self._parse_done(line)
             if line.startswith(until) or line.startswith("ERR"):
@@ -1794,6 +1798,7 @@ class StrataEngine:
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
+        solo_held, solo_prev, solo_n = None, None, 0   # the solo leg on the engine's session (until its DONE is read)
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
@@ -1810,6 +1815,9 @@ class StrataEngine:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+                    # the engine's single-stream session holds this leg (the Context view: see _settle_held)
+                    solo_prev, solo_held, solo_n = self.held, list(prompt), len(prompt)
+                    self.held, self.held_busy = solo_held, True
                     if deadline is not None:
                         cancel._strata_queue_deadline = None
                     started = getattr(cancel, "_strata_queue_started", None)
@@ -1833,7 +1841,11 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
+                    def took(t):
+                        pending.append(t)
+                        solo_held.append(t)
+
+                    for x in self._control(cancel, took, stop_when=others, on_quiet=give_way):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
@@ -1842,6 +1854,8 @@ class StrataEngine:
                             give_way()
                             yield None
                     phase = "none"                          # its DONE is read
+                    self._settle_held(solo_held, solo_n, solo_prev, "done")
+                    solo_held = None
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
@@ -1991,6 +2005,13 @@ class StrataEngine:
                         continue
                     cont = bool(self._ctl_result and self._ctl_result[1])
                     phase = "slot" if cont else "none"
+                    if self.own_solo_session:
+                        # the engine read this prompt in its own session first (BGEN is GEN 1 there): that session
+                        # now holds it, unless the read gave way or was stopped part of the way
+                        part = (self._done_finish() == "cancel" or
+                                (self._yielded is not None and self._yielded[0] == slot))
+                        self.held, self.held_note = (None, "stopped") if part else (list(prompt), None)
+                        self.held_used = time.time()
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
@@ -2064,20 +2085,25 @@ class StrataEngine:
         finally:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
+            solo_end = None                             # how a solo leg still open here ended (_settle_held)
             try:
                 if phase in ("solo", "admit") and (self.gen != born or not self.alive()):
                     phase = "none"                      # #1012: its engine is gone: nothing to stop or drain
                 if phase in ("solo", "admit") and self._ctl_erred:
-                    phase = "none"                      # #1059: it ended on the engine's ERR: no DONE to wait 300 s for
+                    phase, solo_end = "none", "err"     # #1059: it ended on the engine's ERR: no DONE to wait 300 s for
                 if phase == "solo":
                     self._send("STOP")
-                    self._drain_control("DONE", born=born)
+                    line = self._drain_control("DONE", born=born,
+                                               on_token=solo_held.append if solo_held is not None else None)
+                    solo_end = "done" if line and line.startswith("DONE") else "err" if line else None
                 elif phase == "admit":
                     line = self._drain_control("BADM", born=born)
                     if line and line.startswith("BADM ") and line.split()[2:3] == ["1"]:
                         phase = "slot"
             except EngineDied:
                 pass
+            if solo_held is not None:
+                self._settle_held(solo_held, solo_n, solo_prev, solo_end)
             bdone_in = False
             if phase == "slot" and slot is not None and out and out[-1] in EOS_IDS and self.gen == born:
                 bd = self._bdone_after_eos(slot)            # (#1869) the slot's figures, not the admission's
@@ -2168,6 +2194,37 @@ class StrataEngine:
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
                                         bool(self.slot_held[b]), self.slot_used[b]))
 
+    # the API monitor's Context view without --batch: the tokens the engine keeps for the next request (the last
+    # prompt and what it decoded, as slot_held with --batch; see _settle_held).  None: not known, held_note says why
+    held: list[int] | None = None
+    held_note: str | None = None
+    held_busy = False
+    held_used = 0.0                                     # when a request last ended on it (time.time())
+    stop_feeds_last = False                             # the DeepSeek engine's STOP: see _settle_held (set_family)
+    # --batch: the engine has a session of its own besides the slots' (src/program/generate.cpp: a request alone runs
+    # there, and every admission is read there first, then copied into its slot).  The Qwen3.6 path (src/qwen35)
+    # has none: a request alone takes one of the slots' sessions (main() sets this from the config's "arch")
+    own_solo_session = True
+
+    def context_view(self) -> list[dict]:
+        """The API monitor's Context view: the token ids each of the engine's sessions holds (None: not known on this
+        side), and when a request last ended on it.  With --batch: the engine's own session (where a request alone
+        runs, and every admission is read first), then each slot - three sessions in VRAM with --batch 2 (each sized
+        for the whole context).  On the Qwen3.6 path there is no own session (own_solo_session)."""
+        held, batch = self.held, getattr(self, "batch", 0)
+        name = "Session" if not batch else "Solo session" if self.own_solo_session else \
+            "Last request alone (in one of the slots' sessions)"
+        view = [{"name": name, "slot": None,
+                 "state": "busy" if self.held_busy else "idle", "tokens": None if held is None else list(held),
+                 "unknown": self.held_note if held is None else None, "used": self.held_used}]
+        for b in range(batch):
+            # a busy slot's list is made again when its request ends (the admission empties it)
+            live, busy = self.slot_live[b], self.slot_busy[b]
+            view.append({"name": f"Slot {b}", "slot": b, "state": live["state"] if live else "busy" if busy else "idle",
+                         "tokens": None if busy else list(self.slot_held[b]), "unknown": "busy" if busy else None,
+                         "used": self.slot_used[b]})
+        return view
+
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
         now, view = time.time(), []
@@ -2203,6 +2260,10 @@ class StrataEngine:
             self.proc.stdin.flush()
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        # every GEN sends the whole prompt, so the engine's cache then holds it and what it decodes (see _settle_held)
+        prev, held = self.held, list(ids)
+        self.held, self.held_busy = held, True
+        ended = None                                     # "done" (DONE read) or "err" (ERR read)
         done = False
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
@@ -2247,9 +2308,10 @@ class StrataEngine:
                     stall_state.clear()
                 if line.startswith("T "):
                     allow = silence
+                    held.append(int(line[2:]))
                     if cancel.is_set():
                         return
-                    yield int(line[2:])
+                    yield held[-1]
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -2270,12 +2332,12 @@ class StrataEngine:
                         pass
                 elif line.startswith("DONE"):
                     self._parse_done(line)
-                    done = True
+                    done, ended = True, "done"
                     if self.last.get("finish") == "nonfinite":   # #879
                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
                     return
                 elif line.startswith("ERR"):
-                    done = True
+                    done, ended = True, "err"
                     raise ValueError(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
@@ -2296,15 +2358,44 @@ class StrataEngine:
                             raise queue.Empty
                         line = self.lines.get(timeout=left)
                     except queue.Empty:
+                        self._settle_held(held, len(ids), prev, None)
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
-                    if line is None or line.startswith("ERR"):
+                    if line is None:
+                        break
+                    if line.startswith("ERR"):
+                        ended = "err"
                         break
                     if line.startswith("DONE"):
                         self._parse_done(line)
+                        ended = "done"
                         break
+                    if line.startswith("T "):             # decoded after the STOP: in the cache all the same
+                        held.append(int(line[2:]))
                     if not self.can_stop:
                         heard = time.monotonic()
+            self._settle_held(held, len(ids), prev, ended)
+
+    def _settle_held(self, held: list[int], n_prompt: int, prev, ended: str | None) -> None:
+        """What the engine keeps after a GEN (src/program/generate.cpp, q36, ds4): the prompt and every token it printed
+        but the last, which it never feeds - also after a STOP.  An ERR leaves the cache as it was; a STOP while the
+        prompt was read keeps a part of it or nothing; non-finite logits (#879) drop it.  ds4 (stop_feeds_last) looks at
+        a STOP before it prints the next token, so after a STOP it has fed every token it printed.  Not seen from here:
+        with drafts (MTP, lookup) an end inside a window of accepted drafts leaves those drafts fed as well."""
+        self.held_busy, self.held_used = False, time.time()
+        finish = self.last.get("finish") if ended == "done" else None
+        if ended == "err":
+            self.held = prev
+        elif ended is None:
+            self.held, self.held_note = None, "ended"
+        elif finish == "nonfinite":
+            self.held, self.held_note = None, "dropped"
+        elif len(held) == n_prompt and finish == "cancel":
+            self.held, self.held_note = None, "stopped"
+        else:
+            if len(held) > n_prompt and not (finish == "cancel" and self.stop_feeds_last):
+                held.pop()
+            self.held, self.held_note = held, None
 
     def _activity(self) -> tuple[float, int] | None:
         """#1317: (CPU seconds, I/O bytes) the engine process has used so far, or None when they cannot be read."""
@@ -2372,6 +2463,8 @@ class StrataEngine:
         that never ends is still ended."""
         if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
+        if action == "restore":
+            self.held, self.held_note = None, "restored"    # the file's tokens are not known on this side
         try:
             self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
             self.proc.stdin.flush()
@@ -3688,6 +3781,25 @@ class ByteTokenizer:
         return raw.decode("utf-8", errors=errors)
 
 
+def token_pieces(tok, ids) -> list[str]:
+    """Each token's text, so that the pieces join to the decoded text: a character split across tokens belongs to
+    the token that completes it (the others get "").  An id outside the vocabulary is shown as <?id>."""
+    raw = getattr(tok, "token_bytes", None)
+    dec = codecs.getincrementaldecoder("utf-8")("replace")
+    pieces = []
+    for t in ids:
+        try:
+            b = raw(t) if raw else tok.decode([t], errors="surrogateescape").encode("utf-8", "surrogateescape")
+        except (IndexError, KeyError):
+            pieces.append(dec.decode(b"", final=True) + f"<?{t}>")
+            continue
+        pieces.append(dec.decode(b))
+    tail = dec.decode(b"", final=True)
+    if tail and pieces:
+        pieces[-1] += tail
+    return pieces
+
+
 # ------------------------------------------------------------------------------------------------ core
 class Detokenizer:
     """Incremental decode: each token's bytes go through an incremental UTF-8 decoder, which emits the complete
@@ -3943,6 +4055,7 @@ class Service:
         self.family = family
         if family == "deepseek41":
             from serve import dsml
+            self.engine.stop_feeds_last = True               # what its cache keeps after a STOP (the Context view)
             eos = (getattr(self.tok, "special_ids", None) or {}).get("eos", 1)
             self.stop_ids = {int(eos)}
             self.parser_cls = dsml.DsmlOutputParser
@@ -4594,6 +4707,21 @@ class Service:
                      if k not in ("input", "output", "reasoning", "response") and not k.startswith("_")}
                     | {"wallclock_s": r.get("wallclock_s", round(time.perf_counter() - r["_clock"], 3))}
                     for r in reversed(records)]
+
+    def context_view(self) -> dict:
+        """GET /api/context (API monitor): the tokens each of the engine's caches holds - the last request's prompt and
+        what it decoded, as this side sent and read them - with each token's text."""
+        view = getattr(self.engine, "context_view", None)
+        if view is None or not self.loaded():
+            return {"available": False, "loaded": self.loaded(), "max_context": self.reported_ctx(), "slots": []}
+        try:
+            slots = view()
+        except (AttributeError, IndexError):             # restart() is making the engine's tables again
+            return {"available": False, "loaded": False, "max_context": self.reported_ctx(), "slots": []}
+        for s in slots:
+            ids = s["tokens"]
+            s["pieces"] = None if ids is None else token_pieces(self.tok, ids)
+        return {"available": True, "loaded": True, "max_context": self.reported_ctx(), "slots": slots}
 
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
@@ -6604,6 +6732,10 @@ def make_handler(svc: Service):
                                                         "mem_total": None, "util": None, "temp": None, "power": None})
                     self._json(200, snapshot)
                 return
+            if path == "/api/context" and svc.api_monitor:
+                if self._authorized():
+                    self._json(200, svc.context_view())
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -6637,7 +6769,8 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata"})
+                                 "loaded": svc.loaded(), "service": "strata",
+                                 **({"api_monitor": True} if svc.api_monitor else {})})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None
@@ -8448,6 +8581,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
         svc.model_arch = cfg.get("arch") or "qwen4exp"
         svc.set_family(svc.model_arch if svc.model_arch == "deepseek41" else None)
+        engine.own_solo_session = svc.model_arch != "qwen35moe"   # the Qwen3.6 path keeps no session of its own
         requested = cfg.get("parallel")
         if requested is None:
             args = cfg.get("args", [])
