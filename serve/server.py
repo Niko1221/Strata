@@ -2133,14 +2133,20 @@ class StrataEngine:
         gs = getattr(self, "slot_gs", 0)
         if gs > 1:
             # pipelined groups of several slots: the engine keeps no idle slot below a busy one as a conversation cache
-            # (its pad row writes the slot), so nothing is worth keeping free for a next turn.  A group's window spans
-            # its slots up to its last busy one, so first fill a hole below a busy slot of the same group (it costs no
-            # extra row), then follow the spreading order
+            # (its pad row writes the slot), so nothing is worth keeping free for a next turn.  The requests spread
+            # over the pipeline's groups FIRST (the group with the fewest busy slots: two requests in one group leave
+            # the other stages idle - with one slot per group per stage that is a card doing nothing), then a hole
+            # below a busy slot of that group (it costs no extra row), then the spreading order
             # (reported on #793: least-recently-used picks left leading holes, [_ B], that cost a whole row each)
+            busy_in = {}
+            for b in range(self.batch):
+                if self.slot_busy[b]:
+                    busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
             def fills_hole(b):
                 g0 = b - b % gs
                 return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
-            return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
+            return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0), not fills_hole(b),
+                                            self.slot_order.index(b)))
         def held_prefix(b):
             # what of `prompt` the slot's cache serves: the slot's whole held stream (the prompt and what it decoded)
             # when this prompt continues it, else its turn checkpoint - the engine takes one at the last <|im_start|> of
