@@ -66,10 +66,18 @@ is the same address as a function of the layout, tested without a GPU.  What sti
 `index_score`'s scan and the selection rows `sparse_attn` takes - which is the step table's work: a second sequence's
 rows are written in their own region but not yet read from it.
 
+**The state is per sequence (2026-10-26).**  `pos`, `toks`, `ctoks`, the four checkpoints and `slot_held` are one
+`State` now, `nseq` of them (`seqs`), and a pass works on `seqs[vseq]` - `state()`: the chunked prompt and the window
+path, `rollback`, `checkpoint`/`restore`/`pin`/`check_positions`, `slot_save`/`slot_load`, `park_save`/`park_load`
+and the Engram's token rows all go through it, and `Model::pos()`/`tokens()` read it.  With one sequence - `vseq` is 0
+everywhere today - every access is the member it was.  What it unlocks is the batched step switching a pass to another
+sequence's state without parking it in host memory; what it still needs is the read side of the compressed rows (the
+step table above), and `feed`/`step`/`sample` naming the sequence they work on instead of today's default.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
-reference.
+reference.  Items 1, 4's writes and 5 are in; 4's reads (the step table) are what is left.
 
 ## What a batched MoE can expect (measured, 2026-10-26)
 

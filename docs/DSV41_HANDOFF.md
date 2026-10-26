@@ -124,6 +124,14 @@ step sets it, and each source's table is allocated for `nseq` regions of `cap` r
 row 0 is the read side - `index_score`'s scan and the selection rows `sparse_attn` takes - which is the step table's
 work.
 
+The model's **state is per sequence** too now (`State`, `nseq` of them, a pass on `state() = seqs[vseq]`): the
+position, the tokens and their Engram ids, the four checkpoints and `slot_held`, through the chunked prompt, the window
+path, `rollback`, `checkpoint`/`restore`/`pin`, `slot_save`/`slot_load`, `park_save`/`park_load` and the Engram's
+token rows; `Model::pos()`/`tokens()` read it.  With `vseq` 0 everywhere - one sequence - the behaviour is the member it
+was, and the same windows are green (probe two slots, three-client HTTP check, and the NSEQ=2 pair), production restored,
+no engine ERR line.  It is what lets the batched step switch a pass to another sequence without parking it; the answers
+are only right once the read side above is in.
+
 The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
@@ -136,10 +144,9 @@ traceback, both slots decoding.
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
    `ds4_batch_plan.hpp` are the CPU half; the serve loop's `Run`s and the round robin are the place they attach.  The
-   window rings and the compressed rows' writes are in (`nseq` / `kv_base`); what is left is the model's state
-   (`pos`, `toks`, `ctoks`, the checkpoints per sequence) and the step table (`ds4_batch_attn.hpp`'s `rows`/`place`,
-   the indexer's scan and the selection rows `sparse_attn` takes) - the "M2, re-scoped" section of the design has the
-   order.
+   window rings, the compressed rows' writes and the model's state (one `State` a sequence, `state()`) are in; what is
+   left is the step table - `ds4_batch_attn.hpp`'s `rows`/`place`, the indexer's scan and the selection rows
+   `sparse_attn` takes - and `feed`/`step`/`sample` naming the sequence they work on.
 3. **Batched MoE** (M3): concatenate the routing rows of the slots and run the grouped GEMM once.
 4. **Tuning** (M5): DSpark with a batch (likely off), chunk sizes, `batch_slots` count.
 5. Decide the fate of Path B (`STRATA_BURST`): keep it as the low-cost compromise, or retire it once N slots work.
