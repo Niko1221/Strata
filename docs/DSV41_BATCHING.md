@@ -132,6 +132,7 @@ state in its own sequence (M2).
 | 8 | `--batch 8` | 14.74 s | within 1.96 s | 119 / 800 | 54.3 tok/s |
 | 10 | `--batch 10` | 18.50 s | within 2.50 s | 133 / 1000 | 54.1 tok/s |
 | 12 | `--batch 12` | 22.12 s | within 2.95 s | 167 / 1200 | 54.3 tok/s |
+| 16 | stock (no `--batch`) | 27.35 s | within 25.28 s (last: 25.93) | 15 / 1600 | 58.5 tok/s |
 | 16 | `--batch 16` | 31.08 s | within 4.15 s | 219 / 1600 | 51.5 tok/s |
 
 The two things this says:
@@ -150,6 +151,10 @@ The two things this says:
 * **The same 16 slots at a 32K context keep every expert in VRAM** (4224 of 4224, the tables 0.30 GB against 9.14 at
   1M) and score 57.2 tok/s aggregate on the same workload - so of the 62 -> 51 tok/s, the expert displacement is about
   half and the other half is what sixteen sequences' passes and cache working sets cost by themselves.
+* **At sixteen clients the stock engine's wall is not much worse** (27.35 s against 31.08) because it runs them one at
+  a time at full speed (58.5 tok/s); what it cannot do is start them together - its last client's first token comes at
+  25.93 s against 4.15 s at worst.  So the branch's honest claim at this size is *waiting*, and the aggregate only comes
+  with the single-launch step.
 
 ## Where a token's time goes (measured, 2026-10-26)
 
