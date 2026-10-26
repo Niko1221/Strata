@@ -542,3 +542,28 @@ Unsupported layouts retain their existing paths. Explicit projection overrides
 take precedence over shape selection. These options need workload-specific
 validation; enabling a control does not establish that a matching kernel ran
 or that the full request became faster.
+
+**Local B70 retest (2026-10-26).** On upstream `4b9e05a2` versus candidate
+engine source `0726ef5a`, the enabled combination above measured 64.2 to
+69.7 engine decode tok/s (+8.567%) and 64.3081 to 69.8043 client tok/s
+(+8.547%). Client TPOT fell from 15.550152 to 14.325761 ms; complete-request
+time fell from 8560.807 to 8249.458 ms (-3.637%). These are six measured
+4096-input/256-output requests per arm across both orders, on the original
+mixed Qwen3.8-Flash-Next GSQ/RCO IQ3_S model, oneAPI 2026.1 / AOT `bmg-g31`,
+INT8 KV, spec4/min-p0.5/suffix3 and prompt cache off. Both arms use existing
+`STRATA_SH_STREAM=0` and `STRATA_VERIFY_QDEDUP=1`; this is not a comparison
+against all upstream defaults. Actual allocation is 13054 expert slots and
+1536-token prefill chunks on both arms. Prefill and TTFT have no demonstrated
+gain (4568.850 to 4570.950 ms and 4594.935 to 4595.776 ms).
+
+The first candidate's default-off sign fallback regressed 64.2 to 63.8 tok/s.
+Restoring the original upstream mask expressions removed that observed
+engine-rate regression: final OFF controls measure 64.2 to 64.2 tok/s in
+both orders (client TPOT 15.549167 to 15.557827 ms pooled). Final enabled
+output hashes match upstream in 5376 kernel cases; repaired OFF repeats
+the affected 560 native/dense cases. All 24 final measured requests have
+matching output hashes and speculative work. Activations in the kernel
+checks are synthetic with real model weights; these results do not imply
+coverage of other models, GPUs or prompt lengths. Full sanitized prompt
+and harness publication remains pending; the figures are local evidence,
+not independently reproduced upstream acceptance.
