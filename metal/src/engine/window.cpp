@@ -458,6 +458,10 @@ private:
     double tp_pre_ = 0, tp_rg_ = 0;
 public:
     ~Window();
+    // Hot kernel reload (the engine control line RELOAD, generate.cpp): recompile every MSL library from the
+    // .metal files on disk (Context::recompile_all) and rebuild the pipeline caches from the new libraries.
+    // Call between requests with the GPU idle; all-or-nothing - a failed recompile leaves the engine as it is.
+    bool reload(double* ms, std::string& err);
     void prof_add(bool draft, double ms) { Prof& x = draft ? dprof_ : cprof_; ++x.n; x.all += ms; }
 private:
     // the Q8_0 copies of the hyper-connection matrices (the default; STRATA_HC_Q8=0: the BF16 originals)
@@ -2188,6 +2192,18 @@ void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     for (const auto& [m, c] : rows) std::fprintf(stderr, "strata metal kprof: %8.3f ms %5.1f%%  %s\n", m, 100.0 * m / sum, c.c_str());
 }
 
+bool Window::reload(double* ms, std::string& err) {
+    const double t0 = now_ms();
+    if (!cx_->recompile_all(err)) return false;   // the compiler's reason; every library stays as it is
+    // The cached pipelines, the encoded windows and the kernel-existence answers all point into the old
+    // libraries; drop them and rebuild them lazily from the recompiled ones (init() kept the buffers).
+    pcache_.clear(); pkey_of_.clear(); wcache_.clear(); bcache_.clear(); gemv_has_.clear();
+    psq_ = cx_->pipeline(lib_, "cut_seq");
+    psp_ = cx_->pipeline(lib_, "cut_spin");
+    *ms = now_ms() - t0;
+    return true;
+}
+
 Window::~Window() {
     if (logpos_) std::fclose(logpos_);
     if (std::getenv("STRATA_METAL_PROFILE") == nullptr) return;
@@ -3547,6 +3563,15 @@ void* window_create() {
     if (g_the_window == nullptr) g_the_window = new Window();
     return g_the_window;
 }
+
+// (this file is inside namespace strata::metal_engine already - see line 51)
+// The RELOAD control line in generate.cpp's engine loop (the server's /reload_kernels): recompiles every .metal
+// source and rebuilds the window's pipeline caches. Answers the time it took, or false with the compiler's reason.
+bool reload_kernels(double* ms, std::string& err) {
+    if (g_the_window == nullptr) { err = "the Metal window is not up"; return false; }
+    return g_the_window->reload(ms, err);
+}
+
 void window_destroy(void* w) {
     if (w != nullptr && w == g_the_window) {
         if (g_stream_window == g_the_window) {

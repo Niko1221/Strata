@@ -122,6 +122,7 @@
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
 namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+namespace strata::metal_engine { bool reload_kernels(double* ms, std::string& err); }   // hot kernel reload
 // STRATA_BATCH_VERIFY: a restored slot region's bytes vs the main window's (metal/src/engine/window.cpp)
 namespace strata::metal_engine { bool window_check_region(const strata::core::SessionState* ss, int64_t upto,
                                                           std::string& rep); }
@@ -12216,6 +12217,22 @@ int main(int argc, char** argv) {
             }
             stop_req.store(false);   // a STOP that arrived between requests is stale
             err.clear();
+            // Development: RELOAD recompiles every .metal kernel source (the MSL is compiled at run time), so a
+            // kernel edit lands without an engine restart.  Answers RELOADED <ms>, or KERR <reason> when the
+            // recompile failed or this is not the Metal engine (the engines keep their kernels and stay in step).
+            // An engine from before this command answers its usual ERR and stays in step; the server maps that.
+            if (line == "RELOAD") {
+#if defined(STRATA_GPU_METAL)
+                double rms = 0;
+                std::string rerr;
+                if (strata::metal_engine::reload_kernels(&rms, rerr)) std::printf("RELOADED %.1f\n", rms);
+                else std::printf("KERR %s\n", rerr.c_str());
+#else
+                std::printf("KERR kernel reload is implemented on the Metal engine only\n");
+#endif
+                std::fflush(stdout);
+                continue;
+            }
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
             // RESTORED <tokens> <bytes> <ms>; SERR <invalid|storage|memory|io> <published 0|1> <reason> for a refusal
@@ -12337,6 +12354,38 @@ int main(int argc, char** argv) {
                         }
                         kept = disk_checks.size();
                         const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
+#if defined(STRATA_GPU_METAL)
+                        // Disk session on Metal: the decode window's cells are in another order, so no linear
+                        // K/V source exists (conversation_kv_source refuses, as its comment says).  Capture the
+                        // host image exactly as parking does, and the image overload of session_file_write
+                        // writes the same file the streamed CUDA path would.
+                        const strata::core::QsaState* draft_disk = use_mtp ? &mtp.kv_state() : nullptr;   // park's draft0 choice
+                        size_t est = 0;
+                        if (!strata::core::conversation_snapshot_bytes(view, ss, g, draft_disk, est, err)) {
+                            refuse(err, strata::core::SessionError::io);
+                            continue;
+                        }
+                        if (!admit(est, why)) {
+                            refuse(why, strata::core::SessionError::memory);
+                            continue;
+                        }
+                        strata::core::SavedConversation image;
+                        blocking("capture", est);
+                        if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft_disk, err)) {
+                            refuse(err, strata::core::SessionError::io);
+                            continue;
+                        }
+                        capture_ms = ms();
+                        strata::core::SessionWriteOptions wo;
+                        wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
+                        wo.progress = moving;
+                        wo.phase = blocking;
+                        strata::core::SessionStatus st;
+                        if (!strata::core::session_file_write(path, image, id, bytes, err, wo, &st)) {
+                            refuse(err, st.error, st.published);
+                            continue;
+                        }
+#else
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
@@ -12356,6 +12405,7 @@ int main(int argc, char** argv) {
                             refuse(err, st.error, st.published);
                             continue;
                         }
+#endif
                         if (st.dir_flush_unsupported)
                             std::fprintf(stderr, "strata serve: session saved to %s; this filesystem cannot flush a "
                                                  "folder, so the new name is not flushed\n", path.c_str());
@@ -12369,6 +12419,11 @@ int main(int argc, char** argv) {
                     std::printf("SAVED %zu %zu %.1f\n", live.size(), bytes, ms());
                 } else {
                     strata::core::SavedConversation image;
+#if defined(STRATA_GPU_METAL)
+                    const strata::core::QsaState* draft_disk = use_mtp ? &mtp.kv_state() : nullptr;   // the save side wrote it this way
+#else
+                    const strata::core::QsaState* draft_disk = &mtp.kv_state();
+#endif
                     size_t bytes = 0;
                     try {
                         // bounds this session can ever restore (geometry, layer range, tokens, checkpoints, every
@@ -12404,7 +12459,7 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate(image, ss, g, draft_disk, err)) {
                         refuse(err);
                         continue;
                     }
@@ -12417,7 +12472,7 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore(image, ss, g, draft_disk, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again

@@ -284,6 +284,10 @@ ENGINE_SILENCE_S = 300.0
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
+# Hot kernel reload (development): the longest wait between `RELOAD` and its RELOADED/KERR answer.  The Metal
+# engine recompiles every kernel library from source (~40k lines of MSL across ~8 libraries); on a slow Mac
+# that is minutes of legitimate silence, so this is its own bound rather than engine_silence_s.
+RELOAD_WAIT_S = 600.0
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
 # PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
@@ -431,6 +435,11 @@ class SessionRefused(ValueError):
     @property
     def status(self) -> int:
         return self.STATUS[self.kind]
+
+
+class KernelReloadFailed(RuntimeError):
+    """Hot kernel reload (development): the engine could not recompile its MSL sources and kept the kernels it
+    had (`KERR <reason>`).  The engine is still in step; nothing needs a restart, fix the source and reload."""
 
 
 class EngineStuck(RuntimeError):
@@ -2478,6 +2487,58 @@ class StrataEngine:
                 continue
             raise out_of_step(line)
 
+    def reload_kernels(self) -> dict:
+        """Development: hot kernel reload (`RELOAD` between requests; the caller holds the service FIFO).  The
+        Metal engine recompiles every .metal source and rebuilds its pipeline caches -> {"ms": <float>}.  A
+        ValueError when the engine predates the command (its usual `ERR expected: GEN` answer: both sides stay
+        in step, the kernels just stay as they are); KernelReloadFailed when the recompile failed (`KERR
+        <reason>`: the engine kept its kernels, nothing needs a restart); EngineDied when it ended (during the
+        recompile, or answering a line this exchange does not allow); EngineSilent when it said nothing for
+        RELOAD_WAIT_S.  INFO/WARN log lines may interleave; they are not answers."""
+        try:
+            self.proc.stdin.write("RELOAD\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + RELOAD_WAIT_S
+
+        def died(line: str) -> EngineDied:
+            self.ended = True                               # not alive from now: the next request restarts it
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=20)
+            except (OSError, AttributeError, subprocess.TimeoutExpired):
+                pass
+            return EngineDied(f"the engine answered RELOAD with {line.strip()[:200]!r}; the server ended the engine")
+
+        while True:
+            left = deadline - time.monotonic()
+            try:
+                line = self.lines.get(timeout=left if left > 0 else 0.001)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {RELOAD_WAIT_S:.0f} s during a kernel reload") from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            f = line.split()
+            head = f[0] if f else ""
+            if head in ("INFO", "WARN"):
+                continue
+            if head == "RELOADED":
+                try:
+                    if len(f) != 2:
+                        raise ValueError
+                    ms = float(f[1])
+                    if not math.isfinite(ms) or ms < 0:
+                        raise ValueError
+                except ValueError:
+                    raise died(line) from None
+                return {"ms": ms}
+            if head == "KERR":
+                raise KernelReloadFailed(line.rstrip("\r\n")[4:].strip() or "the engine did not say why")
+            if head == "ERR":                               # an engine from before RELOAD: in step, just unsure
+                raise ValueError(f"this engine does not understand RELOAD (it answered {line.strip()[:120]!r})")
+            raise died(line)
+
     def close(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while; ENGINE_QUIT_WAIT_S), then terminate (ENGINE_TERM_WAIT_S), then kill (ENGINE_KILL_WAIT_S).  Raises
@@ -4142,6 +4203,37 @@ class Service:
                          "timings": {"save_ms": r["ms"]}}
         return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
                      "timings": {"restore_ms": r["ms"]}}
+
+    def reload_kernels(self) -> tuple[int, dict]:
+        """Development: hot kernel reload, the engine's MSL recompiled from the sources on disk.  Between
+        requests, holding the service FIFO (as the session files do).  -> (HTTP status, body): 501 when this
+        engine or transport does not know the command, 500 with the compiler's reason when the recompile
+        failed (the engine kept its kernels), 200 with the time when the new kernels are live."""
+        def error(code, message):
+            return code, {"error": {"code": code, "message": message,
+                                    "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if not hasattr(self.engine, "reload_kernels"):
+            return error(501, "this server's engine transport does not support kernel reload")
+        if getattr(self.engine, "batch", 0):
+            return error(501, "kernel reload is not available with parallel requests (\"parallel\" / --batch)")
+        self.last_request_at = time.time()
+        with self.fifo:
+            if not self.loaded():
+                return error(503, "the model is not loaded")
+            with self.status_lock:
+                self.status.update(busy=True, phase="recompiling the kernels", started=time.time(),
+                                   first_token=None, prompt_tokens=None, generated=None, max_tokens=None)
+            try:
+                r = self.engine.reload_kernels()
+            except KernelReloadFailed as e:
+                return error(500, f"the recompile failed; the old kernels are still in use: {e}")
+            except ValueError as e:                         # the engine predates RELOAD: it stayed in step
+                return error(501, str(e))
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+        return 200, {"status": "reloaded", "timings": {"reload_ms": r["ms"]}}
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -6763,10 +6855,11 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
-            if path in ("/unload", "/load") and not self._control_body():
+            if path in ("/unload", "/load", "/reload_kernels") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
-            if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
+            if path in ("/unload", "/load", "/reload_kernels") and not self._own_page(
+                    "the model can be loaded, unloaded, or its kernels reloaded"):
                 return
             # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
             if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
@@ -6789,6 +6882,14 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                return
+            if path == "/reload_kernels":                  # development: recompile the MSL, keep the conversation
+                try:
+                    code, body = svc.reload_kernels()
+                except EngineDied as e:                     # EngineSilent included: the engine was ended
+                    code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
+                                                 "the engine again", "type": "server_error"}}
+                self._json(code, body)
                 return
             reserved = False
             try:
