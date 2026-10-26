@@ -1,0 +1,110 @@
+[
+ {
+  "length": "32k",
+  "depth": 10,
+  "prompt_tokens": 31643,
+  "seconds": 21.5,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "32k",
+  "depth": 50,
+  "prompt_tokens": 31643,
+  "seconds": 20.5,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ },
+ {
+  "length": "32k",
+  "depth": 90,
+  "prompt_tokens": 31644,
+  "seconds": 20.5,
+  "found": true,
+  "word": "willow-cobalt-696",
+  "answer": "willow-cobalt-696"
+ },
+ {
+  "length": "128k",
+  "depth": 10,
+  "prompt_tokens": 125871,
+  "seconds": 92.7,
+  "found": true,
+  "word": "falcon-saffron-138",
+  "answer": "falcon-saffron-138"
+ },
+ {
+  "length": "128k",
+  "depth": 50,
+  "prompt_tokens": 125869,
+  "seconds": 84.6,
+  "found": true,
+  "word": "quartz-tundra-528",
+  "answer": "quartz-tundra-528"
+ },
+ {
+  "length": "128k",
+  "depth": 90,
+  "prompt_tokens": 125869,
+  "seconds": 51.9,
+  "found": true,
+  "word": "quartz-glacier-192",
+  "answer": "quartz-glacier-192"
+ },
+ {
+  "length": "250k",
+  "depth": 10,
+  "prompt_tokens": 242114,
+  "seconds": 202.0,
+  "found": true,
+  "word": "tundra-falcon-946",
+  "answer": "tundra-falcon-946"
+ },
+ {
+  "length": "250k",
+  "depth": 50,
+  "prompt_tokens": 242114,
+  "seconds": 145.8,
+  "found": true,
+  "word": "willow-glacier-745",
+  "answer": "willow-glacier-745"
+ },
+ {
+  "length": "250k",
+  "depth": 90,
+  "prompt_tokens": 242115,
+  "seconds": 144.6,
+  "found": true,
+  "word": "falcon-juniper-150",
+  "answer": "falcon-juniper-150"
+ },
+ {
+  "length": "262k",
+  "depth": 10,
+  "prompt_tokens": 254774,
+  "seconds": 216.6,
+  "found": true,
+  "word": "glacier-falcon-670",
+  "answer": "glacier-falcon-670"
+ },
+ {
+  "length": "262k",
+  "depth": 50,
+  "prompt_tokens": 254775,
+  "seconds": 216.8,
+  "found": true,
+  "word": "copper-lantern-529",
+  "answer": "copper-lantern-529"
+ },
+ {
+  "length": "262k",
+  "depth": 90,
+  "prompt_tokens": 254774,
+  "seconds": 217.8,
+  "found": true,
+  "word": "copper-willow-684",
+  "answer": "copper-willow-684"
+ }
+]
