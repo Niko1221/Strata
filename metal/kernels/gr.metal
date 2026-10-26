@@ -177,3 +177,24 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
 GRD(8, 8) GRD(8, 4) GRD(4, 4) GRD(4, 2) GRD(16, 16) GRD(16, 8)
 template [[host_name("gr_up")]] kernel decltype(gr_up_f<T_BF16>) gr_up_f<T_BF16>;
 template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8_0>;
+
+// debug capture (window.cpp's cap_fold, STRATA_BATCH_VERIFY): the per-row sums of R after every fold.
+// grid(ntok), 256 threads: out[t] = sum_d R[t * hc * n + d]
+kernel void fold_sum(device const float* R [[buffer(0)]], device float* out [[buffer(1)]],
+                     constant GrArgs& a [[buffer(2)]], uint tg [[threadgroup_position_in_grid]],
+                     ushort tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float part[8];
+    const uint hn = a.hc * a.n_embd;
+    device const float* r = R + tg * hn;
+    float ss = 0.0f;
+    for (uint d = tid; d < hn; d += 256) ss += r[d];
+    ss = simd_sum(ss);
+    if (lane == 0) part[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float tot = 0.0f;
+        for (int i = 0; i < 8; ++i) tot += part[i];
+        out[tg] = tot;
+    }
+}
