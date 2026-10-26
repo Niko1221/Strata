@@ -162,16 +162,22 @@ The same questions on the Qwen path (`strata`, the ISTA-DASLab IQ2_XS pack, 69 G
 several requests in one window (`"parallel": N`, `--batch N`): nothing in this branch touches it, and the measurements
 say both that it runs normally on this tree and what its own batching is worth as a reference.
 
-| context | parallel | clients | wall | first tokens within | handovers | aggregate |
-|---|---:|---:|---:|---:|---:|---:|
-| 32K, `--kv int8` | 1 | 3 | 12.02 s | 8.24 s | 2 / 300 | 25.0 tok/s (cold cache) |
-| 32K, `--kv int8` | 4 | 4 | 8.77 s | 1.72 s | 377 / 400 | 45.6 tok/s |
-| 1M, `--kv q4_0` | 1 | 3 | 5.99 s | 3.99 s | 2 / 300 | 50.1 tok/s |
-| 1M, `--kv q4_0` | 4 | 4 | 12.92 s | 8.96 s | 269 / 400 | 31.0 tok/s (expert cache 68-78%) |
+| context | parallel | clients | max_tokens asked | wall | first tokens within | handovers | aggregate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 32K, `--kv int8` | 1 | 3 | 256K | 12.02 s | 8.24 s | 2 / 300 | 25.0 tok/s (cold cache) |
+| 32K, `--kv int8` | 4 | 4 | 256K | 8.77 s | 1.72 s | 377 / 400 | 45.6 tok/s (1.8x) |
+| **256K, `--kv int8`** | **1** | **3** | **128K** | **4.11 s** | **2.87 s** | **2 / 300** | **73.0 tok/s** |
+| **256K, `--kv int8`** | **4** | **4** | **128K** | **7.78 s** | **1.87 s** | **364 / 400** | **51.4 tok/s** (cache 96%) |
+| **256K, `--kv int8`** | **8** | **8** | **128K** | **20.69 s** | **6.11 s** | **769 / 800** | **38.7 tok/s** (cache 84%) |
+| 1M, `--kv q4_0` | 1 | 3 | 256K | 5.99 s | 3.99 s | 2 / 300 | 50.1 tok/s |
+| 1M, `--kv q4_0` | 4 | 4 | 256K | 12.92 s | 8.96 s | 269 / 400 | 31.0 tok/s (cache 68-78%) |
 
 Qwen's own batching at a chat context is a real aggregate win (45.6 against 25.0 tok/s at four requests, and 377
 handovers against 2) where the dsv41 slots are still one pass each - that is what M2's single-launch step and M3 would
-buy, and the reference this branch is measured against.  At 1M context it needs the KV at `q4_0` (with `--kv int8`, 45 KB
+buy, and the reference this branch is measured against.  At the 256K context with 128K asked, four requests are the
+sweet spot (51.4 tok/s, first tokens within 1.87 s) and eight cost (38.7 tok/s, 6.11 s), while one at a time keeps the
+highest aggregate (73.0 tok/s) at the price of the queue - the expert cache goes from 96 % at four slots to 84 % at
+eight, which is where the aggregate goes.  At 1M context it needs the KV at `q4_0` (with `--kv int8`, 45 KB
 a token, the 1M-token KV leaves no VRAM for its expert tier and the engine refuses), and there the four slots *cost*
 aggregate (31.0 against 50.1 tok/s) because the KV leaves the expert cache at a 68-78 % hit rate - the same trade this
 branch's 1M-context numbers show.  The first case after a load pays the pack's cold reads through the file cache (the 32K

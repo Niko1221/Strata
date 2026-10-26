@@ -173,12 +173,15 @@ comes from.  Capping a slot's context (the design's 32K) is the lever that would
 
 **Qwen3.8-Flash-Next on the same box (2026-10-27).**  The other model family (`strata`, ISTA-DASLab IQ2_XS, 69 GB)
 runs normally on this tree - nothing here touches it - and its own batching is the reference this branch is measured
-against.  At a 32K context, three clients at `parallel 1` ran serialized (wall 12.02 s, first tokens within 8.24 s, 2
-handovers, 25.0 tok/s) and four at `parallel 4` together (wall 8.77 s, first tokens within 1.72 s, 377 handovers, 45.6
-tok/s - 1.8x).  At a 1M context the engine needs `--kv q4_0` (with int8 the 1M-token KV leaves no VRAM for its expert
-tier and the engine refuses): there `parallel 1` took 5.99 s for three clients (50.1 tok/s) and `parallel 4` 12.92 s for
-four (31.0 tok/s, the expert cache down to a 68-78 % hit rate) - the same trade the dsv41 slots show at 1M.  The first
-case after a load pays the pack's cold reads, so its single-request rates are the low ones.
+against.  **At the 256K context with 128K max_tokens** (the comparison asked for): `parallel 1` with three clients took
+4.11 s of wall (first tokens within 2.87 s, 2 handovers over 300 tokens, 73.0 tok/s aggregate - the queue is what it
+costs), `parallel 4` with four 7.78 s (first tokens within 1.87 s, 364 handovers, 51.4 tok/s, the expert cache at 96 %),
+and `parallel 8` with eight 20.69 s (first tokens within 6.11 s, 769 handovers, 38.7 tok/s, the cache at 84 %) - four is
+the sweet spot there, and past it the KV's room comes out of the experts.  The controls: at a 32K context the same
+batching is a real aggregate win (25.0 -> 45.6 tok/s, 1.8x, 377 handovers against 2); at 1M the engine needs
+`--kv q4_0` (int8's 1M-token KV leaves no VRAM for its expert tier and it refuses), where `parallel 1` took 5.99 s for
+three clients (50.1 tok/s) and `parallel 4` 12.92 s for four (31.0 tok/s, cache 68-78 %).  The first case after a load
+pays the pack's cold reads, so its single-request rates are the low ones.
 
 ## Next, in order
 
