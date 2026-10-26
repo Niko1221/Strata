@@ -40,6 +40,10 @@ Between two slices the read now shares the engine with the slots that decode (it
 about half the slice's time, the state is loaded back): the short request's whole answer took 2.59 s instead of 5.70 s
 (with neither mechanism) and 5.98 s (with the yield alone), and it finishes while the long prompt is still reading.
 
+Then three slots (20:12-20:19, `--slots 3`): the probe sends three admissions at once, every slot's tokens equal the GEN of
+its own prompt, all three BADM/BDONE lines are right and the BT lines take turns; through the server with `--batch 3`
+the three-client check is green, the engine's trace shows slots 0, 1 and 2 decoding, mean switch 4.99 ms.
+
 Then the two-slot version, same day (18:17-18:24, `--batch 2 --slot-burst 8`): the probe's two admissions at once - each
 slot's tokens equal its GEN reference and their BT lines interleave (`0001110000111100001111`); over HTTP three clients
 interleave their answer tokens (8 handovers over 47 tokens, 2 with one slot) and the reference prompt admitted through
