@@ -217,8 +217,10 @@ so the slots never wait for the read and the read is one run with no drain insid
 - Off, said once, where the read's thread would allocate or free (`STRATA_PREFILL_HELP=1`, `STRATA_SPLIT_MTP_BATCH=1`),
   where serving a doorbell makes a CUDA call (`--pcie-mode dma`, `STRATA_FS_SLOTS`, the helper caches
   `--expert-cache-device1..3`), and with an expert source that hands out buffers it recycles (the GGUF in place, an
-  unbuffered source, `STRATA_IO_PREFETCH`): the experts come from the RAM arena or the mapped file. A prompt with
-  pictures is read the usual way.
+  unbuffered source, `STRATA_IO_PREFETCH`): the experts come from the RAM arena or the mapped file.
+- A prompt with pictures is read this way too. Its picture rows go up through the same pinned slots, in runs of at most
+  4 MiB, and the slots are grown to that before the read. It does not give way to a shorter request (as before), so a
+  `BYIELD` does not stop its run. `STRATA_PIPED_CONCURRENT_PICTURES=0` reads it the usual way.
 
 One log line per read (`strata batch: read N tokens on a thread of its own in X ms (concurrent, to Q of T); the slots
 decoded R rows meanwhile (S rows/s; stage k: W windows, H ms host each)`). Built for CUDA and HIP (HIP keeps the default
