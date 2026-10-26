@@ -142,3 +142,22 @@ Implementation sketch (not started): the serve loop keeps a `BurstQueue` of admi
 calls `slot_save` into a `std::vector<uint8_t>` keyed by request id, pops the next request, `slot_load`s it, and
 continues streaming `T` lines for that request. The scheduler and the KV block tables in this branch are not
 needed for it; they belong to the real batching path.
+
+## B2 integration points (server side, no engine change)
+
+`serve/server.py` already loops over generation passes in `Service.run()` (`while True:` near line 5251): each pass
+calls `self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb)` (line ~5262) and the loop
+continues with a new `prompt` for reasoning recovery and tool calls.  A chunked pass needs three small things
+there, behind an env flag (`STRATA_BURST`, 0 = off, default):
+
+1. cap the pass: `per_pass = min(max_new - n, burst)` and pass that to `generate()`;
+2. when a pass ends with the model still going (no stop token, no recovery, no tool call), continue the outer
+   loop with `prompt = ids + raw_ids` - the continuation the engine reuses (it skips the shared prefix);
+3. between passes the FIFO is released, so another request takes the engine: that is the interleaving.
+
+Accounting that must not move: `n` (tokens in this reply), `raw_ids` (every id the model wrote), `segments`
+(one entry per pass, used by the DONE statistics) and `first_engine_token_s`.  A chunk boundary is invisible to
+the client: the same `T` lines stream out, only later.
+
+Harness: `python -m serve.server --engine mock --port 8099` runs the whole server with a scripted engine and no
+GPU, so two concurrent clients can prove the interleaving without touching the production model.
