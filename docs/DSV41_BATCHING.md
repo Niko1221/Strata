@@ -250,6 +250,25 @@ aggregate (31.0 against 50.1 tok/s) because the KV leaves the expert cache at a 
 branch's 1M-context numbers show.  The first case after a load pays the pack's cold reads through the file cache (the 32K
 parallel-1 rates above), which is why the single-request numbers of the first case are lower than the later ones.
 
+### The batch's geometry, computed (M5, measured 2026-10-27)
+
+The engine reports what a batch costs on the model and the cards it was loaded on, from the pack's own geometry and the
+cards' measured memory - nothing in it is a constant of a model or a box.  A sequence's tables are the sources' `cap` rows
+of their two rows' bytes (`win`, the head dims and the ratios come from the pack); the room is `cudaMemGetInfo` after
+the load; the count is what half that room allows on top of the sequences in place; the experts are what the cards
+actually hold.  Same build, this box, `--batch 16`:
+
+| context | a sequence's tables | room after the load | more slots at half the room | experts in VRAM |
+|---|---:|---:|---:|---:|
+| 8K | 8 MB | 17.4 GB | +1154 (a memory bound only) | 15360 / 15360 |
+| 1M | 965 MB | 9.75 GB | +5 (22 in all) | 13190 / 15360 |
+
+The 1M row is the policy the sixteen-slot runs asked for: each sequence's tables cost ~1 GB, the seventeen in place cost
+~16 GB of the experts' room, and only about five more fit before the cards are full - so a slot count should be chosen
+from this number (and from what the switch costs, which is the burst's tuning), not from a flag written by hand.  The
+count is a memory bound: the protocol's slots and the scheduler bound it too, and at a chat context the memory is not what
+limits it.
+
 ## Where a token's time goes (measured, 2026-10-26)
 
 Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at

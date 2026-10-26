@@ -9817,6 +9817,32 @@ struct Model::Impl {
         if (!ok || !os::replace_file(tmp, o.profile)) std::remove(tmp.c_str());
     }
 
+    // M5, measured: what a batch's geometry costs on this model and these cards - a sequence's tables (the arena the
+    // sources' rows are allocated from, divided by the sequences it was sized for), the room the cards have left after
+    // everything, and the count those two numbers allow at a share of that room.  Nothing here is a model's or a box's
+    // constant: win, hd, the ratios and the cards' memory are read, the rest follows.
+    struct BatchPlan {
+        size_t per_seq = 0;      // bytes a sequence's tables take, summed over the cards
+        size_t room = 0;         // free bytes on the cards after the load
+        int fit_half = 0;        // sequences the free room allows at half of it
+        int experts = 0, in_vram = 0;
+    };
+    BatchPlan batch_plan() const {
+        BatchPlan p;
+        for (size_t di = 0; di < devs.size(); ++di) {
+            size_t f = 0, t = 0;
+            cudaSetDevice(devs[di].id);
+            if (cudaMemGetInfo(&f, &t) == cudaSuccess) p.room += f;
+        }
+        // a sequence's tables, from the geometry the pack gives: each source's region is `cap` rows of its two rows' bytes
+        for (const Src& s : srcs) p.per_seq += (size_t) s.cap * (ckv_rb() + ik_rb());
+        for (const Layer& l : L) {
+            p.experts += l.mtp ? 0 : l.n_exp;
+            p.in_vram += l.mtp ? 0 : l.n_vram;
+        }
+        p.fit_half = p.per_seq > 0 ? nseq + (int) ((p.room / 2) / p.per_seq) : nseq;
+        return p;
+    }
     std::vector<std::string> info_lines() const {
         std::vector<std::string> v;
         int nh = 0;
@@ -9827,6 +9853,15 @@ struct Model::Impl {
                                    "cpu_experts=%d ram_experts=%d engine=ds4-0.1",
                       (long long) o.max_context, (long long) o.max_context, g.nl * g.n_exp - nh, nh, ram_held);
         v.push_back(b);
+        {
+            // the batch's geometry, measured (M5): what a sequence's tables cost here, what room is left, what fits
+            const BatchPlan bp = batch_plan();
+            std::snprintf(b, sizeof b,
+                          "INFO batch_nseq=%d batch_table_mb_per_seq=%.0f batch_room_mb=%.0f batch_fit_half=%d "
+                          "batch_experts=%d batch_experts_vram=%d",
+                          nseq, (double) bp.per_seq / 1e6, (double) bp.room / 1e6, bp.fit_half, bp.experts, bp.in_vram);
+            v.push_back(b);
+        }
         if (commit_kept > 0) {   // (Windows, an integrated GPU: the commit kept experts off the GPU - the server says so)
             std::snprintf(b, sizeof b,
                           "NOTE experts: %.0f GB stay off the GPU - Windows' page file is too small to hold them there; "
