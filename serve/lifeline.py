@@ -179,6 +179,8 @@ def _start_token(pid: int) -> str:
 
 
 def _watch(child: subprocess.Popen) -> None:
+    if not isinstance(child, _REAL_POPEN) or getattr(child, "pid", None) is None:
+        return
     try:
         watcher = subprocess.Popen([sys.executable, "-S", "-c", _WATCHER, str(child.pid), _start_token(child.pid)],
                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

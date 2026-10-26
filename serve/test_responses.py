@@ -276,27 +276,18 @@ class NoLeakedSampler(unittest.TestCase):
     running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings."""
 
     def test_server_close_ends_the_sampler(self):
-        import threading
         import time
         tok = ByteTokenizer()
-
-        def samplers() -> set:
-            # By identity, not by count: another test's sampler can finish (or start) between the two
-            # readings, which made the old `count == before + 1` assertion fail as "1 != 2" with nothing
-            # wrong - seen in CI on this file, twice in a row, and never reproduced standalone.
-            return {t.ident for t in threading.enumerate() if t.name.endswith("(_loop)")}
-
-        before = samplers()
         httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
-        mine = samplers() - before
-        self.assertEqual(len(mine), 1, "the server did not start its hardware sampler")
+        sampler = getattr(getattr(httpd, "svc", None), "telemetry", None)
+        self.assertIsNotNone(sampler, "the server did not initialize telemetry")
+        thread = getattr(sampler, "_thread", None)
+        self.assertIsNotNone(thread, "the server did not start its hardware sampler thread")
+        self.assertTrue(thread.is_alive(), "the hardware sampler thread died immediately")
         httpd.shutdown()
         httpd.server_close()
-        for _ in range(50):
-            if not (mine & samplers()):
-                break
-            time.sleep(0.1)
-        self.assertFalse(mine & samplers(), "a stopped server left its hardware sampler running")
+        thread.join(timeout=5.0)
+        self.assertFalse(thread.is_alive(), "a stopped server left its hardware sampler running")
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP

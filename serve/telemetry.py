@@ -581,7 +581,8 @@ class Telemetry:
         }
         self._disk_prev = None
         self._stop = threading.Event()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
 
     def _disk(self):
         if not self.ps:
