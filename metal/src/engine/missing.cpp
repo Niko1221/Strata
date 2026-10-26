@@ -31,6 +31,7 @@ void missing(const char* name) {
 
 // ---- entry points the shared host loop asks every request, with nothing to do on Metal yet
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/fused_gr.hpp"
 namespace strata::kernels {
 // no control vector on Metal (--control-vector-scaled is not ported): the empty one, `loaded()` false
 const Cvec& cvec() {
@@ -39,12 +40,20 @@ const Cvec& cvec() {
 }
 }  // namespace strata::kernels
 
+// the hyper-connection persist read (STRATA_HC_PERSIST) is a CUDA/HIP kernel: on Metal every read takes the
+// default path, so these are the same no-ops src/kernels/cuda/fused_gr.cu compiles for non-CUDA translation units.
+namespace strata::kernels {
+void fused_gr_persist_init() {}
+bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
+}  // namespace strata::kernels
+
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
 // lldb needs a debugging permission a user's session may not have)
 #include <csignal>
 #include <signal.h>
 #include <execinfo.h>
 #include <exception>
+#include <sys/ucontext.h>
 #include <unistd.h>
 namespace {
 [[noreturn]] void metal_terminate() {
@@ -57,12 +66,20 @@ namespace {
 }
 const bool g_terminate_set = (std::set_terminate(metal_terminate), true);
 // a crash (SIGSEGV / SIGBUS) prints its call stack too: macOS keeps no report for a command-line process by default
-void metal_crash(int sig, siginfo_t* si, void*) {
+void metal_crash(int sig, siginfo_t* si, void* uc) {
     void* fr[64];
     const int n = backtrace(fr, 64);
-    char msg[160];
-    const int m = std::snprintf(msg, sizeof msg, "strata metal: crashed (signal %d at address %p) - the call stack:\n", sig,
-                                si ? si->si_addr : nullptr);
+    char msg[640];
+    const auto* ss = uc ? &((const ucontext_t*) uc)->uc_mcontext->__ss : nullptr;
+    const int m = std::snprintf(msg, sizeof msg,
+                                "strata metal: crashed (signal %d code %d at address %p) pc %p x0 %p x1 %p x2 %p x8 %p x19 %p x21 %p x22 %p x23 %p x24 %p x25 %p x26 %p - the call stack:\n",
+                                sig, si ? si->si_code : 0, si ? si->si_addr : nullptr,
+                                ss ? (void*) ss->__pc : nullptr, ss ? (void*) ss->__x[0] : nullptr,
+                                ss ? (void*) ss->__x[1] : nullptr, ss ? (void*) ss->__x[2] : nullptr,
+                                ss ? (void*) ss->__x[8] : nullptr, ss ? (void*) ss->__x[19] : nullptr,
+                                ss ? (void*) ss->__x[21] : nullptr, ss ? (void*) ss->__x[22] : nullptr,
+                                ss ? (void*) ss->__x[23] : nullptr, ss ? (void*) ss->__x[24] : nullptr,
+                                ss ? (void*) ss->__x[25] : nullptr, ss ? (void*) ss->__x[26] : nullptr);
     (void) !write(2, msg, (size_t) m);
     backtrace_symbols_fd(fr, n, 2);
     signal(sig, SIG_DFL);
@@ -74,6 +91,7 @@ bool set_crash() {
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGTRAP, &sa, nullptr);   // libmalloc's integrity trips and __builtin_trap land here
     return true;
 }
 const bool g_crash_set = set_crash();

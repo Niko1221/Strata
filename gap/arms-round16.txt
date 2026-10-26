@@ -1,0 +1,17 @@
+# round 16: is the decode window SSD read-bound? dispatch_lat (standalone, server up): a memory barrier costs
+# ~3 us (1100/window = 3.3 ms of 90) and an ICB dispatch 0.09 us - barriers and dispatch count are dead as
+# explanations. The stream log says 679.5 MB read from SSD per T2 window (28391 reads) at ~7.3 GB/s = ~93 ms -
+# the whole window - while only ~26 MB is misses; the rest is read-ahead (top 6 = STRATA_METAL_PREFETCH).
+# Interleaved D,X,D,X,D to fight round 15's +25% position drift; each arm prints its own MB/window.
+# PREFETCH2=10 adds layer l+2's top-10 (more waste if SSD-bound, fewer misses if latency-bound).
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round16.txt 2>&1 | tee /tmp/round16.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+K3_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=3|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+K0_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=0|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+K12_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+Q2_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH2=10|t357.txt|128|40960|
+D_p5|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

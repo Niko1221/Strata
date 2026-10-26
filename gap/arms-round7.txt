@@ -1,0 +1,8 @@
+# round 7: MoE path showdown, real runs @262144, interleaved anchors (CTAB on everywhere)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+A_pp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t2048.txt|2|262144|
+M_pp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|
+V_pp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_EXPERTS=v3|t2048.txt|2|262144|
+T_pp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|262144|
+A_pp2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1|t2048.txt|2|262144|
+M_pp2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|262144|

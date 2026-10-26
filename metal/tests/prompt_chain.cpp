@@ -45,7 +45,7 @@ struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane;
 struct GdnPArgs { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
-struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff, ebase, ecount; };
 struct ArgArgs { uint32_t n_vocab, parts; };
 
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
@@ -88,7 +88,11 @@ int main(int argc, char** argv) {
         for (size_t o = 0; o < f.file_bytes; o += 16384) s += ((const uint8_t*)f.map)[o];
         std::printf("file touched in %.1f s\n", mtl::now_s() - t0);
     }
-    mtl::Buffer W = cx.wrap(f.map, f.map_bytes);
+    // a file past the device's maxBufferLength wraps as overlapping chunks, each holding any tensor's full
+    // range (Context::wrap), the way the engine's weight files do; a 47 GB shard on a 64 GB M1 Max needs it
+    uint64_t max_bytes = 0;
+    for (const auto& t : f.tensors) max_bytes = std::max(max_bytes, t.second.bytes);
+    mtl::Buffer W = cx.wrap(f.map, f.map_bytes, (size_t)max_bytes);
     auto T_ = [&](const std::string& name) -> const gguf::Tensor& {
         const gguf::Tensor* t = f.find(name);
         if (!t) { std::fprintf(stderr, "missing tensor %s\n", name.c_str()); std::exit(2); }
@@ -153,7 +157,7 @@ int main(int argc, char** argv) {
                 qcur = F32(MT * 24 * 256), qcurh = F16(MT * 24 * 256), qidx = F32(MT * 4 * 128), scores = F32(MT * MB), qids = cx.alloc(4 * MT * QB),
                 part = F32(MT * QCHUNKS * 24 * 258), XQ = F32(4 * MT * 6144 + MT * 384), xqh = F16(MT * 6144);
     mtl::Buffer logits = F32(MT * NEXP), ids = cx.alloc(4 * MT * TOPK), wts = F32(MT * TOPK),
-                bcnt = cx.alloc(4 * (size_t)nblk_max * NEXP), boff = cx.alloc(4 * (size_t)nblk_max * NEXP), eoff = cx.alloc(4 * NEXP),
+                bcnt = cx.alloc(4 * (size_t)nblk_max * NEXP), boff = cx.alloc(4 * (size_t)nblk_max * NEXP), eoff = cx.alloc(4 * (NEXP + 1)),
                 tiles = cx.alloc(8 * (size_t)(maxrows / TM + 1)), meta = cx.alloc(64), stok = cx.alloc(4 * (size_t)maxrows),
                 sw = F32(maxrows), pos = cx.alloc(4 * MT * TOPK), XS = F16((size_t)maxrows * N), HS = F16((size_t)maxrows * NFF),
                 YE = F32((size_t)maxrows * N), yr = F32(MT * N), gsh = F32(MT * NFF), ush = F32(MT * NFF), hh = F16(MT * NFF),
@@ -325,7 +329,7 @@ int main(int argc, char** argv) {
                   {mtl::Arg::B(gst[gi]), mtl::Arg::B(ghist[par][gi]), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                    mtl::Arg::B(z), mtl::Arg::B(W, T_(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T_(b + "ssm_dt.bias").offset),
                    mtl::Arg::B(W, T_(b + "ssm_a").offset), mtl::Arg::B(W, T_(b + "ssm_norm.weight").offset), mtl::Arg::B(yg),
-                   mtl::Arg::V(a), mtl::Arg::B(ghist[1 - par][gi])},
+                   mtl::Arg::V(a), mtl::Arg::B(ghist[1 - par][gi]), mtl::Arg::B(yg)},
                   48, 1, 512, "gdn scan");
                 act16(yg, ygh, (size_t)T * 6144, "gdn proj");
                 gemm(ygh, Wout, bo, T, N, 6144, "gdn proj");

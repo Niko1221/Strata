@@ -1,0 +1,15 @@
+# round 17: the 40 ms gap lives in the STREAM pipeline. Round 16 closed the SSD-readahead theory (PREFETCH=0
+# still reads 683 MB/window - not ahead bytes - and time/misses/bytes don't track). Warm kprof's 48.35 ms busy
+# sum was a STREAM=0 window; PROFILE's 84-93 ms is STREAM=1. So run the real window at STREAM=0 (the arm env
+# lands after gap.sh's fixed env, so it overrides) and compare T2 GPU ms and decode tok/s in-window anchors.
+# KS_p adds KPROF=2 (its gate is !stream_ - this arm passes it) for the busy/serialized split of the same mode.
+# K12_p2 re-tests round 16's only above-anchor-band result (PREFETCH=12: 84.4 ms, misses halved).
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round17.txt 2>&1 | tee /tmp/round17.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+S_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_STREAM=0|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+KS_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_STREAM=0 STRATA_METAL_KPROF=2|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+K12_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

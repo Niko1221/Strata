@@ -761,6 +761,9 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    PRESSURE_SKIP = re.compile(r"conversation cache: skip parking \(physical RAM admission;.*; "
+                               r"evicted \d+, (\d+) still parked\)")
+    MINIMUM_SKIP = re.compile(r"conversation cache: skip parking \(\d+ tokens, below the \d+ minimum; parked=(\d+)\)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -808,6 +811,24 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None             # retained K/V can remain even when no entries do
+                continue
+            m = self.MINIMUM_SKIP.search(line)
+            if m:
+                self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None
+                continue                               # this refusal precedes make_room(): no evictions
+            if ("conversation cache: skip parking (" in line or
+                    "conversation cache: allocation failed; skip parking" in line):
+                # make_room() may have evicted entries before a later refusal, without a park/restore summary.
+                # The pressure line gives the remaining count, but its "evicted N" is only that gate's delta,
+                # not the cumulative total (the budget gate may already have evicted others). Don't guess it.
+                m = self.PRESSURE_SKIP.search(line)
+                remaining = int(m.group(1)) if m else None
+                self.state["parked"] = remaining
+                # The pressure gate runs after take_reuse(), so an empty cache there has no retained K/V.
+                self.state["bytes"] = 0 if remaining == 0 else None
+                self.state["evictions"] = None
         return dict(self.state)
 
 
@@ -5092,16 +5113,25 @@ class Service:
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
-            # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
+            # A request with a budget of its own is left as it was; below the floor the next branch answers.
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
             if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
-        if (thinking and not budget and self.answer_room and self.family == "deepseek41"
-                and max_new and DS41_SMALL_CAP_MIN <= max_new < ANSWER_ROOM_MIN_CAP):
-            # DeepSeek-V4.1 only: a short max_tokens (/v1/messages and /v1/chat/completions with 200-600) was spent
-            # entirely on the thinking, so no text block ever arrived.  With no budget of the client's own, the thinking
-            # is capped at half of max_tokens; then the wrap-up, </think> and the answer follow in the other half.
-            budget = max_new // 2
+        _small_cap = False
+        if thinking and not budget and self.answer_room and max_new and 0 < max_new < ANSWER_ROOM_MIN_CAP:
+            if self.family == "deepseek41" and max_new >= DS41_SMALL_CAP_MIN:
+                # DeepSeek-V4.1 only: a short max_tokens (/v1/messages and /v1/chat/completions with 200-600) was spent
+                # entirely on the thinking, so no text block ever arrived. With no budget of the client's own, the thinking
+                # is capped at half of max_tokens; then the wrap-up, </think> and the answer follow in the other half.
+                budget = max_new // 2
+            else:
+                # 2026-10-21: the omp sub-agent harness caps replies at max_tokens 400 and the model's thinking spent
+                # the whole cap: (length) with no text and no tool call, so the client's length-recovery gave up after
+                # 3 tries. Below the 1024 floor the answer keeps the same proportional share (the #984 reserve, so
+                # 400 leaves 200 for thinking and 200 for the reply). "answer_room": false leaves it as it was.
+                budget = max(1, max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2))
+            _small_cap = True
+        if _small_cap:
             print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
         if budget and max_new and max_new > 0:
@@ -5277,6 +5307,9 @@ class Service:
                                     last_out = time.perf_counter()
                                     yield "ping", None
                                     continue
+                                if t == 2147483647:           # the sampler's argmax sentinel: a non-finite logits
+                                    raise EngineNonFinite(    # row (#879); engines whose window graphs lack the
+                                        "the engine emitted its argmax sentinel (#879)")   # device guard show it here
                                 n += 1
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
