@@ -9854,7 +9854,9 @@ struct Model::Impl {
         return true;
     }
 
-    int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter) {
+    // `row` (M2's batched step): the logits row to sample - a step's rows are one token each of several sequences,
+    // so each is sampled with its own slot's parameters; -1 is the step's last row (the single-sequence case)
+    int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter, int row = -1) {
         Dev& d = devs[(size_t) head_dev];
         cudaSetDevice(d.id);
         strata::dsv41k::SamplerParams sp;
@@ -9865,8 +9867,8 @@ struct Model::Impl {
         sp.min_p = min_p;
         sp.seed = seed;
         sp.counter = counter;
-        strata::dsv41k::sample_tokens(d.logits + (size_t) std::max(0, n_logits - 1) * g.vocab, 1, g.vocab, nullptr, 0,
-                                       sp, d.tok, d.st);
+        const int r = row >= 0 ? std::min(row, std::max(0, n_logits - 1)) : std::max(0, n_logits - 1);
+        strata::dsv41k::sample_tokens(d.logits + (size_t) r * g.vocab, 1, g.vocab, nullptr, 0, sp, d.tok, d.st);
         int t = -1;
         cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
         cudaStreamSynchronize(d.st);
@@ -10037,8 +10039,8 @@ int Model::feed_unit() const { return p_->chunk > 0 ? std::max(p_->chunk, (int) 
 void Model::set_progress(std::function<void(int64_t)> f) { p_->progress = std::move(f); }
 void Model::set_cancel(std::function<bool()> f) { p_->cancel = std::move(f); }
 bool Model::cancelled() const { return p_->halted; }
-int Model::sample(float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter) {
-    return p_->sample(t, tp, tk, mp, seed, counter);
+int Model::sample(float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter, int row) {
+    return p_->sample(t, tp, tk, mp, seed, counter, row);
 }
 bool Model::logits(std::vector<float>& out) { return p_->logits(out); }
 int Model::image_token() const { return p_->img_tok; }

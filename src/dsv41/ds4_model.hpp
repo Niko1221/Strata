@@ -120,7 +120,8 @@ public:
     /// feed(n - 1), checkpoint(slot), feed(1)
     bool feed_mark(const int* tokens, int n, int logits_rows, int slot, std::string& err);
     /// The next token from the last feed's last logit row (greedy when temperature <= 0).
-    int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter);
+    int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter,
+               int row = -1);   // (row: M2's batched step; -1 the last row)
     /// The last feed's logit rows on the host (rows x vocab floats).
     bool logits(std::vector<float>& out);
 
