@@ -33,6 +33,29 @@ to be capped (e.g. 32K tokens a slot: a few hundred MB for 2-3 slots) - the batc
 the one the design names: a row counted wrong does not crash, it answers subtly wrong - hence a parity test against the
 present per-query calls is the first thing to write.
 
+## M2 in the model: the sites to change
+
+The kernel side is ready (above).  In `ds4_model.cu` the per-sequence base threads through these places, in this order:
+
+1. **the window ring's allocation** (`dalloc(d, l.win, g.win * win_rb(), ...)`, ~3748): `nseq * g.win` rows, one ring a
+   sequence; every use below takes `l.win + seq * win_rb()` (the ring functions already address rows from the pointer they
+   are given, so nothing in the kernels changes);
+2. **the decode path's ring traffic**: `ext_to_ring` (~6914), `ring_to_ext` (~6969), `ring_restore` (~7196) and the
+   prompt path's `ring_to_ext` (~7283) - each call gets the sequence's ring;
+3. **the checkpoint and slot code** (~4913, ~4976, ~5058): a window checkpoint copies `g.win * win_rb()` bytes of *one*
+   ring - with N sequences it is N rings (or the sequence's, once checkpoints are per sequence too);
+4. **the compressed rows**: `compress_win` writes at `p0 / ratio` and `index_score`/`sparse_attn` select rows - all of
+   them need the source's `kv_base` (a sequence's rows are `kv_base .. kv_base + cap`), which is what
+   `ds4_batch_attn.hpp` puts into the step's selection table;
+5. **the model's state**: `pos`, `toks`, `ctoks` and the checkpoints become per sequence (an array of `nseq`), and
+   `feed`/`step`/`sample` take the sequence they work on - this is the `Run` the serve loop already keeps, moved into the
+   model.
+
+The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
+probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
+(4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
+reference.
+
 ## What a batched MoE can expect (measured, 2026-10-26)
 
 M3 assumes the expert weights are read once for the tokens of a step, which pays only when those tokens route to the same
