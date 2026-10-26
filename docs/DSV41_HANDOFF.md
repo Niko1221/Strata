@@ -302,3 +302,13 @@ as a `(win + 1)`-row block at `t * (win + 1)`, up to `kWin` rows a step, but the
 `win + C + nseq * (win + 1)` rows - at `--prefill-chunk 8` (C = 8) a step of 8 rows writes 1032 rows into a 523-row
 buffer.  The buffer now reserves `max(nseq, kWin)` blocks after the contiguous path's rows.  The A/B still ends with an
 illegal memory access, so the per-row chunk path has at least one more fault before the step can stand on it.
+
+
+**The per-row path's third fault, bisected (2026-10-27 07:16-07:20).**  `--steprows 1` - the per-row call on its own, no
+`chunk_ab` comparison - fails as well, and its first error is not in the window block: it surfaces inside the dense
+weights' f16 reconstruction (`ds4 gguf rows: an illegal memory access`, then `exl3 rows_f16`), i.e. in a `gemm` of the
+chunk's early layers, before `ring_to_ext`.  So the A/B's failure was never the comparison's: the per-row chunk call
+faults on its own, at a third site, after the two fixed ones (`pos_rows` pageable host memory, the per-row
+`ext_to_ring`'s extra `win * HD`).  Next: a `cudaGetLastError()` clear + `cudaStreamSynchronize` around that `rows`
+call (env-gated) tells whether the kernel itself is out of bounds or an earlier launch's sticky error is surfacing
+there.
