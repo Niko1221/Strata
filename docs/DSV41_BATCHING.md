@@ -86,6 +86,14 @@ prompt (12 tokens), a 300-token one (140 tokens: past the 128-token ring, across
 sharing a 20-token prefix with the first (the model's own checkpoint/restore) - and sequence 1 writes exactly what
 sequence 0 does.  That is the region arithmetic checked end to end, which is what a row counted wrong would break.
 
+**A slot's conversation stays in its sequence (2026-10-26).**  The serve loop parked a slot's conversation between its
+bursts because the model held one; with the state, the rings, the compressed rows and the compressors' group per sequence
+it does not: `STRATA_DS4_BATCH_LIVE=1` gives each slot a sequence of its own, the pass switching with `Model::use_seq`
+instead of `slot_save`/`slot_load` (or the cards' `park_save`/`park_load`), a solo GEN takes the sequence after the
+slots', and `reset()` clears the pass's sequence only.  The probe with two slots and the three-client HTTP check pass with
+the env on, and the slots take turns more finely for it (14 handovers over 47 tokens against the parked path's 8, no
+switch cost at all) - what is left of M2 is the single-launch step, not the switching.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the

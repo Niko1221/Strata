@@ -19,6 +19,7 @@ and always restore production (a trap), so a run is ~4-6 minutes of downtime.
 | `windows/batch_turn_window.sh` | the two-turn check then the HTTP check |
 | `windows/batch_nseq_window.sh` | the probe and the HTTP check with `STRATA_DS4_NSEQ=2` (two window rings) |
 | `windows/batch_seq_window.sh` | the parity check: sequence 0 and sequence 1 on the same prompts (no HTTP) |
+| `windows/batch_live_window.sh` | the probe and the HTTP check with `STRATA_DS4_BATCH_LIVE=1` (a slot's state in its own sequence, no parking) |
 
 The engine binary the windows use (`build/strata-dsv41.batch`, built from this branch) and the config
 (`strata-batch1.json`, the production config plus `--batch N --slot-burst K --read-slice 1024`, port 8099) are made by

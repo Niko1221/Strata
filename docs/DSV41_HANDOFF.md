@@ -144,6 +144,15 @@ The compressors' partial group is a sequence's too now (`comp_kv`/`comp_sc`: `ns
 layer, the pass's at `vseq`), and the checkpoint / slot / park paths copy that one; the parity check's 300-token prompt
 crosses many groups, so its half-finished group is written and read inside sequence 1's region.  Same gate, green.
 
+**A batch slot now keeps its conversation in its own sequence** (`STRATA_DS4_BATCH_LIVE=1`, `Model::use_seq`,
+`seq_count()`, a per-sequence `reset()`; `--batch N` sizes the model for N + 1 sequences so a solo GEN has one too):
+the serve loop no longer parks a slot between its bursts - the pass switches sequence, nothing is copied, and the read
+slices of a prompt let the slots' sequences run untouched.  With the env on: the probe with two slots **every check
+passed**, the three-client HTTP check **every check passed** (reference answer byte-identical, **14 handovers over 47
+tokens** against the parked path's 8, a client leaving mid-stream handled), production restored health 200, no engine ERR
+line (`tools/dsv41/windows/batch_live_window.sh`).  The parked path stays the default until the single-launch step is in.
+`Finish` also takes a per-row position now (`pos_rows`), for that step's rows.
+
 The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
