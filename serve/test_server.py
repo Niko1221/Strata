@@ -2642,6 +2642,65 @@ class NonFiniteLogits(unittest.TestCase):
         self.assertNotIn("STOP", eng.proc.stdin.getvalue())   # the DONE was read: nothing to stop or drain
 
 
+class SentinelEngine(MockEngine):
+    """The Metal port reads no device row check: there a non-finite logits row surfaces as the engine's argmax
+    sentinel id (2147483647) in the token stream instead of a `DONE ... nonfinite`.  The first pass yields `cut`
+    whole tokens, then the sentinel (None: the script runs whole); the later ones run whole, as the retried pass."""
+
+    def __init__(self, *a, cut=0, **kw):
+        super().__init__(*a, **kw)
+        self.cut, self.calls, self.last = cut, [], None
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.calls.append(list(ids))
+        cut, self.cut = self.cut, None
+        self.last = {"prompt_tokens": len(ids), "reused": 0 if cut is None else len(ids) - 1, "finish": "stop"}
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+            if cut is not None and i >= cut:
+                yield 2147483647
+                return
+            yield t
+
+
+class SentinelToken(unittest.TestCase):
+    """the argmax sentinel id in the stream takes the #879 recovery: retried once before the first token, "length"
+    mid-reply - never a raw IndexError out of the detokenizer."""
+
+    def run_reply(self, cut):
+        tok = ByteTokenizer()
+        eng = SentinelEngine(tok, "hello", max_context=CTX, cut=cut)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        ids = tok.encode("hi")
+        events, done, error = [], None, None
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                for kind, x in svc.run(ids, False, None, 100, {}, threading.Event()):
+                    if kind == "done":
+                        done = x
+                    elif kind == "event":
+                        events.append(x)
+            except EngineNonFinite as e:
+                error = e
+        text = "".join(ev.text or "" for ev in events if ev.kind == "content")
+        return eng, done, error, text, out.getvalue()
+
+    def test_before_first_token_is_retried_once(self):
+        eng, done, error, text, log = self.run_reply(0)
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 2)                     # the same request, once more
+        self.assertEqual(eng.calls[0], eng.calls[1])
+        self.assertEqual(done["finish"], "stop")
+        self.assertEqual(text, "hello")
+
+    def test_mid_reply_ends_as_length(self):
+        eng, done, error, text, log = self.run_reply(3)         # "hel"
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 1)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("length", 3))
+        self.assertEqual(text, "hel")
+        self.assertIn("non-finite after 3 tokens", log)
+
+
 class LayerSplit(unittest.TestCase):
     """#644: "layer_split" is the first layer of each later GPU; a list is accepted, counts per card are not."""
 
@@ -4275,10 +4334,13 @@ class ThinkingBudget(unittest.TestCase):
 
     def test_the_answer_room_has_its_limits(self):
         self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
-        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 300,        # below the floor: as before
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 300,        # below the floor: 200
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
-        self.assertEqual(b["choices"][0]["finish_reason"], "length")
-        self.assertFalse(b["choices"][0]["message"]["content"])
+        # 2026-10-21: small caps used to be "left as they were": the thinking ate the whole cap and the reply came
+        # back (length) with no text and no tool call (the omp sub-agent harness sends 400 and gave up after 3).
+        # The answer now keeps its share (the #984 reserve): 300 leaves thinking 150 + answer room.
+        self.assertEqual(b["choices"][0]["message"]["content"], ThinkingEngine.ANSWER)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
         self.svc.answer_room = False                               # the config's "answer_room": false
         code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024,
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
@@ -4286,7 +4348,7 @@ class ThinkingBudget(unittest.TestCase):
         self.svc.answer_room = True
         code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024, "reasoning_effort": "none",
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
-        self.assertEqual(len(self.engine.prompts), 3)              # thinking off: no budget, one prompt each
+        self.assertEqual(len(self.engine.prompts), 4)              # 300: cut + wrap-up; 1024 off: 1; none: 1
 
     def test_anthropic_thinking_budget_tokens_is_a_budget(self):
         """0.1.45: thinking {type: enabled, budget_tokens: N} closes the thinking after N tokens (it was only a level)."""

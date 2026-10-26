@@ -57,7 +57,8 @@ int main(int argc, char** argv) {
         d.p = &p;
         d.args = {mtl::Arg::B(state, 4 * st_elems * layer), mtl::Arg::B(hist, 4 * (size_t)C * 3 * layer), mtl::Arg::B(qkv),
                   mtl::Arg::B(al), mtl::Arg::B(be), mtl::Arg::B(z), mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa),
-                  mtl::Arg::B(gm), mtl::Arg::B(out), mtl::Arg::V(a), mtl::Arg::B(hist2, 4 * (size_t)C * 3 * layer)};
+                  mtl::Arg::B(gm), mtl::Arg::B(out), mtl::Arg::V(a), mtl::Arg::B(hist2, 4 * (size_t)C * 3 * layer),
+                  mtl::Arg::B(out)};
         d.grid[0] = HV;
         d.tg[0] = std::getenv("GDN_IB8") ? 1024 : 512;
         return d;
@@ -96,6 +97,57 @@ int main(int argc, char** argv) {
         return 0;
     }
     int fails = 0;
+    {
+        // the batch-row layout (window.cpp's gdn loop): a step bound at a row's slice must write every plane and
+        // the per-16 sums exactly where a base-bound step of the same token writes them at that row's place.  A
+        // batch row binds y at its slice and the sums at the fixed sums region plus the row's 384-float slot; a
+        // base-bound run strides both inside the kernel.  Before the sums got their own binding a row's sums
+        // landed one plane-row past the slice - stale for the quantized-input GEMVs that read them back, and one
+        // arena allocation over on the write.
+        const size_t n = (size_t)HV * S, a_plane = (size_t)MAXT * n, sums_off = 4 * a_plane, nsums = n / 16;
+        auto plane_disp = [&](const mtl::Pipeline& p, int row, const mtl::Buffer& xyb) {
+            GdnArgs a{HK, HV, C, 0, 1e-6f, (uint32_t)a_plane};  // verify: no state or history write-back
+            mtl::Dispatch d;
+            d.p = &p;
+            d.args = {mtl::Arg::B(state), mtl::Arg::B(hist), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
+                      mtl::Arg::B(z), mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa), mtl::Arg::B(gm),
+                      mtl::Arg::B(xyb, 4 * n * row), mtl::Arg::V(a), mtl::Arg::B(hist2),
+                      mtl::Arg::B(xyb, 4 * sums_off + 4 * nsums * row)};
+            d.grid[0] = HV;
+            d.tg[0] = 512;
+            return d;
+        };
+        const size_t total = 4 * a_plane + MAXT * nsums;
+        mtl::Buffer xyb = cx.alloc(4 * total), xys = cx.alloc(4 * total);
+        std::memset(xyb.ptr, 0x5A, 4 * total);
+        std::memset(xys.ptr, 0x5A, 4 * total);
+        mtl::Pipeline p1 = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, 1));
+        cx.run({plane_disp(p1, 0, xys)});
+        cx.run({plane_disp(p1, 3, xyb)});
+        const float* xb = xyb.as<float>();
+        const float* xs = xys.as<float>();
+        bool rows_eq = true;
+        for (int k = 0; k < 4; ++k)
+            rows_eq = rows_eq && std::memcmp(xb + k * a_plane + 3 * n, xs + k * a_plane, 4 * n) == 0;
+        const bool sums_eq = std::memcmp(xb + sums_off + 3 * nsums, xs + sums_off, 4 * nsums) == 0;
+        // the sums slot, both rows: the block sum of the row's f32 plane, in the kernel's even/odd pair order
+        bool sums_ref = true;
+        for (int r = 0; r < 2; ++r) {
+            const float* base = r ? xb : xs;
+            const int row = r ? 3 : 0;
+            for (int h = 0; h < HV; ++h)
+                for (int b16 = 0; b16 < S / 16; ++b16) {
+                    float s0 = 0, s1 = 0;
+                    for (int k = 0; k < 16; k += 2) { s0 += base[row * n + h * S + b16 * 16 + k];
+                                                       s1 += base[row * n + h * S + b16 * 16 + k + 1]; }
+                    sums_ref = sums_ref && base[sums_off + row * nsums + h * (S / 16) + b16] == s0 + s1;
+                }
+        }
+        std::printf("gdn parity plane rows: slice == base-bound at that row: %s, sums land in the row's slot: %s, "
+                    "sums match the CPU blocks: %s  %s\n", rows_eq ? "yes" : "NO", sums_eq ? "yes" : "NO",
+                    sums_ref ? "yes" : "NO", (rows_eq && sums_eq && sums_ref) ? "PASS" : "FAIL");
+        fails += !(rows_eq && sums_eq && sums_ref);
+    }
     for (int nt = 1; nt <= 4; ++nt) {
         mtl::Pipeline p = cx.pipeline(lib, std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step", mtl::Constants().i(2, nt));
         // determinism: the same verify call three times

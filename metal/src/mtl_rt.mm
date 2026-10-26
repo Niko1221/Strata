@@ -32,6 +32,10 @@ struct Context::Impl {
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
     std::vector<id<MTLLibrary>> libs;
+    // the hot-reload registry (see recompile_all): the request each library was compiled from, index for index
+    // with libs; and the libraries a reload replaced, kept because pipeline states made from them may still run
+    std::vector<std::pair<std::vector<std::string>, std::string>> reqs;
+    std::vector<id<MTLLibrary>> retired;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
 };
@@ -71,38 +75,100 @@ bool Context::supports_metal4() const {
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
+uint64_t Context::max_threadgroup_memory() const { return [impl_->dev maxThreadgroupMemoryLength]; }
 
-int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
-    std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
+namespace {
+// the MSL source a compile request builds: prelude, optional ggml-common.h, the files with #line markers.
+// False with a reason when a file cannot be read (hot reload keeps its current kernels and says what failed;
+// at startup a missing file is fatal, as read_file always was).
+bool build_source(const std::string& ggml_common_path, const std::string& kernel_dir,
+                  const std::vector<std::string>& files, const std::string& prelude,
+                  std::string& src, std::string& err) {
+    src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
-        src += read_file(ggml_common_path);
-        src += "\n";
+        std::ifstream g(ggml_common_path, std::ios::binary);
+        if (!g) { err = "mtl: cannot read " + ggml_common_path; return false; }
+        std::stringstream ss;
+        ss << g.rdbuf();
+        src += ss.str() + "\n";
     }
     for (const auto& f : files) {
         std::string p = (f.size() && f[0] == '/') ? f : kernel_dir + "/" + f;
-        src += "#line 1 \"" + f + "\"\n" + read_file(p) + "\n";
+        std::ifstream in(p, std::ios::binary);
+        if (!in) { err = "mtl: cannot read " + p; return false; }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        src += "#line 1 \"" + f + "\"\n" + ss.str() + "\n";
     }
+    return true;
+}
+
+// the runtime compiler with the engine's options: nil plus the compiler's log on error
+id<MTLLibrary> compile_source(id<MTLDevice> dev, const std::string& src, NSError** err) {
     MTLCompileOptions* o = [MTLCompileOptions new];
     // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
     // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.
-    fast_math = false;
+    bool fast_math = false;
     if (const char* m = std::getenv("STRATA_METAL_MATH")) fast_math = std::string(m) == "fast";
     if (@available(macOS 15.0, *)) {
         o.mathMode = fast_math ? MTLMathModeFast : MTLMathModeSafe;
     } else {
         o.fastMathEnabled = fast_math;
     }
-    NSError* err = nil;
-    id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
+    return [dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:err];
+}
+}  // namespace
+
+int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
+    (void) fast_math;   // the env decides (the argument is kept for callers)
+    std::string src, err;
+    if (!build_source(ggml_common_path, kernel_dir, files, prelude, src, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        std::exit(2);
+    }
+    NSError* cerr = nil;
+    id<MTLLibrary> lib = compile_source(impl_->dev, src, &cerr);
     if (!lib) {
         std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
                      [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
-                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
+                     files.empty() ? "?" : files.back().c_str(), [[cerr localizedDescription] UTF8String]);
         std::exit(3);
     }
     impl_->libs.push_back(lib);
+    impl_->reqs.push_back({files, prelude});   // the hot-reload registry, index for index with libs
     return (int)impl_->libs.size() - 1;
+}
+
+bool Context::recompile_all(std::string& err) {
+    if (impl_->reqs.size() != impl_->libs.size()) { err = "mtl: the compile registry is out of step"; return false; }
+    std::vector<id<MTLLibrary>> fresh;
+    fresh.reserve(impl_->libs.size());
+    for (size_t i = 0; i < impl_->reqs.size(); ++i) {
+        std::string src;
+        if (!build_source(ggml_common_path, kernel_dir, impl_->reqs[i].first, impl_->reqs[i].second, src, err))
+            return false;
+        NSError* cerr = nil;
+        id<MTLLibrary> lib = compile_source(impl_->dev, src, &cerr);
+        if (!lib) {
+            const auto& files = impl_->reqs[i].first;
+            err = "mtl: reload compile failed (" + std::string(files.empty() ? "?" : files.back()) + "): " +
+                  std::string([[cerr localizedDescription] UTF8String]);
+            return false;
+        }
+        fresh.push_back(lib);
+    }
+    for (size_t i = 0; i < fresh.size(); ++i) {
+        impl_->retired.push_back(impl_->libs[i]);   // kept: graphs replayed from their pipeline states still run
+        impl_->libs[i] = fresh[i];
+    }
+    return true;
+}
+
+int Context::library_count() const { return (int) impl_->libs.size(); }
+
+bool Context::has_function(int lib, const std::string& fn) const {
+    return [[impl_->libs[lib] functionNames] containsObject:[NSString stringWithUTF8String:fn.c_str()]];
 }
 
 Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
@@ -176,18 +242,22 @@ void require_fit(const Pipeline& p, uint32_t threads, const char* where) {
 }
 
 Buffer Context::alloc(size_t bytes) {
-    id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-    if (!b) {
-        std::fprintf(stderr, "mtl: alloc %zu failed\n", bytes);
-        std::exit(4);
+    // Metal autoreleases a reference to every new buffer: without a pool drained here, the engine's threads (which have
+    // none) keep each one alive for good and free() gives nothing back
+    @autoreleasepool {
+        id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        if (!b) {
+            std::fprintf(stderr, "mtl: alloc %zu failed\n", bytes);
+            std::exit(4);
+        }
+        std::memset([b contents], 0, bytes);
+        allocated_ += bytes;
+        Buffer r;
+        r.handle = (__bridge_retained void*)b;
+        r.ptr = [b contents];
+        r.bytes = bytes;
+        return r;
     }
-    std::memset([b contents], 0, bytes);
-    allocated_ += bytes;
-    Buffer r;
-    r.handle = (__bridge_retained void*)b;
-    r.ptr = [b contents];
-    r.bytes = bytes;
-    return r;
 }
 
 Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
@@ -204,13 +274,15 @@ Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
     r.stride = maxlen - span;
     for (size_t base = 0; base < bytes; base += r.stride) {
         const size_t len = std::min(maxlen, (bytes - base + pg - 1) / pg * pg);
-        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + base length:len
-                                                        options:MTLResourceStorageModeShared deallocator:nil];
-        if (!b) {
-            std::fprintf(stderr, "mtl: wrap chunk %zu+%zu failed\n", base, len);
-            std::exit(4);
+        @autoreleasepool {   // as in alloc()
+            id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + base length:len
+                                                            options:MTLResourceStorageModeShared deallocator:nil];
+            if (!b) {
+                std::fprintf(stderr, "mtl: wrap chunk %zu+%zu failed\n", base, len);
+                std::exit(4);
+            }
+            r.chunks->push_back((__bridge_retained void*)b);
         }
-        r.chunks->push_back((__bridge_retained void*)b);
         if (base + len >= bytes) break;
     }
     allocated_ += bytes;
@@ -223,17 +295,19 @@ Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
 }
 
 Buffer Context::wrap(void* p, size_t bytes) {
-    id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
-    if (!b) {
-        std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
-        std::exit(4);
+    @autoreleasepool {   // as in alloc()
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
+            std::exit(4);
+        }
+        allocated_ += bytes;
+        Buffer r;
+        r.handle = (__bridge_retained void*)b;
+        r.ptr = p;
+        r.bytes = bytes;
+        return r;
     }
-    allocated_ += bytes;
-    Buffer r;
-    r.handle = (__bridge_retained void*)b;
-    r.ptr = p;
-    r.bytes = bytes;
-    return r;
 }
 
 void Context::free(Buffer& b) {
@@ -344,6 +418,48 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
             ev.signaledValue = base + 2 * s + 2;
         }
         impl_->ev_v = base + 2 * cuts.size() + 2;
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+double Context::run_graph_flag(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, const Dispatch& seq_d,
+                               const Dispatch& spin_d, const int* seq, int* rel, void (*at_cut)(void*, int),
+                               void* user) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        size_t i = 0;
+        for (size_t s = 0; s <= cuts.size(); ++s) {
+            const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
+            if (s > 0) {   // the gate: this segment's dispatches may not read pre-patch state
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, spin_d);
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            const size_t first = i;
+            for (; i < end; ++i) {
+                if (i > first && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, ds[i]);
+            }
+            if (s < cuts.size()) {   // mark the cut: visible only after this segment's writes
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, seq_d);
+            }
+        }
+        [enc endEncoding];
+        [cb commit];
+        for (size_t s = 0; s < cuts.size(); ++s) {
+            while (*seq < (int) s + 1) {
+                if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+            }
+            at_cut(user, (int) s);
+            *rel = (int) s + 1;
+        }
         [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
