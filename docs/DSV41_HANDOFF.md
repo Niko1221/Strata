@@ -183,6 +183,17 @@ batching is a real aggregate win (25.0 -> 45.6 tok/s, 1.8x, 377 handovers agains
 three clients (50.1 tok/s) and `parallel 4` 12.92 s for four (31.0 tok/s, cache 68-78 %).  The first case after a load
 pays the pack's cold reads, so its single-request rates are the low ones.
 
+**Release gate on the final tree (2026-10-27, commit `352ec9c`).**  `serve.test_server`: **352 tests, OK** (134.8 s).
+The fuzz with the live slots (`STRATA_DS4_BATCH_LIVE=1`, twelve rounds of two to four concurrent requests, a third
+abandoned mid-stream and a canary after each): every round answered, canaries 0.09-0.44 s, both slots decoded, **0 engine
+ERR lines and 0 server tracebacks**; production restored `health 200` after the window.  The unit tests
+(`ds4_batch_attn_test` with the `write_row` cases and the five others) are green on the same tree.
+
+What is *not* in yet: M2's single-launch pass.  The design note in `docs/DSV41_BATCHING.md` ("The single-launch step:
+what is in, and what it needs on this box") lists the four pieces - the per-row descriptor through `layer_chunk`, the
+cross-group hand-off of a step's T latent rows (the hard one on four GPUs and two tensor-parallel groups), the serve
+loop's one step over all active slots, and the measurement that should put sixteen slots below the stock engine's wall.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

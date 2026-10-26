@@ -95,6 +95,30 @@ slots', and `reset()` clears the pass's sequence only.  The probe with two slots
 the env on, and the slots take turns more finely for it (14 handovers over 47 tokens against the parked path's 8, no
 switch cost at all) - what is left of M2 is the single-launch step, not the switching.
 
+### The single-launch step: what is in, and what it needs on this box (2026-10-27)
+
+The model side is done: every sequence's ring, compressed rows, compressors' group and state live in their own region
+(`nseq`), a pass can be pointed at any of them (`use_seq`), the indexer's picks are absolute rows of the one table
+(`rows_add_i`), and `Finish` takes a position a row (`pos_rows`).  The parity check proves the regions end to end.
+
+What one launch over T sequences still needs, in the order it has to be built:
+
+1. **a per-row descriptor through `layer_chunk`** (`pos[t]`, `seq[t]`): the window rows side by side at
+   `t * (win + 1)` of the chunk scratch, `finish`'s `pos_rows` (in), `ext_to_ring` per row, `compress_win` and the
+   ik/ckv writes per row (each row's own group and `kv_base`), the indexer per row - the attention is already one call
+   (`AttnRows` carries `win0`/`nwin`/`nsel` per query and the picks are absolute);
+2. **the cross-group rows**: with `--tp 2` on four GPUs half the sources are read by the other group's layers, and the
+   new rows travel today through the staged host-mapped hand-off (one block a chunk, a flag and acks a window).  For T
+   rows at T different offsets that becomes: one copy of the step's T latent rows to an owning group (`T x hd` floats),
+   then each reader's own `finish` into its copy - the pack's quantization is deterministic, so the copies stay
+   bit-identical - about 32 KB a layer a step, ~8 MB a step in all, which PCIe pays in ~0.3 ms;
+3. **the serve loop**: one step over every active slot (the live mode is in, so nothing is parked), then a `BT` a slot;
+4. **the measurement**: `route_overlap` bounds what the shared expert reads can save at 1.15-1.28x, so the step's wall
+   at sixteen slots should land below the stock engine's 27.35 s (the one-pass-per-slot live mode is 31.08 s).
+
+Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
+throughput.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
