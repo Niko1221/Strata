@@ -184,6 +184,29 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.actions("restore"), ["restore"])
         self.assertEqual(self.calls[-1], ("restore", self.path("ses-a")))
 
+    def test_parked_flag_self_heals_on_zero_reuse_done(self):
+        # momo dormancy (recheck 2026-10-26): the engine's park evicts copies under budget pressure but its
+        # eviction lines name a count, never the victim, so an evicted mid keeps its joined parked=True
+        # forever - every switch-back then silently pays a cold prefill (the x-2/x-4 rows; sim scenario B).
+        # DONE's reused is the engine's only session-attributed cache accounting: a park that held this
+        # conversation reused its prefix (every observed park hit reused whole checkpoint blocks), so a
+        # reused==0 DONE on a PARKED session whose checkpoint is on disk proves the park did not serve it:
+        # unpark. The design floor's one cold step is already paid by that turn; the next switch-back
+        # reaches should_restore's file+fidelity gates.
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_turn_done("ses-a", MID, 0, MID)              # a completed turn with reuse
+        self.ladder.on_arrival(self.service, "ses-b", P2)           # switch away: ses-a checkpointed
+        self.ladder.on_conv_event(ConvEvent(kind="parked", tokens=MID, byte_count=MID_BYTES, evictions=3))
+        self.assertTrue(self.ladder.tracked["ses-a"].parked)        # the joined park claim
+        self.ladder.on_arrival(self.service, "ses-a", P1 + " tail")  # switch back while parked:
+        self.assertEqual(self.actions("restore"), [])               # park hits beat any restore (pinned)
+        self.ladder.on_turn_done("ses-a", MID + 8, 0, 0)            # the engine's own books: this prompt
+        # was served with 0 reused - the park demonstrably did not hold it
+        self.assertFalse(self.ladder.tracked["ses-a"].parked)       # the stale claim self-heals
+        self.ladder.on_arrival(self.service, "ses-b", P2)           # switch away again (dirty: re-save)
+        self.ladder.on_arrival(self.service, "ses-a", P1 + " tail more")   # switch back: the gate is open
+        self.assertEqual(self.calls[-1], ("restore", self.path("ses-a")))  # and the file is restored
+
     def test_ladder_yields_to_pending_restore(self):
         a, b = self._two_checkpoints()
         pending = str(Path(self.dir.name) / "llm-session-pending.bin")

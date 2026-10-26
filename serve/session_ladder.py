@@ -176,10 +176,28 @@ def should_restore(s: TrackedSession, cfg: LadderConfig) -> bool:
 
 
 def prefix_fidelity(saved_prefix: str | None, incoming_prompt: str) -> bool:
-    """Is the checkpoint's saved prefix still a byte-prefix of the incoming prompt?  OpenCode rewrites
+    """Is the checkpoint's saved prefix still the head of the incoming prompt?  OpenCode rewrites
     context (compaction, edits); a stale checkpoint restores as waste, so serve byte-compares before
-    issuing RESTORE.  No captured prefix -> not fidelity-checkable -> False (re-anchor instead)."""
-    return bool(saved_prefix) and incoming_prompt.startswith(saved_prefix)
+    issuing RESTORE.  The strict compare is exact for turn-array prompts (the saved render ends at the
+    generation opener, which is where the next render's completed assistant turn begins), but not for a
+    client that re-sends ONE growing user message (the momo dormancy of the 2026-10-26 recheck): the
+    incoming render re-renders the saved turn's closing marker after the growth, so the bytes diverge
+    at exactly that marker while the engine's own prefix join still holds (bridge restores reused full
+    checkpoint files on this shape; a DISC-row checkpoint reused 32768 of 35750 tokens).  So the saved
+    prefix is also matched cut at its last turn-end marker - a rewrite diverging before that point is
+    still rejected, only growth at the conversation's tail passes.  No captured prefix -> not
+    fidelity-checkable -> False (re-anchor instead)."""
+    if not saved_prefix:
+        return False
+    if incoming_prompt.startswith(saved_prefix):
+        return True
+    cut = saved_prefix.rfind(TURN_END)
+    return cut >= 0 and incoming_prompt.startswith(saved_prefix[:cut])
+
+
+# The chat template's message-closing marker (the tokenizer's literal every rendered turn ends with;
+# encode_prompt renders prompts with these markers, so prefix_fidelity can cut a saved prefix at one).
+TURN_END = "<|im_end|>"
 
 
 # Engine.session_file rejects a path with control characters (ValueError "invalid session command"), so a
@@ -517,6 +535,14 @@ class SessionLadder:
         s.save_eligible = over_budget or tokens >= MIN_PARK_TOKENS
         s.dirty = True                                # Task 8: a completed turn is unsaved until the
         # ladder's next save of it (on_idle / on_unload / a switch-away save)
+        if reused == 0 and s.parked and s.file_path is not None:
+            s.parked = False                          # park self-heal (the momo dormancy, recheck 2026-10-26):
+        # DONE's reused is the engine's only session-attributed cache accounting - a park copy that held this
+        # conversation reused its prefix (every observed park hit reused whole checkpoint blocks), while the
+        # eviction lines name a count, never the victim, so a budget-evicted mid would otherwise keep its
+        # joined parked=True forever and every switch-back silently pays the cold prefill.  The design floor's
+        # one cold step is already paid by this turn; unparking lets the next switch-back reach should_restore's
+        # file+fidelity gates (an aux without a file cannot restore anyway and is left untouched).
         if not s.save_eligible:
             self.last_prompts.pop(session_id, None)  # an aux-sized conversation earns no saves: no retained prefix
 
