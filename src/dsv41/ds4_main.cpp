@@ -18,6 +18,12 @@
 // `pin=N` on a GEN marks the first N prompt tokens as a start other requests share (a system prompt and its tools): the
 // read stops there for a checkpoint, so a request behind the same start - another agent - goes back to it instead of
 // reading it again (also without slots).  STRATA_DS4_REUSE=0 turns every reuse off (each request reads its whole prompt).
+// --batch N speaks the server's batched path (docs/DSV41_BATCHING.md, M4): `BGEN <slot> <max_new> [keys] <ids>` reads
+// the request's prompt and first token as a GEN 1, answers `BADM <slot> 1`, then decodes the rest on `BT <slot> <id>` lines
+// until `BDONE <slot> <produced> <finish> <ms>`; `BSTOP <slot>` ends one slot.  INFO batch_slots=N turns the server's path
+// on, so it is said only here.  One slot at a time until per-sequence KV (M2) exists: a slot's answer runs to its end
+// before the next request is read.
+#include "ds4_batch_proto.hpp"
 #include "ds4_model.hpp"
 #include "ds4_os.hpp"
 #include "ds4_packinfo.hpp"
@@ -87,7 +93,7 @@ void usage() {
                  "maya-ds4 --pack <model>/maya-ds4 [--gpus 0,1,...] [--max-context N] [--reserve-mib N]\n"
                  "           [--vram-experts F] [--cpu-threads N] [--expert-profile FILE|none] [--ssd-cache GB] [--ssd-policy lru|lfu|lfulru] [--no-expert-cache] [--verbose]\n"
                  "           [--tp N] [--threads on|off] [--prefill-chunk N] [--dspark on|off|none|auto] [--dspark-block N] [--dspark-conf F] [--experts N|auto]\n"
-                 "           [--vision on|off] [--mmap-experts on|off|auto]\n"
+                 "           [--vision on|off] [--mmap-experts on|off|auto] [--batch N]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
@@ -100,6 +106,7 @@ struct Lines {
     std::deque<std::string> q;
     bool eof = false;
     std::atomic<bool> stop{false};
+    std::atomic<int> bstop{-1};   // BSTOP <slot>: that batch slot's decode ends (the server's batched path, M4)
     void start() {
         std::thread([this] {
             std::string l;
@@ -110,6 +117,11 @@ struct Lines {
                     stop.store(true);
                     continue;
                 }
+                if (l.rfind("BSTOP", 0) == 0) {   // (only that slot ends; a STOP would end whatever runs)
+                    bstop.store(l.size() > 6 ? std::atoi(l.c_str() + 6) : -1);
+                    continue;
+                }
+                if (l.rfind("BYIELD", 0) == 0) continue;   // (the read never gives way: a prompt is read whole)
                 if (l == "QUIT") stop.store(true);
                 q.push_back(l);
                 cv.notify_all();
@@ -331,6 +343,12 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
 // request at a time; this only decides which of the lines already waiting is read next (the server's
 // STRATA_ADMIT_SHORT_FIRST rule, at the engine).  STRATA_DS4_ADMIT_SHORT_FIRST=0 turns it off.
 static int64_t gen_prompt_len(const std::string& line, bool& is_gen) {
+    strata::ds4::batchproto::Admission adm;   // a BGEN is a request too: the admission order is about its prompt
+    if (strata::ds4::batchproto::split(line, adm)) {
+        is_gen = true;
+        Req r;
+        return parse_gen(adm.request, r, adm.request.rfind("GENI ", 0) == 0) ? (int64_t) r.ids.size() : -1;
+    }
     const bool geni = line.rfind("GENI ", 0) == 0;
     is_gen = geni || line.rfind("GEN ", 0) == 0;
     if (!is_gen) return 0;
@@ -360,12 +378,17 @@ static void admit_short_first(Lines& in, std::string& line) {
     in.push_front(all);
 }
 
-int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
+int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack,
+          int batch_slots) {
     std::vector<int> eos = parse_ids(eos_list);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
+    // the server's batched path turns on from this INFO line alone (serve/server.py: self.batch = batch_slots), so it is
+    // printed only when the serve loop really speaks BGEN (docs/DSV41_BATCHING.md, M4)
+    if (batch_slots > 0) std::printf("INFO batch_slots=%d\n", batch_slots);
     std::printf("READY %lld stop\n", (long long) m.max_context());
     std::fflush(stdout);
-    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT\n");
+    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; "
+                         "BGEN[I] <slot> <max_new> [keys] <ids>; STOP, BSTOP <slot>, QUIT\n");
     Lines in;
     in.start();
     std::string line;
@@ -691,13 +714,46 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     while (in.next(line)) {
         if (line == "QUIT") break;
         admit_short_first(in, line);
+        // M4: BGEN[I] <slot> <max_new> ... is a request admitted into a batch slot.  Its prompt is read and its first
+        // token sampled exactly as GEN 1 does; the slot then decodes the rest (BT lines) after BADM.
+        int admit_slot = -1;
+        long long admit_max_new = 0;
+        {
+            strata::ds4::batchproto::Admission adm;
+            if (strata::ds4::batchproto::split(line, adm)) {
+                if (batch_slots <= 0) {
+                    std::printf("ERR BGEN: the engine's batch slots are off (start it with --batch N)\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                if (adm.slot < 0 || adm.slot >= batch_slots) {
+                    std::printf("ERR BGEN: no such slot %d (%d here)\n", adm.slot, batch_slots);
+                    std::fflush(stdout);
+                    continue;
+                }
+                if (adm.max_new < 1) {
+                    std::printf("ERR BGEN: a slot's request needs a max_new of at least 1\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                admit_slot = adm.slot;
+                admit_max_new = adm.max_new;
+                line = adm.request;
+            } else if (line.rfind("BGEN ", 0) == 0 || line.rfind("BGENI ", 0) == 0) {
+                std::printf("ERR BGEN: expected a slot and a max_new\n");
+                std::fflush(stdout);
+                continue;
+            }
+        }
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
-            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP and QUIT)\n", line.substr(0, line.find(' ')).c_str());
+            std::printf("ERR unsupported command '%s' (GEN, GENI, BGEN, BGENI, STOP, BSTOP and QUIT)\n",
+                        line.substr(0, line.find(' ')).c_str());
             std::fflush(stdout);
             continue;
         }
         in.stop.store(false);
+        in.bstop.store(-1);   // (a BSTOP for a slot of a request that has ended is stale)
         Req r;
         if (!parse_gen(line, r, geni)) {
             std::printf("ERR expected: GEN <max_new> [keys] <id,id,...> or GENI <max_new> [keys] <file> <id,id,...>\n");
@@ -716,6 +772,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             if (!e.empty()) {
                 std::printf("ERR %s\n", e.c_str());
                 std::printf("DONE 0 %zu 0.0 0.0 cancel 0 0 0 0 0\n", r.ids.size());
+                if (admit_slot >= 0) std::printf("BADM %d 0\n", admit_slot);   // (an admission still ends: nothing runs)
                 std::fflush(stdout);
                 continue;
             }
@@ -765,9 +822,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             else m.reset();
         }
         if (took || from == 0) held.clear();   // (a slot is text only: the state that comes back holds no pictures)
-        if ((int64_t) r.ids.size() + std::max(0LL, r.max_new) > m.max_context()) {
+        const long long want_max = admit_slot >= 0 ? admit_max_new : r.max_new;   // (a BGEN admits the whole request)
+        if ((int64_t) r.ids.size() + std::max(0LL, want_max) > m.max_context()) {
             std::printf("ERR the prompt (%zu tokens) and max_new %lld are more than the context %lld\n", r.ids.size(),
-                        r.max_new, (long long) m.max_context());
+                        want_max, (long long) m.max_context());
             std::fflush(stdout);
             continue;
         }
@@ -864,6 +922,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             std::fprintf(stderr, "ds4 serve: stopped while reading the prompt of %zu tokens, after %.0f ms%s\n",
                          total, now_ms() - t0, back ? "; the conversation before it is kept" : "");
             std::printf("DONE 0 %zu %.1f 0.0 cancel 0 0 %zu 0 0\n", r.ids.size(), now_ms() - t0, back ? from : (size_t) 0);
+            if (admit_slot >= 0) std::printf("BADM %d 0\n", admit_slot);
             std::fflush(stdout);
             continue;
         }
@@ -882,7 +941,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const double t1 = now_ms();
         long long produced = 0;
         const char* finish = "length";
-        const long long limit = r.max_new > 0 ? r.max_new : m.max_context() - (long long) r.ids.size();
+        // (a BGEN's admission: the limit is what the request asked for - its first token included; the rewritten line's
+        // own max_new is 1)
+        const long long limit = admit_slot >= 0
+                                   ? admit_max_new
+                                   : (r.max_new > 0 ? r.max_new : m.max_context() - (long long) r.ids.size());
         long long d_off = 0, d_acc = 0;
         bool cool = false;
         int tok = m.sample(r.temperature, r.top_p, r.top_k, r.min_p, r.seed, counter++);
@@ -919,17 +982,39 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             std::printf("%s\n", out.c_str());
         };
+        bool slot_going = false;   // (a BGEN whose admission went on: its answer ends with BDONE, not DONE)
+        double slot_t0 = 0.0;
         for (;;) {
-            if (in.stop.load()) {
+            if (in.stop.load() || (produced > 0 && admit_slot >= 0 && in.bstop.load() == admit_slot)) {
                 finish = "cancel";
                 break;
             }
-            std::printf("T %d\n", tok);
+            const bool admission = admit_slot >= 0 && produced == 0;
+            if (admit_slot >= 0 && !admission)
+                std::printf("BT %d %d\n", admit_slot, tok);
+            else
+                std::printf("T %d\n", tok);
             ++produced;
             if (produced % 8 == 0) stat_line();
             std::fflush(stdout);
             bool end = false;
             for (int e : eos) end = end || tok == e;
+            if (admission) {
+                // the admission is the GEN 1 read the server follows on the control lines: its DONE, then BADM says
+                // whether the slot decodes the rest (BT lines) or that one token was the whole answer
+                const char* finish0 = end ? "stop" : "length";
+                const double t2a = now_ms();
+                std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0,
+                            t2a - t1, finish0, d_acc, d_off, from);
+                slot_going = strata::ds4::batchproto::continues(produced, admit_max_new, finish0);
+                std::printf("BADM %d %d\n", admit_slot, slot_going ? 1 : 0);
+                std::fflush(stdout);
+                if (!slot_going) {
+                    finish = finish0;
+                    break;
+                }
+                slot_t0 = now_ms();
+            }
             if (end) {
                 finish = "stop";
                 break;
@@ -960,8 +1045,17 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         //  the checkpoint at this prompt's end)
         stat_line();
         const double t2 = now_ms();
-        std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0, t2 - t1, finish,
-                    d_acc, d_off, from);
+        if (admit_slot >= 0 && produced == 0) {
+            // (a stop before the admission's first token: the server still needs its DONE and BADM, or it waits for ever)
+            std::printf("DONE 0 %zu 0.0 0.0 cancel 0 0 %zu 0 0\n", r.ids.size(), from);
+            std::printf("BADM %d 0\n", admit_slot);
+        } else if (slot_going) {
+            // the slot's own end: its count includes the admission's token, and the server frees the slot on this line
+            std::printf("BDONE %d %lld %s %.1f\n", admit_slot, produced, finish, t2 - slot_t0);
+        } else if (admit_slot < 0) {
+            std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0, t2 - t1,
+                        finish, d_acc, d_off, from);
+        }
         std::fflush(stdout);
         const auto& s = m.stats();
         std::fprintf(stderr,
@@ -1242,6 +1336,7 @@ int main(int argc, char** argv) {
     bool pack_info_mode = false;
     bool admit_order = false;
     int burst = 0;
+    int batch_slots = 0;   // --batch N: the server's batched path (docs/DSV41_BATCHING.md, M4); 0: one request at a time
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -1315,6 +1410,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") serve_mode = true;
         else if (a == "--admit-order") admit_order = true;
         else if (a == "--burst") burst = std::atoi(val("--burst").c_str());
+        else if (a == "--batch") batch_slots = std::max(0, std::atoi(val("--batch").c_str()));
         else if (a == "--pack-info") pack_info_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
@@ -1365,7 +1461,7 @@ int main(int argc, char** argv) {
     }
     if (!o.vision_only) std::fprintf(stderr, "%s", m.describe().c_str());
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
-    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack);
+    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, batch_slots);
     const int window_given = window;
     if (window == 0) window = 16;   // (the scoring / profiling runs; the plain run below takes the model's feed unit)
     if (!prof_ids.empty()) return profile_run(m, prof_ids, window);

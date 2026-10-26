@@ -1,7 +1,9 @@
 # Batched decoding for DeepSeek-V4.1 (`strata-dsv41`)
 
-Status: **design proposal** (no code yet). Scoped for the `deepseek41` engine and the HTTP server that
-drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
+Status: **design, partly built**.  The scheduler's CPU half (M1), the chunked-decoding path in the server (Path B) and
+the engine's batch protocol for one slot (`--batch N`, BGEN) are implemented and tested; the kernels (M2 varlen
+attention, M3 batched MoE) are not - they are what turns the present interleaving of requests into real throughput.
+Scoped for the `deepseek41` engine and the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
 2.25 bpw pack (274 GB, 1M context).
 
 ## Where it stands
@@ -162,17 +164,26 @@ the client: the same `T` lines stream out, only later.
 Harness: `python -m serve.server --engine mock --port 8099` runs the whole server with a scripted engine and no
 GPU, so two concurrent clients can prove the interleaving without touching the production model.
 
-## M4 protocol: what the engine must speak for batch_slots > 0
+## M4 protocol: what the engine speaks for batch_slots > 0
 
-The server already implements the batched path (`Engine.generate_batched`, serve/server.py:1772); it turns on
-when the engine's INFO block reports `batch_slots`, and it speaks:
+The server's batched path (`Engine.generate_batched`, serve/server.py:1772) turns on when the engine's INFO block
+reports `batch_slots`.  The lines, as the server actually reads them:
 
-* `BGEN <slot> <max_new><keys> <ids>` - one step for that slot (keys are `temperature=... top_p=...` etc.);
-* `BGENI <slot> <max_new><keys> <pictures> <ids>` - the same with a DSI1 pictures file;
-* the reply is the existing stream (`PP ...`, `T <id>`, `DONE ...`), tagged the way the server already reads it;
-* `STOP <slot>` cancels one slot; `QUIT` ends the engine.
+* `BGEN <slot> <max_new><keys> <ids>` - one request admitted into a slot (`BGENI` the same, with a DSI1 pictures
+  file).  The engine reads the prompt and samples its first token exactly as a `GEN 1` / `GENI 1` would: the usual
+  `PP ...`, `T <id>` and `DONE ...` on the control lines;
+* then `BADM <slot> <1|0>`: 1 = the slot decodes the rest, 0 = that one token was the whole answer (EOS, max_new 1, a
+  cancel);
+* the slot's own tokens are `BT <slot> <id>` and it ends with `BDONE <slot> <produced> <finish> <ms>`; `<produced>`
+  counts the admission's token too.  Both go to a per-slot queue (`serve/server.py:_pump`), not the control lines;
+* `BSTOP <slot>` ends that slot (`BDONE ... cancel`); `BYIELD <slot>` is accepted and dropped (this engine reads a
+  prompt whole); `STOP` still stops a solo request and `QUIT` ends the engine.
 
-A slot is a conversation the engine holds between calls (its tokens, KV, samplers).  Advertising
-`batch_slots N` **before** BGEN works would break every request: the server would send BGEN and the engine would
-answer `ERR unsupported command`.  So the order is: BGEN for one slot first (behaviour identical to GEN), then
-advertise `batch_slots 1`, then widen to N - which needs per-sequence KV (M2).
+A slot is a conversation the engine holds between calls (its tokens, KV, samplers).  Advertising `batch_slots N`
+**before** the engine speaks BGEN would break every request: the server would send BGEN and the engine would answer
+`ERR unsupported command`.  `dsv41 --batch N` says `INFO batch_slots=N` and speaks all of the above; without the
+flag nothing changes - the one-at-a-time engine the server ran before.
+
+Status: one slot at a time.  The model still holds one conversation, so a slot's answer runs to its end before the next
+request is read (the server may run a solo request while a slot is busy; the engine serves them in turn).  Interleaving
+needs per-sequence KV (M2) or the parked-state bursts of Path B.
