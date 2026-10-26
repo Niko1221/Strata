@@ -26,6 +26,7 @@ The validation also stays ON with the mask: it is the check that the mask and th
 from __future__ import annotations
 import base64
 import json
+import re
 import threading
 
 try:
@@ -153,14 +154,58 @@ def format_of(sampling: dict):
     return rf
 
 
-def grammar(rf: dict, with_tools: bool, vocab: Vocab) -> str:
-    """The Lark grammar: optional whitespace, then the schema's JSON - or, with tools, a tool call."""
+_NAME_SAFE = re.compile(r"[A-Za-z0-9_-]+")    # a tool name safe to put in a grammar regex literal
+
+
+def safe_tool_names(tools) -> list[str]:
+    """The declared tool names a grammar can enumerate: the request's tools array (template form {name, ...} or
+    OpenAI form {type: function, function: {name, ...}} - the same array the route built from its own
+    template_tools()/openai_tools() call), filtered to [A-Za-z0-9_-]+.  A name outside that set is left out and
+    falls back to the free REST branch (a grammar regex literal must not carry stray regex syntax)."""
+    out = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name")
+        if name is None and isinstance(t.get("function"), dict):
+            name = t["function"].get("name")
+        if isinstance(name, str) and _NAME_SAFE.fullmatch(name) and name not in out:
+            out.append(name)
+    return out
+
+
+def grammar(rf: dict | None, with_tools: bool, vocab: Vocab, tool_names=None) -> str:
+    """The Lark grammar: optional whitespace, then the schema's JSON - or, with tools, a tool call.
+    With no format but tools and STRATA_TOOL_MASK=1 (the bare-call grammar), the choice is the call or
+    PROSE: prose cannot START with '<' (a tag or '<tool_call' text must go through the calls branch, where
+    the name sits behind the enum) but a '<' later in the text stays free (measured: masked=0, EOS ok).
+    `tool_names` (opt-in, T3a): when a non-empty list is given, the call's name sits behind a literal
+    single-choice regex (only these names, with a maximal-munch lookahead) instead of being free; the body
+    after the name stays the free REST, as always (the server's tool-call parser reads it, v3 lesson)."""
+    if rf is None:                                   # the bare-call grammar (STRATA_TOOL_MASK=1)
+        if not with_tools:
+            raise ValueError("the bare-call grammar needs tools")
+        names = [n for n in (tool_names or []) if _NAME_SAFE.fullmatch(n)]
+        lines = ["start: WS? answer",
+                 "WS: /[ \\t\\r\\n]+/",
+                 "answer: calls | PROSE",
+                 "PROSE: /[^<][\\s\\S]*/"]
+        if names:
+            alt = "|".join(sorted(names, key=lambda n: (-len(n), n)))
+            lines += [f'calls: {vocab.literal(TOOL_CALL)} WS? NAME REST',
+                      f"NAME: /(?:{alt})[\\s<]/",
+                      "REST: /[\\s\\S]*/"]
+        else:
+            lines += [f"calls: {vocab.literal(TOOL_CALL)} REST",
+                      "REST: /[\\s\\S]*/"]
+        return _llg.LLMatcher.grammar_from_lark("\n".join(lines) + "\n")
     if rf["type"] == "json_object":
         schema = {"type": "object"}
     else:
         schema = (rf.get("json_schema") or {}).get("schema")
         if not isinstance(schema, dict):
             raise ValueError("json_schema without a schema object")
+    names = [n for n in (tool_names or []) if _NAME_SAFE.fullmatch(n)]
     lines = ["start: WS? answer",
              "WS: /[ \\t\\r\\n]+/",
              "answer: json" + (" | calls" if with_tools else ""),
@@ -169,8 +214,22 @@ def grammar(rf: dict, with_tools: bool, vocab: Vocab) -> str:
         # the call itself is not constrained here: the server's tool-call parser reads it as it always did.
         # Anything may follow the opening tag - a tokenizer that writes <tool_call> as plain text (no special
         # token, so feed() cannot free the turn) must still be able to finish the call.
-        lines += [f"calls: {vocab.literal(TOOL_CALL)} REST",
-                  "REST: /[\\s\\S]*/"]
+        if names:
+            # opt-in (T3a/T3d): the declared names are a literal single choice right after the tag (an undecided
+            # whitespace run may sit between them); everything past the name stays REST.
+            # T3d: llguidance 1.9.1 rejects look-around in a regex literal, so the maximal-munch lookahead
+            # (?![\w-]) is replaced by a mandatory delimiter class [\s<] after the alternation (measured in
+            # scratch/t3v_corr.py: with a prefix pair like exec/exec_command the grammar stays on the longer
+            # branch after 'exec', pinning the longest name).  Longest-first ordering keeps that pinning for
+            # llguidance's prioritized alternation.  Names are pre-filtered to [A-Za-z0-9_-]+ by _NAME_SAFE,
+            # so no regex metacharacter can enter the literal (no re.escape needed).
+            alt = "|".join(sorted(names, key=lambda n: (-len(n), n)))
+            lines += [f'calls: {vocab.literal(TOOL_CALL)} WS? NAME REST',
+                      f"NAME: /(?:{alt})[\\s<]/",
+                      "REST: /[\\s\\S]*/"]
+        else:
+            lines += [f"calls: {vocab.literal(TOOL_CALL)} REST",
+                      "REST: /[\\s\\S]*/"]
     return _llg.LLMatcher.grammar_from_lark("\n".join(lines) + "\n")
 
 
@@ -224,7 +283,7 @@ def masks_for_window(m, drafts, cut_ids):
 # ------------------------------------------------------------------------------------------------ one turn
 class Constraint:
     """One generation pass of one request: the matcher, and whether the answer (the constrained part) has started."""
-    def __init__(self, vocab: Vocab, grammar_text: str, armed: bool):
+    def __init__(self, vocab: Vocab, grammar_text: str, armed: bool, name_enum: bool = False):
         self.vocab, self.armed = vocab, armed
         self.m = _llg.LLMatcher(vocab.lltok, grammar_text, log_level=0)
         if self.m.is_error():
@@ -233,6 +292,12 @@ class Constraint:
         self.failed = None                  # why the mask was given up (the validation after the turn then decides)
         self.masked = 0                     # tokens decoded under a mask (diagnostics, tests)
         self.tool_call = vocab.single(TOOL_CALL) # its id, when the model has one token for it
+        # T3a (opt-in): with an enumerated call the release waits for the name - the tag alone no longer frees
+        # the turn; the grammar masks the name's bytes, and a refused consume lands on the existing failed
+        # downgrade below (a refused consume is a permanent matcher error, rollback cannot undo it - measured).
+        self.name_enum = bool(name_enum)
+        self.await_name = False             # the tag was fed under name_enum: the next tokens are the name
+        self.name_len = 0                   # name-enum: non-separator tokens consumed since the tag
 
     # --- the engine's question
     def active(self) -> bool:
@@ -278,8 +343,9 @@ class Constraint:
             if self.tail.endswith(THINK_END):
                 self.armed = True
             return
-        # --- a tool call: the turn is free from here ---
-        if self.tool_call is not None and t == self.tool_call:
+        # --- a tool call: the turn is free from here (unless the call's names are enumerated, T3a: the
+        #     release waits for the name, the grammar masks its bytes, a rule-breaker lands on failed below)
+        if self.tool_call is not None and t == self.tool_call and not self.name_enum:
             self.armed = False                  # a tool call: the turn is free from here (not validated)
             self.failed = "tool call"           # mask() -> None, reply() -> "MF" for the rest of the turn
             return
@@ -287,6 +353,42 @@ class Constraint:
             self.failed = self.m.get_error() or f"token {t} is outside the grammar"
             why = (self.failed.strip().splitlines() or ["?"])[0][:160]
             note_once(f"constrained decoding: gave the mask up in a turn ({why}); the turn is validated after")
+            return
+        if self.name_enum and self.tool_call is not None and t == self.tool_call:
+            self.await_name = True          # the tag sat in the grammar and is consumed: the name is next
+        if self.await_name:
+            # the separator after the enumerated name frees the turn (_all_free() can never fire on a byte
+            # vocabulary: REST compiles to the valid-UTF-8 character set and the invalid single bytes stay
+            # masked forever - measured 2026-10-26, 82/263 tokens, so the release below never reached):
+            text = self.vocab.tok.decode([t])
+            if text and all(ch in " \t\r\n<" for ch in text) and self.name_len > 0:
+                self.await_name = False
+                self.armed = False
+                self.failed = "tool call"
+                return
+            if not (text and all(ch in " \t\r\n<" for ch in text)):
+                self.name_len += 1          # a name token (separators before the name do not count)
+        if self.await_name and self._all_free():
+            # the name is behind us and the body is the free REST: the turn is free exactly where the
+            # tag-only release used to free it one token earlier (the parser reads the call as it always did)
+            self.await_name = False
+            self.armed = False
+            self.failed = "tool call"
+
+    def _all_free(self) -> bool:
+        """True when the matcher's next mask allows every token of the vocabulary: the grammar is past the
+        enumerated name, into REST (anything may follow) - the point where a name-enumerated call frees the
+        turn.  A refused consume can never reach here (it sets failed above and the mask is not asked again)."""
+        bits = self.m.compute_bitmask()
+        nwords = (self.vocab.n + 31) // 32
+        if 4 * nwords > len(bits):              # words past the end are "not allowed": not free
+            return False
+        for w in range(nwords):
+            word = int.from_bytes(bits[4 * w:4 * w + 4], "little")
+            bits_in = min(32, self.vocab.n - 32 * w)
+            if word & ((1 << bits_in) - 1) != (1 << bits_in) - 1:
+                return False                    # one in-vocab token is masked out: still constrained
+        return True
 
     def observe(self, ids) -> None:
         """Tokens the server put into the stream itself (the thinking budget's wrap-up, which ends in </think>)."""

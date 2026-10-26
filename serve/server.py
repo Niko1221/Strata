@@ -362,6 +362,7 @@ class MockEngine:
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
         self.last_embeddings = embeddings
+        self.last_sampling_constraint = (sampling or {}).get(constrain.KEY)
         if len(self.scripts) > 1:
             if self.cycle:
                 self.script = self.scripts[self.turns % len(self.scripts)]
@@ -3937,13 +3938,21 @@ class Service:
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
 
-    def _with_constraint(self, sampling, tools, thinking):
+    def mask_available(self) -> bool:
+        """The engine takes token masks and llguidance is importable: a JSON response format is worth
+        wiring even with tools (the answer|calls grammar masks the turn).  Bare test engines without
+        the INFO key fall back to the prompt directive and the validation after the turn."""
+        return bool(getattr(self.engine, "supports_mask", False)) and constrain.available()
+
+    def _with_constraint(self, sampling, tools, thinking, force=None):
         """A JSON response format on an engine that takes token masks: the request's sampling with a fresh
         serve/constrain.Constraint for this pass (the schema, and with tools also a tool call).  Anything else -
         no format, an older engine, llguidance missing, a schema llguidance cannot compile - leaves it as it was:
         the prompt directive and the validation after the turn."""
         fmt = constrain.format_of(sampling) if isinstance(sampling, dict) else None
-        if fmt is None:
+        if fmt is None or force is not None:
+            # a forced tool_choice appends the call's opening tag to the prompt; the grammar starts at that
+            # tag and would wait for one that is already there - the directive and the validation stand in
             return sampling
         if not getattr(self.engine, "supports_mask", False):
             constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
@@ -3957,7 +3966,21 @@ class Service:
             vocab = self.__dict__.get("_llg_vocab")
             if vocab is None:
                 vocab = self.__dict__.setdefault("_llg_vocab", constrain.Vocab(self.tok, self.stop_ids))
-            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab), armed=not thinking)
+            # T3a opt-in (default off): STRATA_TOOL_NAME_ENUM=1 enumerates the request's declared tool names
+            # in the grammar.  The names come from the very tools array this request rendered (the same
+            # template_tools()/openai_tools() result the route built) - never from a later routes() call.
+            names = constrain.safe_tool_names(tools) if os.environ.get("STRATA_TOOL_NAME_ENUM") == "1" else []
+            if fmt is None and os.environ.get("STRATA_TOOL_MASK") == "1" and tools:
+                # T6 (bare tool calls, opt-in): no JSON format but tools are offered - constrain the call
+                # itself: a tag (or '<tool_call' text) can only arrive through the calls branch, where the
+                # name sits behind the enum and the separator frees the turn; prose stays possible (it just
+                # cannot START with '<' - a '<' later in the text is free, measured).  The call body after
+                # the name stays the free REST (the parser reads it, v3 lesson); thinking turns are unarmed
+                # as with the format path.  A prose turn under the mask costs the valid-UTF-8 character set
+                # (a byte vocabulary's invalid single bytes stay masked - measured 82/263) until the EOS.
+                fmt = {"type": "bare"}                      # grammar(None, ...) = the bare-call grammar
+            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab, tool_names=names or None),
+                                     armed=not thinking, name_enum=bool(names))
         except Exception as e:                           # noqa: BLE001 - an unsupported schema keyword, a vocab problem
             constrain.note_once(f"constrained decoding off for a request: {str(e).splitlines()[0][:200]}")
             return sampling
@@ -4711,6 +4734,7 @@ class Service:
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": bool(getattr(self.engine, "supports_mask", False) and constrain.available()),
+                                  "tools_with_json": self.mask_available(),   # /v1/chat/completions takes tools + a JSON format together when the mask is on
                                   "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
@@ -5117,7 +5141,8 @@ class Service:
                 out.append(ev)
             return out
         opening = []                                    # without thinking the prompt ends with the forced opening:
-        if force and not thinking:                      # the parser reads it as if the model had written it
+        forced = force                                  # a forced call keeps the mask unarmed even once the
+        if force and not thinking:                      # opening has been fed (see _with_constraint)
             opening, force = parser.feed(force), None
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
@@ -5234,7 +5259,7 @@ class Service:
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
-                    sampling = self._with_constraint(sampling, tools, thinking)   # serve/constrain.py (or unchanged)
+                    sampling = self._with_constraint(sampling, tools, thinking, force=forced)   # serve/constrain.py (or unchanged)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -5935,6 +5960,12 @@ def structured_chunks(chunks, validator):
                 yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
+        if choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+            # a turn that calls a tool is not the final answer: the schema validates the answer, not the
+            # call (the same reading as /v1/responses #782) - pass the call through as it came
+            for chunk in buffered:
+                yield chunk
+            return
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
         yield buffered[0]
         delta = {"content": content}
@@ -7115,8 +7146,12 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
-            messages, validator = prepare_format(req.get("response_format"), messages)
-            if validator is not None and (tools or req.get("strata_mcp")):
+            wants_tools = bool(tools) or req.get("strata_mcp") is True
+            # a JSON format with tools: on an engine that takes token masks the answer|calls grammar masks
+            # the turn (the call goes through, the schema binds the final answer, as on /v1/responses #782);
+            # anywhere else the prompt directive cannot tell a call turn from an answer, so the old 400 stays
+            messages, validator = prepare_format(req.get("response_format"), messages, with_tools=wants_tools)
+            if validator is not None and wants_tools and not svc.mask_available():
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
