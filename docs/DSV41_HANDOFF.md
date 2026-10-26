@@ -31,6 +31,13 @@ Then the engine's batch protocol, in a model window (2026-10-26 17:56-18:02):
   client that leaves mid-stream (BSTOP) does not disturb the next request.  The server's trace shows 6 `BGEN`
   admissions and 3 `BSTOP`s.
 
+Then a read gives way (19:07-19:10): with `--batch 2` the prompt is fed in 1024-token slices and a `BYIELD` between two
+of them ends it (`YIELDED <slot> <n>` + DONE; the partially read state stays in the model and the next admission reads
+on).  A 4,031-token prompt with a short request 1.2 s behind it: the short one's first token at 0.77 s instead of 5.47 s
+(engine line: "the prompt read gave way after 1024 of 4031 tokens"), and the HTTP check still gives the reference answer
+byte-identical to production with the sliced read (three clients interleaving, a client leaving mid-stream handled).
+Its later tokens still wait for the long read: between slices the read holds the model.
+
 Then the two-slot version, same day (18:17-18:24, `--batch 2 --slot-burst 8`): the probe's two admissions at once - each
 slot's tokens equal its GEN reference and their BT lines interleave (`0001110000111100001111`); over HTTP three clients
 interleave their answer tokens (8 handovers over 47 tokens, 2 with one slot) and the reference prompt admitted through
@@ -61,8 +68,10 @@ tokens): parking states buys latency fairness, not throughput - that is M2/M3's 
 * The slots take turns by parking their conversation in host memory (`Model::slot_save`/`slot_load`): the model holds
   one conversation, so a switch costs one save and one load (tens of MB at 8K tokens, ~ms).  `--slot-burst K` (16 by
   default) is how many tokens one slot decodes per turn; a burst of 8 makes the interleaving visible without much
-  overhead.  A picture request sets `no_switch` and runs to its end; a prompt read blocks the other slots (BYIELD is
-  dropped).
+  overhead.  A picture request sets `no_switch` and runs to its end; a read is fed in 1024-token slices so that a
+  `BYIELD` can end it between two of them (the part read stays as the model's state, `kept = from` otherwise).
+* Between the slices of a read the model is still held by it: the slots' tokens wait for the read to finish or give way.
+  Interleaving the read slices with the slots' bursts is the next step (the design's section 3 scheduler).
 * A finished slot leaves its conversation in the model (unowned); the next admission parks it into the conversation
   folder (if `slot_max > 0`), so a later turn still reuses its prefix.
 * Test assets on the box: `build/strata-dsv41.batch` (the `--batch` engine), `strata-batch1.json` (production config

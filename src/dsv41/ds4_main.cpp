@@ -20,8 +20,10 @@
 // reading it again (also without slots).  STRATA_DS4_REUSE=0 turns every reuse off (each request reads its whole prompt).
 // --batch N speaks the server's batched path (docs/DSV41_BATCHING.md, M4): `BGEN <slot> <max_new> [keys] <ids>` reads
 // the request's prompt and first token as a GEN 1, answers `BADM <slot> 1`, then decodes the rest on `BT <slot> <id>` lines
-// until `BDONE <slot> <produced> <finish> <ms>`; `BSTOP <slot>` ends one slot.  INFO batch_slots=N turns the server's path
-// on, so it is said only here.  With N > 1 the model still holds one conversation: a slot that is not decoding is set
+// until `BDONE <slot> <produced> <finish> <ms>`; `BSTOP <slot>` ends one slot.  `BYIELD <slot>` (a shorter request waits
+// for the control lines) ends a prompt read between two 1024-token slices: `YIELDED <slot> <tokens read>` and DONE, and
+// the same prompt's next call reads on from there - a quick chat does not wait behind a 40k-token agent prompt.  INFO
+// batch_slots=N turns the server's path on, so it is said only here.  With N > 1 the model still holds one conversation: a slot that is not decoding is set
 // aside in host memory (Model::slot_save) and loaded back for its next burst (`--slot-burst K`, 16 by default), so the
 // slots take turns and their BT lines interleave.  That is the latency half of the design in docs/DSV41_BATCHING.md -
 // the same tokens go through the same kernels, so the aggregate stays until M2/M3 (per-sequence KV, batched MoE).
@@ -109,6 +111,7 @@ struct Lines {
     bool eof = false;
     std::atomic<bool> stop{false};
     std::atomic<int> bstop{-1};   // BSTOP <slot>: that batch slot's decode ends (the server's batched path, M4)
+    std::atomic<int> byield{-1};  // BYIELD <slot>: the control lines are wanted elsewhere - a read gives way (#656)
     void start() {
         std::thread([this] {
             std::string l;
@@ -123,7 +126,10 @@ struct Lines {
                     bstop.store(l.size() > 6 ? std::atoi(l.c_str() + 6) : -1);
                     continue;
                 }
-                if (l.rfind("BYIELD", 0) == 0) continue;   // (the read never gives way: a prompt is read whole)
+                if (l.rfind("BYIELD", 0) == 0) {
+                    byield.store(l.size() > 7 ? std::atoi(l.c_str() + 7) : -1);
+                    continue;
+                }
                 if (l == "QUIT") stop.store(true);
                 q.push_back(l);
                 cv.notify_all();
@@ -976,6 +982,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         in.stop.store(false);
         in.bstop.store(-1);   // (a BSTOP for a slot of a request that has ended is stale)
+        in.byield.store(-1);
         Req r;
         if (!parse_gen(line, r, geni)) {
             std::printf("ERR expected: GEN <max_new> [keys] <id,id,...> or GENI <max_new> [keys] <file> <id,id,...>\n");
@@ -1115,12 +1122,22 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         if (from > 0 && from < total) m.checkpoint(1);
         m.set_cancel([&in] { return in.stop.load(); });
         bool stopped = false;
+        int64_t gave_way = -1;   // BYIELD: the read stops here for a shorter request; the part read stays in the model
         while (ok && done < total) {
             if (in.stop.load()) {
                 stopped = true;
                 break;
             }
-            size_t n = std::min<size_t>((size_t) m.feed_unit(), total - done);
+            // (#656) a shorter request is waiting for the control lines: the read gives way at a chunk boundary (a read
+            // with pictures is not cut - its spans' state would have to be rebuilt)
+            if (pics.empty() && in.byield.load() >= 0 && done > from) {
+                gave_way = (int64_t) done;
+                break;
+            }
+            // (#656) with batch slots a read is fed in slices: between two of them a shorter request gets the control
+            // lines, and the state stops where it is consistent (mid-run it is not - a STOP goes back to the start)
+            const size_t slice = batch_slots > 0 && pics.empty() ? (size_t) 1024 : (size_t) m.feed_unit();
+            size_t n = std::min<size_t>(slice, total - done);
             if (pin_at > done && pin_at < done + n) n = pin_at - done;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
             const bool fin = done + n == total;
@@ -1143,6 +1160,21 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         m.set_cancel(nullptr);
         m.set_images({});
+        if (gave_way >= 0) {
+            // the read gives way: the part read stays in the model (its tokens = gave_way), the server sends the same
+            // prompt again and this read goes on from there - never from 0, so a long prompt cannot be starved
+            const int ys = in.byield.load();
+            in.byield.store(-1);
+            std::fprintf(stderr, "ds4 serve: the prompt read gave way after %lld of %zu tokens (slot %d, %.0f ms)\n",
+                         (long long) gave_way, total, ys, now_ms() - t0);
+            std::printf("YIELDED %d %lld\n", ys, (long long) gave_way);
+            std::printf("DONE 0 %zu %.1f 0.0 cancel 0 0 %lld 0 0\n", r.ids.size(), now_ms() - t0, (long long) gave_way);
+            if (admit_slot >= 0) std::printf("BADM %d 0\n", admit_slot);
+            std::fflush(stdout);
+            held.clear();
+            cur = -1;   // (the conversation is in the model, but no slot owns it)
+            continue;
+        }
         if (stopped || (!ok && m.cancelled())) {
             const bool back = from > 0 && m.restore((int64_t) from) && (size_t) m.pos() == from;
             if (!back) {

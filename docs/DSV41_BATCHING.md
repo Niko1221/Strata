@@ -177,8 +177,9 @@ reports `batch_slots`.  The lines, as the server actually reads them:
   cancel);
 * the slot's own tokens are `BT <slot> <id>` and it ends with `BDONE <slot> <produced> <finish> <ms>`; `<produced>`
   counts the admission's token too.  Both go to a per-slot queue (`serve/server.py:_pump`), not the control lines;
-* `BSTOP <slot>` ends that slot (`BDONE ... cancel`); `BYIELD <slot>` is accepted and dropped (this engine reads a
-  prompt whole); `STOP` still stops a solo request and `QUIT` ends the engine.
+* `BSTOP <slot>` ends that slot (`BDONE ... cancel`); `BYIELD <slot>` (a much shorter prompt waits for the control
+  lines) ends a prompt read between two 1024-token slices - `YIELDED <slot> <tokens read>`, then DONE - and the same
+  prompt's next admission reads on from there; `STOP` still stops a solo request and `QUIT` ends the engine.
 
 A slot is a conversation the engine holds between calls (its tokens, KV, samplers).  Advertising `batch_slots N`
 **before** the engine speaks BGEN would break every request: the server would send BGEN and the engine would answer
@@ -194,6 +195,12 @@ BGEN behind them returns the byte-identical production answer, and a client that
 `BSTOP` without disturbing the next request.  The wall time does not drop (4.13 s with one slot, 4.23 s with two): the
 same tokens go through the same kernels - this is the latency half, not the throughput half.
 
-Known limits of this stage: a prompt read still blocks the other slots (BYIELD is dropped), a request with pictures runs
-to its end without being parked (its state cannot be set aside), and each parked slot holds its conversation in host
-memory, so the cost per switch grows with the context (tens of MB at 8K tokens).
+A read gives way to a shorter request (#656): with `--batch N` a prompt is fed in 1024-token slices, and a `BYIELD`
+between two of them ends the read - the part read stays in the model, the server sends the same prompt again, and its
+read goes on from where it stopped.  Measured: a 4,031-token prompt with a short request 1.2 s behind it - the short
+one's first token at 0.77 s instead of 5.47 s, and the engine's own line "the prompt read gave way after 1024 of 4031
+tokens".  Its later tokens still wait for the long read's remaining slices.
+
+Known limits of this stage: between the slices of a read the model is held by that read (the slots' bursts wait), a
+request with pictures runs to its end without being parked (its state cannot be set aside), and each parked slot holds
+its conversation in host memory, so the cost per switch grows with the context (tens of MB at 8K tokens).
