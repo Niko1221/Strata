@@ -41,6 +41,8 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 
 121 + 111 + 8 = 239 GB for 1.75; 138 + 111 + 8 = 257 GB for 2.00; 155 + 111 + 8 = 274 GB for 2.25.
 
+The engine reads the n-gram table as MXFP8, Q6_K, IQ4_NL (the file above) or Q5_K. Unsloth's UD-IQ2_XXS set stores it as Q5_K.
+
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
 tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
 tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.

@@ -4,6 +4,7 @@
 // angles, the softmaxes and the roundings follow the reference's F32 arithmetic.  A window's token is blockIdx.y.
 #include "ds4_kernels.cuh"
 #include "ds4_numerics.cuh"
+#include "ds4_q5k.cuh"
 #include "ds4_q6k.cuh"
 #include "ds4_attn_split.cuh"
 
@@ -1339,6 +1340,11 @@ __global__ void engram_dequant_kernel(const uint8_t* __restrict__ rows, const ui
             out[(size_t) r * hd + e] = iq4nl_value(rows + (size_t) r * hd + (size_t) (e / 32) * 18, e % 32);
         return;
     }
+    if (fmt == 4) {   // (ggml Q5_K superblocks at the row's start)
+        for (int e = threadIdx.x; e < hd; e += blockDim.x)
+            out[(size_t) r * hd + e] = q5k_value(rows + (size_t) r * hd + (size_t) (e / 256) * kQ5kBytes, e % 256);
+        return;
+    }
     for (int e = threadIdx.x; e < hd; e += blockDim.x) {
         const float hv = e4m3_value(rows[(size_t) r * hd + e]);
         const uint8_t sb = scales[(size_t) r * (hd / 32) + e / 32];
@@ -1756,6 +1762,11 @@ __global__ void engram_dequant_tok_kernel(const uint8_t* __restrict__ src, size_
     if (fmt == 2) {   // (ggml IQ4_NL blocks at the row's start, their scales inside)
         for (int e = threadIdx.x; e < hd; e += blockDim.x)
             out[(size_t) r * hd + e] = iq4nl_value(rows + (size_t) (e / 32) * 18, e % 32);
+        return;
+    }
+    if (fmt == 4) {   // (ggml Q5_K superblocks at the row's start)
+        for (int e = threadIdx.x; e < hd; e += blockDim.x)
+            out[(size_t) r * hd + e] = q5k_value(rows + (size_t) (e / 256) * kQ5kBytes, e % 256);
         return;
     }
     for (int e = threadIdx.x; e < hd; e += blockDim.x) {
