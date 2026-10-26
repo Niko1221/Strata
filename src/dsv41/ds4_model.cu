@@ -3035,7 +3035,12 @@ struct Model::Impl {
                       dalloc(d, c.ckr, C * HD, err) && dalloc(d, c.cgr, C * HD, err) &&
                       dalloc(d, c.latent, (C + 2) * HD, err) && dalloc(d, c.lat16, (C + 2) * HD, err) &&
                       dalloc(d, c.ikr, (C + 2) * g.ix_hd, err) &&
-                    dalloc(d, c.ext, ((size_t) g.win + C + (size_t) nseq * ((size_t) g.win + 1)) * HD, err) &&
+                    // (a step's per-row window blocks are a (win + 1)-row block a row, up to kWin rows: after the
+                    //  contiguous path's win + C rows the buffer holds a whole step's blocks, whatever the chunk is -
+                    //  at --prefill-chunk 8 a chunk's C is smaller than one step's blocks)
+                    dalloc(d, c.ext,
+                           ((size_t) g.win + C + (size_t) std::max<int>(nseq, kWin) * ((size_t) g.win + 1)) * HD,
+                           err) &&
                       dalloc(d, c.q, A * HQ, err) && dalloc(d, c.o, A * HQ, err) && dalloc(d, c.o16, A * HQ, err) &&
                       dalloc(d, c.oa, A * OG * g.o_lora, err) && dalloc(d, c.oa16, A * OG * g.o_lora, err) &&
                       dalloc(d, c.iq, AI * g.ix_heads * g.ix_hd, err) && dalloc(d, c.iw, C * 64, err) &&

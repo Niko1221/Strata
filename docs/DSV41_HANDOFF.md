@@ -294,3 +294,11 @@ and reads its input line between two steps is the shape to build, and the hand-o
 GPUs.
 
 The experiment is not in the tree: it was reverted after measuring, so `6aa4878` is what the branch holds.
+
+
+**Correction (2026-10-27 07:05).**  The A/B above fails on the *pristine* tree too, so it is not a casualty of the fixes
+tried at 06:00.  One cause is proved and fixed in the tree now: `layer_chunk`'s per-row branch lays a row's window out
+as a `(win + 1)`-row block at `t * (win + 1)`, up to `kWin` rows a step, but the chunk's `ext` scratch only reserved
+`win + C + nseq * (win + 1)` rows - at `--prefill-chunk 8` (C = 8) a step of 8 rows writes 1032 rows into a 523-row
+buffer.  The buffer now reserves `max(nseq, kWin)` blocks after the contiguous path's rows.  The A/B still ends with an
+illegal memory access, so the per-row chunk path has at least one more fault before the step can stand on it.
