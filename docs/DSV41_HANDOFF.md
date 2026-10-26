@@ -75,6 +75,10 @@ M5's drafting question is answered on the box: with the drafter on, three client
 with it off for the batch slots (`STRATA_DS4_BATCH_NOSPEC=1`) 5.09 s and 5.31 s - the drafter stays on (the design's
 guess was "likely off").  The flag stays for a wider measurement.
 
+Where a token's time goes (21:19-21:21): decode is 79 tok/s at a 216-token context, 90 at 3.5K, 90 at 10K, 77 at 20K - the
+context moves it by a few percent, and the attention kernel's own header puts a query at ~125 us (~1% of a 12.5 ms step).
+M2 therefore buys *overlap*, not throughput; the MoE (M3) is where the 2-3x is.  Prompt reads: 585-590 tok/s from 3.5K.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

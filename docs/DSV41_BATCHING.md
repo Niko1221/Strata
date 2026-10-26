@@ -7,6 +7,15 @@ they are what turns the present interleaving of requests into real throughput.  
 the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
 2.25 bpw pack (274 GB, 1M context).
 
+## Where a token's time goes (measured, 2026-10-26)
+
+Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at
+3.5K, 90 tok/s at 10K, 77 tok/s at 20K (greedy, one request at a time, the batched engine; prompt reads 585-590 tok/s from
+3.5K on).  The split-KV attention is documented in its own header at ~125 us a query (`ds4_attn_split.cuh`), ~1% of the
+step, and even at 20K the whole attention path is a few percent.  So **M2 buys overlap, not throughput**: the time is in
+the MoE (M3), which is where the 2-3x is.  M2 stays the prerequisite for a batched step - each token's attention needs
+its own KV and positions - not the speedup itself.
+
 ## Where it stands
 
 `strata-dsv41 --serve` reads one request at a time: `GEN <max_new> [keys] <ids>`, `GENI` for pictures,
