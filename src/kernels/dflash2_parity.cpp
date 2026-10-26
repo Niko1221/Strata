@@ -25,6 +25,26 @@ template<class T> struct Device {
     Device(const Device&) = delete;
     std::vector<T> read(size_t n) { std::vector<T> v(n); checked(cudaMemcpy(v.data(), p, n*sizeof(T), cudaMemcpyDeviceToHost)); return v; }
 };
+// Optional mapped input validates identical selector arithmetic through host memory.
+struct SelectorBook {
+    uint16_t* p=nullptr;
+    void* host=nullptr;
+    explicit SelectorBook(const std::vector<uint16_t>& values) {
+        const char* flag=std::getenv("STRATA_TEST_HOST_CODEBOOKS");
+        if(flag && flag[0]=='1') {
+            checked(cudaHostAlloc(&host,values.size()*2,cudaHostAllocMapped));
+            const auto status=cudaHostGetDevicePointer(&p,host,0);
+            if(status!=cudaSuccess) {cudaFreeHost(host);host=nullptr;checked(status);}
+            std::memcpy(host,values.data(),values.size()*2);
+        } else {
+            checked(cudaMalloc(&p,values.size()*2));
+            const auto status=cudaMemcpy(p,values.data(),values.size()*2,cudaMemcpyHostToDevice);
+            if(status!=cudaSuccess) {cudaFree(p);p=nullptr;checked(status);}
+        }
+    }
+    ~SelectorBook() {if(host)cudaFreeHost(host);else if(p)cudaFree(p);}
+    SelectorBook(const SelectorBook&)=delete;
+};
 void near(float got, double want) {
     if (!std::isfinite(got) || std::abs(got - want) > 3e-5 * (1 + std::abs(want)))
         throw std::runtime_error("GPU/reference mismatch: " + std::to_string(got) + " vs " + std::to_string(want));
@@ -271,7 +291,7 @@ void selector(bool timing) {
             p=(uint32_t)p16[i]<<16;n=(uint32_t)n16[i]<<16;
             std::memcpy(&prev[i],&p,4);std::memcpy(&next[i],&n,4);
         }
-        Device<uint16_t> dp16(p16),dn16(n16);
+        SelectorBook dp16(p16),dn16(n16);
         Device<float> dl(logits), dh(hidden), dp(prev), dn(next), du(rows * top_k);
         Device<int32_t> anchor(std::vector<int32_t>{7}), ids(rows * top_k), output(rows - 1);
         Device<float> confidence(rows - 1);
@@ -290,6 +310,8 @@ void selector(bool timing) {
         }
         Device<uint8_t> lattice((size_t)rows*top_k*top_k*sizeof(float));
         const size_t lattice_bytes=(size_t)rows*top_k*top_k*sizeof(float);
+        const size_t staging_bytes=dflash2_select_staging_bytes(rows,top_k,rank);
+        Device<uint8_t> staging(staging_bytes);
         for (bool probabilities : {false, true}) {
             dflash2_select(ids.p, du.p, dh.p, dp.p, dn.p, anchor.p, output.p,
                            probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr);
@@ -300,7 +322,29 @@ void selector(bool timing) {
                                 probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
                 throw std::runtime_error("BF16 and FP32 codebook selector results differ");
+            dflash2_select_staged(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                probabilities?confidence.p:nullptr,rows,top_k,rank,vocab,
+                staging.p,staging_bytes,nullptr,lattice.p,lattice_bytes);
+            if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
+                throw std::runtime_error("staged codebook selector results differ");
             if (rows==8 && top_k==16 && rank==256 && probabilities) {
+                Device<int32_t> tail_ids(rows*top_k);
+                checked(cudaMemcpy(tail_ids.p+top_k,ids.p+top_k,
+                    (rows-1)*top_k*sizeof(int32_t),cudaMemcpyDeviceToDevice));
+                dflash2_select_staged(tail_ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                    confidence.p,rows,top_k,rank,vocab,staging.p,staging_bytes,nullptr,lattice.p,lattice_bytes);
+                if(output.read(rows-1)!=got || confidence.read(rows-1)!=prob)
+                    throw std::runtime_error("staged selector read an uninitialized anchor ID");
+                const auto sentinel_stage=staging.read(16);
+                for(bool unaligned:{false,true}) {
+                    bool refused=false;
+                    try {dflash2_select_staged(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                        confidence.p,rows,top_k,rank,vocab,staging.p+(unaligned?1:0),
+                        staging_bytes-(unaligned?0:1),nullptr,lattice.p,lattice_bytes);}
+                    catch(const std::invalid_argument&){refused=true;}
+                    if(!refused || staging.read(16)!=sentinel_stage)
+                        throw std::runtime_error("staged selector accepted or wrote invalid scratch");
+                }
                 auto shifted_p = p16, shifted_n = n16;
                 auto shifted_h = hidden;
                 shifted_p.insert(shifted_p.begin(), 0); shifted_n.insert(shifted_n.begin(), 0);
@@ -379,6 +423,11 @@ void selector(bool timing) {
                                probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr,false,lattice.p,lattice_bytes);
             if (output.read(rows - 1) != got || (probabilities && confidence.read(rows - 1) != prob))
                 throw std::runtime_error("omitting anchor logits changed the selector");
+            dflash2_select_staged(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                probabilities?confidence.p:nullptr,rows,top_k,rank,vocab,
+                staging.p,staging_bytes,nullptr,lattice.p,lattice_bytes);
+            if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
+                throw std::runtime_error("staged selector read poisoned anchor logits");
             int predecessor = 7;
             for (int row = 1; row < rows; ++row) {
                 std::vector<double> scores(top_k);
@@ -668,7 +717,7 @@ void invalid_model_values() {
     dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,anchor.p,picks.p,prob.p,3,2,1,nullptr);
     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("selector masked an invalid transition");
     for(float p:prob.read(2))if(p!=0)throw std::runtime_error("invalid selector confidence is not zero");
-    Device<uint16_t> prev16(std::vector<uint16_t>{0x3f80,0x3f80}),
+    SelectorBook prev16(std::vector<uint16_t>{0x3f80,0x3f80}),
         next16(std::vector<uint16_t>{0x3f80,0x7fc0});
     Device<float> lattice(12);
     dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,anchor.p,picks.p,prob.p,3,2,1,nullptr,
@@ -680,6 +729,18 @@ void invalid_model_values() {
     dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,negative_anchor.p,picks.p,prob.p,3,2,1,nullptr,
                        false,lattice.p,12*sizeof(float));
     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("negative BF16 selector anchor accepted");
+    const size_t stage_bytes=dflash2_select_staging_bytes(3,2,1);
+    Device<uint8_t> stage(stage_bytes);
+    for(bool negative:{false,true}) {
+        dflash2_select_staged(ids.p,unary.p,hidden.p,prev16.p,next16.p,
+            negative?negative_anchor.p:anchor.p,picks.p,prob.p,3,2,1,2,
+            stage.p,stage_bytes,nullptr,lattice.p,12*sizeof(float));
+        for(int token:picks.read(2))if(token!=-1)
+            throw std::runtime_error("staged selector accepted an invalid transition");
+        for(float value:prob.read(2))if(value!=0)
+            throw std::runtime_error("staged selector invalid confidence is not zero");
+    }
+
     // Rejected API calls must not launch a kernel which poisons the CUDA context.
     bool refused=false;
     try { dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,anchor.p,picks.p,prob.p,3,2,1025,nullptr); }
@@ -698,9 +759,10 @@ int main(int argc, char** argv) {
         std::puts("PASS: attention FP64 oracle, ring addressing and invalid values");
         return 0;
     }
-    if (argc > 1 && std::strcmp(argv[1], "--selector-bench") == 0) {
-        try { selector(true); checked(cudaDeviceSynchronize()); }
+    if (argc > 1 && (std::strcmp(argv[1], "--selector-bench") == 0 || std::strcmp(argv[1], "--selector-check") == 0)) {
+        try { selector(std::strcmp(argv[1],"--selector-bench")==0); invalid_model_values(); checked(cudaDeviceSynchronize()); }
         catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
+        std::puts("PASS: mapped/staged selector IDs, confidence and invalid values");
         return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "--topk-smoke") == 0) {

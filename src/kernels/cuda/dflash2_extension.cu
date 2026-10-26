@@ -559,6 +559,72 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
 }
 namespace {
+__global__ void selector_stage_books(const int32_t* ids, const int32_t* anchor,
+    const uint16_t* __restrict__ prev, const uint16_t* __restrict__ next,
+    uint16_t* __restrict__ staged_prev, uint16_t* __restrict__ staged_next,
+    int32_t* compact_ids, int32_t* compact_anchor, int top_k, int rank, int vocab) {
+    const int compact=blockIdx.x, t=threadIdx.x;
+    // Anchor-row head IDs are intentionally unwritten in the normal runtime.
+    const int token=compact==0?anchor[0]:(compact<=top_k?-1:ids[compact-1]);
+    const bool valid=token>=0 && token<vocab;
+    if(!t) {
+        if(compact)compact_ids[compact-1]=valid?compact:-1;
+        else compact_anchor[0]=valid?0:-1;
+    }
+    const size_t source=(size_t)(valid?token:0)*rank, destination=(size_t)compact*rank;
+    if(rank%8==0 && ((uintptr_t(prev)|uintptr_t(next))&15)==0) {
+        for(int j=t*8;j<rank;j+=32*8) {
+            const uint4 p=valid?*(const uint4*)(prev+source+j):make_uint4(0,0,0,0);
+            const uint4 n=valid?*(const uint4*)(next+source+j):make_uint4(0,0,0,0);
+            *(uint4*)(staged_prev+destination+j)=p;
+            *(uint4*)(staged_next+destination+j)=n;
+        }
+    } else {
+        for(int j=t;j<rank;j+=32) {
+            staged_prev[destination+j]=valid?prev[source+j]:0;
+            staged_next[destination+j]=valid?next[source+j]:0;
+        }
+    }
+}
+__global__ void selector_unmap_ids(const int32_t* compact, const int32_t* ids,
+                                   int32_t* out, int rows, int top_k) {
+    const int r=threadIdx.x;
+    if(r<rows-1) {
+        const int at=compact[r];
+        out[r]=at>0 && at<=rows*top_k?ids[at-1]:-1;
+    }
+}
+}
+std::size_t dflash2_select_staging_bytes(int rows, int top_k, int rank) {
+    if(rows<2 || rows>8 || top_k<1 || top_k>64 || rank<1 || rank>1024)
+        throw std::invalid_argument("dflash2_select_staged: invalid geometry");
+    const size_t book=(((size_t)rows*top_k+1)*rank*2+31)&~size_t(31);
+    const size_t ids=((size_t)rows*top_k*4+31)&~size_t(31);
+    return 2*book+ids+64;
+}
+void dflash2_select_staged(const int32_t* ids, const float* unary, const float* hidden,
+    const uint16_t* prev, const uint16_t* next, const int32_t* anchor,
+    int32_t* out, float* confidence, int rows, int top_k, int rank, int vocab,
+    void* staging, size_t staging_bytes, void* stream, void* scratch, size_t scratch_bytes) {
+    const size_t needed=dflash2_select_staging_bytes(rows,top_k,rank);
+    if(!ids || !unary || !hidden || !prev || !next || !anchor || !out || vocab<1 ||
+       !staging || staging_bytes<needed || (uintptr_t(staging)&31)!=0)
+        throw std::invalid_argument("dflash2_select_staged: missing inputs or invalid staging");
+    const size_t book=(((size_t)rows*top_k+1)*rank*2+31)&~size_t(31);
+    const size_t id_bytes=((size_t)rows*top_k*4+31)&~size_t(31);
+    auto* p=(uint16_t*)staging;
+    auto* n=(uint16_t*)((uint8_t*)staging+book);
+    auto* compact_ids=(int32_t*)((uint8_t*)staging+2*book);
+    auto* compact_anchor=(int32_t*)((uint8_t*)compact_ids+id_bytes);
+    auto* compact_out=compact_anchor+8;
+    selector_stage_books<<<rows*top_k+1,32,0,(cudaStream_t)stream>>>(
+        ids,anchor,prev,next,p,n,compact_ids,compact_anchor,top_k,rank,vocab);
+    dflash2_select_bf16(compact_ids,unary,hidden,p,n,compact_anchor,compact_out,
+        confidence,rows,top_k,rank,stream,false,scratch,scratch_bytes);
+    selector_unmap_ids<<<1,32,0,(cudaStream_t)stream>>>(compact_out,ids,out,rows,top_k);
+}
+
+namespace {
 __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_bf16,
                                int rows, int hidden, int hc) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;

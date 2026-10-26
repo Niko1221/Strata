@@ -94,6 +94,7 @@ execution of the same weights. They do not replace the checkpoint or the target 
 | `STRATA_DFLASH2_MERGE_TOPK` | Merges sorted tile lists using their current heads | Uses the existing tiled workspace, with at most 64 vocabulary tiles. Other cases retain the previous merge. |
 | `STRATA_DFLASH2_VECTOR_SELECTOR` | Loads four BF16 selector rank values at once | Rank divisible by four and aligned buffers. Other shapes, reference and serial modes retain scalar reads. Also works with the existing lattice selector. |
 | `STRATA_DFLASH2_CACHE_QUERY` | Keeps the attention tile's four query values in registers | Preserves dot-product and reduction order; can be combined with `STRATA_DFLASH2_SMALL_PAGE_ATTENTION=1`. |
+| `STRATA_DFLASH2_HOST_CODEBOOKS` | Keeps the two BF16 selector tables in pinned system RAM, visible to the GPU | Value 2 first copies the selected rows to a small GPU buffer. Requires enough available system RAM. |
 
 The merge option can be combined with the existing
 `STRATA_DFLASH2_REGISTER_TOPK=1` tile kernel. Each component can be measured
@@ -126,6 +127,22 @@ reads free device memory. The auto cache can therefore use the VRAM that a full
 borrow chunks from the expert cache while decoding. The target's KV policy is
 unchanged. An infeasible startup allocation still reports an error, and the complete
 model plus expert cache must fit the PC's available VRAM.
+
+`STRATA_DFLASH2_HOST_CODEBOOKS=1` moves the selector tables to mapped system RAM.
+Value 2 also stages only the selected rows on the GPU before scoring them. Both
+retain the BF16 table values and selector arithmetic. With the official Q8_0
+checkpoint, the upload fixture accounts for 242.5 MiB less device memory with
+value 1, or 242.373 MiB less with value 2 (including its 132,672-byte staging
+buffer). These measurements are from the RTX 4070 Ti SUPER build. They are device
+allocation accounting, not a guarantee of identical driver allocation rounding.
+Pinned RAM remains allocated until the drafter is released.
+
+The automatic expert cache sees the freed memory at startup. A manually sized
+cache needs a separate adjustment and a new fit check after warmup; enabling the
+option alone does not increase its expert count. More available VRAM does not by
+itself establish faster generation. The
+[2026-10-26 report](../bench/results/2026-10-26-dflash2-attention/README.md)
+records token checks and throughput comparisons with MTP.
 
 The [128K VRAM audit](../bench/results/2026-10-19-dflash2-vram/README.md) checks full
 BF16/Q8_0/Q4_0 allocations and one actual elastic growth step on RTX 4070 Ti SUPER.

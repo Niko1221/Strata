@@ -217,6 +217,12 @@ private:
     void project(const uint16_t* x, const uint16_t* w, float* y, int ni, int no, int rows, void* stream, bool prepared = false);
     void prepare_projection(const uint16_t* x, int ni, int rows, void* stream);
     std::vector<std::pair<const uint16_t*, int>> quant_types_;
+#ifdef STRATA_ENABLE_DFLASH2
+    // Optional pinned selector tables; wt_ holds their device-visible views.
+    std::vector<void*> host_codebooks_;
+    void* selector_staging_ = nullptr;
+    std::size_t selector_staging_bytes_ = 0;
+#endif
     float* proj_float_ = nullptr;
     uint8_t* proj_q8_ = nullptr;
 

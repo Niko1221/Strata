@@ -287,6 +287,11 @@ void DFlashDrafter::release() {
     clear_graphs();
     auto free_dev = [](void* p) { if (p) cudaFree(p); };
     free_dev(w_); free_dev(head_ids_); head_ids_ = nullptr; head_rows_ = 0;
+#ifdef STRATA_ENABLE_DFLASH2
+    for (void* host : host_codebooks_) if (host) cudaFreeHost(host);
+    host_codebooks_.clear();
+    free_dev(selector_staging_); selector_staging_ = nullptr; selector_staging_bytes_ = 0;
+#endif
     for (auto& [name, p] : wf_) free_dev((void*) p);
     for (auto& st : st_) {
         qsa_state_release_elastic(st);
@@ -410,11 +415,39 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // ---- the weights: one aligned device block, the packed GGUF layout preserved.
     // Earlier phases may have left a sticky error in the per-thread state: start clean.
     cudaGetLastError();
-    if (cudaMalloc(&w_, artifact_.weight_bytes()) != cudaSuccess)
+    size_t gpu_weight_bytes = artifact_.weight_bytes();
+#ifdef STRATA_ENABLE_DFLASH2
+    bool host_codebooks = false;
+    const char* host_codebooks_env = std::getenv("STRATA_DFLASH2_HOST_CODEBOOKS");
+    host_codebooks = dg.is_dflash2() && host_codebooks_env && (host_codebooks_env[0] == '1' || host_codebooks_env[0] == '2');
+    auto host_table = [&](const auto& t) {
+        return host_codebooks && t.type == 30 &&
+            (t.name == "selector.predecessor" || t.name == "selector.successor");
+    };
+    size_t host_bytes = 0;
+    if (host_codebooks) for (const auto& t : artifact_.tensors())
+        if (host_table(t)) host_bytes += (t.bytes + 31) & ~size_t(31);
+    gpu_weight_bytes -= host_bytes;
+#endif
+    if (cudaMalloc(&w_, gpu_weight_bytes) != cudaSuccess)
         return bail("dflash: the weights do not fit in VRAM");
-    vram_ += artifact_.weight_bytes();
+    vram_ += gpu_weight_bytes;
     size_t at = 0;
     for (const auto& t : artifact_.tensors()) {
+#ifdef STRATA_ENABLE_DFLASH2
+        if (host_table(t)) {
+            void* host = nullptr;
+            if (cudaHostAlloc(&host, (size_t)t.bytes, cudaHostAllocMapped) != cudaSuccess)
+                return bail("dflash2: cannot pin the selector codebook");
+            host_codebooks_.push_back(host);
+            uint16_t* device_view = nullptr;
+            if (cudaHostGetDevicePointer(&device_view, host, 0) != cudaSuccess)
+                return bail("dflash2: cannot map the selector codebook on the device");
+            std::memcpy(host, artifact_.host_data(t), (size_t)t.bytes);
+            wt_.push_back({t.name, device_view});
+            continue;
+        }
+#endif
         wt_.push_back({t.name, w_ + at / 2});
         if (cudaMemcpyAsync(w_ + at / 2, artifact_.host_data(t), (size_t) t.bytes,
                             cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
@@ -424,6 +457,9 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         if (t.type != 30) quant_types_.push_back({w_ + at / 2, t.type});
         at += (t.bytes + 31) & ~size_t(31);
     }
+#ifdef STRATA_ENABLE_DFLASH2
+    if (host_bytes) std::fprintf(stderr,"dflash2: selector codebooks: %.3f MiB mapped host RAM instead of device weights\n",host_bytes/1048576.0);
+#endif
     // The rms_norm gammas run as F32 device vectors (the kernel's contract); widen the small ones
     // at upload.  Qwen3 norms apply `y * w` with NO Gemma +1.
     auto is_norm = [](const std::string& n) {
@@ -609,6 +645,12 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
 #ifdef STRATA_ENABLE_DFLASH2
         ok = ok && take(strata::kernels::dflash2_topk_scratch_bytes((int) R, (int) dg.vocab,
                         (int) dg.selector_top_k), (void**) &selector_scratch_);
+        if(ok && host_codebooks && host_codebooks_env[0]=='2' && R>=2) {
+            selector_staging_bytes_=strata::kernels::dflash2_select_staging_bytes(
+                (int)R,(int)dg.selector_top_k,(int)dg.selector_rank);
+            ok=take(selector_staging_bytes_,&selector_staging_);
+            if(ok)std::fprintf(stderr,"dflash2: selected codebook row staging: %zu bytes VRAM\n",selector_staging_bytes_);
+        }
 #endif
     }
     if (ok && elastic_kv) {
@@ -1580,7 +1622,13 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                         selector_unary_ + head_begin * dg.selector_top_k,
                         head_rows, vocab, (int) dg.selector_top_k, cs_, reference ? nullptr : selector_scratch_,
                         reference ? 0 : dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
-            dflash2_select_bf16(selector_ids_, selector_unary_, selector_hidden_, wp("selector.predecessor"),
+            if(selector_staging_ && !reference)
+                dflash2_select_staged(selector_ids_,selector_unary_,selector_hidden_,
+                    wp("selector.predecessor"),wp("selector.successor"),tok_,out_,
+                    probs?(float*)(out_+max_rows_):nullptr,K,(int)dg.selector_top_k,
+                    (int)dg.selector_rank,(int)dg.vocab,selector_staging_,selector_staging_bytes_,cs_,
+                    selector_scratch_,dflash2_topk_scratch_bytes((int)max_rows_,vocab,(int)dg.selector_top_k));
+            else dflash2_select_bf16(selector_ids_, selector_unary_, selector_hidden_, wp("selector.predecessor"),
                            wp("selector.successor"), tok_, out_, probs ? (float*) (out_ + max_rows_) : nullptr,
                            K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference,
                            reference ? nullptr : selector_scratch_, reference ? 0 :

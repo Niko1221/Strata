@@ -135,6 +135,15 @@ void dflash2_select_bf16(const int32_t* candidates, const float* unary, const fl
                          const uint16_t* predecessor, const uint16_t* successor, const int32_t* anchor,
                          int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream,
                          bool reference = false, void* scratch = nullptr, std::size_t scratch_bytes = 0);
+// Compact the selected codebook rows before applying the same selector arithmetic.
+// Staging must be 32-byte aligned and disjoint from inputs/output. Inputs may be
+// device-resident or host-mapped. Output IDs retain their original vocabulary IDs.
+std::size_t dflash2_select_staging_bytes(int rows, int top_k, int rank);
+void dflash2_select_staged(const int32_t* candidates, const float* unary, const float* hidden,
+    const uint16_t* predecessor, const uint16_t* successor, const int32_t* anchor,
+    int32_t* out, float* confidence, int rows, int top_k, int rank, int vocab,
+    void* staging, std::size_t staging_bytes, void* stream,
+    void* scratch = nullptr, std::size_t scratch_bytes = 0);
 // Completed target residual [rows][hc][hidden], before the next layer's learned HC read.
 void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
                      int rows, int hidden, int hc, void* stream);
