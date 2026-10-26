@@ -50,6 +50,11 @@ interleave their answer tokens (8 handovers over 47 tokens, 2 with one slot) and
 BGEN behind them is byte-identical to production.  The wall time is the same (4.13 s one slot vs 4.23 s two, 120/60/40
 tokens): parking states buys latency fairness, not throughput - that is M2/M3's job.
 
+Regression and soak (20:26-20:33): `serve.test_server` **352 tests, OK** (275 s) over the same tree, and a soak of 8 rounds
+x 4 concurrent streaming requests on a `--batch 2` server: 32 requests, 0 failed, 4.1-6.1 s a round, health 200 after,
+both slots decoding, mean switch 3.07 ms, no engine ERR line and no server traceback (`tools/../batch_soak.py`, on the
+box at /data/works/batch_soak.py).
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
