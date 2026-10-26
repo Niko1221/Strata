@@ -1087,6 +1087,11 @@ struct Model::Impl {
     cudaStream_t cc_cs = nullptr;     // the refills' copy stream on CUDA1
     bool cc_fill = false;             // (DS4_CACHE_CARD_FILL=0: a freed slot stays empty)
     int cc_inflight = 0;              // refills queued or being copied
+    // the swaps' pace and bar: a scan every DS4_CARD_EVERY tokens, a CPU-lane expert in past heat x DS4_CARD_MARGIN + DS4_CARD_BONUS
+    const int cc_every = std::max(1, (int) env_f("DS4_CARD_EVERY", 16.0f));
+    const float cc_margin = env_f("DS4_CARD_MARGIN", 2.0f), cc_bonus = env_f("DS4_CARD_BONUS", 4.0f);
+    int64_t cc_tokens = 0;
+    size_t cc_scan = 0;               // the layer the next scan starts at
     static constexpr int kMaxCardMoves = 8;   // CUDA1's swaps in flight at most (the freed slots' refills not counted)
     std::vector<Layer> L;
     std::vector<Src> srcs;
@@ -6631,8 +6636,8 @@ struct Model::Impl {
         if (cudaMemcpy(l.cc_tab + e, &v, 8, cudaMemcpyHostToDevice) != cudaSuccess) card_fail("updating its table failed");
         cudaSetDevice(cur);
     }
-    // between windows: the refills that landed into the tables, then a refill queued for each free slot
-    void card_tick() {
+    // between windows (of T tokens): the refills that landed into the tables, then a refill queued for each free slot
+    void card_tick(int T) {
         std::vector<CardFill> done;
         {
             std::lock_guard<std::mutex> lk(cc_mu);
@@ -6667,25 +6672,32 @@ struct Model::Impl {
             cc_free[i] = cc_free.back();
             cc_free.pop_back();
         }
-        // a layer's coldest CUDA1 expert out for its hottest CPU-lane one, past the expert cache's margin
-        for (Layer& l : L) {
-            if (cc_inflight >= kMaxCardMoves) break;
-            if (l.mtp || l.cc.empty()) continue;
-            int cold = -1, best = -1;
-            for (int e = 0; e < l.n_exp; ++e) {
-                const int c = l.cc[(size_t) e];
-                if (c >= 0) {
-                    if (cold < 0 || l.heat[(size_t) e] < l.heat[(size_t) cold]) cold = e;
-                } else if (c == -1 && l.slot[(size_t) e] < 0 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best])) {
-                    best = e;
+        // every cc_every tokens: a layer's coldest CUDA1 expert out for its hottest CPU-lane one, past CUDA1's own bar
+        cc_tokens += T;
+        if (cc_tokens >= cc_every) {
+            cc_tokens = 0;
+            const size_t nl = L.size();
+            size_t j = 0;
+            for (; j < nl && cc_inflight < kMaxCardMoves; ++j) {
+                Layer& l = L[(cc_scan + j) % nl];
+                if (l.mtp || l.cc.empty()) continue;
+                int cold = -1, best = -1;
+                for (int e = 0; e < l.n_exp; ++e) {
+                    const int c = l.cc[(size_t) e];
+                    if (c >= 0) {
+                        if (cold < 0 || l.heat[(size_t) e] < l.heat[(size_t) cold]) cold = e;
+                    } else if (c == -1 && l.slot[(size_t) e] < 0 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best])) {
+                        best = e;
+                    }
                 }
+                if (cold < 0 || best < 0 || !(l.heat[(size_t) best] > l.heat[(size_t) cold] * cc_margin + cc_bonus)) continue;
+                const int s = l.cc[(size_t) cold];
+                l.cc[(size_t) cold] = -1;
+                card_tab(l, cold, 0ull);
+                card_queue(l, s, best);
+                queued = true;
             }
-            if (cold < 0 || best < 0 || !(l.heat[(size_t) best] > l.heat[(size_t) cold] * c_margin + c_bonus)) continue;
-            const int s = l.cc[(size_t) cold];
-            l.cc[(size_t) cold] = -1;
-            card_tab(l, cold, 0ull);
-            card_queue(l, s, best);
-            queued = true;
+            cc_scan = (cc_scan + j) % nl;   // (the next scan goes on from the layer this one stopped before)
         }
         if (queued) cc_cv.notify_one();
     }
@@ -9154,7 +9166,7 @@ struct Model::Impl {
     void cache_tick_swaps(int T) {
         if (!o.expert_cache || cache_ths.empty()) return;
         cache_switch();
-        if (cc_fill) card_tick();
+        if (cc_fill) card_tick(T);
         decay_tokens += T;
         if (decay_tokens >= 256) {   // older use counts less: x0.9 every 256 tokens
             decay_tokens = 0;
