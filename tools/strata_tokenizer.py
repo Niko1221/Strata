@@ -308,8 +308,11 @@ class Tokenizer:
             for ch in self.tokens[i]:
                 v = UNICODE_TO_BYTE.get(ch)
                 if v is None:
-                    raise KeyError("token %d contains a character outside the byte alphabet: %r" % (i, ch))
-                raw.append(v)
+                    raw += ch.encode("utf-8")   # a literal-token char (deepseek's ｜/▁, etc.): a non-byte vocab, so the
+                                                # token is the text itself; ASCII chars already equal their byte, so this
+                                                # reconstructs the token's exact UTF-8 bytes.  #token_bytes non-byte vocab
+                else:
+                    raw.append(v)
             b = cache[i] = bytes(raw)
         return b
 
