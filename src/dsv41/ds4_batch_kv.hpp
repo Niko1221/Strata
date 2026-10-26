@@ -55,6 +55,8 @@ public:
         return static_cast<int64_t>(b) * block_tokens_ + (pos % block_tokens_);
     }
 
+    const std::vector<int32_t>& blocks() const { return table_; }
+
     void advance(int32_t n) { tokens_ += n; }
 
     /// Return the blocks to the free list.
@@ -130,6 +132,11 @@ public:
                 seqs_.push_back(s);
                 return;
             }
+    }
+
+    void advance(int32_t seq, int32_t n) {
+        for (auto& s : seqs_)
+            if (s.seq() == seq) { s.advance(n); return; }
     }
 
     void close(int32_t seq) {
