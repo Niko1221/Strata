@@ -6689,8 +6689,17 @@ struct Model::Impl {
         }
         if (queued) cc_cv.notify_one();
     }
-    // expert e the main card evicted from l: into CUDA1 in place of the layer's coldest there, when e is hotter
+    // expert e the main card evicted from l: into a slot of l CUDA1 has free, else in place of its coldest there when e is hotter
     void card_demote(Layer& l, int e) {
+        for (size_t i = 0; i < cc_free.size(); ++i)
+            if (cc_lay[(size_t) cc_free[i]] == l.il) {   // (the slot of the expert the main card took in exchange)
+                const int s = cc_free[i];
+                cc_free[i] = cc_free.back();
+                cc_free.pop_back();
+                card_queue(l, s, e);
+                cc_cv.notify_one();
+                return;
+            }
         if (cc_inflight >= kMaxCardMoves) return;
         int cold = -1;
         for (int x = 0; x < l.n_exp; ++x)
