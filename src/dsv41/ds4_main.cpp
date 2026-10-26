@@ -1484,6 +1484,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      t1 > t0 ? 1000.0 * (double) (r.ids.size() - from) / (t1 - t0) : 0.0, produced, t2 - t1,
                      t2 > t1 ? 1000.0 * (double) produced / (t2 - t1) : 0.0,
                      s.experts ? 100.0 * (double) s.cpu_experts / (double) s.experts : 0.0);
+        if (s.card_experts > 0)
+            std::fprintf(stderr, "maya ds4 serve: CUDA1 (--expert-cache-device1) %.1f%% of the experts, %.0f ms waited for it\n",
+                         s.experts ? 100.0 * (double) s.card_experts / (double) s.experts : 0.0, s.card_wait_ms);
         if (d_off > 0) std::fprintf(stderr, "maya ds4 serve: drafts %lld of %lld kept; %s\n", d_acc, d_off,
                                     per_position(s_dec, s).c_str());
         if (nan_stop) {   // (its state holds the NaNs: the next request starts from nothing)

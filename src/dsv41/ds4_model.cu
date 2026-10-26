@@ -689,6 +689,11 @@ __global__ void pred_proj_k(const float* x, int D, float* out) {
     }
     out[(size_t) t * 256 + j] = a * rsqrtf((float) D);
 }
+// (--expert-cache-device1) a decode token's plan on CUDA1: each pick's slot there, 0 for the picks another lane computes
+__global__ void card_plan_k(const unsigned long long* tab, const int* ids, unsigned long long* plan) {
+    const int i = threadIdx.x;   // kPicks threads
+    plan[i] = ids[i] >= 0 ? tab[ids[i]] : 0ull;
+}
 
 struct Chunk {
     int C = 0, A = 0, AI = 0;
@@ -1058,6 +1063,15 @@ struct Model::Impl {
     std::vector<Dev> devs;
     Dev ccd;                          // --expert-cache-device1: CUDA1, experts only (its stream null: off)
     double cc_share = 0, cc_load_s = 0;   // the routed picks its experts take by the profile (0..1); their load time
+    // CUDA1's decode token: its picks' ids (-1: another lane's) and weights, the FFN input, plan, gate/up rows, its part
+    struct CardIn {
+        int ids[kPicks];
+        float w[kPicks];
+    };
+    CardIn *cc_in_h = nullptr, *cc_in_d = nullptr;
+    float *cc_x = nullptr, *cc_h = nullptr, *cc_out = nullptr, *cc_out_h = nullptr;
+    unsigned long long* cc_plan = nullptr;
+    bool cc_live = false;             // decode hands CUDA1 its picks (DS4_CACHE_CARD=0: never)
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
@@ -1524,10 +1538,11 @@ struct Model::Impl {
                              "RAM still are)\n", a.requests, 100.0 * f);
     }
     // where a small window's pick of expert e of l is computed (light, ram_light: under DISK_SKIP_W's, RAM_SKIP_W's bar)
-    enum class Lane { Vram, StoreZc, Skip, Cpu };
+    enum class Lane { Vram, StoreZc, Card, Skip, Cpu };
     Lane lane_of(const Layer& l, int e, int T, bool light, bool ram_light) const {
         if (l.slot[(size_t) e] >= 0) return Lane::Vram;
-        if (T == 1 && !l.zc.empty() && l.zc[(size_t) e]) return Lane::StoreZc;
+        if (T == 1 && !l.zc.empty() && l.zc[(size_t) e]) return Lane::StoreZc;   // (the device's own choice: it comes first)
+        if (T == 1 && cc_live && l.cc[(size_t) e] >= 0) return Lane::Card;
         if ((light && !in_ram(l, e)) || ram_light) return Lane::Skip;
         return Lane::Cpu;
     }
@@ -3668,7 +3683,7 @@ struct Model::Impl {
         if (!lane_alloc(err)) return false;
         if (!place_experts(err)) return false;
         if (!load_experts(err)) return false;
-        if (ccd.st != nullptr && !load_cache_card(err)) return false;
+        if (ccd.st != nullptr && (!load_cache_card(err) || !card_buffers(err))) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
             // the CPU lane's parts pinned (the chunks stream them to the GPUs by DMA), each layer's virtual slots
@@ -6536,6 +6551,16 @@ struct Model::Impl {
             return false;
         }
         cc_load_s = (now_ms() - t0) / 1000.0;
+        return true;
+    }
+    // CUDA1's decode buffers (cc_*); DS4_CACHE_CARD=0 leaves its experts unused
+    bool card_buffers(std::string& err) {
+        if (!halloc(cc_in_h, 1, err) || !halloc(cc_out_h, (size_t) g.dim, err) || !dalloc(ccd, cc_in_d, 1, err) ||
+            !dalloc(ccd, cc_x, (size_t) g.dim, err) || !dalloc(ccd, cc_plan, (size_t) kPicks, err) ||
+            !dalloc(ccd, cc_h, (size_t) kPicks * g.ff, err) || !dalloc(ccd, cc_out, (size_t) g.dim, err))
+            return false;
+        const char* v = std::getenv("DS4_CACHE_CARD");
+        cc_live = v == nullptr || v[0] != '0';
         return true;
     }
 
@@ -9534,6 +9559,57 @@ struct Model::Impl {
         pf_cv.notify_one();
     }
 
+    // (--expert-cache-device1) a fault on CUDA1 would leave its picks out of the answer: the engine stops instead
+    [[noreturn]] static void card_fail(const char* what) {
+        std::fprintf(stderr, "ds4: CUDA1 (--expert-cache-device1): %s\n", what);
+        std::abort();
+    }
+    // CUDA1's picks `pick` (indices into the token's k) of a decode token: their weighted sum into cc_out_h, on its stream
+    void card_launch(const Layer& l, const Req& r, const int* pick, int n) {
+        cudaSetDevice(ccd.id);
+        for (int i = 0; i < kPicks; ++i) {
+            cc_in_h->ids[i] = -1;
+            cc_in_h->w[i] = 0.0f;
+        }
+        for (int j = 0; j < n; ++j) {
+            cc_in_h->ids[pick[j]] = r.ids[0][pick[j]];
+            cc_in_h->w[pick[j]] = r.w[0][pick[j]];
+        }
+        cudaMemcpyAsync(cc_x, r.x[0], (size_t) g.dim * sizeof(float), cudaMemcpyHostToDevice, ccd.st);
+        cudaMemcpyAsync(cc_in_d, cc_in_h, sizeof(CardIn), cudaMemcpyHostToDevice, ccd.st);
+        card_plan_k<<<1, kPicks, 0, ccd.st>>>(l.cc_tab, &cc_in_d->ids[0], cc_plan);
+        x3::MoeArgs ma;
+        ma.plan_ptr = cc_plan;
+        ma.plan_w = &cc_in_d->w[0];
+        ma.lay = l.lay;
+        ma.k = l.k_exp;
+        ma.n_embd = g.dim;
+        ma.n_ff = g.ff;
+        ma.limit = g.lim;
+        gg::moe_gate_up(ma, cc_x, cc_h, ccd.st);
+        gg::moe_down(ma, cc_h, nullptr, cc_out, ccd.st);
+        cudaMemcpyAsync(cc_out_h, cc_out, (size_t) g.dim * sizeof(float), cudaMemcpyDeviceToHost, ccd.st);
+        cudaEventRecord(ccd.ev, ccd.st);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) card_fail(cudaGetErrorString(e));
+    }
+    // waits for CUDA1's part of the decode token and adds it to the answer's part (or makes it the part, without a CPU one)
+    void card_merge(Resp& rp, int n) {
+        const double t0 = now_ms();
+        cudaError_t e;
+        while ((e = cudaEventQuery(ccd.ev)) == cudaErrorNotReady) cpu_relax();
+        if (e != cudaSuccess) card_fail(cudaGetErrorString(e));
+        st.card_wait_ms += now_ms() - t0;
+        st.card_experts += n;
+        float* o = rp.part[0];
+        if (rp.cpu[0]) {
+            for (int d = 0; d < g.dim; ++d) o[d] += cc_out_h[d];
+        } else {
+            std::memcpy(o, cc_out_h, (size_t) g.dim * sizeof(float));
+            rp.cpu[0] = 1;
+        }
+    }
+
     // the decode path's host side: each published routing in turn - its CPU lane experts (if any) into the answer's
     // part, then the answer's seq.  Spins while requests come (a token's 40 layers), naps after 2 ms without one.
     void serve_lane() {
@@ -9582,6 +9658,7 @@ struct Model::Impl {
                 int tok_of[kWin * kPicks];
                 int nslots = 0;
                 std::vector<std::pair<int, int>> picks;   // (expert, t * kPicks + i), CPU-lane only
+                int card[kPicks], n_card = 0;             // (a decode token) the picks CUDA1 computes, by index i
                 if (trace_f != nullptr && !l.mtp) {   // DS4_TRACE=file: one record a route request: u8 layer, u8 T, T x k int16 expert ids
                     // DS4_TRACE_AHEAD=1: T has bit 7 set and the guesses follow: u8 na1, u8 na2, T x (na1 + na2) int16 (the
                     // next layer's likely picks by rank, then the one after's), as the lookahead made them for THIS layer's
@@ -9639,6 +9716,10 @@ struct Model::Impl {
                         const Lane lane = lane_of(l, e, T, light, rsk && r.w[t][i] < ram_skip_w * wsum);
                         if (lane == Lane::Vram) continue;
                         l.cpu_hits.push_back(e);
+                        if (lane == Lane::Card) {
+                            card[n_card++] = i;
+                            continue;
+                        }
                         if (lane == Lane::StoreZc) {   // the device computed it from the store's slot
                             store->touch(li, e);
                             ++st.store_zc;
@@ -9660,6 +9741,7 @@ struct Model::Impl {
                         picks.push_back({e, t * kPicks + i});
                     }
                 }
+                if (n_card > 0) card_launch(l, r, card, n_card);   // (it runs while the CPU lane computes the rest)
                 if (aon) skip_auto_tick(li, T, heavy, cold, heavy_cpu);
                 if (disk_skip_auto && dsk_rule && !picks.empty()) {   // (the experts this answer leaves in RAM)
                     std::lock_guard<std::mutex> lk(sk_auto.mu);
@@ -9745,6 +9827,7 @@ struct Model::Impl {
                     st.cpu_experts += nslots;
                 }
                 if (lc >= 0) lane_answer(ln_cls[(size_t) lc], lt);
+                if (n_card > 0) card_merge(rp, n_card);
             }
             std::atomic_thread_fence(std::memory_order_release);
             *(volatile unsigned*) &rp.seq = next;
