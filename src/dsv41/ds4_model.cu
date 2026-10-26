@@ -925,6 +925,8 @@ struct Layer {
     unsigned long long* vram_tab = nullptr;     // device [n_exp]
     std::vector<uint8_t> zc;                    // (the RAM store) expert -> 1: its store slot is GPU-visible, the device computes it over PCIe
     unsigned long long* zc_tab = nullptr;       // device [n_exp]: those slots' device addresses (0: none) - the decode token's zc_stage reads it
+    std::vector<int> cc;                        // (--expert-cache-device1) expert -> its slot on CUDA1 (-1: none)
+    unsigned long long* cc_tab = nullptr;       // device [n_exp] on CUDA1: those slots' addresses (0: none)
     std::vector<std::array<x3::Mat, 3>> vm;     // expert -> its gate, up, down as EXL3 views of its VRAM blob
     std::vector<uint64_t> region_off;           // expert -> file region (offset, bytes, file)
     std::vector<uint64_t> region_bytes;
@@ -1054,6 +1056,8 @@ struct Model::Impl {
     Pack pk;
     Geo g;
     std::vector<Dev> devs;
+    Dev ccd;                          // --expert-cache-device1: CUDA1, experts only (its stream null: off)
+    double cc_share = 0, cc_load_s = 0;   // the routed picks its experts take by the profile (0..1); their load time
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
@@ -1955,6 +1959,12 @@ struct Model::Impl {
             if (d.st) cudaStreamDestroy(d.st);
             if (d.ev) cudaEventDestroy(d.ev);
         }
+        if (ccd.st != nullptr) {
+            cudaSetDevice(ccd.id);
+            for (void* p : ccd.allocs) cudaFree(p);
+            cudaStreamDestroy(ccd.st);
+            if (ccd.ev) cudaEventDestroy(ccd.ev);
+        }
         for (void* p : host_allocs) cudaFreeHost(p);
         for (Layer& l : L)
             for (uint8_t* b : l.host)
@@ -2679,9 +2689,22 @@ struct Model::Impl {
             err = "no CUDA device";
             return false;
         }
+        const bool cc_on = o.expert_cache_device1 != 0;
+        if (cc_on) {   // CUDA1 holds experts and takes no layers
+            if (!pk.gguf) {
+                err = "--expert-cache-device1 takes a GGUF pack";
+                return false;
+            }
+            if (ndev < 2 || std::find(o.gpus.begin(), o.gpus.end(), 1) != o.gpus.end()) {
+                err = ndev < 2 ? "--expert-cache-device1: no CUDA1 (" + std::to_string(ndev) + " device visible)"
+                               : std::string("--expert-cache-device1: CUDA1 is in --gpus");
+                return false;
+            }
+        }
         std::vector<int> ids = o.gpus;
         if (ids.empty())
-            for (int i = 0; i < ndev; ++i) ids.push_back(i);
+            for (int i = 0; i < ndev; ++i)
+                if (!cc_on || i != 1) ids.push_back(i);
         devs.resize(ids.size());
         if (prof_on) prof_pool.resize((size_t) ndev);
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -2697,6 +2720,17 @@ struct Model::Impl {
             }
             CK(cudaMemGetInfo(&d.free0, &d.total));
             d.free0 = uma_free(d.id, d.free0);
+        }
+        if (cc_on) {
+            ccd.id = 1;
+            CK(cudaSetDevice(ccd.id));
+            CK(cudaStreamCreateWithFlags(&ccd.st, cudaStreamNonBlocking));
+            CK(cudaEventCreateWithFlags(&ccd.ev, cudaEventDisableTiming));
+            if (!x3::prepare(ccd.st) || !gg::prepare(ccd.st)) {
+                err = "exl3 scratch on CUDA1";
+                return false;
+            }
+            CK(cudaMemGetInfo(&ccd.free0, &ccd.total));
         }
         // the groups' width: o.tp, less while the experts' blocks do not split in it (a member takes n_ff / tp of each
         // expert: the down's inputs in whole blocks - a GGUF's 256-value types split n_ff 2304 in 1, 3 or 9 parts)
@@ -3634,6 +3668,7 @@ struct Model::Impl {
         if (!lane_alloc(err)) return false;
         if (!place_experts(err)) return false;
         if (!load_experts(err)) return false;
+        if (ccd.st != nullptr && !load_cache_card(err)) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
             // the CPU lane's parts pinned (the chunks stream them to the GPUs by DMA), each layer's virtual slots
@@ -6409,6 +6444,101 @@ struct Model::Impl {
         return true;
     }
 
+    // CUDA1's room for its decode buffers beside the experts --expert-cache-device1 puts there
+    static constexpr size_t kCacheCardRoom = (size_t) 256 << 20;
+
+    // --expert-cache-device1: the CPU lane's most-routed experts (the profile's share of their layer) into CUDA1 while they fit
+    bool load_cache_card(std::string& err) {
+        struct Pick {
+            int layer, e;
+            double share;
+        };
+        std::vector<Pick> picks;
+        int trunk = 0;
+        for (const Layer& l : L) {
+            if (l.mtp) continue;
+            ++trunk;
+            if (l.cpu_only) continue;
+            const uint32_t* p = prof.data() + (size_t) l.il * g.n_exp;
+            double sum = 0;
+            for (int e = 0; e < l.n_exp; ++e) sum += p[e];
+            for (int e = 0; e < l.n_exp; ++e)
+                if (l.slot[(size_t) e] < 0) picks.push_back({l.il, e, sum > 0 ? p[e] / sum : 0.0});
+        }
+        std::stable_sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.share > b.share; });
+        CK(cudaSetDevice(ccd.id));
+        size_t fr = 0, tot = 0;
+        CK(cudaMemGetInfo(&fr, &tot));
+        const size_t keep = ((size_t) o.reserve_mib << 20) + kCacheCardRoom;
+        const size_t room = fr > keep ? fr - keep : 0;
+        const size_t most = o.expert_cache_device1 < 0 ? picks.size() : (size_t) o.expert_cache_device1;
+        std::vector<Pick> take;
+        size_t bytes = 0;
+        for (const Pick& p : picks) {
+            if (take.size() >= most) break;
+            const size_t b = align256(L[(size_t) p.layer].blob);
+            if (bytes + b > room) continue;
+            take.push_back(p);
+            bytes += b;
+        }
+        for (Layer& l : L) l.cc.assign((size_t) l.n_exp, -1);
+        uint8_t* base = nullptr;
+        if (bytes > 0 && !dalloc(ccd, base, bytes, err, &ccd.experts)) return false;
+        std::vector<uint8_t*> dst(take.size());
+        size_t off = 0;
+        for (size_t i = 0; i < take.size(); ++i) {
+            L[(size_t) take[i].layer].cc[(size_t) take[i].e] = (int) i;
+            dst[i] = base + off;
+            off += align256(L[(size_t) take[i].layer].blob);
+            cc_share += take[i].share / std::max(1, trunk);
+        }
+        for (Layer& l : L) {
+            if (l.mtp) continue;
+            std::vector<unsigned long long> tab((size_t) l.n_exp, 0ull);
+            for (int e = 0; e < l.n_exp; ++e)
+                if (l.cc[(size_t) e] >= 0) tab[(size_t) e] = (unsigned long long) dst[(size_t) l.cc[(size_t) e]];
+            if (!dalloc(ccd, l.cc_tab, (size_t) l.n_exp, err)) return false;
+            CK(cudaMemcpy(l.cc_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice));
+        }
+        // the bytes in file order, by a few threads through pinned staging blobs
+        std::vector<size_t> order(take.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const Layer &la = L[(size_t) take[a].layer], &lb = L[(size_t) take[b].layer];
+            if (la.mx_file[0] != lb.mx_file[0]) return la.mx_file[0] < lb.mx_file[0];
+            return la.mx_off[0] + (uint64_t) take[a].e * la.mx_stride[0] < lb.mx_off[0] + (uint64_t) take[b].e * lb.mx_stride[0];
+        });
+        size_t maxb = 0;
+        for (const Layer& l : L) maxb = std::max(maxb, l.blob);
+        std::atomic<size_t> next{0};
+        std::atomic<bool> failed{false};
+        const double t0 = now_ms();
+        std::vector<std::thread> th;
+        for (int t = 0; t < 8; ++t)
+            th.emplace_back([&] {
+                cudaSetDevice(ccd.id);
+                uint8_t* stage = nullptr;
+                if (cudaHostAlloc((void**) &stage, maxb, cudaHostAllocPortable) != cudaSuccess) stage = nullptr;
+                for (;;) {
+                    const size_t i = next.fetch_add(1);
+                    if (i >= order.size() || failed.load()) break;
+                    const Pick& p = take[order[i]];
+                    const Layer& l = L[(size_t) p.layer];
+                    if (stage == nullptr || !read_mx(l, p.e, stage) ||
+                        cudaMemcpy(dst[order[i]], stage, l.blob, cudaMemcpyHostToDevice) != cudaSuccess)
+                        failed.store(true);
+                }
+                if (stage) cudaFreeHost(stage);
+            });
+        for (auto& t : th) t.join();
+        if (failed.load()) {
+            err = "loading CUDA1's experts (--expert-cache-device1) failed";
+            return false;
+        }
+        cc_load_s = (now_ms() - t0) / 1000.0;
+        return true;
+    }
+
     std::string describe() const {
         std::ostringstream s;
         for (size_t di = 0; di < devs.size(); ++di) {
@@ -6434,6 +6564,20 @@ struct Model::Impl {
                           "%.2f GB, %.0f MiB free\n",
                           d.id, a, b, tp, (int) di == head_dev ? " + head" : "", d.weights / 1e9, d.experts / 1e9, ev, et,
                           d.caches / 1e9, fr / 1048576.0);
+            s << line;
+        }
+        if (ccd.st != nullptr) {
+            size_t fr = 0, tot = 0;
+            cudaSetDevice(ccd.id);
+            cudaMemGetInfo(&fr, &tot);
+            int n = 0;
+            for (const Layer& l : L)
+                for (int c : l.cc) n += c >= 0;
+            char line[256];
+            std::snprintf(line, sizeof line,
+                          "ds4: CUDA%d expert cache (--expert-cache-device1): %d of the CPU lane's most-routed experts, %.2f GB "
+                          "(%.1f%% of the routed picks by the profile), loaded in %.1f s, %.0f MiB free\n",
+                          ccd.id, n, ccd.experts / 1e9, 100.0 * cc_share, cc_load_s, fr / 1048576.0);
             s << line;
         }
         int nh = 0;

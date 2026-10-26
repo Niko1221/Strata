@@ -26,7 +26,8 @@ namespace strata::ds4 {
 struct Options {
     std::string pack;                 // <model>/maya-ds4
     int64_t max_context = 32768;
-    std::vector<int> gpus;            // empty: every visible GPU
+    std::vector<int> gpus;            // empty: every visible GPU (but CUDA1 with expert_cache_device1)
+    int expert_cache_device1 = 0;     // CUDA1 holds the CPU lane's most-routed experts and no layers (0: off, -1: as many as fit)
     int64_t reserve_mib = 600;        // VRAM left free on each GPU
     bool vram_experts_auto = true;    // (Metal: no --vram-experts given: the share the anonymous-memory cap leaves - metal_expert_cap)
     double vram_experts = 1.0;        // the share of the expert budget to use (tests: less, so the CPU lane works)
