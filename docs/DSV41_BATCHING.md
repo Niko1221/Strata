@@ -74,10 +74,22 @@ everywhere today - every access is the member it was.  What it unlocks is the ba
 sequence's state without parking it in host memory; what it still needs is the read side of the compressed rows (the
 step table above), and `feed`/`step`/`sample` naming the sequence they work on instead of today's default.
 
+**The regions are read from, and a sequence on its own answers what sequence 0 does (2026-10-26).**  The indexer's scan
+and the rows `sparse_attn` takes start at the pass's sequence now (`ik_rows`/`ckv_rows`: the table at `kv_base` rows),
+and so do the checkpoint / slot / park paths (`win_of(l)` is the pass's ring, `ckv_rows`/`ik_rows` its table) - with one
+sequence every pointer is the buffer's base, as it was.  `STRATA_DS4_VSEQ=n` runs a pass on sequence n (which brings its
+own region along: `nseq >= n + 1`), and `tools/dsv41/batch_seq_parity.py` (the window
+`tools/dsv41/windows/batch_seq_window.sh`) runs the same prompts on sequence 0 and sequence 1 in two loads - a 40-token
+prompt (12 tokens), a 300-token one (140 tokens: past the 128-token ring, across many compression groups) and a prompt
+sharing a 20-token prefix with the first (the model's own checkpoint/restore) - and sequence 1 writes exactly what
+sequence 0 does.  That is the region arithmetic checked end to end, which is what a row counted wrong would break.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
-reference.  Items 1, 4's writes and 5 are in; 4's reads (the step table) are what is left.
+reference.  Items 1-5 are in, and a sequence other than 0 answers on its own: what is left of M2 is the **single-launch
+step over several sequences** - per-row positions (`finish` takes one `pos` a window today) and the step table's rows,
+`ds4_batch_attn.hpp`'s `rows`/`place` - and `feed`/`step`/`sample` naming the sequence.
 
 ## What a batched MoE can expect (measured, 2026-10-26)
 

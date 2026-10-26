@@ -132,6 +132,14 @@ was, and the same windows are green (probe two slots, three-client HTTP check, a
 no engine ERR line.  It is what lets the batched step switch a pass to another sequence without parking it; the answers
 are only right once the read side above is in.
 
+The **read side is in, and a sequence on its own answers what sequence 0 does** (`STRATA_DS4_VSEQ=n`): the indexer's
+scan and the rows `sparse_attn` takes start at the pass's sequence (`ik_rows`/`ckv_rows` = the table at `kv_base`
+rows), the checkpoint / slot / park paths copy the pass's ring and region (`win_of(l)` is the pass's ring now), and
+`tools/dsv41/windows/batch_seq_window.sh` runs the same three prompts on sequence 0 and on sequence 1 in two loads
+(40 tokens/12 written, 300/140 - past the 128-token ring and across compression groups - and a 20-token shared prefix for
+the checkpoint/restore): **sequence 1 writes exactly what sequence 0 does**, every check, and the same window's tree also
+passes the probe and the three-client HTTP check with `vseq` 0.  Production restored health 200 after each.
+
 The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
