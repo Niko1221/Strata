@@ -396,8 +396,22 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     const size_t layers = owned_qsa(ss);
     if ((owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
     size_t tails = 0, dead = 0, block_pos = 0;
+#if defined(STRATA_GPU_METAL)
+    // a Metal session file carries the decode window's own checkpoint payload (Window::checkpoint_save,
+    // metal/src/engine/window.cpp): its indexer tail keeps a whole block of keys per QSA layer
+    // (idx_block rows x idx_key_dim floats, not idx_block - 1), and it writes no per-layer block position
+    // (the window's indexer derives the block from the token count). The GDN rows, the PLE history and the
+    // dead keys match the CPU-side counts byte for byte. window_checkpoint_restore is the gate that matches
+    // these payload bytes to the window's buffers; a CPU-size tail limit would refuse the engine's own file.
+    size_t window_tail = 0;
+    if (!product(window_tail, {(uint64_t) strata::kernels::qsa_real_shapes().idx_block, (uint64_t) g.idx_key_dim,
+                               sizeof(float)}) ||
+        !product(tails, {layers, window_tail}) || !product(dead, {layers, z.dead}) ||
+        !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+#else
     if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
         !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+#endif
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
