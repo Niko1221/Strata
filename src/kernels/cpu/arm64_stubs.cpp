@@ -13,6 +13,7 @@
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
+#include "strata/kernels/cpu/tq_cpu.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +33,7 @@ bool iq128_supported(int) noexcept { return false; }
 bool iq128_down_supported(int) noexcept { return false; }
 bool iq512_gather_on() noexcept { return false; }
 bool iq512x_supported(int) noexcept { return false; }
+bool iq256x_supported(int) noexcept { return false; }
 bool nvfp4_256_fits(int) { return false; }
 bool nvfp4_512_fits(int) { return false; }
 
@@ -86,6 +88,9 @@ void iq512_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*,
 void iq512x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     missing("iq512x_rows");
 }
+void iq256x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
+    missing("iq256x_rows");
+}
 void q8k_quant_avx1(const float*, void*, int64_t) { missing("q8k_quant_avx1"); }
 void q8k_quant_avx2(const float*, void*, int64_t) { missing("q8k_quant_avx2"); }
 void kq256_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {
@@ -112,5 +117,15 @@ void nvfp4_512_gu_rows(const uint8_t*, size_t, size_t, int, const void* const*, 
 void nvfp4_512_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int, float) {
     missing("nvfp4_512_rows");
 }
+
+// the trellis rows (the DeepSeek engine's CPU lane, src/dsv41/ds4_tq_cpu.cpp; tq_isa() answers scalar here)
+namespace tq_detail {
+void tq_rows_avx2(int, const int16_t*, const uint8_t*, size_t, int, const TqAct* const*, int, float* const*, int, int) {
+    missing("tq_rows_avx2");
+}
+void tq_rows_avx512(int, const int16_t*, const uint8_t*, size_t, int, const TqAct* const*, int, float* const*, int, int) {
+    missing("tq_rows_avx512");
+}
+}  // namespace tq_detail
 
 }  // namespace strata::kernels::cpu

@@ -1214,6 +1214,9 @@ void exl3_cpu_rows_acc_n(const Exl3Part& m, const float* const* xh, int n, int k
     exl3_cpu_rows_acc_cols_n(m, xh, n, ks0, ks1, 0, m.n, acc);
 }
 
+#if !defined(EXL3_X86)   // (Linux arm64: band_gemm's chunk, defined with the x86 tiers above)
+constexpr int kGemmK = 256;
+#endif
 size_t exl3_cpu_gemm_scratch() { return (size_t) kGemmK * 128; }
 
 void exl3_cpu_band_gemm(const Exl3Part& m, const float* const* xh, int n, int c0, int nb, float* const* acc,
