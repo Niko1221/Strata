@@ -201,26 +201,23 @@ def main() -> int:
     check("GEN gives %d tokens" % n, len(ref) == n, "got %d (%s)" % (len(ref), ref_done[:6]))
 
     if a.slots >= 2:
-        # two admissions sent at once: the engine gives each slot the model in turn (a burst each), so their BT lines
-        # interleave and each one's tokens are what a GEN of the same prompt gives
-        other_prompt = [2000 + i for i in range(40)]
-        ref1, _ = e.gen(other_prompt, n)
-        both, order = e.bgen_many([(0, prompt, n), (1, other_prompt, n)])
-        check("two admissions: slot 0 says BADM 0 1", both[0]["badm"][:3] == ["BADM", "0", "1"],
-              " ".join(both[0]["badm"] or ["<none>"]))
-        check("two admissions: slot 1 says BADM 1 1", both[1]["badm"][:3] == ["BADM", "1", "1"],
-              " ".join(both[1]["badm"] or ["<none>"]))
-        check("slot 0's tokens equal its GEN", both[0]["first"] + both[0]["bt"] == ref,
-              "1 + %d of %d" % (len(both[0]["bt"]), n))
-        check("slot 1's tokens equal its GEN", both[1]["first"] + both[1]["bt"] == ref1,
-              "1 + %d of %d" % (len(both[1]["bt"]), n))
-        check("both slots end with their own BDONE",
-              both[0]["bdone"] is not None and both[0]["bdone"][1:4] == ["0", str(n), "length"] and
-              both[1]["bdone"] is not None and both[1]["bdone"][1:4] == ["1", str(n), "length"],
-              " ; ".join(" ".join(both[s]["bdone"] or ["<none>"]) for s in (0, 1)))
+        # every admission sent at once: the engine gives each slot the model in turn (a burst each), so their BT lines
+        # interleave and each slot's tokens are what a GEN of its own prompt gives
+        prompts = [prompt] + [[2000 * (k + 1) + i for i in range(40)] for k in range(1, a.slots)]
+        refs = [e.gen(p, n)[0] for p in prompts]
+        both, order = e.bgen_many([(k, p, n) for k, p in enumerate(prompts)])
+        for k in range(a.slots):
+            check("slot %d says BADM %d 1" % (k, k), both[k]["badm"][:3] == ["BADM", str(k), "1"],
+                  " ".join(both[k]["badm"] or ["<none>"]))
+        for k in range(a.slots):
+            check("slot %d's tokens equal its GEN" % k, both[k]["first"] + both[k]["bt"] == refs[k],
+                  "1 + %d of %d" % (len(both[k]["bt"]), n))
+            check("slot %d ends with its own BDONE" % k,
+                  both[k]["bdone"] is not None and both[k]["bdone"][1:4] == [str(k), str(n), "length"],
+                  " ".join(both[k]["bdone"] or ["<none>"]))
         switches = sum(1 for x, y in zip(order, order[1:]) if x != y)
-        check("the slots take turns (their BT lines interleave)", switches >= 2,
-              "".join(str(x) for x in order[:40]) + " (%d switches)" % switches)
+        check("the slots take turns (their BT lines interleave)", switches >= a.slots,
+              "".join(str(x) for x in order[:60]) + " (%d switches)" % switches)
 
     got = e.bgen(0, prompt, n)
     check("BGEN admission gives exactly one token", len(got["first"]) == 1, "got %d" % len(got["first"]))
