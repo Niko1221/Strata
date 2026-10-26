@@ -1,9 +1,9 @@
 // The chat's own folder and opening its files by path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { createChatFolders, openFile, openCommand, resolveChatFile, refusedFolder } from '../server/chat-files.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
@@ -27,6 +27,34 @@ test('a chat folder is remembered per chat, must exist, and is never a system fo
     assert.throws(() => a.set('c1', ''), /Choose a folder/);
     assert.throws(() => a.set('c1', process.platform === 'win32' ? 'C:' + BS : '/'), /whole drive/);
     assert.ok(refusedFolder(process.platform === 'win32' ? 'C:' + BS + 'Windows' + BS + 'System32' : '/etc'));
+    if (process.platform !== 'win32') {
+      const home = process.env.HOME ?? process.env.USERPROFILE;
+      if (home) {
+        assert.equal(refusedFolder(join(home, 'Strata-data')), null, 'the user home remains allowed');
+        const homeReal = realpathSync(home);
+        if (homeReal !== resolve(home)) assert.equal(refusedFolder(homeReal), null, 'the real target of the home symlink remains allowed');
+      }
+      const symlinkRoot = mkdtempSync(join(tmpdir(), 'strata-home-link-'));
+      try {
+        const homeTarget = join(symlinkRoot, 'var', 'home', 'user'); mkdirSync(homeTarget, { recursive: true });
+        const homeLink = join(symlinkRoot, 'home', 'user'); mkdirSync(join(symlinkRoot, 'home'));
+        let linked = false;
+        try { symlinkSync(homeTarget, homeLink, 'dir'); linked = true; } catch { /* directory symlinks may be unavailable */ }
+        if (linked) {
+          const oldHome = process.env.HOME;
+          try {
+            process.env.HOME = homeLink;
+            assert.equal(homedir(), homeLink);
+            assert.equal(refusedFolder(join(homeTarget, 'Strata-data')), null, 'a /var/home target behind the home symlink is allowed');
+          } finally {
+            if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+          }
+        }
+      } finally { rmSync(symlinkRoot, { recursive: true, force: true }); }
+      assert.equal(refusedFolder('/run/media/user/external_SSD/Strata-data'), null, 'mounted removable media is allowed');
+      assert.ok(refusedFolder('/run/models'), 'the rest of /run remains protected');
+      assert.ok(refusedFolder('/var/lib/Strata-data'), 'other /var locations remain protected');
+    }
     rmSync(mine, { recursive: true }); assert.equal(a.get('c1'), null, 'a deleted folder falls back to the default'); assert.equal(a.info('c1').exists, false);
     a.clear('c1'); assert.equal(a.info('c1'), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
