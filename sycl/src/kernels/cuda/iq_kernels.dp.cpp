@@ -235,10 +235,18 @@ __dpct_inline__ float vec_dot_iq2_xs_q8_1(const void *__restrict__ vbq,
         const sycl::uint2 grid_pos =
             ((const sycl::uint2 *)iq2xs_grid)[q2[l0 / 2] & 0x1FF];
         const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
+#if STRATA_IQ3S_SIGN_FAST
         const int signs0 = iq3s_sign_mask(signs);
+#else
+        const int signs0 = swar_ne4(signs & 0x08040201);
+#endif
         const int grid_l = iq3s_apply_sign(grid_pos.x(), signs0);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
+#if STRATA_IQ3S_SIGN_FAST
         const int signs1 = iq3s_sign_mask(signs >> 4);
+#else
+        const int signs1 = swar_ne4(signs & 0x80402010);
+#endif
         const int grid_h = iq3s_apply_sign(grid_pos.y(), signs1);
         const int u1 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 1);
         if (l0 < 4) {
@@ -271,8 +279,15 @@ __dpct_inline__ float vec_dot_iq2_s_q8_1(const void *__restrict__ vbq,
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int* grid_pos = (const int*) (iq2s_grid + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if STRATA_IQ3S_SIGN_FAST
         const int signs0 = iq3s_sign_mask(signs_packed_8[l0 / 2]);
         const int signs1 = iq3s_sign_mask(signs_packed_8[l0 / 2] >> 4);
+#else
+        const int signs0 = swar_ne4(((signs_packed_8[l0 / 2] & 0x03) << 7) |
+                ((signs_packed_8[l0 / 2] & 0x0C) << 21));
+        const int signs1 = swar_ne4(((signs_packed_8[l0 / 2] & 0x30) << 3) |
+                ((signs_packed_8[l0 / 2] & 0xC0) << 17));
+#endif
         const int grid_l = iq3s_apply_sign(grid_pos[0], signs0);
         const int grid_h = iq3s_apply_sign(grid_pos[1], signs1);
         const int u0 = get_int_b4(bq8_1[iqs / 2].qs, l0 + 0);
@@ -1085,10 +1100,24 @@ template<> struct Split<17> : SplitLs2 {   // IQ2_XS
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const sycl::uint2 grid_pos = grid_lut[q2[l0 / 2] & 0x1FF];
             const uint32_t signs = unpack_ksigns(q2[l0 / 2] >> 9);
+#if STRATA_IQ3S_SIGN_FAST
             const int signs0 = iq3s_sign_mask(signs);
-            r.g[l0 + 0] = iq3s_apply_sign(grid_pos.x(), signs0);
             const int signs1 = iq3s_sign_mask(signs >> 4);
+#else
+            const int signs0 = dpct::vectorized_binary<sycl::uchar4>(
+                signs & 0x08040201, 0, std::not_equal_to<>());
+            const int signs1 = dpct::vectorized_binary<sycl::uchar4>(
+                signs & 0x80402010, 0, std::not_equal_to<>());
+#endif
+#if STRATA_IQ3S_SIGN_APPLY_FAST
+            r.g[l0 + 0] = iq3s_apply_sign(grid_pos.x(), signs0);
             r.g[l0 + 1] = iq3s_apply_sign(grid_pos.y(), signs1);
+#else
+            r.g[l0 + 0] = dpct::vectorized_binary<sycl::uchar4>(
+                grid_pos.x() ^ signs0, signs0, std::minus<>());
+            r.g[l0 + 1] = dpct::vectorized_binary<sycl::uchar4>(
+                grid_pos.y() ^ signs1, signs1, std::minus<>());
+#endif
         }
         r.dw = sycl::vec<sycl::half, 1>(bq2->d)
                    .convert<float, sycl::rounding_mode::automatic>()[0];
@@ -1114,10 +1143,28 @@ template<> struct Split<22> : SplitLs2 {   // IQ2_S
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int* grid_pos = (const int*) (grid_lut + (qs[l0 / 2] | ((qh << (8 - l0)) & 0x300)));
+#if STRATA_IQ3S_SIGN_FAST
             const int signs0 = iq3s_sign_mask(signs_packed_8[l0 / 2]);
             const int signs1 = iq3s_sign_mask(signs_packed_8[l0 / 2] >> 4);
+#else
+            const int signs0 = dpct::vectorized_binary<sycl::uchar4>(
+                ((signs_packed_8[l0 / 2] & 0x03) << 7) |
+                    ((signs_packed_8[l0 / 2] & 0x0C) << 21),
+                0x00000000, std::not_equal_to<>());
+            const int signs1 = dpct::vectorized_binary<sycl::uchar4>(
+                ((signs_packed_8[l0 / 2] & 0x30) << 3) |
+                    ((signs_packed_8[l0 / 2] & 0xC0) << 17),
+                0x00000000, std::not_equal_to<>());
+#endif
+#if STRATA_IQ3S_SIGN_APPLY_FAST
             r.g[l0 + 0] = iq3s_apply_sign(grid_pos[0], signs0);
             r.g[l0 + 1] = iq3s_apply_sign(grid_pos[1], signs1);
+#else
+            r.g[l0 + 0] = dpct::vectorized_binary<sycl::uchar4>(
+                grid_pos[0] ^ signs0, signs0, std::minus<>());
+            r.g[l0 + 1] = dpct::vectorized_binary<sycl::uchar4>(
+                grid_pos[1] ^ signs1, signs1, std::minus<>());
+#endif
         }
         r.dw = sycl::vec<sycl::half, 1>(bq2->d)
                    .convert<float, sycl::rounding_mode::automatic>()[0];
@@ -1750,8 +1797,13 @@ template <> struct Multi<18> {   // iq3_xxs
             const sycl::int2 grid_pos = G ? sycl::int2(G[q3[l0 + 0]], G[q3[l0 + 1]])
                                           : sycl::int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
+#if STRATA_IQ3S_SIGN_FAST
             const int signs0 = iq3s_sign_mask(signs);
             const int signs1 = iq3s_sign_mask(signs >> 4);
+#else
+            const int signs0 = swar_ne4(signs & 0x08040201);
+            const int signs1 = swar_ne4(signs & 0x80402010);
+#endif
             m.w[l0 + 0] = iq3s_apply_sign(grid_pos.x(), signs0);
             m.w[l0 + 1] = iq3s_apply_sign(grid_pos.y(), signs1);
         }
@@ -1788,8 +1840,13 @@ template <> struct Multi<22> {   // iq2_s
         for (int l0 = 0; l0 < 8; l0 += 2) {
             const int gi = qs[l0 / 2] | ((qh << (8 - l0)) & 0x300);
             const int* grid_pos = G ? (const int*) (G + gi) : (const int*) (iq2s_grid + gi);
+#if STRATA_IQ3S_SIGN_FAST
             const int signs0 = iq3s_sign_mask(sp[l0 / 2]);
             const int signs1 = iq3s_sign_mask(sp[l0 / 2] >> 4);
+#else
+            const int signs0 = swar_ne4(((sp[l0 / 2] & 0x03) << 7) | ((sp[l0 / 2] & 0x0C) << 21));
+            const int signs1 = swar_ne4(((sp[l0 / 2] & 0x30) << 3) | ((sp[l0 / 2] & 0xC0) << 17));
+#endif
             m.w[l0 + 0] = iq3s_apply_sign(grid_pos[0], signs0);
             m.w[l0 + 1] = iq3s_apply_sign(grid_pos[1], signs1);
         }
