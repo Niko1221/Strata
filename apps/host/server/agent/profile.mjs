@@ -67,7 +67,7 @@ export const CUSTOM_TOOLS_SCRIPT = fileURLToPath(new URL('./custom-tools-mcp.mjs
 const SEARCH_NAMES = Object.freeze({ builtin: 'DuckDuckGo, or Bing when DuckDuckGo is busy', exa: 'Exa', perplexity: 'Perplexity', deepseek: 'DeepSeek' });
 
 /** What Settings -> Tools says when nothing was chosen. */
-const NO_TOOLS_SETTINGS = Object.freeze({ off: new Set(), search: { provider: 'builtin', key: '' }, webWithoutAsking: false, browserEnabled: false, browserPath: null, browserCli: null, servers: {}, hasInstructionTools: false, hasCommandTools: false, toolFile: null });
+const NO_TOOLS_SETTINGS = Object.freeze({ off: new Set(), search: { provider: 'builtin', key: '' }, webWithoutAsking: false, askUserQuestions: false, browserEnabled: false, browserPath: null, browserCli: null, servers: {}, hasInstructionTools: false, hasCommandTools: false, toolFile: null });
 
 /**
  * The tool servers (MCP) set up for the model in Settings, as Harness client rows. Their tools appear to the agent as
@@ -328,7 +328,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
-    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir, compaction }) },
+    { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, skillsDir, compaction, askUser: tools.askUserQuestions === true }) },
     // Strata names its chats itself; the Harness's own title request would be an extra model call on
     // every first prompt (and, for an API route, an unrequested one).
     { id: 'session-title-llm', disabled: true },

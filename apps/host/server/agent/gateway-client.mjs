@@ -84,9 +84,13 @@ export class GatewayClient {
     };
   }
 
-  /** Answer one forwarded approval waterfall. `outcome` is `allowed-once`, `rejected`, or `next`. */
-  async answerEvent({ clientId, eventId, outcome }) {
-    const wire = outcome === 'next' ? { kind: 'next' } : { kind: 'result', value: outcome };
+  /**
+   * Answer one forwarded waterfall. `outcome` is `allowed-once`, `rejected`, or `next`. For a user question
+   * the answer is structured, so `value` carries it and takes precedence over the `outcome` string; approvals
+   * pass no `value`, so their wire stays exactly `{ kind: 'result', value: <outcome string> }`.
+   */
+  async answerEvent({ clientId, eventId, outcome, value }) {
+    const wire = outcome === 'next' ? { kind: 'next' } : { kind: 'result', value: value !== undefined ? value : outcome };
     return this.rpc('$events/result', { clientId, eventId, outcome: wire });
   }
 
