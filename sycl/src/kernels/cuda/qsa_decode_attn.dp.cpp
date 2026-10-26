@@ -615,6 +615,73 @@ __dpct_inline__ void attn_merge_kernel(const float *__restrict__ part_acc,
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
+// Chunks beyond the device-side width contain only -FLT_MAX maxima. Keep the
+// original fold order while issuing eight independent partial reads together.
+__dpct_inline__ void attn_merge_active_kernel(
+    const float *__restrict__ part_acc, const float *__restrict__ part_m,
+    const float *__restrict__ part_l, int n_chunks, float *__restrict__ attn,
+    long long scratch_stride, const int32_t *__restrict__ steps) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int z = item_ct1.get_group(1);
+    part_acc += (size_t) z * (size_t) scratch_stride;
+    part_m += (size_t) z * (size_t) scratch_stride;
+    part_l += (size_t) z * (size_t) scratch_stride;
+    attn += (size_t) z * (size_t) item_ct1.get_group_range(2) * HD;
+    const int width = steps[(size_t) z * kStepCount + kStepWidth];
+    const int reach = width <= 0 ? 0 : 1 + (width - 1) / CHUNK;
+    const int nc = sycl::min(reach, n_chunks);
+    const int h = item_ct1.get_group(2), kvh = h / G, hl = h % G;
+    const int d = item_ct1.get_local_id(2);
+    const float* pm_h = part_m + (size_t) kvh * n_chunks * G + hl;
+    const float* pl_h = part_l + (size_t) kvh * n_chunks * G + hl;
+    const float* pa_h = part_acc + ((size_t) kvh * n_chunks * G + hl) * HD + d;
+    constexpr int MU = 8;
+    float M = -FLT_MAX;
+    int c = 0;
+    for (; c + MU <= nc; c += MU) {
+        float pm[MU];
+#pragma unroll
+        for (int j = 0; j < MU; ++j) pm[j] = pm_h[(size_t) (c + j) * G];
+#pragma unroll
+        for (int j = 0; j < MU; ++j) M = sycl::fmax(M, pm[j]);
+    }
+    for (; c < nc; ++c) M = sycl::fmax(M, pm_h[(size_t) c * G]);
+    float L = 0.0f, acc = 0.0f;
+    c = 0;
+    for (; c + MU <= nc; c += MU) {
+        float pm[MU], pl[MU], pa[MU];
+#pragma unroll
+        for (int j = 0; j < MU; ++j) {
+            pm[j] = pm_h[(size_t) (c + j) * G];
+            pl[j] = pl_h[(size_t) (c + j) * G];
+            pa[j] = pa_h[(size_t) (c + j) * G * HD];
+        }
+#pragma unroll
+        for (int j = 0; j < MU; ++j) {
+            if (pm[j] == -FLT_MAX) continue;
+            const float w = sycl::native::exp(pm[j] - M);
+            L = sycl::fma(pl[j], w, L);
+            acc = sycl::fma(pa[j], w, acc);
+        }
+    }
+    for (; c < nc; ++c) {
+        const float m = pm_h[(size_t) c * G];
+        if (m == -FLT_MAX) continue;
+        const float w = sycl::native::exp(m - M);
+        L = sycl::fma(pl_h[(size_t) c * G], w, L);
+        acc = sycl::fma(pa_h[(size_t) c * G * HD], w, acc);
+    }
+    attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
+}
+
+bool merge_active_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_ATTN_MERGE_ACTIVE");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
 #if defined(STRATA_EXPERIMENTAL_SM60)
 // the current device is below sm_75 (per device: a layer split can mix cards); STRATA_ATTN_PRE75=0 turns PR #540's
 // kernel off (A/B)
@@ -832,15 +899,27 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class attn_merge_kernel_338175>>(
-            sycl::nd_range<3>(
-                sycl::range(1, (unsigned)n_q, (unsigned)s.n_head) *
-                    sycl::range(1, 1, HD),
-                sycl::range(1, 1, HD)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                attn_merge_kernel(part_acc, part_m, part_l, n_chunks, attn,
-                                  stride);
-            });
+        if (merge_active_on() && n_q <= 8) {
+            st->parallel_for<dpct_kernel_name<class attn_merge_active>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, (unsigned)n_q, (unsigned)s.n_head) *
+                        sycl::range(1, 1, HD),
+                    sycl::range(1, 1, HD)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    attn_merge_active_kernel(part_acc, part_m, part_l, n_chunks,
+                                             attn, stride, steps);
+                });
+        } else {
+            st->parallel_for<dpct_kernel_name<class attn_merge_kernel_338175>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, (unsigned)n_q, (unsigned)s.n_head) *
+                        sycl::range(1, 1, HD),
+                    sycl::range(1, 1, HD)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    attn_merge_kernel(part_acc, part_m, part_l, n_chunks, attn,
+                                      stride);
+                });
+        }
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the

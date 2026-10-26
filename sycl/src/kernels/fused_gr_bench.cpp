@@ -2,6 +2,7 @@
 // ones, bit for bit on every output (lo, rs, inject, mixed, the in-place R), and each one's time.
 //
 //     build/fused_gr_bench [iters] [T min] [T max]
+// On SYCL the fast setter is a no-op; compare hashes across builds or environment settings.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
@@ -184,8 +185,15 @@ int main(int argc, char** argv) {
                              1000000.0f;
                         us[f] = std::fmin(us[f], 1e3 * ms / iters);
                     }
-                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s\n", T, apply, inject, us[0], us[1],
-                            same ? "bitwise equal" : "DIFFERS");
+                uint64_t hash = 1469598103934665603ull;
+                for (float value : out[1]) {
+                    uint32_t bits;
+                    std::memcpy(&bits, &value, sizeof(bits));
+                    hash = (hash ^ bits) * 1099511628211ull;
+                }
+                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s | hash %016llx\n",
+                            T, apply, inject, us[0], us[1], same ? "bitwise equal" : "DIFFERS",
+                            (unsigned long long) hash);
                 if (!same) ++failures;
             }
     std::printf("fused_gr_bench: %d differing\n", failures);

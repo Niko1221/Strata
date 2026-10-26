@@ -29,6 +29,11 @@ endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
+option(STRATA_SYCL_IQ_DECODE_FAST "Opt in to the packed IQ/Q2 decode helpers" OFF)
+if(STRATA_SYCL_IQ_DECODE_FAST)
+  add_compile_definitions(STRATA_Q2_WORD_FAST=1 STRATA_IQ4NL_LUT_SWAR=1 STRATA_IQ4XS_LUT_SWAR=1
+                         STRATA_IQ4_LUT_SWAR=1 STRATA_IQ3S_SIGN_FAST=1 STRATA_IQ3S_SIGN_APPLY_FAST=1)
+endif()
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
 # bound for every device in this build.
@@ -355,6 +360,11 @@ if(STRATA_SYCL_PARITY)
   add_executable(native_grouped_parity ${_src})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels)
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  if(STRATA_NATIVE_EXPERTS)
+    strata_resolve(_src src/kernels/native_expert_bench.cpp)
+    add_executable(native_expert_bench ${_src})
+    target_link_libraries(native_expert_bench PRIVATE strata_kernels strata_kernels_cpu)
+  endif()
   # 0.1.40 (#783): the batched verify-window kernels against the ones they replace, bitwise (synthetic, no model)
   foreach(p IN ITEMS verify native_multi kv_steps resident_plan gr_multi)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
@@ -396,6 +406,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  add_executable(fused_gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/fused_gr_bench.cpp)
+  target_link_libraries(fused_gr_bench PRIVATE strata_kernels)
   add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
   target_link_libraries(sycl_router_fast PRIVATE strata_kernels)
   add_test(NAME sycl_router_fast COMMAND sycl_router_fast)

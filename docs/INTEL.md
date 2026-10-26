@@ -510,3 +510,35 @@ a type pun the SYCL compiler does not honour. A prompt that borrowed cache slots
 Level Zero v2). An A750 prompt of 2,744 tokens hung (direct copy out of pageable memory; regression test
 `sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
 An A770 JIT build misread memory past 4 GiB into an allocation. The xe driver aliased pages in a 22 GiB arena (NaN at layer 4).
+
+### Opt-in mixed-IQ3 decode experiments
+
+These controls select separate decode paths. They do not enable INT8 prefill,
+change the expert cache size or change other devices' defaults. Set runtime
+controls before starting the engine; restart after changing them.
+
+Build with `-DSTRATA_SYCL_IQ_DECODE_FAST=ON` to select the packed Q2/IQ4 and
+sign helpers. The build option defaults to `OFF`. Test the same model and
+request sequence against a build without that option before using it.
+
+| Runtime control | Selected work |
+|---|---|
+| `STRATA_IQ3S_GU_SLM=1` | Stage native IQ3_S gate/up activations |
+| `STRATA_IQ4NL_DOWN_SLM=1` | Stage native IQ4_NL down activations |
+| `STRATA_IQ2S_GU_ROW_REUSE=1` | Reuse inputs across two IQ2_S gate/up rows |
+| `STRATA_IQ3XXS_GU_ROW_REUSE=1` | Reuse inputs across two IQ3_XXS gate/up rows |
+| `STRATA_EXPERT_ROW_E3=1` | Process eligible three-entry tails in the row-reuse path |
+| `STRATA_IQ3S_GU_ROW_REUSE=1` | Reuse IQ3_S gate/up row inputs |
+| `STRATA_RESIDENT_PLAN_COMPACT=1` | Size the resident routing work-group for the entry count |
+| `STRATA_GR_CACHED_NORM=1` | Reuse HC normalized input on supported layouts |
+| `STRATA_GR_LO_REUSE=1` | Reuse HC low-rank SiLU output on supported layouts |
+| `STRATA_GR_REDUCE_ILP=1` | Keep partial loads in flight in the cached-lo HC reduce |
+| `STRATA_MMVQ_SHAPE_RPW=1` | Select row reuse for bounded Q4_K/Q5_K projection shapes |
+| `STRATA_Q6_SHAPE_GRF=1` | Select large GRF for bounded Q6_K projection shapes |
+| `STRATA_GDN_QK_REG=1` | Register-broadcast QK for supported BMG GDN geometry |
+| `STRATA_ATTN_MERGE_ACTIVE=1` | Merge only active chunks in bounded batched QSA decode |
+
+Unsupported layouts retain their existing paths. Explicit projection overrides
+take precedence over shape selection. These options need workload-specific
+validation; enabling a control does not establish that a matching kernel ran
+or that the full request became faster.
