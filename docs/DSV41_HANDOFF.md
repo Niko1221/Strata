@@ -96,6 +96,10 @@ DSpark's verify works.  So M2 is per-sequence KV *regions* plus a per-step table
 for the per-slot KV (a capped context a slot, not 1M) is the design decision.  The first thing to write is the parity test
 that runs the kernel with T = 2 over two disjoint regions and compares it with two T = 1 calls.
 
+M2's first code is in: `src/dsv41/ds4_batch_attn.hpp` (with `tests/dsv41/batch_attn_test.cpp`, no GPU) is the step
+table - a sequence's window base and compressed-row region, the rows its position can select, the indexer's picks into
+the shared table (refused outside its region) and a disjointness check.  Not wired into the model yet.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
