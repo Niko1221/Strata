@@ -171,6 +171,15 @@ GPU left.  Each extra sequence's compressed KV is ~0.54 GB a GPU (~2.2 GB in all
 experts stayed in VRAM with one sequence, 3662 at 13 and 3441 at 17, and that displacement is where the 62 -> 51 tok/s
 comes from.  Capping a slot's context (the design's 32K) is the lever that would raise both the count and the aggregate.
 
+**Qwen3.8-Flash-Next on the same box (2026-10-27).**  The other model family (`strata`, ISTA-DASLab IQ2_XS, 69 GB)
+runs normally on this tree - nothing here touches it - and its own batching is the reference this branch is measured
+against.  At a 32K context, three clients at `parallel 1` ran serialized (wall 12.02 s, first tokens within 8.24 s, 2
+handovers, 25.0 tok/s) and four at `parallel 4` together (wall 8.77 s, first tokens within 1.72 s, 377 handovers, 45.6
+tok/s - 1.8x).  At a 1M context the engine needs `--kv q4_0` (with int8 the 1M-token KV leaves no VRAM for its expert
+tier and the engine refuses): there `parallel 1` took 5.99 s for three clients (50.1 tok/s) and `parallel 4` 12.92 s for
+four (31.0 tok/s, the expert cache down to a 68-78 % hit rate) - the same trade the dsv41 slots show at 1M.  The first
+case after a load pays the pack's cold reads, so its single-request rates are the low ones.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
