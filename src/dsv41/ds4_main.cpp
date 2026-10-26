@@ -97,7 +97,7 @@ void usage() {
                  "maya-ds4 --pack <model>/maya-ds4 [--gpus 0,1,...] [--max-context N] [--reserve-mib N]\n"
                  "           [--vram-experts F] [--cpu-threads N] [--expert-profile FILE|none] [--ssd-cache GB] [--ssd-policy lru|lfu|lfulru] [--no-expert-cache] [--verbose]\n"
                  "           [--tp N] [--threads on|off] [--prefill-chunk N] [--dspark on|off|none|auto] [--dspark-block N] [--dspark-conf F] [--experts N|auto]\n"
-                 "           [--vision on|off] [--mmap-experts on|off|auto] [--batch N] [--slot-burst K]\n"
+                 "           [--vision on|off] [--mmap-experts on|off|auto] [--batch N] [--slot-burst K] [--read-slice N]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
@@ -387,7 +387,7 @@ static void admit_short_first(Lines& in, std::string& line) {
 }
 
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack,
-          int batch_slots, int slot_burst) {
+          int batch_slots, int slot_burst, int read_slice) {
     std::vector<int> eos = parse_ids(eos_list);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
     // the server's batched path turns on from this INFO line alone (serve/server.py: self.batch = batch_slots), so it is
@@ -749,6 +749,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     int cur = -1;                   // the slot whose conversation the model holds (-1: none of them)
     size_t rr_last = (size_t) -1;
     const int burst = slot_burst > 0 ? slot_burst : 16;
+    const int slice_tokens = read_slice > 0 ? read_slice : 1024;   // (--read-slice: how much of a prompt one feed reads)
+    const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
     std::string err;                // (the model's last error, for the admission and for a slot's round)
     // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
     // VRAM hit, promotions a token) and DeepSeek's own - experts a token on the CPU lane, MB a token the storage
@@ -885,7 +887,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     const auto run_slot = [&](int s) {
         Run& run = bslots[(size_t) s];
         if (!run.active) return;
+        double switch_ms = 0.0;
         if (cur != s) {
+            const double t_switch = now_ms();
             if (cur >= 0) {
                 if (!park_slot(cur)) end_slot(cur, "cancel");   // (its bytes cannot be kept: it ends rather than be lost)
                 cur = -1;
@@ -906,10 +910,16 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 }
             }
             cur = s;
+            switch_ms = now_ms() - t_switch;
         }
         const int lim = (run.no_switch || burst <= 0) ? INT_MAX : burst;
+        const long long before = run.produced;
+        const double t_burst = now_ms();
         for (int k = 0; k < lim; ++k)
             if (!run_advance(run)) break;
+        if (slot_trace)
+            std::fprintf(stderr, "ds4 slot: slot %d: %lld tokens in %.1f ms, switch %.1f ms, parked %zu bytes\n", s,
+                         run.produced - before, now_ms() - t_burst, switch_ms, run.parked.size());
         if (run.ended) end_slot(s, run.finish);
     };
     // the next slot to run, round robin (a picture slot keeps the model until its answer is done)
@@ -1136,7 +1146,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             // (#656) with batch slots a read is fed in slices: between two of them a shorter request gets the control
             // lines, and the state stops where it is consistent (mid-run it is not - a STOP goes back to the start)
-            const size_t slice = batch_slots > 0 && pics.empty() ? (size_t) 1024 : (size_t) m.feed_unit();
+            const size_t slice = batch_slots > 0 && pics.empty() ? (size_t) slice_tokens : (size_t) m.feed_unit();
             const double t_slice = now_ms();
             size_t n = std::min<size_t>(slice, total - done);
             if (pin_at > done && pin_at < done + n) n = pin_at - done;
@@ -1167,16 +1177,25 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 std::vector<uint8_t> read_state;
                 std::string e;
                 const int64_t read_at = m.pos();
+                const double t_park = now_ms();
                 if (m.slot_save(read_state, e) != 0) {
+                    const double t_parked = now_ms();
                     m.reset();
-                    const double until = now_ms() + std::min(1000.0, slice_ms * 0.5);
+                    const double until = t_parked + std::min(1000.0, slice_ms * 0.5);
                     while (now_ms() < until) {
                         const int s = next_active();
                         if (s < 0) break;
                         run_slot(s);
                     }
                     if (cur >= 0 && !park_slot(cur)) end_slot(cur, "cancel");   // (the last burst's state, before the read's)
-                    if (!m.slot_load(read_state.data(), read_state.size(), read_at, e)) {
+                    const double t_decodes = now_ms();
+                    const bool back = m.slot_load(read_state.data(), read_state.size(), read_at, e);
+                    if (slot_trace)
+                        std::fprintf(stderr,
+                                     "ds4 read: slice %.0f ms, %.1f MB parked in %.1f ms, decodes %.1f ms, back %.1f ms\n",
+                                     slice_ms, (double) read_state.size() / 1e6, t_parked - t_park,
+                                     t_decodes - t_parked, now_ms() - t_decodes);
+                    if (!back) {
                         std::fprintf(stderr, "ds4 serve: the prompt read's state could not be brought back (%s)\n", e.c_str());
                         ok = false;
                         err = "the prompt read's state could not be brought back";
@@ -1540,6 +1559,7 @@ int main(int argc, char** argv) {
     int burst = 0;
     int batch_slots = 0;   // --batch N: the server's batched path (docs/DSV41_BATCHING.md, M4); 0: one request at a time
     int slot_burst = 16;   // --slot-burst K: tokens one slot decodes before another gets the model
+    int read_slice = 1024; // --read-slice N: tokens of a prompt one feed reads (a BYIELD lands between two of them)
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -1615,6 +1635,7 @@ int main(int argc, char** argv) {
         else if (a == "--burst") burst = std::atoi(val("--burst").c_str());
         else if (a == "--batch") batch_slots = std::max(0, std::atoi(val("--batch").c_str()));
         else if (a == "--slot-burst") slot_burst = std::max(0, std::atoi(val("--slot-burst").c_str()));
+        else if (a == "--read-slice") read_slice = std::max(0, std::atoi(val("--read-slice").c_str()));
         else if (a == "--pack-info") pack_info_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
@@ -1665,7 +1686,7 @@ int main(int argc, char** argv) {
     }
     if (!o.vision_only) std::fprintf(stderr, "%s", m.describe().c_str());
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
-    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, batch_slots, slot_burst);
+    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, batch_slots, slot_burst, read_slice);
     const int window_given = window;
     if (window == 0) window = 16;   // (the scoring / profiling runs; the plain run below takes the model's feed unit)
     if (!prof_ids.empty()) return profile_run(m, prof_ids, window);

@@ -72,6 +72,11 @@ tokens): parking states buys latency fairness, not throughput - that is M2/M3's 
   default) is how many tokens one slot decodes per turn; a burst of 8 makes the interleaving visible without much
   overhead.  A picture request sets `no_switch` and runs to its end; a read is fed in 1024-token slices so that a
   `BYIELD` can end it between two of them (the part read stays as the model's state, `kept = from` otherwise).
+* Tuning (M5): `STRATA_DS4_SLOT_TRACE=1` prints a burst's tokens/ms and its switch's ms, and a read slice's size and
+  cost; `--read-slice N` sets the slice (default 1024).  Measured: a switch ~4.4-4.5 ms on short conversations, i.e.
+  ~3.7 % of an 8-token burst, ~1.9 % of the default 16; the wall time does not move with the burst (4.1-5.1 s), the
+  interleaving does (8 handovers at 8, 2 at 32).  The cost follows the state's size, so it is the context, not the
+  kernels, that caps this approach at chat-sized conversations.
 * Between the slices of a read the active slots decode (about half the slice's time each round); the read's state is
   parked and loaded back around them, so its own tokens are untouched.  A read over 32k tokens is not interleaved, nor
   one with pictures - the copies or the state would cost more than they give.

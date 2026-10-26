@@ -206,6 +206,14 @@ the active slots get bursts for about half the slice's time, and the state is lo
 request's whole answer took 2.59 s (against 5.70 s with neither mechanism and 5.98 s with the yield alone) - it
 finishes while the 4k-token prompt is still being read.
 
+**What a turn costs (M5, measured).**  `STRATA_DS4_SLOT_TRACE=1` prints, per burst, the tokens, the burst's ms and the
+switch's ms (the park and the load of the state), and per read slice its size and cost.  With three clients on two slots
+and short conversations, a switch costs **~4.4-4.5 ms**; a burst of 8 tokens (~120 ms of decode) therefore pays ~3.7 %,
+the default 16 ~1.9 %, and 32 ~0.9 %.  The wall time is flat across those (4.1-5.1 s run to run - three short clients
+are noisy), while the interleaving drops with the burst (8 handovers at burst 8, 2 at burst 32): exactly the trade the
+design predicts, with no throughput in it.  The switch's cost follows the state's size, so it grows with the context;
+that, not the kernel time, is what caps the parked-state approach at chat-sized conversations.
+
 Known limits of this stage: a read whose state is over 32k tokens is not interleaved (the save/load per slice would
 cost more than it gives), a request with pictures runs to its end without being parked (its state cannot be set
 aside), and each parked slot holds its conversation in host memory, so the cost per switch grows with the context
