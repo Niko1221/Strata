@@ -199,8 +199,14 @@ A read gives way to a shorter request (#656): with `--batch N` a prompt is fed i
 between two of them ends the read - the part read stays in the model, the server sends the same prompt again, and its
 read goes on from where it stopped.  Measured: a 4,031-token prompt with a short request 1.2 s behind it - the short
 one's first token at 0.77 s instead of 5.47 s, and the engine's own line "the prompt read gave way after 1024 of 4031
-tokens".  Its later tokens still wait for the long read's remaining slices.
+tokens".
 
-Known limits of this stage: between the slices of a read the model is held by that read (the slots' bursts wait), a
-request with pictures runs to its end without being parked (its state cannot be set aside), and each parked slot holds
-its conversation in host memory, so the cost per switch grows with the context (tens of MB at 8K tokens).
+Between two slices the read shares the engine with the slots that decode: its state is set aside (`Model::slot_save`),
+the active slots get bursts for about half the slice's time, and the state is loaded back.  With that the short
+request's whole answer took 2.59 s (against 5.70 s with neither mechanism and 5.98 s with the yield alone) - it
+finishes while the 4k-token prompt is still being read.
+
+Known limits of this stage: a read whose state is over 32k tokens is not interleaved (the save/load per slice would
+cost more than it gives), a request with pictures runs to its end without being parked (its state cannot be set
+aside), and each parked slot holds its conversation in host memory, so the cost per switch grows with the context
+(tens of MB at 8K tokens).

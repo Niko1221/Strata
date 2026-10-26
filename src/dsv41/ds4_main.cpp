@@ -1137,6 +1137,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // (#656) with batch slots a read is fed in slices: between two of them a shorter request gets the control
             // lines, and the state stops where it is consistent (mid-run it is not - a STOP goes back to the start)
             const size_t slice = batch_slots > 0 && pics.empty() ? (size_t) 1024 : (size_t) m.feed_unit();
+            const double t_slice = now_ms();
             size_t n = std::min<size_t>(slice, total - done);
             if (pin_at > done && pin_at < done + n) n = pin_at - done;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
@@ -1149,6 +1150,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 ok = fin ? m.feed_mark(r.ids.data() + done, (int) n, 1, 1, err)
                          : m.feed(r.ids.data() + done, (int) n, 0, err);
             done += n;
+            const double slice_ms = now_ms() - t_slice;
             if (ok && pin_at != 0 && done == pin_at) m.checkpoint(3);
             if (ok && (done >= next_pp || done == total)) {
                 const double ms = now_ms() - t0;
@@ -1156,6 +1158,31 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                             ms > 0 ? 1000.0 * (double) (done - from) / ms : 0.0, from);
                 std::fflush(stdout);
                 next_pp = done + 64;
+            }
+            // the read shares the engine with the slots that decode: its state is set aside for their bursts and brought
+            // back afterwards (the same bytes Model::slot_save takes) - a 4k-token read no longer holds the model for its
+            // whole length.  The decodes get about half the slice's time; a big state (the copies would cost more than
+            // they give) and a read with pictures stay on the old path, and so does one with nothing decoding.
+            if (ok && done < total && batch_slots > 0 && pics.empty() && held.empty() && m.pos() <= 32768) {
+                std::vector<uint8_t> read_state;
+                std::string e;
+                const int64_t read_at = m.pos();
+                if (m.slot_save(read_state, e) != 0) {
+                    m.reset();
+                    const double until = now_ms() + std::min(1000.0, slice_ms * 0.5);
+                    while (now_ms() < until) {
+                        const int s = next_active();
+                        if (s < 0) break;
+                        run_slot(s);
+                    }
+                    if (cur >= 0 && !park_slot(cur)) end_slot(cur, "cancel");   // (the last burst's state, before the read's)
+                    if (!m.slot_load(read_state.data(), read_state.size(), read_at, e)) {
+                        std::fprintf(stderr, "ds4 serve: the prompt read's state could not be brought back (%s)\n", e.c_str());
+                        ok = false;
+                        err = "the prompt read's state could not be brought back";
+                    }
+                    cur = -1;
+                }
             }
         }
         m.set_cancel(nullptr);
