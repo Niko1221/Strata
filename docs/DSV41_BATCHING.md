@@ -76,10 +76,11 @@ sequence - `vseq` is 0 everywhere today - every access is the member it was.  Wh
 sequence's state without parking it in host memory; what it still needs is the read side of the compressed rows (the
 step table above), and `feed`/`step`/`sample` naming the sequence they work on instead of today's default.
 
-**The regions are read from, and a sequence on its own answers what sequence 0 does (2026-10-26).**  The indexer's scan
-and the rows `sparse_attn` takes start at the pass's sequence now (`ik_rows`/`ckv_rows`: the table at `kv_base` rows),
-and so do the checkpoint / slot / park paths (`win_of(l)` is the pass's ring, `ckv_rows`/`ik_rows` its table) - with one
-sequence every pointer is the buffer's base, as it was.  `STRATA_DS4_VSEQ=n` runs a pass on sequence n (which brings its
+**The regions are read from, and a sequence on its own answers what sequence 0 does (2026-10-26).**  The indexer scans
+the pass's sequence's region now (`ik_rows`: the table at `kv_base` rows) and its picks are made absolute for the attention
+(`rows_add_i` adds that base, so `sparse_attn` reads the one table from its base - the form a single step over several
+sequences needs), and the checkpoint / slot / park paths take the pass's ring and region too (`win_of(l)` is the pass's
+ring, `ckv_rows`/`ik_rows` its table) - with one sequence every pointer is the buffer's base, as it was.  `STRATA_DS4_VSEQ=n` runs a pass on sequence n (which brings its
 own region along: `nseq >= n + 1`), and `tools/dsv41/batch_seq_parity.py` (the window
 `tools/dsv41/windows/batch_seq_window.sh`) runs the same prompts on sequence 0 and sequence 1 in two loads - a 40-token
 prompt (12 tokens), a 300-token one (140 tokens: past the 128-token ring, across many compression groups) and a prompt
