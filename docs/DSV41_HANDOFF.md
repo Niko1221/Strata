@@ -114,6 +114,10 @@ through `win_of(layer, seq)`, a sequence's ring being its own `g.win` rows of th
 rows from the pointer they get, so no kernel changes).  With one sequence it is `l.win` bit for bit; the two-slot probe
 and the three-client HTTP check pass with `STRATA_DS4_NSEQ=2` as well.  The checkpoint and slot paths still take ring 0.
 
+The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
+(what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
+attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

@@ -42,6 +42,14 @@ inline int window_rows(const Step& s, int t) {
     return (int) n;
 }
 
+/// The compressed rows a sequence has *written* at a position: pos / ratio (slot_save's count - a compressor's group
+/// completes every ratio tokens).  It is one less than selectable() at a group's boundary, which is the off-by-one that
+/// makes a batched answer subtly wrong instead of crashing.
+inline int written_rows(int64_t pos, int ratio) { return ratio > 0 ? (int) (pos / ratio) : 0; }
+
+/// The row a position's group lands in when the compressor writes it: pos / ratio (the same row it is written into).
+inline int row_of(int64_t pos, int ratio) { return written_rows(pos, ratio); }
+
 /// The compressed rows its position can select: (pos + 1) / ratio, capped by the region and by kcap.
 inline int selectable(const Step& s, int t) {
     int64_t n = s.ratio > 0 ? (s.seq[t].pos + 1) / s.ratio : 0;

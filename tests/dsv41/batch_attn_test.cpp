@@ -34,6 +34,16 @@ int main() {
     CHECK(nsel[0] == 25 && nsel[1] == 500 && nsel[2] == 1);
     CHECK(strata::ds4::batchattn::selectable(s, 0) == 25);
 
+    // the two row counts: what a sequence has written against what a position may select - they differ at a group's
+    // boundary by one (slot_save's pos / ratio against the attention's (pos + 1) / ratio)
+    CHECK(strata::ds4::batchattn::written_rows(0, 4) == 0);
+    CHECK(strata::ds4::batchattn::written_rows(3, 4) == 0);
+    CHECK(strata::ds4::batchattn::written_rows(4, 4) == 1);
+    CHECK(strata::ds4::batchattn::written_rows(7, 4) == 1);
+    CHECK(strata::ds4::batchattn::selectable(s, 1) == (2000 + 1) / 4);
+    CHECK(strata::ds4::batchattn::written_rows(s.seq[1].pos, s.ratio) == 2000 / 4);
+    CHECK(strata::ds4::batchattn::row_of(4 * 7 + 2, 4) == 7);
+
     // a step of three sequences is fine; one with a sequence that has no row yet is not
     CHECK(strata::ds4::batchattn::disjoint(s));
     Step z = s;
