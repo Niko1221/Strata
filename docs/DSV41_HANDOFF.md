@@ -109,6 +109,11 @@ passed**, the three-client HTTP check **all passed** (reference answer byte-iden
 disconnect handled), the seven unit tests green (two of them on the GPU), and production restored healthy after every
 window.  The branch is ready to review; nothing is pushed (the M1-M5 rule).
 
+M2 step 1 is in: the window ring is allocated for `STRATA_DS4_NSEQ` sequences (default 1) and every read/write of it goes
+through `win_of(layer, seq)`, a sequence's ring being its own `g.win` rows of the one buffer (the ring functions address
+rows from the pointer they get, so no kernel changes).  With one sequence it is `l.win` bit for bit; the two-slot probe
+and the three-client HTTP check pass with `STRATA_DS4_NSEQ=2` as well.  The checkpoint and slot paths still take ring 0.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

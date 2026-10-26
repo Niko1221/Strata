@@ -951,6 +951,12 @@ struct Model::Impl {
     uint16_t* h_emb = nullptr;        // the window's embedding rows
     std::vector<float> c_xh, c_xsb, c_acc, c_xhd, c_xsd, c_accd, c_yd;
     // the state
+    // how many sequences' KV the window buffer holds (docs/DSV41_BATCHING.md, M2): 1 until the batched step is wired;
+    // a sequence's ring is g.win rows of the same buffer (win_of)
+    int nseq = [] {
+        const char* e = std::getenv("STRATA_DS4_NSEQ");
+        return e != nullptr ? std::max(1, std::atoi(e)) : 1;
+    }();
     int64_t pos = 0;
     std::vector<int32_t> toks, ctoks;
     struct Check {                    // the state at a position: every window ring, the compressors' partial groups
@@ -2838,6 +2844,8 @@ struct Model::Impl {
     // the caches' row bytes, packed as DeepSeek keeps them (ds4_kernels.cuh): the window ring's (FP8), the compressed
     // KV's (FP4 + E4M3 scales), the index keys' (FP4 + power-of-two scales)
     size_t win_rb() const { return kv_row_bytes(kKvFp8, g.hd); }
+    // a layer's window ring: the sequence's own (its g.win rows of the buffer, nseq of them side by side)
+    uint8_t* win_of(const Layer& l, int seq = 0) const { return l.win + (size_t) seq * (size_t) g.win * win_rb(); }
     size_t ckv_rb() const { return kv_row_bytes(kKvFp4, g.hd); }
     size_t ik_rb() const { return kv_row_bytes(kKvFp4p, g.ix_hd); }
 
@@ -3745,7 +3753,7 @@ struct Model::Impl {
                     l.eg_w = qw;
                 }
             }
-            if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
+            if (!dalloc(d, l.win, (size_t) nseq * (size_t) g.win * win_rb(), err, &d.caches)) return false;
             if (g.n_mtp > 0 && !l.mtp) {
                 if (!dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err)) return false;
                 if (l.kv_src && l.ratio > 1 && (!dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err) ||
@@ -4888,7 +4896,7 @@ struct Model::Impl {
                 Layer& l = member(l0, m);
                 Dev& d = devs[(size_t) l.dev];
                 cudaSetDevice(d.id);
-                cudaMemsetAsync(l.win, 0, (size_t) g.win * win_rb(), d.st);
+                cudaMemsetAsync(l.win, 0, (size_t) nseq * (size_t) g.win * win_rb(), d.st);
                 if (l.c_kv) cudaMemsetAsync(l.c_kv, 0, (size_t) l.ratio * g.hd * 4, d.st);
                 if (l.c_score) cudaMemsetAsync(l.c_score, 0, (size_t) l.ratio * g.hd * 4, d.st);
             }
@@ -6911,7 +6919,7 @@ struct Model::Impl {
                 fk.dst = d.ext + (size_t) g.win * HD;
                 fk.dst_stride = HD;
                 finish(d.kvr, na, HD, HD, fk, d.st);
-                ext_to_ring(d.ext, l.win, p0 + a, g.win, na, HD, d.st);
+                ext_to_ring(d.ext, win_of(l), p0 + a, g.win, na, HD, d.st);
             }
         }
         return true;
@@ -6966,7 +6974,7 @@ struct Model::Impl {
         for (int i = 0; i < g.n_mtp; ++i) {
             Layer& l = L[(size_t) (g.nl + i)];
             if (dump_d != nullptr) {   // (stream order: the ring the block reads - as BF16 rows - the stream it leaves)
-                ring_to_ext(l.win, d.ext, g.win, g.win, g.hd, d.st);
+                ring_to_ext(win_of(l), d.ext, g.win, g.win, g.hd, d.st);
                 CK(cudaMemcpyAsync(h_dump_ring + (size_t) i * rs, d.ext, rs * 2, cudaMemcpyDeviceToHost, d.st));
             }
             if (!layer(l, 0, p0, T, dp, err)) return false;
@@ -7193,10 +7201,10 @@ struct Model::Impl {
                 RingBatch& b = rb[(size_t) l.dev];
                 if (b.n == kMaxRingBatch) {   // (more layers on a device than a batch takes: this one alone)
                     cudaSetDevice(devs[(size_t) l.dev].id);
-                    ring_restore(l.win, l.ring_bak, p0, g.win, keep, T, g.hd, devs[(size_t) l.dev].st);
+                    ring_restore(win_of(l), l.ring_bak, p0, g.win, keep, T, g.hd, devs[(size_t) l.dev].st);
                     continue;
                 }
-                b.ring[b.n] = l.win;
+                b.ring[b.n] = win_of(l);
                 b.bak[b.n++] = l.ring_bak;
             }
         for (size_t di = 0; di < devs.size(); ++di)
@@ -7280,7 +7288,7 @@ struct Model::Impl {
             finish(c.qr, T, g.q_lora, g.q_lora, fq, s);
             x3::rows_f16(c.qr, g.q_lora, nullptr, T, g.q_lora, c.qr16, s);
             // the window rows: the ring's (positions p0 - win ..) then the chunk's
-            ring_to_ext(l.win, c.ext, p0, g.win, HD, s);
+            ring_to_ext(win_of(l), c.ext, p0, g.win, HD, s);
             Finish fk;
             fk.w = l.kv_norm;
             fk.eps = g.eps;
@@ -7293,7 +7301,7 @@ struct Model::Impl {
             finish(c.kvr, T, HD, HD, fk, s);
             // feed_mark's checkpoint: the ring as it was before row snap_t - the old ring, then the chunk's rows before it
             if (snap) {
-                CK(cudaMemcpyAsync(L0.snap_win, l.win, (size_t) g.win * win_rb(), cudaMemcpyDeviceToDevice, s));
+                CK(cudaMemcpyAsync(L0.snap_win, win_of(L0), (size_t) g.win * win_rb(), cudaMemcpyDeviceToDevice, s));
                 if (wp.snap_t > 0) ext_to_ring(c.ext, L0.snap_win, p0, g.win, wp.snap_t, HD, s, nullptr);
             }
             ext_to_ring(c.ext, l.win, p0, g.win, T, HD, s, nullptr);
