@@ -345,21 +345,19 @@ static void admit_short_first(Lines& in, std::string& line) {
         return e != nullptr ? std::atoll(e) : (int64_t) 2048;
     }();
     if (kShort <= 0) return;
-    bool is_gen = false;
-    const int64_t cur = gen_prompt_len(line, is_gen);
-    if (!is_gen || cur < 0) return;
-    std::deque<std::string> rest;
+    std::deque<std::string> all;
+    all.push_back(line);
     std::string l;
-    std::string best = line;
-    int64_t bestn = cur;
-    while (in.try_next(l)) {
-        bool g = false;
-        const int64_t n = gen_prompt_len(l, g);
-        if (g && n >= 0 && n < bestn) { rest.push_back(best); best = l; bestn = n; }
-        else rest.push_back(l);
-    }
-    in.push_front(rest);
-    line = best;
+    while (in.try_next(l)) all.push_back(l);
+    std::stable_sort(all.begin(), all.end(), [](const std::string& a, const std::string& b) {
+        bool ga = false, gb = false;
+        const int64_t na = gen_prompt_len(a, ga), nb = gen_prompt_len(b, gb);
+        if (ga != gb) return ga;
+        return ga && na < nb;
+    });
+    line = all.front();
+    all.pop_front();
+    in.push_front(all);
 }
 
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
@@ -1242,6 +1240,7 @@ int main(int argc, char** argv) {
     unsigned long long cli_seed = 1;
     bool serve_mode = false;
     bool pack_info_mode = false;
+    bool admit_order = false;
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -1313,6 +1312,7 @@ int main(int argc, char** argv) {
         else if (a == "--profile-run") prof_ids = val("--profile-run");
         else if (a == "--spec-eval") spec_ids = val("--spec-eval");
         else if (a == "--serve") serve_mode = true;
+        else if (a == "--admit-order") admit_order = true;
         else if (a == "--pack-info") pack_info_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
@@ -1338,6 +1338,23 @@ int main(int argc, char** argv) {
     if (o.profile.empty()) o.profile = o.pack + "/expert-profile.bin";   // "none": no profile
     if (o.profile == "none") o.profile.clear();
     o.vision_only = !enc_rgb.empty();
+    if (admit_order) {                                 // the M1 admission order, without a model
+        Lines in;
+        in.start();
+        std::string line;
+        int shown = 0;
+        while (in.next(line)) {
+            if (line == "QUIT") break;
+            admit_short_first(in, line);
+            bool g = false;
+            const int64_t len = gen_prompt_len(line, g);
+            std::printf("ADMIT %lld %s\n", (long long) len, g ? "gen" : "other");
+            std::fflush(stdout);
+            if (++shown >= 64) break;
+        }
+        return 0;
+    }
+
     strata::ds4::Model m;
     std::string err;
     if (!m.load(o, err)) {
