@@ -742,6 +742,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         double t_prompt0 = 0.0, t_prompt1 = 0.0, t_slot0 = 0.0;
         std::vector<uint8_t> parked;   // its conversation while it is not in the model
         size_t parked_tokens = 0;
+        std::vector<int> parked_ids;   // (the conversation's tokens, so its next turn is recognized and taken back)
         strata::ds4::Stats s_dec;
         long long io_dec = -1;
     };
@@ -878,6 +879,21 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             std::printf("DONE 0 %zu 0.0 0.0 cancel 0 0 %zu 0 0\n", o.req.ids.size(), o.reused);
             std::printf("BADM %d 0\n", s);
             std::fflush(stdout);
+        }
+        // the finished conversation stays in the slot's own bytes: the server sends its next turn back to this slot
+        // (pick_slot and slot_held), and the read then goes on from here instead of from token 0.  The folder keeps the
+        // big ones anyway; this is the cheap rung above it.
+        if (o.continued && cur == s && held.empty() && m.pos() > 0 && m.pos() <= 65536) {
+            std::vector<uint8_t> buf;
+            std::string e;
+            const int64_t n_pos = m.pos();
+            if (m.slot_save(buf, e) != 0) {
+                o.parked = std::move(buf);
+                o.parked_tokens = (size_t) n_pos;
+                o.parked_ids = m.tokens();
+                std::fprintf(stderr, "ds4 serve: slot %d keeps its %lld-token conversation for its next turn\n", s,
+                             (long long) n_pos);
+            }
         }
         o.active = false;
         o.continued = false;
@@ -1028,6 +1044,37 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             m.reset();
             held.clear();
         }
+        // A conversation's next turn re-renders its answer without the thinking the engine produced, so the state a slot
+        // kept can be *longer* than the new prompt (and the server's slot_held, which is tokens, then matches nothing):
+        // the engine looks through every slot's kept conversation for one this prompt continues, and loads the best.
+        // The prefix logic below then stops at one of its checkpoints and reads on from there.
+        bool from_park = false;
+        if (reuse && admit_slot >= 0 && pics.empty()) {
+            size_t best = bslots.size(), best_n = 0;
+            for (size_t k = 0; k < bslots.size(); ++k) {
+                const Run& c = bslots[k];
+                if (c.parked.empty() || c.parked_ids.empty()) continue;
+                size_t same_n = 0;
+                while (same_n < c.parked_ids.size() && same_n < r.ids.size() && c.parked_ids[same_n] == r.ids[same_n])
+                    ++same_n;
+                if (same_n > best_n) {
+                    best_n = same_n;
+                    best = k;
+                }
+            }
+            // (a shared start of 16 tokens is the same conversation; a shorter one is an exact continuation)
+            if (best < bslots.size() &&
+                (best_n >= 16 || (best_n == bslots[best].parked_ids.size() && best_n < r.ids.size()))) {
+                std::string e;
+                if (m.slot_load(bslots[best].parked.data(), bslots[best].parked.size(), (int64_t) bslots[best].parked_tokens, e)) {
+                    from_park = true;
+                    std::fprintf(stderr, "ds4 serve: slot %zu's kept conversation taken back (%zu of the prompt's %zu tokens shared)\n",
+                                 best, best_n, r.ids.size());
+                }
+                else
+                    std::fprintf(stderr, "ds4 serve: slot %zu's kept conversation could not be loaded (%s)\n", best, e.c_str());
+            }
+        }
         const auto& st = m.tokens();
         const size_t n_state = st.size();
         size_t c = 0;
@@ -1055,7 +1102,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // CONVERSATION SLOTS: this prompt does not continue the conversation in the model - that one is set aside
             // first (another one takes the model, and its state is lost otherwise), then the kept conversation this
             // prompt does continue is taken back - if it goes further back than the checkpoints the state itself holds
-            if (held.empty()) slot_put("");
+            if (held.empty() && !from_park) slot_put("");   // (the slot already holds these bytes)
             const int64_t limit = (int64_t) std::min(c, r.ids.size() - 1);
             const int64_t rs = m.restorable(limit);
             bool whole = false;

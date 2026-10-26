@@ -55,6 +55,14 @@ x 4 concurrent streaming requests on a `--batch 2` server: 32 requests, 0 failed
 both slots decoding, mean switch 3.07 ms, no engine ERR line and no server traceback (`tools/../batch_soak.py`, on the
 box at /data/works/batch_soak.py).
 
+A slot now keeps the conversation it finished (up to 64k tokens) in its own bytes, and a later admission whose prompt
+shares at least 16 tokens with it loads it back before the prefix logic runs, so the read stops at one of that
+conversation's checkpoints.  The match is made across all slots because a re-rendered turn drops the thinking the engine
+produced: the kept state can be longer than the new prompt, and the server's token-level slot_held then matches nothing.
+Seen in the three-client check: "slot 0's kept conversation taken back (101 of 118 tokens shared)", "slot 1's ... (28 of
+43)".  A single client still goes through the solo path (the server keeps it there while it is alone), where the engine
+continues the state in place as before - so a two-turn single-client test shows no slot reuse, by design.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

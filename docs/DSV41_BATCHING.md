@@ -186,6 +186,11 @@ A slot is a conversation the engine holds between calls (its tokens, KV, sampler
 `ERR unsupported command`.  `dsv41 --batch N` says `INFO batch_slots=N` and speaks all of the above; without the
 flag nothing changes - the one-at-a-time engine the server ran before.
 
+**The slot keeps its conversation (built).**  A slot that finishes an answer sets its state aside in its own bytes (up to
+64k tokens); a later admission whose prompt shares at least 16 tokens with it loads it back before the prefix logic, so
+the read stops at that conversation's checkpoint and goes on.  The match is made over every slot's kept conversation -
+a re-rendered turn drops the thinking, so the kept state can be longer than the new prompt.
+
 **N slots without kernels (built).**  The model still holds one conversation, so the serve loop parks a slot that is not
 decoding in host memory - `Model::slot_save`, the same bytes the conversation folder keeps - and loads it back for that
 slot's next burst (`--slot-burst K`, 16 by default).  The slots take turns round robin and their `BT` lines interleave
