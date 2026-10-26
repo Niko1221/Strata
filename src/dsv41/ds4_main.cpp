@@ -740,8 +740,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         bool no_switch = false;     // pictures: their state cannot be set aside, so the slot runs to its end
         size_t reused = 0;
         double t_prompt0 = 0.0, t_prompt1 = 0.0, t_slot0 = 0.0;
-        std::vector<uint8_t> parked;   // its conversation while it is not in the model
+        std::vector<uint8_t> parked;   // its conversation while it is not in the model (the host copy)
         size_t parked_tokens = 0;
+        int64_t park_id = -1;          // (the device park: its arena, taken on the first switch out)
+        bool parked_dev = false;
         std::vector<int> parked_ids;   // (the conversation's tokens, so its next turn is recognized and taken back)
         strata::ds4::Stats s_dec;
         long long io_dec = -1;
@@ -752,6 +754,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     const int burst = slot_burst > 0 ? slot_burst : 16;
     const int slice_tokens = read_slice > 0 ? read_slice : 1024;   // (--read-slice: how much of a prompt one feed reads)
     const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
+    // (STRATA_DS4_PARK_DEVICE=1: a slot's turn switch copies the state device to device instead of through the host)
+    const bool park_device = std::getenv("STRATA_DS4_PARK_DEVICE") != nullptr;
     std::string err;                // (the model's last error, for the admission and for a slot's round)
     // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
     // VRAM hit, promotions a token) and DeepSeek's own - experts a token on the CPU lane, MB a token the storage
@@ -850,8 +854,19 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         run.got.pop_back();
         return true;
     };
-    // the conversation in the model into slot s's own bytes
+    // the conversation in the model into slot s's own bytes (or, with STRATA_DS4_PARK_DEVICE, the cards' memory)
     const auto park_slot = [&](int s) -> bool {
+        if (park_device) {
+            Run& run = bslots[(size_t) s];
+            if (run.park_id < 0) run.park_id = m.park_new();
+            std::string e;
+            if (run.park_id >= 0 && m.park_save(run.park_id, e) != 0) {
+                run.parked_dev = true;
+                return true;
+            }
+            std::fprintf(stderr, "ds4 serve: slot %d could not be parked on the cards (%s): the host copy is used\n", s,
+                         e.c_str());
+        }
         const int64_t n_pos = m.pos();
         std::vector<uint8_t> buf;
         std::string e;
@@ -913,7 +928,17 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 if (held.empty()) slot_put("");   // (a finished conversation: the folder may keep it for its next turn)
                 held.clear();
             }
-            if (!run.parked.empty()) {
+            if (run.parked_dev) {
+                std::string e;
+                const bool ok = m.park_load(run.park_id, e);
+                run.parked_dev = false;
+                if (!ok) {
+                    std::fprintf(stderr, "ds4 serve: slot %d could not be loaded back from the cards (%s)\n", s, e.c_str());
+                    run.finish = "cancel";
+                    end_slot(s, "cancel");
+                    return;
+                }
+            } else if (!run.parked.empty()) {
                 std::string e;
                 const bool ok = m.slot_load(run.parked.data(), run.parked.size(), (int64_t) run.parked_tokens, e);
                 run.parked.clear();

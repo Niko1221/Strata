@@ -67,6 +67,10 @@ A fuzz of the batched path (21:01-21:02, `--batch 2`): 12 rounds of 2-4 concurre
 and 1 in 3 abandoned mid-stream, each round followed by a canary request: every round answered, the canary came back in
 0.29-0.46 s, both slots decoded, no engine ERR line and no server traceback (`/data/works/batch_fuzz.py`).
 
+The turn switch can also be a device-to-device copy (`STRATA_DS4_PARK_DEVICE=1`, `Model::park_save/park_load`): measured
+2.62 ms against 4.5 ms for the host copy on the same workload, with the probe (2 slots) and the three-client check green
+and no host fallback.  It is opt-in; the host path is the default.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

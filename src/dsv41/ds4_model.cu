@@ -5315,6 +5315,204 @@ struct Model::Impl {
         return true;
     }
 
+    // ---- a batch slot's state parked on the cards (Model::park_*) ------------------------------------------------
+    // The device half of slot_save/slot_load, kept where it already lives: one arena per device, the copies device to
+    // device.  The host half (the tokens, the checkpoints) is kept beside it, and one walk over the segments serves
+    // both directions, so a save and a load can never disagree about the layout.
+    struct Park {
+        std::vector<void*> buf;       // one arena per device
+        std::vector<size_t> cap;      // its bytes
+        std::vector<size_t> used;     // what the last save put in it
+        int64_t pos = 0;
+        std::vector<int32_t> toks;
+        Check ck[kChecks];
+        uint64_t bytes = 0;
+    };
+    std::vector<std::unique_ptr<Park>> parks;
+
+    Park* park_at(int64_t id) {
+        if (id < 0 || (size_t) id >= parks.size() || parks[(size_t) id] == nullptr) return nullptr;
+        return parks[(size_t) id].get();
+    }
+
+    // every device segment of the state at n_pos, in one fixed order: f(device, pointer, bytes)
+    template <class F>
+    void state_segments(int64_t n_pos, F&& f) const {
+        for (const Layer& l : L) {
+            for (int m = 0; m < l.nm; ++m) {
+                const Layer& lm = member(l, m);
+                f((int) lm.dev, (void*) lm.win, (size_t) g.win * win_rb());
+                if (lm.c_kv != nullptr) {
+                    f((int) lm.dev, (void*) lm.c_kv, (size_t) lm.ratio * (size_t) g.hd * 4);
+                    f((int) lm.dev, (void*) lm.c_score, (size_t) lm.ratio * (size_t) g.hd * 4);
+                }
+            }
+        }
+        for (const Src& s : srcs) {
+            const size_t rows = (size_t) (n_pos / std::max(1, s.ratio));
+            if (rows == 0) continue;
+            for (size_t di = 0; di < devs.size(); ++di) {
+                if (s.ckv[di] != nullptr) f((int) di, (void*) s.ckv[di], rows * ckv_rb());
+                if (s.ik[di] != nullptr) f((int) di, (void*) s.ik[di], rows * ik_rb());
+            }
+        }
+    }
+
+    int64_t park_new() {
+        for (size_t i = 0; i < parks.size(); ++i)
+            if (parks[i] == nullptr) {
+                parks[i] = std::make_unique<Park>();
+                parks[i]->buf.assign(devs.size(), nullptr);
+                parks[i]->cap.assign(devs.size(), 0);
+                parks[i]->used.assign(devs.size(), 0);
+                return (int64_t) i;
+            }
+        parks.push_back(std::make_unique<Park>());
+        parks.back()->buf.assign(devs.size(), nullptr);
+        parks.back()->cap.assign(devs.size(), 0);
+        parks.back()->used.assign(devs.size(), 0);
+        return (int64_t) parks.size() - 1;
+    }
+
+    void park_free(int64_t id) {
+        Park* p = park_at(id);
+        if (p == nullptr) return;
+        for (size_t di = 0; di < p->buf.size() && di < devs.size(); ++di) {
+            if (p->buf[di] == nullptr) continue;
+            cudaSetDevice(devs[di].id);
+            cudaFree(p->buf[di]);
+        }
+        parks[(size_t) id].reset();
+    }
+
+    uint64_t park_save(int64_t id, std::string& err) {
+        Park* p = park_at(id);
+        if (p == nullptr) {
+            err = "no such park";
+            return 0;
+        }
+        if (pos <= 0 || (int64_t) toks.size() != pos) {
+            err = "there is no conversation";
+            return 0;
+        }
+        if (!imgs.empty()) {
+            err = "it holds pictures";
+            return 0;
+        }
+        std::vector<size_t> need(devs.size(), 0);
+        state_segments(pos, [&](int d, void*, size_t b) { need[(size_t) d] += b; });
+        for (size_t di = 0; di < devs.size(); ++di) {
+            if (need[di] <= p->cap[di]) continue;
+            cudaSetDevice(devs[di].id);
+            if (p->buf[di] != nullptr) {
+                cudaFree(p->buf[di]);
+                p->buf[di] = nullptr;
+                p->cap[di] = 0;
+            }
+            void* b = nullptr;
+            if (cudaMalloc(&b, need[di]) != cudaSuccess) {
+                err = "not enough device memory to park the state";
+                return 0;
+            }
+            p->buf[di] = b;
+            p->cap[di] = need[di];
+        }
+        for (Dev& d : devs) {   // (the devices' work ends before their state is read)
+            cudaSetDevice(d.id);
+            cudaStreamSynchronize(d.st);
+        }
+        std::vector<size_t> off(devs.size(), 0);
+        bool ok = true;
+        std::string first;
+        state_segments(pos, [&](int d, void* src, size_t b) {
+            if (b == 0) return;
+            const size_t di = (size_t) d;
+            if (!ok) {
+                off[di] += b;
+                return;
+            }
+            cudaSetDevice(devs[di].id);
+            if (cudaMemcpyAsync((uint8_t*) p->buf[di] + off[di], src, b, cudaMemcpyDeviceToDevice, devs[di].st) !=
+                cudaSuccess) {
+                ok = false;
+                first = cudaGetErrorString(cudaGetLastError());
+            }
+            off[di] += b;
+        });
+        for (Dev& d : devs) {
+            cudaSetDevice(d.id);
+            cudaStreamSynchronize(d.st);
+        }
+        if (!ok) {
+            err = "parking the state: " + first;
+            return 0;
+        }
+        p->pos = pos;
+        p->toks = toks;
+        for (int k = 0; k < kChecks; ++k) p->ck[k] = ck[k];
+        p->used = need;
+        p->bytes = 0;
+        for (size_t di = 0; di < devs.size(); ++di) p->bytes += need[di];
+        return p->bytes;
+    }
+
+    bool park_load(int64_t id, std::string& err) {
+        Park* p = park_at(id);
+        if (p == nullptr) {
+            err = "no such park";
+            return false;
+        }
+        if (p->pos <= 0 || p->toks.empty()) {
+            err = "that park holds no conversation";
+            return false;
+        }
+        std::vector<size_t> need(devs.size(), 0);
+        state_segments(p->pos, [&](int d, void*, size_t b) { need[(size_t) d] += b; });
+        for (size_t di = 0; di < devs.size(); ++di)
+            if (need[di] > p->used[di]) {
+                err = "the park's bytes are not this state's";
+                return false;
+            }
+        for (Dev& d : devs) {   // (their work ends before the state is written over)
+            cudaSetDevice(d.id);
+            cudaStreamSynchronize(d.st);
+        }
+        pos = p->pos;
+        toks = p->toks;
+        ctoks.resize((size_t) pos);
+        for (size_t i = 0; i < (size_t) pos; ++i) ctoks[i] = toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i]] : 0;
+        for (int k = 0; k < kChecks; ++k) ck[k] = p->ck[k];
+        std::vector<size_t> off(devs.size(), 0);
+        bool ok = true;
+        std::string first;
+        state_segments(pos, [&](int d, void* dst, size_t b) {
+            if (b == 0) return;
+            const size_t di = (size_t) d;
+            if (!ok) {
+                off[di] += b;
+                return;
+            }
+            cudaSetDevice(devs[di].id);
+            if (cudaMemcpyAsync(dst, (const uint8_t*) p->buf[di] + off[di], b, cudaMemcpyDeviceToDevice, devs[di].st) !=
+                cudaSuccess) {
+                ok = false;
+                first = cudaGetErrorString(cudaGetLastError());
+            }
+            off[di] += b;
+        });
+        for (Dev& d : devs) {
+            cudaSetDevice(d.id);
+            cudaStreamSynchronize(d.st);
+        }
+        if (!ok) {
+            err = "loading the parked state: " + first;
+            reset();
+            return false;
+        }
+        slot_held = false;
+        return true;
+    }
+
     std::string slot_identity() const {
         const auto size_of = [](const std::string& p) {
             std::error_code ec;
@@ -9423,6 +9621,10 @@ bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::str
     return p_->slot_load(data, bytes, n_pos, err);
 }
 std::string Model::slot_identity() const { return p_->slot_identity(); }
+int64_t Model::park_new() { return p_->park_new(); }
+uint64_t Model::park_save(int64_t id, std::string& err) { return p_->park_save(id, err); }
+bool Model::park_load(int64_t id, std::string& err) { return p_->park_load(id, err); }
+void Model::park_free(int64_t id) { p_->park_free(id); }
 void Model::save_profile() const { p_->save_profile(); }
 const Stats& Model::stats() const {
     Stats& st = p_->st;

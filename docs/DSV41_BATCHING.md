@@ -219,6 +219,14 @@ are noisy), while the interleaving drops with the burst (8 handovers at burst 8,
 design predicts, with no throughput in it.  The switch's cost follows the state's size, so it grows with the context;
 that, not the kernel time, is what caps the parked-state approach at chat-sized conversations.
 
+**Where the switch's time goes (measured, `STRATA_DS4_PARK_DEVICE=1`).**  `slot_save/slot_load` copy the state to the host
+and back (~4.5 ms for a short conversation's few hundred tokens); `Model::park_save/park_load` keep the same segments -
+every window ring, the compressors' partial groups and each source's compressed KV and index keys, per device and per
+tensor-parallel member - in per-device arenas, copied device to device, with the tokens and the checkpoints beside them.
+On the box (2 slots, burst 8) a switch then takes **2.62 ms** instead of 4.5, with the probe and the three-client check
+still green.  What is left is the stream sync and the checkpoints' host copies; a move-based park would halve that.  The
+host path stays the default (nothing changes without the env).
+
 Known limits of this stage: a read whose state is over 32k tokens is not interleaved (the save/load per slice would
 cost more than it gives), a request with pictures runs to its end without being parked (its state cannot be set
 aside), and each parked slot holds its conversation in host memory, so the cost per switch grows with the context

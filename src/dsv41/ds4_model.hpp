@@ -174,6 +174,15 @@ public:
     /// blocks - a slot naming anything else is not this model's state (a file's .meta says so; slot_load refuses).
     std::string slot_identity() const;
 
+    /// A batch slot's state parked where it lives - in the cards' memory (the device half of slot_save/slot_load; the
+    /// tokens and the checkpoints are kept beside it): a slot's turn switch is then a device-to-device copy instead of a
+    /// round trip over PCIe.  park_new() takes an id, park_save/park_load move the state, park_free gives the memory
+    /// back.  park_save returns the bytes kept (0 and err: no conversation, pictures, or not enough device memory).
+    int64_t park_new();
+    uint64_t park_save(int64_t id, std::string& err);
+    bool park_load(int64_t id, std::string& err);
+    void park_free(int64_t id);
+
     /// The vision tower: the token every position of an image's span carries (-1: no tower).
     int image_token() const;
     /// An image's pixels (RGB rows, width x height, both multiples of the patch size: the server's resize) -> the
