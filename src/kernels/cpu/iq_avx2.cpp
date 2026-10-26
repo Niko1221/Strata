@@ -31,6 +31,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -569,6 +570,101 @@ void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n
 void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
                         int r0, int r1) {
     iq4nl256_down_rows_v(vnni_on() ? kIq256Vnni : 0, w, row_bytes, n, hq, nt, out, r0, r1);
+}
+
+
+// ---- IQ3_S "nibble" rows (ported from the SirDebugALot/Strata-Qwen3.6 Pascal fork's cpu_iq3_nibble.cpp, MIT):
+// each 256-value block re-encoded once, losslessly, as 4-bit codes (magnitude index and sign of every value) with
+// the 8 sub-scales expanded, so a row's dot is a 16-entry shuffle instead of grid lookups and sign bits.
+namespace {
+struct Iq3Nib {
+    uint16_t d;
+    uint8_t c[128];   // per 32 values: the first 16 in the low nibbles, the last 16 in the high ones
+    int8_t sc[8];
+};
+static_assert(sizeof(Iq3Nib) == 138, "IQ3_S nibble block");
+inline float hsum8n(__m256 v) {
+    __m128 x = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    x = _mm_hadd_ps(x, x);
+    x = _mm_hadd_ps(x, x);
+    return _mm_cvtss_f32(x);
+}
+inline __m256i nib_codes(const Iq3Nib& b, int h) {
+    const __m128i table = _mm_setr_epi8(1, 3, 5, 7, 9, 11, 13, 15, -1, -3, -5, -7, -9, -11, -13, -15);
+    const __m128i packed = _mm_loadu_si128((const __m128i*) (b.c + 16 * h));
+    const __m128i mask = _mm_set1_epi8(15);
+    const __m128i lo = _mm_shuffle_epi8(table, _mm_and_si128(packed, mask));
+    const __m128i hi = _mm_shuffle_epi8(table, _mm_and_si128(_mm_srli_epi16(packed, 4), mask));
+    return _mm256_inserti128_si256(_mm256_castsi128_si256(lo), hi, 1);
+}
+template <int NT>
+void nib_rows(const Iq3Nib* w, int nb, const block_q8_K* const* y, float* const* out, int r0, int r1) {
+    for (int row = r0; row < r1; ++row) {
+        __m256 accf[NT];
+        for (int t = 0; t < NT; ++t) accf[t] = _mm256_setzero_ps();
+        for (int i = 0; i < nb; ++i) {
+            const Iq3Nib& b = w[(size_t) row * nb + i];
+            __m256i acci[NT];
+            for (int t = 0; t < NT; ++t) acci[t] = _mm256_setzero_si256();
+            for (int h = 0; h < 8; ++h) {
+                const __m256i c = nib_codes(b, h);
+                const __m256i mag = _mm256_abs_epi8(c);
+                const __m256i scl = _mm256_set1_epi16(b.sc[h]);
+                for (int t = 0; t < NT; ++t) {
+                    const __m256i a = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 32 * h));
+                    // vpsignb, as ggml's own IQ3_S AVX2 dot (its -128 behaviour included)
+                    const __m256i pairs = _mm256_maddubs_epi16(mag, _mm256_sign_epi8(a, c));
+                    acci[t] = _mm256_add_epi32(acci[t], _mm256_madd_epi16(pairs, scl));
+                }
+            }
+            const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(b.d)));
+            for (int t = 0; t < NT; ++t)
+                accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(d * y[t][i].d), _mm256_cvtepi32_ps(acci[t]), accf[t]);
+        }
+        for (int t = 0; t < NT; ++t) out[t][row] = hsum8n(accf[t]);
+    }
+}
+}  // namespace
+
+size_t iq3_nibble_block_bytes() { return sizeof(Iq3Nib); }
+
+void iq3_nibble_encode(const uint8_t* src, uint8_t* dst_, size_t blocks) {
+    Iq3Nib* dst = (Iq3Nib*) dst_;
+    for (size_t i = 0; i < blocks; ++i) {
+        const uint8_t* b = src + i * 110;   // block_iq3_s: d, qs[64], qh[8], signs[32], scales[4]
+        Iq3Nib& o = dst[i];
+        std::memcpy(&o.d, b, 2);
+        for (int h = 0; h < 8; ++h) {
+            o.sc[h] = (int8_t) (2 * ((b[106 + h / 2] >> (4 * (h & 1))) & 15) + 1);
+            uint8_t codes[32];
+            for (int g = 0; g < 8; ++g) {
+                const int index = b[2 + 8 * h + g] | (((b[66 + h] >> g) & 1) << 8);
+                const uint32_t grid = iq3s_grid[index];
+                for (int lane = 0; lane < 4; ++lane) {
+                    const int k = 4 * g + lane;
+                    const int mag = (grid >> (8 * lane)) & 255;
+                    const int neg = (b[74 + 4 * h + k / 8] >> (k & 7)) & 1;
+                    codes[k] = (uint8_t) (((mag - 1) / 2) | (neg << 3));
+                }
+            }
+            for (int k = 0; k < 16; ++k) o.c[16 * h + k] = (uint8_t) (codes[k] | (codes[k + 16] << 4));
+        }
+    }
+}
+
+void iq3_nibble_rows(const uint8_t* w, int nb, const void* const* act, int nt, float* const* out, int r0, int r1) {
+    const Iq3Nib* ww = (const Iq3Nib*) w;
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int n = std::min(4, nt - t0);
+        const block_q8_K* const* y = (const block_q8_K* const*) (act + t0);
+        float* const* o = out + t0;
+        switch (n) {
+            case 1: nib_rows<1>(ww, nb, y, o, r0, r1); break;
+            case 2: nib_rows<2>(ww, nb, y, o, r0, r1); break;
+            case 3: nib_rows<3>(ww, nb, y, o, r0, r1); break;
+            default: nib_rows<4>(ww, nb, y, o, r0, r1); break;
+        }
+    }
 }
 
 }  // namespace strata::kernels::cpu
