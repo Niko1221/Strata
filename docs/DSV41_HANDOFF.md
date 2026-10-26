@@ -104,6 +104,11 @@ The kernel-side property M2 stands on is now tested on the GPU: `ds4_attn_batch_
 query on its own window rows ([0,8) and [8,16)) and its own compressed rows ([0,4) and [16,20) of the table), then runs
 the same two queries one at a time - every output value is identical.
 
+**Release gate (final, this tree):** `serve.test_server` **352/352 OK** (175 s), the batch probe with two slots **all checks
+passed**, the three-client HTTP check **all passed** (reference answer byte-identical to production, 8 handovers,
+disconnect handled), the seven unit tests green (two of them on the GPU), and production restored healthy after every
+window.  The branch is ready to review; nothing is pushed (the M1-M5 rule).
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
