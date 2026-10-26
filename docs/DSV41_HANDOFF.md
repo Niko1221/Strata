@@ -14,6 +14,7 @@ Branch: `feat/dsv41-batch-m1` in /data/works/Strata (not pushed).  Design: `docs
 | chunked decoding in the server | `serve/server.py` (`STRATA_BURST`, `STRATA_BURST_CONTINUE`) | `serve.test_server` 352 tests |
 | engine: shortest-first admission, `--burst`, `--admit-order` | `src/dsv41/ds4_main.cpp` | built, one live check |
 | engine: `--batch N`, BGEN/BADM/BT/BDONE/BSTOP, `INFO batch_slots` | `src/dsv41/ds4_main.cpp`, `src/dsv41/ds4_batch_proto.hpp` | `batch_proto_test.cpp`; `tools/dsv41/batch_probe.py` (live engine); the server check |
+| engine: N slots by parked-state bursts (`--slot-burst K`) | `src/dsv41/ds4_main.cpp` | `batch_probe.py --slots 2`; the server check (3 clients) |
 
 Validated on the box (earlier): mock-engine A/B (8 tokens without continuation, 40 with), 3-client real run (chunked
 continuation works, no interleaving yet), `serve.test_server` 352/352.
@@ -30,13 +31,17 @@ Then the engine's batch protocol, in a model window (2026-10-26 17:56-18:02):
   client that leaves mid-stream (BSTOP) does not disturb the next request.  The server's trace shows 6 `BGEN`
   admissions and 3 `BSTOP`s.
 
+Then the two-slot version, same day (18:17-18:24, `--batch 2 --slot-burst 8`): the probe's two admissions at once - each
+slot's tokens equal its GEN reference and their BT lines interleave (`0001110000111100001111`); over HTTP three clients
+interleave their answer tokens (8 handovers over 47 tokens, 2 with one slot) and the reference prompt admitted through
+BGEN behind them is byte-identical to production.  The wall time is the same (4.13 s one slot vs 4.23 s two, 120/60/40
+tokens): parking states buys latency fairness, not throughput - that is M2/M3's job.
+
 ## Next, in order
 
-1. **Multi-slot BGEN (N > 1).**  Per-sequence KV (M2): use `ds4_batch_kv.hpp`/`ds4_batch_plan.hpp`, then slots hold
-   their state in memory and the serve loop runs one step per slot per turn.  This is what makes three clients
-   interleave; the server side already supports it (`--batch N` in the engine's args -> `INFO batch_slots=N`).  The
-   cheap way there is the parked states of Path B (`ds4_state_bank.hpp`): a burst of K tokens per slot per turn.
-2. **varlen attention** (`ds4_attn_split.cuh`, `ds4_model.cu`): per-run block tables instead of one ring.
+1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
+   `ds4_batch_plan.hpp` are the CPU half; the serve loop's `Run`s and the round robin are the place they attach.
+   `varlen attention` (`ds4_attn_split.cuh`, `ds4_model.cu`) is the kernel: per-run block tables instead of one ring.
 3. **Batched MoE** (M3): concatenate the routing rows of the slots and run the grouped GEMM once.
 4. **Tuning** (M5): DSpark with a batch (likely off), chunk sizes, `batch_slots` count.
 5. Decide the fate of Path B (`STRATA_BURST`): keep it as the low-cost compromise, or retire it once N slots work.
@@ -53,8 +58,13 @@ Then the engine's batch protocol, in a model window (2026-10-26 17:56-18:02):
 * the engine's stdin reader takes `BSTOP`/`BYIELD` off the queue itself; a `BSTOP` for a slot that has ended must not
   cancel the next admission (it is reset at the start of a request and only checked after the admission's token) - the
   probe caught exactly that.
-* One slot at a time: the model holds one conversation, so a slot's answer runs to its end before the next request is
-  read; the server may run a solo request while a slot is busy, and the engine serves them in turn.
+* The slots take turns by parking their conversation in host memory (`Model::slot_save`/`slot_load`): the model holds
+  one conversation, so a switch costs one save and one load (tens of MB at 8K tokens, ~ms).  `--slot-burst K` (16 by
+  default) is how many tokens one slot decodes per turn; a burst of 8 makes the interleaving visible without much
+  overhead.  A picture request sets `no_switch` and runs to its end; a prompt read blocks the other slots (BYIELD is
+  dropped).
+* A finished slot leaves its conversation in the model (unowned); the next admission parks it into the conversation
+  folder (if `slot_max > 0`), so a later turn still reuses its prefix.
 * Test assets on the box: `build/strata-dsv41.batch` (the `--batch` engine), `strata-batch1.json` (production config
   with `--batch 1`, port 8099, `exe` = the .batch binary), `/data/works/batch_window.sh` (probe + server check),
   `/data/works/batch_http_window.sh` (server check alone), logs in `/data/works/batch_*window.log`.  Production's

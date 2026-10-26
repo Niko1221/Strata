@@ -3,10 +3,12 @@
 
     python tools/dsv41/batch_probe.py --exe build/strata-dsv41.batch --pack <pack> [--tokens 12] [--timeout 1800]
 
-Starts the engine with --serve --batch 1 and STRATA_DS4_REUSE=0 (a GEN and a BGEN of the same prompt then both read it
+Starts the engine with --serve --batch N and STRATA_DS4_REUSE=0 (a GEN and a BGEN of the same prompt then both read it
 from token 0: the comparison is about the batch lines, not about the prefix reuse) and checks:
 
-  1. INFO batch_slots=1 is said before READY;
+  0. with --slots 2 and --slot-burst 4, two admissions at once: both slots' tokens equal their GEN references, the BT
+     lines interleave, and each slot ends with its own BDONE;
+  1. INFO batch_slots=N is said before READY;
   2. GEN and BGEN of the same prompt give the same greedy tokens;
   3. BGEN with max_new 1 answers BADM 0 (the admission's token was the whole answer) and no BT line;
   4. BSTOP 0 ends a slot: BDONE ... cancel, fewer tokens than asked for;
@@ -121,6 +123,40 @@ class Engine:
                     raise SystemExit("slot: " + line)
         return {"first": first, "done": done, "badm": badm, "bt": bt, "bdone": bdone}
 
+    def bgen_many(self, reqs, timeout=600):
+        """reqs: [(slot, ids, max_new)] - every admission sent at once, then the mixed stream read to each BDONE.
+
+        The control lines carry no slot id (the server reads them one admission at a time): a T/DONE block is given to
+        the slot of the BADM that follows it.  BT and BDONE carry their slot."""
+        for slot, ids, n in reqs:
+            self.send("BGEN %d %d %s" % (slot, n, ",".join(str(int(t)) for t in ids)))
+        out = {slot: {"first": [], "done": None, "badm": None, "bt": [], "bdone": None} for slot, _, _ in reqs}
+        order = []
+        pending = {"first": [], "done": None}
+        ends = 0
+        while ends < len(reqs):
+            line = self.line(timeout)
+            f = line.split()
+            if line.startswith("T "):
+                pending["first"].append(int(f[1]))
+            elif line.startswith("DONE"):
+                pending["done"] = f
+            elif line.startswith("BADM "):
+                slot = int(f[1])
+                out[slot]["first"] = pending["first"]
+                out[slot]["done"] = pending["done"]
+                out[slot]["badm"] = f
+                pending = {"first": [], "done": None}
+            elif line.startswith("BT "):
+                out[int(f[1])]["bt"].append(int(f[2]))
+                order.append(int(f[1]))
+            elif line.startswith("BDONE "):
+                out[int(f[1])]["bdone"] = f
+                ends += 1
+            elif line.startswith("ERR"):
+                raise SystemExit("batch: " + line)
+        return out, order
+
     def close(self):
         try:
             self.send("QUIT")
@@ -134,12 +170,15 @@ def main() -> int:
     ap.add_argument("--exe", required=True)
     ap.add_argument("--pack", required=True)
     ap.add_argument("--tokens", type=int, default=12)
+    ap.add_argument("--slots", type=int, default=1)
     ap.add_argument("--timeout", type=int, default=1800, help="how long the model may take to load")
     ap.add_argument("--extra", default="", help="more engine arguments, space separated")
     a = ap.parse_args()
 
-    argv = [a.exe, "--pack", a.pack, "--serve", "--batch", "1", "--max-context", "8192", "--eos", "999999",
+    argv = [a.exe, "--pack", a.pack, "--serve", "--batch", str(a.slots), "--max-context", "8192", "--eos", "999999",
             "--dspark", "off", "--tp", "2", "--experts", "6", "--mmap-experts", "auto"]
+    if a.slots >= 2:   # (a burst small enough that the slots must take turns)
+        argv += ["--slot-burst", str(max(2, a.tokens // 3))]
     argv += [x for x in a.extra.split(" ") if x]
     env = dict(os.environ)
     env["STRATA_DS4_REUSE"] = "0"
@@ -153,12 +192,35 @@ def main() -> int:
 
     ready = e.start(a.timeout)
     print("READY:", ready, flush=True)
-    check("INFO batch_slots=1 before READY", e.info.get("batch_slots") == "1", "info=%s" % e.info.get("batch_slots"))
+    check("INFO batch_slots=%d before READY" % a.slots, e.info.get("batch_slots") == str(a.slots),
+          "info=%s" % e.info.get("batch_slots"))
 
     prompt = [1000 + i for i in range(40)]
     n = a.tokens
     ref, ref_done = e.gen(prompt, n)
     check("GEN gives %d tokens" % n, len(ref) == n, "got %d (%s)" % (len(ref), ref_done[:6]))
+
+    if a.slots >= 2:
+        # two admissions sent at once: the engine gives each slot the model in turn (a burst each), so their BT lines
+        # interleave and each one's tokens are what a GEN of the same prompt gives
+        other_prompt = [2000 + i for i in range(40)]
+        ref1, _ = e.gen(other_prompt, n)
+        both, order = e.bgen_many([(0, prompt, n), (1, other_prompt, n)])
+        check("two admissions: slot 0 says BADM 0 1", both[0]["badm"][:3] == ["BADM", "0", "1"],
+              " ".join(both[0]["badm"] or ["<none>"]))
+        check("two admissions: slot 1 says BADM 1 1", both[1]["badm"][:3] == ["BADM", "1", "1"],
+              " ".join(both[1]["badm"] or ["<none>"]))
+        check("slot 0's tokens equal its GEN", both[0]["first"] + both[0]["bt"] == ref,
+              "1 + %d of %d" % (len(both[0]["bt"]), n))
+        check("slot 1's tokens equal its GEN", both[1]["first"] + both[1]["bt"] == ref1,
+              "1 + %d of %d" % (len(both[1]["bt"]), n))
+        check("both slots end with their own BDONE",
+              both[0]["bdone"] is not None and both[0]["bdone"][1:4] == ["0", str(n), "length"] and
+              both[1]["bdone"] is not None and both[1]["bdone"][1:4] == ["1", str(n), "length"],
+              " ; ".join(" ".join(both[s]["bdone"] or ["<none>"]) for s in (0, 1)))
+        switches = sum(1 for x, y in zip(order, order[1:]) if x != y)
+        check("the slots take turns (their BT lines interleave)", switches >= 2,
+              "".join(str(x) for x in order[:40]) + " (%d switches)" % switches)
 
     got = e.bgen(0, prompt, n)
     check("BGEN admission gives exactly one token", len(got["first"]) == 1, "got %d" % len(got["first"]))

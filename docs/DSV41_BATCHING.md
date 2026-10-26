@@ -1,9 +1,10 @@
 # Batched decoding for DeepSeek-V4.1 (`strata-dsv41`)
 
-Status: **design, partly built**.  The scheduler's CPU half (M1), the chunked-decoding path in the server (Path B) and
-the engine's batch protocol for one slot (`--batch N`, BGEN) are implemented and tested; the kernels (M2 varlen
-attention, M3 batched MoE) are not - they are what turns the present interleaving of requests into real throughput.
-Scoped for the `deepseek41` engine and the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
+Status: **design, partly built**.  The scheduler's CPU half (M1), the chunked-decoding path in the server (Path B), the
+engine's batch protocol (BGEN/BADM/BT/BDONE/BSTOP) and N slots that take turns on the one model by parking their states
+(`--batch N`, `--slot-burst K`) are implemented and tested; the kernels (M2 varlen attention, M3 batched MoE) are not -
+they are what turns the present interleaving of requests into real throughput.  Scoped for the `deepseek41` engine and
+the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
 2.25 bpw pack (274 GB, 1M context).
 
 ## Where it stands
@@ -184,6 +185,15 @@ A slot is a conversation the engine holds between calls (its tokens, KV, sampler
 `ERR unsupported command`.  `dsv41 --batch N` says `INFO batch_slots=N` and speaks all of the above; without the
 flag nothing changes - the one-at-a-time engine the server ran before.
 
-Status: one slot at a time.  The model still holds one conversation, so a slot's answer runs to its end before the next
-request is read (the server may run a solo request while a slot is busy; the engine serves them in turn).  Interleaving
-needs per-sequence KV (M2) or the parked-state bursts of Path B.
+**N slots without kernels (built).**  The model still holds one conversation, so the serve loop parks a slot that is not
+decoding in host memory - `Model::slot_save`, the same bytes the conversation folder keeps - and loads it back for that
+slot's next burst (`--slot-burst K`, 16 by default).  The slots take turns round robin and their `BT` lines interleave
+in the stream.  Measured on the box (2 slots, burst 8, three clients asking 120/60/40 tokens): the two slots' answer
+tokens alternate (8 handovers over 47 answer tokens, against 2 with one slot), the reference prompt admitted through
+BGEN behind them returns the byte-identical production answer, and a client that leaves mid-stream is stopped with
+`BSTOP` without disturbing the next request.  The wall time does not drop (4.13 s with one slot, 4.23 s with two): the
+same tokens go through the same kernels - this is the latency half, not the throughput half.
+
+Known limits of this stage: a prompt read still blocks the other slots (BYIELD is dropped), a request with pictures runs
+to its end without being parked (its state cannot be set aside), and each parked slot holds its conversation in host
+memory, so the cost per switch grows with the context (tens of MB at 8K tokens).
