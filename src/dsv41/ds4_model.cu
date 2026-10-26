@@ -2875,6 +2875,10 @@ struct Model::Impl {
     // paths copy (one sequence: the buffer's own base, as before)
     uint8_t* ckv_rows(const Src& s, size_t di) const { return s.ckv[di] ? s.ckv[di] + (size_t) kv_base(s) * ckv_rb() : nullptr; }
     uint8_t* ik_rows(const Src& s, size_t di) const { return s.ik[di] ? s.ik[di] + (size_t) kv_base(s) * ik_rb() : nullptr; }
+    // a layer's compressors' partial group (ratio > 1), the pass's sequence's: l.c_kv and l.c_score hold nseq of them,
+    // ratio x hd floats each
+    float* comp_kv(const Layer& l) const { return l.c_kv + (size_t) vseq * (size_t) l.ratio * (size_t) g.hd; }
+    float* comp_sc(const Layer& l) const { return l.c_score + (size_t) vseq * (size_t) l.ratio * (size_t) g.hd; }
     size_t ckv_rb() const { return kv_row_bytes(kKvFp4, g.hd); }
     size_t ik_rb() const { return kv_row_bytes(kKvFp4p, g.ix_hd); }
 
@@ -3755,8 +3759,8 @@ struct Model::Impl {
                 const std::string C = A + "compressor.";
                 if (!mat(d, C + "wkv", l.c_wkv, err, acct) || !f32(d, C + "norm.weight", l.c_norm, err, acct)) return false;
                 if (l.ratio > 1 && !mat(d, C + "wgate", l.c_wgate, err, acct)) return false;
-                if (l.ratio > 1 && (!dalloc(d, l.c_kv, (size_t) l.ratio * g.hd, err) ||
-                                    !dalloc(d, l.c_score, (size_t) l.ratio * g.hd, err)))
+                if (l.ratio > 1 && (!dalloc(d, l.c_kv, (size_t) nseq * (size_t) l.ratio * g.hd, err) ||
+                                    !dalloc(d, l.c_score, (size_t) nseq * (size_t) l.ratio * g.hd, err)))
                     return false;
             }
             if (l.ix_src) {
@@ -4926,8 +4930,10 @@ struct Model::Impl {
                 Dev& d = devs[(size_t) l.dev];
                 cudaSetDevice(d.id);
                 cudaMemsetAsync(l.win, 0, (size_t) nseq * (size_t) g.win * win_rb(), d.st);
-                if (l.c_kv) cudaMemsetAsync(l.c_kv, 0, (size_t) l.ratio * g.hd * 4, d.st);
-                if (l.c_score) cudaMemsetAsync(l.c_score, 0, (size_t) l.ratio * g.hd * 4, d.st);
+                if (l.c_kv)
+                    cudaMemsetAsync(l.c_kv, 0, (size_t) nseq * (size_t) l.ratio * g.hd * 4, d.st);
+                if (l.c_score)
+                    cudaMemsetAsync(l.c_score, 0, (size_t) nseq * (size_t) l.ratio * g.hd * 4, d.st);
             }
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
@@ -4951,8 +4957,8 @@ struct Model::Impl {
             if (l.c_kv) {
                 c.comp[2 * i].resize((size_t) l.ratio * g.hd);
                 c.comp[2 * i + 1].resize((size_t) l.ratio * g.hd);
-                cudaMemcpyAsync(c.comp[2 * i].data(), l.c_kv, c.comp[2 * i].size() * 4, cudaMemcpyDeviceToHost, d.st);
-                cudaMemcpyAsync(c.comp[2 * i + 1].data(), l.c_score, c.comp[2 * i + 1].size() * 4,
+                cudaMemcpyAsync(c.comp[2 * i].data(), comp_kv(l), c.comp[2 * i].size() * 4, cudaMemcpyDeviceToHost, d.st);
+                cudaMemcpyAsync(c.comp[2 * i + 1].data(), comp_sc(l), c.comp[2 * i + 1].size() * 4,
                                 cudaMemcpyDeviceToHost, d.st);
             }
         }
@@ -5012,8 +5018,8 @@ struct Model::Impl {
                 cudaSetDevice(d.id);
                 cudaMemcpyAsync(win_of(l), c.win[i].data(), c.win[i].size(), cudaMemcpyHostToDevice, d.st);
                 if (l.c_kv) {
-                    cudaMemcpyAsync(l.c_kv, c.comp[2 * i].data(), c.comp[2 * i].size() * 4, cudaMemcpyHostToDevice, d.st);
-                    cudaMemcpyAsync(l.c_score, c.comp[2 * i + 1].data(), c.comp[2 * i + 1].size() * 4,
+                    cudaMemcpyAsync(comp_kv(l), c.comp[2 * i].data(), c.comp[2 * i].size() * 4, cudaMemcpyHostToDevice, d.st);
+                    cudaMemcpyAsync(comp_sc(l), c.comp[2 * i + 1].data(), c.comp[2 * i + 1].size() * 4,
                                     cudaMemcpyHostToDevice, d.st);
                 }
             }
@@ -5101,8 +5107,8 @@ struct Model::Impl {
             put(&cn, 8);
             if (cn > 0) {
                 const size_t cb = (size_t) cn * 4;
-                if (cudaMemcpy(p + off, l.c_kv, cb, cudaMemcpyDeviceToHost) != cudaSuccess ||
-                    cudaMemcpy(p + off + cb, l.c_score, cb, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                if (cudaMemcpy(p + off, comp_kv(l), cb, cudaMemcpyDeviceToHost) != cudaSuccess ||
+                    cudaMemcpy(p + off + cb, comp_sc(l), cb, cudaMemcpyDeviceToHost) != cudaSuccess) {
                     err = l.name + "compressor's group: " + cudaGetErrorString(cudaGetLastError());
                     return 0;
                 }
@@ -5246,8 +5252,8 @@ struct Model::Impl {
                 }
                 for (int m = 0; m < l.nm; ++m) {
                     Layer& lm = member(l, m);
-                    if (cudaMemcpy(lm.c_kv, data + off, cb, cudaMemcpyHostToDevice) != cudaSuccess ||
-                        cudaMemcpy(lm.c_score, data + off + cb, cb, cudaMemcpyHostToDevice) != cudaSuccess) {
+                    if (cudaMemcpy(comp_kv(lm), data + off, cb, cudaMemcpyHostToDevice) != cudaSuccess ||
+                        cudaMemcpy(comp_sc(lm), data + off + cb, cb, cudaMemcpyHostToDevice) != cudaSuccess) {
                         err = l.name + "compressor's group: " + cudaGetErrorString(cudaGetLastError());
                         return false;
                     }
@@ -5387,8 +5393,8 @@ struct Model::Impl {
                 const Layer& lm = member(l, m);
                 f((int) lm.dev, (void*) win_of(lm), (size_t) g.win * win_rb());
                 if (lm.c_kv != nullptr) {
-                    f((int) lm.dev, (void*) lm.c_kv, (size_t) lm.ratio * (size_t) g.hd * 4);
-                    f((int) lm.dev, (void*) lm.c_score, (size_t) lm.ratio * (size_t) g.hd * 4);
+                    f((int) lm.dev, (void*) comp_kv(lm), (size_t) lm.ratio * (size_t) g.hd * 4);
+                    f((int) lm.dev, (void*) comp_sc(lm), (size_t) lm.ratio * (size_t) g.hd * 4);
                 }
             }
         }
@@ -7248,9 +7254,9 @@ struct Model::Impl {
                 if (l.c_snap != nullptr) {
                     cudaSetDevice(d.id);
                     const size_t ns = (size_t) l.ratio * g.hd * 4;
-                    cudaMemcpyAsync(l.c_kv, l.c_snap, ns, cudaMemcpyDeviceToDevice, d.st);
-                    cudaMemcpyAsync(l.c_score, l.c_snap + (size_t) l.ratio * g.hd, ns, cudaMemcpyDeviceToDevice, d.st);
-                    compress_win(l.c_rows, l.c_rows + (size_t) kWin * g.hd, l.c_kv, l.c_score, l.ratio, (int) p0, keep,
+                    cudaMemcpyAsync(comp_kv(l), l.c_snap, ns, cudaMemcpyDeviceToDevice, d.st);
+                    cudaMemcpyAsync(comp_sc(l), l.c_snap + (size_t) l.ratio * g.hd, ns, cudaMemcpyDeviceToDevice, d.st);
+                    compress_win(l.c_rows, l.c_rows + (size_t) kWin * g.hd, comp_kv(l), comp_sc(l), l.ratio, (int) p0, keep,
                                  g.hd, l.c_norm, g.eps, d.latent, d.st);
                 }
             }
@@ -7355,13 +7361,13 @@ struct Model::Impl {
                         const int64_t ps = p0 + wp.snap_t;
                         for (int sl = 0; sl < R; ++sl) {
                             const int64_t q = ps - 1 - (((ps - 1 - sl) % R) + R) % R;
-                            const float* kv = q >= p0 ? c.ckr + (size_t) (q - p0) * HD : l.c_kv + (size_t) sl * HD;
-                            const float* sc = q >= p0 ? c.cgr + (size_t) (q - p0) * HD : l.c_score + (size_t) sl * HD;
+                            const float* kv = q >= p0 ? c.ckr + (size_t) (q - p0) * HD : comp_kv(l) + (size_t) sl * HD;
+                            const float* sc = q >= p0 ? c.cgr + (size_t) (q - p0) * HD : comp_sc(l) + (size_t) sl * HD;
                             CK(cudaMemcpyAsync(L0.snap_kv + (size_t) sl * HD, kv, (size_t) HD * 4, cudaMemcpyDeviceToDevice, s));
                             CK(cudaMemcpyAsync(L0.snap_sc + (size_t) sl * HD, sc, (size_t) HD * 4, cudaMemcpyDeviceToDevice, s));
                         }
                     }
-                    compress_win(c.ckr, c.cgr, l.c_kv, l.c_score, R, (int) p0, T, HD, l.c_norm, g.eps, c.latent, s);
+                    compress_win(c.ckr, c.cgr, comp_kv(l), comp_sc(l), R, (int) p0, T, HD, l.c_norm, g.eps, c.latent, s);
                 }
             }
             const int clen_max = (int) ((p0 + T) / R);
@@ -8683,9 +8689,9 @@ struct Model::Impl {
                 if (l.c_kv) {
                     ckp.comp[2 * i].resize((size_t) l.ratio * g.hd);
                     ckp.comp[2 * i + 1].resize((size_t) l.ratio * g.hd);
-                    CK(cudaMemcpyAsync(ckp.comp[2 * i].data(), kept && l.snap_kv ? l.snap_kv : l.c_kv,
+                    CK(cudaMemcpyAsync(ckp.comp[2 * i].data(), kept && l.snap_kv ? l.snap_kv : comp_kv(l),
                                        ckp.comp[2 * i].size() * 4, cudaMemcpyDeviceToHost, dv.st));
-                    CK(cudaMemcpyAsync(ckp.comp[2 * i + 1].data(), kept && l.snap_sc ? l.snap_sc : l.c_score,
+                    CK(cudaMemcpyAsync(ckp.comp[2 * i + 1].data(), kept && l.snap_sc ? l.snap_sc : comp_sc(l),
                                        ckp.comp[2 * i + 1].size() * 4, cudaMemcpyDeviceToHost, dv.st));
                 }
             }
@@ -9145,12 +9151,12 @@ struct Model::Impl {
                 } else {
                     if (spec_win && l.c_snap != nullptr) {   // to replay the accepted rows if drafts are rejected
                         const size_t ns = (size_t) R * HD * 4, nr = (size_t) T * HD * 4;
-                        CK(cudaMemcpyAsync(l.c_snap, l.c_kv, ns, cudaMemcpyDeviceToDevice, s));
-                        CK(cudaMemcpyAsync(l.c_snap + (size_t) R * HD, l.c_score, ns, cudaMemcpyDeviceToDevice, s));
+                        CK(cudaMemcpyAsync(l.c_snap, comp_kv(l), ns, cudaMemcpyDeviceToDevice, s));
+                        CK(cudaMemcpyAsync(l.c_snap + (size_t) R * HD, comp_sc(l), ns, cudaMemcpyDeviceToDevice, s));
                         CK(cudaMemcpyAsync(l.c_rows, d.ckr, nr, cudaMemcpyDeviceToDevice, s));
                         CK(cudaMemcpyAsync(l.c_rows + (size_t) kWin * HD, d.cgr, nr, cudaMemcpyDeviceToDevice, s));
                     }
-                    compress_win(d.ckr, d.cgr, l.c_kv, l.c_score, R, (int) p0, T, HD, l.c_norm, g.eps, d.latent, s);
+                    compress_win(d.ckr, d.cgr, comp_kv(l), comp_sc(l), R, (int) p0, T, HD, l.c_norm, g.eps, d.latent, s);
                 }
             }
             Rows lim;
