@@ -7,6 +7,20 @@ they are what turns the present interleaving of requests into real throughput.  
 the HTTP server that drives it. Numbers are from a 4 x NVIDIA L20 box (184 GB VRAM, PCIe 4.0, no NVLink) running the IST-DAS
 2.25 bpw pack (274 GB, 1M context).
 
+## What a batched MoE can expect (measured, 2026-10-26)
+
+M3 assumes the expert weights are read once for the tokens of a step, which pays only when those tokens route to the same
+experts.  The engine writes its routing when asked (`DS4_TRACE=file`: a record a route request - u8 layer, u8 T, then
+T x k_exp int16 expert ids), and `tools/dsv41/route_overlap.py` measures it.  Two sequences decoding at the same time
+(`--batch 2 --slot-burst 1`, two unrelated prompts) share **25.5 %** of their six experts (1.53 of 6); consecutive tokens
+of one sequence share 22.1 %.
+
+Batching two tokens therefore reads 10.5 expert rows instead of 12 (**1.15x**), three tokens 14.9 instead of 18
+(**1.20x**) - not the 2-3x the design assumed.  A batched MoE still saves the launches and a little dispatch, and a
+workload whose prompts are much closer (one agent template, short answers) could route together better, but on this box
+with these prompts the read side - where the time is - hardly moves.  Raising the overlap itself (grouping requests that
+share a prompt, or a scheduler that pairs them) is a cheaper lever than the kernel, and worth measuring first.
+
 ## Where a token's time goes (measured, 2026-10-26)
 
 Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at

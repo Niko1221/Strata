@@ -79,6 +79,12 @@ Where a token's time goes (21:19-21:21): decode is 79 tok/s at a 216-token conte
 context moves it by a few percent, and the attention kernel's own header puts a query at ~125 us (~1% of a 12.5 ms step).
 M2 therefore buys *overlap*, not throughput; the MoE (M3) is where the 2-3x is.  Prompt reads: 585-590 tok/s from 3.5K.
 
+What a batched MoE can expect (21:23-21:26): the routing trace (`DS4_TRACE=file`) of two sequences decoding at the same
+time shows they share **25.5 %** of their six experts (consecutive tokens of one sequence: 22.1 %), so batching two tokens
+reads 10.5 expert rows instead of 12 (1.15x) and three read 14.9 instead of 18 (1.20x) - the design's 2-3x is not what
+the routing statistics say.  The lever with more room is the overlap itself (pairing requests that share a prompt), not
+the kernel; `tools/dsv41/route_overlap.py` measures both.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
