@@ -119,6 +119,17 @@ What one launch over T sequences still needs, in the order it has to be built:
 Until (2) is built the engine keeps one pass a sequence: the live mode buys the waiting, the single launch the
 throughput.
 
+**The per-row chunk path was tried (2026-10-27) and is not in the tree.**  `StepRows` - a position and a sequence a row -
+went through `layer_chunk`: the window block a row (`[the ring's rows][the token]` at `t * (win + 1)`), the compressor
+and the ik/ckv writes a sequence, the indexer a row, `AttnRows` in its explicit form (one launch; the picks absolute).
+It compiles, and `STRATA_DS4_STEPROWS=1` routed every chunk through it for an A/B against the contiguous path.  Two things
+came out of it: the window rule a row is **`win - 1` ring rows and the token's** (or `p` and it when the position is
+younger than the ring) - not `win` and it; and the chunk scratch has to hold `t * (win + 1)` rows, not `win + C`, or
+the per-row blocks run off its end.  The A/B itself is not trustworthy yet: at `--prefill-chunk 8` two *identical*
+contiguous runs differ by the sixth token, so the engine is not deterministic in that shape and a bit-exact comparison
+against it proves nothing (the same prompt at the default chunk sizes is byte-identical run to run - the three-client
+check has compared it with production all along).  The code stays out until a deterministic shape can carry the test.
+
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
 (4) is where a second sequence's rows start to be read, and where the parity test (`ds4_attn_batch_test`) becomes the
