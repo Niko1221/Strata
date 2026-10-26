@@ -756,6 +756,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
     // (STRATA_DS4_PARK_DEVICE=1: a slot's turn switch copies the state device to device instead of through the host)
     const bool park_device = std::getenv("STRATA_DS4_PARK_DEVICE") != nullptr;
+    // (STRATA_DS4_BATCH_NOSPEC=1: a batch slot decodes without the DSpark drafter - the tuning question of
+    // docs/DSV41_BATCHING.md's open questions: with several sequences on the one model the drafts cost every one of them)
+    const bool batch_nospec = std::getenv("STRATA_DS4_BATCH_NOSPEC") != nullptr;
     std::string err;                // (the model's last error, for the admission and for a slot's round)
     // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
     // VRAM hit, promotions a token) and DeepSeek's own - experts a token on the CPU lane, MB a token the storage
@@ -836,7 +839,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             int off = 0, acc = 0;
             // a round whose drafts were all below the confidence floor: the next one does without the drafter
             // (a request's spec / dspark_conf keys over the engine's: the speed calibration measures both ways)
-            const bool try_spec = (run.req.spec < 0 ? spec : run.req.spec != 0) && !run.cool;
+            const bool try_spec = (run.req.spec < 0 ? spec : run.req.spec != 0) && !run.cool &&
+                                  !(batch_nospec && run.slot >= 0);
             if (!round(m, run.tok, room, try_spec, run.req.conf >= 0 ? run.req.conf : conf_min, run.req.temperature,
                        run.req.top_p, run.req.top_k, run.req.min_p, run.req.seed, run.counter, run.got, off, acc, err,
                        run.req.cum)) {

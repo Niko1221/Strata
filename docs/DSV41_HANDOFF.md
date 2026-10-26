@@ -71,6 +71,10 @@ The turn switch can also be a device-to-device copy (`STRATA_DS4_PARK_DEVICE=1`,
 2.62 ms against 4.5 ms for the host copy on the same workload, with the probe (2 slots) and the three-client check green
 and no host fallback.  It is opt-in; the host path is the default.
 
+M5's drafting question is answered on the box: with the drafter on, three clients on two slots took 4.27 s and 4.39 s;
+with it off for the batch slots (`STRATA_DS4_BATCH_NOSPEC=1`) 5.09 s and 5.31 s - the drafter stays on (the design's
+guess was "likely off").  The flag stays for a wider measurement.
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +

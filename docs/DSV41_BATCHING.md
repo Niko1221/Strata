@@ -227,6 +227,11 @@ On the box (2 slots, burst 8) a switch then takes **2.62 ms** instead of 4.5, wi
 still green.  What is left is the stream sync and the checkpoints' host copies; a move-based park would halve that.  The
 host path stays the default (nothing changes without the env).
 
+**DSpark in a batch (measured).**  The design's open question was whether the drafter should stay on when several sequences
+share the model ("likely off").  `STRATA_DS4_BATCH_NOSPEC=1` turns it off for batch slots only, and the answer is the
+opposite: three clients on two slots took 4.27 s and 4.39 s with the drafter, 5.09 s and 5.31 s without it (same
+interleaving, 8 handovers) - so it stays on at this size.  Worth measuring again with more slots or longer answers.
+
 Known limits of this stage: a read whose state is over 32k tokens is not interleaved (the save/load per slice would
 cost more than it gives), a request with pictures runs to its end without being parked (its state cannot be set
 aside), and each parked slot holds its conversation in host memory, so the cost per switch grows with the context
