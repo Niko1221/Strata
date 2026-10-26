@@ -92,13 +92,6 @@ public:
     int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = false);
     Pipeline pipeline(int lib, const std::string& fn, const Constants& c = {});
     bool has_function(int lib, const std::string& fn) const;
-    // Hot kernel reload (development): recompile EVERY library compiled so far from its recorded source files -
-    // the MSL is compiled at run time, so an edit to a .metal file is picked up without restarting the engine.
-    // All-or-nothing: when one recompile fails, every library stays as it is and false is returned with the
-    // compiler's reason.  Existing pipeline states keep working (the sources they came from are retained);
-    // callers rebuild their pipeline caches afterwards.  Not thread-safe: call between requests, GPU idle.
-    bool recompile_all(std::string& err);
-    int library_count() const;                            // number of compiled libraries (for status lines)
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
     Buffer wrap(void* page_aligned, size_t bytes);  // no-copy wrap (page-aligned, size multiple of page)
