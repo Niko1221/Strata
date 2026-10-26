@@ -957,6 +957,9 @@ struct Model::Impl {
         const char* e = std::getenv("STRATA_DS4_NSEQ");
         return e != nullptr ? std::max(1, std::atoi(e)) : 1;
     }();
+    // the sequence this pass serves: its ring (win_of) and its rows of each source's compressed table (kv_base).  0 - one
+    // sequence - until the batched step sets it per pass; every write below then lands where it did before
+    int vseq = 0;
     int64_t pos = 0;
     std::vector<int32_t> toks, ctoks;
     struct Check {                    // the state at a position: every window ring, the compressors' partial groups
@@ -2366,9 +2369,11 @@ struct Model::Impl {
                     CK(cudaEventCreateWithFlags(&s.ev_ik, cudaEventDisableTiming));
                     CK(cudaSetDevice(d.id));
                 }
-                if (s.ckv[di] != nullptr && !dalloc(d, s.ckv[di], (size_t) s.cap * ckv_rb(), err, &d.caches))
+                // the table holds nseq sequences' regions (M2): a sequence's is cap rows, its own at seq * cap
+                if (s.ckv[di] != nullptr &&
+                    !dalloc(d, s.ckv[di], (size_t) nseq * (size_t) s.cap * ckv_rb(), err, &d.caches))
                     return false;
-                if (s.ik[di] != nullptr && !dalloc(d, s.ik[di], (size_t) s.cap * ik_rb(), err, &d.caches))
+                if (s.ik[di] != nullptr && !dalloc(d, s.ik[di], (size_t) nseq * (size_t) s.cap * ik_rb(), err, &d.caches))
                     return false;
             }
         }
@@ -2846,6 +2851,12 @@ struct Model::Impl {
     size_t win_rb() const { return kv_row_bytes(kKvFp8, g.hd); }
     // a layer's window ring: the sequence's own (its g.win rows of the buffer, nseq of them side by side)
     uint8_t* win_of(const Layer& l, int seq = 0) const { return l.win + (size_t) seq * (size_t) g.win * win_rb(); }
+    // a sequence's rows of a source's compressed table (ds4_batch_attn.hpp's Layout::kv_base): its region is s.cap rows
+    // from seq * s.cap, so with one sequence - the default - the base is 0 and the offsets below are the g_first rows the
+    // compressor's writes and the cross-device copies always used
+    int64_t kv_base(const Src& s) const { return (int64_t) vseq * s.cap; }
+    size_t ckv_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ckv_rb(); }
+    size_t ik_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ik_rb(); }
     size_t ckv_rb() const { return kv_row_bytes(kKvFp4, g.hd); }
     size_t ik_rb() const { return kv_row_bytes(kKvFp4p, g.ix_hd); }
 
@@ -7349,7 +7360,7 @@ struct Model::Impl {
                     fi.pos_step = R;
                     fi.freqs = freqs;
                     fi.quant = 3;
-                    fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                    fi.pdst = ks.ik[(size_t) l.dev] + ik_at(ks, g_first);
                     fi.pdst_stride = (long long) ik_rb();
                     finish(c.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
                 }
@@ -7411,7 +7422,7 @@ struct Model::Impl {
                 fc.pos_step = R;
                 fc.freqs = freqs;
                 fc.quant = 2;
-                fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
+                fc.pdst = sr.ckv[(size_t) l.dev] + ckv_at(sr, g_first);
                 fc.pdst_stride = (long long) ckv_rb();
                 finish(const_cast<float*>(latent), ng, HD, HD, fc, s);
                 if (mi == 0 && sr.remote) {   // the new rows for the other groups' readers (slot k % 2, once
@@ -7424,7 +7435,7 @@ struct Model::Impl {
                     x.bytes[0] = (size_t) ng * ckv_rb();
                     x.n = 1;
                     if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
-                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + ik_at(srcs[(size_t) l.ik_src], g_first);
                         x.dst[1] = sr.stage(slot) + x_cap() * ckv_rb();
                         x.bytes[1] = (size_t) ng * ik_rb();
                         x.n = 2;
@@ -7943,12 +7954,12 @@ struct Model::Impl {
                     Xfer x;
                     if (ng > 0 && sr.ckv[(size_t) di] != nullptr) {
                         x.src[x.n] = sr.stage(slot);
-                        x.dst[x.n] = sr.ckv[(size_t) di] + (size_t) g_first * ckv_rb();
+                        x.dst[x.n] = sr.ckv[(size_t) di] + ckv_at(sr, g_first);
                         x.bytes[x.n++] = (size_t) ng * ckv_rb();
                     }
                     if (ng > 0 && sr.ik[(size_t) di] != nullptr) {
                         x.src[x.n] = sr.stage(slot) + x_cap() * ckv_rb();
-                        x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
+                        x.dst[x.n] = sr.ik[(size_t) di] + ik_at(sr, g_first);
                         x.bytes[x.n++] = (size_t) ng * ik_rb();
                     }
                     if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, s);
@@ -8973,12 +8984,12 @@ struct Model::Impl {
                 Xfer x;
                 if (sr.ckv[(size_t) di] != nullptr) {
                     x.src[x.n] = sr.x_stage;
-                    x.dst[x.n] = sr.ckv[(size_t) di] + (size_t) g_first * ckv_rb();
+                    x.dst[x.n] = sr.ckv[(size_t) di] + ckv_at(sr, g_first);
                     x.bytes[x.n++] = (size_t) ng * ckv_rb();
                 }
                 if (sr.ik[(size_t) di] != nullptr) {
                     x.src[x.n] = sr.x_stage + x_cap() * ckv_rb();
-                    x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
+                    x.dst[x.n] = sr.ik[(size_t) di] + ik_at(sr, g_first);
                     x.bytes[x.n++] = (size_t) ng * ik_rb();
                 }
                 if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, s);
@@ -9143,10 +9154,10 @@ struct Model::Impl {
                     fi.pos_step = R;
                     fi.freqs = freqs;
                     fi.quant = 3;
-                    fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                    fi.pdst = ks.ik[(size_t) l.dev] + ik_at(ks, g_first);
                     fi.pdst_stride = (long long) ik_rb();
                     finish(d.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
-                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, (size_t) g_first * ik_rb(),
+                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, ik_at(ks, g_first),
                                               (size_t) ng * ik_rb(), l.dev, err))
                         return false;
                 }
@@ -9205,10 +9216,10 @@ struct Model::Impl {
                 fc.pos_step = R;
                 fc.freqs = freqs;
                 fc.quant = 2;
-                fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
+                fc.pdst = sr.ckv[(size_t) l.dev] + ckv_at(sr, g_first);
                 fc.pdst_stride = (long long) ckv_rb();
                 finish(d.latent, ng, HD, HD, fc, s);
-                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
+                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, ckv_at(sr, g_first),
                                           (size_t) ng * ckv_rb(), l.dev, err))
                     return false;
                 if (wp.par && mi == 0 && sr.remote) {   // the new rows for the other groups' readers
@@ -9218,7 +9229,7 @@ struct Model::Impl {
                     x.bytes[0] = (size_t) ng * ckv_rb();
                     x.n = 1;
                     if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
-                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + ik_at(srcs[(size_t) l.ik_src], g_first);
                         x.dst[1] = sr.x_stage + x_cap() * ckv_rb();
                         x.bytes[1] = (size_t) ng * ik_rb();
                         x.n = 2;

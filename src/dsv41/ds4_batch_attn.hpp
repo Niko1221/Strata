@@ -50,6 +50,10 @@ inline int written_rows(int64_t pos, int ratio) { return ratio > 0 ? (int) (pos 
 /// The row a position's group lands in when the compressor writes it: pos / ratio (the same row it is written into).
 inline int row_of(int64_t pos, int ratio) { return written_rows(pos, ratio); }
 
+/// The row a sequence's compressor writes a position's group into: its region's start (kv_base) plus row_of().  One
+/// sequence writes at row_of(pos, ratio) - kv_base 0 - so this is the address the model's finish step gets either way.
+inline int write_row(const Layout& l, int64_t pos, int ratio) { return l.kv_base + row_of(pos, ratio); }
+
 /// The compressed rows its position can select: (pos + 1) / ratio, capped by the region and by kcap.
 inline int selectable(const Step& s, int t) {
     int64_t n = s.ratio > 0 ? (s.seq[t].pos + 1) / s.ratio : 0;

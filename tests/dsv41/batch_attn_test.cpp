@@ -44,6 +44,14 @@ int main() {
     CHECK(strata::ds4::batchattn::written_rows(s.seq[1].pos, s.ratio) == 2000 / 4);
     CHECK(strata::ds4::batchattn::row_of(4 * 7 + 2, 4) == 7);
 
+    // the write side: a sequence's compressor lands in its own region - one sequence where it always did, a later one
+    // offset by its kv_base - and the row it writes is the one written_rows() counts (what slot_save copies)
+    CHECK(strata::ds4::batchattn::write_row(s.seq[0], 30, 4) == 7);
+    CHECK(strata::ds4::batchattn::write_row(s.seq[1], 30, 4) == 4096 + 7);
+    CHECK(strata::ds4::batchattn::write_row(s.seq[1], 4 * 7, 4) == 4096 + 7);
+    CHECK(strata::ds4::batchattn::write_row(s.seq[2], 30, 4) - s.seq[2].kv_base ==
+          strata::ds4::batchattn::written_rows(30, 4));
+
     // a step of three sequences is fine; one with a sequence that has no row yet is not
     CHECK(strata::ds4::batchattn::disjoint(s));
     Step z = s;
