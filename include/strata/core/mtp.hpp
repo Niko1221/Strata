@@ -79,7 +79,6 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
-<<<<<<< HEAD
 
     /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN).  The layer's 512 routed experts (708 MB) are read by the DECODE alone:
     /// `record_rest` is their only reader, and every prompt pass - the capture's K/V (record_front) and the prompt
@@ -99,11 +98,9 @@ public:
     bool experts_lend(std::string& err);      ///< snapshot to pinned host (the block stays in place)
     bool experts_reclaim(std::string& err);   ///< the snapshot back into the block, at the address it never left
 
-=======
     /// STRATA_DRAFT_TIMING=1 / STRATA_MTP_PROFILE=1: flush the draft profilers' report now
     /// (they auto-report only every 300 rounds; the summary site calls this so short runs see them).
     void profile_flush() const;
->>>>>>> 1bfb89fb8 (mtp: flush the draft profilers at the summary site (STRATA_DRAFT_TIMING=1 wall=round+steps+gaps+tail + host split; STRATA_MTP_PROFILE=1 16-stage) - they auto-reported only every 300 rounds, so one-shot runs never saw them)
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
