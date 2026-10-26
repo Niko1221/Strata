@@ -430,7 +430,7 @@ void target_features_and_attention() {
     }
     const int hd=128;
     for (int page : {4,64,96})
-    for (int heads : {4,32}) for (int rows : {2,4,8})
+    for (int heads : {4,32}) for (int rows : {1,2,4,8})
     for (int end : {9,73,2053,4101,8197}) for (int window : {0,2048,4096}) {
         const bool ring = end == 8197;
         if (ring && !(window == 2048 && (page == 4 || page == 64) && heads == 32 && rows == 8)) continue;
@@ -692,6 +692,12 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
+    if (argc>1 && (std::strcmp(argv[1],"--attention-bench")==0 || std::strcmp(argv[1],"--attention-check")==0)) {
+        try { target_features_and_attention(); invalid_model_values(); if(std::strcmp(argv[1],"--attention-bench")==0) attention_benchmark(argc>2?argv[2]:nullptr); checked(cudaDeviceSynchronize()); }
+        catch(const std::exception& e) {std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
+        std::puts("PASS: attention FP64 oracle, ring addressing and invalid values");
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "--selector-bench") == 0) {
         try { selector(true); checked(cudaDeviceSynchronize()); }
         catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }

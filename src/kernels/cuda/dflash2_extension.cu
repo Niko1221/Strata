@@ -570,12 +570,17 @@ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_
     if (out) out[i] = sum;
     if (out_bf16) out_bf16[i] = bf16_from_f32(sum);
 }
-template<bool Canonical, bool Paired, int PageShift = 6>
+template<bool Canonical, bool Paired, int PageShift = 6, bool CacheQuery = false>
 __global__ void attention128_kernel(const float* q, const uint16_t* k, const uint16_t* v,
                                     const int32_t* table, const int32_t* steps, float* scratch,
                                     int rows, int heads, int kv_heads, int page_size, int chunks, int window) {
     const int ch = blockIdx.x, head = blockIdx.y, row = blockIdx.z, t = threadIdx.x;
     const int lane = t & 31, warp = t / 32;
+    float cached_q[CacheQuery ? 4 : 1];
+    if constexpr (CacheQuery) {
+#pragma unroll
+        for (int j=0;j<4;++j) cached_q[j]=q[(row*heads+head)*128+lane+32*j];
+    }
     const int end = steps[row * 4 + 1], position = end - rows + row;
     const int first = window ? max(0, end - rows - window + 1) : 0;
     const int begin = first + ch * 64;
@@ -593,8 +598,13 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
             const int offset = Canonical ? cell & ((1 << PageShift) - 1) : cell % page_size;
             poolrow = ((size_t)table[page] * (Canonical ? 8 : kv_heads) + kv_head) *
                       (Canonical ? (1 << PageShift) : page_size) + offset;
-            for (int d = lane; d < 128; d += 32)
-                dot += q[(row * heads + head) * 128 + d] * __half2float(__ushort_as_half(k[poolrow * 128 + d]));
+            if constexpr (CacheQuery) {
+                for (int d = lane; d < 128; d += 32)
+                    dot += cached_q[d / 32] * __half2float(__ushort_as_half(k[poolrow * 128 + d]));
+            } else {
+                for (int d = lane; d < 128; d += 32)
+                    dot += q[(row * heads + head) * 128 + d] * __half2float(__ushort_as_half(k[poolrow * 128 + d]));
+            }
             for (int offset = 16; offset; offset >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, offset);
         }
         if (!lane) {
@@ -665,6 +675,22 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
         const char* value = std::getenv("STRATA_DFLASH2_SMALL_PAGE_ATTENTION");
         return value && value[0] == '1';
     }();
+    static const bool cached_query = [] {
+        const char* v=std::getenv("STRATA_DFLASH2_CACHE_QUERY"); return v && v[0]=='1';
+    }();
+    if (cached_query) {
+        if (small_page && heads==32 && kv_heads==8 && page_size==4) {
+            if (active_cells>=512 && reinterpret_cast<std::uintptr_t>(v)%alignof(__half2)==0)
+                attention128_kernel<true,true,2,true><<<dim3(chunks,heads,rows),64,0,(cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+            else attention128_kernel<true,false,2,true><<<dim3(chunks,heads,rows),128,0,(cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        } else if (heads==32 && kv_heads==8 && page_size==64) {
+            if (active_cells>=512 && reinterpret_cast<std::uintptr_t>(v)%alignof(__half2)==0)
+                attention128_kernel<true,true,6,true><<<dim3(chunks,heads,rows),64,0,(cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+            else attention128_kernel<true,false,6,true><<<dim3(chunks,heads,rows),128,0,(cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        } else attention128_kernel<false,false,6,true><<<dim3(chunks,heads,rows),128,0,(cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        attention128_merge<<<rows*heads,128,0,(cudaStream_t)stream>>>(scratch,out,chunks);
+        return;
+    }
     // The official geometry uses power-of-two pages and four Q heads per KV
     // head. Its addresses need shifts, not runtime integer divisions. Other
     // geometries keep the general indexing path.
