@@ -37,7 +37,58 @@ samples are retained separately. They are not pooled into the final table.
 
 These are hot synthetic component timings, not request throughput. No percentage
 is added to an earlier component gain or presented as a larger advantage over MTP.
-The full-model comparison is running at this snapshot.
+The completed full-model decode screen below does not establish an increased
+advantage over MTP. A separate 32K prompt comparison is running at this snapshot.
+
+## Full-model decode screen
+
+The fixed prompts contain 27/2427/2425 input tokens. Every process has one warmup
+and three measured 384-token requests per task. DFlash2 processes also perform
+same-process target-only checks; every warmup, measured sequence and control
+matches a common separate target-only process. All nine profiles, including that
+control, completed. The table shows decode speed, excluding prompt processing.
+Raw files also retain prompt time and request wall time.
+
+Settings: context 8192, requested resident 8192, expert cache 2900 slots, reserve 480
+MiB, prefill 512, short-read 64, prompt cache disabled, speculation allocation 8,
+fixed routing profile, no adaptive swaps or PCIe tier. DFlash2 uses the official
+Q8_0 artifact, block 7 and floor 0.7. MTP uses max-T 4 and floor 0.5. The target is
+`Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata`, with the same pack, dense
+GGUF, BF16 embeddings, FP8 PLE and interleaved shared-head settings for every arm.
+
+Median decode tok/s in execution order:
+
+| Arm | Short code | Long code | Cache |
+| --- | ---: | ---: | ---: |
+| mtp-a | 39.444 | 39.180 | 41.726 |
+| original-a | 44.602 | 42.926 | 45.194 |
+| tuned-a | 44.981 | 43.289 | 45.434 |
+| query-a | 44.958 | 43.254 | 45.320 |
+| query-b | 44.663 | 43.300 | 45.438 |
+| tuned-b | 44.682 | 43.239 | 45.363 |
+| original-b | 44.698 | 43.007 | 45.097 |
+| mtp-b | 39.455 | 39.087 | 41.755 |
+
+`original` uses the starting branch's behavior without the optional bundle.
+`tuned` enables prompt batch/grid, direct quantization, context graph, BF16 tiles,
+register top-k, list merge, vector selector and the existing small-page attention.
+`query` adds only the new query cache to that bundle. Original/tuned use the
+baseline binary; query uses the candidate whose full hash is in the metadata.
+
+The query cache reduces isolated attention latency but does not produce a stable
+increase in full-model decode speed over the tuned profile here. The bundle's
+small differences from original also need to be considered with process variation.
+The existing DFlash2 advantage over these fixed MTP settings is visible, but it
+must not be attributed to the new cache. Individual samples and ranges are in
+`whole-model/summary.json`; rounds are not independent hardware trials.
+All DFlash2 processes retain accepted/offered counts 279/368, 246/322 and 266/327.
+
+`collect_full_screen.py` archives only zero-exit completed profiles and checks
+all token sequences, prompt/profile hashes and actual placement metadata against
+the common control. Original JSON hashes are recorded before absolute local
+paths become `${REPO}` / `${STRATA_DATA}`. Full commands and environment flags
+are retained. The source runner is the existing
+`bench/results/2026-10-21-dflash2-long-goal/run.py`.
 
 ## Validation
 
@@ -58,7 +109,8 @@ Passed:
 
 Not run: other GPUs, Windows, Metal, multi-GPU, concurrent requests or vision.
 DFlash2 in this tree requires the NVIDIA CUDA backend; HIP/SYCL execution is not
-claimed. Full-model token and speed comparisons are pending in this snapshot.
+claimed. The short full-model token and speed screen completed as described
+above; the separate 32K comparison is pending in this snapshot.
 
 Reproduce the component check in an enabled CUDA build:
 

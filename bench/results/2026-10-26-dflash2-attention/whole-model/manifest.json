@@ -1,0 +1,74 @@
+[
+  {
+    "label": "control",
+    "original_sha256": "615863a5da1a24bbce021101d053555f101a71b32b94fe9b9f111c81a3c03592",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "target-only run",
+    "start_utc": "2026-10-26T03:54:37Z",
+    "end_utc": "2026-10-26T03:56:05Z"
+  },
+  {
+    "label": "mtp-a",
+    "original_sha256": "ca05dfddb6eb4c0e835fb999f27e4427c40c7290b92c3a50abab4dbfcf251656",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T03:56:05Z",
+    "end_utc": "2026-10-26T03:59:31Z"
+  },
+  {
+    "label": "original-a",
+    "original_sha256": "ee4327d04957d9888e59b2dcd0c9b9c298c653006b1d688cad77e07ff11c84df",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T03:59:32Z",
+    "end_utc": "2026-10-26T04:03:44Z"
+  },
+  {
+    "label": "tuned-a",
+    "original_sha256": "4465aea6860622cac7e2a90cc014c9e64600adc93d1e5b0954e943ebb2922531",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:03:44Z",
+    "end_utc": "2026-10-26T04:07:52Z"
+  },
+  {
+    "label": "query-a",
+    "original_sha256": "e0c4ff92870eda995e21231f3b420f7ad56e8fd617f984afe5ccf5e101bf7fa6",
+    "engine_sha256": "0e91f283a0068dd6f355d0ddcb78d7fab498c8477f7a878da1cb70f6b777bf2c",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:07:52Z",
+    "end_utc": "2026-10-26T04:12:00Z"
+  },
+  {
+    "label": "query-b",
+    "original_sha256": "a1b28172fd8104f5cfc5b56897023c5b0890879af5ac05e11ef3ab5d2f6dc2e1",
+    "engine_sha256": "0e91f283a0068dd6f355d0ddcb78d7fab498c8477f7a878da1cb70f6b777bf2c",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:12:01Z",
+    "end_utc": "2026-10-26T04:16:08Z"
+  },
+  {
+    "label": "tuned-b",
+    "original_sha256": "da81d3e5cef65d9952a7417b6793d7d8c7858b6a9a8dccc80ef89b71f21ab797",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:16:08Z",
+    "end_utc": "2026-10-26T04:20:16Z"
+  },
+  {
+    "label": "original-b",
+    "original_sha256": "4e59cabbbf81f181c94a4021dd6969c1a013ac387083e34700e2bd0c13ee64a9",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:20:16Z",
+    "end_utc": "2026-10-26T04:24:25Z"
+  },
+  {
+    "label": "mtp-b",
+    "original_sha256": "5de067ab987764ae46f44a1246c8baf4243d87c9a12c71b77b346dcb8cb59e63",
+    "engine_sha256": "dc6c9b13e4575443a582b2139aa7715c3f19b702d913b7e950b5bf0dd47c3123",
+    "validation": "common target-only controls passed; matching prompt preparation and capacity",
+    "start_utc": "2026-10-26T04:24:25Z",
+    "end_utc": "2026-10-26T04:27:55Z"
+  }
+]
