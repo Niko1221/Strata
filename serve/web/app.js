@@ -119,6 +119,7 @@ async function loadHealth() {
     health = await (await fetch("health")).json();
     renderEmptyChat();
     $("tab-btn-images").hidden = !health.image_generation;
+    $("api-monitor-link").hidden = $("req-monitor").hidden = !health.api_monitor;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
