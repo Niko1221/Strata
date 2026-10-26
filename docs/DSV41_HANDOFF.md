@@ -63,6 +63,10 @@ Seen in the three-client check: "slot 0's kept conversation taken back (101 of 1
 43)".  A single client still goes through the solo path (the server keeps it there while it is alone), where the engine
 continues the state in place as before - so a two-turn single-client test shows no slot reuse, by design.
 
+A fuzz of the batched path (21:01-21:02, `--batch 2`): 12 rounds of 2-4 concurrent requests with random `max_tokens` (1..80)
+and 1 in 3 abandoned mid-stream, each round followed by a canary request: every round answered, the canary came back in
+0.29-0.46 s, both slots decoded, no engine ERR line and no server traceback (`/data/works/batch_fuzz.py`).
+
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
