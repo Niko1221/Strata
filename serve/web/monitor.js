@@ -70,6 +70,82 @@ async function showDetail() {
   text("detail-speed", speed(value.timings?.predicted_per_second)); text("detail-format", value.response_format || "text");
   $("detail-error").hidden = !value.error; text("detail-error", value.error?.message || ""); content();
 }
+// M6: the parallel view - the batch slots as the engine holds them, and the requests in flight over four minutes.  It
+// hides itself when the server serves one request at a time, so the page looks as it always did there.
+const SERIES_MS = 240000;
+let series = [], peak = 0;
+function slotCells(slots) {
+  const el = $("slots"), stamp = JSON.stringify(slots);
+  if (el.dataset.stamp === stamp) return;
+  el.dataset.stamp = stamp;
+  el.replaceChildren();
+  for (const s of slots) {
+    const cell = document.createElement("div");
+    cell.className = "slot" + (s.busy ? " busy" : "");
+    cell.setAttribute("role", "status");
+    cell.setAttribute("aria-label", "Slot " + s.slot + (s.busy ? " busy" : " idle"));
+    const n = document.createElement("b"); n.textContent = s.slot;
+    const label = document.createElement("span"); label.textContent = s.busy ? "busy" : "idle";
+    cell.append(n, label);
+    el.append(cell);
+  }
+}
+function paintChart() {
+  const c = $("chart");
+  if (!c) return;
+  const ctx = c.getContext("2d"), ratio = window.devicePixelRatio || 1, w = c.clientWidth || 600, h = 120;
+  if (c.width !== Math.round(w * ratio) || c.height !== Math.round(h * ratio)) {
+    c.width = Math.round(w * ratio); c.height = Math.round(h * ratio);
+  }
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const cs = getComputedStyle(document.documentElement);
+  const line = cs.getPropertyValue("--st-line-soft").trim() || "#2a2f39";
+  const accent = cs.getPropertyValue("--st-accent").trim() || "#4f8cff";
+  const muted = cs.getPropertyValue("--st-ink-muted").trim() || "#8b93a3";
+  const mono = cs.getPropertyValue("--st-font-mono").trim() || "monospace";
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = line; ctx.lineWidth = 1;
+  for (let i = 1; i < 4; ++i) {
+    const y = Math.round((h - 20) * i / 4) + 10;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  if (!series.length) {
+    ctx.fillStyle = muted; ctx.font = "12px " + mono;
+    ctx.fillText("Waiting for traffic…", 12, h / 2);
+    return;
+  }
+  const now = Date.now(), t0 = now - SERIES_MS, top = Math.max(1, peak);
+  const x = t => Math.max(0, Math.min(w, (t - t0) / SERIES_MS * w));
+  const y = n => h - 10 - (n / top) * (h - 20);
+  ctx.beginPath(); ctx.moveTo(x(series[0].t), y(0));
+  for (const p of series) ctx.lineTo(x(p.t), y(p.inflight));
+  ctx.lineTo(x(series[series.length - 1].t), y(0)); ctx.closePath();
+  ctx.globalAlpha = 0.18; ctx.fillStyle = accent; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.moveTo(x(series[0].t), y(series[0].inflight));
+  for (const p of series) ctx.lineTo(x(p.t), y(p.inflight));
+  ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = muted; ctx.font = "11px " + mono;
+  ctx.fillText("in flight · peak " + top + " · 4 min", 12, 18);
+}
+function parallel(status, records) {
+  const conc = status.concurrency || {}, slots = conc.slots || [];
+  const serving = Math.max(1, conc.serving || 1);
+  $("parallel").hidden = !(slots.length > 0 || serving > 1);
+  if ($("parallel").hidden) return;
+  const inflight = typeof status.activity?.in_flight === "number" ? status.activity.in_flight : records.filter(active).length;
+  const busy = slots.filter(s => s.busy).length;
+  peak = Math.max(peak, inflight, busy);
+  series.push({t: Date.now(), inflight: Math.max(inflight, busy)});
+  while (series.length && series[0].t < Date.now() - SERIES_MS) series.shift();
+  slotCells(slots.length ? slots : Array.from({length: serving}, (_, i) => ({slot: i, busy: false})));
+  text("p-inflight", inflight);
+  text("p-busy", busy + " / " + (slots.length || serving));
+  text("p-waiting", conc.waiting || Math.max(0, inflight - busy));   // (the engine's number, or what the slots do not hold)
+  text("p-peak", peak);
+  text("parallel-note", serving + " slot(s) · " + (conc.requested ?? serving) + " asked");
+  paintChart();
+}
+window.addEventListener("resize", paintChart);
 async function refresh() {
   try {
     const [status, history] = await Promise.all([api("/v1/status"), api("/api/requests")]);
@@ -84,6 +160,7 @@ async function refresh() {
     $("model-state").className = `value ${inflight || loading ? "busy" : status.loaded ? "loaded" : ""}`;
     text("model", status.model); text("count", records.length);
     text("active", inflight ? `${inflight} active / queued` : status.auto_load ? "Loads automatically on the next request" : "No active requests");
+    parallel(status, records);
     const last = records.find(r => !active(r));
     text("wall", last ? seconds(last.wallclock_s) : "—"); text("speed", speed(last?.timings?.predicted_per_second));
     $("load").disabled = operating || Boolean(inflight) || status.loaded; $("unload").disabled = operating || Boolean(inflight) || !status.loaded;

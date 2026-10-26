@@ -301,6 +301,22 @@ three-client run then interleaves 158 times over 300 tokens against 52 with `--s
 against 5.26 s); with parked states the measured ~4 ms switch against ~15 ms a token gives six.  Neither the model nor the
 number of cards enters the rule, and the trace prints what it picked (`ds4 slot: ... burst 1`).
 
+### M6: the monitor's parallel view (2026-10-27)
+
+The built-in API monitor (`/api-monitor`, `serve/web/monitor.*`) shows the batch as it runs, in the page's own vocabulary -
+the same cards, panels and `--st-*` tokens: a row of slot cells that light while a slot holds a request, an area chart of
+the requests in flight over four minutes (with the peak marked), and four facts (in flight, slots busy, waiting, peak).
+The panel draws itself only where the server serves more than one request at a time, so a single-request deployment looks
+exactly as it did.
+
+The data is the engine's own: `/v1/status`'s `concurrency` gained `slots` (a slot's busy flag), `busy` and `waiting`,
+read from the engine's slot bookkeeping.  Measured on the box (two slots, three clients, 8K): `slots=BB` while both slots
+held requests, `B.` as one finished, `..` after - and the three clients answered in 5.16 s with 164 handovers.  The page
+serves with `--api-monitor` and the panel's seven elements are in the served HTML.
+
+What is *not* in it yet: the requests list does not name the slot a request holds (the engine knows it inside the batched
+path), and the queue figure falls back to "in flight minus busy" when the engine reports nothing.
+
 ## Where a token's time goes (measured, 2026-10-26)
 
 Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at

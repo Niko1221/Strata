@@ -4715,8 +4715,14 @@ class Service:
             "cache_max_tokens": ctx,
             "context": {"native": ctx, "max_positions": ctx},
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
+            # M6: the batch slots as they stand - which hold a request, how many wait - so the monitor can draw the
+            # parallel view from the engine's own bookkeeping rather than guess it from the request list
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
-                            "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
+                            "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0))),
+                            "slots": [{"slot": i, "busy": bool(b)}
+                                      for i, b in enumerate(getattr(self.engine, "slot_busy", None) or [])],
+                            "busy": sum(1 for b in (getattr(self.engine, "slot_busy", None) or []) if b),
+                            "waiting": int(getattr(self.engine, "waiting", 0) or 0)},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
