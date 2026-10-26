@@ -1241,6 +1241,7 @@ int main(int argc, char** argv) {
     bool serve_mode = false;
     bool pack_info_mode = false;
     bool admit_order = false;
+    int burst = 0;
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -1313,6 +1314,7 @@ int main(int argc, char** argv) {
         else if (a == "--spec-eval") spec_ids = val("--spec-eval");
         else if (a == "--serve") serve_mode = true;
         else if (a == "--admit-order") admit_order = true;
+        else if (a == "--burst") burst = std::atoi(val("--burst").c_str());
         else if (a == "--pack-info") pack_info_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
