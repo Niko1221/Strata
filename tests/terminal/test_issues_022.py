@@ -84,7 +84,7 @@ class Issue3403MacBuildTools(unittest.TestCase):
             for p in packages:
                 installed[p.split("==")[0]] = "/venv/bin/" + p.split("==")[0]
 
-        with mock.patch.object(setup, "find_tool", side_effect=find), mock.patch.object(setup, "pip_install", side_effect=pip) as pi:
+        with mock.patch.object(setup, "find_tool", side_effect=find), mock.patch.object(setup, "pip_install", side_effect=pip) as pi,                 mock.patch.object(setup, "_tool_version", return_value=(True, (3, 31, 0))):
             self.assertEqual(setup.ensure_build_tools(), ("/venv/bin/cmake", "/venv/bin/ninja"))
             self.assertEqual(pi.call_count, 1)
             setup.ensure_build_tools()                       # present now: nothing more is installed

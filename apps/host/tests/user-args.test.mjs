@@ -3,6 +3,7 @@
  * apps", and engine arguments the app does not know (the control vector options). Nothing here starts an engine; Control is a fake that
  * records the run file the host saved and asked it to start.
  */
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

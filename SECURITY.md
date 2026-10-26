@@ -74,7 +74,7 @@ the model. The section above is about the engine's HTTP server. This is what the
 The Terminal installs with one line:
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 

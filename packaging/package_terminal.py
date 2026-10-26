@@ -121,6 +121,11 @@ INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (t
 #: module it starts to import is never forgotten again; tests/terminal/test_bundle_imports.py checks the staged bundle.
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
                    "strata_tokenizer", "gguf_reader", "calibrate")
+#: tools run BY PATH (`python tools/.../x.py`) by setup.py, strata_cli or strata_control: no import names them, so setup_tool_imports() cannot find
+#: them.  DeepSeek's setup and launch run dsv41/pack_gguf.py (the model folder), dsv41/smoke.py (the engine's first answer) and dsv41/tune.py
+#: (the short tune); setup.py's other by-path tools (nvfp4_local_pack, strata_bench, strata_inspect) were missing from the bundle the same way.
+#: tests/terminal/test_bundle_tools_paths.py reads the by-path references out of the source and fails when one is missing from the bundle.
+INSTALLER_SCRIPTS = ("dsv41/pack_gguf", "dsv41/smoke", "dsv41/tune", "nvfp4_local_pack", "strata_bench", "strata_inspect")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
 
 #: packages the bundle must import after the install (the API server's and the CLI's).
@@ -245,9 +250,15 @@ def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
         source = folder / "tools" / f"{name}.py"
         if not source.exists():
             raise SystemExit(f"installer tool missing: tools/{name}.py")
+        sub = name.rsplit("/", 1)[0] + "/" if "/" in name else ""     # (tools/dsv41/tune.py imports its neighbour smoke.py)
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8-sig"))):
             names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else                 [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
-            todo += [m for m in names if (folder / "tools" / f"{m}.py").exists() and m not in seen]
+            for m in names:
+                for rel in ((sub + m,) if sub else ()) + (m,):
+                    if (folder / "tools" / f"{rel}.py").exists():
+                        if rel not in seen:
+                            todo.append(rel)
+                        break
     return sorted(seen)
 
 
@@ -266,7 +277,7 @@ def setup_tool_imports(source: Path = ROOT) -> list[str]:
 
 def add_installer(folder: Path, source: Path = ROOT) -> dict:
     """Copy the installer's files from the source tree into a staged terminal folder (after the terminal payload is in place)."""
-    tools = local_imports(source, tuple(sorted(set(INSTALLER_TOOLS) | set(setup_tool_imports(source)))))
+    tools = local_imports(source, tuple(sorted(set(INSTALLER_TOOLS) | set(INSTALLER_SCRIPTS) | set(setup_tool_imports(source)))))
     copied = []
     for name in INSTALLER_FILES:
         (folder / name).parent.mkdir(parents=True, exist_ok=True)
@@ -274,6 +285,7 @@ def add_installer(folder: Path, source: Path = ROOT) -> dict:
         copied.append(name)
     (folder / "tools").mkdir(exist_ok=True)
     for name in tools:
+        (folder / "tools" / f"{name}.py").parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
         copied.append(f"tools/{name}.py")
     if (folder / INSTALLER_DATA).exists():

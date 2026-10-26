@@ -61,7 +61,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
+                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
@@ -3479,7 +3479,7 @@ def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
     return visible
 
 
-DS41_SLOT_KEEP_DEFAULT = "0"      # the engine keeps a displaced conversation in RAM and in the slot folder (see below)
+DS41_SLOT_KEEP_DEFAULT = "1"      # the engine keeps a displaced conversation in RAM and in the slot folder (see below)
 DS41_SLOT_GB_DEFAULT = "2"        # the folder's cap in GB (a 6.5K-token conversation is about 17 MB)
 
 
@@ -3488,7 +3488,7 @@ def deepseek_slot_env(env: dict, cfg: dict) -> None:
     at its checkpoints (agents and sub-agents that take turns do not read their prompts again).  STRATA_DS4_SLOT_KEEP
     switches it (the default above; a config's env or the shell wins); the folder is `ds4-slots` next to the run log, in
     Strata's data folder (STRATA_DS4_SLOT_DIR names another), and the engine caps it (STRATA_DS4_SLOT_GB, 2 here, 16 in the engine) and
-    removes what is older than a week or not this model's.  Off by default (0.2.4); STRATA_DS4_SLOT_KEEP=1 turns it on."""
+    removes what is older than a week or not this model's.  On by default; STRATA_DS4_SLOT_KEEP=0 turns it off."""
     env.setdefault("STRATA_DS4_SLOT_KEEP", DS41_SLOT_KEEP_DEFAULT)
     env.setdefault("STRATA_DS4_SLOT_GB", DS41_SLOT_GB_DEFAULT)
     log = cfg.get("log")
@@ -4931,8 +4931,8 @@ class Service:
         """DeepSeek-V4.1 only: how many leading messages are the system prompt (its tools are rendered with them).  An
         agent and its sub-agents that work behind the same system prompt and tools share exactly this start, so the
         engine keeps a checkpoint of its state there (pin=N): the next agent behind the same start goes back to it
-        instead of reading it again.  0: none (off unless STRATA_DS4_AUTO_PIN=1, no system message, or nothing after it)."""
-        if os.environ.get("STRATA_DS4_AUTO_PIN", "0") != "1":
+        instead of reading it again.  0: none (STRATA_DS4_AUTO_PIN=0, no system message, or nothing after it)."""
+        if os.environ.get("STRATA_DS4_AUTO_PIN", "1") == "0":
             return 0
         n = 0
         for m in messages:
@@ -5516,7 +5516,7 @@ class Service:
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
-                                if n and last.get("generated") and last.get("decode_ms") else None,
+                                if n and (last.get("generated") or 0) >= 2 and last.get("decode_ms") else None,
                                 "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
@@ -5650,7 +5650,7 @@ def answer_speed(last: dict, generated: int, wall_s: float | None = None) -> flo
     Only an engine that sent no DONE falls back to the server's own clock from the first token, and a clock younger than
     RATE_MIN_SPAN_S says nothing (it printed 1000000 tok/s for a one-token reply).  Prompt reading is never in it."""
     produced, decode_ms = last.get("generated"), last.get("decode_ms")
-    if produced and decode_ms and decode_ms > 0:
+    if produced and produced >= 2 and decode_ms and decode_ms > 0:       # one token has no first-to-last span (a 1-token probe printed 1,250 tok/s)
         return round(produced / (decode_ms / 1000), 1)
     if generated and wall_s is not None and wall_s >= RATE_MIN_SPAN_S:
         return round(generated / wall_s, 1)
@@ -7136,6 +7136,7 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
+            require_messages(messages)                # an empty conversation is a 400, as OpenAI answers it, not a reply to nothing
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None

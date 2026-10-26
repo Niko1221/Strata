@@ -49,6 +49,13 @@ class MacCheck(unittest.TestCase):
         self.assertTrue(info["clt"])
         self.assertEqual(M.mac_problems(info), [])
 
+    def test_an_intel_python_on_apple_silicon_is_still_an_apple_silicon_mac(self):     # #3894
+        with mock.patch.object(M.platform, "machine", return_value="x86_64"):
+            info = M.mac_info(fake_run({**M5, "machdep.cpu.brand_string": "Apple M1 Max"}))
+        self.assertTrue(info["arm64"])
+        self.assertTrue(info["rosetta_python"])
+        self.assertNotIn("Intel", " ".join(M.mac_problems(info)))
+
     def test_intel_old_macos_and_missing_tools_are_named(self):
         with mock.patch.object(M.platform, "machine", return_value="x86_64"):
             info = M.mac_info(fake_run({**M5, "macos": "14.6", "machdep.cpu.brand_string": "Intel Core i9"}, clt_rc=2))

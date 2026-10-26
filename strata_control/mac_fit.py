@@ -94,7 +94,11 @@ def mac_info(run=subprocess.run) -> dict:
         clt_path = clt.stdout.strip() if clt.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         clt_path = ""
-    return {"chip": chip, "ram_gb": ram, "macos": ver, "arm64": platform.machine() == "arm64",
+    # platform.machine() is the PYTHON's build: an Intel Python running through Rosetta says x86_64 on an M1 Max (#3894). The chip name
+    # (Rosetta passes "Apple M1 Max" through) and hw.optional.arm64 say what the Mac is.
+    python_arm = platform.machine() == "arm64"
+    mac_arm = python_arm or _sysctl("hw.optional.arm64", run) == "1" or chip.startswith("Apple")
+    return {"chip": chip, "ram_gb": ram, "macos": ver, "arm64": mac_arm, "rosetta_python": mac_arm and not python_arm,
             "clt": clt_path, "perf_cores": int(_sysctl("hw.perflevel0.physicalcpu", run) or 0)}
 
 

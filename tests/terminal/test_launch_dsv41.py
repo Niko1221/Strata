@@ -91,6 +91,12 @@ class LaunchDeepSeek(unittest.TestCase):
         self.assertIn("drafting  DSpark", out)
         self.assertNotIn("MTP", out)
 
+    def test_the_plan_does_not_promise_a_strata_engine_download_for_deepseek(self):
+        p = self.plan("--model", "ud-q8_k_xl", "--no-tui")
+        text = json.dumps(p.get("download") or {})
+        self.assertNotIn("engine for your graphics card", text)
+        self.assertFalse((p.get("download") or {}).get("engine_missing"))
+
     def test_no_card_is_said(self):
         self.hw = {**HW_12, "gpus": []}
         code, out, err = run_cli(["launch", "--plan", "--model", "ud-q8_k_xl", "--no-tui"])
