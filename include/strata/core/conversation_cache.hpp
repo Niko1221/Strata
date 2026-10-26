@@ -183,6 +183,24 @@ struct SavedConversation {
     }
 };
 
+/// `c` holds the state `ids` (with `images`) describes, or a continuation of it: its tokens start with `ids` and
+/// its pictures below ids.size() are exactly `images`.  What an idle batch slot holds is then parked already (or
+/// a longer continuation is), so the slot need not park it again before an admission overwrites it.
+template<class Token>
+bool conversation_covers(const ConversationCheckpoint& c, const std::vector<Token>& ids,
+                         const std::vector<ConversationImageKey>& images) {
+    const size_t n = ids.size();
+    if (n == 0 || c.ids.size() < n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if ((int64_t) c.ids[i] != (int64_t) ids[i]) return false;
+    size_t j = 0;
+    for (const auto& image : c.imgs) {
+        if (image.start >= (int64_t) n) continue;
+        if (j == images.size() || !(images[j++] == image)) return false;
+    }
+    return j == images.size();
+}
+
 template<class Token>
 int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
                             const std::vector<ConversationImageKey>& images) {
@@ -263,6 +281,19 @@ public:
             for (const auto& c : e.checkpoints) consider(c, false);
         }
         return best;
+    }
+
+    /// A parked conversation holds this state already (its live tokens or one of its checkpoints start with `ids`,
+    /// same pictures, same steering): see conversation_covers.  Read-only; no LRU effect.
+    template<class Token>
+    bool holds(const std::vector<Token>& ids, const std::vector<ConversationImageKey>& images, bool cvec) const {
+        for (const auto& e : entries_) {
+            if (e.cvec != cvec) continue;
+            if (conversation_covers(e.live, ids, images)) return true;
+            for (const auto& c : e.checkpoints)
+                if (conversation_covers(c, ids, images)) return true;
+        }
+        return false;
     }
 
     SavedConversation take(size_t index) {
