@@ -69,3 +69,16 @@ def split(max_new: int, burst: int) -> list[int]:
         out.append(n)
         left -= n
     return out
+
+
+def pass_limit(max_new: int, produced: int, burst: int) -> int:
+    """What one GEN pass may ask for: the tokens left, capped by the burst size (0: burst off)."""
+    left = max_new - produced
+    if left <= 0:
+        return 0
+    return left if burst <= 0 else min(left, burst)
+
+
+def ended_by_chunk(max_new: int, produced_in_pass: int, limit: int, burst: int) -> bool:
+    """True when a pass stopped at the chunk cap rather than at the model (EOS, cancel, recovery)."""
+    return burst > 0 and limit > 0 and produced_in_pass >= limit and produced_in_pass < max_new

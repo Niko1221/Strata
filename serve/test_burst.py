@@ -1,7 +1,7 @@
 """The chunked round-robin bookkeeping (serve/burst.py)."""
 import unittest
 
-from serve.burst import BurstCursor, split
+from serve.burst import BurstCursor, ended_by_chunk, pass_limit, split
 
 
 class Split(unittest.TestCase):
@@ -38,3 +38,17 @@ class Cursor(unittest.TestCase):
         c.finished = True
         self.assertEqual(c.next_chunk(), 0)
         self.assertFalse(c.accept([9]))
+
+
+class PassLimit(unittest.TestCase):
+    def test_cap(self):
+        self.assertEqual(pass_limit(100, 0, 0), 100)
+        self.assertEqual(pass_limit(100, 0, 64), 64)
+        self.assertEqual(pass_limit(100, 64, 64), 36)
+        self.assertEqual(pass_limit(100, 100, 64), 0)
+
+    def test_chunk_boundary(self):
+        self.assertTrue(ended_by_chunk(100, 64, 64, 64))
+        self.assertFalse(ended_by_chunk(100, 30, 64, 64))   # the model stopped early
+        self.assertFalse(ended_by_chunk(100, 100, 100, 64)) # the whole reply is done
+        self.assertFalse(ended_by_chunk(100, 64, 64, 0))    # burst off
