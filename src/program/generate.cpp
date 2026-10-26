@@ -3428,6 +3428,11 @@ int main(int argc, char** argv) {
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
     o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
+#elif defined(STRATA_ARM64)   // Linux arm64 (GB10 / DGX Spark, unofficial): no x86 kernel is built; like the older-CPU
+    // build, a native pack's CPU experts run on ggml-cpu (NEON) and every x86 kernel is behind cpu_avx2_ok()
+    std::fprintf(stderr, "strata generate: Linux arm64 build (unofficial): the CPU's experts run on ggml-cpu (NEON); "
+                         "a Q2_0 pack has no arm64 CPU kernel - use an IQ or Unsloth pack\n");
+    if (false) {
 #else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {
 #endif

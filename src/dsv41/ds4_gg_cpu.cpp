@@ -169,6 +169,7 @@ static int amd_family() {
         if (!__get_cpuid(1, &a, &b, &c, &d)) return 0;
         const unsigned eax = a;
 #else
+        const unsigned eax = 0;   // (not x86: no vendor to read, so not AMD; the lines below are never reached)
         return 0;
 #endif
         const unsigned base = (eax >> 8) & 0xF;
