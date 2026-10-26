@@ -115,7 +115,13 @@ What one launch over T sequences still needs, in the order it has to be built:
    tensor-parallel group** (`--tp 4` on this box), where no source is remote and the hand-off is not needed at all: measured
    on 2026-10-27, the probe with two slots (every check) and three clients over HTTP (100 tokens each, 5.26 s of wall, 52
    handovers) are green at `--tp 4`, 8K context.  That is a route to land the step first and measure what one group costs;
-3. **the serve loop**: one step over every active slot (the live mode is in, so nothing is parked), then a `BT` a slot;
+3. **the serve loop**: one step over every active slot (the live mode is in, so nothing is parked), then a `BT` a slot.
+   Two ways into the step, and the second is the shorter one now that the chunk path is per-row: (a) `forward_rows` over
+   `layer()` - the window path, which needs the per-row descriptor in `layer()` and its plan (`plan_window` takes the rows
+   now) - and (b) **one chunk of T rows through the chunk machinery** (`run_dev_chunks` with `nk = 1`), since `chunk_rows`
+   is already the per-row path the in-process A/B proves: the entry fills `h_emb` a row (each sequence's token) and the
+   Engram rows a row, and `Run` carries the descriptor to `run_layer`; what it still needs is that descriptor on `Run` and
+   each row's logits sampled from the chunk's output rows (the head is per row already);
 4. **the measurement**: `route_overlap` bounds what the shared expert reads can save at 1.15-1.28x, so the step's wall
    at sixteen slots should land below the stock engine's 27.35 s (the one-pass-per-slot live mode is 31.08 s).
 

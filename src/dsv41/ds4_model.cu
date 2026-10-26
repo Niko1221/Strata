@@ -8990,19 +8990,21 @@ struct Model::Impl {
     }
 
     // the window's plan, in window order (the indexer's and the candidate source's sizes carry from window to window)
-    void plan_window(int64_t p0, int T, WinPlan& wp) {
+    // the plan a window's layers need (the indexer's counts a row); `step` gives the rows their own positions instead of
+    // p0 + t - M2's batched step, where row t is one token of another sequence
+    void plan_window(int64_t p0, int T, WinPlan& wp, const StepRows* step = nullptr) {
         wp.par = par;
         wp.async = par || (!sync_decode && T <= async_max_t);
         wp.vl = 0;
         for (int t = 0; t < T && !imgs.empty(); ++t)
-            if (in_image(p0 + t)) wp.vl |= 1u << t;
+            if (in_image(step != nullptr ? step->pos[t] : p0 + t)) wp.vl |= 1u << t;
         for (int il = 0; il < g.nl; ++il) {
             const Layer& l = L[(size_t) il];
             if (l.ratio > 0) {
                 const int R = l.ratio;
                 int n[kWin], k[kWin], clen_max = 0;
                 for (int t = 0; t < T; ++t) {
-                    n[t] = (int) ((p0 + t + 1) / R);
+                    n[t] = (int) (((step != nullptr ? step->pos[t] : p0 + t) + 1) / R);
                     k[t] = std::min(g.ix_topk, n[t]);
                     clen_max = std::max(clen_max, n[t]);
                 }
