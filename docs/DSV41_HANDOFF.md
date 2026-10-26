@@ -140,6 +140,10 @@ rows), the checkpoint / slot / park paths copy the pass's ring and region (`win_
 the checkpoint/restore): **sequence 1 writes exactly what sequence 0 does**, every check, and the same window's tree also
 passes the probe and the three-client HTTP check with `vseq` 0.  Production restored health 200 after each.
 
+The compressors' partial group is a sequence's too now (`comp_kv`/`comp_sc`: `nseq` groups of `ratio x hd` floats a
+layer, the pass's at `vseq`), and the checkpoint / slot / park paths copy that one; the parity check's 300-token prompt
+crosses many groups, so its half-finished group is written and read inside sequence 1's region.  Same gate, green.
+
 The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.

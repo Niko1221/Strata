@@ -69,8 +69,10 @@ rows are written in their own region but not yet read from it.
 **The state is per sequence (2026-10-26).**  `pos`, `toks`, `ctoks`, the four checkpoints and `slot_held` are one
 `State` now, `nseq` of them (`seqs`), and a pass works on `seqs[vseq]` - `state()`: the chunked prompt and the window
 path, `rollback`, `checkpoint`/`restore`/`pin`/`check_positions`, `slot_save`/`slot_load`, `park_save`/`park_load`
-and the Engram's token rows all go through it, and `Model::pos()`/`tokens()` read it.  With one sequence - `vseq` is 0
-everywhere today - every access is the member it was.  What it unlocks is the batched step switching a pass to another
+and the Engram's token rows all go through it, and `Model::pos()`/`tokens()` read it.  The compressors' partial group
+is per sequence as well (`comp_kv`/`comp_sc`: `nseq` of `ratio x hd` floats a layer, its own at `vseq`), so a
+sequence's half-finished group belongs to it alone - the checkpoint, slot and park paths copy the pass's.  With one
+sequence - `vseq` is 0 everywhere today - every access is the member it was.  What it unlocks is the batched step switching a pass to another
 sequence's state without parking it in host memory; what it still needs is the read side of the compressed rows (the
 step table above), and `feed`/`step`/`sample` naming the sequence they work on instead of today's default.
 
