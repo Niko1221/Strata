@@ -4704,6 +4704,10 @@ class Service:
             return round(v / unit, digits) if isinstance(v, (int, float)) else None
 
         busy, ctx = bool(s.get("busy")), self.reported_ctx()
+        # M6: how many requests are admitted but hold no slot (in flight minus the slots that do hold one)
+        slots_now = list(getattr(self.engine, "slot_busy", None) or [])
+        busy_n = sum(1 for b in slots_now if b)
+        waiting_n = max(0, int(running) + int(s.get("queued") or 0) - busy_n)
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
@@ -4719,10 +4723,9 @@ class Service:
             # parallel view from the engine's own bookkeeping rather than guess it from the request list
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0))),
-                            "slots": [{"slot": i, "busy": bool(b)}
-                                      for i, b in enumerate(getattr(self.engine, "slot_busy", None) or [])],
-                            "busy": sum(1 for b in (getattr(self.engine, "slot_busy", None) or []) if b),
-                            "waiting": int(getattr(self.engine, "waiting", 0) or 0)},
+                            "slots": [{"slot": i, "busy": bool(b)} for i, b in enumerate(slots_now)],
+                            "busy": busy_n,
+                            "waiting": waiting_n},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},

@@ -314,8 +314,10 @@ read from the engine's slot bookkeeping.  Measured on the box (two slots, three 
 held requests, `B.` as one finished, `..` after - and the three clients answered in 5.16 s with 164 handovers.  The page
 serves with `--api-monitor` and the panel's seven elements are in the served HTML.
 
-What is *not* in it yet: the requests list does not name the slot a request holds (the engine knows it inside the batched
-path), and the queue figure falls back to "in flight minus busy" when the engine reports nothing.
+The queue figure is the honest one - requests admitted but holding no slot (in flight minus the slots that hold one):
+with two slots and three clients the status reads `in_flight=3 slots=BB busy=2 waiting=1`, then `B.` and `..` as they
+finish.  What is *not* in it yet: the requests list does not name the slot a request holds (the engine knows it inside the
+batched path).
 
 ## Where a token's time goes (measured, 2026-10-26)
 
