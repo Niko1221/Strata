@@ -18,6 +18,7 @@
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -339,6 +340,61 @@ __global__ void __launch_bounds__(256) k_q6k_f32s(const uint8_t* __restrict__ W,
         for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
         if (L == 0) y[(size_t) t * n_out + row] = v;
     }
+}
+/// kQ8S decode: y [T][rows] = W x for T <= NT q8_1 activation rows (xq: T x cols / 32 blocks of 36 bytes, the values
+/// at +4).  A warp per row, 16 weight bytes a lane a step, the activations' values and scales in shared memory
+/// (NT * cols + NT * cols / 32 * 4 bytes), STRATA_DP4A (vmad below sm_61).  grid (rows / 8), block 256.
+template <int NT>
+__global__ void __launch_bounds__(256) k_q8s_rows(const int8_t* __restrict__ wq, const __half* __restrict__ wd,
+                                                  const uint8_t* __restrict__ xq, float* __restrict__ y, int rows,
+                                                  int cols, int T) {
+    extern __shared__ int4 q8s_sm[];
+    const int nvec = cols / 16, nsc = cols / 32;
+    int* sa = (int*) q8s_sm;                  // [T][cols / 4]
+    float* sdv = (float*) (sa + NT * (cols / 4));   // [T][nsc]
+    for (int i = threadIdx.x; i < T * nsc * 8; i += blockDim.x) {
+        const int b = i / 8, w = i % 8;
+        sa[b * 8 + w] = *(const int*) (xq + (size_t) b * 36 + 4 + 4 * w);
+    }
+    for (int i = threadIdx.x; i < T * nsc; i += blockDim.x) sdv[i] = __low2float(*(const __half2*) (xq + (size_t) i * 36));
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * 8 + warp;
+    if (row >= rows) return;
+    const int4* wr = (const int4*) (wq + (size_t) row * cols);
+    const __half* wdr = wd + (size_t) row * nsc;
+    float acc[NT];
+#pragma unroll
+    for (int t = 0; t < NT; ++t) acc[t] = 0.f;
+#pragma unroll 4
+    for (int i = lane; i < nvec; i += 32) {
+        const int4 w4 = __ldg(wr + i);
+        const float ws = __half2float(__ldg(wdr + (i >> 1)));
+#pragma unroll
+        for (int t = 0; t < NT; ++t) {
+            if (t >= T) break;
+            const int4 a4 = ((const int4*) (sa + t * (cols / 4)))[i];
+            int sum = STRATA_DP4A(w4.x, a4.x, 0);
+            sum = STRATA_DP4A(w4.y, a4.y, sum);
+            sum = STRATA_DP4A(w4.z, a4.z, sum);
+            sum = STRATA_DP4A(w4.w, a4.w, sum);
+            acc[t] = fmaf((float) sum * ws, sdv[t * nsc + (i >> 1)], acc[t]);
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < NT; ++t) {
+        if (t >= T) break;
+        float v = acc[t];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+        if (lane == 0) y[(size_t) t * rows + row] = v;
+    }
+}
+/// kQ8S rows to FP16 (a prompt chunk's GEMM operand): n_out x n_in halves.  grid1(n_out * n_in).
+__global__ void k_q8s_f16(const int8_t* __restrict__ wq, const __half* __restrict__ wd, __half* __restrict__ out,
+                          int64_t n_in, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = __float2half((float) wq[i] * __half2float(wd[i / 32]));
 }
 __global__ void k_gemv_f32(const float* W, const float* x, float* y, int n_in, int n_out) {
     const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
@@ -1156,10 +1212,52 @@ __global__ void __launch_bounds__(128) k_gdn_norm(const float* o_raw, const floa
 
 // ------------------------------------------------------------------------------------------------ the model
 struct Mat {
-    const uint8_t* d = nullptr;   // device, GGUF blocks
+    const uint8_t* d = nullptr;   // device, GGUF blocks (kQ8S: int8 rows [n_out][n_in])
     int type = -1;
     int n_in = 0, n_out = 0;
+    const __half* sd = nullptr;   // kQ8S: the scales [n_out][n_in / 32]
 };
+/// STRATA_Q36_DENSE_Q8S: a dense matrix converted at load to Q8_0 values as rows of int8 with their FP16 scales apart
+/// (16-byte loads, every activation row from shared memory: the fork's Pascal / Maxwell decode layout)
+constexpr int kQ8S = 208;
+/// Q6_K rows (ggml's block layout, dequantize_row_q6_K's order) -> Q8_0 values (blocks of 32: d = amax / 127, q =
+/// round(x / d)) as int8 rows q and FP16 scales sd.  Rows [r0, r1).
+inline void q6k_to_q8s_rows(const uint8_t* src, int64_t n_in, int64_t r0, int64_t r1, int8_t* q, __half* sd) {
+    const int64_t nb = n_in / 256;
+    std::vector<float> y((size_t) n_in);
+    for (int64_t r = r0; r < r1; ++r) {
+        const uint8_t* row = src + (size_t) r * nb * 210;
+        for (int64_t b = 0; b < nb; ++b) {
+            const uint8_t* ql = row + b * 210;
+            const uint8_t* qh = ql + 128;
+            const int8_t* sc = (const int8_t*) (ql + 192);
+            __half dh;
+            std::memcpy(&dh, ql + 208, 2);
+            const float d = __half2float(dh);
+            float* yy = y.data() + b * 256;
+            for (int n = 0; n < 2; ++n) {
+                for (int l = 0; l < 32; ++l) {
+                    const int is = l / 16;
+                    yy[l] = d * sc[is] * (float) (((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+                    yy[l + 32] = d * sc[is + 2] * (float) (((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+                    yy[l + 64] = d * sc[is + 4] * (float) (((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32);
+                    yy[l + 96] = d * sc[is + 6] * (float) (((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32);
+                }
+                yy += 128;
+                ql += 64;
+                qh += 32;
+                sc += 8;
+            }
+        }
+        for (int64_t j = 0; j < n_in / 32; ++j) {
+            float amax = 0.f;
+            for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(y[(size_t) (j * 32 + i)]));
+            const float d = amax / 127.0f, id = d != 0.f ? 1.0f / d : 0.f;
+            sd[(size_t) r * (n_in / 32) + j] = __float2half(d);
+            for (int i = 0; i < 32; ++i) q[(size_t) r * n_in + j * 32 + i] = (int8_t) std::lround(y[(size_t) (j * 32 + i)] * id);
+        }
+    }
+}
 
 struct Layer {
     bool attn = false;
@@ -1190,6 +1288,9 @@ struct Model {
     strata::core::ModelGeometry g;
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
+    size_t q8s_max = 0;                        // STRATA_Q36_DENSE_Q8S: the largest converted matrix but the head (values)
+    uint8_t* head_host = nullptr;              // STRATA_Q36_LEND_HEAD: the head's bytes in pinned host memory
+    size_t head_bytes = 0;
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
@@ -1332,6 +1433,31 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             std::exit(1);
         }
         const uint64_t nb = strata::tensor_payload_bytes(*t);
+        // 1: every Q6_K matrix, 2: all but the output head (0.12 GiB less VRAM; the head keeps the Q6_K kernels)
+        static const int to_q8s = [] { const char* v = std::getenv("STRATA_Q36_DENSE_Q8S"); return v ? std::atoi(v) : 0; }();
+        if (to_q8s > 0 && w.type == 14 && w.n_in % 256 == 0 && !(to_q8s == 2 && name.rfind("output", 0) == 0)) {   // Q6_K -> kQ8S, on the host in row bands
+            const int64_t R = w.n_out, Kc = w.n_in;
+            std::vector<int8_t> hq((size_t) R * Kc);
+            std::vector<__half> hs((size_t) R * (Kc / 32));
+            const auto* src = (const uint8_t*) gm.shard(s).tensor_data(*t);
+            const int nt = (int) std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            std::vector<std::thread> th;
+            for (int k = 0; k < nt; ++k)
+                th.emplace_back([&, k] { q6k_to_q8s_rows(src, Kc, R * k / nt, R * (k + 1) / nt, hq.data(), hs.data()); });
+            for (auto& x : th) x.join();
+            int8_t* dq = nullptr;
+            __half* ds = nullptr;
+            CK(cudaMalloc(&dq, hq.size()));
+            CK(cudaMalloc(&ds, hs.size() * 2));
+            CK(cudaMemcpy(dq, hq.data(), hq.size(), cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(ds, hs.data(), hs.size() * 2, cudaMemcpyHostToDevice));
+            bytes += hq.size() + hs.size() * 2;
+            w.type = kQ8S;
+            w.d = (const uint8_t*) dq;
+            w.sd = ds;
+            m.q8s_max = std::max<size_t>(m.q8s_max, name.rfind("output", 0) == 0 ? 0 : (size_t) R * Kc);
+            return w;
+        }
         uint8_t* d = nullptr;
         CK(cudaMalloc(&d, nb));
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
@@ -1425,6 +1551,14 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     }
     m.out_norm = f32("output_norm.weight");
     m.head = mat("output.weight");
+    if (const char* v = std::getenv("STRATA_Q36_LEND_HEAD"); v != nullptr && v[0] == '1' && m.head.type != kQ8S) {
+        // a long prompt borrows the head's VRAM (the fork's phase loan): its copy here restores it after the prompt
+        size_t s = 0;
+        const strata::TensorInfo* t = find("output.weight", s);
+        m.head_bytes = strata::tensor_payload_bytes(*t);
+        CK(cudaHostAlloc((void**) &m.head_host, m.head_bytes, cudaHostAllocDefault));
+        std::memcpy(m.head_host, gm.shard(s).tensor_data(*t), m.head_bytes);
+    }
     {
         size_t s = 0;
         const strata::TensorInfo* t = find("token_embd.weight", s);
@@ -1963,14 +2097,38 @@ struct Engine {
         for (size_t i = 0; i < v.size() && i < set.size(); ++i) *v[i].first = set[i];
     }
     /// the chunk's set at `base` (big_bytes long), carved in row_bufs' order
+    // STRATA_Q36_LEND_HEAD (with STRATA_Q36_SHARE_BUFS): during a long prompt the head's VRAM holds the second
+    // staging buffer - not read once the last chunk's layers ran; the head is copied back from host memory after the
+    // prompt and the last row's logits are taken then
+    bool lend = false, head_lent = false;
+    size_t lend_stage = 0;   // bytes of the head region the staging buffer takes (0: it stays in the slots' memory)
+    // (the MoE outputs went there too until a layer's staging buffer, 358 MiB here, took nearly all of the head's 390)
+    bool lent_buf(void** p) const { return lend && lend_bufs && (p == (void**) &eparts || p == (void**) &mq_gu); }
+    bool lend_bufs = false;
+    size_t big_bytes_in_arena() {
+        size_t b = 0;
+        for (auto& e : row_bufs((size_t) tmax, true))
+            if (!lent_buf(e.first)) b += rb_align(e.second);
+        return b;
+    }
     void carve_big(uint8_t* base) {
         big_set.clear();
-        size_t off = 0;
+        size_t off = 0, hoff = lend_stage;
         for (auto& e : row_bufs((size_t) tmax, true)) {
-            big_set.push_back(base + off);
-            off += rb_align(e.second);
+            if (lent_buf(e.first)) {
+                big_set.push_back((uint8_t*) m->head.d + hoff);
+                hoff += rb_align(e.second);
+            } else {
+                big_set.push_back(base + off);
+                off += rb_align(e.second);
+            }
         }
         big_carved = true;
+    }
+    void restore_head() {
+        if (!head_lent) return;
+        CK(cudaMemcpyAsync((void*) m->head.d, m->head_host, m->head_bytes, cudaMemcpyHostToDevice, st));
+        head_lent = false;
     }
     /// after place_experts: STRATA_Q36_SHARE_BUFS without shared slots (no hybrid staging): the chunk's set of its own
     void finish_bufs() {
@@ -1984,6 +2142,7 @@ struct Engine {
     void enter_big() {
         if (!share_bufs || big_active) return;
         evict_shared();
+        if (lend) head_lent = true;   // the head's bytes are the prompt's from here on
         CK(cudaMemsetAsync(big_set[0], 0, big_bytes, st));
         use_set(big_set, true);
         if (use_mmq) MMQ::iota(ident, (int64_t) tmax * m->top_k, st);
@@ -1991,6 +2150,7 @@ struct Engine {
     }
     void leave_big() {
         if (!share_bufs || !big_active) return;
+        restore_head();
         CK(cudaStreamSynchronize(st));
         use_set(small_set, false);
         xw = hw = hmw = nullptr;
@@ -2052,8 +2212,14 @@ struct Engine {
                      [] { const char* v = std::getenv("STRATA_Q36_SHARE_BUFS"); return v != nullptr && v[0] == '1'; }();
         if (share_bufs) {
             alloc_row_bufs((size_t) kSmallRows, false, small_set);
-            big_bytes = 0;
-            for (auto& e : row_bufs(T, true)) big_bytes += rb_align(e.second);
+            lend = m->head_host != nullptr;
+            if (lend) {   // the lent buffers must fit in the head (the staging buffer is added in place_experts)
+                size_t lb = 0;
+                for (auto& e : row_bufs(T, true))
+                    if (lent_buf(e.first)) lb += rb_align(e.second);
+                if (lb > m->head_bytes) lend = false;
+            }
+            big_bytes = big_bytes_in_arena();
             std::fprintf(stderr, "strata-q36: the chunk's buffers (%.0f MiB) share the expert slots' VRAM (STRATA_Q36_SHARE_BUFS); "
                          "%d-row buffers for decoding\n", (double) big_bytes / 1048576.0, kSmallRows);
         } else {
@@ -2229,6 +2395,31 @@ struct Engine {
         if (q == xq) src_xq = src;
         else if (q == q8) src_q8 = src;
     }
+    /// kQ8S: y [T][rows] = W x from x's q8_1 image (T <= 8; rows: the first ones only, 0 all)
+    void q8s_rows(const Mat& w, const void* q, float* out, int T, int rows = 0) {
+        const int n_out = rows > 0 ? rows : (int) w.n_out;
+        const int grid = (n_out + 7) / 8;
+        // (the scales sit after NT rows of values: the shared memory is sized for the template's NT, not T)
+        auto smem = [&](int nt) { return (size_t) nt * w.n_in + (size_t) nt * (w.n_in / 32) * 4; };
+        const auto* wq = (const int8_t*) w.d;
+        const auto* xq8 = (const uint8_t*) q;
+        if (T == 1) k_q8s_rows<1><<<grid, 256, smem(1), st>>>(wq, w.sd, xq8, out, n_out, w.n_in, T);
+        else if (T <= 2) k_q8s_rows<2><<<grid, 256, smem(2), st>>>(wq, w.sd, xq8, out, n_out, w.n_in, T);
+        else if (T <= 4) k_q8s_rows<4><<<grid, 256, smem(4), st>>>(wq, w.sd, xq8, out, n_out, w.n_in, T);
+        else k_q8s_rows<8><<<grid, 256, smem(8), st>>>(wq, w.sd, xq8, out, n_out, w.n_in, T);
+    }
+    /// kQ8S for a prompt chunk (x16 holds the rows in FP16): the matrix in FP16 in the prompt GEMM's scratch, then its
+    /// FP16 product (Gemm::f16 - its own cuBLAS call took 48 ms a product on a GTX 970, the GGUF matrices' 4)
+    void q8s_gemm(const Mat& w, float* out, int T) {
+        const int64_t rows = std::min<int64_t>(w.n_out, gemm.scratch_elems() / w.n_in);
+        for (int64_t r0 = 0; r0 < w.n_out; r0 += rows) {
+            const int64_t n = std::min<int64_t>(rows, w.n_out - r0);
+            k_q8s_f16<<<grid1(n * w.n_in), kThreads, 0, st>>>((const int8_t*) w.d + (size_t) r0 * w.n_in,
+                                                               w.sd + (size_t) r0 * (w.n_in / 32), (__half*) gemm.scratch(),
+                                                               w.n_in, n * w.n_in);
+            gemm.f16((const uint16_t*) x16, gemm.scratch(), out + r0, T, n, w.n_in, w.n_out);
+        }
+    }
     bool q6k_f32(const Mat& w, const float* xin, float* out, int T, int rows = 0) {
         if (!q6f || w.type != 14 || xin == nullptr || T < 1 || T > 8 || w.n_in % 256 != 0) return false;
         const int n_out = rows > 0 ? rows : (int) w.n_out;
@@ -2291,6 +2482,11 @@ struct Engine {
         else quant(xin, n, T, q);
     }
     void apply(const Mat& w, const void* q, float* out, int T) {
+        if (w.type == kQ8S) {
+            if (T > kGemmT) q8s_gemm(w, out, T);
+            else q8s_rows(w, q, out, T);
+            return;
+        }
         if (T > kGemmT) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
         else if (!q6k_f32(w, q == xq ? src_xq : q == q8 ? src_q8 : nullptr, out, T)) mmq(w, q, out, T);
     }
@@ -2595,6 +2791,12 @@ struct Engine {
     }
     /// y [T][n_out] = W x from x's q8_1 image, 8 columns per launch.
     void mmq(const Mat& w, const void* q, float* out, int T) {
+        if (w.type == kQ8S) {
+            for (int c0 = 0; c0 < T; c0 += 8)
+                q8s_rows(w, (const char*) q + (size_t) c0 * K::native_q8_1_bytes(w.n_in, 1), out + (size_t) c0 * w.n_out,
+                         std::min(8, T - c0));
+            return;
+        }
         if (q8_small(w, q, out, T)) return;
         const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
         for (int c0 = 0; c0 < T; c0 += 8) {
@@ -2966,6 +3168,13 @@ struct Engine {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         const Mat& hd = m->head;
+        if (hd.type == kQ8S && draft_n > 0 && draft_n < g.n_vocab && draft_n % 8 == 0) {   // the kQ8S head's first rows
+            quant(hn, N, 1, q8);
+            q8s_rows(hd, q8, logits_m, 1, draft_n);
+            k_argmax<<<dim3(kArgBlocks, 1), kThreads, 0, st>>>(logits_m, draft_n, pick_m, amv, ami, false);
+            k_argmax<<<dim3(1, 1), kThreads, 0, st>>>(logits_m, kArgBlocks, pick_m, amv, ami, true);
+            return;
+        }
         // STRATA_Q36_Q6K_F32: a Q6_K head's first draft_n rows in FP32 (the full head per draft cost a Maxwell card ~5 ms)
         if (q6f && hd.type == 14 && draft_n > 0 && draft_n < g.n_vocab && draft_n % 8 == 0 && q6k_f32(hd, hn, logits_m, 1, draft_n)) {
             k_argmax<<<dim3(kArgBlocks, 1), kThreads, 0, st>>>(logits_m, draft_n, pick_m, amv, ami, false);
@@ -3429,7 +3638,7 @@ struct Engine {
             if (win_sub && main_hybrid && use_mmq && !mtab_now && !map_on && !img_active && left >= 2 * (int64_t) tmax) {
                 const int nsub = (int) std::min<int64_t>(win_sub, left / tmax), T = tmax;
                 const int64_t rows = (int64_t) nsub * T;
-                forward_window(toks + i, nsub, pos, i + rows == n ? 1 : 0);
+                forward_window(toks + i, nsub, pos, i + rows == n && !head_lent ? 1 : 0);
                 if (m->has_mtp && mtp_d > 0) {
                     for (int c = 0; c < nsub; ++c) {
                         const float* seeds = hmw + ((size_t) c * T - 1) * N;
@@ -3463,7 +3672,7 @@ struct Engine {
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             chunk_pictures(pos, T);
-            forward(T, pos, i + T == n ? 1 : 0, false, false);
+            forward(T, pos, i + T == n && !head_lent ? 1 : 0, false, false);
             if (m->has_mtp && mtp_d > 0) {
                 // seeds: h_{q-1} for each row q: hlast, then this chunk's rows 0 .. T - 2 (in `y`, free here)
                 CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
@@ -3483,6 +3692,11 @@ struct Engine {
                 if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
                 return i;
             }
+        }
+        if (head_lent) {   // STRATA_Q36_LEND_HEAD: the head back, then the last row's logits (hlast is that row)
+            restore_head();
+            head_rows(hlast, 1, logits, pick);
+            CK(cudaStreamSynchronize(st));
         }
         if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
         return n;
@@ -3698,10 +3912,14 @@ struct Engine {
         return p;
     }
     float hprob = 0.f;
+    bool sprof = std::getenv("STRATA_Q36_STEP_PROF") != nullptr;
+    double sp_draft = 0, sp_verify = 0;
+    long long sp_steps = 0, sp_rows = 0, sp_kept = 0;
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
                   const std::atomic<bool>* cancel = nullptr) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid && rebal_every == 0) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
+        const auto sp_t0 = Clock::now();
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
         CK(cudaStreamSynchronize(st));
         // rows of the first MTP call: (hmain row i, fix[i]) at positions pos - fix.size() + i, then (hlast, x) at pos
@@ -3748,6 +3966,7 @@ struct Engine {
                 break;
             }
         }
+        const double sp_t1 = sprof ? ms_since(sp_t0) : 0.0;
         // the verify window
         const int T = D + 1;
         hpin[16] = x_tok;
@@ -3762,6 +3981,16 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         int a = 0;
         while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+        if (sprof) {   // STRATA_Q36_STEP_PROF: drafting / verifying per step
+            sp_draft += sp_t1;
+            sp_verify += ms_since(sp_t0) - sp_t1;
+            sp_rows += T;
+            sp_kept += a + 1;
+            if (++sp_steps % 64 == 0)
+                std::fprintf(stderr, "strata-q36 STEP_PROF %lld steps: %.2f ms drafting + %.2f ms verifying a step, %.2f rows "
+                             "verified and %.2f tokens kept a step\n", sp_steps, sp_draft / sp_steps, sp_verify / sp_steps,
+                             (double) sp_rows / sp_steps, (double) sp_kept / sp_steps);
+        }
         if (cancel != nullptr && cancel->load()) a = 0;
         for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
         commit(a + 1);
@@ -3921,7 +4150,17 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.share_stage = E.stage_slots && staging > 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
-    const size_t front = staging + (E.share_bufs ? E.big_bytes : 0);   // the slots' bytes a prompt borrows
+    if (E.lend && staging > 0) {   // the second staging buffer in the head too, when it fits beside the lent buffers
+        size_t lb = 0;
+        for (auto& e : E.row_bufs((size_t) E.tmax, true))
+            if (E.lent_buf(e.first)) lb += Engine::rb_align(e.second);
+        if (lb + Engine::rb_align(max_layer + kMmqTail) <= m.head_bytes) E.lend_stage = Engine::rb_align(max_layer + kMmqTail);
+    }
+    const size_t front = staging - E.lend_stage + (E.share_bufs ? E.big_bytes : 0);   // the slots' bytes a prompt borrows
+    if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
+        std::fprintf(stderr, "strata-q36: front %.0f MiB = staging %.0f - lent %.0f + chunk buffers %.0f (share %d lend %d)\n",
+                     front / 1048576.0, staging / 1048576.0, E.lend_stage / 1048576.0, E.big_bytes / 1048576.0,
+                     (int) E.share_bufs, (int) E.lend);
     if (E.share_stage) {   // the staging pair (and the chunk's buffers) inside the slots' bytes (at least that much of them)
         const size_t outs = (size_t) E.hybrid_t * m.top_k * g.n_embd * 4 + ((size_t) 64 << 20);
         slot_bytes = std::max(front, budget2 > outs ? budget2 - outs : 0);
@@ -4041,7 +4280,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
         for (int b = 0; b < 2; ++b) {
             if (E.share_stage) {
-                E.stage[b] = dslots + (E.share_bufs ? E.big_bytes : 0) + (size_t) b * (max_layer + kMmqTail);
+                E.stage[b] = (b == 1 && E.lend_stage) ? (uint8_t*) m.head.d
+                                                      : dslots + (E.share_bufs ? E.big_bytes : 0) + (size_t) b * (max_layer + kMmqTail);
             } else {
                 CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
                 CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
