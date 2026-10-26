@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
-                          StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
+                          StrataEngine, Vision, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
@@ -33,6 +33,44 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
 ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
 #                                                one token repeated, which the server ends at 256)
+
+
+class VisionDecode(unittest.TestCase):
+    def test_native_decoder_failure_uses_existing_normalization_once(self):
+        for reply, expected_calls in (("ERR cannot read the image crop\nOK 450\n", 2),
+                                      ("ERR the vision encoder failed\n", 1)):
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as temp:
+                vision = Vision.__new__(Vision)
+                vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+                vision.cache_batches = 0
+                vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(reply))
+                with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                        mock.patch.object(Vision, 'normalize', side_effect=lambda data, force=False:
+                                     b'converted' if force else data) as normalize:
+                    if expected_calls == 2:
+                        encoded, tokens = vision.encode('crop')
+                        encoded.write_bytes(b'fake encoder output')
+                        self.assertEqual(tokens, 450)
+                        self.assertEqual(vision.encode('crop')[1], 450)
+                        self.assertEqual(vision.proc.stdin.getvalue().count('ENC '), 2)
+                        self.assertEqual(normalize.call_args_list[1].kwargs, {'force': True})
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'vision encoder failed'):
+                            vision.encode('crop')
+                        self.assertEqual(normalize.call_count, 1)
+                self.assertFalse(list(Path(temp).glob('*.img')))
+
+    def test_failed_conversion_removes_temporary_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            vision = Vision.__new__(Vision)
+            vision.dir, vision.lock, vision.cache = Path(temp), threading.RLock(), {}
+            vision.cache_batches = 0
+            vision.proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO('ERR cannot read the image crop\n'))
+            with mock.patch.object(Vision, 'load', return_value=b'original'), \
+                    mock.patch.object(Vision, 'normalize', side_effect=[b'original', ValueError('bad image')]):
+                with self.assertRaisesRegex(ValueError, 'bad image'):
+                    vision.encode('crop')
+            self.assertFalse(list(Path(temp).glob('*.img')))
 
 
 class RecordingEngine(MockEngine):
@@ -371,6 +409,8 @@ class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
     class FakeVision:
+        batch = staticmethod(contextlib.nullcontext)
+
         def __init__(self, d):
             self.dir = Path(d)
             self.rows = self.dir / "img.sve"
@@ -584,6 +624,7 @@ class VisionTempFiles(unittest.TestCase):
         pipe = Pipe()
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.cache_batches = 0
         v.proc = mock.Mock(stdin=pipe, stdout=mock.Mock(readline=lambda: "OK 7 1 1 1\n"))
         try:
             with mock.patch.object(Vision, "load", return_value=b""), \
@@ -5953,7 +5994,8 @@ class VisionCacheEviction(unittest.TestCase):
     def make(self, d):
         import serve.server as server
         v = server.Vision.__new__(server.Vision)
-        v.dir, v.cache, v.lock = d, {}, threading.Lock()
+        v.dir, v.cache, v.lock = d, {}, threading.RLock()
+        v.cache_batches = 0
         v.load = lambda src: src
 
         class Pipe:
@@ -6108,6 +6150,10 @@ class VisionShutdown(unittest.TestCase):
 
             class Proc:
                 stdin = io.StringIO()
+                stdout = None
+
+                def poll(self):
+                    return 0
 
                 def wait(self, timeout=None):
                     return 0
