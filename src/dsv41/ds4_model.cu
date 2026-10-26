@@ -7428,6 +7428,7 @@ struct Model::Impl {
                             Rows tr = lim;
                             tr.gen = 3;
                             topk(c.scores, ss, na, tr, cd, (int) cand_stride(), g.cand_blk, tk, (int) topk_stride(), s);
+                            rows_add_i(tk, na, (int) topk_stride(), (int) kv_base(sr), s);   // (absolute rows: one table)
                         } else {
                             index_score(c.iq, iw, ik_rows(ks, (size_t) l.dev), g.ix_heads, g.ix_hd, na, nlast, nullptr, 0, 1,
                                         lim, c.scores, ss, s);
@@ -7438,6 +7439,7 @@ struct Model::Impl {
                                             (int) cand_stride(), s);
                             }
                             topk(c.scores, ss, na, lim, nullptr, 0, 1, tk, (int) topk_stride(), s);
+                            rows_add_i(tk, na, (int) topk_stride(), (int) kv_base(sr), s);
                         }
                     }
                 }
@@ -7470,7 +7472,7 @@ struct Model::Impl {
                     xfer_put(x, sr.flag(slot), wp.win, d.xcnt, s);
                 }
             }
-            ckv = ckv_rows(sr, (size_t) l.dev);
+            ckv = sr.ckv[(size_t) l.dev];   // (the picks are absolute rows of the one table: rows_add_i above)
         }
         if (kv_only) return true;
         prof_mark(d, 7);
@@ -9220,6 +9222,7 @@ struct Model::Impl {
                             tr.k[t] = lim.k[t];
                         }
                         topk(d.scores, ss, T, tr, d.cand, (int) cand_stride(), g.cand_blk, d.topk, (int) topk_stride(), s);
+                        rows_add_i(d.topk, T, (int) topk_stride(), (int) kv_base(sr), s);   // (absolute rows: one table)
                     } else {
                         index_score(d.iq, d.iw, ik_rows(ks, (size_t) l.dev), g.ix_heads, g.ix_hd, T, clen_max, nullptr, 0, 1,
                                     lim, d.scores, ss, s);
@@ -9233,6 +9236,7 @@ struct Model::Impl {
                                         (int) cand_stride(), s);
                         }
                         topk(d.scores, ss, T, lim, nullptr, 0, 1, d.topk, (int) topk_stride(), s);
+                        rows_add_i(d.topk, T, (int) topk_stride(), (int) kv_base(sr), s);
                     }
                 }
             }
@@ -9265,7 +9269,7 @@ struct Model::Impl {
                 }
             }
             for (int t = 0; t < T; ++t) ar.nsel[t] = lim.n[t] > 0 ? wp.topk[l.il][t] : 0;
-            ckv = ckv_rows(sr, (size_t) l.dev);
+            ckv = sr.ckv[(size_t) l.dev];   // (the picks are absolute rows of the one table: rows_add_i above)
         }
         if (l.mtp) {   // the block's rows (BF16), after the ring's in ext, as every query's selection
             ckv = d.ext + (size_t) g.win * HD;

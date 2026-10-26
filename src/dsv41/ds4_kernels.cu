@@ -2132,6 +2132,17 @@ void hc_mean(const float* h, int T, int hc, int dim, float* out, long long out_s
     hc_mean_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(h, hc, dim, out, out_stride);
 }
 void iota_rows(int* out, int T, int n, int stride, cudaStream_t s) { iota_rows_kernel<<<T, 64, 0, s>>>(out, n, stride); }
+
+// p[row][e] += add for e < stride (M2's batched step: a sequence's picks, made absolute in the shared table)
+__global__ void rows_add_i_kernel(int* p, int stride, int add) {
+    const int e = blockIdx.y * blockDim.x + threadIdx.x;
+    if (e >= stride) return;
+    p[(size_t) blockIdx.x * stride + e] += add;
+}
+void rows_add_i(int* p, int rows, int stride, int add, cudaStream_t s) {
+    if (p == nullptr || rows <= 0 || stride <= 0 || add == 0) return;
+    rows_add_i_kernel<<<dim3(rows, cdiv(stride, 256)), 256, 0, s>>>(p, stride, add);
+}
 void markov_add(float* logits, const uint16_t* E, const uint16_t* H, const int* tok, int V, int R, cudaStream_t s) {
     markov_kernel<<<cdiv(V, kThreads / 32), kThreads, (size_t) R * sizeof(float), s>>>(logits, E, H, tok, V, R);
 }
