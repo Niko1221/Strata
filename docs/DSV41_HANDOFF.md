@@ -189,6 +189,12 @@ abandoned mid-stream and a canary after each): every round answered, canaries 0.
 ERR lines and 0 server tracebacks**; production restored `health 200` after the window.  The unit tests
 (`ds4_batch_attn_test` with the `write_row` cases and the five others) are green on the same tree.
 
+**Release gate on the tuning tree (2026-10-27, commit `60b95a1`).**  `serve.test_server`: **352 tests, OK** (478 s - the
+box was loaded by the gate's own runs).  The fuzz with the live slots (twelve rounds of two to four concurrent requests, a
+third abandoned mid-stream, a canary after each): **every round answered, canary green** (0.29-0.44 s), with the serve
+loop's burst now measured per turn instead of passed in.  The batch probe (two slots, every check) and the three-client
+HTTP check (`all checks passed`) are green on the same tree; production restored `health 200` after each window.
+
 What is *not* in yet: M2's single-launch pass.  The design note in `docs/DSV41_BATCHING.md` ("The single-launch step:
 what is in, and what it needs on this box") lists the four pieces - the per-row descriptor through `layer_chunk`, the
 cross-group hand-off of a step's T latent rows (the hard one on four GPUs and two tensor-parallel groups), the serve
