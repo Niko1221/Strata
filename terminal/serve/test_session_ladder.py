@@ -147,6 +147,32 @@ class SessionLadderDecisions(unittest.TestCase):
         self.assertFalse(prefix_fidelity(saved, rewritten))
         self.assertFalse(prefix_fidelity(saved, "completely different prompt"))
 
+    # The momo dormancy shape (recheck 2026-10-26): a client re-sends ONE growing user message (the probe
+    # harness, single-message chats).  The saved render closes that turn (<|im_end|>) and opens the answer;
+    # the next render grows the content INSIDE that closed turn, so the strict byte-compare breaks exactly
+    # at the saved turn's closing marker (byte 2773 of 2814 on the real template) even though the engine's
+    # own prefix join still holds - the bridge restores of the 21:1x battery reused full checkpoint files on
+    # exactly this shape, and the DISC row's engine-side checkpoint restore reused 32768 of 35750 tokens.
+    # Fidelity therefore also accepts the saved prefix cut at its last turn-end marker.
+    SAVED_GROW = ("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>")
+
+    def test_prefix_fidelity_grown_single_message(self):
+        grown = ("<|im_start|>user\nhello and then some more text<|im_end|>\n"
+                 "<|im_start|>assistant\n<think>")
+        self.assertTrue(prefix_fidelity(self.SAVED_GROW, grown))
+        self.assertTrue(prefix_fidelity(self.SAVED_GROW, self.SAVED_GROW))   # unchanged turn still exact
+
+    def test_prefix_fidelity_grown_still_rejects_surgery(self):
+        # The relaxation cuts at the saved prefix's LAST turn-end marker: a rewrite diverging before that
+        # point (the compaction case) is still rejected - only growth at the conversation's tail passes.
+        saved = ("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\nanswer<|im_end|>\n"
+                 "<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>")
+        self.assertFalse(prefix_fidelity(saved, saved.replace("hello", "hxllo")))
+        self.assertFalse(prefix_fidelity(saved, saved.replace("again", "hxllo")))
+        self.assertFalse(prefix_fidelity(saved, "completely different prompt"))
+        self.assertTrue(prefix_fidelity(saved, saved.replace(
+            "again", "again and some more tail text")))      # growth at the tail: still the same conversation
+
 
 class JoinTolerance(unittest.TestCase):
     """F1 (final review): the tolerant join.  join_event's exact (tokens, byte_count) key never matches the
