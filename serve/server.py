@@ -1688,6 +1688,8 @@ class StrataEngine:
         beat = time.monotonic()
         try:
             while True:
+                if cancel.is_set():
+                    return False
                 deadline = getattr(cancel, "_strata_queue_deadline", None)
                 if deadline is not None and time.monotonic() >= deadline:
                     raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
@@ -1710,6 +1712,9 @@ class StrataEngine:
                             with self.slot_cv:
                                 self.slot_cv.notify_all()
                             continue
+                    if cancel.is_set():
+                        self.ctl.release()
+                        return False
                     if self.alive():
                         if deadline is not None and time.monotonic() >= deadline:
                             self.ctl.release()
@@ -1794,6 +1799,7 @@ class StrataEngine:
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
+        admit_beat = 0.0
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
@@ -1809,6 +1815,8 @@ class StrataEngine:
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                    if cancel.is_set():
+                        return
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
                         cancel._strata_queue_deadline = None
@@ -1888,6 +1896,7 @@ class StrataEngine:
                                     break
                                 if not admit_wait:          # #1603: counted while it waits for a slot (it holds no
                                     admit_wait, admit_since = True, time.monotonic()   # control lines then)
+                                    admit_beat = admit_since
                                     self.admitting += 1
                             if holding:
                                 self.ctl.release()
@@ -1909,6 +1918,9 @@ class StrataEngine:
                                     self.slot_cv.wait(timeout=min(1.0, max(0, wait_remaining)))
                             if cancel.is_set():
                                 return
+                            if time.monotonic() - admit_beat >= 10.0:
+                                admit_beat = time.monotonic()
+                                yield None
                             if not holding:
                                 ok = yield from self._take_control(cancel, len(prompt))
                                 if not ok:
@@ -1935,6 +1947,8 @@ class StrataEngine:
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                    if cancel.is_set():
+                        return
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
@@ -2007,15 +2021,22 @@ class StrataEngine:
                 live.update(state="decoding", first_token=time.time(), generated=len(out))
                 gen0 = len(out) - 1                         # the admission's own token: the slot feeds it first
                 going_solo = False
+                slot_beat = time.monotonic()
                 while True:
+                    if cancel.is_set() and not stop_sent:
+                        self._send(f"BSTOP {slot}")
+                        stop_sent = True
                     try:
-                        line = self.slot_q[slot].get(timeout=10.0)
+                        line = self.slot_q[slot].get(timeout=0.5)
                     except queue.Empty:
                         if cancel.is_set() and not stop_sent:
                             self._send(f"BSTOP {slot}")
                             stop_sent = True
-                        yield None
+                        if time.monotonic() - slot_beat >= 10.0:
+                            slot_beat = time.monotonic()
+                            yield None
                         continue
+                    slot_beat = time.monotonic()
                     if line is None:
                         phase = "none"
                         raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
