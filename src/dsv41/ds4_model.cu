@@ -2869,6 +2869,8 @@ struct Model::Impl {
     // from seq * s.cap, so with one sequence - the default - the base is 0 and the offsets below are the g_first rows the
     // compressor's writes and the cross-device copies always used
     int64_t kv_base(const Src& s) const { return (int64_t) vseq * s.cap; }
+    void use_seq(int seq) { vseq = std::max(0, std::min(seq, nseq - 1)); }
+    int seq_count() const { return nseq; }
     size_t ckv_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ckv_rb(); }
     size_t ik_at(const Src& s, int64_t row) const { return (size_t) (kv_base(s) + row) * ik_rb(); }
     // the same tables at row 0 of the pass's sequence: what the indexer scans, the attention reads and the slot/park
@@ -4918,22 +4920,23 @@ struct Model::Impl {
         }
     }
 
+    // the pass's sequence back to nothing: its ring, its compressors' partial group and its state (the other sequences'
+    // are left where they are - with one sequence this is the whole model, as before)
     void reset() {
-        state().pos = 0;
-        state().toks.clear();
-        state().ctoks.clear();
-        state().slot_held = false;
-        for (Check& c0 : state().ck) c0.pos = -1;
+        State& st = state();
+        st.pos = 0;
+        st.toks.clear();
+        st.ctoks.clear();
+        st.slot_held = false;
+        for (Check& c0 : st.ck) c0.pos = -1;
         for (Layer& l0 : L)
             for (int m = 0; m < l0.nm; ++m) {
                 Layer& l = member(l0, m);
                 Dev& d = devs[(size_t) l.dev];
                 cudaSetDevice(d.id);
-                cudaMemsetAsync(l.win, 0, (size_t) nseq * (size_t) g.win * win_rb(), d.st);
-                if (l.c_kv)
-                    cudaMemsetAsync(l.c_kv, 0, (size_t) nseq * (size_t) l.ratio * g.hd * 4, d.st);
-                if (l.c_score)
-                    cudaMemsetAsync(l.c_score, 0, (size_t) nseq * (size_t) l.ratio * g.hd * 4, d.st);
+                cudaMemsetAsync(win_of(l), 0, (size_t) g.win * win_rb(), d.st);
+                if (l.c_kv) cudaMemsetAsync(comp_kv(l), 0, (size_t) l.ratio * g.hd * 4, d.st);
+                if (l.c_score) cudaMemsetAsync(comp_sc(l), 0, (size_t) l.ratio * g.hd * 4, d.st);
             }
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
@@ -9656,6 +9659,8 @@ bool Model::verify(int y, const std::vector<int>& d, float t, float tp, int tk, 
                    int& accepted, int& next, std::string& err) {
     return p_->verify(y, d, t, tp, tk, mp, seed, counter, accepted, next, err);
 }
+void Model::use_seq(int seq) { p_->use_seq(seq); }
+int Model::seq_count() const { return p_->seq_count(); }
 int64_t Model::pos() const { return p_->state().pos; }
 int64_t Model::max_context() const { return p_->o.max_context; }
 int Model::vocab() const { return p_->g.vocab; }

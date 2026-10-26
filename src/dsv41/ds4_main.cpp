@@ -752,6 +752,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     int cur = -1;                   // the slot whose conversation the model holds (-1: none of them)
     size_t rr_last = (size_t) -1;
     const int burst = slot_burst > 0 ? slot_burst : 16;
+    // (STRATA_DS4_BATCH_LIVE=1: a slot's conversation stays in its own sequence of the model - its rings, compressed rows,
+    // its compressors' partial group and its state are per sequence (M2) - instead of being parked in host memory between
+    // its bursts.  A solo GEN gets the sequence after the slots')
+    const bool live = std::getenv("STRATA_DS4_BATCH_LIVE") != nullptr;
+    const int solo_seq = live ? (int) bslots.size() : 0;
     const int slice_tokens = read_slice > 0 ? read_slice : 1024;   // (--read-slice: how much of a prompt one feed reads)
     const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
     // (STRATA_DS4_PARK_DEVICE=1: a slot's turn switch copies the state device to device instead of through the host)
@@ -902,7 +907,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // the finished conversation stays in the slot's own bytes: the server sends its next turn back to this slot
         // (pick_slot and slot_held), and the read then goes on from here instead of from token 0.  The folder keeps the
         // big ones anyway; this is the cheap rung above it.
-        if (o.continued && cur == s && held.empty() && m.pos() > 0 && m.pos() <= 65536) {
+        if (!live && o.continued && cur == s && held.empty() && m.pos() > 0 && m.pos() <= 65536) {
             std::vector<uint8_t> buf;
             std::string e;
             const int64_t n_pos = m.pos();
@@ -925,7 +930,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         double switch_ms = 0.0;
         if (cur != s) {
             const double t_switch = now_ms();
-            if (cur >= 0) {
+            if (live) {   // (its state is its own sequence: nothing to copy in)
+                m.use_seq(s);
+            } else if (cur >= 0) {
                 if (!park_slot(cur)) end_slot(cur, "cancel");   // (its bytes cannot be kept: it ends rather than be lost)
                 cur = -1;
             } else if (m.pos() > 0) {
@@ -1063,7 +1070,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         // the model holds one conversation: if it is an active slot's, set it aside in that slot's own bytes first (the
         // admission below then starts from an empty state, and may still take a kept conversation from the folder)
-        if (cur >= 0) {
+        const int read_seq = admit_slot >= 0 ? admit_slot : solo_seq;
+        if (live) {
+            m.use_seq(read_seq);   // (its own state: a prompt that continues it goes on, anything else resets below)
+            cur = -1;
+        } else if (cur >= 0) {
             if (!park_slot(cur)) end_slot(cur, "cancel");
             m.reset();
             held.clear();
@@ -1250,6 +1261,18 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // whole length.  The decodes get about half the slice's time; a big state (the copies would cost more than
             // they give) and a read with pictures stay on the old path, and so does one with nothing decoding.
             if (ok && done < total && batch_slots > 0 && pics.empty() && held.empty() && m.pos() <= 32768) {
+                if (live) {
+                    // the slots' sequences are their own: the read's state is not in their way, so they decode for a
+                    // while and the read goes on where it stopped (nothing is saved or loaded)
+                    const double until = now_ms() + std::min(1000.0, slice_ms * 0.5);
+                    while (now_ms() < until) {
+                        const int s = next_active();
+                        if (s < 0) break;
+                        run_slot(s);
+                    }
+                    m.use_seq(read_seq);
+                    cur = -1;
+                } else {
                 std::vector<uint8_t> read_state;
                 std::string e;
                 const int64_t read_at = m.pos();
@@ -1277,6 +1300,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                         err = "the prompt read's state could not be brought back";
                     }
                     cur = -1;
+                }
                 }
             }
         }
@@ -1754,6 +1778,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // a batched engine holds one sequence a slot (M2): the rings, the compressed tables and the state are allocated for
+    // them, plus one for a solo GEN (an explicit STRATA_DS4_NSEQ wins)
+    if (serve_mode && batch_slots > 0) setenv("STRATA_DS4_NSEQ", std::to_string(batch_slots + 1).c_str(), 0);
     strata::ds4::Model m;
     std::string err;
     if (!m.load(o, err)) {

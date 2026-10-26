@@ -145,6 +145,10 @@ public:
     void set_cancel(std::function<bool()> f);
     bool cancelled() const;   // the last feed() / feed_mark() ended early on a Stop
     int64_t pos() const;
+    /// The sequence a pass works on (0 .. seq_count() - 1): its state, its window ring and its rows of the compressed
+    /// tables (docs/DSV41_BATCHING.md, M2).  0 - the engine's one conversation - unless the serve loop keeps several.
+    void use_seq(int seq);
+    int seq_count() const;
     int64_t max_context() const;
     int vocab() const;
     int dim() const;
