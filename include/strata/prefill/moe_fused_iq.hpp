@@ -1,6 +1,9 @@
 // include/strata/prefill/moe_fused_iq.hpp - #136: the fused int8 prompt experts (moe_fused.hpp) for the native GGUF
 // packs (tools/iq_pack.py: an expert is its raw GGUF slices [gate rows | up rows | down rows], formats per layer in
-// expert_layout().fmt), opt-in with the same STRATA_PF_FUSED=1 (NVIDIA sm_80 and newer; sm_75 and HIP: MMQ).
+// expert_layout().fmt), opt-in with the same STRATA_PF_FUSED=1. The upstream
+// native-IQ path remains the SM80+ path; this PR extends admission to NVIDIA
+// sm_75 and additionally requires STRATA_PF_FUSED_SM75=1 and
+// STRATA_PF_FUSED_NATIVE_SM75=1. Unsupported devices and formats keep MMQ.
 //
 // The grouping on the GPU (fused::group), the per-expert pointers (fused::Batch: a cache slot or a ring slot, no
 // gather) and the launch shape are the Q2_0 path's.  What differs is the load stage: the i-quant blocks are decoded to
@@ -26,7 +29,7 @@ struct NativeGeom {
     size_t up_off = 0, down_off = 0;  ///< inside the blob
 };
 
-/// enabled() (STRATA_PF_FUSED=1 on sm_80+), and the kernels cover this gate/up and down pair on this device.
+/// The fused path was explicitly enabled and the kernels cover this gate/up and down pair on this device.
 bool native_supported(int gu_type, int d_type);
 
 /// x [rows][cols] FP32 -> `xa` (act_bytes(rows, cols)): int8 per 32 values in natural order, the native kernels' form.

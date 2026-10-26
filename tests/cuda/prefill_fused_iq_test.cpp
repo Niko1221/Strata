@@ -645,8 +645,12 @@ int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
         _putenv_s("STRATA_PF_FUSED", "1");
+        _putenv_s("STRATA_PF_FUSED_SM75", "1");
+        _putenv_s("STRATA_PF_FUSED_NATIVE_SM75", "1");
 #else
         setenv("STRATA_PF_FUSED", "1", 1);
+        setenv("STRATA_PF_FUSED_SM75", "1", 1);
+        setenv("STRATA_PF_FUSED_NATIVE_SM75", "1", 1);
         setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
 #endif
         int n = 0;
@@ -691,8 +695,8 @@ int main(int argc, char** argv) {
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
             if (!fused::native_supported((int) p.gu, (int) p.d)) {
-                // the canonical Q2_0 pack's Q2_0 gate/up is the Turing opt-in's (STRATA_PF_FUSED_SM75=1), and on Turing that is
-                // the only pair set up: skip what this device does not take (--only=NAME still insists)
+                // Turing uses only the specializations which fit its shared-memory limit; skip any unavailable pair
+                // in the default matrix (--only=NAME still insists).
                 const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
                 int major = 0;
                 cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
@@ -705,7 +709,7 @@ int main(int argc, char** argv) {
             // the IQ2_XS pack's layers (34 of 48 IQ2_S / Q2_0, 11 IQ2_XXS / Q2_0), the IQ3_S pack's most common, IQ3_XXS's
             for (const Pair& p : only ? pairs : std::vector<Pair>{pairs[0], pairs[1], pairs[4], pairs[3]}) {
                 if (only && std::string(p.name).find(only) == std::string::npos) continue;
-                if (!fused::native_supported((int) p.gu, (int) p.d)) continue;   // (Turing: the Q2_0 pair only)
+                if (!fused::native_supported((int) p.gu, (int) p.d)) continue;
                 for (int T : chunks) timing_part(p, T, s);
             }
         }

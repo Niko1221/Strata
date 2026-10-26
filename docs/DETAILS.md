@@ -47,6 +47,12 @@ engine 0.1.26 with the settings setup writes (`--prefill auto`, 8-bit KV above 4
 code-agent prompt per length, 256 generated tokens, MTP speculative decoding on. "262K" is the full context window (a
 259,943-token prompt). The IQ2_XS row used Swift 1.5's IQ2_XS, which runs at the original's speed.
 
+On an sm_75 GPU, `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_NATIVE_SM75=1` extends the existing native-IQ
+path to covered IQ expert pairs with the qualified 128-row work shape. The first two variables are the existing fused
+prefill gates; `STRATA_PF_FUSED_NATIVE_SM75` is the new, separate A/B gate for this Turing extension. The upstream
+SM80+ native-IQ path is unchanged. Unsupported layers keep MMQ. The setting is manual and affects sm_75 prompt
+experts only.
+
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
