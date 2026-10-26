@@ -3898,6 +3898,17 @@ class Service:
                 self.engine = new_engine
                 self.tok = tok
                 self.template = new_template
+                # the swap must rebuild every tokenizer-derived cache, not just self.tok/self.template:
+                # encode_prompt prefers self.prompts when it is not None, and it wraps a tokenizer (PromptEncoder.tok);
+                # leaving the startup one would tokenize the new model's template with the old tokenizer (#537 cache).
+                self.stop_ids = set(tok.encode(IM_END, parse_special=True) +
+                                    tok.encode("", parse_special=True))
+                self.prompts = None
+                if hasattr(tok, "encode_marked") and hasattr(tok, "max_special_len"):
+                    from strata_tokenizer import PromptEncoder
+                    slots = conversation_slots(self.engine)
+                    self.prompts = PromptEncoder(tok, keep=slots) if slots is not None and slots > 0 \
+                        else PromptEncoder(tok)
                 self.vision = vision
                 self.model = default_model_name(cfg)
                 self.aliases = []
