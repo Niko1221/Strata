@@ -114,6 +114,16 @@ through `win_of(layer, seq)`, a sequence's ring being its own `g.win` rows of th
 rows from the pointer they get, so no kernel changes).  With one sequence it is `l.win` bit for bit; the two-slot probe
 and the three-client HTTP check pass with `STRATA_DS4_NSEQ=2` as well.  The checkpoint and slot paths still take ring 0.
 
+The compressed rows' **writes** followed (`kv_base`, the same day): a finished group's row lands at
+`kv_base + pos / ratio`, `kv_base` = `vseq * src.cap` with `vseq` (the sequence the pass serves) 0 until the batched
+step sets it, and each source's table is allocated for `nseq` regions of `cap` rows - both paths' `finish` calls,
+`replicate`'s offset and the group-to-group copies take it.  One sequence is the `g_first` rows it always was: the probe
+(two slots) and the three-client HTTP check green, and the same pair with `STRATA_DS4_NSEQ=2` green too
+(`tools/dsv41/windows/batch_window.sh`, `batch_nseq_window.sh`; production restored health 200, no engine ERR line).
+`ds4_batch_attn.hpp`'s `write_row(layout, pos, ratio)` is that address, tested without a GPU.  What still reads from
+row 0 is the read side - `index_score`'s scan and the selection rows `sparse_attn` takes - which is the step table's
+work.
+
 The compressed rows' two counts are named and pinned in `ds4_batch_attn.hpp`: `written_rows(pos, ratio) = pos / ratio`
 (what a sequence has written - slot_save's count) against `selectable() = (pos + 1) / ratio` (what a position may
 attend - the kernel's gen rule); they differ by one at a group's boundary, and the test checks both there.
@@ -125,8 +135,11 @@ traceback, both slots decoding.
 ## Next, in order
 
 1. **Per-sequence KV (M2)**, which is what turns the present turn-taking into throughput: `ds4_batch_kv.hpp` +
-   `ds4_batch_plan.hpp` are the CPU half; the serve loop's `Run`s and the round robin are the place they attach.
-   `varlen attention` (`ds4_attn_split.cuh`, `ds4_model.cu`) is the kernel: per-run block tables instead of one ring.
+   `ds4_batch_plan.hpp` are the CPU half; the serve loop's `Run`s and the round robin are the place they attach.  The
+   window rings and the compressed rows' writes are in (`nseq` / `kv_base`); what is left is the model's state
+   (`pos`, `toks`, `ctoks`, the checkpoints per sequence) and the step table (`ds4_batch_attn.hpp`'s `rows`/`place`,
+   the indexer's scan and the selection rows `sparse_attn` takes) - the "M2, re-scoped" section of the design has the
+   order.
 3. **Batched MoE** (M3): concatenate the routing rows of the slots and run the grouped GEMM once.
 4. **Tuning** (M5): DSpark with a batch (likely off), chunk sizes, `batch_slots` count.
 5. Decide the fate of Path B (`STRATA_BURST`): keep it as the low-cost compromise, or retire it once N slots work.

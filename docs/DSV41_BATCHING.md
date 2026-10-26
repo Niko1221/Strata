@@ -51,10 +51,20 @@ The kernel side is ready (above).  In `ds4_model.cu` the per-sequence base threa
    `feed`/`step`/`sample` take the sequence they work on - this is the `Run` the serve loop already keeps, moved into the
    model.
 
-Sites found for the compressed rows (the next step): `compress_win` is called at ~7224, ~7335 and ~9124 with the layer's
+Sites found for the compressed rows (the next step): `compress_win` is called at ~7235, ~7346 and ~9135 with the layer's
 `l.c_kv`/`l.c_score` and a latent scratch (`c.latent`, `d.latent`), and the finished group's row is written into the
 source's `ckv`/`ik` afterwards - that write (and the indexer's reads, `index_score`) is where a sequence's `kv_base` goes,
 not the compress call itself.
+
+**The write half is in (2026-10-26).**  A finished group's row is written at `kv_base + pos / ratio` now, where
+`kv_base` is `Model::Impl::kv_base(src)` = `vseq * src.cap` and `vseq` is the sequence the pass serves (0 until the
+batched step sets it): both paths' `finish` calls (`fi.pdst` for the index keys, `fc.pdst` for the compressed KV), the
+copies that carry a source's new rows to the other devices' copies (`replicate`'s offset, the group-to-group `x.dst`),
+and the tables themselves are allocated for `nseq` regions of `cap` rows, like the window rings.  With one sequence the
+base is 0 and every address is the `g_first` rows it always was; `ds4_batch_attn.hpp`'s `write_row(layout, pos, ratio)`
+is the same address as a function of the layout, tested without a GPU.  What still starts at row 0 is the *read* side -
+`index_score`'s scan and the selection rows `sparse_attn` takes - which is the step table's work: a second sequence's
+rows are written in their own region but not yet read from it.
 
 The order above is also the safe order to build it: (1) with `nseq = 1` changes nothing and can be checked by the
 probe's GEN/BGEN equality; (2) with two sequences' rings side by side but only one active is still the present behaviour;
