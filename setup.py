@@ -87,6 +87,9 @@ def home() -> Path:
 
 
 WIN = os.name == "nt"
+# Linux on arm64 (NVIDIA GB10 / DGX Spark; unofficial): no ready-made engine and no x86 CPU kernels, so setup compiles the
+# engine here (CMakeLists.txt STRATA_ARM64) and the CPU experts run on ggml-cpu, as on the Mac.
+LINUX_ARM64 = sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64")
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  Every file has a fixed size and SHA-256 too (REPO_PINS); a revision the repository no longer has stops the
@@ -1334,11 +1337,15 @@ def cpu_info():
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            m = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)
+            flags = set(m.group(1).split()) if m else set()
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
             name = m.group(1) if m else name
+            if m is None and LINUX_ARM64:
+                names = list(dict.fromkeys(re.findall(r"^Model name:\s*(.*)$", out(["lscpu"]), re.M)))
+                name = " + ".join(names) + " (arm64)" if names else "arm64 CPU"
         except OSError:
             pass
     return name, avx2, avx512
@@ -1372,7 +1379,7 @@ def cpu_floor(avx2: bool) -> str:
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced
-    if avx2:
+    if avx2 or LINUX_ARM64:
         return ""
     if WIN:
         f = _cpuid_floor()
@@ -1456,8 +1463,18 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
+            uma = {}
+            try:
+                vram = float(mem) / 1024.0
+            except ValueError:
+                # GB10 / DGX Spark: memory.total is [N/A], the GPU shares the RAM.  Counted like a Strix Halo with no
+                # carve-out (amd_apply_uma): the shared pool is the RAM less what the OS keeps
+                if "n/a" not in mem.lower():
+                    raise
+                vram = max(0.0, ram_gb() - UMA_OS_LEFT_GB)
+                uma = {"uma": True, "dedicated_gb": 0.0, "shared_gb": vram}
+            found.append({"index": int(idx), "name": name, "vram_gb": vram, "arch": cc.replace(".", ""),
+                          "driver": drv, **uma})
         except ValueError:
             continue
     return found
@@ -8925,7 +8942,9 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        mem = (f"unified memory, {gpu['vram_gb']:.0f} GB usable by the GPU" if gpu.get("uma") else
+               f"{gpu['vram_gb']:.1f} GB VRAM")
+        ok(f"GPU: {gpu['name']}, {mem}, compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda, driver_major(gpu))   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
@@ -8958,8 +8977,8 @@ def main() -> int:
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
-    link = None if hip else pcie_link(int(gpu.get("index", 0)))
+    ok(f"CPU: {cpu} ({'NEON, CPU experts on ggml-cpu' if LINUX_ARM64 else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    link = None if hip or (LINUX_ARM64 and gpu.get("uma")) else pcie_link(int(gpu.get("index", 0)))   # GB10: NVLink-C2C, no PCIe link
     if link is not None:
         line, problem = pcie_lines(link)
         ok(line)
@@ -8968,7 +8987,11 @@ def main() -> int:
     floor = cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if LINUX_ARM64:
+        warn("Linux on arm64 (GB10 / DGX Spark) is an UNOFFICIAL port: there is no ready-made engine, so setup compiles "
+             "it here with your CUDA toolkit (10-20 minutes, once); the CPU's share of the experts runs on ggml-cpu")
+        a.build = True
+    elif not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
