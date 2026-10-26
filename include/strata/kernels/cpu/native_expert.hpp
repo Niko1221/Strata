@@ -60,6 +60,9 @@ int native_gu_mt_min(int gu_type);
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1);
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
+/// STRATA_Q36_IQ3_NIBBLE: a layer's IQ3_S down rows as nibble blocks (iq3_nibble_encode) for the experts whose blobs are
+/// blobs + e * stride (e < n): native_down_rows takes them for a blob in that range.  per: one expert's nibble bytes.
+void register_iq3_nibbles(const uint8_t* blobs, size_t n, size_t stride, const uint8_t* nib, size_t per);
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
 

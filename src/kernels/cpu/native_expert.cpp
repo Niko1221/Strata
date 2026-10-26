@@ -424,8 +424,24 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     }
 }
 
+namespace {
+struct NibLayer { const uint8_t* lo; size_t n, stride; const uint8_t* nib; size_t per; };
+std::vector<NibLayer> g_nib;   // written at load, before any expert runs
+}
+void register_iq3_nibbles(const uint8_t* blobs, size_t n, size_t stride, const uint8_t* nib, size_t per) {
+    g_nib.push_back({blobs, n, stride, nib, per});
+}
+
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
+    if (f.d_type == 21 && !g_nib.empty() && cpu_avx2_ok()) {   // STRATA_Q36_IQ3_NIBBLE
+        for (const NibLayer& L : g_nib) {
+            if (blob < L.lo || blob >= L.lo + L.n * L.stride) continue;
+            const size_t e = (size_t) (blob - L.lo) / L.stride;
+            iq3_nibble_rows(L.nib + e * L.per, (int) (f.n_ff / 256), hq, nt, out, r0, r1);
+            return;
+        }
+    }
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
@@ -440,6 +456,13 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     }
     if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    // STRATA_IQ_DOWN_MT=1 (opt-in): IQ3_S / IQ4_XS / ... downs of a multi-token group on the gate/up rows' AVX2 kernel
+    // (the blocks decoded once for every token; ggml-cpu's dot below decodes them again for each)
+    static const bool down_mt = [] { const char* v = std::getenv("STRATA_IQ_DOWN_MT"); return v != nullptr && v[0] == '1'; }();
+    if (down_mt && cpu_avx2_ok() && !cpu_avx512_ok() && nt >= mt_min && iq256_supported(f.d_type)) {
+        iq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows

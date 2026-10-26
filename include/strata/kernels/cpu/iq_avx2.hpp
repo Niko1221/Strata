@@ -56,4 +56,11 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                           float* const* out, int r0, int r1);
 
+/// IQ3_S downs re-encoded losslessly as nibble codes (STRATA_Q36_IQ3_NIBBLE): 138 bytes a 256-value block.
+size_t iq3_nibble_block_bytes();
+/// `blocks` block_iq3_s (110 bytes each) at src -> as many nibble blocks at dst.
+void iq3_nibble_encode(const uint8_t* src, uint8_t* dst, size_t blocks);
+/// out[t][r] = w_r . a[t] (Q8_K activations), rows [r0, r1) of nb nibble blocks each, any nt.
+void iq3_nibble_rows(const uint8_t* w, int nb, const void* const* act, int nt, float* const* out, int r0, int r1);
+
 }  // namespace strata::kernels::cpu

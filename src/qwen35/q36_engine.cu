@@ -29,6 +29,8 @@
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
+#include "strata/kernels/cpu/iq_avx2.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #endif
@@ -1740,6 +1742,7 @@ struct Engine {
 #endif
     };
     std::vector<Hy> hy;
+    std::vector<std::vector<uint8_t>> nib_store;   // STRATA_Q36_IQ3_NIBBLE: the layers' nibble rows
     // STRATA_Q36_STAGE_SLOTS=1 (opt-in): the prompt's staging pair is the front of the expert slots' memory, so a small
     // card keeps that VRAM as slots while it decodes; a streamed prompt empties the slots it overwrites (slot_staged) and
     // the rebalance after the prompt refills them from the routing counts
@@ -4259,6 +4262,32 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             err = "the CPU and GPU expert layouts differ";
             return false;
         }
+    }
+    if (const char* v = std::getenv("STRATA_Q36_IQ3_NIBBLE"); v != nullptr && v[0] == '1' && C::cpu_avx2_ok()) {
+        // the IQ3_S downs re-encoded for the CPU pool (the fork's lossless nibble rows: no grid lookups), host memory.
+        // GTX 970 + 3900X with STRATA_IQ_DOWN_MT: 45.2 / 31.8 tok/s against 48.8 / 32.4 without (short / 4K): the
+        // 138-byte blocks are 25% more DRAM traffic than IQ3_S's 110 on a bandwidth-bound CPU lane
+        const auto t1 = Clock::now();
+        size_t total = 0;
+        for (Layer* Lp : all) {
+            Layer& L = *Lp;
+            if (L.L.d_type != 21 || !L.hblobs || (mtp_only && Lp != &m.mtp)) continue;
+            const size_t blocks = (size_t) g.n_embd * (size_t) (g.n_ff / 256), per = blocks * C::iq3_nibble_block_bytes();
+            E.nib_store.emplace_back((size_t) ne * per);
+            uint8_t* nib = E.nib_store.back().data();
+            const int nt = (int) std::max(1u, std::min(12u, std::thread::hardware_concurrency()));
+            std::vector<std::thread> th;
+            for (int k = 0; k < nt; ++k)
+                th.emplace_back([&, k] {
+                    for (int64_t x = k; x < ne; x += nt)
+                        C::iq3_nibble_encode(L.hblobs + (size_t) x * L.stride + L.L.down_off, nib + (size_t) x * per, blocks);
+                });
+            for (auto& t : th) t.join();
+            C::register_iq3_nibbles(L.hblobs, (size_t) ne, L.stride, nib, per);
+            total += (size_t) ne * per;
+        }
+        std::fprintf(stderr, "strata-q36: IQ3_S downs as nibble rows for the CPU pool (STRATA_Q36_IQ3_NIBBLE): %.2f GiB of host "
+                     "memory in %.1f s\n", (double) total / (1 << 30), ms_since(t1) / 1000.0);
     }
     const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
     CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
