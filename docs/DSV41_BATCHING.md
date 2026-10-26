@@ -269,6 +269,15 @@ from this number (and from what the switch costs, which is the burst's tuning), 
 count is a memory bound: the protocol's slots and the scheduler bound it too, and at a chat context the memory is not what
 limits it.
 
+### The slot's burst, measured (M5, 2026-10-27)
+
+`--slot-burst K` - how many tokens a slot decodes before another gets the model - was a number in every script (8, 16,
+32).  The engine measures it now: the turn's switch against the burst's own time, the shortest burst whose switch is at
+most 5 % of it.  On the live path there is nothing to copy, the switch measures 0.0 ms, and it picks **one token** - the
+three-client run then interleaves 158 times over 300 tokens against 52 with `--slot-burst 8`, at the same wall (5.27
+against 5.26 s); with parked states the measured ~4 ms switch against ~15 ms a token gives six.  Neither the model nor the
+number of cards enters the rule, and the trace prints what it picked (`ds4 slot: ... burst 1`).
+
 ## Where a token's time goes (measured, 2026-10-26)
 
 Decode on this box costs ~12.5 ms a token and the context barely moves it: 79 tok/s at a 216-token context, 90 tok/s at

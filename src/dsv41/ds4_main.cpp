@@ -751,7 +751,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     std::vector<Run> bslots((size_t) std::max(1, batch_slots));
     int cur = -1;                   // the slot whose conversation the model holds (-1: none of them)
     size_t rr_last = (size_t) -1;
-    const int burst = slot_burst > 0 ? slot_burst : 16;
+    // --slot-burst K: K tokens a slot decodes before another gets the model.  0 (the default now): measured - the burst
+    // where a turn's switch costs at most 5 % of the burst's own time, which on the live path (no state to copy) is one
+    // token and with parked states is a handful; nothing here is a model's or a box's constant
+    int burst = slot_burst > 0 ? slot_burst : 8;   // (the seed; adapted after every burst when auto)
     // (STRATA_DS4_BATCH_LIVE=1: a slot's conversation stays in its own sequence of the model - its rings, compressed rows,
     // its compressors' partial group and its state are per sequence (M2) - instead of being parked in host memory between
     // its bursts.  A solo GEN gets the sequence after the slots')
@@ -969,9 +972,18 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const double t_burst = now_ms();
         for (int k = 0; k < lim; ++k)
             if (!run_advance(run)) break;
+        const double burst_ms = now_ms() - t_burst;
+        if (slot_burst <= 0) {
+            // auto: the shortest burst whose switch is at most 5 % of it (finer turns = shorter waiting; the switch is
+            // what a finer turn costs, and it is measured here rather than assumed)
+            const double toks = (double) std::max<long long>(1, run.produced - before);
+            const double per_tok = burst_ms / toks;
+            const int want = (int) std::ceil(switch_ms / std::max(1e-3, 0.05 * per_tok));
+            burst = std::max(1, std::min(64, want));
+        }
         if (slot_trace)
-            std::fprintf(stderr, "ds4 slot: slot %d: %lld tokens in %.1f ms, switch %.1f ms, parked %zu bytes\n", s,
-                         run.produced - before, now_ms() - t_burst, switch_ms, run.parked.size());
+            std::fprintf(stderr, "ds4 slot: slot %d: %lld tokens in %.1f ms, switch %.1f ms, parked %zu bytes, burst %d\n",
+                         s, run.produced - before, burst_ms, switch_ms, run.parked.size(), burst);
         if (run.ended) end_slot(s, run.finish);
     };
     // the next slot to run, round robin (a picture slot keeps the model until its answer is done)
@@ -1658,7 +1670,7 @@ int main(int argc, char** argv) {
     bool admit_order = false;
     int burst = 0;
     int batch_slots = 0;   // --batch N: the server's batched path (docs/DSV41_BATCHING.md, M4); 0: one request at a time
-    int slot_burst = 16;   // --slot-burst K: tokens one slot decodes before another gets the model
+    int slot_burst = 0;    // --slot-burst K: tokens one slot decodes before another gets the model (0: measured)
     int read_slice = 1024; // --read-slice N: tokens of a prompt one feed reads (a BYIELD lands between two of them)
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
