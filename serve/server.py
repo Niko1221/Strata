@@ -2681,7 +2681,8 @@ class Vision:
         self.fallback = (self.reader_args(cpu), log, env) if cpu else None
         self.proc = None
         self.stopped = True
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.cache_batches = 0
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
@@ -2691,7 +2692,11 @@ class Vision:
         self.elastic_mib = int(cfg.get("elastic_mib") or 2048)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
-            self._start()
+            try:
+                self._start()
+            except Exception:
+                self.shutdown()
+                raise
 
     # What a picture may become when the config does not say (setup writes the same numbers, setup.VISION): an old, hand-edited or migrated
     # config without vision.max_tokens left the reader unclamped, and #3690 saw one picture become 93,700 image tokens (I7).  A key that is
@@ -2867,12 +2872,12 @@ class Vision:
             return False
 
     @staticmethod
-    def normalize(data: bytes) -> bytes:
+    def normalize(data: bytes, *, force: bool = False) -> bytes:
         """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG.
         A JPEG with an EXIF Orientation other than 1 is turned upright first (needs Pillow)."""
         jpeg = data[:3] == b"\xff\xd8\xff"
-        if (jpeg and not Vision._exif_rotated(data)) or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
-                data[:6] in (b"GIF87a", b"GIF89a"):
+        if not force and ((jpeg and not Vision._exif_rotated(data)) or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
+                data[:6] in (b"GIF87a", b"GIF89a")):
             return data
         try:
             import io
@@ -2897,6 +2902,26 @@ class Vision:
         out = io.BytesIO()
         im.save(out, format="PNG")
         return out.getvalue()
+
+    def _trim_cache(self):
+        """The caller holds self.lock; keep at most 64 images once no batch still needs their paths."""
+        while len(self.cache) > 64:
+            old = next(iter(self.cache))
+            self.cache.pop(old)[0].unlink(missing_ok=True)
+
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Keep encoded files until a request has copied them.  Acquire the service FIFO before this lock."""
+        with self.lock:
+            self.cache_batches += 1
+            try:
+                yield
+            finally:
+                self.cache_batches -= 1
+                if not self.cache_batches:
+                    self._trim_cache()
+
 
     def encode_all(self, sources: list, cancel=None) -> list[tuple[Path, int]]:
         """encode() for every image of one request: the files of this request's earlier images are never evicted to
@@ -2928,6 +2953,13 @@ class Vision:
                 self.proc.stdin.flush()
                 try:
                     line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
+                    if line.startswith("ERR cannot read the image"):
+                        converted = self.normalize(data, force=True)
+                        if converted != data:
+                            img.write_bytes(converted)
+                            self.proc.stdin.write(f"ENC {img.name} {out.name}\n")
+                            self.proc.stdin.flush()
+                            line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
                 except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
                     self.stopped = True                   # alive() is False, so the next request starts it again
                     raise ValueError(str(e)) from None
@@ -2938,12 +2970,13 @@ class Vision:
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
             self.warn_if_over_limit(self.cache[key][1])
-            held = {str(p) for p in keep} | {str(out)}
-            for old in list(self.cache):                               # oldest first, but never one still in use
-                if len(self.cache) <= 64:
-                    break
-                if str(self.cache[old][0]) not in held:
-                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            if not self.cache_batches:
+                held = {str(p) for p in keep} | {str(out)}
+                for old in list(self.cache):                           # oldest first, but never one still in use
+                    if len(self.cache) <= 64:
+                        break
+                    if str(self.cache[old][0]) not in held:
+                        self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
 
     def warn_if_over_limit(self, tokens: int) -> None:
@@ -2973,6 +3006,9 @@ class Vision:
                 proc.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                pipe.close()
         self.stopped = True
 
     def shutdown(self):
@@ -5014,77 +5050,79 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self._turn(cancel):
+        with (self._turn(cancel) if images else contextlib.nullcontext()), \
+                (self.vision.batch() if images else contextlib.nullcontext()):
+            if images:
                 self._vision_up()
                 try:
                     encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
                                else [self.vision.encode(src) for src in images])
                 finally:
                     self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
-        ctx = self.engine.max_context
-        if ctx <= 0:
-            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
-            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = getattr(self.engine, "known_ctx", 0)
+                # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+                # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+                # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+                literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+                out, k = [], 0
+                for j, t in enumerate(ids):
+                    if t == pad and j > 0 and ids[j - 1] == start:
+                        # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                        if k == len(encoded):
+                            raise ValueError("the prompt and its images do not match")
+                        out += [pad] * encoded[k][1]
+                        k += 1
+                    elif t == pad:
+                        out += literal
+                    else:
+                        out.append(t)
+                if k != len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                ids = out
+            ctx = self.engine.max_context
             if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-        room = ctx - CTX_SLACK - len(ids)
-        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
-            if room < 1:
-                # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
-                # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
-                self.forget_prompt(encoded_ids)
-                raise ValueError("request exceeds the context window: "
-                                 f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                 f"({ctx}); requests are never truncated")
-            max_new = room
-        elif max_new > room:
-            if not self.fit_max_tokens:
-                self.forget_prompt(encoded_ids)
-                raise ValueError("request exceeds the context window: "
-                                 f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                 f"({ctx}); requests are never truncated. Send a smaller "
-                                 f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
-                                 "model's strata-<model>.json to shorten it to the room left (#545)")
-            print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({len(ids)} tokens) leaves that much "
-                  f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
-            max_new = max(1, room)          # a shorter completion beats a 400 (the default)
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
-            # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
-            # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
-            self.embeddings.path = combined             # first, so a half-written one is found as well
-            # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
-            # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
-            # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
-            self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
-            write_temporary(combined, [p for p, _ in encoded])
-        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
-            lead = self.deepseek_shared_start(messages)
-            if lead:
-                req["strata_prefix"] = {"messages": lead}
+                if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+                # a failed restart leaves max_context 0: check against the last known context, so the request reaches
+                # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
+                ctx = getattr(self.engine, "known_ctx", 0)
+                if ctx <= 0:
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
+                if room < 1:
+                    # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
+                    # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
+                    self.forget_prompt(encoded_ids)
+                    raise ValueError("request exceeds the context window: "
+                                     f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                                     f"({ctx}); requests are never truncated")
+                max_new = room
+            elif max_new > room:
+                if not self.fit_max_tokens:
+                    self.forget_prompt(encoded_ids)
+                    raise ValueError("request exceeds the context window: "
+                                     f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                                     f"({ctx}); requests are never truncated. Send a smaller "
+                                     f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                     "model's strata-<model>.json to shorten it to the room left (#545)")
+                print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({len(ids)} tokens) leaves that much "
+                      f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
+                max_new = max(1, room)          # a shorter completion beats a 400 (the default)
+            if images:
+                # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+                # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
+                # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
+                combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+                self.embeddings.path = combined             # first, so a half-written one is found as well
+                # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
+                # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
+                # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
+                self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
+                write_temporary(combined, [p for p, _ in encoded])
+            if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
+                lead = self.deepseek_shared_start(messages)
+                if lead:
+                    req["strata_prefix"] = {"messages": lead}
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
