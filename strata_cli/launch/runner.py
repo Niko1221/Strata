@@ -521,6 +521,9 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["mtp"] = True
     if s.extra:
         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
+        if s.family == "deepseek41":
+            a_changes = {("--reserve-mib" if key == "--vram-reserve-mib" else key): value
+                         for key, value in a_changes.items()}
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
         if e_changes:
             cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)

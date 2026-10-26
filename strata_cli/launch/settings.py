@@ -269,7 +269,7 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
 def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[dict[str, Any], dict[str, str | None]]:
     """Turn the Advanced table's values into `tune_knobs.apply_to_argv` changes and environment changes.
 
-    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value."""
+    DSpark takes a literal mode. Other flags keep the Advanced table's on/off shorthand."""
     args: dict[str, Any] = {}
     env: dict[str, str | None] = {}
     for key, value in extra.items():
@@ -277,7 +277,9 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
             low = value.lower()
             if low == "" and key not in bool_flags:
                 continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
-            if key in bool_flags or low in ("on", "true", "yes", ""):
+            if key == "--dspark":                  # on/off/none are engine modes, not flag-presence shorthand (#3959)
+                args[key] = value
+            elif key in bool_flags or low in ("on", "true", "yes", ""):
                 args[key] = None if low in ("off", "false", "no", "none") else True
             elif low in ("off", "false", "no", "none"):
                 args[key] = None
