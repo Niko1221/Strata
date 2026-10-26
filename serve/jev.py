@@ -240,6 +240,37 @@ def render_state(state) -> str:
     return json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False)
 
 
+def parse_context(req) -> tuple[str, tuple[int, dict] | None]:
+    """Opt-in request `context`: caller-supplied text rendered between the state and the
+    question block (#3743: a derived binary field asked without its sibling categories lets
+    the model answer the everyday meaning - 65 of our 67 banking77 is_card errors were
+    false positives; the group prompt, which shows the taxonomy, was right where is_card
+    was wrong on 40 items.  The catalogue context pins the taxonomy meaning).
+
+    Accepts a string or a list of strings (joined by newlines); empty text is treated as
+    absent.  Rendered VERBATIM - no wording is added, so the caller owns the experiment.
+    With no `context` the rendered prompt is byte-identical to the donor's frozen shape, so
+    every calibrator fitted on that render still applies; a context-bearing request reads
+    from a shifted distribution and should be calibrated for its own use.
+    """
+    ctx = req.get("context")
+    if ctx is None:
+        return "", None
+    if isinstance(ctx, str):
+        lines = [ctx]
+    elif isinstance(ctx, list) and all(isinstance(x, str) for x in ctx):
+        lines = ctx
+    else:
+        return "", _err("context", "must be a string or a list of strings")
+    text = "\n".join(x for x in (line.strip() for line in lines) if x)
+    return text, None
+
+
+def user_turn(state_text: str, context_text: str, block: str) -> str:
+    """The user turn: state, then the optional context, then the question block."""
+    return "\n\n".join(part for part in (state_text, context_text, block) if part)
+
+
 def question_block(qdef) -> str:
     """The question's rendered suffix - the DONOR'S render (server.cpp render_qblock),
     frozen D3 shape: the full option list is always shown to the model."""
@@ -638,7 +669,7 @@ def _captured(engine, want: int) -> bool:
     return _captured_count(engine) == want
 
 
-def consolidated_rows(svc, state_text: str, qdefs: list):
+def consolidated_rows(svc, state_text: str, qdefs: list, context_text: str = ""):
     """Render ONE prompt for all the questions and return (ids, rows) - the absolute prompt position of each
     field's cue - or None when the prefix cannot be kept exact.
 
@@ -655,7 +686,7 @@ def consolidated_rows(svc, state_text: str, qdefs: list):
     """
     units = []
     for i, qdef in enumerate(qdefs):
-        content = (state_text + "\n\n" + question_block(qdef)) if i == 0 else question_block(qdef)
+        content = user_turn(state_text, context_text, question_block(qdef)) if i == 0 else question_block(qdef)
         messages = [{"role": "system", "content": SYSTEM_V1}]
         for prev in units:
             messages.append({"role": "user", "content": prev["content"]})
@@ -688,6 +719,10 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     f"label {lbl!r} encodes to {ntok} tokens; every label must be one token "
                     f"(refused rather than scored on a truncated path)")
 
+    context_text, ctx_err = parse_context(req)
+    if ctx_err is not None:
+        return ctx_err
+
     engine = svc.engine
     if not hasattr(engine, "final_row_logits"):
         return 503, {"error": {"message": "systemone needs an engine with a logits readout "
@@ -703,7 +738,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     l_qdefs = [q for q in qdefs if not (v_mode and q["type"] == "choice")]
     l_pin = 0
     if len(l_qdefs) > 1 and not image_state and _pin_enabled():
-        l_pin = _shared_prefix_len(svc, [state_text + "\n\n" + question_block(q) for q in l_qdefs])
+        l_pin = _shared_prefix_len(svc, [user_turn(state_text, context_text, question_block(q)) for q in l_qdefs])
     with svc.fifo:                                       # the engine turn: one request at a time
         # M3.1 fix B (jevpos, opt-in): text L-mode with more than one field - ONE prompt read, one head row
         # kept per field, instead of one prompt per field.  Falls back to the per-question path whenever the
@@ -717,7 +752,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             # McNemar p=0.0008).  Rendering in a fixed order makes the same set render the same prompt and answer
             # the same whoever asks.  The answers are keyed by qid, so nothing about the response changes.
             ordered = sorted(qdefs, key=lambda q: q["id"])
-            plan = consolidated_rows(svc, state_text, ordered)
+            plan = consolidated_rows(svc, state_text, ordered, context_text)
             rows = None
             if plan is not None:
                 ids, rows = plan
@@ -752,12 +787,12 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 v_pin = 0
                 if len(qdef["labels"]) > 1 and _pin_enabled():
                     v_pin = _shared_prefix_len(
-                        svc, [state_text + "\n\n" + head + v_branch(qdef, k) for k in qdef["labels"]])
+                        svc, [user_turn(state_text, context_text, head + v_branch(qdef, k)) for k in qdef["labels"]])
                 d_scores = []
                 for bi, key in enumerate(qdef["labels"]):
                     prompt = svc.template.render(
                         [{"role": "system", "content": SYSTEM_V1},
-                         {"role": "user", "content": state_text + "\n\n" + head + v_branch(qdef, key)}],
+                         {"role": "user", "content": user_turn(state_text, context_text, head + v_branch(qdef, key))}],
                         add_generation_prompt=True,
                         enable_thinking=False)
                     ids = svc.tok.encode(prompt, parse_special=True)
@@ -800,7 +835,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 continue
             prompt = svc.template.render(
                 [{"role": "system", "content": SYSTEM_V1},
-                 {"role": "user", "content": state_text + "\n\n" + question_block(qdef)}],
+                 {"role": "user", "content": user_turn(state_text, context_text, question_block(qdef))}],
                 add_generation_prompt=True,
                 enable_thinking=False)   # D3 (frozen): the readout position must predict the label, not open <think>
             ids = svc.tok.encode(prompt, parse_special=True)
