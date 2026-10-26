@@ -643,7 +643,7 @@ struct Out {
     }
     void u64(uint64_t v) { raw(&v, 8); }
     void i64(int64_t v) { raw(&v, 8); }
-    template<class T> void vec(const std::vector<T>& v) { u64(v.size()); raw(v.data(), v.size() * sizeof(T)); }
+    template<class V> void vec(const V& v) { u64(v.size()); raw(v.data(), v.size() * sizeof(typename V::value_type)); }
     void buffer(const ConversationBuffer& b) {
         u64(b.size());
         b.visit(0, b.size(), [&](const uint8_t* p, size_t c, size_t) { raw(p, c); return ok; });
@@ -735,7 +735,8 @@ struct In {
         if (n > (uint64_t) std::numeric_limits<size_t>::max() / (elem ? elem : 1)) return fail("element count too large");
         return true;
     }
-    template<class T> bool vec(std::vector<T>& v, uint64_t limit = UINT64_MAX) {
+    template<class V> bool vec(V& v, uint64_t limit = UINT64_MAX) {
+        using T = typename V::value_type;
         uint64_t n = 0;
         if (!count(n, sizeof(T), limit)) return false;
         v.resize((size_t) n);

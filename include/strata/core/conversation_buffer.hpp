@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/core/progress.hpp"
+#include "strata/core/conversation_storage.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -12,9 +13,7 @@
 
 namespace strata::core {
 
-// Snapshot-owned host storage. Appending never relocates existing payloads;
-// only the small segment directory can move. No sharing or copy-on-write is
-// needed because a parked image and its retained active buffers have one owner.
+// Snapshot storage: stable legacy segments or immutable blocks with copy-on-write.
 class ConversationBuffer {
 public:
     static constexpr size_t segment_bytes = 16 * 1024 * 1024;
@@ -39,6 +38,7 @@ public:
 
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
+    size_t directory_bytes() const { return segments_.capacity() * sizeof(Segment); }
     size_t bytes() const {
         size_t n = segments_.capacity() * sizeof(Segment);
         for (const auto& segment : segments_) n += segment.capacity();
@@ -46,7 +46,21 @@ public:
     }
     // Includes the old directory while reserve allocates its replacement.
     // Saturation makes an overflowing estimate fail admission before resize.
-    size_t allocation_peak(size_t n) const {
+    void freeze() { if (conversation_dedup_enabled()) for (auto& s : segments_) s.freeze(); }
+    template<class Fn> void for_each_bytes(Fn&& fn) const { for (const auto& s : segments_) fn(s); }
+    static constexpr size_t shared_block_bytes = 1 << 20;
+    // `keep`: leading bytes a capture retains unchanged (dedup mode only).
+    size_t allocation_peak(size_t n, size_t keep = 0) const {
+        if (conversation_dedup_enabled()) {
+            // This buffer is already charged where it lives. A capture adds the
+            // blocks from the one holding `keep` onwards and a new directory.
+            const size_t first = std::min(keep, size_) / shared_block_bytes * shared_block_bytes;
+            size_t total = n > first ? n - first : 0;
+            const size_t count = n / shared_block_bytes + (n % shared_block_bytes != 0);
+            if (count > SIZE_MAX / sizeof(Segment) || !add(total, count * sizeof(Segment)) ||
+                !add(total, directory_bytes())) return SIZE_MAX;
+            return total;
+        }
         size_t total = bytes();
         if (n <= size_) return total;
         const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
@@ -62,6 +76,20 @@ public:
         return total;
     }
     void resize(size_t n, uint8_t value = 0) {
+        if (conversation_dedup_enabled()) {
+            // Fixed boundaries allow sharing across different append histories.
+            const size_t count = n / shared_block_bytes + (n % shared_block_bytes != 0);
+            segments_.reserve(count);
+            while (segments_.size() > count) segments_.pop_back();
+            for (size_t i = 0; i < count; ++i) {
+                if (i == segments_.size()) segments_.emplace_back();
+                const size_t target = std::min(shared_block_bytes, n - i * shared_block_bytes);
+                segments_[i].reserve(target);
+                segments_[i].resize(target, value);
+            }
+            size_ = n;
+            return;
+        }
         if (n > size_) {
             const size_t held = size_;
             const bool growing = held != 0;
@@ -123,7 +151,7 @@ public:
     }
 
 private:
-    using Segment = std::vector<uint8_t>;
+    using Segment = ConversationBytes;
     // A fresh capture allocates exactly its payload. Later appends reserve
     // geometrically growing segments, bounded by 16 MiB. Small chat turns then
     // extend the final allocation instead of adding one transfer per turn.

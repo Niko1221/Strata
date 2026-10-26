@@ -27,6 +27,7 @@ SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& c
     if (cache.retained_bytes()) {
         out.bytes += cache.retained_bytes();
         { auto unused = cache.take_reuse(); }
+        conversation_release_free_heap();
         room = available();
         if (done()) return out;
     }
@@ -35,6 +36,7 @@ SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& c
         if (!cache.evict_oldest()) break; // pinned conversations stay parked
         ++out.parked;
         out.bytes += before - cache.bytes();
+        conversation_release_free_heap();
         room = available();
         if (done()) return out;
     }

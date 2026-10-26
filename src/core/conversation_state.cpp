@@ -98,7 +98,9 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
     size_t ids = 0, images = 0;
     if (!product(ids, {c.ids.size(), sizeof(int32_t)}) ||
         !product(images, {c.imgs.size(), sizeof(ConversationImageKey)})) return false;
-    for (size_t n : {ids, images, c.gdn.size(), c.ple.size(), c.tails.size(), c.dead.size(), c.block_pos.size()})
+    // A frozen payload is copied by reference in dedup mode.
+    auto copied = [](const ConversationBytes& b) { return conversation_dedup_enabled() && b.shared() ? 0 : b.size(); };
+    for (size_t n : {ids, images, copied(c.gdn), copied(c.ple), copied(c.tails), copied(c.dead), copied(c.block_pos)})
         if (!add(total, n)) return false;
     return true;
 }
@@ -181,6 +183,7 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
             !copy(c.dead.data() + j * z.dead, st.idx_dead, z.dead, error) ||
             !copy(c.block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error)) return false;
     }
+    c.freeze();
     return true;
 }
 
@@ -288,7 +291,10 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
         if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
         const size_t fresh = conversation_kv_bytes(st, g, int64_t(view.ids.size()), index);
         size_t retained = 0;
-        if (!conversation_kv_capture_bytes(reuse.kv[i], st, g, int64_t(view.ids.size()), index, retained, error)) return false;
+        // The same retained prefixes conversation_snapshot_save keeps.
+        const int64_t unchanged = index ? reuse.unchanged_tokens : std::max<int64_t>(0, reuse.unchanged_tokens - 1);
+        if (!conversation_kv_capture_bytes(reuse.kv[i], st, g, int64_t(view.ids.size()), index, retained, error,
+                                           unchanged)) return false;
         bytes -= fresh;
         if (!add(bytes, retained)) return fail(error, "retained K/V allocation overflow");
     }

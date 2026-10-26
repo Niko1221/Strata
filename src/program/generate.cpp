@@ -9414,9 +9414,27 @@ int main(int argc, char** argv) {
                 o.conversation_cache_mib = 0;
             }
         }
+        if (strata::core::conversation_dedup_enabled() && (!stages.empty() || o.batch != 0)) {
+            std::fprintf(stderr, "strata: STRATA_PARKED_DEDUP requires single-GPU serial serving\n");
+            return 1;
+        }
+        std::fprintf(stderr, "strata serve: conversation cache: dedup mode=%d (STRATA_PARKED_DEDUP; restart required)\n",
+                     strata::core::conversation_dedup_enabled() ? 1 : 0);
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        auto dedup_diagnostics = [&] {
+            if (!strata::core::conversation_dedup_enabled()) return;
+            const auto& st = strata::core::conversation_storage_stats();
+            const size_t logical = st.logical.load(), physical = st.payload.load();
+            const size_t metadata = conversations.metadata_bytes();
+            std::fprintf(stderr, "strata serve: conversation cache: dedup mode=1 logical_bytes=%zu physical_bytes=%zu "
+                         "saved_bytes=%zu metadata_bound=%zu accounted_bytes=%zu allocation_peak=%zu hits=%zu cow=%zu "
+                         "index_entries=%zu\n",
+                         logical, physical, logical > physical ? logical - physical : 0,
+                         metadata, physical + metadata, st.peak.load(), st.hits.load(), st.cow.load(),
+                         strata::core::ConversationBytes::index_entries());
+        };
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -9583,6 +9601,8 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
+            // Dedup mode: retained and held storage are already charged, the
+            // estimate counts only what the capture adds and `held` is ignored.
             if (!conversations.make_room(estimate, held)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
@@ -9592,7 +9612,9 @@ int main(int argc, char** argv) {
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
-                const size_t additional = estimate > retained ? estimate - retained : 0;
+                // Dedup mode: retained storage is already resident and the estimate is the addition.
+                const size_t additional = strata::core::conversation_dedup_enabled() ? estimate
+                                        : estimate > retained ? estimate - retained : 0;
                 // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
                 // above only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
@@ -9610,9 +9632,14 @@ int main(int argc, char** argv) {
                     return strata::core::conversation_memory_admit(
                         mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
                 };
+                // Dedup mode: make_room() may have freed blocks the heap still holds; trim before evicting.
+                if (strata::core::conversation_dedup_enabled() && !admit())
+                    strata::core::conversation_release_free_heap();
                 while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
-                       conversations.evict_oldest())
+                       conversations.evict_oldest()) {
                     ++evicted;
+                    strata::core::conversation_release_free_heap();   // dedup blocks: see the helper
+                }
                 if (!admit()) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
@@ -9651,6 +9678,7 @@ int main(int argc, char** argv) {
                              stored ? "parked" : "skipped", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
+                dedup_diagnostics();
             } catch (const std::bad_alloc&) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
@@ -12886,6 +12914,12 @@ int main(int argc, char** argv) {
                     if ((int64_t) c.ids.size() <= parked.tokens && starts_with(c.ids, c.imgs)) checks.push_back(c);
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
+                if (strata::core::conversation_dedup_enabled() && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
+                    // Reuse the restored donor, preserving its dirty boundary.
+                    conversations.retain(std::vector<strata::core::ConversationKv>(donor->kv),
+                                         int64_t(donor->live.ids.size()));
+                    conversations.limit_reuse(parked.tokens);
+                }
                 cvec_cached = donor->cvec;
                 resume = parked.tokens;
                 from_live = false;
@@ -15439,6 +15473,7 @@ int main(int argc, char** argv) {
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+            dedup_diagnostics();
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld\n",

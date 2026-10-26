@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -23,7 +24,7 @@ struct ConversationImageKey {
 struct ConversationCheckpoint {
     std::vector<int32_t> ids;
     std::vector<ConversationImageKey> imgs;
-    std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
+    ConversationBytes gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
     // A shared-prefix pin (the request key pin=N): this checkpoint is the read-only prefix many suffix queries branch
     // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
@@ -43,6 +44,21 @@ struct ConversationCheckpoint {
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;
 
+    void freeze() {
+        if (!conversation_dedup_enabled()) return;
+        gdn.freeze(); ple.freeze(); tails.freeze(); dead.freeze(); block_pos.freeze();
+        for (auto& part : stage_parts) part.freeze();
+    }
+    template<class Fn> void for_each_bytes(Fn&& fn) const {
+        fn(gdn); fn(ple); fn(tails); fn(dead); fn(block_pos);
+        for (const auto& part : stage_parts) part.for_each_bytes(fn);
+    }
+    size_t metadata_bytes() const {
+        size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
+                   stage_parts.capacity() * sizeof(ConversationCheckpoint);
+        for (const auto& part : stage_parts) n += part.metadata_bytes();
+        return n;
+    }
     size_t bytes() const {
         size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
                gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
@@ -58,6 +74,15 @@ struct ConversationKv {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
     ConversationBuffer k, v, k_scale, v_scale, pooled;
+    void freeze() { k.freeze(); v.freeze(); k_scale.freeze(); v_scale.freeze(); pooled.freeze(); }
+    template<class Fn> void for_each_bytes(Fn&& fn) const {
+        for (const auto* b : {&k, &v, &k_scale, &v_scale, &pooled}) b->for_each_bytes(fn);
+    }
+    size_t metadata_bytes() const {
+        // Charge directories separately from shared payloads.
+        return k.directory_bytes() + v.directory_bytes() + k_scale.directory_bytes() +
+               v_scale.directory_bytes() + pooled.directory_bytes();
+    }
     size_t bytes() const {
         return k.bytes() + v.bytes() + k_scale.bytes() + v_scale.bytes() + pooled.bytes();
     }
@@ -69,6 +94,12 @@ struct ConversationKvReuse {
     int64_t captured_tokens = 0, unchanged_tokens = 0;
     // With a layer split: the later stages' own retained K/V, one per stage, same extents (empty: none)
     std::vector<ConversationKvReuse> stages;
+    size_t metadata_bytes() const {
+        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
+        for (const auto& layer : kv) n += layer.metadata_bytes();
+        for (const auto& s : stages) n += s.metadata_bytes();
+        return n;
+    }
     size_t bytes() const {
         size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
         for (const auto& layer : kv) n += layer.bytes();
@@ -173,6 +204,26 @@ struct SavedConversation {
         return false;
     }
 
+    void freeze() {
+        if (!conversation_dedup_enabled()) return;
+        live.freeze(); for (auto& c : checkpoints) c.freeze();
+        for (auto& k : kv) k.freeze();
+        for (auto& s : stage_images) s.freeze();
+    }
+    template<class Fn> void for_each_bytes(Fn&& fn) const {
+        live.for_each_bytes(fn);
+        for (const auto& c : checkpoints) c.for_each_bytes(fn);
+        for (const auto& k : kv) k.for_each_bytes(fn);
+        for (const auto& s : stage_images) s.for_each_bytes(fn);
+    }
+    size_t metadata_bytes() const {
+        size_t n = live.metadata_bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
+                   kv.capacity() * sizeof(ConversationKv) + stage_images.capacity() * sizeof(SavedConversation);
+        for (const auto& c : checkpoints) n += c.metadata_bytes();
+        for (const auto& k : kv) n += k.metadata_bytes();
+        for (const auto& s : stage_images) n += s.metadata_bytes();
+        return n;
+    }
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
                    kv.capacity() * sizeof(ConversationKv);
@@ -215,7 +266,22 @@ public:
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
     /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
-    size_t bytes() const { return bytes_ + reuse_.bytes(); }
+    size_t logical_bytes() const {
+        size_t n = reuse_.bytes();
+        for (const auto& e : entries_) n += e.bytes();
+        return n;
+    }
+    size_t metadata_bytes() const {
+        size_t n = reuse_.metadata_bytes() + entries_.size() * (sizeof(SavedConversation) + sizeof(uint64_t));
+        for (const auto& e : entries_) n += e.metadata_bytes();
+        // Conservative allowance for live wrappers and control blocks.
+        n += conversation_storage_stats().objects.load() * ConversationBytes::wrapper_allowance;
+        return n + ConversationBytes::index_bytes();
+    }
+    size_t bytes() const {
+        if (!conversation_dedup_enabled()) return bytes_ + reuse_.bytes();
+        return conversation_storage_stats().payload.load() + metadata_bytes();
+    }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
     // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
@@ -233,7 +299,10 @@ public:
         reuse_ = {};
         ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
         for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
-        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+        if (conversation_dedup_enabled()) {
+            if (enabled() && bytes() <= budget_ && candidate.metadata_bytes() <= budget_ - bytes())
+                reuse_ = std::move(candidate);
+        } else if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
@@ -243,6 +312,7 @@ public:
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
     size_t retained_bytes() const { return reuse_.bytes(); }
     bool can_fit(size_t incoming, size_t held = 0) const {
+        if (conversation_dedup_enabled()) held = 0; // already in the payload ledger
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
     }
@@ -313,8 +383,8 @@ public:
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
+        if (conversation_dedup_enabled()) return make_room_shared(incoming);
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
             // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
             // shared prefix)?  If not, evict nothing
@@ -341,7 +411,7 @@ public:
     bool evict_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (stays(i)) continue;
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -373,21 +443,10 @@ public:
     // shares the system prompt's root with it), is kept.  Returns how many were dropped.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
-        auto held = [&](const ConversationCheckpoint& c) {
-            if (c.ids == ids && c.imgs == images) return true;
-            for (const auto& k : checkpoints)
-                if (k.ids == c.ids && k.imgs == c.imgs) return true;
-            return false;
-        };
         size_t dropped = 0;
         for (size_t i = 0; i < entries_.size();) {
-            const auto& e = entries_[i];
-            const ConversationCheckpoint* deepest = nullptr;
-            for (const auto& c : e.checkpoints)
-                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
-                !(guarded_ != 0 && serials_[i] == guarded_)) {
-                bytes_ -= e.bytes();
+            if (superseded_by(i, ids, images, checkpoints, cvec)) {
+                bytes_ -= entries_[i].bytes();
                 erase(i);
                 ++dropped;
                 continue;
@@ -420,6 +479,24 @@ public:
     }
 
     bool put(SavedConversation&& image, size_t held = 0) {
+        if (conversation_dedup_enabled()) {
+            image.freeze();
+            // Its payload and `held` are already charged; add only this entry's metadata.
+            const size_t meta = image.metadata_bytes() + sizeof(SavedConversation) + sizeof(uint64_t);
+            if (!enabled() || meta > budget_) return false;
+            // Superseded copies go only if the image is then admitted.
+            std::vector<bool> superseded(entries_.size());
+            for (size_t i = 0; i < entries_.size(); ++i)
+                superseded[i] = superseded_by(i, image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
+            if (!make_room_shared(meta, superseded)) return false;
+            // Allocate before moving so failure preserves the caller's image.
+            serials_.push_back(next_serial_);
+            try { entries_.push_back(std::move(image)); }
+            catch (...) { serials_.pop_back(); throw; }
+            ++next_serial_;
+            bytes_ += entries_.back().bytes(); // legacy logical bookkeeping
+            return true;
+        }
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
@@ -431,6 +508,71 @@ public:
     }
 
 private:
+    // Pinned shared prefixes and the guarded (borrowed) donor are never evicted.
+    bool stays(size_t i) const { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); }
+    // drop_superseded()'s rule for entry i.
+    bool superseded_by(size_t i, const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                       const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
+        auto held = [&](const ConversationCheckpoint& c) {
+            if (c.ids == ids && c.imgs == images) return true;
+            for (const auto& k : checkpoints)
+                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+            return false;
+        };
+        const auto& e = entries_[i];
+        const ConversationCheckpoint* deepest = nullptr;
+        for (const auto& c : e.checkpoints)
+            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+        return e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
+               !(guarded_ != 0 && serials_[i] == guarded_);
+    }
+    // Dedup mode. `held` and retained storage are already in the payload ledger.
+    // Plan removals from what each would really release under bytes()'s rules:
+    // payload (shared blocks only with their last owner), entry metadata and
+    // wrapper/index-node allowances; retained index buckets stay charged.
+    // `replaced` entries (superseded copies) go first, then oldest first.
+    // An image that cannot fit removes nothing.
+    bool make_room_shared(size_t incoming, const std::vector<bool>& replaced = {}) {
+        if (!enabled() || incoming > budget_) return false;
+        auto fits = [&](size_t used, size_t count) { return count < slots_ && used <= budget_ - incoming; };
+        auto marked = [&](size_t i) { return i < replaced.size() && replaced[i]; };
+        std::unordered_map<const void*, long> released;
+        size_t freed = 0, count = 0, victims = 0;
+        auto release = [&](size_t i) {
+            entries_[i].for_each_bytes([&](const ConversationBytes& b) {
+                freed += ConversationBytes::wrapper_allowance;
+                if (!b.shared()) freed += b.capacity();
+                else if (++released[b.payload_id()] == b.payload_owners())
+                    freed += b.capacity() + (b.indexed() ? ConversationBytes::index_node_allowance : 0);
+            });
+            freed += entries_[i].metadata_bytes() + sizeof(SavedConversation) + sizeof(uint64_t);
+            --count;
+        };
+        auto plan_replaced = [&] {
+            released.clear(); freed = 0; count = entries_.size();
+            for (size_t i = 0; i < entries_.size(); ++i)
+                if (marked(i)) release(i);
+        };
+        plan_replaced();
+        size_t used = bytes();
+        if (used - std::min(used, freed) > budget_ - incoming) { reuse_ = {}; used = bytes(); plan_replaced(); }
+        for (size_t i = 0; i < entries_.size() && !fits(used - std::min(used, freed), count); ++i) {
+            if (stays(i) || marked(i)) continue;
+            release(i);
+            ++victims;
+        }
+        if (!fits(used - std::min(used, freed), count)) {
+            if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) guard_blocked_ = true;
+            return false;
+        }
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (marked(i)) { bytes_ -= entries_[i].bytes(); erase(i); ++superseded_; }
+        while (victims-- > 0) evict_oldest();
+        // Safety net for allocator-dependent metadata; the plan should already fit.
+        while (!fits(bytes(), entries_.size()))
+            if (!evict_oldest()) return false;
+        return true;
+    }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);

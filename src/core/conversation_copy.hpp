@@ -74,6 +74,18 @@ inline std::vector<T> copy_beating(const std::vector<T>& src) {
     return out;
 }
 
+inline ConversationBytes copy_beating(const ConversationBytes& src) {
+    if (conversation_dedup_enabled()) return src;
+    std::vector<uint8_t> out;
+    out.reserve(src.size());
+    for (size_t at = 0; at < src.size(); at += 1 << 20) {
+        out.insert(out.end(), src.begin() + at, src.begin() + std::min(src.size(), at + (1 << 20)));
+        if (const long us = test_slow_copy_us(); us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        core::progress_beat();
+    }
+    ConversationBytes result; result = std::move(out); return result;
+}
+
 inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoint& c) {
     ConversationCheckpoint o;
     o.ids = copy_beating(c.ids);

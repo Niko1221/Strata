@@ -227,8 +227,9 @@ void full_session(int fmt, int mode, int experts) {
     for (int64_t dirty : {65, 3, 0}) {
         check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
         ConversationKvReuse reuse{a.kv,65,dirty};
+        const auto donor_before = a.kv[0].k;
         const uint8_t* original = nullptr;
-        reuse.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
+        std::as_const(reuse.kv[0].k).visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
         main.fill_after(91,dirty); draft.fill_after(91,std::max<int64_t>(0,dirty-1));
         cuda_check(cudaMemset(ss.gdn_state,91,sizes.gdn));
         ids.resize(70);
@@ -239,15 +240,22 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_snapshot_save(fresh,view,ss,g,draft.state,err),"full capture reference after growth or rewind");
         size_t peak=0,reused=0;
         check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.state,peak,err),"admit incremental capture peak");
+        const size_t ledger = conversation_storage_stats().reset_peak();
         check(conversation_snapshot_save(incremental,view,ss,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
-        check(incremental.bytes() <= peak,"incremental allocation stays within admitted bound");
+        check(conversation_dedup_enabled() ? conversation_storage_stats().added_within(ledger,peak) : incremental.bytes() <= peak,
+              "incremental allocation stays within admitted bound");
         check(incremental.live.gdn==fresh.live.gdn && incremental.live.ple==fresh.live.ple &&
               incremental.live.dead==fresh.live.dead && equal(incremental.kv[0],fresh.kv[0]) &&
               equal(incremental.kv[1],fresh.kv[1]),"incremental capture equals full capture after growth or rewind");
         check((dirty>=4)==(reused>0),"only complete unchanged pages or rows are retained");
-        incremental.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){
-            check(p==original,"growth never reallocates the retained payload");return true;
-        });
+        if (!conversation_dedup_enabled()) {
+            std::as_const(incremental.kv[0].k).visit(0,1,[&](const uint8_t* p,size_t,size_t){
+                check(p==original,"growth never reallocates the retained payload");return true;
+            });
+        } else {
+            // Partial immutable blocks may detach; the donor must stay unchanged.
+            check(a.kv[0].k==donor_before,"incremental capture preserves immutable donor bytes");
+        }
         check(conversation_snapshot_restore(incremental,ss,g,draft.state,err)==ConversationRestore::restored,"restore segmented incremental snapshot");
         uint64_t fingerprint=0;
         check(conversation_kv_verify(incremental.kv.back(),draft.state,g,70,false,fingerprint,err),"incremental draft authoritative and ring read-back");
@@ -283,8 +291,11 @@ void full_session(int fmt, int mode, int experts) {
         size_t peak=0,reused=0;
         check(conversation_snapshot_save(fresh,view,ss,g,nullptr,err),"full stage capture reference");
         check(conversation_snapshot_capture_bytes(reuse,view,ss,g,nullptr,peak,err),"admit an incremental stage capture");
+        const size_t ledger = conversation_storage_stats().reset_peak();
         check(conversation_snapshot_save(incremental,view,ss,g,nullptr,err,std::move(reuse),&reused),"incremental stage capture");
-        check(reused>0 && incremental.bytes()<=peak && equal(incremental.kv[0],fresh.kv[0]) &&
+        const bool within = conversation_dedup_enabled() ? conversation_storage_stats().added_within(ledger,peak)
+                                                         : incremental.bytes()<=peak;
+        check(reused>0 && within && equal(incremental.kv[0],fresh.kv[0]) &&
               incremental.live.gdn==fresh.live.gdn,"an incremental stage capture reuses pages and equals a full one");
         SavedConversation split_image=stage;
         split_image.stage_images.push_back(stage);

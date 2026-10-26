@@ -795,6 +795,10 @@ class ConvCacheLog:
         for line in data[:end].decode("utf-8", "replace").splitlines():
             if "conversation cache:" not in line:
                 continue
+            if "conversation cache: dedup mode=" in line:
+                values = {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", line)}
+                self.state["dedup"] = {**self.state.get("dedup", {}), **values}
+                continue
             m = self.EVENT.search(line)
             if m:
                 st = self.state

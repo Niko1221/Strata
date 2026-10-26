@@ -219,11 +219,14 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     size_t peak = 0, reused = 0;
     check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "incremental capture admission without transfers");
     copied_bytes = 0;
+    const size_t ledger = conversation_storage_stats().reset_peak();
     const bool saved_incrementally = conversation_snapshot_save(incremental,view,ss,g,draft.st,error,std::move(reuse),&reused);
     if (!saved_incrementally) std::fprintf(stderr,"capture error: %s\n",error.c_str());
     check(saved_incrementally, "incremental capture through host backend");
     check(reused > 0 && copied_bytes + reused == full_copies, "reused byte count measures transfers actually omitted");
-    check(incremental.bytes() <= peak && incremental.live.gdn == full.live.gdn, "running state refreshed within admitted allocation");
+    const bool within = conversation_dedup_enabled() ? conversation_storage_stats().added_within(ledger,peak)
+                                                     : incremental.bytes() <= peak;
+    check(within && incremental.live.gdn == full.live.gdn, "running state refreshed within admitted allocation");
     for (size_t i=0;i<full.kv.size();++i)
         check(incremental.kv[i].k==full.kv[i].k && incremental.kv[i].v==full.kv[i].v &&
               incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&

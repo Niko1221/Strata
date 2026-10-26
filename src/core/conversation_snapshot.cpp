@@ -121,15 +121,27 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
 }
 } // namespace
 
+namespace {
+// Recopy the partial page and the indexer's moving spare row. Completed
+// pages/rows strictly before the first rewritten token remain identical.
+size_t retained_prefix(const Layout& l, const ModelGeometry& g, size_t part, size_t size, int64_t unchanged, bool index) {
+    if (part == 4) return index ? size_t(unchanged / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0;
+    const int64_t whole_cells = (unchanged / l.page_size) * l.page_size;
+    return l.cells ? (size / size_t(l.cells)) * size_t(whole_cells) : 0;
+}
+} // namespace
+
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
-                                   int64_t upto, bool index, size_t& bytes, std::string& error) {
+                                   int64_t upto, bool index, size_t& bytes, std::string& error,
+                                   int64_t unchanged_tokens) {
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<const ConversationBuffer*,5> buffers = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     bytes = 0;
     for (size_t i = 0; i < buffers.size(); ++i) {
-        const size_t n = buffers[i]->allocation_peak(sizes[i]);
+        const size_t keep = unchanged_tokens > 0 ? retained_prefix(l, g, i, sizes[i], unchanged_tokens, index) : 0;
+        const size_t n = buffers[i]->allocation_peak(sizes[i], keep);
         if (n == SIZE_MAX || !conversation_detail::add(bytes, n)) {
             error = "conversation snapshot: segmented K/V allocation overflow";
             return false;
@@ -154,7 +166,6 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         error = "conversation snapshot: invalid unchanged prefix";
         return false;
     }
-    const int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
     image.format = l.format;
     image.cells = l.cells;
     image.heads = g.n_head_kv;
@@ -166,15 +177,13 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     for (size_t i = 0; i < dst.size(); ++i) {
-        // Recopy the partial page and the indexer's moving spare row. Completed
-        // pages/rows strictly before the first rewritten token remain identical.
-        const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
-                                  : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
+        const size_t keep = retained_prefix(l, g, i, sizes[i], unchanged_tokens, index);
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
         if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
                 return transfer(p, src[i] ? static_cast<const uint8_t*>(src[i]) + at : nullptr, n, error);
             })) return false;
+        dst[i]->freeze();
         if (reused_bytes) *reused_bytes += keep;
     }
     return true;
