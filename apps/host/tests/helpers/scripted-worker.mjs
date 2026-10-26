@@ -186,6 +186,12 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       const n = parseInt(args, 10) || 400;
       return say(Array.from({ length: n }, (_, i) => `w${i} `));
     }
+    if (name === 'pause') {
+      const [milliseconds, ...answer] = args.trim().split(/\s+/);
+      await delay(Number(milliseconds));
+      if (!closed) await say([answer.join(' ')]);
+      return;
+    }
     if (name === 'hang') { send({ role: 'assistant', content: '' }); return; }   // headers sent, then silence: a model server that went quiet
     if (name === 'echo') return say([args]);
     if (name === 'retrywrite' || name === 'retryshell') {

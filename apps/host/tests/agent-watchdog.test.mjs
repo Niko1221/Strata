@@ -10,6 +10,17 @@ import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
 
+test('an explicit local allowance permits a quiet reply beyond the normal limit', { skip, timeout: 90_000 }, async t => {
+  const worker = await startScriptedWorker({});
+  const dir = mkdtempSync(join(tmpdir(), 'strata-wd-')); const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+  const bridge = createAgentBridge({ dataDir: dir, localInstances: () => [{ id: 'i', label: 'S', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }], connections: () => [], env: { ...process.env, STRATA_LOCAL_STALL_MS: '10000' }, startTimeoutMs: 90_000, stallMs: 2500, stallToolMs: 6000 });
+  t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
+  const out = [];
+  await bridge.runTurn({ chatId: 'local-pause', message: 'SCRIPT:pause 4000 answered', workspacePath: ws, mode: 'bypass', onFrame: f => out.push(f) });
+  assert.match(out.filter(f => f.type === 'delta').map(f => f.text).join(''), /answered/);
+  assert.equal(out.some(f => f.type === 'error'), false);
+});
+
 test('a silent model ends the turn with a plain message, and the chat works again afterwards', { skip }, async (t) => {
   const worker = await startScriptedWorker({});
   const dir = mkdtempSync(join(tmpdir(), 'strata-wd-')); const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
