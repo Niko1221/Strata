@@ -32,6 +32,10 @@ struct Context::Impl {
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
     std::vector<id<MTLLibrary>> libs;
+    // the hot-reload registry (see recompile_all): the request each library was compiled from, index for index
+    // with libs; and the libraries a reload replaced, kept because pipeline states made from them may still run
+    std::vector<std::pair<std::vector<std::string>, std::string>> reqs;
+    std::vector<id<MTLLibrary>> retired;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
 };
@@ -73,38 +77,95 @@ uint64_t Context::recommended_working_set() const { return [impl_->dev recommend
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
 uint64_t Context::max_threadgroup_memory() const { return [impl_->dev maxThreadgroupMemoryLength]; }
 
-int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
-    std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
+namespace {
+// the MSL source a compile request builds: prelude, optional ggml-common.h, the files with #line markers.
+// False with a reason when a file cannot be read (hot reload keeps its current kernels and says what failed;
+// at startup a missing file is fatal, as read_file always was).
+bool build_source(const std::string& ggml_common_path, const std::string& kernel_dir,
+                  const std::vector<std::string>& files, const std::string& prelude,
+                  std::string& src, std::string& err) {
+    src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
-        src += read_file(ggml_common_path);
-        src += "\n";
+        std::ifstream g(ggml_common_path, std::ios::binary);
+        if (!g) { err = "mtl: cannot read " + ggml_common_path; return false; }
+        std::stringstream ss;
+        ss << g.rdbuf();
+        src += ss.str() + "\n";
     }
     for (const auto& f : files) {
         std::string p = (f.size() && f[0] == '/') ? f : kernel_dir + "/" + f;
-        src += "#line 1 \"" + f + "\"\n" + read_file(p) + "\n";
+        std::ifstream in(p, std::ios::binary);
+        if (!in) { err = "mtl: cannot read " + p; return false; }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        src += "#line 1 \"" + f + "\"\n" + ss.str() + "\n";
     }
+    return true;
+}
+
+// the runtime compiler with the engine's options: nil plus the compiler's log on error
+id<MTLLibrary> compile_source(id<MTLDevice> dev, const std::string& src, NSError** err) {
     MTLCompileOptions* o = [MTLCompileOptions new];
     // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
     // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.
-    fast_math = false;
+    bool fast_math = false;
     if (const char* m = std::getenv("STRATA_METAL_MATH")) fast_math = std::string(m) == "fast";
     if (@available(macOS 15.0, *)) {
         o.mathMode = fast_math ? MTLMathModeFast : MTLMathModeSafe;
     } else {
         o.fastMathEnabled = fast_math;
     }
-    NSError* err = nil;
-    id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
+    return [dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:err];
+}
+}  // namespace
+
+int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
+    (void) fast_math;   // the env decides (the argument is kept for callers)
+    std::string src, err;
+    if (!build_source(ggml_common_path, kernel_dir, files, prelude, src, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        std::exit(2);
+    }
+    NSError* cerr = nil;
+    id<MTLLibrary> lib = compile_source(impl_->dev, src, &cerr);
     if (!lib) {
         std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
                      [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
-                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
+                     files.empty() ? "?" : files.back().c_str(), [[cerr localizedDescription] UTF8String]);
         std::exit(3);
     }
     impl_->libs.push_back(lib);
+    impl_->reqs.push_back({files, prelude});   // the hot-reload registry, index for index with libs
     return (int)impl_->libs.size() - 1;
 }
+
+bool Context::recompile_all(std::string& err) {
+    if (impl_->reqs.size() != impl_->libs.size()) { err = "mtl: the compile registry is out of step"; return false; }
+    std::vector<id<MTLLibrary>> fresh;
+    fresh.reserve(impl_->libs.size());
+    for (size_t i = 0; i < impl_->reqs.size(); ++i) {
+        std::string src;
+        if (!build_source(ggml_common_path, kernel_dir, impl_->reqs[i].first, impl_->reqs[i].second, src, err))
+            return false;
+        NSError* cerr = nil;
+        id<MTLLibrary> lib = compile_source(impl_->dev, src, &cerr);
+        if (!lib) {
+            const auto& files = impl_->reqs[i].first;
+            err = "mtl: reload compile failed (" + std::string(files.empty() ? "?" : files.back()) + "): " +
+                  std::string([[cerr localizedDescription] UTF8String]);
+            return false;
+        }
+        fresh.push_back(lib);
+    }
+    for (size_t i = 0; i < fresh.size(); ++i) {
+        impl_->retired.push_back(impl_->libs[i]);   // kept: graphs replayed from their pipeline states still run
+        impl_->libs[i] = fresh[i];
+    }
+    return true;
+}
+
+int Context::library_count() const { return (int) impl_->libs.size(); }
 
 bool Context::has_function(int lib, const std::string& fn) const {
     return [[impl_->libs[lib] functionNames] containsObject:[NSString stringWithUTF8String:fn.c_str()]];
