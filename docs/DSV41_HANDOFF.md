@@ -189,6 +189,22 @@ abandoned mid-stream and a canary after each): every round answered, canaries 0.
 ERR lines and 0 server tracebacks**; production restored `health 200` after the window.  The unit tests
 (`ds4_batch_attn_test` with the `write_row` cases and the five others) are green on the same tree.
 
+**Where the branch stands (2026-10-27, commit `0e62a63`, 71 commits, nothing pushed).**  The tree is gated (352 server
+tests, the live-slot fuzz, the probe and the three-client HTTP check, all green on `60b95a1`/later) and production has
+never been left broken.  What is in: M1 (per-sequence state and the turn-taking scheduler), M4 (the batch protocol and the
+server's batched streaming), M5 (all the measurements, plus the parameters computed rather than written: the batch's
+geometry in `INFO batch_*`, the burst from the measured switch, a slot's context computed at load, written beside the
+pack and applied by the next load), M6 (the monitor's parallel view), and M2's foundations - the per-sequence regions, the
+absolute selection rows, the per-row chunk path (proved bit-identical in process), the decode side's plumbing
+(`Run::rows`, `chunk_rows`, `forward_chunks`, per-row Engram reads, `forward_rows`, the per-row sampler).
+
+What is **not** in: the step itself.  Two attempts are recorded in `docs/DSV41_BATCHING.md`: the chunk flow carries a
+step of two rows functionally (every client answered) but at 0.6-1.2 tok/s - its per-call setup dominates - so the step
+needs the lean per-window path (`layer()`'s own buffers), which is the next thing to write; the per-row branch of
+`layer()` is the 150 lines the design note describes, and the in-process A/B (`STRATA_DS4_STEPROWS=2`) is the harness to
+prove it with.  M3 (the grouped GEMM over a step's T routed rows) comes after that; `route_overlap` bounds it at
+1.15-1.28x, so the milestone's 2-3x is the thing to test the moment the step is lean.
+
 **Release gate on the tuning tree (2026-10-27, commit `60b95a1`).**  `serve.test_server`: **352 tests, OK** (478 s - the
 box was loaded by the gate's own runs).  The fuzz with the live slots (twelve rounds of two to four concurrent requests, a
 third abandoned mid-stream, a canary after each): **every round answered, canary green** (0.29-0.44 s), with the serve
