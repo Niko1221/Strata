@@ -5855,7 +5855,7 @@ struct Model::Impl {
         int dev;   // dst's device (devs index), -1: RAM
     };
     std::vector<StreamPiece> st_vram;   // (DS4_COPY_STREAM) VRAM experts' pieces, streamed with the copy's
-    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by DS4_STREAM_WORKERS (4) workers, each a
+    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by a worker a range of a file, each a
     // reader filling one of its two arenas while its mover hands out the other's pieces
     bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
         std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
@@ -5863,7 +5863,8 @@ struct Model::Impl {
         });
         const uint64_t A = os::kDirectAlign;
         const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 64.0f)) << 20;
-        const int nw = std::max(1, (int) env_f("DS4_STREAM_WORKERS", 4.0f));
+        const int forced = (int) env_f("DS4_STREAM_WORKERS", 0.0f);   // (N: N readers sharing every chunk, for tests)
+        const int most = std::max(1, (int) env_f("DS4_STREAM_RANGES", 4.0f));   // a file's readers at most (1: one a file)
         constexpr uint64_t kGap = 16ull << 20;   // a gap up to this is read through, so a tensor's pieces stay one stream
         struct Chunk {
             int file;
@@ -5900,6 +5901,37 @@ struct Model::Impl {
             std::mutex mu;
             std::condition_variable cv;
         };
+        // a reader a range, front to back: each file cut into ranges of about the smallest file's bytes
+        std::vector<std::pair<size_t, size_t>> rng;   // a reader's chunks [first, last) (chunks run in file order)
+        if (forced <= 0) {
+            std::vector<std::pair<size_t, size_t>> fch;
+            std::vector<uint64_t> fb;
+            for (size_t c = 0; c < chunks.size(); ++c) {
+                if (c == 0 || chunks[c].file != chunks[c - 1].file) {
+                    fch.push_back({c, c});
+                    fb.push_back(0);
+                }
+                fch.back().second = c + 1;
+                fb.back() += chunks[c].n;
+            }
+            const uint64_t least = fb.empty() ? 1 : std::max<uint64_t>(1, *std::min_element(fb.begin(), fb.end()));
+            for (size_t f = 0; f < fch.size(); ++f) {
+                const int k = std::clamp((int) std::lround((double) fb[f] / (double) least), 1, most);
+                uint64_t acc = 0;
+                size_t start = fch[f].first;
+                int made = 0;   // (cuts at 1/k, 2/k, .. of the file's bytes; the rest is its last range)
+                for (size_t c = fch[f].first; c < fch[f].second; ++c) {
+                    acc += chunks[c].n;
+                    if (made < k - 1 && acc * (uint64_t) k >= fb[f] * (uint64_t) (made + 1)) {
+                        rng.push_back({start, c + 1});
+                        start = c + 1;
+                        ++made;
+                    }
+                }
+                if (start < fch[f].second) rng.push_back({start, fch[f].second});
+            }
+        }
+        const int nw = forced > 0 ? forced : (int) rng.size();
         std::vector<Worker> ws((size_t) nw);
         bool ok = true;
         for (Worker& w : ws)
@@ -5907,17 +5939,20 @@ struct Model::Impl {
         std::atomic<size_t> next{0};
         std::atomic<bool> bad{!ok};
         std::vector<std::thread> th;
-        for (Worker& wr : ws) {
-            Worker* pw = &wr;
-            th.emplace_back([&, pw] {   // the reader: the next chunk into the arena its mover has emptied
+        for (size_t wi = 0; wi < ws.size(); ++wi) {
+            Worker* pw = &ws[wi];
+            th.emplace_back([&, pw, wi] {   // the reader: the next chunk into the arena its mover has emptied
                 Worker& w = *pw;
+                size_t own = forced > 0 ? 0 : rng[wi].first;   // (the next chunk of its range)
                 for (int s = 0;; s ^= 1) {
                     Arena& x = w.a[s];
                     {
                         std::unique_lock<std::mutex> lk(w.mu);
                         w.cv.wait(lk, [&] { return !x.full; });
                     }
-                    const size_t ci = bad.load() ? chunks.size() : next.fetch_add(1);
+                    const size_t ci = bad.load() ? chunks.size()
+                                      : forced > 0 ? next.fetch_add(1)
+                                                   : (own < rng[wi].second ? own++ : chunks.size());
                     const bool last = ci >= chunks.size() ||
                                       !os::pread_direct(pk.dfds[(size_t) chunks[ci].file], x.p, chunks[ci].n, chunks[ci].off);
                     if (last && ci < chunks.size()) bad.store(true);
@@ -5979,10 +6014,10 @@ struct Model::Impl {
         for (Worker& w : ws)
             for (Arena& x : w.a)
                 if (x.p != nullptr) cudaFreeHost(x.p);
-        std::fprintf(stderr, "ds4: the experts streamed: %.1f GB in %zu reads of up to %llu MB (%d workers, unbuffered) "
+        std::fprintf(stderr, "ds4: the experts streamed: %.1f GB in %zu reads of up to %llu MB (%d readers, %s, unbuffered) "
                              "in %.1f s, %.1f GB to RAM, %.1f GB to VRAM\n",
-                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw, (now_ms() - t0) / 1000.0, to_ram / 1e9,
-                     to_vram / 1e9);
+                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw,
+                     forced > 0 ? "sharing the chunks" : "a range each", (now_ms() - t0) / 1000.0, to_ram / 1e9, to_vram / 1e9);
         if (bad.load())
             err = ok ? "streaming the experts from the model's files failed" : "no pinned memory for the experts' stream";
         return !bad.load();
