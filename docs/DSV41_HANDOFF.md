@@ -381,3 +381,19 @@ row of that loop (or compute-sanitizer on the layer), then the 300-token shape.
 Environment notes from the same window: a build's binary must not be copied over one a dying engine still holds
 (`Text file busy` until the process exits; use a fresh name), and a window's restore copies `strata-dsv41.prod` back
 over `build/strata-dsv41`, so keep the branch build under another name (`.dbg`, `.stepN`).
+
+
+**It is a deadlock, not a 270x slowdown (2026-10-27 14:40-14:50).**  A build with host-order prints only (no syncs;
+`DS4_STEPDBG`) shows the prompt reaching layer 2 of the first chunk and stopping right after the per-row `ratio`
+print (the first layer with `l.ratio = 2`): no compressor-row print, no indexer, no next layer.  Running the engine
+directly (one `GEN`, stdin held open) and reading `/proc/<pid>` at the stop: the main thread sleeps in the 50 ms
+monitor loop of `run_dev_chunks`, every device worker is in `futex_wait_queue_me`, GPU 0 is idle while GPUs 1-3 stay
+at 100 %, so a device worker is blocked, not the arithmetic being slow.  The earlier synced build put the same stop
+inside `cudaStreamSynchronize` after the window section, which agrees: the worker waits for something that never
+arrives.  The last thing that worker did is the per-row window block of layer 2 (its print fired), then the `ratio`
+print - so the wait is in that layer's compressor/indexer block, its attention, or its flow MoE; which of the three
+is the next print to add.  The box has no gdb/eu-stack/pstack, so the tools for a stack are either a print after each
+branch or `compute-sanitizer` on that layer (a faulted kernel can leave a stream that never signals).
+
+The plain path through the same build is fine: `plain: OK`, 96 tokens read in **760 ms** on the same load where the
+per-row run stops - so the control is clean and the shape (96 tokens, `DS4_CHUNK=16`, one server) is not the cause.
