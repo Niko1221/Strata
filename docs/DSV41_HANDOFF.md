@@ -880,3 +880,20 @@ second, so the turn's 2.5 s could not have told the two apart.  The PR body and 
 test (`GEN` with the slot's own tokens plus a few new ones, then `took back ... from the folder` and `DONE`'s `reused`
 close to N) is listed under "not run".
 
+
+## The batch attempts on production, and back to one stream (02:50)
+
+Three batched settings were started on production in a row, each with the `.step29` engine:
+
+| | config | what happened |
+|---|---|---|
+| 2 slots | `--batch 2 --slot-context 1048576 --read-slice 32768` | served, but a slot switch parked and reloaded the whole conversation (~1 GB at 1M): 23 tokens took 19-26 s. Also: **`STRATA_DS4_BATCH_LIVE` was not set**, so the engine was on the parking path, not the live one |
+| 8 slots | `--batch 8 --slot-context 1048576` | 984 host experts (9.7 GB); eight requests at once took 68-105 s each |
+| 4 slots, 512K | `--batch 4 --slot-context 524288 --read-slice 32768` **with** `BATCH_LIVE=1` and `STEP=1` | healthy: `serving 4`, `context 524288`, 93 host experts (0.9 GB) - the intended batch path |
+
+Then production went back to **one stream, 1M** (`health 200`, `serving 1`, `context 1048576`, slot folder `700`, 4 host
+experts).  One false start on the way: the new server could not bind 8080 while the old one was still shutting down
+(`port 8080 is already in use`) and nothing came up for ~3 minutes; the launcher and the config were already the
+one-stream ones, so a plain start fixed it.  The launcher keeps `SLOT_KEEP`, `SLOT_DAYS=2`, `ADMIT_SHORT_FIRST=2048`,
+`ADMIT_MAX_WAIT_S=300`; the batch-only `BATCH_LIVE`/`STEP` were removed with the batch config.
+
