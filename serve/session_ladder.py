@@ -686,9 +686,11 @@ class SessionLadder:
     def _note_file_saved(self, session_id: str, path: str) -> None:
         """Task 7 records a ladder file it saved for this session: the file joins the LRU ledger (a re-save of
         the same path moves it to the recent end - saves overwrite in place), the session's file_path follows
-        it, and the ledger caps at cfg.retention_max_files: an over-cap save retires the least-recent file -
-        removed from disk (one canonical file per session; the cap is what bounds the big ones, the tmpfiles
-        age rule owns the rest) together with that session's tracked state."""
+        it, and the ledger caps at cfg.retention_max_files: an over-cap save retires a file - removed from
+        disk (one canonical file per session; the cap is what bounds the big ones, the tmpfiles age rule owns
+        the rest) together with that session's tracked state.  Which file is the _retirement_victim's
+        decision (final review B): aux-first, plain LRU as the fallback.  The cap itself is enforced either
+        way."""
         if path in self.saved_files:
             self.saved_files.remove(path)
         self.saved_files.append(path)
@@ -697,7 +699,8 @@ class SessionLadder:
             s.file_path = path
             s.dirty = False                           # Task 8: the ladder's own save makes it clean
         while len(self.saved_files) > self.cfg.retention_max_files:
-            old = self.saved_files.pop(0)
+            old = self._retirement_victim()
+            self.saved_files.remove(old)
             for sid in [k for k, v in self.tracked.items() if v.file_path == old]:
                 del self.tracked[sid]
                 self.last_prompts.pop(sid, None)               # the prefix bound to a retired file retires with it
@@ -705,6 +708,21 @@ class SessionLadder:
                 os.remove(old)
             except OSError:
                 pass                                       # already gone (the age rule got there first): the ledger is what matters
+
+    def _retirement_victim(self) -> str:
+        """Which file an over-cap save retires (final review B).  Plain least-recent is wrong under the
+        always-park-current rule: an aux-sized CURRENT session earns a checkpoint too, so a 100-token park
+        could evict an older mid - the expensive file, the one whose restore was worth seconds.  So the
+        victim is the LEAST-RECENT entry whose tracked session is not save_eligible (aux-sized: the cheap
+        re-prefill), and a ledger path whose tracked session is already gone counts as a candidate - there
+        is nothing left behind it to protect.  Only when no such entry exists does retirement fall back to
+        the plain least-recent file.  The hard cap is unchanged either way: exactly one file goes per
+        over-cap save (this is called holding the LADDER LOCK, from _note_file_saved)."""
+        for path in self.saved_files:                        # least-recent first
+            owners = [sid for sid, v in self.tracked.items() if v.file_path == path]
+            if not owners or all(not self.tracked[sid].save_eligible for sid in owners):
+                return path
+        return self.saved_files[0]
 
     def _join(self, ev: ConvEvent) -> TrackedSession | None:
         if ev.kind == "skipped_over_budget" and ev.tokens == 0:
