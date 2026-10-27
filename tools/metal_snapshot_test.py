@@ -4,7 +4,8 @@ decode window's own K/V, so the conversation cache and SAVE / RESTORE are on, as
 protocol, one engine start (before, the Metal engine never parked and SAVE failed):
 
   1. started with --conversation-cache-mib: no start-up line turns the cache off on Metal, and INFO reports
-     conversation_cache_mib=1024;
+     conversation_cache_mib=1024 (the test's own --conversation-cache-min-tokens comes after the config's, so a
+     config's admission floor does not keep its short conversations from parking);
   2. a second conversation parks the first (`conversation cache: parked` in the log, no `skip parking`);
   3. SAVE <path> answers `SAVED <tokens> <bytes> <ms>` and writes the file;
   4. RESTORE of a file that is not a session file answers `SERR invalid 0 ...` and leaves the engine in step;
@@ -31,7 +32,8 @@ def main():
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
     tok = tokenizer(cfg["tokenizer"])
-    args = [a.exe, "--serve", *cfg["args"], *a.extra.split(), "--conversation-cache-mib", "1024"]
+    args = [a.exe, "--serve", *cfg["args"], *a.extra.split(), "--conversation-cache-mib", "1024",
+            "--conversation-cache-min-tokens", "16"]   # the last value wins: the config's floor may be above 32 tokens
     log_path = os.path.join(tempfile.gettempdir(), "metal_snapshot_test_engine.log")
     with open(log_path, "w") as log:
         p = subprocess.Popen(args, cwd=cfg.get("cwd"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
