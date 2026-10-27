@@ -198,13 +198,19 @@ class Monitor(unittest.TestCase):
         self.assertEqual(self.request("/web/../server.py")[0], 404)
 
     def test_control_waits_politely_and_keeps_its_label(self):
-        # #1997: the Unload button posts /unload?wait=1 (waits server-side for a busy turn to end), and
+        # #1997 plus the final review (Minor 6, Minor 3, parked 3): the Unload button posts
+        # /unload?wait=240 - a server-side wait for a busy turn, strictly under a browser's ~300 s fetch
+        # timeout, so a pathologically busy turn answers the readable 409 JSON instead of dying as a
+        # browser-level timeout (?wait=1 asked for the server's 300 s default, which sat right on it).
         # controlLabel holds "Unloading…" while the control request is in flight, so the 2-second poll
-        # cannot overwrite it from live status.
+        # cannot overwrite it from live status - and the state pill's class is guarded by the same
+        # label, so the words and the colour agree.
         code, script = self.request("/web/monitor.js")
         self.assertEqual(code, 200)
-        self.assertIn('"/unload?wait=1"', script)
-        self.assertIn("controlLabel", script)
+        self.assertIn('"/unload?wait=240"', script)
+        self.assertIn("controlLabel || (", script)                     # the label's guard
+        self.assertIn('${controlLabel || inflight || loading ? "busy"', script)   # the pill's guard
+        self.assertIn('status.loaded ? "loaded"', script)              # ...still the live green otherwise
 
 
 class ConversationCacheCard(unittest.TestCase):
