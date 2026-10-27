@@ -223,6 +223,23 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  const DS_EXPERTS_MIN=[0,1,50];
  function dsEngineVersion(config){const m=/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String(config?.exe??''))||/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String((config?.lib_dirs??[])[0]??''));return m?m[1].split('.').map(Number):null;}
  function dsExpertsSupported(config){const v=dsEngineVersion(config);if(!v)return false;for(let i=0;i<DS_EXPERTS_MIN.length;i++){const a=v[i]??0,b=DS_EXPERTS_MIN[i];if(a!==b)return a>b;}return true;}
+ /* Control's ceiling for one start wait: 600 s until Control 0.1.50, 1800 s from there (the 0.1.50 runtime takes a longer wait for a
+    big model, #3949). Control rejects a wait above its own ceiling before it starts anything, so asking an older Control for 1800 s
+    would stop every load: the app asks for what the Control it has accepts, and keeps today's 600 s when it cannot tell. */
+ const CONTROL_LONG_START_MIN=[0,1,50],START_WAIT_CEILING=600,START_WAIT_CEILING_LONG=1800;
+ function controlAllowsLongStart(){const v=String(control?.version??'').split('.').map(x=>Number.parseInt(x,10)||0);for(let i=0;i<CONTROL_LONG_START_MIN.length;i++){const a=v[i]??0,b=CONTROL_LONG_START_MIN[i];if(a!==b)return a>b;}return true;}
+ function startWaitCeiling(){return controlAllowsLongStart()?START_WAIT_CEILING_LONG:START_WAIT_CEILING;}
+ /* How long a start waits for this model, in the same shape as `strata launch`'s figure (#3949 #3459 #4191): ten minutes, about eight
+    more seconds per GB above 40 GB, never more than this Control accepts. A model nobody can size keeps the 300 s it always had.
+    The run config's engine_ready_s is the floor, not the ceiling: the server reads that number and ends the engine when it runs out,
+    so the start must never give up before the server does (setup writes 3600 for DeepSeek V4.1-Flash). */
+ function startWaitFor(config,entry,model){
+  const ceiling=startWaitCeiling(),ready=Number(config?.engine_ready_s)||0;
+  const known=Number(entry?.diskGb),fromDisk=Number.isFinite(known)&&known>0?known:0;
+  const gb=fromDisk||Number((snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===model)?.download_gb)||0;
+  const sized=gb>40?Math.max(300,600+(gb-40)*8):300;
+  return Math.trunc(Math.max(300,Math.min(ceiling,Math.max(ready,sized))));
+ }
  function buildConfig(args,config){
   const vision=runtimeVision(config,args.vision);
   const visionPreferences=args.vision!==undefined?{ui_vision_enabled:args.vision!=='no',ui_vision_device:args.vision==='no'?config.ui_vision_device??'yes':args.vision}:{};
@@ -300,12 +317,18 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
-  let proc=null,started=null,retried=null;
+  let proc=null,started=null,retried=null,startWait=null;
   if(packaged){
+   /* How long this start waits, and the server's own engine wait kept above it. The server ends the engine when its engine wait runs
+      out (900 s, or the config's engine_ready_s), so a start that waits longer than that can never win: as in `strata launch`, the
+      server gets a wait above the start's. It is only ever raised, never lowered, so a config that already names a longer one
+      (setup's 3600 for DeepSeek V4.1-Flash) is left alone. */
+   startWait=startWaitFor(config,entry,args.model);
+   if(startWait+60>Math.max(900,Number(cfg.engine_ready_s)||0))cfg.engine_ready_s=startWait+60;
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:ownEngine(config)?Math.min(600,Math.max(300,Number(config.engine_ready_s)||300)):300}));};
+   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWait}));};
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;
