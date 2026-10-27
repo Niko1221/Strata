@@ -562,22 +562,45 @@ The step's first tokens all arrive at one instant (0.88 s at 2 slots, 3.40 s at 
 read) against the bursts' 0.41 s spread, and 0 routed experts on the CPU lane at 16 slots.  The flow streams a step's
 experts on this path (86.8 against 86.6: no penalty), which the chunk path could never do.
 
-**Exactness.**  At two slots the step's tokens are the burst path's, bit for bit (32 tokens, `--ref`).  At four they are
-not: slots 1 and 2 diverge at tokens 4 and 7, at eight four of the eight do (2, 7, 12, 15), at sixteen seven of them
-(1, 2, 2, 2, 3, 4, 6, 13, 15).  What is ruled out: one prompt for every slot (`same_probe.py`, 24 tokens) gives slot
-0's tokens from *every* slot at 2, 4 and 16 slots - the bursts' control does too at 16 - so no row of a pass sees
-another row's scratch, at any T, and the pass is deterministic.  The same-prompt probe cannot see a wrongly-addressed
-per-sequence region (every row writes identical bytes to it), so that side is still open.  Four slots is where it
-starts, which is a workable size to bisect: 2 rows stage two segments a row and never flush the descriptor, 4 rows
-flush it once (`x.n + 2 > 4`), and 4 is also the first count where a *pass* completes a group on every row at one
-step (at R = 4, p = 67: rows 4 through 67) - the first step that writes rows AND reads them back in its own attention.
-The next probe separates those two: 4 slots with `--tp 1` (the serial path, `replicate` instead of the staged
-hand-off) against a 4-slot burst reference with the same `--tp 1` - if that is exact, the staging is the bug, if it is
-not, the per-row write/read of the compressed rows and keys is.
+**Exactness: it was a race, and it is fixed (19:10).**  At two slots the step's tokens were the burst path's from the
+start.  At four and more they drifted - but *not always*: the same 4-slot run with alternating prompts (A, B, A, B;
+every even slot must answer slot 0 and every odd slot slot 1, `same_probe.py --alt`) came out clean in 1 run of 3, and
+the 6-token run with `DS4_STEPCHECK`'s per-layer syncs came out clean too, while the 4- and 8- and 16-slot runs
+without the syncs drifted.  Two races, both on a buffer reused *within* a pass:
+
+* the window path's cross-group staging has no acknowledgements (the chunk path's `x_ack` is what the chunk path
+  relies on): a reader's copy into its table could still be in flight when the next pass's writer staged into the same
+  slot (`sr.stage(0)`), so some rows landed from another pass.  `run_dev` now syncs a step's device at the end of its
+  work - a pass a chunk, all its copies done before the next pass stages - which is what the head device's sync
+  already gave the logits.
+* the serial path (`!wp.par`, `replicate`) staged every row through the *same* pinned buffer (`sr.h_ckv`): the next
+  row's device-to-host copy could overtake the previous row's host-to-device copies.  A row now stages in its own
+  slice of it (`h_ckv + t * ckv_rb()`, `h_ik + t * ik_rb()`).
+
+Measured after the fix (alternating prompts, 24 tokens): 3 of 3 clean at 4 slots, 1 of 1 at 16, 2 of 2 unchanged at 2.
+The same-prompt probe had missed it because a stale copy for every row carries the same bytes; alternating prompts is
+what exposes it (`tools/dsv41/same_probe.py`, now with `--alt` and `--out`).
 
 **Window discipline (learned the hard way today).**  `services/boot.sh` is started by a *login* shell, so any
 `bash -lc` over ssh (`rex.py run` / `runf`) during a window starts production behind the window's back and the run
 then fights it for VRAM: the 18:10 window measured 15375 host experts, 18 s first tokens and drifting tokens because a
 production engine had taken ~35 GB of each card.  Move `boot.sh` aside (`mv boot.sh boot.sh.off`) before a window, as
 `final_gate.sh` does, poll with `rx.py` (`bash -c`), and put it back in the window's restore.
+
+Debug switches the hunt left behind, both off by default: `DS4_STEP_SERIAL=1` runs a step's pass on one thread with
+`replicate` instead of the threads' hand-off (it takes the staged cross-group path out of the picture), and
+`DS4_STEPCHECK=1` prints every pass's shape (`tr step T <n> pos ... seq ...`) and checks that rows 0 and 2 of a pass
+with the same prompt stay bit-identical after every layer (it syncs a device a layer, so use it on short runs).
+
+**Still open at 19:20: a pass of 8 rows and more drifts with a prompt a slot.**  With the race fixed, 2 slots are
+exact (96 tokens, 59.9 tok/s against the bursts' 43.0, `--ref` true) and the alternating-prompt probes are clean at 4
+slots (3 of 3) and 16 (1 of 1).  But 16 slots with a *different prompt each* (the bench's own) still drift: 12 of the
+16 slots differ from their burst reference, from token 1 on for slot 5 and 2-8 for most.  The alternating probe only
+says every even slot answers every other even slot; it cannot see a wrong answer that all of them share.  Two
+candidate boundaries, both at 7/8 rows: `kAttnScratchT = 7` (a step of up to 7 rows takes `sparse_attn`'s staged,
+scratch-decoded kernel; 8 rows switch it to `sparse_attn_packed_kernel`, which no step had used before this one) and
+`async_max_t = 8` (the routing mailbox: up to 8 rows async, above it the synchronous route - in the threads' path
+`wp.par` forces async anyway, so this one only matters without `--threads`).  The next probe: 4 and 8 slots with a
+burst reference each on this binary, which says whether the drift starts at 8 (then `DS4_ATTN_STAGED=1`, forcing
+`heads_per_block = -1` so that every T takes the staged kernel, separates the two).
 

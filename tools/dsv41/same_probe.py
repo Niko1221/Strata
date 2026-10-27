@@ -9,6 +9,7 @@ Exit 0 when every slot's tokens are slot 0's, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import queue
 import subprocess
@@ -75,7 +76,9 @@ def main() -> int:
     ap.add_argument("--read-timeout", type=int, default=1800)
     ap.add_argument("--extra", default="")
     ap.add_argument("--step", action="store_true")
+    ap.add_argument("--alt", action="store_true", help="two prompts: the even slots one, the odd slots another")
     ap.add_argument("--label", default="")
+    ap.add_argument("--out", default="", help="write every slot's tokens to this JSON")
     a = ap.parse_args()
 
     argv = [a.exe, "--pack", a.pack, "--serve", "--batch", str(a.slots), "--max-context", str(a.max_context),
@@ -95,10 +98,16 @@ def main() -> int:
         t_load = time.time()
         ready = e.start(a.timeout)
         print("%sREADY: %s (%.0f s)" % (a.label + ": " if a.label else "", ready, time.time() - t_load), flush=True)
-        prompt = [1000 + i for i in range(a.prompt_tokens)]   # (the same prompt every slot)
+        # (the same prompt every slot; --alt: two prompts, the even slots A and the odd slots B - every even slot must
+        # answer slot 0 and every odd slot slot 1, which a wrongly-addressed per-sequence region does not give)
+        pa = [1000 + i for i in range(a.prompt_tokens)]
+        pb = [2000 + 3 * i for i in range(a.prompt_tokens)]
         t0 = time.time()
         for k in range(slots):
-            e.send("BGEN %d %d %s" % (k, n, ",".join(str(x) for x in prompt)))
+            p = pa
+            if a.alt and k % 2 == 1:
+                p = pb
+            e.send("BGEN %d %d %s" % (k, n, ",".join(str(x) for x in p)))
         ends = 0
         while ends < slots:
             line = e.next(a.read_timeout)
@@ -121,17 +130,25 @@ def main() -> int:
     finally:
         e.close()
 
-    ref = toks[0]
     same = True
-    for k in range(1, slots):
-        if toks[k] != ref:
+    for k in range(slots):
+        ref_k = toks[0 if (not a.alt or k % 2 == 0) else 1]
+        what = "slot %d" % (0 if (not a.alt or k % 2 == 0) else 1)
+        if k == (0 if (not a.alt or k % 2 == 0) else 1):
+            continue
+        if toks[k] != ref_k:
             same = False
-            d = next((i for i, (x, y) in enumerate(zip(toks[k], ref)) if x != y), min(len(toks[k]), len(ref)))
-            print("  slot %d differs from slot 0 at %d: %s vs %s" % (k, d, toks[k][max(0, d - 2):d + 3],
-                                                                      ref[max(0, d - 2):d + 3]), flush=True)
+            d = next((i for i, (x, y) in enumerate(zip(toks[k], ref_k)) if x != y), min(len(toks[k]), len(ref_k)))
+            print("  slot %d differs from %s at %d: %s vs %s" % (k, what, d, toks[k][max(0, d - 2):d + 3],
+                                                                  ref_k[max(0, d - 2):d + 3]), flush=True)
     total = sum(len(t) for t in toks)
-    print("%d slot(s), %d tokens each, %d in all in %.2f s (%.1f tok/s); every slot slot 0's tokens: %s" %
-          (slots, n, total, wall, total / wall if wall else 0, same), flush=True)
+    if a.out:
+        with open(a.out, "w") as f:
+            json.dump({"slots": {str(k): {"tokens": toks[k]} for k in range(slots)}, "wall": wall}, f)
+        print("wrote %s" % a.out, flush=True)
+    print("%d slot(s), %d tokens each, %d in all in %.2f s (%.1f tok/s); every slot its prompt's tokens: %s%s" %
+          (slots, n, total, wall, total / wall if wall else 0, same, " (two prompts, alternating)" if a.alt else ""),
+          flush=True)
     return 0 if same else 1
 
 

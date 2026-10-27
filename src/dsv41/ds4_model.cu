@@ -9377,6 +9377,14 @@ struct Model::Impl {
             return false;
         }
         for (int t = 0; t < T; ++t) seqs[(size_t) rows.seq[t]].slot_held = false;   // (their states grow now)
+        // (DS4_STEPCHECK=1: the shape of every pass - how many rows, where each stands, in which sequence)
+        if (std::getenv("DS4_STEPCHECK") != nullptr) {
+            std::fprintf(stderr, "tr step T %d pos", T);
+            for (int t = 0; t < T; ++t) std::fprintf(stderr, " %d", (int) rows.pos[t]);
+            std::fprintf(stderr, " seq");
+            for (int t = 0; t < T; ++t) std::fprintf(stderr, " %d", rows.seq[t]);
+            std::fprintf(stderr, "\n");
+        }
         // the Engram rows: each row its own sequence's tokens (asked for now, collected before its layer)
         const double te = now_ms();
         const int64_t eg_w0 = eg_wait_ns.load();
@@ -9387,10 +9395,17 @@ struct Model::Impl {
         }
         st.engram_ms += now_ms() - te;
         plan_window(0, T, wplan, &rows);   // (the rows' own positions: the indexer's counts and the candidate plans)
+        // (DS4_STEP_SERIAL=1: the pass on one thread, device after device, its new table rows given to every copy by
+        // replicate - a debug switch that takes the staged cross-group hand-off out of the picture)
+        const bool step_serial = std::getenv("DS4_STEP_SERIAL") != nullptr;
+        if (step_serial) {
+            wplan.par = false;
+            wplan.async = false;
+        }
         prof_window = prof_on && T == 1;
         n_logits = T;   // (every row's logits: the serve loop samples one a row)
         const double tl = now_ms();
-        if (par) {
+        if (par && !step_serial) {
             if (!forward_par(0, T, err, &rows)) return false;
         } else if (!forward_serial(0, T, err, &rows)) return false;
         st.layer_ms += now_ms() - tl;
@@ -9506,6 +9521,9 @@ struct Model::Impl {
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
         const int D = g.dim, H = g.hc;
+        // (DS4_STEPCHECK=1: rows 0 and 2 of a step with the same prompt must stay bit-identical - the first layer and
+        // device where they are not is printed; a debug switch, it syncs a device a layer)
+        static const bool step_check = std::getenv("DS4_STEPCHECK") != nullptr;
         bool started = false;
         std::vector<char> got(srcs.size(), 0);
         for (int il = 0; il < g.nl; ++il) {
@@ -9534,6 +9552,7 @@ struct Model::Impl {
                 const int64_t g_first = p0 / sr.ratio;
                 const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
                 if (step != nullptr) {   // (a step: the rows its own positions completed, staged one a row)
+                    if (!wp.par) continue;   // (the serial pass's replicate put them in every copy already)
                     const int R = std::max(1, sr.ratio);
                     Xfer x;
                     int trow = 0;
@@ -9579,9 +9598,24 @@ struct Model::Impl {
             }
             if (mi == 0 && !tap(d, il, T, err)) return false;
             if (!layer(L0, mi, p0, T, wp, err, step)) return false;
+            if (step_check && step != nullptr && T > 2) {
+                std::vector<float> a((size_t) H * D), b((size_t) H * D);
+                CK(cudaMemcpyAsync(a.data(), d.h, a.size() * 4, cudaMemcpyDeviceToHost, s));
+                CK(cudaMemcpyAsync(b.data(), d.h + (size_t) 2 * H * D, b.size() * 4, cudaMemcpyDeviceToHost, s));
+                CK(cudaStreamSynchronize(s));
+                double mx = 0.0;
+                for (size_t i = 0; i < a.size(); ++i) mx = std::max(mx, (double) std::fabs(a[i] - b[i]));
+                if (mx > 0.0)
+                    std::fprintf(stderr, "tr stepcheck dev %d il %d after layer: h0 vs h2 max %.6g\n", di, il, mx);
+            }
             if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, il, p0, T);
             const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
             if (last && mi == 0 && il + 1 < g.nl) xfer_put(hand_xfer(d.hand, d, T, true), d.hand_flag, wp.win, d.xcnt, s);
+        }
+        if (step != nullptr) {
+            // (a step: this device's work - the cross-group copies into its tables included - is done before the next
+            // pass stages; the window path has no acknowledgements, and a pass a chunk reuses the source's slot)
+            CK(cudaStreamSynchronize(s));
         }
         if (d.grp == devs[(size_t) head_dev].grp) return head_rows_dev(di, T, err);
         return true;
@@ -9788,8 +9822,8 @@ struct Model::Impl {
                         fc.quant = 2;
                         fc.pdst = sr.ckv[(size_t) l.dev] + ckv_at(sr, row, sq);
                         finish(d.latent + (size_t) t * HD, 1, HD, HD, fc, s);
-                        if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, ckv_at(sr, row, sq), ckv_rb(),
-                                                  l.dev, err))
+                        if (!wp.par && !replicate(sr.ckv, sr.h_ckv + (size_t) t * ckv_rb(), sr.ev_ckv, fc.pdst,
+                                                  ckv_at(sr, row, sq), ckv_rb(), l.dev, err))
                             return false;
                     }
                 }
@@ -9810,8 +9844,8 @@ struct Model::Impl {
                         fi.quant = 3;
                         fi.pdst = ks.ik[(size_t) l.dev] + ik_at(ks, row, sq);
                         finish(d.ikr + (size_t) t * g.ix_hd, 1, g.ix_hd, g.ix_hd, fi, s);
-                        if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, ik_at(ks, row, sq), ik_rb(),
-                                                  l.dev, err))
+                        if (!wp.par && !replicate(ks.ik, ks.h_ik + (size_t) t * ik_rb(), ks.ev_ik, fi.pdst,
+                                                  ik_at(ks, row, sq), ik_rb(), l.dev, err))
                             return false;
                     }
                 }
