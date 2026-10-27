@@ -699,7 +699,7 @@ class AccessStep(Base):
                 await press(pilot, *self.reach(), "down", "down")
                 t = text_of(app)
                 self.assertIn("cloudflared is not installed on this computer", t)
-                self.assertIn("quick tunnel", t)
+                self.assertIn("quick tunnel", flat(app))
                 await press(pilot, "enter")
             self.assertEqual(ctx.settings.access, "cloudflare")
             self.assertIn("Save as preset, then launch", text_of(app))

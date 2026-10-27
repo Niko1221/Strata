@@ -134,6 +134,14 @@ export function checkRunConfig(text, { known = KNOWN_KEYS } = {}) {
   return { ok: !issues.some(i => i.level === 'error'), issues };
 }
 
+/** Validate and parse one captured text value, so callers use the checked snapshot. */
+export function checkAndParseRunConfig(text, options) {
+  text = String(text ?? '');
+  const checked = checkRunConfig(text, options);
+  if (!checked.ok) return { ...checked, config: null };
+  return { ...checked, config: JSON.parse(text.replace(/^\uFEFF/, '')) };
+}
+
 /** The English lines of the issues, `Line 12: …`, for the Details of a refused start. */
 export function describeIssues(issues, level) {
   return issues.filter(i => !level || i.level === level).map(i => `${i.line ? `Line ${i.line}: ` : ''}${i.message}`);

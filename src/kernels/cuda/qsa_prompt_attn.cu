@@ -1,5 +1,7 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/gfx12_platform_defaults.hpp"
@@ -2418,12 +2420,16 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             if (pf_env == 1 || (pf_env < 0 && t75 && strata::sm75_series())) return launch<1, true>(q, pools, ids, steps, cap, s, attn, n_q, st);
             return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         }
-        // STRATA_PROMPT_ATTN_IMMA=1 (opt-in, sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel)
+        // STRATA_PROMPT_ATTN_IMMA (sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel).  ON by default since 0.2.7 on every
+        // card that has them (Ampere and newer, CUDA builds; not Turing, Volta or Pascal, which have no int8 m16n8k32 MMA this kernel needs):
+        // +1.6% / +1.8% prompt at 8K / 16K on the RTX PRO 5000 (sm_120) and +1.1% / +1.3% at 8K / 16K on 2x RTX A4000 (sm_86), decode unchanged,
+        // 5 pairs each; another summation order (~1e-7), so a near-tie can flip a prompt's first token.  Sm_80, 8.9, 9.0 and the datacentre
+        // Blackwells run the same kernel unmeasured.  STRATA_PROMPT_ATTN_IMMA=0 is the off switch (the v2 i8 kernel of 0.2.6), =1 as the default.
         if (g_pa_imma < 0) {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_IMMA");
-            g_pa_imma = v != nullptr && v[0] == '1' ? 1 : 0;
+            g_pa_imma = v == nullptr ? 2 : (v[0] == '1' ? 1 : 0);   // 2: the default (on where the kernel can run)
         }
-        if (g_pa_imma == 1 && !turing) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (!turing && (g_pa_imma == 1 || (g_pa_imma == 2 && strata::prompt_attn_imma_default(false, 80, strata::qwen_defaults_026())))) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;

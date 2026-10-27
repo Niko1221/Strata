@@ -77,6 +77,12 @@ ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB c
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
+# A unified-memory APU (Ryzen AI Max "Strix Halo", gfx1151, Windows): the graphics chip and the CPU share one pool of RAM, so the
+# engine's expert tiers are one pool too.  The measured 64 GB box: 2.00 bpw, Faster (5 experts), DSpark auto, Adrenalin 26.10.1.
+UMA_RESERVE_GB = 12.0                 # kept for Windows, the desktop and the engine's buffers (the engine's own RAM store margin)
+UMA_MEASURED = ("a Ryzen AI Max+ 395 (Radeon 8060S, 128 GB unified: a 64 GB BIOS carve-out plus 64 GB seen by Windows) on Windows: answers "
+                "14-16 tokens a second on code in the default Faster mode (5 experts) and 10-11 on chat; a 4,000-token prompt 77-81 tokens a "
+                "second, 8,000 tokens 108-111")
 
 
 def variant(model: str | None) -> dict | None:
@@ -84,6 +90,27 @@ def variant(model: str | None) -> dict | None:
     if not model:
         return None
     return next((v for k, v in ISTA_SETS.items() if k.lower() == str(model).lower()), None)
+
+
+def uma_card(cards: list[dict] | None) -> dict | None:
+    """The integrated Radeon a run uses, when the graphics memory is the PC's RAM (Ryzen AI Max, gfx1151): setup marks it `uma` (and
+    `integrated`); a discrete card never is.  None on every other computer."""
+    return next((c for c in cards or [] if c.get("uma") or c.get("integrated")), None)
+
+
+def uma_total_gb(card: dict, ram_gb: float | None) -> float:
+    """The one pool of a unified-memory PC, counted once: the RAM Windows sees plus the BIOS carve-out the GPU owns (the "shared"
+    part of the GPU's figure is that same RAM).  On the owner's Strix Halo: 64 GB + a 64 GB carve-out = 128 GB.  Without the carve-out
+    in the card's data, the GPU's figure less its shared part, or the larger of the two, is the best that can be said."""
+    ram = float(ram_gb or 0.0)
+    dedicated = float(card.get("dedicated_gb") or 0.0)
+    if dedicated > 0:
+        return ram + dedicated
+    vram = float(card.get("vram_gb") or 0.0)
+    shared = float(card.get("shared_gb") or 0.0)
+    if vram > 0 and shared > 0:
+        return ram + max(0.0, vram - shared)
+    return max(ram, vram)
 
 
 def variant_key(model: str | None) -> str | None:
@@ -245,6 +272,64 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
     return out
 
 
+def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
+    """plan() for an official IST-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
+    counted once.  The engine holds what fits beside the dense weights and the reserve and reads the rest from the SSD; the numbers in
+    UMA_MEASURED are the measured 64 GB box.  Never a refusal."""
+    v = ISTA_SETS[key]
+    total = uma_total_gb(card, ram_gb)
+    expert_gb = v["experts_gb"] / EXPERTS
+    set_gb = v["set_bytes"] / GB
+    download = ista_download_bytes(model) / GB
+    room = max(0.0, total - ISTA_DENSE_GB - UMA_RESERVE_GB)
+    resident = min(float(v["experts_gb"]), room)
+    streamed = max(0.0, float(v["experts_gb"]) - room)
+    in_mem = int(resident / expert_gb)
+    need_disk = download + DISK_HEADROOM_GB
+    out: dict[str, Any] = {
+        "variant": model, "cards": [{"index": card.get("index"), "name": card.get("name"), "vram_gb": _round1(total),
+                                     "layers": [0, LAYERS - 1], "dense_gb": _round1(ISTA_DENSE_GB),
+                                     "experts_gb": _round1(resident), "experts": in_mem}],
+        "experts_total": EXPERTS, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
+        "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(ISTA_DENSE_GB),
+        "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
+        "measured": UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
+        "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
+        "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
+        "uma": True, "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(total), "spill_gb": _round1(streamed),
+        "spare_ram_gb": _round1(max(0.0, total - ISTA_DENSE_GB - v["experts_gb"] - UMA_RESERVE_GB)),
+    }
+    lines, warns = out["lines"], out["warnings"]
+    lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, "
+                 f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
+    lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
+                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+    name = card.get("name") or "the built-in Radeon"
+    lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
+                 f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {ISTA_DENSE_GB:.1f} GB of "
+                 f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for Windows; the other {streamed:.0f} GB are read from the SSD while it answers.")
+    lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
+    if streamed > 0.5:
+        lines.append("Keep the model files on the NVMe drive and the machine otherwise idle while it answers: every word reads experts from it.")
+    if streamed <= 0.5:
+        out["verdict"] = "fits"
+    elif total >= float(v.get("ram_ok_gb") or 0):
+        out["verdict"] = "tight"
+        if total < 48:
+            warns.append(f"This PC has {total:.0f} GB of memory shared with the graphics chip and the model was measured on 128 GB: with less, "
+                         "more experts come from the SSD and each word takes longer. It still runs.")
+    else:
+        out["verdict"] = "spills"
+        warns.append(f"This PC has {total:.0f} GB of memory shared with the graphics chip and the model was measured on 128 GB: most of its "
+                     "experts are read from the SSD while it answers, so it is slow (a word can take seconds). The smaller 1.75 bpw set "
+                     "suits this computer better. It is still allowed.")
+    if disk_free_gb is not None and disk_free_gb < need_disk:
+        warns.append(f"The download needs about {need_disk:.0f} GB of free disk space and {disk_free_gb:.0f} GB are free where the files go. "
+                     "Use --models-dir on a bigger drive, or --gguf-dir for files you already have.")
+    out["words"] = " ".join(lines)
+    return out
+
+
 def plan(cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None = None, context: int = 8192,
          vendor: str | None = None, model: str | None = None) -> dict[str, Any]:
     """Where the model goes on this computer.  `cards`: the graphics cards ({"index", "name", "vram_gb", ...}, as gpu_fit takes them),
@@ -253,8 +338,14 @@ def plan(cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | N
 
     Keys: cards (per card: index, name, vram_gb, layers, dense_gb, experts_gb, experts), experts_in_vram, experts_total, vram_experts_gb,
     cpu_experts_gb, ram_needed_gb, spill_gb, spare_ram_gb, verdict (fits / tight / spills / unknown / no_card), tp, args,
-    download_gb, engram_gb, disk_need_gb, disk_ok, lines (plain words, one idea each), warnings (the risks, plainly), measured."""
+    download_gb, engram_gb, disk_need_gb, disk_ok, lines (plain words, one idea each), warnings (the risks, plainly), measured.
+    On a unified-memory APU (Ryzen AI Max, gfx1151) the plan counts one pool: also `uma: True` and `streamed_gb` (the experts
+    read from the SSD), tp 1 and no args (nothing to split between cards)."""
     if variant(model):
+        mine = gpu_fit.for_vendor(list(cards or []), vendor)[0] if vendor else list(cards or [])
+        card = uma_card(mine)
+        if card is not None:
+            return _plan_uma(variant_key(model), model, card, ram_gb, disk_free_gb, context)
         return _plan_ista(variant_key(model), cards, ram_gb, disk_free_gb, context, vendor)
     keep, ignored = gpu_fit.usable_cards(gpu_fit.for_vendor(list(cards or []), vendor)[0]) if vendor else gpu_fit.usable_cards(list(cards or []))
     keep = [c for c in keep if float(c.get("vram_gb") or 0) >= SMALLEST_CARD_GB]

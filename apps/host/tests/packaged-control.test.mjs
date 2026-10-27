@@ -26,8 +26,10 @@ function fakeControlDir() {
 
 test('the Control component is found by STRATA_CONTROL_DIR or beside the host, and only if it is whole', () => {
   const dir = fakeControlDir();
+  // The explicit env has no STRATA_COMPONENTS_DIR, so findControl would look in the real per-user components folder and find an updated Control installed on this PC.
+  const none = join(dir, 'no-components');
   try {
-    const found = findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'nowhere') });
+    const found = findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'nowhere'), components: none });
     assert.equal(found.dir, dir);
     assert.equal(found.python, bundledPython(dir));
     assert.equal(found.bundle.python, '3.12.15');
@@ -35,15 +37,15 @@ test('the Control component is found by STRATA_CONTROL_DIR or beside the host, a
     const install = mkdtempSync(join(tmpdir(), 'strata-install-'));
     try {
       mkdirSync(join(install, 'host', 'server'), { recursive: true });
-      assert.equal(findControl({ env: {}, hostDir: join(install, 'host') }), null, 'nothing beside the host yet');
+      assert.equal(findControl({ env: {}, hostDir: join(install, 'host'), components: none }), null, 'nothing beside the host yet');
       mkdirSync(join(install, 'control', 'python', ...(isWin ? [] : ['bin'])), { recursive: true });
       mkdirSync(join(install, 'control', 'strata_control'));
       writeFileSync(bundledPython(join(install, 'control')), 'x');
       writeFileSync(join(install, 'control', 'strata.py'), '#');
-      assert.equal(findControl({ env: {}, hostDir: join(install, 'host') }).dir, join(install, 'control'));
+      assert.equal(findControl({ env: {}, hostDir: join(install, 'host'), components: none }).dir, join(install, 'control'));
     } finally { rmSync(install, { recursive: true, force: true }); }
     rmSync(join(dir, 'strata.py'));
-    assert.equal(findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'x') }), null, 'a half component is not used');
+    assert.equal(findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'x'), components: none }), null, 'a half component is not used');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
