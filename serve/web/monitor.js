@@ -81,7 +81,10 @@ async function refresh() {
     const inflight = Math.max(status.activity.in_flight, records.filter(active).length);
     const loading = records.some(r => r.state === "loading");
     text("loaded", controlLabel || (loading ? "Loading…" : inflight ? "In use" : status.loaded ? "Loaded" : "Unloaded"));
-    $("model-state").className = `value ${inflight || loading ? "busy" : status.loaded ? "loaded" : ""}`;
+    // The pill's colour follows the same guard as the label above: while a control request is in flight the
+    // live status still says "loaded" (the engine is only gone when the unload answers), and a green pill
+    // under an "Unloading…" label contradicts it - so a control in flight renders the busy state.
+    $("model-state").className = `value ${controlLabel || inflight || loading ? "busy" : status.loaded ? "loaded" : ""}`;
     text("model", status.model); text("count", records.length);
     text("active", inflight ? `${inflight} active / queued` : status.auto_load ? "Loads automatically on the next request" : "No active requests");
     const last = records.find(r => !active(r));
@@ -96,7 +99,10 @@ async function control(load) {
   actionError = "";
   operating = true; $("load").disabled = $("unload").disabled = true;
   controlLabel = load ? "Loading…" : "Unloading…"; text("loaded", controlLabel);
-  try { await api(load ? "/load" : "/unload?wait=1", {}); notice(""); }
+  // ?wait=240 (not ?wait=1, which means the server's 300 s UNLOAD_WAIT_S default): the polite window is
+  // strictly under a browser's ~300 s fetch timeout, so a pathologically busy turn answers the readable
+  // 409 JSON the page can show instead of dying as a browser-level timeout.
+  try { await api(load ? "/load" : "/unload?wait=240", {}); notice(""); }
   catch (error) { actionError = error.message; notice(actionError); }
   finally { controlLabel = ""; operating = false; await refresh(); }
 }
