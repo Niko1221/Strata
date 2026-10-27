@@ -844,9 +844,13 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     def _num_or_none(key):
         # The nullable variant of _num (unload-works Task 3): an absent key or an explicit `null` keeps None
         # (the adaptive quiet gate); anything else converts like _num, same refusal naming key and value.
+        # Final review C: a JSON boolean is not a number - float(False) would silently mean 0.0 (fire on any
+        # idle moment) and float(True) 1.0 - so a bool is refused with the same wording as a non-number.
         raw = block.get(key)
         if raw is None:
             return None
+        if isinstance(raw, bool):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
         try:
             return float(raw)
         except (TypeError, ValueError):
@@ -8177,7 +8181,10 @@ def make_handler(svc: Service):
                     return                                   # the same 503 as EngineStuck, not a leaked traceback
                 body = {"status": r}
                 if r == "busy":                              # 409 with a message the webui can show, not a bare status
-                    body["error"] = {"message": "a request is running or queued; try again when it is quiet"}
+                    # final review C: the FIFO can also be held by the ladder's background pre-staging save, so
+                    # the wording says "the model is saving" rather than calling that a request.
+                    body["error"] = {"message": "a request is running or the model is saving; "
+                                                "try again when it is quiet"}
                 self._json(409 if r == "busy" else 200, body)
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
