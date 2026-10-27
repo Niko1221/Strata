@@ -609,9 +609,12 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
 
 A request that continues a chat reads only the part after what the engine already holds: the live session, or one of the
 checkpoints in RAM (up to 6, about 118 MB each, taken at the start of each new assistant turn and every 16K prompt tokens). A
-checkpoint is used only when the prompt starts with exactly its tokens and pictures. The oldest checkpoint, in practice
-the end of the system prompt that every chat of a client shares, is kept for good, so a new chat that shares the prefix
-starts after it. A prompt of 2,048 tokens or more is also checkpointed at the end of its system prompt. Claude Code stamps its
+checkpoint is used only when the prompt starts with exactly its tokens and pictures. The checkpoint at the end of the system
+prompt, which every chat of a client shares, is kept for good, so a new chat that shares the prefix starts after it. It is
+found by its turn boundary, not by age: a system prompt that ends past the first 16K periodic checkpoint still keeps its
+root, and the grid checkpoints before it rotate like any other (under `--prompt-cache-spread` the first of them stays).
+Without such a root the oldest checkpoint holds the pin. A prompt of 2,048 tokens or more is also checkpointed at the end of
+its system prompt. Claude Code stamps its
 system prompt with a billing header that changes on every request; the server pins both stamps so the prompt stays the same.
 
 | Option | Effect |

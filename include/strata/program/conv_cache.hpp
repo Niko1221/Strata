@@ -20,6 +20,11 @@
 //   * every other slot rotates by least recent use.  A checkpoint's stamp advances when it is created,
 //     when a new checkpoint lands on its length, and when a request mounts through it.
 //
+// The root is not always the chain's FIRST item: a system prompt that ends past the first periodic chunk
+// end (16K at the defaults) leaves grid checkpoints ahead of its own checkpoint (#2228, #3090).  The
+// overloads that take `root` pin that index instead of item 0; the caller names it through root_length /
+// root_index below.  Without a root argument, or with root 0, item 0 is the pin, as before.
+//
 // With a budget below two slots there is no room to keep root and leaf apart, so the pin switches off and
 // the oldest checkpoint leaves - the previous behaviour, one slot = the newest point only.
 #pragma once
@@ -77,6 +82,55 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     return v;
 }
 
+/// The length of the system-prompt root checkpoint, read from the conversation itself: the first turn boundary after
+/// token 0, kept only when it lies at or past `min_root` AND a later boundary exists - the position root_at picks in
+/// generate.cpp (root_at searches below the request's last boundary, so a single-boundary conversation has no system
+/// prompt ending there, and a first boundary below `min_root` means none at all).  0 = none; the policies then pin
+/// item 0, as before.  Pure, so parked, pooled and restored chains need no stored mark.
+inline int64_t root_length(const int64_t* ids, size_t n_ids, int64_t turn_token, int64_t min_root) {
+    if (turn_token < 0 || min_root <= 0) return 0;
+    for (size_t i = 1; i < n_ids; ++i)
+        if (ids[i] == turn_token) {
+            if ((int64_t) i < min_root) return 0;
+            for (size_t j = i + 1; j < n_ids; ++j)
+                if (ids[j] == turn_token) return (int64_t) i;
+            return 0;
+        }
+    return 0;
+}
+
+/// The chain index holding `root_len` tokens, or 0 when none does (item 0 is then the pin, as before).
+inline size_t root_index(const int64_t* lens, size_t n, int64_t root_len) {
+    if (root_len > 0)
+        for (size_t i = 0; i < n; ++i)
+            if (lens[i] == root_len) return i;
+    return 0;
+}
+
+/// The root found by the caller (`root`, an index into the chain): a system prompt that ends past the first periodic
+/// chunk end leaves grid checkpoints ahead of its own checkpoint, so the root is not always item 0 (#2228, #3090).
+/// The pin moves to `root`: it is never the victim, and item 0 rotates like any other item.  `root` 0 (or out of
+/// range) is the policy above, unchanged.
+inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, const bool* tail, const bool* pinned,
+                              size_t root) {
+    if (root == 0 || root >= n) return eviction_victim(stamps, n, cap, tail, pinned);
+    if (cap < 2 || n < 2) return 0;
+    size_t newest = 0;
+    for (size_t i = 1; i < n; ++i)
+        if (stamps[i] > stamps[newest]) newest = i;
+    if (tail != nullptr)
+        for (size_t i = 0; i < n; ++i)
+            if (tail[i] && i != root && !(pinned != nullptr && pinned[i]) && i != newest) return i;
+    size_t v = n;                    // the least recently used among the non-root, unpinned items (item 0 included)
+    for (size_t i = 0; i < n; ++i)
+        if (i != root && !(pinned != nullptr && pinned[i]) && (v == n || stamps[i] < stamps[v])) v = i;
+    if (v != n) return v;
+    v = 0;                           // all pinned: the oldest of them, never the root (root > 0 here)
+    for (size_t i = 1; i < n; ++i)
+        if (i != root && stamps[i] < stamps[v]) v = i;
+    return v;
+}
+
 /// --prompt-cache-spread: the item whose removal leaves the smallest gap for its distance from the newest, so the kept
 /// points thin out geometrically towards the root and an edit d tokens before the end reads about d again.  `lens`:
 /// the chain's token counts.  Never the root, the newest or a pinned item; the tail rule first, as above.
@@ -97,6 +151,29 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
         if (v != n) return v;
     }
     return eviction_victim(stamps, n, cap, tail, pinned);
+}
+
+/// spread_victim with the caller-named root, as above: the root is never dropped, wherever it sits.  The scan still
+/// leaves item 0 and the newest alone (the gap rule needs both neighbours), so a grid checkpoint at item 0 goes only
+/// through the fallback; `root` 0 (or out of range) is the policy above, unchanged.
+inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t n, int64_t cap, const bool* tail,
+                            const bool* pinned, size_t root) {
+    if (root == 0 || root >= n) return spread_victim(lens, stamps, n, cap, tail, pinned);
+    if (n >= 3 && cap >= 2) {
+        auto candidate = [&](size_t i) { return i != root && !(pinned != nullptr && pinned[i]); };
+        if (tail != nullptr)
+            for (size_t i = 1; i + 1 < n; ++i)
+                if (tail[i] && candidate(i)) return i;
+        size_t v = n;
+        double best = 0;
+        for (size_t i = 1; i + 1 < n; ++i) {
+            if (!candidate(i)) continue;
+            const double gap = double(lens[i + 1] - lens[i - 1]) / double(lens[n - 1] - lens[i - 1]);
+            if (v == n || gap < best) { v = i; best = gap; }
+        }
+        if (v != n) return v;
+    }
+    return eviction_victim(stamps, n, cap, tail, pinned, root);
 }
 
 }  // namespace strata::program::conv_cache
