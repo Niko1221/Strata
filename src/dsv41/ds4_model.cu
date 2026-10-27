@@ -5682,10 +5682,21 @@ struct Model::Impl {
         };
         std::vector<Job> jobs;
         size_t maxb = 0;
+        // DS4_COPY_STREAM=1: a one-card layer's VRAM experts go into the experts' stream (stream_pieces), not the staging below
+        const bool stream = env_tri("DS4_COPY_STREAM") == 1 && !pk.dfds.empty() &&
+                            std::all_of(pk.dfds.begin(), pk.dfds.end(), [](os::fd_t f) { return f != os::kBadFd; });
         for (const Layer& l : L) {
             maxb = std::max(maxb, l.blob);
-            for (int e = 0; e < l.n_exp; ++e)
-                if (l.slot[(size_t) e] >= 0) jobs.push_back({l.il, e});
+            for (int e = 0; e < l.n_exp; ++e) {
+                if (l.slot[(size_t) e] < 0) continue;
+                if (!stream || l.nm > 1) {
+                    jobs.push_back({l.il, e});
+                    continue;
+                }
+                for (int r = 0; r < 3; ++r)
+                    st_vram.push_back({l.mx_file[r], l.mx_off[r] + (uint64_t) e * l.mx_stride[r], mx_part_bytes(l, r),
+                                       l.vram_base + (size_t) l.slot[(size_t) e] * l.blob + l.lay.trellis[r], l.dev});
+            }
         }
         std::sort(jobs.begin(), jobs.end(), [&](const Job& a, const Job& b) {
             const Layer &la = L[(size_t) a.layer], &lb = L[(size_t) b.layer];
@@ -5769,6 +5780,11 @@ struct Model::Impl {
                 if (av != ~uint64_t{0}) warm_bytes = av > kRamMargin ? std::min<uint64_t>(warm_bytes, av - kRamMargin) : 0;
             }
         }
+        if (!st_vram.empty()) {   // (no copy took them along)
+            std::vector<StreamPiece> ps;
+            ps.swap(st_vram);
+            if (!stream_pieces(ps, err)) return false;
+        }
         if (ram_tier && warm_bytes > 0 && !warm.empty()) {
             // chunks of 32 slots up to warm_bytes (all the RAM the rest leaves, kRamMargin kept), one slot kept free for
             // a move in; the hottest experts read in, their pages then dropped from the page cache.  Plain memory, not
@@ -5836,7 +5852,9 @@ struct Model::Impl {
         int file;
         uint64_t off, n;
         uint8_t* dst;
+        int dev;   // dst's device (devs index), -1: RAM
     };
+    std::vector<StreamPiece> st_vram;   // (DS4_COPY_STREAM) VRAM experts' pieces, streamed with the copy's
     // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by DS4_STREAM_WORKERS (4) workers, each a
     // reader filling one of its two arenas while its mover hands out the other's pieces
     bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
@@ -5853,7 +5871,9 @@ struct Model::Impl {
             size_t p0, p1;   // the pieces reaching into it
         };
         std::vector<Chunk> chunks;
-        uint64_t bytes = 0;
+        uint64_t bytes = 0, to_ram = 0, to_vram = 0;
+        for (const StreamPiece& p : ps) (p.dev < 0 ? to_ram : to_vram) += p.n;
+        const double t0 = now_ms();
         for (size_t i = 0; i < ps.size();) {
             size_t k = i + 1;
             uint64_t end = ps[i].off + ps[i].n;
@@ -5913,6 +5933,7 @@ struct Model::Impl {
             });
             th.emplace_back([&, pw] {   // the mover: each piece's part in the chunk to its place
                 Worker& w = *pw;
+                std::vector<cudaStream_t> cst(devs.size(), nullptr);   // (a device's copies from the pinned arena)
                 for (int s = 0;; s ^= 1) {
                     Arena& x = w.a[s];
                     {
@@ -5924,25 +5945,46 @@ struct Model::Impl {
                     for (size_t q = c.p0; q < c.p1; ++q) {
                         const StreamPiece& p = ps[q];
                         const uint64_t b = std::max(p.off, c.off), e = std::min(p.off + p.n, c.off + c.n);
-                        if (b < e) std::memcpy(p.dst + (b - p.off), x.p + (b - c.off), (size_t) (e - b));
+                        if (b >= e) continue;
+                        if (p.dev < 0) {
+                            std::memcpy(p.dst + (b - p.off), x.p + (b - c.off), (size_t) (e - b));
+                            continue;
+                        }
+                        cudaStream_t& st = cst[(size_t) p.dev];
+                        cudaSetDevice(devs[(size_t) p.dev].id);
+                        if ((st == nullptr && cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) != cudaSuccess) ||
+                            cudaMemcpyAsync(p.dst + (b - p.off), x.p + (b - c.off), (size_t) (e - b), cudaMemcpyHostToDevice,
+                                            st) != cudaSuccess)
+                            bad.store(true);
                     }
+                    for (size_t d = 0; d < cst.size(); ++d)   // (the arena is read until its copies are done)
+                        if (cst[d] != nullptr) {
+                            cudaSetDevice(devs[d].id);
+                            if (cudaStreamSynchronize(cst[d]) != cudaSuccess) bad.store(true);
+                        }
                     {
                         std::lock_guard<std::mutex> lk(w.mu);
                         x.full = false;
                     }
                     w.cv.notify_all();
                 }
+                for (size_t d = 0; d < cst.size(); ++d)
+                    if (cst[d] != nullptr) {
+                        cudaSetDevice(devs[d].id);
+                        cudaStreamDestroy(cst[d]);
+                    }
             });
         }
         for (auto& t : th) t.join();
         for (Worker& w : ws)
             for (Arena& x : w.a)
                 if (x.p != nullptr) cudaFreeHost(x.p);
-        std::fprintf(stderr, "ds4: the copy streamed %.1f GB in %zu reads of up to %llu MB (%d workers, unbuffered)\n",
-                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw);
+        std::fprintf(stderr, "ds4: the experts streamed: %.1f GB in %zu reads of up to %llu MB (%d workers, unbuffered) "
+                             "in %.1f s, %.1f GB to RAM, %.1f GB to VRAM\n",
+                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw, (now_ms() - t0) / 1000.0, to_ram / 1e9,
+                     to_vram / 1e9);
         if (bad.load())
-            err = ok ? "streaming the CPU lane's experts from the model's files failed"
-                     : "no pinned memory for the copy's stream";
+            err = ok ? "streaming the experts from the model's files failed" : "no pinned memory for the experts' stream";
         return !bad.load();
     }
 
@@ -6107,8 +6149,12 @@ struct Model::Impl {
                 stream = stream && (size_t) l.mx_file[r] < pk.dfds.size() && pk.dfds[(size_t) l.mx_file[r]] != os::kBadFd;
                 for (int X = 0; X < NH; ++X)
                     ps.push_back({l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) X * nb, nb,
-                                  ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]});
+                                  ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r], -1});
             }
+        }
+        if (stream) {   // (the VRAM experts' pieces in the same pass)
+            ps.insert(ps.end(), st_vram.begin(), st_vram.end());
+            st_vram.clear();
         }
         if (stream && !stream_pieces(ps, err)) return false;
         std::vector<std::thread> th;
