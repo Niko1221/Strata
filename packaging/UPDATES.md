@@ -137,9 +137,17 @@ All signing happens on the release PC, on the finished files.
   Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
   (`feed.select_engine`: platform, backend, CUDA `archs` and `min_driver`, HIP `archs`; `tests/terminal/test_release_matrix.py`).
 
+**DeepSeek engine packages** are separate from the Qwen engine packages: build `strata-dsv41` per variant on a box with that CUDA
+toolkit and pack it with `feed_tool.py pack-engine --prefix strata-dsv41` (feed member `dsv41`). The release carries Windows CUDA 13,
+Linux CUDA 13, Linux CUDA 12 (variant `cuda12`: sm_70 V100 / Titan V, sm_75, sm_80, sm_86, sm_89), Linux AMD rx9070 and Windows AMD
+rdna3. The Linux `cuda12` build is what a V100 downloads (`feed.select_engine` matches its `sm_70`); build it with
+`VARIANT=cuda12 packaging/build_dsv41_cuda.sh` (CUDA 12.x toolkit) and put it in `RELEASE/dsv41` beside the other variants before
+`build-feed --dsv41 RELEASE/dsv41`.
+
 **Steps**
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
+    VARIANT=cuda12 packaging/build_dsv41_cuda.sh   # and VARIANT=cuda13; then package_engine.py --variant cuda12 --require-dsv41 / feed_tool.py packs it
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
     python packaging/feed_tool.py pack-control <control folder> --version 0.1.50 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file

@@ -35,8 +35,11 @@ Each row is an OS, CPU ABI and backend. A row is `qualified` only after the acce
 | `macos-x86_64-*` | none | none | Unsupported. The macOS engine is Apple Silicon only. |
 
 **DeepSeek V4.1-Flash.** The signed feed's `dsv41` member carries the DeepSeek engine `strata-dsv41` as its own package: Windows
-NVIDIA `cuda13`, Linux NVIDIA `cuda13`, Linux AMD `rx9070`, and since 0.2.7 Windows AMD `rdna3` (Ryzen AI Max, gfx1151). All other
-engine packages carry no DeepSeek engine. Build `strata-dsv41` with `packaging/build_dsv41_cuda.sh` (Linux) or
+NVIDIA `cuda13`, Linux NVIDIA `cuda13`, Linux NVIDIA `cuda12` (sm_70 V100 / Titan V, sm_75, sm_80, sm_86, sm_89), Linux AMD `rx9070`,
+and since 0.2.7 Windows AMD `rdna3` (Ryzen AI Max, gfx1151). The `cuda12` package is what a V100 downloads: build it with
+`VARIANT=cuda12 packaging/build_dsv41_cuda.sh` and pack it with `feed_tool.py pack-engine --prefix strata-dsv41` (its variant is `cuda12`;
+`feed.select_engine` matches the card's sm_70). All other engine packages carry no DeepSeek engine. Build `strata-dsv41` with
+`packaging/build_dsv41_cuda.sh` (Linux) or
 `packaging/build_dsv41_windows.bat` (Windows), then package it with `package_engine.py --require-dsv41`; or pack it as the separate
 download (`feed_tool.py pack-engine --prefix strata-dsv41`, [UPDATES.md](UPDATES.md#the-feed)).
 

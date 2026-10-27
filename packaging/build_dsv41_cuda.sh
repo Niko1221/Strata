@@ -3,20 +3,33 @@
 # beside `strata` (setup.py dsv41_exe() looks for strata-dsv41 in the engine folder).  Same toolchain and RUNPATH rule as the
 # engine build: the result finds cudart/cublas beside itself ($ORIGIN), never the toolkit it was built with.
 #
-#   SRC=<checkout> B=<build dir> CUDA=/usr/local/cuda-13.0 GG=<llama.cpp checkout> [ARCH="86-real;89-real;120"] [JOBS=6]  packaging/build_dsv41_cuda.sh
+#   VARIANT=cuda13| cuda12  SRC=<checkout> B=<build dir> [CUDA=<toolkit root>] GG=<llama.cpp checkout> [ARCH=...] [JOBS=6]  packaging/build_dsv41_cuda.sh
 #
-# ARCH defaults to the 0.2.7 release shape: SASS for sm_86 (RTX 3090 / 3060), sm_89 (RTX 40, #3935) and sm_120 (RTX Blackwell) + PTX sm_120, i.e.
-# the package lists sm_86, sm_89, sm_120, compute_120 (the Windows twin built and ran on an RTX 5070; the Linux sm_86 build is the one tested on the
-# RTX 3060 box; sm_89 is built here, not run: the one reporter's own build ran at 40.2 tok/s on an RTX 4090).  Needs CUDA 13 (the sm_120 code);
-# for a CUDA 12.9 package pass ARCH="86-real;89" (sm_86, sm_89, compute_89) or leave strata-dsv41 out (the Pascal cuda12 variant has no DeepSeek path).
+# VARIANT=cuda13 (default) is the 0.2.7 release shape: SASS for sm_86 (RTX 3090 / 3060), sm_89 (RTX 40) and sm_120 (RTX Blackwell) + PTX sm_120,
+# and needs CUDA 13 (the sm_120 code).  VARIANT=cuda12 is the package for cards CUDA 13 has no code for: sm_70 (V100 / Titan V), sm_75 (RTX 20),
+# sm_80 (A100), sm_86 and sm_89; it needs a CUDA 12.x toolkit and builds with -DSTRATA_EXPERIMENTAL_SM60=ON, the same flag the cuda12 Qwen engine
+# uses (packaging/build_cuda_linux.sh).  Pack the result as the feed's dsv41 member with '--variant cuda12' in package_engine.py / feed_tool.py.
+# ARCH overrides the per-variant default ("70-real;86-real;89-real" for cuda12, "86-real;89-real;120" for cuda13); a cuda12 build must not name 120.
 # Prints the binary path on the last line; collect its libraries with packaging/collect_libs.py --binary <it> --search $CUDA/lib64.
 set -eu
 SRC=${SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 B=${B:?B=<build dir>}
-CUDA=${CUDA:?CUDA=<toolkit root>}
 GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
-ARCH=${ARCH:-86-real;89-real;120}
+variant=${VARIANT:-cuda13}
+case "$variant" in
+  cuda13) CUDA=${CUDA:-/usr/local/cuda-13.0}; ARCH=${ARCH:-86-real;89-real;120}; sm60=OFF ;;
+  cuda12) CUDA=${CUDA:-/usr/local/cuda-12.9}; ARCH=${ARCH:-70-real;86-real;89-real}; sm60=ON ;;
+  *) echo "build_dsv41_cuda.sh: VARIANT must be cuda13 or cuda12" >&2; exit 2 ;;
+esac
+if [ "$variant" = cuda12 ]; then
+  case "$ARCH" in *120*) echo "build_dsv41_cuda.sh: a cuda12 build cannot name sm_120 (it needs CUDA 13)" >&2; exit 2 ;; esac
+fi
 JOBS=${JOBS:-6}
+cudafull=$("$CUDA/bin/nvcc" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+case "$variant:$cudafull" in
+  cuda12:12.*|cuda13:13.*) ;;
+  *) echo "build_dsv41_cuda.sh: $variant needs the matching CUDA toolkit; nvcc here is ${cudafull:-missing}" >&2; exit 2 ;;
+esac
 export PATH=$CUDA/bin:$PATH
 # the build id: the commit, 9 characters.  A git checkout gives it to CMake itself; a tarball has no .git, so COMMIT=<hex> is required there and goes to BUILD_ID.
 # (The id is baked in when cmake configures: a stale build dir is configured again, and a stale binary is deleted first.)
@@ -26,7 +39,7 @@ if [ ! -e "$SRC/.git" ] && [ ! -f "$SRC/BUILD_ID" ]; then
 fi
 rm -f "$B/CMakeCache.txt" "$B/strata-dsv41"
 cmake -G Ninja -S "$SRC" -B "$B" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON \
-  -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=$ARCH" -DCMAKE_CUDA_COMPILER="$CUDA/bin/nvcc" \
+  -DSTRATA_EXPERIMENTAL_SM60=$sm60 -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON "-DCMAKE_CUDA_ARCHITECTURES=$ARCH" -DCMAKE_CUDA_COMPILER="$CUDA/bin/nvcc" \
   -DCUDAToolkit_ROOT="$CUDA" -DSTRATA_GGML_DIR="$GG" -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_SKIP_BUILD_RPATH=OFF \
   '-DCMAKE_INSTALL_RPATH=$ORIGIN'
 ninja -j "$JOBS" -C "$B" strata-dsv41
