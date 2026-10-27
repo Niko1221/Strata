@@ -9489,6 +9489,28 @@ int main(int argc, char** argv) {
             conv_budget,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
         uint64_t gate_ceiling_mib = 0;   // measured empty-cache MemAvailable ceiling, MiB; 0 = never measured
+        // The RAM gate's shrink is a ratchet: slots and budget come down under pressure and never climb
+        // back by themselves.  Checked at every park and every restore (the two moments a switch just
+        // moved RAM).  Both tests must pass: free RAM above the learned ceiling (a ceiling cleared as
+        // stale earlier: this test passes on its own until the next hopeless attempt re-learns it), AND
+        // room for one full-context conversation at the real per-slot cost (0 = unknown, e.g. a layer
+        // split: the floor alone decides).  Regrow leaves the learned ceiling where it is: while free
+        // RAM stands below it the prediction keeps protecting the regrown cache from being emptied to
+        // relearn the number (free RAM standing above it is stale anyway - the park gate itself clears
+        // it).  ponytail: no hysteresis - RAM hovering across the admit line logs a regrow/shrink pair
+        // per switch (bounded: one cut each); add a margin if field logs show churn.
+        auto try_regrow = [&] {
+            if (!conversations.shrunk()) return;
+            const auto m = strata::core::sample_host_memory();
+            if (!m) return;
+            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+            if ((gate_ceiling_mib != 0 && (m->available >> 20) <= gate_ceiling_mib) ||
+                !strata::core::conversation_memory_admit(m->available, conv_slot_bytes, floor))
+                return;
+            conversations.regrow();
+            std::fprintf(stderr, "strata serve: conversation cache: free RAM fits a full conversation again: back to %zu slots and %zu MiB (--conversation-cache-mib sets it)\n",
+                         conversations.slots(), conversations.budget() >> 20);
+        };
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -9567,6 +9589,7 @@ int main(int argc, char** argv) {
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            try_regrow();   // the caps may have been cut by an earlier pressure spike that has passed
             // #2049: parking copies the outgoing conversation's running checkpoints and K/V into host memory, which
             // is a silent stretch of the "request" stage; when the OS has paged that memory out it takes minutes.
             // Named, so a stall report says "parking"; its copies beat (conversation_copy.hpp), so the watchdog
@@ -9691,11 +9714,16 @@ int main(int argc, char** argv) {
                     // so learn instead: the first attempt that runs the cache dry and still refuses
                     // records the post-eviction reading as this box's empty-cache ceiling (the worst
                     // measurement wins). From then on a
-                    // park that cannot fit even at the measured ceiling gives up one slot if it can - and
-                    // whatever stays parked, stays; snapshots that fit keep parking beside them. Free RAM
-                    // climbing back to the recorded ceiling makes the number stale: it is cleared and the
-                    // attempt runs again. The loop's victim is the smallest, so even this last destructive
-                    // attempt does not start by killing the conversation that has waited longest.
+                    // park that cannot fit even at the measured ceiling gives up slots one at a time if it
+                    // can - and whatever the cuts leave parked, stays; snapshots that fit keep parking
+                    // beside them.
+                    // Free RAM climbing back to the recorded ceiling makes the number stale: it is
+                    // cleared, and the next hopeless attempt runs the evict loop first and relearns a
+                    // ceiling only when that runs dry - only then do the caps shrink again.
+                    // try_regrow() puts cut caps back at every park and restore.  The evict loop's
+                    // victim is the smallest (a shrink takes its own oldest-first victims inside the
+                    // new caps), so even the last destructive attempt does not start by killing the
+                    // conversation that has waited longest.
                     // A conversation EXCHANGE parks with the incoming image's RAM (held), and any warm
                     // park runs with its retained reuse buffers (retained) still in hand: the cache
                     // cannot see either, so a ceiling taken beside them under-counts and a credit spent
@@ -9706,7 +9734,6 @@ int main(int argc, char** argv) {
                         (mem->available >> 20) >= gate_ceiling_mib)
                         gate_ceiling_mib = 0;
                     const uint64_t avail_mib = mem ? mem->available >> 20 : 0;
-                    bool tried_after_shrink = false;
                     // An EMPTY cache has nothing to free and nothing to protect: shrink (and its
                     // permanent capacity cost) would only cut slots for conversations that do fit.
                     // Such a park takes the plain refusal path, which still records the ceiling.
@@ -9715,53 +9742,48 @@ int main(int argc, char** argv) {
                             mem->available, additional, floor,
                             gate_ceiling_mib > avail_mib ? (gate_ceiling_mib - avail_mib) << 20 : 0)) {
                         // F4: on a box this tight a whole cache of slots nobody can park in is dead weight.
-                        // Give up ONE slot and shrink the budget to what this machine can actually admit, so
-                        // the rest park again.  The kept line prints when there is no slot left to give
-                        // (already one) and when the one try after a shrink still does not fit.
+                        // Give up ONE slot, scale the budget with it, and try admission once with the
+                        // freed RAM - it may admit this very snapshot.  Cutting further in the SAME event
+                        // cannot: the prediction reduces to `need <= measured ceiling`, and the ceiling
+                        // says this box cannot host even an emptied-cache version of this park - every
+                        // further cut would only evict conversations the RAM could never hold anyway,
+                        // for an admit the ceiling already predicts false (a byte-full cache makes each
+                        // next cut evict, so an in-event loop destroys the cache for nothing).  The next
+                        // hopeless event gives up one more slot, so the cuts still march one at a time
+                        // across events, never past the last one.  try_regrow() puts the cut caps back
+                        // when free RAM climbs back.
                         size_t slots_before = 0, budget_after = 0, freed = 0;
-                        if (conversations.shrink(conv_slot_bytes, slots_before, budget_after, freed)) {
+                        if (conversations.shrink(conv_slot_bytes, slots_before, budget_after, freed))
                             std::fprintf(stderr, "strata serve: conversation cache: free RAM (measured empty-cache ceiling %llu MiB) cannot admit a %zu MiB snapshot plus the %lld MiB floor - dropping 1 of %zu slots and shrinking the budget to %zu MiB so the rest can park again (freed %zu MiB; --conversation-cache-mib sets it)\n",
                                          (unsigned long long) gate_ceiling_mib, additional >> 20,
                                          (long long) o.conversation_cache_min_free_mib, slots_before,
                                          budget_after >> 20, freed >> 20);
-                            // The freed bytes may be enough; but need stands above the measured
-                            // ceiling, so the full evict-to-admit loop would only destroy the rest
-                            // of the cache for a refusal the ceiling already predicts - try ONCE, and
-                            // keep what is parked.  tried_after_shrink keeps even the loop's own
-                            // re-sampled admit() from re-arming that destruction on a RAM race.
-                            tried_after_shrink = true;
-                            if (!admit()) {
-                                std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; measured empty-cache ceiling %llu MiB would not admit it: kept)\n",
-                                             additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                             (unsigned long long) gate_ceiling_mib);
-                                return true;
-                            }
-                        } else {
+                        if (!admit()) {
                             std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; measured empty-cache ceiling %llu MiB would not admit it: kept)\n",
                                          additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
                                          (unsigned long long) gate_ceiling_mib);
                             return true;
                         }
-                    }
-                    if (!tried_after_shrink)
+                    } else {
                         while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
                                conversations.evict_smallest())
                             ++evicted;
-                    if (!admit()) {
-                        // The reading is this box's ceiling only if the loop ran the cache dry of
-                        // everything PERMANENTLY available - empty or nothing but pinned entries.  A
-                        // guarded borrow-donor is only held for this attempt: a ceiling read beside it
-                        // would under-count, so none is taken.  The WORST measurement wins, so a
-                        // single lucky sample can never re-arm the destructive loop.
-                        if (held == 0 && retained == 0 && mem && conversations.all_pinned()) {
-                            const uint64_t seen_mib = mem->available >> 20;
-                            if (gate_ceiling_mib == 0 || seen_mib < gate_ceiling_mib)
-                                gate_ceiling_mib = seen_mib;
+                        if (!admit()) {
+                            // The reading is this box's ceiling only if the loop ran the cache dry of
+                            // everything PERMANENTLY available - empty or nothing but pinned entries.  A
+                            // guarded borrow-donor is only held for this attempt: a ceiling read beside it
+                            // would under-count, so none is taken.  The WORST measurement wins, so a
+                            // single lucky sample can never re-arm the destructive loop.
+                            if (held == 0 && retained == 0 && mem && conversations.all_pinned()) {
+                                const uint64_t seen_mib = mem->available >> 20;
+                                if (gate_ceiling_mib == 0 || seen_mib < gate_ceiling_mib)
+                                    gate_ceiling_mib = seen_mib;
+                            }
+                            std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
+                                         additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
+                                         evicted, conversations.size());
+                            return true;
                         }
-                        std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
-                                     additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                     evicted, conversations.size());
-                        return true;
                     }
                 }
                 if (evicted)
@@ -13037,8 +13059,9 @@ int main(int argc, char** argv) {
                 conversations.count_borrow();
                 std::fprintf(stderr, "strata serve: conversation cache: borrowed %lld tokens from a parked "
                              "conversation, which stays parked, in %.1f ms; parked=%zu bytes=%zu borrowed=%zu\n",
-                             (long long) resume, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
-                             conversations.size(), conversations.bytes(), conversations.borrowed());
+                              (long long) resume, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                              conversations.size(), conversations.bytes(), conversations.borrowed());
+                try_regrow();   // a borrow may be the only switch this request makes (park-gain says parking is not worth it)
             }
             if (incoming) {
                 const auto t0 = Clock::now();
@@ -13088,6 +13111,9 @@ int main(int argc, char** argv) {
                 cvec_cached = incoming->cvec;
                 resume = parked.tokens;
                 from_live = parked.live;
+                // Before retain(): it sizes the reused K/V against the cache's caps, and those caps may
+                // still stand at a pressure cut this restore just made stale.
+                try_regrow();
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));

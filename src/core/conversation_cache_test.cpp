@@ -796,6 +796,18 @@ int main() {
         ConversationCache off(0, 4), no_slots(size_t(1) << 20, 0);
         check(!off.shrink(1000, sb, ba, fr) && !no_slots.shrink(1000, sb, ba, fr),
               "a disabled cache does not shrink");
+        // regrow(): the ratchet's other half - shrink cuts the caps, free RAM puts the configured ones back.
+        ConversationCache ratchet(size_t(1) << 24, 4);
+        check(!ratchet.shrunk(), "an unshrunk cache has nothing to regrow");
+        check(ratchet.shrink(0, sb, ba, fr) && ratchet.shrunk() && ratchet.slots() == 3, "shrink cuts the caps");
+        ratchet.regrow();
+        check(!ratchet.shrunk() && ratchet.slots() == 4 && ratchet.budget() == (size_t(1) << 24),
+              "regrow puts the configured slots and budget back");
+        // successive hopeless events give up one slot each; that march has to end somewhere.
+        ConversationCache grind(size_t(1) << 24, 4);
+        check(grind.shrink(0, sb, ba, fr) && grind.shrink(0, sb, ba, fr) && grind.shrink(0, sb, ba, fr) &&
+                  grind.slots() == 1 && !grind.shrink(0, sb, ba, fr),
+              "shrink one slot at a time down to one, then refuses - the march terminates");
         // all_pinned(): the RAM ceiling is only recorded when nothing PERMANENTLY held remains.
         ConversationCache fresh(size_t(1) << 20, 4);
         check(fresh.all_pinned(), "an empty cache can learn the ceiling");

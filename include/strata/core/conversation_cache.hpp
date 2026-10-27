@@ -256,7 +256,7 @@ public:
     };
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
-        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+        : budget_(budget), slots_(slots), min_tokens_(min_tokens), budget_cfg_(budget), slots_cfg_(slots) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
@@ -470,6 +470,13 @@ public:
         return true;
     }
 
+    // The ratchet's other half: shrink() cut the caps below what was configured, and free RAM climbing
+    // back makes that cut stale.  shrunk() is the cheap check at every park and restore; regrow() puts
+    // the configured slots and budget back (entries never grow, so the caps can only fit better).
+    size_t budget() const { return budget_; }
+    bool shrunk() const { return budget_ < budget_cfg_ || slots_ < slots_cfg_; }
+    void regrow() { budget_ = budget_cfg_; slots_ = slots_cfg_; }
+
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
     // may carry the poison.  Returns how many were parked.
     size_t clear() {
@@ -557,6 +564,7 @@ private:
     }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
+    size_t budget_cfg_ = 0, slots_cfg_ = 0;   // shrink()'s caps against the configured values: shrunk()/regrow()
     std::deque<SavedConversation> entries_; // least recently active first
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
     uint64_t next_serial_ = 1, guarded_ = 0;
