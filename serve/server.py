@@ -4777,6 +4777,32 @@ class Service:
         finally:
             self.fifo.release()
 
+    def pre_save_pass(self) -> bool:
+        """Task 4 (unload-works): one opportunistic pre-save pass for the idle queue - the dirty checkpoint
+        reaches disk while the queue is quiet, before any unload is ever asked for.  Both gates are
+        non-blocking: an engine not in memory (unloaded flag: True before the first start and after close(),
+        server.py:1108/1396 - getattr's default covers engines that carry no such flag) has nothing to
+        pre-stage, and a held FIFO means a live request or unload owns the engine: skip, never wait.  With
+        the FIFO grabbed the ladder's pre_save hook runs (its own quiet gate: cfg.pre_save_idle_s).  An
+        EngineDied found mid-save is logged and swallowed here - the thread polls forever and a dead engine
+        is the next request's to restart, exactly as start_idle_unload's loop reasons."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return False
+        if getattr(self.engine, "unloaded", False):
+            return False            # not started (or already gone): nothing in memory to pre-stage
+        idle = time.time() - (self.last_request_at or self.started_at)
+        if not self.fifo.acquire(blocking=False):
+            return False            # a live request or unload owns the engine: skip, never wait
+        try:
+            ladder.pre_save(self, idle)
+            return True
+        except EngineDied as e:
+            print(f"[strata] session pre-save: {e}", flush=True)
+            return False
+        finally:
+            self.fifo.release()
+
     def start_idle_unload(self):
         if not self.idle_unload_s or not hasattr(self.engine, "unload"):
             return
@@ -4792,6 +4818,28 @@ class Service:
                 except EngineDied as e:                 # Task 8: the ladder's save-on-unload can find
                     print(f"[strata] idle unload: {e}", flush=True)   # the engine gone mid-save; the
                     # thread lives, the next turn (or the next request's ensure_loaded) handles the dead engine
+        threading.Thread(target=loop, daemon=True).start()
+
+    def start_session_pre_save(self):
+        """Task 4's timer thread (unload-works): the opportunistic pre-save pass on a 2.0 s cadence, so a
+        dirty checkpoint reaches disk once the queue goes quiet - before the idle unload (or any /unload)
+        is ever asked for.  Enabled-ladder gate: with the ladder off this thread is never started.  Same
+        survival stance as start_idle_unload's loop: engine trouble is logged, the thread lives, the next
+        beat (or the next request) deals with it."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return
+        print("[strata] the session ladder pre-stages checkpoints once the queue goes quiet", flush=True)
+
+        def loop():
+            while True:
+                time.sleep(2.0)
+                try:
+                    self.pre_save_pass()
+                except EngineStuck as e:                # the same survival stance as start_idle_unload:
+                    print(f"[strata] session pre-save: {e}", flush=True)     # the thread lives, the pass
+                except EngineDied as e:                 # is tried again at the next 2 s beat
+                    print(f"[strata] session pre-save: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
@@ -9446,6 +9494,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     httpd = serve(svc, host=a.host, port=a.port)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
+    svc.start_session_pre_save()
     svc.start_vision_idle()
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
