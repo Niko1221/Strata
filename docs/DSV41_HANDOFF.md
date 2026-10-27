@@ -558,6 +558,20 @@ pieces that were missing:
 | 16 | 43.3 | 50.1 | **86.6** (8.7 a slot) |
 | 16, flow on | - | not runnable (the flow deadlocked) | **86.8** |
 
+The same measurements on the **final binary** (`build/strata-dsv41.step26`), 96 tokens a slot, 32K a slot, each step run
+against the bursts of its own slot count (`--ref`), 21:10-21:17:
+
+| slots | bursts, tok/s | step, tok/s | gain | tokens |
+|---:|---:|---:|---:|---|
+| 2 | 43.0 | **59.9** | +39 % | the reference's, bit for bit |
+| 4 | 43.2 | **77.6** | +80 % | the reference's, bit for bit |
+| 8 | 43.3 | **88.6** | +105 % | the reference's, bit for bit |
+| 16 | 43.4 | **86.7** | +100 % | not (rounding above 8 rows - see below) |
+
+(The 4- and 8-slot rows here replace the earlier 77.8/89.2, which were measured before the staging-race fix; the 16-slot
+row is from the same family of builds as the race fix and was not re-run on `.step26` - 86.6/86.7/86.8 across those
+builds, i.e. within noise.)
+
 The step's first tokens all arrive at one instant (0.88 s at 2 slots, 3.40 s at 8, 6.75 s at 16 - the last prompt's
 read) against the bursts' 0.41 s spread, and 0 routed experts on the CPU lane at 16 slots.  The flow streams a step's
 experts on this path (86.8 against 86.6: no penalty), which the chunk path could never do.
