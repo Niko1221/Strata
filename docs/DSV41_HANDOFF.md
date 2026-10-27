@@ -382,6 +382,13 @@ Environment notes from the same window: a build's binary must not be copied over
 (`Text file busy` until the process exits; use a fresh name), and a window's restore copies `strata-dsv41.prod` back
 over `build/strata-dsv41`, so keep the branch build under another name (`.dbg`, `.stepN`).
 
+**Where the box is (2026-10-27 13:50).**  Production was last seen `health 200`; the tree is clean at `fb7a4fd`
+(the stall note above is not committed to `docs/DSV41_HANDOFF.md` yet - the box became unreachable at 13:50,
+`10.188.27.29:2222` and `:8080` both timing out).  Instrumented builds were left as `build/strata-dsv41.step2` ..
+`.step5` (revert the line numbers are not in the tree); `build/strata-dsv41` was restored to the stock `.prod` by
+the last window.
+
+
 
 **It is a deadlock, not a 270x slowdown (2026-10-27 14:40-14:50).**  A build with host-order prints only (no syncs;
 `DS4_STEPDBG`) shows the prompt reaching layer 2 of the first chunk and stopping right after the per-row `ratio`
@@ -397,6 +404,7 @@ branch or `compute-sanitizer` on that layer (a faulted kernel can leave a stream
 
 The plain path through the same build is fine: `plain: OK`, 96 tokens read in **760 ms** on the same load where the
 per-row run stops - so the control is clean and the shape (96 tokens, `DS4_CHUNK=16`, one server) is not the cause.
+
 
 
 **The per-row path is correct and as fast as the contiguous one; the *flow* is what deadlocks (2026-10-27 14:52-15:12).**
@@ -421,6 +429,7 @@ The flow itself is the next investigation: `flow_layer`/`flow_pump` and the per-
 pump the host never issues).
 
 
+
 **Where the flow stops on a per-row run (2026-10-27 15:35-15:45).**  Print-bisection with the flow on puts the stop
 inside `flow_layer`: the last print is its entry for layer 1, and the per-row branch's prints before it (the four
 branch points and the attention) are all there; layer 2's prints never come, and the flow's own wait-loop print never
@@ -432,6 +441,7 @@ has not landed.  With `DS4_FLOW=0` the same prompt runs (1991 ms against 1993 ms
 layer cache can keep a step's rows.  gdb cannot attach on this box - the container blocks ptrace ("ptrace:
 Inappropriate ioctl for device"), even with gdb installed and through sudo - so the flow has to be bisected with
 prints.  (At 96 tokens the flow is also slower than the batch path: 760 ms against 665 ms of prompt read.)
+
 
 ## The step runs, and the chunk path is the wrong host for it (2026-10-27, 16:00-17:30)
 
@@ -518,50 +528,56 @@ the flow to learn a step's rows, or a slot cap whose experts all fit VRAM.
    `batch_step_bench.py --ref`).
 3. Then M3's margin (1.15-1.28x) and the flow.
 
-**Addendum (17:20-17:35): the tokens' drift is the chunk path's arithmetic, not the hand-off; and the one- and
-four-slot numbers.**  One slot (one sequence, T=1 steps, 32K a slot) diverges from the bursts at the third token exactly
-as two slots do, so the step's rows are not the cause: the chunk path's kernels (a cublas GEMM over T rows) and the
-decode path's (an `mv` per token, its own summation order) do not produce the same last bits, and a greedy stream drifts
-as soon as they differ.  The in-process A/B says the same from the other side - the per-row chunk path is bit-identical
-to the *contiguous chunk* path, which is a prompt path, not the decode path.  So a step can only be a drop-in for the
-decode path if it runs the decode path's kernels: one more reason the window path is its host.  The hand-off is not
-implicated.
 
-| slots | bursts, a slot | bursts, all | step, a slot | step, all |
-|---:|---:|---:|---:|---:|
-| 1 | 54.5 tok/s | 54.5 | 5.1 | 5.1 (48 tokens in 9.5 s) |
-| 2 | - | - | 5.0 | 9.6 |
-| 4 | 13.7-14.2 | ~56 | 5.0 | 18.4 |
-| 8 | - | - | 5.0 | 34.1 |
-| 16 | 3.2-3.4 | 43.4 | 4.0 | 50.1 |
+## The step runs on the window path: 86.6 tok/s at sixteen slots, exact at two (2026-10-27, 18:00-18:25)
 
-The step's cost is a step (a fixed ~200 ms + ~6 ms a row: 199 ms at 2 and 8 slots, 249 at 16), the bursts' is a token a
-pass - a slot's own rate collapses as the slots multiply (54.5, ~14, 3.2) while the step's stays 5.0 - and they cross at
-sixteen slots on this box.  That is the whole argument for the window-path step: at ~16 ms a step instead of 200 the
-same sixteen slots aggregate several times this, and the shape does not change - one pass's expert read over sixteen
-rows is the ceiling.
+**What the tree has now.**  `STRATA_DS4_STEP=1` no longer runs `forward_chunks`: `forward_rows` calls `forward_step`,
+which is `forward`'s pass with a row table - the decode path's kernels (`layer()`, `mv`, the async mailbox), ~16 ms a
+pass instead of the chunk path's ~200 ms.  `DS4_STEP_CHUNK=1` keeps the chunk path's step for an A/B.  The per-row
+pieces that were missing:
 
-## Where the work stands (2026-10-27, 17:45) - a fresh session starts here
+* the compressed rows and the index keys of the groups a pass completes, one row a row: `finish` with the row's own
+  `pdst` (its own sequence's row of the table, at its own group's first position) and its own position; and the same
+  rows staged for the other groups' readers in row order (`xfer_put`), the descriptor `run_dev`'s step branch already
+  held, the source's flag set even when a pass completes no row (a reader waits on it).
+* the indexer a row at a time: each row its own sequence's region of the index keys (`ik_rows(ks, dev, seq)`) and its
+  own picks made absolute in that region (`rows_add_i` with `kv_base(sr, seq)`) - one `index_score` cannot serve two
+  sequences' key regions, so a pass runs one call a row.
+* `finish`'s `pos_rows` indexes the query, not the row: `pos_rows[v / vpp]`.  A step's `q` carries `vpp = NHL` rows a
+  query, so the chunk step's rope read another row's position, and its compressed rows went in unroped (`fw.rd = 0`):
+  that is why the chunk step's tokens drifted from the third on.  The window path's step is exact at two slots.
 
-**Green and committed.**  `7ff3616` (the step on the chunk path: serve-loop step, `seq_pos`, the row hand-off,
-`--slot-context`, the fail-fast), `608280c` + `ab225e3` (the measurements and the drift's explanation), `bf3fe4e` (the
-window path takes a step's rows: the plumbing), `48d3ff2` (the window path's `layer()` takes them: rope, windows,
-compressors, index keys).  The release gate is green on this tree: **348 tests OK**, the batch probe's **all checks
-passed**, production restored (`health 200`).  Nothing is pushed.
+**Measured** (four L20s, 1M max-context, greedy, DSpark off, 64-token prompts, 96 tokens a slot, both at
+`--slot-context 32768`, a window each, production stopped; `tools/dsv41/batch_step_bench.py`):
 
-**What works, measured** (32K a slot, 1M max-context, greedy, DSpark off, 96 tokens a slot): the step at 1/2/4/8/16
-slots is 5.1/5.0/5.0/5.0/4.0 tok/s a slot and 5.1/9.6/18.4/34.1/**50.1** tok/s in all - against the bursts'
-54.5/~56/43.4; the first tokens all arrive at one instant (16 slots: 6.75 s against the bursts' 0.41 s spread).  At 1M
-without the cap the step is not runnable: 2170 of 4224 experts go to the CPU lane (the tables are 15.4 GB a GPU) and a
-step reads ~27 GB of experts.  A step costs ~200 ms of fixed cost on the chunk path (the per-layer device sync and the
-bounds over the bus) + ~6 ms a row; the window path's token is ~16 ms.  That is why the step's next home is the window
-path, and the numbers it should reach are one pass's expert read over sixteen rows.
+| slots | bursts, tok/s | step, chunk path | step, window path |
+|---:|---:|---:|---:|
+| 2 | 31.4 | 9.0 | **39.4** (42.8 a slot) |
+| 4 | - | 18.4 | **77.8** (29.9 a slot) |
+| 8 | - | 34.1 | **89.2** (18.4 a slot) |
+| 16 | 43.3 | 50.1 | **86.6** (8.7 a slot) |
+| 16, flow on | - | not runnable (the flow deadlocked) | **86.8** |
 
-**What is left of the window step** (all four sites are in `layer()`/`forward`, and each has a working reference in
-`layer_chunk`'s per-row branch): the indexer's per-row `index_score`/`topk`/`rows_add_i`; the compressed rows' write
-and their writer-side per-row staging (`replicate` and the `sr.x_stage` put); the head's rows (`head_rows_dev` already
-takes T; `n_logits = T` is what a step needs); and `forward_step` itself (per-sequence tokens and `pos += 1`, `h_emb`'s
-rows, `plan_window(0, T, wplan, &rows)`, `forward_par(..., &rows)`), with `Model::forward_rows` taking that arm
-(`DS4_STEP_CHUNK=1` keeping today's chunk path for A/B).  Then: the same seeds through `batch_step_bench.py --ref` (the
-window step should agree with the single-sequence path's tokens - it runs the same kernels), and the 16-slot
-measurement; after that M3's margin (1.15-1.28x, only visible when the experts stream) and the flow's step rows.
+The step's first tokens all arrive at one instant (0.88 s at 2 slots, 3.40 s at 8, 6.75 s at 16 - the last prompt's
+read) against the bursts' 0.41 s spread, and 0 routed experts on the CPU lane at 16 slots.  The flow streams a step's
+experts on this path (86.8 against 86.6: no penalty), which the chunk path could never do.
+
+**Exactness.**  At two slots the step's tokens are the burst path's, bit for bit (32 tokens, `--ref`).  At four they are
+not: slots 1 and 2 diverge at tokens 4 and 7, at eight four of the eight do (2, 7, 12, 15), at sixteen seven of them
+(1, 2, 2, 2, 3, 4, 6, 13, 15).  What is ruled out: one prompt for every slot (`same_probe.py`, 24 tokens) gives slot
+0's tokens from *every* slot at 2, 4 and 16 slots - the bursts' control does too at 16 - so no row of a pass sees
+another row's scratch, at any T, and the pass is deterministic.  The same-prompt probe cannot see a wrongly-addressed
+per-sequence region (every row writes identical bytes to it), so that side is still open.  Four slots is where it
+starts, which is a workable size to bisect: 2 rows stage two segments a row and never flush the descriptor, 4 rows
+flush it once (`x.n + 2 > 4`), and 4 is also the first count where a *pass* completes a group on every row at one
+step (at R = 4, p = 67: rows 4 through 67) - the first step that writes rows AND reads them back in its own attention.
+The next probe separates those two: 4 slots with `--tp 1` (the serial path, `replicate` instead of the staged
+hand-off) against a 4-slot burst reference with the same `--tp 1` - if that is exact, the staging is the bug, if it is
+not, the per-row write/read of the compressed rows and keys is.
+
+**Window discipline (learned the hard way today).**  `services/boot.sh` is started by a *login* shell, so any
+`bash -lc` over ssh (`rex.py run` / `runf`) during a window starts production behind the window's back and the run
+then fights it for VRAM: the 18:10 window measured 15375 host experts, 18 s first tokens and drifting tokens because a
+production engine had taken ~35 GB of each card.  Move `boot.sh` aside (`mv boot.sh boot.sh.off`) before a window, as
+`final_gate.sh` does, poll with `rx.py` (`bash -c`), and put it back in the window's restore.
+
