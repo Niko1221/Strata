@@ -378,6 +378,7 @@ class Requirements(unittest.TestCase):
 
         with mock.patch.object(setup, "WIN", False), \
                 mock.patch.object(setup, "find_tool", side_effect=find_tool), \
+                mock.patch.object(setup, "_tool_version", return_value=(True, (3, 28, 1))), \
                 mock.patch.object(setup, "pip_install", side_effect=pip_install), \
                 mock.patch.object(setup, "run", side_effect=run):
             setup.cmake_build(ROOT, ROOT / "build-test", "strata", [], None, "unused.bat")
@@ -396,6 +397,21 @@ class Requirements(unittest.TestCase):
                 quiet(setup.pip_install, packages, "the packages")
             after = json.loads((Path(d) / ".strata-pip.json").read_text()) if ran else stamp
         return [c for cmd in ran for c in cmd if "==" in c or c in setup.PY_PACKAGES], after
+
+    def test_a_stamp_written_by_another_system_is_not_believed(self):                    # #3634
+        lines = setup.requirement_lines()
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".strata-pip.json").write_text(json.dumps(lines))
+            (Path(d) / ".strata-pip.json.os").write_text("win32" if setup.sys.platform != "win32" else "linux")
+            ran = []
+            with mock.patch.object(setup.sys, "prefix", d), mock.patch.object(setup, "run", lambda cmd, **kw: ran.append(cmd)):
+                quiet(setup.pip_install, lines, "the packages")
+            self.assertTrue(ran)                                                          # installed again, here
+            self.assertEqual((Path(d) / ".strata-pip.json.os").read_text(), setup.sys.platform)
+            ran.clear()
+            with mock.patch.object(setup.sys, "prefix", d), mock.patch.object(setup, "run", lambda cmd, **kw: ran.append(cmd)):
+                quiet(setup.pip_install, lines, "the packages")
+            self.assertFalse(ran)                                                         # and then skipped as before
 
     def test_fresh_install_gets_every_pin(self):
         lines = setup.requirement_lines()

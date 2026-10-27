@@ -72,6 +72,8 @@ def verdict(on_this_pc: str | None) -> tuple[str, str]:
         return TIGHT, "not checked (this computer's memory could not be read)"
     if low.startswith("does not fit"):
         return NO, "too big (can still try)"
+    if "free disk space" in low:                           # DeepSeek: fits in memory, not on the disk (still allowed)
+        return TIGHT, "tight: needs more disk space"
     if "low-ram mode" in low:
         return FITS, "fits, a bit slower"
     if "part of its experts" in low or "read from the ssd" in low:
@@ -324,11 +326,16 @@ class Catalog:
         rec = self.recommendation(hw)
         out: list[ModelRow] = []
         own = self.strata.own_families()                # Qwen3.6 is listed for the app; the Terminal's launch list is Flash-Next's
+        dsv41 = None
         for fam in self.strata.model_table(hw):
-            if fam["family"] in own:
+            if fam["family"] in own and not own[fam["family"]].get("multi_file"):
                 continue
             for size in fam["sizes"]:
                 f = fit_on(size, hw.get("ram_gb"), vram)
+                if size.get("multi_file"):            # DeepSeek-V4.1-Flash: shared over every card (strata_control/dsv41_fit.py)
+                    dsv41 = self.strata.dsv41_plan(hw, model=size["model"])
+                    f = {"vramUseGb": _round1(dsv41["vram_experts_gb"] + sum(c["dense_gb"] for c in dsv41["cards"])),
+                         "ramUseGb": _round1(dsv41.get("ram_needed_gb") or dsv41["cpu_experts_gb"]), "spillGb": _round1(dsv41.get("spill_gb") or 0.0)}
                 cat, words = verdict(size.get("on_this_pc"))
                 out.append(ModelRow(
                     family=fam["family"], family_title=fam["title"], model=size["model"], id=size["id"],
@@ -344,6 +351,9 @@ class Catalog:
         """`iq3_xxs` or `IQ3_XXS` (and an optional family) -> (family, model); raises ValueError with the closest match."""
         models, families, _ctx, _src = self.tables()
         names = list(models)
+        for fam_name, fam_d in families.items():       # DeepSeek-V4.1-Flash's size is not one of setup's MODELS
+            if fam_d.get("multi_file"):
+                names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
         match = next((n for n in names if n.lower() == model.lower()), None)
         if match is None:
             near = S.closest(model, names)
@@ -376,6 +386,8 @@ class Catalog:
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
         """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
         hw = hw or self.hardware()
+        if self.strata.multi_family(family):                   # DeepSeek-V4.1-Flash: the context the engine was checked at
+            return int(getattr(self.strata.setup_module(), "DSV41_CONTEXT", 8192))
         if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
             mac = self.strata.mac()
             if mac is not None:

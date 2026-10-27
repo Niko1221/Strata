@@ -185,8 +185,11 @@ def main() -> int:
         check("profile list", r["rc"] == 0, rc=r["rc"], output=r["stdout"].strip()[:300])
 
         r = run([*strata, "install"], env, root)
-        check("install refuses without an installer", r["rc"] == 5 and "no installer" in r["stderr"],
-              rc=r["rc"], stderr=r["stderr"].strip()[:300])
+        # since 0.2.4 the Terminal carries setup.py: with no keyboard it stops at the first question, in plain words and with a non-zero code
+        # (an older Terminal without the installer answers rc 5 "no installer")
+        stopped = r["rc"] not in (0, None) and ("no installer" in r["stderr"] or "setup stopped" in (r["stdout"] + r["stderr"]).lower())
+        check("install stops without a keyboard (or without an installer)", stopped, rc=r["rc"], stderr=r["stderr"].strip()[:300],
+              output=r["stdout"].strip()[-300:])
 
         # serve on the mock engine: a fake run config (the mock never loads it), a free port, a chat answer
         cfg_dir = sandbox / "cfg"

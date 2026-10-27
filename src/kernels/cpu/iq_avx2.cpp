@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 // STRATA_AVXVNNI (CMake: the compiler has the AVX-VNNI intrinsics): GCC and Clang compile them only inside functions
 // with target("avxvnni") - the VNNI copy of iq_avx2_rows.inl.
@@ -532,6 +533,23 @@ void iq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
 void iq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                 int r0, int r1) {
     iq256_rows_v(iq256_variant(), type, w, row_bytes, n, act, nt, out, r0, r1);
+}
+
+bool iq256x_supported(int type) noexcept { return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 29; }
+
+void iq256x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
+                 int r0, int r1) {
+    const int variant = iq256_variant();
+    const bool g = (variant & kIq256Gather) != 0;
+#if STRATA_AVXVNNI
+    if (variant & kIq256Vnni) {
+        if (g) vnni::dot_type<true, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
+        else vnni::dot_type<false, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
+        return;
+    }
+#endif
+    if (g) plain::dot_type<true, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
+    else plain::dot_type<false, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
 }
 
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,

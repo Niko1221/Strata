@@ -1,3 +1,4 @@
+import { workspaceIdForSession } from './session-workspace';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
@@ -721,7 +722,7 @@ export async function bootstrap() {
       skills,
       workspacePath: workspaceState.workspaces[0]?.path ?? '',
       workspaces: workspaceState.workspaces,
-      activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceState.workspaces[0]?.id ?? null,
+      activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceIdForSession(workspaceState.workspaces, state.sessions.find(s => s.id === state.activeSession)) ?? workspaceState.workspaces[0]?.id ?? null,
       connection: 'live',
     });
     applyProviders(providers);
@@ -1104,7 +1105,11 @@ export function continueTaskInNewChat(task: Task) {
 }
 
 export function selectSession(id: string) {
-  set({ activeSession: id });
+  // A chat comes back in the workspace it was made in, so its next turn runs in the same folder (#3754).
+  const workspace = workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === id));
+  const change = workspace && workspace !== state.activeWorkspace;
+  set(change ? { activeSession: id, activeWorkspace: workspace } : { activeSession: id });
+  if (change) void loadWorkspaceFiles();
   markRead(id);
 }
 
@@ -1728,7 +1733,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
         // So a skill narrowed to another workspace does not fire here.
-        workspaceId: state.activeWorkspace,
+        workspaceId: workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === sessionId)) ?? state.activeWorkspace,
       },
       (frame) => {
         // A line from the app itself carries `key` (the English sentence): shown in the person's language.

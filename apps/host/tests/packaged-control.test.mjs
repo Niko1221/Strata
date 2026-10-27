@@ -1,3 +1,4 @@
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -85,13 +86,13 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
   const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
   process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
-  const configs = ['iq2_xs', 'iq3_s'].map(id => {
+  const configs = ids.map(id => {
     const path = join(install, `strata-${id}.json`);
     writeFileSync(path, JSON.stringify({ exe: 'component:strata-engine', tokenizer: join(install, 'tok'), args: ['--max-context', '32768'], model_name: `Qwen ${id}`, port: 8080 }));
     return { id, path };
@@ -199,6 +200,59 @@ test('packaged: load = saved profile + runtime start under Control; unload = run
     assert.equal(f.native.state().instances.length, 1);
     assert.equal(f.others().length, 0, 'the host never spawned anything itself');
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: a model id with dots (DeepSeek) is listed, loaded from its run config, and unloaded', async () => {
+  const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
+  const f = packagedFixture({ ids: [id] });
+  try {
+    writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', '--eos', '1'], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    const state = await f.native.refresh(true);
+    assert.deepEqual(state.installed.models.map(m => m.model), [id], 'listed (the install finished but the app used to show nothing)');
+    assert.equal(state.installed.models[0].ready, true);
+    const job = await finish(f.native, f.native.operation('load', { model: id }).id);
+    assert.equal(job.state, 'done', job.error);                    // used to end with "The model configuration is outside the Strata installation."
+    assert.deepEqual(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).map(c => c.slice(0, 2)), [['saveProfile', 'app-1'], ['start', 'app-1']]);
+    const flags = f.saved[0].args.filter(a => a.startsWith('--'));
+    assert.deepEqual(flags, ['--pack', '--max-context', '--eos'], 'The own engine of DeepSeek gets none of the Flash-Next options (it ended with "unknown option --batch")');
+    assert.equal(f.calls.find(c => c[0] === 'start')[2], 600, 'it waits longer than the usual 300 s, up to the 600 s Control allows');
+    const instance = f.native.state().instances[0];
+    assert.equal(instance.model, id);
+    assert.equal(instance.status, 'ready');
+    await f.native.unload(instance.id);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'stop').at(-1), ['stop', 'app-1']);
+    assert.equal(f.native.state().instances.length, 0);
+    for (const odd of ['a..b', '../x', 'x/y', '.hidden']) assert.equal((await finish(f.native, f.native.operation('load', { model: odd }).id)).state, 'error', odd);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: the Speed choice of DeepSeek passes --experts 5 or 6 only when chosen and only for an engine that knows it (0.1.50 or newer)', async () => {
+  const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
+  const run = async (values, extraArgs = [], engine = '0.1.50-windows-x86_64-cuda-cuda13') => {
+    const f = packagedFixture({ ids: [id] });
+    try {
+      writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', engine, 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', ...extraArgs], model_name: 'deepseek-v4.1-flash', port: 8080 }));
+      await f.native.refresh(true);
+      const capability = f.native.settings(id).capabilities.dsExperts;
+      const job = await finish(f.native, f.native.operation('load', { model: id, ...(values ? { values } : {}) }).id);
+      assert.equal(job.state, 'done', job.error);
+      return { cfg: f.saved[0], capability };
+    } finally { await f.native.close(); f.cleanup(); }
+  };
+  const flag = cfg => { const i = cfg.args.indexOf('--experts'); return i < 0 ? null : cfg.args[i + 1]; };
+  const none = await run(null);
+  assert.equal(flag(none.cfg), null, 'nothing chosen: the engine decides (--experts auto)');
+  assert.equal(none.capability, true);
+  assert.equal(flag((await run({ ds_experts: '5' })).cfg), '5');
+  assert.equal(flag((await run({ ds_experts: '6' }, ['--experts', '5'])).cfg), '6', 'the choice replaces an older flag');
+  assert.equal(flag((await run({ ds_experts: null }, ['--experts', '5'])).cfg), null, 'Default clears an older flag');
+  assert.equal('ds_experts' in (await run({ ds_experts: '5' })).cfg, false, 'the app-only key is not handed to the engine');
+  assert.equal(flag((await run({ ds_experts: '5' }, [], '0.1.60-windows-x86_64-cuda-cuda13')).cfg), '5', 'a newer engine knows it');
+  for (const old of ['0.1.49.2-windows-x86_64-cuda-cuda13', '0.1.49-linux-x86_64-cuda-cuda13']) {
+    const r = await run({ ds_experts: '5' }, [], old);
+    assert.equal(r.capability, false, `${old}: the choice is hidden`);
+    assert.equal(flag(r.cfg), null, `${old}: nothing is passed (it would end the start with "unknown option --experts")`);
+  }
 });
 
 test('packaged: no engine for this PC is the notice, and nothing is started', async () => {

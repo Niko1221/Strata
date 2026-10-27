@@ -90,6 +90,35 @@ class Manifest(unittest.TestCase):
         folder = self.package()
         self.assertNotIn("link.so", {f[0] for f in ec.read_manifest(folder).files})
 
+    def test_linux_programs_are_executable_in_the_tar_even_from_a_windows_packer(self):
+        import feed_tool
+        folder = self.package()
+        elf = bytes([0x7f]) + b"ELF" + bytes(60)
+        for name in ("strata-dsv41", "strata-vision"):                    # ELF programs without execute bits (copied over from Windows)
+            (folder / name).write_bytes(elf)
+            os.chmod(folder / name, 0o644)
+        (folder / "libx.so").write_bytes(elf)
+        if WINDOWS:                                                       # a Linux package packed on Windows: the ELF header decides
+            self.assertEqual(feed_tool._mode(folder / "strata-dsv41", "strata-dsv41", "strata"), 0o755)
+            self.assertEqual(feed_tool._mode(folder / "strata-vision", "strata-vision", "strata"), 0o755)
+
+    def test_strata_dsv41_travels_beside_the_engine_and_can_be_required(self):
+        dsv = "strata-dsv41.exe" if WINDOWS else "strata-dsv41"
+        with self.assertRaises(SystemExit):
+            self.package(require_dsv41=True)                                  # a package without it is refused when it is required
+        self.assertNotIn(dsv, {f[0] for f in ec.read_manifest(self.package()).files})   # optional by default (Intel, Mac, Pascal ...)
+        (self.src / dsv).write_bytes(b"dsv41-binary-" * 50)
+        other = self.root / "again"
+        other.mkdir()
+        folder = package_engine.build(self.src, "cuda", "0.1.46", HERE, other, archs=("sm_86",), build_id="x", require_dsv41=True)
+        self.assertIn(dsv, {f[0] for f in ec.read_manifest(folder).files})
+        self.assertEqual(package_engine.main(["--verify", str(folder), "--require-dsv41"]), 0)
+        (self.src / dsv).unlink()
+        plain = self.root / "plain"
+        plain.mkdir()
+        bare = package_engine.build(self.src, "cuda", "0.1.47", HERE, plain, archs=("sm_86",), build_id="x")
+        self.assertEqual(package_engine.main(["--verify", str(bare), "--require-dsv41"]), 1)
+
     def test_a_gpu_package_without_archs_is_refused_by_the_packager(self):
         with self.assertRaises(SystemExit):
             self.package(archs=())
@@ -174,6 +203,46 @@ class Arch(unittest.TestCase):
         self.assertTrue(ec.arch_covers(["sm_75", "compute_89"], ["sm_120"]), "PTX of an older generation runs on a newer card")
         self.assertFalse(ec.arch_covers(["sm_75", "compute_89"], ["sm_86"]), "PTX never runs on an older card")
         self.assertTrue(ec.arch_covers(["sm_86"], []), "cannot tell: not a refusal")
+
+    def test_machine_code_runs_on_a_newer_minor_of_the_same_major(self):
+        """CUDA's cubin rule: sm_MN code runs on sm_MK when K >= N (an RTX 40 card, sm_89, runs sm_86 code)."""
+        self.assertTrue(ec.arch_covers(["sm_86"], ["sm_89"]))
+        self.assertTrue(ec.arch_covers(["sm_120"], ["sm_121"]))
+        self.assertTrue(ec.arch_covers(["sm_86"], ["sm_86"]))
+        self.assertTrue(ec.arch_covers(["sm_80"], ["sm_86"]))
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_80"]), "an older minor version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_90"]), "another major version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_75"]), "an older major version is not covered")
+        self.assertFalse(ec.arch_covers(["sm_86"], ["sm_120"]), "Blackwell is another major version")
+        self.assertFalse(ec.arch_covers(["sm_120"], ["sm_89"]))
+        self.assertFalse(ec.arch_covers(["sm_89"], ["sm_100"]), "sm_100 is major 10, not major 1 + minor 00")
+        self.assertTrue(ec.arch_covers(["sm_86", "sm_120"], ["sm_75", "sm_89"]), "one covered card is enough")
+
+    def test_the_packages_of_each_engine(self):
+        """The Qwen engine (sm_86 + PTX 89) and the DeepSeek engine (sm_86 + sm_120 + PTX 120) on the RTX 20 to 50 families."""
+        from strata_control import feed
+
+        def package(archs):
+            return feed.EnginePackage(version="0.1.49.1", platform="linux-x86_64", backend="cuda", variant="cuda13", archs=tuple(archs),
+                                      min_driver={}, min_runtime=None, build_id="b", url="u", format="tar.gz", size=1, sha256="a" * 64,
+                                      manifest_sha256="b" * 64, installed_bytes=1)
+
+        def fits(pkg, card):
+            hw = {"platform": "linux-x86_64", "backend": "cuda", "cuda_archs": [card], "nvidia_driver": None}
+            return not feed.engine_fit_reasons(pkg, hw)
+
+        qwen = package(["sm_86", "compute_89"])
+        deepseek = package(["sm_86", "sm_120", "compute_120"])
+        deepseek_89 = package(["sm_86", "sm_89", "sm_120", "compute_120"])
+        for card, qwen_ok, deepseek_ok in (("sm_75", False, False), ("sm_86", True, True), ("sm_89", True, True), ("sm_90", True, False),
+                                            ("sm_120", True, True), ("sm_121", True, True)):
+            with self.subTest(card=card):
+                self.assertEqual(fits(qwen, card), qwen_ok, f"Qwen engine on {card}")
+                self.assertEqual(fits(deepseek, card), deepseek_ok, f"DeepSeek engine on {card}")
+        for card in ("sm_86", "sm_89", "sm_120", "sm_121"):
+            self.assertTrue(fits(deepseek_89, card), card)
+        self.assertFalse(fits(deepseek_89, "sm_90"), "H100 (sm_90) needs its own code or PTX 90")
+        self.assertFalse(fits(deepseek_89, "sm_75"))
 
 
 class Start(unittest.TestCase):
