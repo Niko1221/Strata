@@ -750,6 +750,34 @@ protected the seat the server reserved: the two are now swapped at the yield, so
 (`seat-yield.patch`).  Re-run of the 40K promotion scenario: A 94.8 s (92.5 s before the fix, 184.3 s before the seat
 map), and the `seat 0 took seat 2's conversation` line is gone - the resume finds its state where it left it.
 
+
+## Item 2, the read-slice matrix (00:10-00:40): the batch read path is 1.3-2.9x slower than one stream
+
+Five `.step29` servers, each a fresh 55K-token prompt with a nonce at the front, the other slot idle unless said, and the
+rate from the engine's own `prompt N tokens = ... read in Z ms` line.  The engine's prefill chunk here is **8192** (its
+own log: "prompts in chunks of 8192"), so "read-slice = prefill chunk" is the 8192 row.
+
+| config | read | rate | with the other slot decoding a long answer |
+|---|---:|---:|---|
+| no `--batch` (baseline) | 33.3 s | **1,649 tok/s** | - |
+| `--batch 2`, 1M slots, read-slice 1,024 | 96.7 s | 572 | 143.6 s (385) |
+| `--batch 2`, 1M slots, read-slice 8,192 | 86.4 s | 634 | 92.1 s (595) |
+| `--batch 2`, 1M slots, read-slice 32,768 | 42.1 s | **1,307** | - |
+| `--batch 2`, 64K slots, read-slice 8,192 | 85.4 s | 637 | - |
+
+What the table says:
+
+* **The 1M tables are not the cost**: with a 64K slot cap the host expert lane is empty (0 of 4224) and the read is 637
+  tok/s, i.e. the same as with the 1M cap (634).
+* **The slice size is most of it**: 1,024 -> 572, 8,192 -> 634, 32,768 -> **1,307** tok/s.  A 55K prompt is 54 feeds at
+  1K, 7 at 8K, 2 at 32K, and each `feed` pays a fixed cost in this path that a bigger slice amortises.
+* **When the other slot decodes, the slice matters even more**: 8K holds 595 tok/s (94 % of its idle rate) where 1K
+  drops to 385 (67 %) - the read gives the decoders `min(1 s, slice/2)` after every feed, so smaller feeds pay that
+  hand-over more often.
+* Even at 32K a batch read (1,307) is still below the one-stream path (1,649), so a second slot costs prefill speed; the
+  recommendation stands: one stream for this workload, and if slots are wanted, `--read-slice 32768` (the yield
+  granularity becomes one 32K feed, i.e. a short request waits at most ~25 s to get in).
+
 (The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
 request.)  Both changes are in commit `0e16735`'s follow-up.  The structured row's "largest gap" measured 0.0 s - the
 four empty deltas landed together - and its bound is `PREFILL_BEAT_S`, i.e. 10 s at most.
