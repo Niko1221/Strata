@@ -3841,6 +3841,26 @@ int strata::qwen35::run(int argc, char** argv) {
             // would take the slots' room, falls back to less
             const double fr_gib = (double) fr / GiB;
             chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;
+            // ... and 4096 where the card has the room to spare.  A chunk streams every layer's experts over PCIe
+            // once, so the more tokens it carries the fewer streams a prompt pays for: a 16 GB RTX 4080 SUPER
+            // (Qwen3.6-35B-A3B-UD-Q4_K_XL, --mtp 2) reads a 4096-token prompt at 840 tok/s with a 2048 chunk and
+            // 1,272 with 4096 at 8192 cells (779 and 1,372 at 32768 cells; medians of 3), and the decode keeps its
+            // speed: 61.8 against 61.9 tok/s at 8192 cells, 54.1 against 51.7 at 32768.  The chunk's buffers take
+            // 0.5 MiB a token (measured 0.47) from the slots' room, so a smaller card keeps 2048 - at 12 GB they
+            // would take most of that room (docs/QWEN36.md measured a 13% decode loss for 4096 on an RTX 3060) - and
+            // so does a long context here, whose K / V comes out of the same room first (65536 cells: 2048).  A
+            // third of the room is the line, and several slots keep 1024 (a long prompt would hold the other slots'
+            // windows for a whole chunk).
+            if (chunk == 2048 && std::max(1, batch) == 1) {
+                size_t n_attn = m.has_mtp ? 1 : 0;
+                for (const Layer& L : m.layers) n_attn += L.attn ? 1 : 0;
+                const double kv = (double) ctx * (double) n_attn * (double) m.g.n_head_kv * (double) m.g.head_dim * 8.0;
+                // the slots' room at a 512-token chunk: the free VRAM less the engine's buffers, the staging pair
+                // and the 0.77 GiB reserve (2.97 GiB together, as measured at 8192 and 32768 cells), and the
+                // sessions' K / V
+                const double room = (double) fr_raw - 2.97 * GiB - kv;
+                if (room > 0.0 && (double) (4096 - 512) * 0.5 * 1048576.0 <= room / 3.0) chunk = 4096;
+            }
         }
         if (const char* cv = std::getenv("STRATA_Q36_CHUNK")) chunk = std::max(256, std::min(4096, std::atoi(cv)));   // force a chunk (512: the old default)
         if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
