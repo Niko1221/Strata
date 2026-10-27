@@ -5831,6 +5831,121 @@ struct Model::Impl {
         return true;
     }
 
+    // a range of a model file and the place its bytes go
+    struct StreamPiece {
+        int file;
+        uint64_t off, n;
+        uint8_t* dst;
+    };
+    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by DS4_STREAM_WORKERS (4) workers, each a
+    // reader filling one of its two arenas while its mover hands out the other's pieces
+    bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
+        std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
+            return a.file != b.file ? a.file < b.file : a.off < b.off;
+        });
+        const uint64_t A = os::kDirectAlign;
+        const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 64.0f)) << 20;
+        const int nw = std::max(1, (int) env_f("DS4_STREAM_WORKERS", 4.0f));
+        constexpr uint64_t kGap = 16ull << 20;   // a gap up to this is read through, so a tensor's pieces stay one stream
+        struct Chunk {
+            int file;
+            uint64_t off, n;
+            size_t p0, p1;   // the pieces reaching into it
+        };
+        std::vector<Chunk> chunks;
+        uint64_t bytes = 0;
+        for (size_t i = 0; i < ps.size();) {
+            size_t k = i + 1;
+            uint64_t end = ps[i].off + ps[i].n;
+            for (; k < ps.size() && ps[k].file == ps[i].file && ps[k].off <= end + kGap; ++k)
+                end = std::max(end, ps[k].off + ps[k].n);
+            size_t p = i;
+            for (uint64_t c = ps[i].off & ~(A - 1); c < end; c += cs) {
+                const uint64_t ce = std::min(c + cs, end);
+                while (p < k && ps[p].off + ps[p].n <= c) ++p;
+                size_t q = p;
+                while (q < k && ps[q].off < ce) ++q;
+                chunks.push_back({ps[i].file, c, ce - c, p, q});
+                bytes += ce - c;
+            }
+            i = k;
+        }
+        struct Arena {
+            uint8_t* p = nullptr;
+            size_t chunk = 0;
+            bool full = false, last = false;   // (last: the reader is done, no chunk in it)
+        };
+        struct Worker {
+            Arena a[2];
+            std::mutex mu;
+            std::condition_variable cv;
+        };
+        std::vector<Worker> ws((size_t) nw);
+        bool ok = true;
+        for (Worker& w : ws)
+            for (Arena& x : w.a) ok = ok && cudaHostAlloc((void**) &x.p, cs + A, cudaHostAllocPortable) == cudaSuccess;
+        std::atomic<size_t> next{0};
+        std::atomic<bool> bad{!ok};
+        std::vector<std::thread> th;
+        for (Worker& wr : ws) {
+            Worker* pw = &wr;
+            th.emplace_back([&, pw] {   // the reader: the next chunk into the arena its mover has emptied
+                Worker& w = *pw;
+                for (int s = 0;; s ^= 1) {
+                    Arena& x = w.a[s];
+                    {
+                        std::unique_lock<std::mutex> lk(w.mu);
+                        w.cv.wait(lk, [&] { return !x.full; });
+                    }
+                    const size_t ci = bad.load() ? chunks.size() : next.fetch_add(1);
+                    const bool last = ci >= chunks.size() ||
+                                      !os::pread_direct(pk.dfds[(size_t) chunks[ci].file], x.p, chunks[ci].n, chunks[ci].off);
+                    if (last && ci < chunks.size()) bad.store(true);
+                    {
+                        std::lock_guard<std::mutex> lk(w.mu);
+                        x.chunk = ci;
+                        x.last = last;
+                        x.full = true;
+                    }
+                    w.cv.notify_all();
+                    if (last) break;
+                }
+            });
+            th.emplace_back([&, pw] {   // the mover: each piece's part in the chunk to its place
+                Worker& w = *pw;
+                for (int s = 0;; s ^= 1) {
+                    Arena& x = w.a[s];
+                    {
+                        std::unique_lock<std::mutex> lk(w.mu);
+                        w.cv.wait(lk, [&] { return x.full; });
+                    }
+                    if (x.last) break;
+                    const Chunk& c = chunks[x.chunk];
+                    for (size_t q = c.p0; q < c.p1; ++q) {
+                        const StreamPiece& p = ps[q];
+                        const uint64_t b = std::max(p.off, c.off), e = std::min(p.off + p.n, c.off + c.n);
+                        if (b < e) std::memcpy(p.dst + (b - p.off), x.p + (b - c.off), (size_t) (e - b));
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(w.mu);
+                        x.full = false;
+                    }
+                    w.cv.notify_all();
+                }
+            });
+        }
+        for (auto& t : th) t.join();
+        for (Worker& w : ws)
+            for (Arena& x : w.a)
+                if (x.p != nullptr) cudaFreeHost(x.p);
+        std::fprintf(stderr, "ds4: the copy streamed %.1f GB in %zu reads of up to %llu MB (%d workers, unbuffered)\n",
+                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw);
+        if (bad.load())
+            err = ok ? "streaming the CPU lane's experts from the model's files failed"
+                     : "no pinned memory for the copy's stream";
+        return !bad.load();
+    }
+
     // a GGUF's CPU-lane experts copied into RAM (copy_mode), decided once VRAM's are in - on a unified-memory APU the GPU
     // has taken its share of the RAM by then, so the copies only get what it leaves.  `hot`: the CPU lane's experts, the
     // most-routed first.  --mmap-experts off: all that fit beside kRamMargin (a warning if not all do); on and auto:
@@ -5981,8 +6096,23 @@ struct Model::Impl {
         std::atomic<int64_t> done_b{0};
         // each copied piece's file pages dropped at once: the copy and the cache never hold it twice (DS4_COPY_DROP=0 keeps them)
         const bool drop = env_tri("DS4_COPY_DROP") != 0;
+        // DS4_COPY_STREAM=1: the copy read front to back in large unbuffered reads (stream_pieces), where every file has them
+        bool stream = env_tri("DS4_COPY_STREAM") == 1;
+        std::vector<StreamPiece> ps;
+        for (size_t i = 0; stream && i < jobs.size(); ++i) {
+            const Job& j = jobs[i];
+            const Layer& l = L[(size_t) j.layer];
+            for (int r = 0; r < 3; ++r) {
+                const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
+                stream = stream && (size_t) l.mx_file[r] < pk.dfds.size() && pk.dfds[(size_t) l.mx_file[r]] != os::kBadFd;
+                for (int X = 0; X < NH; ++X)
+                    ps.push_back({l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) X * nb, nb,
+                                  ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]});
+            }
+        }
+        if (stream && !stream_pieces(ps, err)) return false;
         std::vector<std::thread> th;
-        for (int t = 0; t < 12 && !jobs.empty(); ++t)
+        for (int t = 0; t < 12 && !stream && !jobs.empty(); ++t)
             th.emplace_back([&] {
                 for (size_t i; (i = ji.fetch_add(1)) < jobs.size() && !bad.load();) {
                     const Job& j = jobs[i];
@@ -6016,7 +6146,8 @@ struct Model::Impl {
         for (const Job& j : jobs) cb += (double) L[(size_t) j.layer].blob;
         std::fprintf(stderr, "ds4: %zu of the CPU lane's %zu experts copied into RAM (%.1f GB, %d NUMA part%s) in %.1f s%s%s\n",
                      jobs.size(), hot.size(), cb / 1e9, NH, NH > 1 ? "s" : "", (now_ms() - t0) / 1000.0,
-                     drop ? ", their file pages dropped" : "", jobs.size() < hot.size() ? "; the others read in place" : "");
+                     stream ? ", streamed" : drop ? ", their file pages dropped" : "",
+                     jobs.size() < hot.size() ? "; the others read in place" : "");
         // DS4_COPY_PIN: pin the copies, so the prompt path DMAs each expert from where it lies instead of copying it to
         // the pinned staging first (the pass streams 122 GB at 6.8 GB/s through the staging, where the RAM-to-staging
         // and DMA probes are 24 and 28 GB/s).  The CPU lane reads the same memory, and pinned 4 KB pages can cost its
