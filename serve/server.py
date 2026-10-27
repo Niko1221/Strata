@@ -320,7 +320,9 @@ BURST_CONTINUE = os.environ.get("STRATA_BURST_CONTINUE") == "1"
 # --batch: new requests take the control lines (one prompt read at a time) short prompts first: a prompt of at most
 # STRATA_ADMIT_SHORT_FIRST tokens goes before longer ones (opt-in; unset or 0: whoever gets the lock first), and a
 # longer one that waited STRATA_ADMIT_MAX_WAIT_S (default 30) counts as short.  A chat question then waits for the one
-# read in progress, not for every agent read that came before it.
+# read in progress, not for every agent read that came before it.  Without --batch the same setting orders the requests
+# waiting for the single turn (Service.run): a short one goes before longer ones that came first, and waits only for the
+# request that holds the turn - which is never interrupted.
 try:
     ADMIT_SHORT_FIRST = max(0, int(os.environ.get("STRATA_ADMIT_SHORT_FIRST") or 0))
 except ValueError:
@@ -3848,6 +3850,8 @@ class Service:
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
+        self.queue_cv = threading.Condition()          # STRATA_ADMIT_SHORT_FIRST without --batch: the requests waiting
+        self.queue_waiters = []                       # for the single turn, [prompt tokens, arrival] each
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -5083,6 +5087,17 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
+    def _queue_next(self):
+        """STRATA_ADMIT_SHORT_FIRST without --batch: the waiting request that takes the single turn next - a prompt of at
+        most that many tokens before a longer one, arrival order within each; a longer one that has waited
+        STRATA_ADMIT_MAX_WAIT_S counts as short (it is never held back for good).  StrataEngine._admit_next's order."""
+        now = time.monotonic()
+        with self.queue_cv:
+            if not self.queue_waiters:
+                return None
+            return min(self.queue_waiters, key=lambda e: (0 if e[0] <= ADMIT_SHORT_FIRST or now - e[1] >= ADMIT_MAX_WAIT_S
+                                                          else 1, e[1]))
+
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
             declared_only=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
@@ -5218,24 +5233,46 @@ class Service:
                 # #1619: a request waiting for the single turn sends a keep-alive every QUEUE_BEAT_S, so a client with
                 # a stream idle timeout does not abort a healthy queued request (and its retry read the prompt again);
                 # a client that left while queued gives its place up instead of taking the turn only to cancel there
+                # STRATA_ADMIT_SHORT_FIRST: only the request _queue_next() names tries for the turn, the others wait
+                # (and still beat); off, every waiting request tries, as before
                 got = False
-                while not got:
-                    if cancel.is_set():
-                        raise QueueCancelled("the client disconnected while waiting for the engine")
-                    left = deadline - time.monotonic() if deadline is not None else QUEUE_BEAT_S
-                    if left <= 0:
-                        raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-                    got = self.fifo.acquire(timeout=min(QUEUE_BEAT_S, left))
-                    if got:
+                ordered = ADMIT_SHORT_FIRST > 0
+                entry = [len(ids), time.monotonic()]
+                if ordered:
+                    with self.queue_cv:
+                        self.queue_waiters.append(entry)
+                beat = time.monotonic()
+                try:
+                    while not got:
                         if cancel.is_set():
-                            self.fifo.release()
                             raise QueueCancelled("the client disconnected while waiting for the engine")
-                        if deadline is not None and time.monotonic() >= deadline:
-                            self.fifo.release()
+                        left = deadline - time.monotonic() if deadline is not None else QUEUE_BEAT_S
+                        if left <= 0:
                             raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-                        turn.callback(self.fifo.release)
-                    else:
-                        yield "ping", None
+                        if not ordered:
+                            got = self.fifo.acquire(timeout=min(QUEUE_BEAT_S, left))
+                        elif self._queue_next() is entry:
+                            got = self.fifo.acquire(timeout=min(0.1, left))
+                        else:
+                            with self.queue_cv:
+                                self.queue_cv.wait(timeout=min(0.1, left))
+                        if got:
+                            if cancel.is_set():
+                                self.fifo.release()
+                                raise QueueCancelled("the client disconnected while waiting for the engine")
+                            if deadline is not None and time.monotonic() >= deadline:
+                                self.fifo.release()
+                                raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                            turn.callback(self.fifo.release)
+                        elif not ordered or time.monotonic() - beat >= QUEUE_BEAT_S:
+                            beat = time.monotonic()
+                            yield "ping", None
+                finally:
+                    if ordered:
+                        with self.queue_cv:
+                            if entry in self.queue_waiters:
+                                self.queue_waiters.remove(entry)
+                            self.queue_cv.notify_all()
             with turn:
                 try:
                     with self.status_lock:
