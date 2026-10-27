@@ -6214,6 +6214,19 @@ class SystemRemindersTail(unittest.TestCase):
         # both past turns byte-stable, and each block once on the last turn, in the order it was sent
         self.assertEqual(users, ["a", "c", "e\n" + a + "\n" + b])
 
+    def test_the_responses_route_moves_the_block_too(self):
+        """#451: /v1/responses builds its messages in serve/responses.py and never runs the chat route's
+        converter, so the rule has to be passed there.  Codex CLI is the client that switches modes."""
+        from serve.responses import input_messages
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        req = {"instructions": "sys", "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "door tiles " + rem}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next step"}]}]}
+        users = lambda tail: [m["content"] for m in input_messages(req, tail) if m["role"] == "user"]   # noqa: E731
+        self.assertEqual(users(True), ["door tiles", "next step\n" + rem])
+        self.assertEqual(users(False), ["door tiles " + rem, "next step"])   # off: as Codex sent it
+
 
 class DivergenceNote(unittest.TestCase):
     """Service.note_divergence compares a request with what each batch slot holds for its next turn (prompt +
