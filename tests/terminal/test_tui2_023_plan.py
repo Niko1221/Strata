@@ -2,6 +2,7 @@
 engine missing, B10/E04 `--drafting off` leaves `--mtp <path>` out of the written config."""
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from strata_cli.launch import modelstate, settings as S
@@ -94,6 +95,40 @@ class DraftingOffConfig(unittest.TestCase):
     def test_an_installed_config_that_already_says_off_stays_off(self):
         cfg = derive_config({**self.BASE, "drafting": "off"}, S.LaunchSettings(), bool_flags=frozenset())
         self.assertNotIn("--mtp", cfg["args"])
+
+
+class ModelFolderCase(unittest.TestCase):
+    """#3996: setup.py writes `models/<the model name>` ("models/IQ3_S") and `catalog.tag_of()` lower-cases it
+    ("iq3_s"). On a case-sensitive filesystem a downloaded model was counted as missing, so the plan, the screens
+    and the confirm dialog offered the whole download again."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+        self.data = Path(self.home.base) / "Strata-data"
+        self.data.mkdir(parents=True, exist_ok=True)
+
+    def weights(self, folder_name: str, size: int = 4096) -> None:
+        folder = self.data / "models" / folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf").write_bytes(b"x" * size)
+
+    def on_disk(self) -> float:
+        return modelstate.assess(catalog(HW_12), "qwen", "IQ3_S", vision="off", data_dir=self.data).on_disk_gb
+
+    def test_a_folder_named_with_the_model_case_is_used(self):
+        self.weights("IQ3_S")
+        # the folder's own spelling wins, so this holds on a case-sensitive disk and on a case-insensitive one
+        self.assertEqual(modelstate._model_folder(self.data, "iq3_s").name, "IQ3_S")
+        self.assertAlmostEqual(self.on_disk(), 4096 / 1e9, places=9)
+
+    def test_the_lower_case_folder_is_still_used(self):
+        self.weights("iq3_s")
+        self.assertEqual(modelstate._model_folder(self.data, "iq3_s").name, "iq3_s")
+        self.assertAlmostEqual(self.on_disk(), 4096 / 1e9, places=9)
+
+    def test_a_missing_folder_still_counts_as_nothing(self):
+        self.assertEqual(self.on_disk(), 0.0)
 
 
 if __name__ == "__main__":

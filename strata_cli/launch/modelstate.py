@@ -156,7 +156,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     # not installed: whatever of the weights is in the model's folder counts
     if family and model:
         base = data or Path(catalog.data_dir())
-        folder = base / "models" / catalog.tag_of(family, model)
+        folder = _model_folder(base, catalog.tag_of(family, model))
         got = 0
         try:
             got = sum(f.stat().st_size for f in folder.glob("*.gguf") if not f.name.lower().startswith("mmproj"))
@@ -181,6 +181,27 @@ def _has_reader(base: Path) -> bool:
         except OSError:
             pass
     return False
+
+
+def _model_folder(base: Path, tag: str) -> Path:
+    """The model's folder under `base/models`, whatever case it was written with.
+
+    setup.py writes `models/<the model name>` ("models/IQ3_S") while `catalog.tag_of()` lower-cases the same
+    name ("iq3_s"). On a case-sensitive filesystem the two never meet, so a model that is fully downloaded was
+    counted as not being on this computer and launch offered the whole download again (#3996). The name as given
+    wins; otherwise an entry that matches apart from case is used, and the lower-case path last, which the caller
+    then reports as missing."""
+    parent = base / "models"
+    exact = parent / tag
+    if exact.is_dir():
+        return exact
+    try:
+        for entry in parent.iterdir():
+            if entry.name.lower() == tag.lower() and entry.is_dir():
+                return entry
+    except OSError:
+        pass
+    return exact
 
 
 def _first_gguf(path: Path) -> Path | None:
