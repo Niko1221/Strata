@@ -9611,7 +9611,8 @@ struct Model::Impl {
             if (!mv(d, {job(l.wq_b, d.qr, d.q, T, g.q_lora, HQ)}, err)) return false;
             Finish fr;
             fr.rd = g.rd;
-            fr.pos = (int) p0;
+            if (step != nullptr) fr.pos_rows = step->pos_dev;   // (a step: each row its own position's rope)
+            else fr.pos = (int) p0;
             fr.vpp = NHL;
             fr.freqs = freqs;
             finish(d.q, T * NHL, HD, HD, fr, s);
@@ -9619,19 +9620,46 @@ struct Model::Impl {
         // the window rows: the ring's (positions p0 - win ..) then this window's, each query its own 128.  A DSpark
         // block's ring holds the trunk's main KV (positions <= p0 - 1, seeded); its block of drafts attends to all of
         // that ring and to the whole block, and leaves the ring as it was
-        ring_to_ext(win_of(l), d.ext, l.mtp ? (int64_t) g.win : p0, g.win, HD, s);   // (a block's ring: its rows as they lie)
+        const size_t eblk = (size_t) (g.win + 1) * HD;   // (a step's row: a ring's win rows, then its token's)
+        if (step != nullptr) {
+            for (int t = 0; t < T; ++t)
+                ring_to_ext(win_of(l, step->seq[t]), d.ext + (size_t) t * eblk, step->pos[t], g.win, HD, s);
+        } else
+            ring_to_ext(win_of(l), d.ext, l.mtp ? (int64_t) g.win : p0, g.win, HD, s);   // (a block's ring: its rows as they lie)
         Finish fk;
         fk.w = l.kv_norm;
         fk.eps = g.eps;
         fk.rd = g.rd;
-        fk.pos = (int) p0;
         fk.freqs = freqs;
         fk.quant = 1;
         fk.dst = d.ext + (size_t) g.win * HD;
-        fk.dst_stride = HD;
+        if (step != nullptr) {   // (each row its own position's rope, written into its own window block)
+            fk.pos_rows = step->pos_dev;
+            fk.dst_stride = (long long) eblk;
+        } else {
+            fk.pos = (int) p0;
+            fk.dst_stride = HD;
+        }
         finish(d.kvr, T, HD, HD, fk, s);
-        if (!l.mtp) ext_to_ring(d.ext, win_of(l), p0, g.win, T, HD, s, spec_win ? l.ring_bak : nullptr);
+        if (!l.mtp) {
+            if (step != nullptr) {
+                for (int t = 0; t < T; ++t)
+                    ext_to_ring(d.ext + (size_t) t * eblk, win_of(l, step->seq[t]), step->pos[t], g.win, 1, HD, s, nullptr);
+            } else
+                ext_to_ring(d.ext, win_of(l), p0, g.win, T, HD, s, spec_win ? l.ring_bak : nullptr);
+        }
         AttnRows ar;
+        if (step != nullptr) {
+            // (M2's step: query t's window is its own block - the ring's rows below its position, then its token's)
+            ar.gen = 0;
+            for (int t = 0; t < T; ++t) {
+                const int p = (int) step->pos[t];
+                const int nr = (int) std::min<int64_t>(g.win - 1, p);
+                ar.win0[t] = (int) ((size_t) t * (size_t) (g.win + 1) + (size_t) (g.win - nr));
+                ar.nwin[t] = nr + 1;
+                ar.nsel[t] = (int) std::min<int64_t>(g.ix_topk, l.ratio > 0 ? (p + 1) / l.ratio : 0);
+            }
+        } else
         for (int t = 0; t < T; ++t) {
             if (l.mtp) {
                 ar.win0[t] = 0;
@@ -9660,6 +9688,12 @@ struct Model::Impl {
                     fc.eps = g.eps;
                     finish(d.ckr, T, HD, HD, fc, s);
                     CK(cudaMemcpyAsync(d.latent, d.ckr, (size_t) T * HD * 4, cudaMemcpyDeviceToDevice, s));
+                } else if (step != nullptr) {
+                    // (a step: each row its own sequence's compressor group, its own completed group or none)
+                    for (int t = 0; t < T; ++t)
+                        compress_win(d.ckr + (size_t) t * HD, d.cgr + (size_t) t * HD, comp_kv(l, step->seq[t]),
+                                     comp_sc(l, step->seq[t]), R, (int) step->pos[t], 1, HD, l.c_norm, g.eps,
+                                     d.latent + (size_t) t * HD, s);
                 } else {
                     if (spec_win && l.c_snap != nullptr) {   // to replay the accepted rows if drafts are rejected
                         const size_t ns = (size_t) R * HD * 4, nr = (size_t) T * HD * 4;
@@ -9674,7 +9708,7 @@ struct Model::Impl {
             Rows lim;
             int clen_max = 0;
             for (int t = 0; t < T; ++t) {
-                lim.n[t] = (int) ((p0 + t + 1) / R);
+                lim.n[t] = (int) (((step != nullptr ? step->pos[t] : p0 + t) + 1) / R);
                 lim.k[t] = std::min(g.ix_topk, lim.n[t]);
                 clen_max = std::max(clen_max, lim.n[t]);
             }
