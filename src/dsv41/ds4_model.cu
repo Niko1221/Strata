@@ -5979,6 +5979,8 @@ struct Model::Impl {
         std::atomic<size_t> ji{0};
         std::atomic<bool> bad{false};
         std::atomic<int64_t> done_b{0};
+        // each copied piece's file pages dropped at once: the copy and the cache never hold it twice (DS4_COPY_DROP=0 keeps them)
+        const bool drop = env_tri("DS4_COPY_DROP") != 0;
         std::vector<std::thread> th;
         for (int t = 0; t < 12 && !jobs.empty(); ++t)
             th.emplace_back([&] {
@@ -5987,10 +5989,14 @@ struct Model::Impl {
                     const Layer& l = L[(size_t) j.layer];
                     for (int r = 0; r < 3; ++r) {
                         const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
-                        for (int X = 0; X < NH; ++X)
-                            if (!pk.read_at(l.mx_file[r], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) X * nb, nb,
+                        for (int X = 0; X < NH; ++X) {
+                            const uint64_t off = l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r] + (uint64_t) X * nb;
+                            if (!pk.read_at(l.mx_file[r], off, nb,
                                             ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]))
                                 bad.store(true);
+                            else if (drop)
+                                os::advise(pk.fds[(size_t) l.mx_file[r]], off, nb, false);
+                        }
                     }
                     const int64_t db = done_b.fetch_add((int64_t) l.blob) + (int64_t) l.blob;
                     if (o.verbose && i % 2048 == 0)
@@ -6008,9 +6014,9 @@ struct Model::Impl {
         ram_held = (int) jobs.size();
         double cb = 0;
         for (const Job& j : jobs) cb += (double) L[(size_t) j.layer].blob;
-        std::fprintf(stderr, "ds4: %zu of the CPU lane's %zu experts copied into RAM (%.1f GB, %d NUMA part%s) in %.1f s%s\n",
+        std::fprintf(stderr, "ds4: %zu of the CPU lane's %zu experts copied into RAM (%.1f GB, %d NUMA part%s) in %.1f s%s%s\n",
                      jobs.size(), hot.size(), cb / 1e9, NH, NH > 1 ? "s" : "", (now_ms() - t0) / 1000.0,
-                     jobs.size() < hot.size() ? "; the others read in place" : "");
+                     drop ? ", their file pages dropped" : "", jobs.size() < hot.size() ? "; the others read in place" : "");
         // DS4_COPY_PIN: pin the copies, so the prompt path DMAs each expert from where it lies instead of copying it to
         // the pinned staging first (the pass streams 122 GB at 6.8 GB/s through the staging, where the RAM-to-staging
         // and DMA probes are 24 and 28 GB/s).  The CPU lane reads the same memory, and pinned 4 KB pages can cost its
