@@ -11,10 +11,12 @@ Fixtures are verbatim `conversation cache:` event lines from the P1 fleet probe
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from serve.session_ladder import (
     JOIN_TOKEN_TOLERANCE,
@@ -120,6 +122,82 @@ class SessionLadderDecisions(unittest.TestCase):
         aux_misflagged = session("aux-2", 70, 0, parked=False, save_eligible=True)
         self.assertFalse(should_save(aux_misflagged, {"aux-2": aux_misflagged}, CFG))
 
+    def test_should_restore_suppressed_while_resident(self):
+        # momo 2026-10-27 restore-churn finding: the engine still holds this session live (its last
+        # DONE reused deep - a continuation, no switch since).  A RESTORE would overwrite the deeper
+        # live state with the older file and re-read the difference on every turn (the 28-row churn:
+        # re-reads grew 2045 -> 6869 -> 12471 tokens).  Resident beats any restore.
+        s = TrackedSession(session_id="ses-a", tokens=150123, parked=False, save_eligible=True,
+                           file_path="/var/lib/strata/sessions/llm-session-ses-a.bin",
+                           saved_prefix="prompt head", last_active=0.0, evictions_at_last_switch=0,
+                           resident=True)
+        self.assertFalse(should_restore(s, CFG))
+
+    def test_on_turn_done_deep_reuse_marks_resident(self):
+        # DONE "prompt 150123 tokens = 148078 reused + 2045 read" (98.6%, momo 14:25): the engine
+        # resumed this conversation from its own slot - resident, so the next arrival must not
+        # restore the older file over it.
+        ladder = SessionLadder(CFG)
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=148078)
+        self.assertTrue(ladder.tracked["ses-a"].resident)
+
+    def test_on_turn_done_shallow_or_cold_done_is_not_resident(self):
+        # A shallow checkpoint resume (89%) or a cold read (0%) leaves the session one the ladder can
+        # still owe a restore to: residency is deep reuse only (the pinned 0.9 line).
+        ladder = SessionLadder(CFG)
+        ladder.on_turn_done("ses-b", tokens=10000, byte_count=0, reused=8899)
+        self.assertFalse(ladder.tracked["ses-b"].resident)
+        ladder.on_turn_done("ses-c", tokens=10000, byte_count=0, reused=0)
+        self.assertFalse(ladder.tracked["ses-c"].resident)
+
+    def test_on_start_clears_residency_of_every_session(self):
+        # A fresh engine parks nothing and holds nothing: residency claims from the previous engine
+        # die with it (the last-active session earns the warm handoff from its file; the others
+        # re-enter through their own next arrival).
+        ladder = SessionLadder(CFG)
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=148078)
+        self.assertTrue(ladder.tracked["ses-a"].resident)
+        ladder.on_start(SimpleNamespace())
+        self.assertFalse(ladder.tracked["ses-a"].resident)
+
+    def test_arrival_switch_clears_residency_and_a_continuation_keeps_it(self):
+        # A resident session loses residency when ANOTHER session takes the slot - from the switch note
+        # on, "the conversation is the engine's to keep or lose", so a later switch-back may restore
+        # again.  The incoming session is untouched: a same-session arrival is a continuation.
+        engine = SimpleNamespace(batch=0,
+                                 session_file=lambda action, path: {"tokens": 1, "bytes": 1, "ms": 1.0})
+        service = SimpleNamespace(engine=engine)
+        ladder = SessionLadder(CFG)
+        ladder.on_arrival(service, "ses-a", "ses-a conversation")        # ses-a becomes the current
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=148078)
+        self.assertTrue(ladder.tracked["ses-a"].resident)
+        ladder.on_arrival(service, "ses-b", "fresh second conversation")  # ses-a departs the slot
+        self.assertFalse(ladder.tracked["ses-a"].resident)
+        ladder.on_arrival(service, "ses-b", "fresh second conversation")  # ses-b's own continuation
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=148078)   # a deep-resumed DONE
+        self.assertTrue(ladder.tracked["ses-a"].resident)                 # re-earned residency stands
+        ladder.on_arrival(service, "ses-a", "ses-a continued")            # its own arrival: no switch note
+        self.assertTrue(ladder.tracked["ses-a"].resident)
+
+    def test_a_joined_event_re_anchors_tokens_and_bytes(self):
+        # probe-A battery (2026-10-27): once a join lands, the session's anchor becomes the ENGINE's own
+        # figures for that conversation - joins from then on compare measured to measured.  The same
+        # conversation's next park (8838 tokens, the checkpoint size swinging to 485 MB against 603 MB:
+        # more than 15%) still lands inside the token band; an out-of-band line joins - and anchors -
+        # nothing.
+        ladder = SessionLadder(CFG)
+        ladder.on_turn_done("probe-a", tokens=8775, byte_count=0, reused=8770)
+        ladder.on_conv_event(ConvEvent(kind="parked", tokens=8803, byte_count=603430952, evictions=1))
+        s = ladder.tracked["probe-a"]
+        self.assertTrue(s.parked)
+        self.assertEqual(s.tokens, 8803)
+        self.assertEqual(s.byte_count, 603430952)
+        ladder.on_conv_event(ConvEvent(kind="parked", tokens=8838, byte_count=485492400, evictions=2))
+        self.assertEqual(s.tokens, 8838)
+        self.assertEqual(s.byte_count, 485492400)
+        ladder.on_conv_event(ConvEvent(kind="parked", tokens=12000, byte_count=485492400, evictions=2))
+        self.assertEqual(s.tokens, 8838)                      # out of band: no join, no re-anchor
+
     def test_should_restore_only_with_valid_file_and_missed_park(self):
         # restore only when a ladder file exists AND park demonstrably missed this session.
         # File shapes from P2: session saved 25861 tokens ... to /var/lib/strata/sessions/probe-p2-20261025T0450
@@ -175,14 +253,16 @@ class SessionLadderDecisions(unittest.TestCase):
 
 
 class JoinTolerance(unittest.TestCase):
-    """F1 (final review): the tolerant join.  join_event's exact (tokens, byte_count) key never matches the
-    request-path figures - on_turn_done records the 40.4 KiB/token estimate while a park line carries the
-    engine's own snapshot_bytes and the generated turn's token delta (7 tokens in the 24.5k evidence pair) -
-    so after exact match the ladder joins the NEAREST session within SNAPSHOT_JOIN_TOLERANCE of the event's
-    bytes and a token band max(JOIN_TOKEN_TOLERANCE x s.tokens, JOIN_TOKEN_TOLERANCE_FLOOR) = max(1%, 256),
-    pinned here.  The near-tie consequence is benign: a mis-join only skips a save or defers a restore - both
-    degrade to today's cold prefill; prefix_fidelity still gates every restore, so a mis-join never restores
-    a wrong file."""
+    """F1 (final review) + the 2026-10-27 battery: the tolerant join.  join_event's exact (tokens,
+    byte_count) key never matches the request-path figures - on_turn_done records the 40.4 KiB/token
+    estimate while a park line carries the engine's own snapshot_bytes and the generated turn's token
+    delta (7 tokens in the 24.5k evidence pair) - so after exact match the ladder joins on the TOKEN
+    BAND max(JOIN_TOKEN_TOLERANCE x s.tokens, JOIN_TOKEN_TOLERANCE_FLOOR) = max(1%, 256) as the primary
+    gate, using SNAPSHOT_JOIN_TOLERANCE bytes only to disambiguate a band holding several candidates
+    (measured park sizes vary 33.6-68 KiB/token against the estimate, so bytes cannot anchor a join
+    honestly - the token band can).  The near-tie consequence is benign: a mis-join only skips a save
+    or defers a restore - both degrade to today's cold prefill; prefix_fidelity still gates every
+    restore, so a mis-join never restores a wrong file."""
 
     # the verbatim evidence pair: DONE "prompt 24504 tokens = 0 reused + 24504 read ..." -> the estimate
     # int(24504 x 40.4 KiB) = 1013722009-ish; the park line 24511 tokens / snapshot_bytes=1046081816.
@@ -209,14 +289,35 @@ class JoinTolerance(unittest.TestCase):
         self.assertIsNone(join_event_tolerant(ConvEvent(kind="parked", tokens=30301,
                                                         byte_count=1241088000, evictions=1), {"big": big}))
 
-    def test_byte_band_is_the_snapshot_tolerance(self):
-        # 15% (SNAPSHOT_JOIN_TOLERANCE, the machinery skipped_over_budget's MiB join already pins) of the
-        # event's byte_count: a gap just inside joins, just outside joins nothing.
-        near = session("near", 24511, 1_000_000_000)
-        ev_in = ConvEvent(kind="parked", tokens=24600, byte_count=880_000_000, evictions=1)   # gap 120M <= 132M
-        self.assertIsNotNone(join_event_tolerant(ev_in, {"near": near}))
-        ev_out = ConvEvent(kind="parked", tokens=24600, byte_count=840_000_000, evictions=1)  # gap 160M > 126M
-        self.assertIsNone(join_event_tolerant(ev_out, {"near": near}))
+    def test_token_band_is_primary_a_lone_candidate_survives_a_starved_byte_gap(self):
+        # momo battery 2026-10-27 (probe-A): DONE 8775 tokens -> the 40.4 KiB/token estimate ~363 MB,
+        # while the engine's park line names 8803 tokens / snapshot_bytes=603430952 measured - a ~66%
+        # gap the 15% byte gate could never bridge, so the join died and the session kept its
+        # parked=False / restore-owed state (the measured sizes sit 33.6 KiB/token for big sessions and
+        # 55-68 KiB/token for small ones: a single pinned ratio cannot match both).  The token band is
+        # the primary gate; bytes only disambiguate below.
+        est = int(8775 * PARK_COST_KIB_PER_TOKEN * 1024)
+        probe = session("probe-a", 8775, est)
+        ev = ConvEvent(kind="parked", tokens=8803, byte_count=603430952, evictions=1)
+        joined = join_event_tolerant(ev, {"probe-a": probe})
+        self.assertIsNotNone(joined)
+        self.assertEqual(joined.session_id, "probe-a")
+
+    def test_byte_tolerance_disambiguates_only_when_the_band_holds_two(self):
+        # Two in-band candidates: byte proximity decides (the P1 parked=3 fingerprints keep their
+        # refusal - an equidistant pair joins nothing, and a sizeless event cannot pick at all).
+        # A LONE in-band candidate joins on tokens alone (the probe-A rule above).
+        a = session("a", 8803, 603430952)
+        b = session("b", 8803, 485492400)
+        ev = ConvEvent(kind="parked", tokens=8838, byte_count=486000000, evictions=1)
+        joined = join_event_tolerant(ev, {"a": a, "b": b})
+        self.assertIsNotNone(joined)                       # b at gap 1.5M, a at 117M: nearest wins
+        self.assertEqual(joined.session_id, "b")
+        ev_tie = ConvEvent(kind="parked", tokens=8838, byte_count=544461676, evictions=1)  # midpoint
+        self.assertIsNone(join_event_tolerant(ev_tie, {"a": a, "b": b}))   # tied gaps: refuses to guess
+        ev0 = ConvEvent(kind="skipped_below_min", tokens=8838, byte_count=0, evictions=1)  # the sizeless line
+        self.assertIsNone(join_event_tolerant(ev0, {"a": a, "b": b}))      # cannot disambiguate two
+        self.assertIsNotNone(join_event_tolerant(ev0, {"a": a}))           # joins a lone candidate on tokens
 
     def test_exact_match_keeps_precedence_and_ambiguity_still_refuses(self):
         # Task 5's rules stand: a unique exact match wins over any nearer tolerant candidate; an ambiguous
@@ -238,6 +339,108 @@ class JoinTolerance(unittest.TestCase):
         for kind in ("dropped", "skipped_over_budget"):   # the no-figures line and the tokened budget refusal
             ev = ConvEvent(kind=kind, tokens=24518, byte_count=1046081900, evictions=1)
             self.assertIsNone(join_event_tolerant(ev, {"near": near}))          # keep exact-only semantics
+
+
+class LadderIndex(unittest.TestCase):
+    """R4 (momo 2026-10-27 battery): the ladder's ledger - which files exist, the prefix anchored to each,
+    who was last active - lives only in the server process, so every SERVER restart (the switch at 14:09)
+    dropped it: tracked empty, no checkpoint knowledge, every session's first arrival a cold prefill even
+    though its file sat in the sessions dir (the 28-row churn's second face).  The ledger now round-trips
+    through a sidecar JSON in the sessions dir: a save records it, a retirement removes it, the warm
+    handoff consumes it, and a new ladder adopts it - skipping files the age rule already removed.  A
+    corrupt sidecar is a no-op: cold prefill is the fallback, never a crash."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096)
+        self.index = os.path.join(self.dir.name, "ladder-index.json")
+
+    def _service(self):
+        engine = SimpleNamespace(batch=0,
+                                 session_file=lambda action, path: {"tokens": 1, "bytes": 1, "ms": 1.0})
+        return SimpleNamespace(engine=engine)
+
+    def _save_ses_a(self, cfg=None):
+        # one switched-away big mid: ses-a completes a turn, an interloper takes the slot, the save lands.
+        service = self._service()
+        ladder = SessionLadder(cfg or self.cfg)
+        ladder.on_arrival(service, "ses-a", "ses-a conversation text")
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=0)
+        ladder.on_arrival(service, "ses-b", "interloper conversation")
+        return ladder
+
+    def test_a_ladder_save_records_the_session_in_the_index(self):
+        self._save_ses_a()
+        data = json.loads(open(self.index).read())
+        path = os.path.join(self.dir.name, "llm-session-ses-a.bin")
+        self.assertEqual(data["files"], [path])
+        entry = data["entries"]["ses-a"]
+        self.assertEqual(entry["file"], path)
+        self.assertEqual(entry["saved_prefix"], "ses-a conversation text")
+        self.assertEqual(entry["tokens"], 150123)
+
+    def test_a_new_ladder_adopts_indexed_checkpoints_and_hands_the_last_active_to_the_warm_restore(self):
+        self._save_ses_a()
+        path = os.path.join(self.dir.name, "llm-session-ses-a.bin")
+        open(path, "wb").close()                        # the save's real counterpart (live: the engine writes it)
+        fresh = SessionLadder(self.cfg)                 # a restarted server, the same sessions dir
+        s = fresh.tracked["ses-a"]
+        self.assertEqual(s.file_path, path)
+        self.assertEqual(s.saved_prefix, "ses-a conversation text")
+        self.assertEqual(s.tokens, 150123)
+        self.assertTrue(s.save_eligible)                # 150123 tokens is over the 4096 MiB budget
+        self.assertFalse(s.parked)                      # a fresh engine parks nothing
+        self.assertFalse(s.resident)                    # ...and holds nothing
+        self.assertFalse(s.dirty)                       # the file IS its saved state: no instant re-save
+        self.assertEqual(fresh.last_active, "ses-a")    # last saved = last active: the handoff candidate
+        service = SimpleNamespace()                     # ensure_loaded's hook
+        fresh.on_start(service)
+        self.assertEqual(service.restore_after_load, path)   # warm resume survives the server restart
+
+    def test_the_warm_handoff_consumes_the_index_entry(self):
+        self._save_ses_a()
+        path = os.path.join(self.dir.name, "llm-session-ses-a.bin")
+        open(path, "wb").close()
+        fresh = SessionLadder(self.cfg)
+        service = SimpleNamespace()
+        fresh.on_start(service)
+        self.assertEqual(service.restore_after_load, path)
+        data = json.loads(open(self.index).read())      # consumed on disk too (the load path unlinks the file)
+        self.assertNotIn("ses-a", data.get("entries", {}))
+        self.assertNotIn(path, data.get("files", []))
+        self.assertNotIn("ses-a", SessionLadder(self.cfg).tracked)   # nothing re-adopts a consumed checkpoint
+
+    def test_retention_retires_index_entries_with_the_files(self):
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           retention_max_files=2)
+        service = self._service()
+        ladder = SessionLadder(cfg)
+        for sid in ("ses-a", "ses-b", "ses-c", "ses-d"):     # four arrivals: a, b, c save on their switch-aways
+            ladder.on_arrival(service, sid, f"{sid} conversation text")
+            ladder.on_turn_done(sid, tokens=150123, byte_count=0, reused=0)
+        data = json.loads(open(self.index).read())           # the over-cap save of c retired a (plain LRU fallback)
+        self.assertEqual(data["files"], [os.path.join(self.dir.name, f"llm-session-{x}.bin")
+                                         for x in ("ses-b", "ses-c")])
+        self.assertEqual(sorted(data["entries"]), ["ses-b", "ses-c"])
+
+    def test_a_corrupt_index_is_ignored_and_the_next_save_overwrites_it(self):
+        with open(self.index, "w") as f:
+            f.write("]] not json [[")
+        fresh = SessionLadder(self.cfg)                 # a no-op, not a crash
+        self.assertEqual(fresh.tracked, {})
+        service = self._service()
+        fresh.on_arrival(service, "ses-a", "ses-a conversation text")
+        fresh.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=0)
+        fresh.on_arrival(service, "ses-b", "interloper conversation")
+        data = json.loads(open(self.index).read())      # the save replaced the garbage
+        self.assertIn("ses-a", data["entries"])
+
+    def test_an_indexed_file_that_is_gone_is_not_adopted(self):
+        self._save_ses_a()                  # duck engine: the ledger knows a file the disk never got
+        fresh = SessionLadder(self.cfg)     # (live: the tmpfiles age rule removes files behind the ladder)
+        self.assertNotIn("ses-a", fresh.tracked)         # an adoption requires the file itself
+        self.assertEqual(fresh.last_active, None)
 
 
 class SessionLadderIntake(unittest.TestCase):
