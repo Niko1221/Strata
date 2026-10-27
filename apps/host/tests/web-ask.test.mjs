@@ -162,13 +162,13 @@ test('the profile names the search service in the gate\'s question, and carries 
 
 // ---------------------------------------------------------------------------------------------- the words, in every language
 
-test('the card text and the Settings switch exist in all eight languages', async () => {
+test('the card text and the Settings switch exist in all nine languages', async () => {
   const compiled = await build({ stdin: { contents: "export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, platform: 'node', format: 'esm' });
   const { tr, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
   const search = manualDecision(SEARCH, { provider: 'DuckDuckGo, or Bing when DuckDuckGo is busy' }).reason;
   const open = manualDecision(FETCH).reason;
   const english = [search, open, 'Let the assistant search the web without asking'];
-  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko']) {
+  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
     setTranslationLanguage(language);
     for (const text of english) assert.notEqual(tr(text), text, `${language}: ${text}`);
     const translated = tr(search);
