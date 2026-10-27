@@ -68,6 +68,7 @@ extern "C" void ds4_busy_end();
 #include <functional>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <sstream>
@@ -362,6 +363,13 @@ struct Pack {
     std::vector<std::pair<uint8_t*, size_t>> maps;   // file -> its read-only mapping (map(): the experts in place)
     std::vector<os::fd_t> dfds;   // (gguf) file -> unbuffered (os::open_direct; kBadFd: buffered reads only)
     std::vector<os::fd_t> pfds;   // (gguf) file -> for reads from many threads at once (os::open_par)
+    // file ranges already in memory (the experts' stream staged them): read_at serves a read inside one from there
+    struct Held {
+        int file;
+        uint64_t off, n;
+        const uint8_t* p;
+    };
+    std::vector<Held> held;   // (sorted by file, then offset)
 
     ~Pack() {
         for (auto& m : maps) os::unmap(m.first, m.second);
@@ -504,6 +512,16 @@ struct Pack {
     }
     bool direct_reads = false;   // (after drop_views: the reads go unbuffered, the cached ones are what the slow path is)
     bool read_at(int file, uint64_t off, uint64_t n, void* dst) const {   // (any thread; side by side where pfds is)
+        if (!held.empty()) {
+            auto it = std::upper_bound(held.begin(), held.end(), std::make_pair(file, off),
+                                       [](const std::pair<int, uint64_t>& k, const Held& h) {
+                                           return k.first != h.file ? k.first < h.file : k.second < h.off;
+                                       });
+            if (it != held.begin() && (--it)->file == file && off + n <= it->off + it->n) {
+                std::memcpy(dst, it->p + (off - it->off), n);
+                return true;
+            }
+        }
         if (direct_reads && (size_t) file < dfds.size() && dfds[(size_t) file] != os::kBadFd) {
             thread_local std::vector<uint8_t> bounce;
             const uint64_t span = os::direct_span(off, n);
@@ -623,6 +641,7 @@ struct Dev {
     float* rw_a = nullptr;
     size_t free0 = 0, total = 0, weights = 0, experts = 0, caches = 0, scratch = 0;
     std::vector<void*> allocs;
+    std::vector<std::function<bool(std::string&)>> fills;   // (DS4_COPY_STREAM) its dense weights' fills, run after the stream
     // a window's scratch, rows of up to kWin tokens (the routed experts' rows: kWin * kPicks)
     float *h = nullptr, *h2 = nullptr, *x = nullptr, *qr = nullptr, *q = nullptr, *kvr = nullptr, *ckr = nullptr,
           *cgr = nullptr, *latent = nullptr, *ikr = nullptr, *iq = nullptr, *iw = nullptr, *scores = nullptr,
@@ -2043,15 +2062,34 @@ struct Model::Impl {
     }
 
     // ---- weights
-    bool upload(Dev& d, const Tensor& t, void* dst, std::string& err) {
-        std::vector<uint8_t> tmp(t.bytes);
-        if (!pk.read(t, tmp.data())) {
-            err = "read failed";
-            return false;
+    // DS4_COPY_STREAM=1: a dense weight's read, conversion and copy held until the experts' stream brought its bytes
+    bool defer = false;
+    std::mutex wants_mu;
+    std::vector<Pack::Held> wants;                              // the file ranges the held fills read
+    std::vector<std::function<bool(std::string&)>> host_fills;   // (the embedding table's)
+    static Pack::Held range(const Tensor& t) { return {t.file, t.off, t.bytes, nullptr}; }
+    // a fill now, or (defer) queued in q with the ranges it reads
+    bool fill(std::vector<std::function<bool(std::string&)>>& q, std::initializer_list<Pack::Held> rs,
+              std::function<bool(std::string&)> job, std::string& err) {
+        if (!defer) return job(err);
+        {
+            std::lock_guard<std::mutex> lk(wants_mu);
+            wants.insert(wants.end(), rs);
         }
-        cudaSetDevice(d.id);
-        CK(cudaMemcpy(dst, tmp.data(), t.bytes, cudaMemcpyHostToDevice));
+        q.push_back(std::move(job));
         return true;
+    }
+    bool upload(Dev& d, const Tensor& t, void* dst, std::string& err) {
+        return fill(d.fills, {range(t)}, [this, &d, &t, dst](std::string& err) {
+            std::vector<uint8_t> tmp(t.bytes);
+            if (!pk.read(t, tmp.data())) {
+                err = "read failed";
+                return false;
+            }
+            cudaSetDevice(d.id);
+            CK(cudaMemcpy(dst, tmp.data(), t.bytes, cudaMemcpyHostToDevice));
+            return true;
+        }, err);
     }
     // a dense matrix in a ggml block type (x3::Mat fmt kFmtGG, row = k / 256 blocks): whole, or part of its rows / inputs
     bool mat_gg(Dev& d, const std::string& pre, const Tensor& t, int ggt, x3::Mat& m, std::string& err, size_t* acct, int part,
@@ -2062,33 +2100,23 @@ struct Model::Impl {
         }
         int n = (int) t.shape[0], k = (int) t.shape[1];
         const size_t rb = gg::type_row_bytes(ggt, k), bb = rb / ((size_t) k / 256);
-        std::vector<uint8_t> w((size_t) n * rb);
-        if (t.bytes != w.size() || !pk.read(t, w.data())) {
+        if (t.bytes != (size_t) n * rb) {
             err = pre + ": read failed";
             return false;
         }
+        const int n0 = n, wd = (cols ? n : k) / np;
         if (np > 1) {
-            const int whole = cols ? n : k, wd = whole / np;
+            const int whole = cols ? n : k;
             if (whole % np != 0 || wd % (cols ? 1 : 256) != 0) {
                 err = pre + ": " + std::to_string(whole) + (cols ? " outputs" : " inputs") + " do not split in " + std::to_string(np) + " parts";
                 return false;
             }
-            std::vector<uint8_t> p;
-            if (cols) {
-                p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
-                n = wd;
-            } else {
-                const size_t pb = (size_t) (wd / 256) * bb, off = (size_t) (part * wd / 256) * bb;
-                p.resize((size_t) n * pb);
-                for (size_t r = 0; r < (size_t) n; ++r) std::memcpy(p.data() + r * pb, w.data() + r * rb + off, pb);
-                k = wd;
-            }
-            w.swap(p);
+            if (cols) n = wd;
+            else k = wd;
         }
+        const size_t pb = np > 1 && !cols ? (size_t) (wd / 256) * bb : rb;   // a row's bytes in the part
         uint8_t* dp = nullptr;
-        if (!dalloc(d, dp, w.size(), err, acct)) return false;
-        cudaSetDevice(d.id);
-        CK(cudaMemcpy(dp, w.data(), w.size(), cudaMemcpyHostToDevice));
+        if (!dalloc(d, dp, (size_t) n * pb, err, acct)) return false;
         m = x3::Mat{};
         m.fmt = gg::kFmtGG;
         m.K = ggt;
@@ -2096,7 +2124,27 @@ struct Model::Impl {
         m.k = k;
         m.n = n;
         m.ld = (int) gg::type_row_bytes(ggt, k);
-        return true;
+        return fill(d.fills, {range(t)}, [this, &d, &t, pre, dp, n0, rb, bb, pb, wd, part, np, cols](std::string& err) {
+            std::vector<uint8_t> w(t.bytes);
+            if (!pk.read(t, w.data())) {
+                err = pre + ": read failed";
+                return false;
+            }
+            if (np > 1) {
+                std::vector<uint8_t> p;
+                if (cols) {
+                    p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
+                } else {
+                    const size_t off = (size_t) (part * wd / 256) * bb;
+                    p.resize((size_t) n0 * pb);
+                    for (size_t r = 0; r < (size_t) n0; ++r) std::memcpy(p.data() + r * pb, w.data() + r * rb + off, pb);
+                }
+                w.swap(p);
+            }
+            cudaSetDevice(d.id);
+            CK(cudaMemcpy(dp, w.data(), w.size(), cudaMemcpyHostToDevice));
+            return true;
+        }, err);
     }
     // a GGUF's BF16 or Q8_0 matrix ([out][in]) onto the device, as mat() takes an EXL3 one: whole, or part `part` of its
     // columns (outputs: a range of its rows) or of its rows (inputs: a range of each row, whole Q8_0 blocks) - a
@@ -2113,44 +2161,53 @@ struct Model::Impl {
         }
         int n = (int) t.shape[0], k = (int) t.shape[1];
         // a row's bytes, and the bytes of v of its values (BF16: 2 each; Q8_0: 34 every 32)
-        auto bytes_of = [&](size_t v) { return q8 ? v / 32 * gg::kQ8Bytes : v * 2; };
-        std::vector<uint8_t> w((size_t) n * bytes_of((size_t) k));
-        if (t.bytes != w.size() || !pk.read(t, w.data())) {
+        auto bytes_of = [q8](size_t v) { return q8 ? v / 32 * gg::kQ8Bytes : v * 2; };
+        const size_t rb = bytes_of((size_t) k);
+        if (t.bytes != (size_t) n * rb) {
             err = pre + ": read failed";
             return false;
         }
+        const int n0 = n, wd = (cols ? n : k) / np;
         if (np > 1) {
-            const int whole = cols ? n : k, wd = whole / np;
+            const int whole = cols ? n : k;
             if (whole % np != 0 || wd % (q8 ? 32 : 8) != 0) {
                 err = pre + ": " + std::to_string(whole) + (cols ? " outputs" : " inputs") + " do not split in " +
                       std::to_string(np) + " parts";
                 return false;
             }
-            const size_t rb = bytes_of((size_t) k);
-            std::vector<uint8_t> p;
-            if (cols) {
-                p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
-                n = wd;
-            } else {
-                const size_t pb = bytes_of((size_t) wd);
-                p.resize((size_t) n * pb);
-                for (size_t r = 0; r < (size_t) n; ++r)
-                    std::memcpy(p.data() + r * pb, w.data() + r * rb + bytes_of((size_t) part * wd), pb);
-                k = wd;
-            }
-            w.swap(p);
+            if (cols) n = wd;
+            else k = wd;
         }
+        const size_t pb = bytes_of((size_t) k);   // a row's bytes in the part
         uint8_t* dp = nullptr;
-        if (!dalloc(d, dp, w.size(), err, acct)) return false;
-        cudaSetDevice(d.id);
-        CK(cudaMemcpy(dp, w.data(), w.size(), cudaMemcpyHostToDevice));
+        if (!dalloc(d, dp, (size_t) n * pb, err, acct)) return false;
         m = x3::Mat{};
         m.fmt = q8 ? gg::kFmtQ8_0 : gg::kFmtBF16;
         m.raw = dp;
         m.k = k;
         m.n = n;
         m.ld = q8 ? (int) bytes_of((size_t) k) : k;
-        return true;
+        return fill(d.fills, {range(t)}, [this, &d, &t, pre, dp, n0, rb, pb, wd, part, np, cols, bytes_of](std::string& err) {
+            std::vector<uint8_t> w(t.bytes);
+            if (!pk.read(t, w.data())) {
+                err = pre + ": read failed";
+                return false;
+            }
+            if (np > 1) {
+                std::vector<uint8_t> p;
+                if (cols) {
+                    p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
+                } else {
+                    p.resize((size_t) n0 * pb);
+                    for (size_t r = 0; r < (size_t) n0; ++r)
+                        std::memcpy(p.data() + r * pb, w.data() + r * rb + bytes_of((size_t) part * wd), pb);
+                }
+                w.swap(p);
+            }
+            cudaSetDevice(d.id);
+            CK(cudaMemcpy(dp, w.data(), w.size(), cudaMemcpyHostToDevice));
+            return true;
+        }, err);
     }
     // a Q8_0 tensor's values as F32 (host)
     static std::vector<float> q8_values(const uint8_t* q, size_t n) {
@@ -2253,26 +2310,11 @@ struct Model::Impl {
             err = name + ": not in the pack";
             return false;
         }
-        std::vector<uint8_t> raw(t->bytes);
-        if (!pk.read(*t, raw.data())) {
-            err = name + ": read failed";
-            return false;
-        }
         size_t n = 0;
-        std::vector<float> v;
-        if (t->dtype == "F32") {
-            n = t->bytes / 4;
-            v.resize(n);
-            std::memcpy(v.data(), raw.data(), t->bytes);
-        } else if (t->dtype == "F16" || t->dtype == "BF16") {
-            n = t->bytes / 2;
-            v.resize(n);
-            const uint16_t* s = (const uint16_t*) raw.data();
-            for (size_t i = 0; i < n; ++i) v[i] = t->dtype == "F16" ? f16_to_f32(s[i]) : bf16_to_f32(s[i]);
-        } else if (t->dtype == "Q8_0") {   // (a GGUF's router may come so)
-            n = t->bytes / gg::kQ8Bytes * 32;
-            v = q8_values(raw.data(), n);
-        } else {
+        if (t->dtype == "F32") n = t->bytes / 4;
+        else if (t->dtype == "F16" || t->dtype == "BF16") n = t->bytes / 2;
+        else if (t->dtype == "Q8_0") n = t->bytes / gg::kQ8Bytes * 32;   // (a GGUF's router may come so)
+        else {
             err = name + ": dtype " + t->dtype + " is not a float";
             return false;
         }
@@ -2281,32 +2323,52 @@ struct Model::Impl {
             return false;
         }
         if (!dalloc(d, p, n, err, acct)) return false;
-        cudaSetDevice(d.id);
-        CK(cudaMemcpy(p, v.data(), n * 4, cudaMemcpyHostToDevice));
-        return true;
-    }
-    bool f16raw(Dev& d, const std::string& name, uint16_t*& p, std::string& err, size_t* acct) {
-        const Tensor* t = pk.get(name);
-        if (t != nullptr && (t->dtype == "F32" || t->dtype == "BF16" || t->dtype == "Q8_0")) {   // (a GGUF's)
-            const size_t n = t->dtype == "Q8_0" ? t->bytes / gg::kQ8Bytes * 32 : t->bytes / (t->dtype == "F32" ? 4 : 2);
+        return fill(d.fills, {range(*t)}, [this, &d, t, name, n, dst = p](std::string& err) {
             std::vector<uint8_t> raw(t->bytes);
             if (!pk.read(*t, raw.data())) {
                 err = name + ": read failed";
                 return false;
             }
-            const std::vector<float> q = t->dtype == "Q8_0" ? q8_values(raw.data(), n) : std::vector<float>();
-            std::vector<uint16_t> h(n);
-            for (size_t i = 0; i < n; ++i) {
-                float v;
-                if (t->dtype == "F32") std::memcpy(&v, raw.data() + i * 4, 4);
-                else if (t->dtype == "Q8_0") v = q[i];
-                else v = bf16_to_f32(((const uint16_t*) raw.data())[i]);
-                h[i] = strata::kernels::f16_from_f32(v);
+            std::vector<float> v;
+            if (t->dtype == "F32") {
+                v.resize(n);
+                std::memcpy(v.data(), raw.data(), t->bytes);
+            } else if (t->dtype == "Q8_0") {
+                v = q8_values(raw.data(), n);
+            } else {
+                v.resize(n);
+                const uint16_t* s = (const uint16_t*) raw.data();
+                for (size_t i = 0; i < n; ++i) v[i] = t->dtype == "F16" ? f16_to_f32(s[i]) : bf16_to_f32(s[i]);
             }
-            if (!dalloc(d, p, n, err, acct)) return false;
             cudaSetDevice(d.id);
-            CK(cudaMemcpy(p, h.data(), n * 2, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(dst, v.data(), n * 4, cudaMemcpyHostToDevice));
             return true;
+        }, err);
+    }
+    bool f16raw(Dev& d, const std::string& name, uint16_t*& p, std::string& err, size_t* acct) {
+        const Tensor* t = pk.get(name);
+        if (t != nullptr && (t->dtype == "F32" || t->dtype == "BF16" || t->dtype == "Q8_0")) {   // (a GGUF's)
+            const size_t n = t->dtype == "Q8_0" ? t->bytes / gg::kQ8Bytes * 32 : t->bytes / (t->dtype == "F32" ? 4 : 2);
+            if (!dalloc(d, p, n, err, acct)) return false;
+            return fill(d.fills, {range(*t)}, [this, &d, t, name, n, dst = p](std::string& err) {
+                std::vector<uint8_t> raw(t->bytes);
+                if (!pk.read(*t, raw.data())) {
+                    err = name + ": read failed";
+                    return false;
+                }
+                const std::vector<float> q = t->dtype == "Q8_0" ? q8_values(raw.data(), n) : std::vector<float>();
+                std::vector<uint16_t> h(n);
+                for (size_t i = 0; i < n; ++i) {
+                    float v;
+                    if (t->dtype == "F32") std::memcpy(&v, raw.data() + i * 4, 4);
+                    else if (t->dtype == "Q8_0") v = q[i];
+                    else v = bf16_to_f32(((const uint16_t*) raw.data())[i]);
+                    h[i] = strata::kernels::f16_from_f32(v);
+                }
+                cudaSetDevice(d.id);
+                CK(cudaMemcpy(dst, h.data(), n * 2, cudaMemcpyHostToDevice));
+                return true;
+            }, err);
         }
         if (t == nullptr || t->dtype != "F16") {
             err = name + ": not an F16 tensor in the pack";
@@ -2330,36 +2392,38 @@ struct Model::Impl {
             err = name + ": not a whole number of 32-value blocks";
             return false;
         }
-        std::vector<uint8_t> raw(t->bytes);
-        if (!pk.read(*t, raw.data())) {
-            err = name + ": read failed";
-            return false;
-        }
-        std::vector<float> v(n);
-        for (size_t i = 0; i < n; ++i) {
-            if (t->dtype == "F32") std::memcpy(&v[i], raw.data() + i * 4, 4);
-            else v[i] = t->dtype == "F16" ? f16_to_f32(((const uint16_t*) raw.data())[i])
-                                          : bf16_to_f32(((const uint16_t*) raw.data())[i]);
-        }
         const size_t nb = n / 32;
-        std::vector<uint8_t> q(nb * 34);
-        for (size_t b = 0; b < nb; ++b) {
-            const float* s = v.data() + b * 32;
-            float amax = 0.0f;
-            for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(s[i]));
-            const float dd = amax > 0.0f ? amax / 127.0f : 0.0f;
-            const uint16_t dh = strata::kernels::f16_from_f32(dd);
-            std::memcpy(q.data() + b * 34, &dh, 2);
-            int8_t* o = (int8_t*) (q.data() + b * 34 + 2);
-            for (int i = 0; i < 32; ++i) {
-                const float x = dd > 0.0f ? s[i] / dd : 0.0f;
-                o[i] = (int8_t) std::max(-127.0f, std::min(127.0f, std::round(x)));
-            }
-        }
         if (!dalloc(d, p, nb * 34, err, acct)) return false;
-        cudaSetDevice(d.id);
-        CK(cudaMemcpy(p, q.data(), nb * 34, cudaMemcpyHostToDevice));
-        return true;
+        return fill(d.fills, {range(*t)}, [this, &d, t, name, n, nb, dst = p](std::string& err) {
+            std::vector<uint8_t> raw(t->bytes);
+            if (!pk.read(*t, raw.data())) {
+                err = name + ": read failed";
+                return false;
+            }
+            std::vector<float> v(n);
+            for (size_t i = 0; i < n; ++i) {
+                if (t->dtype == "F32") std::memcpy(&v[i], raw.data() + i * 4, 4);
+                else v[i] = t->dtype == "F16" ? f16_to_f32(((const uint16_t*) raw.data())[i])
+                                              : bf16_to_f32(((const uint16_t*) raw.data())[i]);
+            }
+            std::vector<uint8_t> q(nb * 34);
+            for (size_t b = 0; b < nb; ++b) {
+                const float* s = v.data() + b * 32;
+                float amax = 0.0f;
+                for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(s[i]));
+                const float dd = amax > 0.0f ? amax / 127.0f : 0.0f;
+                const uint16_t dh = strata::kernels::f16_from_f32(dd);
+                std::memcpy(q.data() + b * 34, &dh, 2);
+                int8_t* o = (int8_t*) (q.data() + b * 34 + 2);
+                for (int i = 0; i < 32; ++i) {
+                    const float x = dd > 0.0f ? s[i] / dd : 0.0f;
+                    o[i] = (int8_t) std::max(-127.0f, std::min(127.0f, std::round(x)));
+                }
+            }
+            cudaSetDevice(d.id);
+            CK(cudaMemcpy(dst, q.data(), nb * 34, cudaMemcpyHostToDevice));
+            return true;
+        }, err);
     }
 
     size_t mat_bytes(const std::string& pre) const {
@@ -3298,6 +3362,9 @@ struct Model::Impl {
             CK(cudaEventCreateWithFlags(&ev_seed, cudaEventDisableTiming));
             CK(cudaEventRecord(ev_seed, devs[(size_t) d_dev].st));
         }
+        // DS4_COPY_STREAM=1: the dense weights' bytes come with the experts' stream, their fills after it (fill)
+        defer = env_tri("DS4_COPY_STREAM") == 1 && !pk.dfds.empty() &&
+                std::all_of(pk.dfds.begin(), pk.dfds.end(), [](os::fd_t f) { return f != os::kBadFd; });
         // the dense weights, each device's layers by a thread of its own
         {
             std::vector<std::string> errs(devs.size());
@@ -3351,43 +3418,46 @@ struct Model::Impl {
                 return false;
             }
             if (!halloc(embed_pinned, nv, err)) return false;
-            if (qrow) {   // (ggml's decode of each row, rounded to BF16 as the Q8_0 path rounds)
-                std::vector<uint8_t> row(erb);
-                for (size_t r = 0; r < (size_t) g.vocab; ++r) {
-                    if (!pk.read_at(t->file, t->off + r * erb, erb, row.data())) {
+            if (!fill(host_fills, {range(*t)}, [this, t, ety, erb, qrow, q8](std::string& err) {
+                    if (qrow) {   // (ggml's decode of each row, rounded to BF16 as the Q8_0 path rounds)
+                        std::vector<uint8_t> row(erb);
+                        for (size_t r = 0; r < (size_t) g.vocab; ++r) {
+                            if (!pk.read_at(t->file, t->off + r * erb, erb, row.data())) {
+                                err = "embed.weight: read failed";
+                                return false;
+                            }
+                            if (!gg::gg_row_to_bf16(ety, row.data(), g.dim, embed_pinned + r * g.dim)) {
+                                err = "embed.weight: ggml has no decode for " + t->dtype;
+                                return false;
+                            }
+                        }
+                    } else if (q8) {   // (a GGUF's: each value rounded to BF16, a row at a time)
+                        std::vector<uint8_t> row((size_t) g.dim / 32 * gg::kQ8Bytes);
+                        for (size_t r = 0; r < (size_t) g.vocab; ++r) {
+                            if (!pk.read_at(t->file, t->off + r * row.size(), row.size(), row.data())) {
+                                err = "embed.weight: read failed";
+                                return false;
+                            }
+                            const std::vector<float> v = q8_values(row.data(), (size_t) g.dim);
+                            for (size_t c = 0; c < (size_t) g.dim; ++c) {
+                                uint32_t u;
+                                std::memcpy(&u, &v[c], 4);
+                                u += 0x7fffu + ((u >> 16) & 1u);   // round to nearest even
+                                embed_pinned[r * g.dim + c] = (uint16_t) (u >> 16);
+                            }
+                        }
+                    } else if (!pk.read(*t, embed_pinned)) {
                         err = "embed.weight: read failed";
                         return false;
                     }
-                    if (!gg::gg_row_to_bf16(ety, row.data(), g.dim, embed_pinned + r * g.dim)) {
-                        err = "embed.weight: ggml has no decode for " + t->dtype;
-                        return false;
-                    }
-                }
-            } else if (q8) {   // (a GGUF's: each value rounded to BF16, a row at a time)
-                std::vector<uint8_t> row((size_t) g.dim / 32 * gg::kQ8Bytes);
-                for (size_t r = 0; r < (size_t) g.vocab; ++r) {
-                    if (!pk.read_at(t->file, t->off + r * row.size(), row.size(), row.data())) {
-                        err = "embed.weight: read failed";
-                        return false;
-                    }
-                    const std::vector<float> v = q8_values(row.data(), (size_t) g.dim);
-                    for (size_t c = 0; c < (size_t) g.dim; ++c) {
-                        uint32_t u;
-                        std::memcpy(&u, &v[c], 4);
-                        u += 0x7fffu + ((u >> 16) & 1u);   // round to nearest even
-                        embed_pinned[r * g.dim + c] = (uint16_t) (u >> 16);
-                    }
-                }
-            } else if (!pk.read(*t, embed_pinned)) {
-                err = "embed.weight: read failed";
+                    if (ds4_dbg("DS4_DBG_EMB")) std::fprintf(stderr,
+                            "DBG emb pinned: %04x %04x %04x %04x  (row1: %04x %04x)\n",
+                            (unsigned) embed_pinned[0], (unsigned) embed_pinned[1],
+                            (unsigned) embed_pinned[2], (unsigned) embed_pinned[3],
+                            (unsigned) embed_pinned[(size_t) g.dim], (unsigned) embed_pinned[(size_t) g.dim + 1]);
+                    return true;
+                }, err))
                 return false;
-            }
-            if (ds4_dbg("DS4_DBG_EMB")) std::fprintf(stderr,
-                    "DBG emb pinned: %04x %04x %04x %04x  (row1: %04x %04x)\n",
-                    (unsigned) embed_pinned[0], (unsigned) embed_pinned[1],
-                    (unsigned) embed_pinned[2], (unsigned) embed_pinned[3],
-                    (unsigned) embed_pinned[(size_t) g.dim], (unsigned) embed_pinned[(size_t) g.dim + 1]);
-
         }
         // the host side of the CPU lane and the Engram rows
         const int cols = (pk.eg_ngram - 1) * pk.eg_heads;
@@ -3624,8 +3694,10 @@ struct Model::Impl {
         }
         // the experts: VRAM slots in what each device has left (after the PCIe lane's staging slots), the rest on the host
         if (!lane_alloc(err)) return false;
+        if (defer && !stage_dense(err)) return false;
         if (!place_experts(err)) return false;
         if (!load_experts(err)) return false;
+        if (defer && !fill_dense(err)) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
             // the CPU lane's parts pinned (the chunks stream them to the GPUs by DMA), each layer's virtual slots
@@ -5130,11 +5202,16 @@ struct Model::Impl {
                     float *qw = nullptr, *kw = nullptr;
                     if (!f32(d, P + "engram.q_weight", qw, err, acct) || !f32(d, P + "engram.k_weight", kw, err, acct))
                         return false;
-                    std::vector<float> a((size_t) g.hc * g.dim), b(a.size());
-                    CK(cudaMemcpy(a.data(), qw, a.size() * 4, cudaMemcpyDeviceToHost));
-                    CK(cudaMemcpy(b.data(), kw, b.size() * 4, cudaMemcpyDeviceToHost));
-                    for (size_t i = 0; i < a.size(); ++i) a[i] *= b[i];   // only ever used as a product
-                    CK(cudaMemcpy(qw, a.data(), a.size() * 4, cudaMemcpyHostToDevice));
+                    if (!fill(d.fills, {}, [this, &d, qw, kw](std::string& err) {
+                            std::vector<float> a((size_t) g.hc * g.dim), b(a.size());
+                            cudaSetDevice(d.id);
+                            CK(cudaMemcpy(a.data(), qw, a.size() * 4, cudaMemcpyDeviceToHost));
+                            CK(cudaMemcpy(b.data(), kw, b.size() * 4, cudaMemcpyDeviceToHost));
+                            for (size_t i = 0; i < a.size(); ++i) a[i] *= b[i];   // only ever used as a product
+                            CK(cudaMemcpy(qw, a.data(), a.size() * 4, cudaMemcpyHostToDevice));
+                            return true;
+                        }, err))
+                        return false;
                     l.eg_w = qw;
                 }
             }
@@ -5164,17 +5241,25 @@ struct Model::Impl {
                 // F16 as the pack holds it, or a GGUF drafter's BF16 rounded to F16 as f16raw rounds d_mk_head (the same
                 // values as the lead's whole rows); another type: no mk_split (the lead's whole rows)
                 if (th != nullptr && (th->dtype == "F16" || th->dtype == "BF16") && th->bytes == (uint64_t) g.vocab * R * 2) {
-                    std::vector<uint16_t> rows((size_t) d.mk_vn * R);
-                    if (!pk.read_at(th->file, th->off + (uint64_t) d.mk_v0 * R * 2, rows.size() * 2, rows.data())) {
-                        err = "the markov head: read failed";
-                        return false;
-                    }
-                    if (th->dtype == "BF16")
-                        for (uint16_t& h : rows) h = strata::kernels::f16_from_f32(bf16_to_f32(h));
-                    if (!dalloc(d, d.mk_share, rows.size(), err, acct) || !dalloc(d, d.mk_erow, (size_t) R, err) ||
+                    const size_t nr = (size_t) d.mk_vn * R;
+                    const uint64_t at = th->off + (uint64_t) d.mk_v0 * R * 2;
+                    if (!dalloc(d, d.mk_share, nr, err, acct) || !dalloc(d, d.mk_erow, (size_t) R, err) ||
                         !dalloc(d, d.mk_ints, (size_t) kWin + 2, err))
                         return false;
-                    CK(cudaMemcpy(d.mk_share, rows.data(), rows.size() * 2, cudaMemcpyHostToDevice));
+                    const Pack::Held rows_at{th->file, at, nr * 2, nullptr};
+                    if (!fill(d.fills, {rows_at}, [this, &d, th, nr, at, dst = d.mk_share](std::string& err) {
+                            std::vector<uint16_t> rows(nr);
+                            if (!pk.read_at(th->file, at, nr * 2, rows.data())) {
+                                err = "the markov head: read failed";
+                                return false;
+                            }
+                            if (th->dtype == "BF16")
+                                for (uint16_t& h : rows) h = strata::kernels::f16_from_f32(bf16_to_f32(h));
+                            cudaSetDevice(d.id);
+                            CK(cudaMemcpy(dst, rows.data(), nr * 2, cudaMemcpyHostToDevice));
+                            return true;
+                        }, err))
+                        return false;
                 }
             }
         }
@@ -5780,9 +5865,11 @@ struct Model::Impl {
                 if (av != ~uint64_t{0}) warm_bytes = av > kRamMargin ? std::min<uint64_t>(warm_bytes, av - kRamMargin) : 0;
             }
         }
-        if (!st_vram.empty()) {   // (no copy took them along)
+        if (!st_vram.empty()) {   // (no copy took them along; the dense weights' with them)
             std::vector<StreamPiece> ps;
             ps.swap(st_vram);
+            ps.insert(ps.end(), st_dense.begin(), st_dense.end());
+            st_dense.clear();
             if (!stream_pieces(ps, err)) return false;
         }
         if (ram_tier && warm_bytes > 0 && !warm.empty()) {
@@ -5855,6 +5942,71 @@ struct Model::Impl {
         int dev;   // dst's device (devs index), -1: RAM
     };
     std::vector<StreamPiece> st_vram;   // (DS4_COPY_STREAM) VRAM experts' pieces, streamed with the copy's
+    std::vector<StreamPiece> st_dense;   // (defer) the dense weights' ranges, streamed with the experts' into staged
+    std::unique_ptr<uint8_t[]> staged;   // (defer) the dense weights' bytes, until their fills ran
+    std::vector<Pack::Held> staged_at;   // (defer) where each range of them lies in staged
+    // the held fills' ranges merged, one buffer for them that the stream fills
+    bool stage_dense(std::string& err) {
+        std::sort(wants.begin(), wants.end(), [](const Pack::Held& a, const Pack::Held& b) {
+            return a.file != b.file ? a.file < b.file : a.off < b.off;
+        });
+        for (const Pack::Held& w : wants)
+            if (!staged_at.empty() && staged_at.back().file == w.file && w.off <= staged_at.back().off + staged_at.back().n)
+                staged_at.back().n = std::max(staged_at.back().n, w.off + w.n - staged_at.back().off);
+            else
+                staged_at.push_back(w);
+        wants.clear();
+        uint64_t all = 0;
+        for (const Pack::Held& r : staged_at) all += r.n;
+        staged.reset(new (std::nothrow) uint8_t[all]);
+        if (staged == nullptr) {
+            err = "no memory to stage the dense weights (" + std::to_string(all >> 20) + " MiB)";
+            return false;
+        }
+        uint64_t at = 0;
+        for (Pack::Held& r : staged_at) {
+            r.p = staged.get() + at;
+            st_dense.push_back({r.file, r.off, r.n, staged.get() + at, -1});
+            at += r.n;
+        }
+        return true;
+    }
+    // the held fills from the staged bytes: each device's on a thread of its own, in the order they were held
+    bool fill_dense(std::string& err) {
+        if (!st_dense.empty()) {   // (no stream took them along)
+            std::vector<StreamPiece> ps;
+            ps.swap(st_dense);
+            if (!stream_pieces(ps, err)) return false;
+        }
+        const double t0 = now_ms();
+        uint64_t all = 0;
+        for (const Pack::Held& r : staged_at) all += r.n;
+        const size_t nr = staged_at.size();
+        pk.held.swap(staged_at);
+        std::vector<std::string> errs(devs.size() + 1);
+        std::vector<std::thread> th;
+        for (size_t di = 0; di < devs.size(); ++di)
+            th.emplace_back([this, di, &errs] {
+                for (auto& f : devs[di].fills)
+                    if (!f(errs[di])) return;
+            });
+        for (auto& f : host_fills)
+            if (!f(errs.back())) break;
+        for (auto& t : th) t.join();
+        pk.held.clear();
+        staged.reset();
+        host_fills.clear();
+        for (Dev& d : devs) d.fills.clear();
+        defer = false;
+        for (const std::string& e : errs)
+            if (!e.empty()) {
+                err = e;
+                return false;
+            }
+        std::fprintf(stderr, "ds4: the dense weights streamed with the experts: %.1f GB in %zu ranges, filled in %.1f s\n",
+                     all / 1e9, nr, (now_ms() - t0) / 1000.0);
+        return true;
+    }
     // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by a worker a range of a file, each a
     // reader filling one of its two arenas while its mover hands out the other's pieces
     bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
@@ -6187,9 +6339,11 @@ struct Model::Impl {
                                   ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r], -1});
             }
         }
-        if (stream) {   // (the VRAM experts' pieces in the same pass)
+        if (stream) {   // (the VRAM experts' and the dense weights' pieces in the same pass)
             ps.insert(ps.end(), st_vram.begin(), st_vram.end());
+            ps.insert(ps.end(), st_dense.begin(), st_dense.end());
             st_vram.clear();
+            st_dense.clear();
         }
         if (stream && !stream_pieces(ps, err)) return false;
         std::vector<std::thread> th;
