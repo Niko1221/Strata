@@ -10118,8 +10118,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
-        # not ap.error: its usage line in front would bury what to do
-        raise SystemExit("[strata] cannot start: " + listen_problem(a.host, a.port, e))
+        # not ap.error: its usage line in front would bury what to do; the exit status stays ap.error's 2
+        print("[strata] cannot start: " + listen_problem(a.host, a.port, e), file=sys.stderr)
+        sys.exit(2)
     if cfg.get("tokenizer"):
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()

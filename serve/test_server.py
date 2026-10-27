@@ -707,6 +707,22 @@ class ListenProblem(unittest.TestCase):
         finally:
             other.close()
 
+    def test_a_taken_port_exits_2_without_the_usage_line(self):
+        # ap.error exited 2; the message printed in its place keeps that status
+        import subprocess
+        other = socket.socket()
+        other.bind(("127.0.0.1", 0))
+        other.listen()
+        try:
+            r = subprocess.run([sys.executable, "-m", "serve.server", "--engine", "mock", "--host", "127.0.0.1",
+                                "--port", str(other.getsockname()[1])],
+                               cwd=ROOT, capture_output=True, text=True, timeout=60)
+        finally:
+            other.close()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("[strata] cannot start: port", r.stderr)
+        self.assertNotIn("usage:", r.stderr)
+
 
 def shutil_rmtree(path):
     import shutil
