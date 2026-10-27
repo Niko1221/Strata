@@ -59,6 +59,17 @@ int main() {
     check(auto_conversation_cache_mib(GiB(40), 2560) == 8192, "capped at 8 GiB");
     check(auto_conversation_cache_mib(GiB(1000), 0) == 8192, "a big server: still the cap");
     check(auto_conversation_cache_mib(GiB(40), 1000000) == 0, "a floor above the RAM: off, no underflow");
+    // #3998: one snapshot of the configured context has to fit, or a long turn is parked nowhere and read again
+    check(auto_conversation_cache_mib(GiB(9), 2560, 524288) == 6656,
+          "9 GiB free, 512K: all the RAM above the floor, short of one 9 GiB snapshot");
+    check(auto_conversation_cache_mib(GiB(20), 2560, 524288) == 9216,
+          "20 GiB free, 512K: one 9 GiB snapshot, above the 8 GiB cap");
+    check(auto_conversation_cache_mib(GiB(40), 2560, 524288) == 9216, "40 GiB free, 512K: still one snapshot");
+    check(auto_conversation_cache_mib(uint64_t(12160) << 20, 2560, 524288) == 9216,
+          "#3998: 12,160 MiB free, 512K: 3,840 MiB before, one 9 GiB snapshot now");
+    check(auto_conversation_cache_mib(GiB(20), 2560, 0) == 7168, "no context: the #3493 rule alone");
+    check(auto_conversation_cache_mib(GiB(8), 2560, 32768) == 2048, "32K context: a snapshot is far below 40%");
+    check(auto_conversation_cache_mib(GiB(4), 2560, 524288) == 0, "4 GiB free: the 40% rule still turns it off");
     // Test the real provider without assuming any particular amount of free RAM.
     const auto available = available_host_bytes();
     check(!available || conversation_memory_admit(available, 0, 0), "provider returns bytes or unknown");

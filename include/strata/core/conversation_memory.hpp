@@ -67,13 +67,26 @@ std::optional<uint64_t> available_host_bytes();
 /// #3493: the conversation cache budget (MiB) --serve uses when --conversation-cache-mib was not given, from the RAM that is available
 /// once the model is loaded: 40% of what is left above the parking floor, at most 8192 (four 100K-token agent conversations were
 /// parked in 8 GiB in the report), in steps of 256, and 0 (off) when less than 1024 would be left to give.  Unknown telemetry: 0.
-inline int64_t auto_conversation_cache_mib(std::optional<uint64_t> available, int64_t min_free_mib) {
+/// #3998: while one snapshot of a conversation at the configured context does not fit the budget, a long turn is parked
+/// nowhere and is read again from token 0 (measured: 400K tokens, 388 s, five times in one session).  The budget therefore
+/// never drops below one snapshot (18 KiB per context token: the largest measured snapshot was 17.6 KiB, int8 K/V at 359K;
+/// q4_0 measured 11.3 KiB) as far as the RAM above the floor allows.  The physical-RAM gate still decides every park, so a
+/// snapshot the machine cannot hold is refused as before.  `max_context` 0 keeps the #3493 rule alone.
+inline int64_t auto_conversation_cache_mib(std::optional<uint64_t> available, int64_t min_free_mib,
+                                           int64_t max_context = 0) {
     if (!available) return 0;
     const int64_t usable = (int64_t) (*available >> 20) - min_free_mib;
     if (usable <= 0) return 0;
     int64_t mib = usable * 2 / 5;
     if (mib > 8192) mib = 8192;
     mib -= mib % 256;
+    if (max_context > 0 && mib >= 1024) {
+        const int64_t one = (max_context * 18 + 1023) / 1024;   // one snapshot of this context, MiB
+        if (one > mib) {
+            mib = one < usable ? one : usable;
+            mib -= mib % 256;
+        }
+    }
     return mib >= 1024 ? mib : 0;
 }
 

@@ -10311,7 +10311,8 @@ int main(int argc, char** argv) {
         if (o.conversation_cache_mib < 0) {
             if (o.serve && o.prompt_cache > 0 && o.conversation_cache_slots > 0) {
                 o.conversation_cache_mib = strata::core::auto_conversation_cache_mib(strata::core::available_host_bytes(),
-                                                                                    o.conversation_cache_min_free_mib);
+                                                                                    o.conversation_cache_min_free_mib,
+                                                                                    o.max_context);
                 if (o.conversation_cache_mib > 0)
                     std::fprintf(stderr, "strata serve: conversation cache sized from the free RAM: %lld MiB for up to %d parked "
                                          "conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)\n",
