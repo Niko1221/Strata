@@ -678,14 +678,23 @@ collected (8 slots at 1M), and flow+step proven on the window path at 1M - with 
 
 **The build is production now.**  `build/strata-dsv41.step26` (md5 `9d0892c98f9f`) -> `build/strata-dsv41` and
 `build/strata-dsv41.prod` (the old stock is kept as `build/strata-dsv41.prod.stock`; the config and the launcher each have
-a `.prod.bak`).  The production config gained **`--batch 2 --slot-context 1048576`** (two slots, a full 1M conversation
-each: 125 of 4224 experts go to the host lane, 1.3 GB, and a pass still reads mostly VRAM) and the launcher gained
-`STRATA_DS4_BATCH_LIVE=1`, `STRATA_DS4_STEP=1` and `server.py --api-monitor`.  (The first deployment was 4 slots at
-256K; 1M with two slots is the setting that was kept.)  After the restart: `health 200`, `/v1/status` reads
-`context.native 1048576` and `serving 2` with slots 0 and 1, the key is enforced (`/v1/status` 401 without it), one
-short answer in 0.63 s ("The capital of France is Paris."), and two requests at once answer in 2.2 s each through the
-two slots ("11, 13, 17" and "12, 14, 16").  The machine's public port 53080 maps to the container's 8080 (8080 is not
-reachable from the outside, 53080 is).
+a `.prod.bak`).  The launcher gained `server.py --api-monitor` (the M6 page); the config is the production one,
+`--max-context 1048576`, **one stream** - see below for why the slots had to go.  After the restart: `health 200`,
+`/v1/status` reads `context.native 1048576` and `serving 1`, the key is enforced (`/v1/status` 401 without it), one
+short answer in 0.63 s ("The capital of France is Paris.").  The machine's public port 53080 maps to the container's
+8080 (8080 is not reachable from the outside, 53080 is).
+
+**Why the slots went away again (22:20).**  With `--batch 2 --slot-context 1048576` the serving agent's requests -
+190K to 223K-token prompts, one turn after another - started coming back as `pi-ai stream idle timeout after 300000ms`.
+The engine log has the mechanism: `the prompt read gave way after 1024 of 223650 tokens (slot 0, 1818 ms)` and the same
+for slot 1, i.e. with two slots the server lets a second long prompt start on the other slot mid-read, and the two reads
+interleave; the interleaved prefill runs at ~500 tok/s, so 223K tokens is ~450 s of silence and the client's 300 s idle
+timeout kills it, the retry piles another long prompt in, and the monitor fills with `disconnected` (the picture that
+prompted this: five requests at 106-301 s, 0 output tokens).  Two sequences' tables at 1M also pushed 125 experts to the
+host lane.  One stream fixes both: no interleaving, and one sequence's tables leave **4** experts on the host lane;
+measured prefill on it: 4.5K tokens in 6.9 s (646 tok/s), 22K in 17.9 s (**1,240 tok/s**), so a 190K prompt is ~150 s -
+inside the client's timeout.  If a 2-slot demo is wanted again, set `STRATA_DS4_ADMIT_SHORT_FIRST=0` in the launcher as
+well so a long read is not interrupted (at the cost of the host experts and a queued second request).
 
 **M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
 `/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
