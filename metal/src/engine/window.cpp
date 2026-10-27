@@ -974,7 +974,13 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         mtl::Constants ac = stream_ ? mtl::Constants().b(20, true) : mtl::Constants();
         ac.b(23, ct);
         const std::string ak = std::string(stream_ ? "#arena" : "") + (ct ? "#ct" : "");
-        g.p = P(lib_, gun, ac, gun + ak);
+        // function constant 25 (MOE_SEQ): windows of 3+ tokens decode an expert's gate rows, then its up rows; the 1- and
+        // 2-token pipelines are built without that path (in the same pipeline it slowed them 8-10% on the M1 Max). Only
+        // Q2_0, IQ2_XXS and IQ3_XXS gate/up with 1 row a lane: on the M1 Max the K-quants, Q8_0, IQ4_XS, IQ2_XS and the 2-row Q2_0 tile ran 10-43% slower with it
+        const bool seq = ntok >= 3 && gr == 1 && (tg_.type == ref::Q2_0 || tg_.type == ref::IQ2_XXS || tg_.type == ref::IQ3_XXS);
+        mtl::Constants gc = ac;
+        if (seq) gc.b(25, true);
+        g.p = P(lib_, gun, gc, gun + ak + (seq ? "#seq" : ""));
         const bool hg = had_gu(l), hd = had_dn(l);
         if (hg) had_rows(ds, lib_, "d:", XF_.b, 0, XR_, 0, ntok, N, hsx_.handle ? &hsx_ : nullptr, false);   // before the host's turn
         g.args = {mtl::Arg::B(EW, ebase), hg ? mtl::Arg::B(XR_) : mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_),

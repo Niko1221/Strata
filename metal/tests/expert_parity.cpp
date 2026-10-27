@@ -414,7 +414,7 @@ int main(int argc, char** argv) {
         K.plan = cx.pipeline(lib, "moe_plan");
         K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
-        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr));
+        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr).b(25, std::getenv("MOE_SEQ") != nullptr));
         K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;
@@ -491,7 +491,7 @@ int main(int argc, char** argv) {
         }
         std::vector<int> ids;
         std::vector<float> w;
-        random_routing(rng, ntok, NE, ids, w, 0.3);
+        random_routing(rng, ntok, NE, ids, w, std::getenv("PARITY_SHARE") ? std::atof(std::getenv("PARITY_SHARE")) : 0.3);
         mtl::Buffer bid = cx.alloc(4 * ids.size()), bw = cx.alloc(4 * w.size()), plan = cx.alloc(4 * P_INTS);
         std::memcpy(bid.ptr, ids.data(), 4 * ids.size());
         std::memcpy(bw.ptr, w.data(), 4 * w.size());
