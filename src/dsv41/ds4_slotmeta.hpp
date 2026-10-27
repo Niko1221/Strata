@@ -6,6 +6,10 @@
 //   u64 magic, u64 identity length, identity bytes, u64 .bin bytes, u64 token count, i32 tokens[],
 //   u64 checkpoint count (0..4), i64 checkpoints[], u64 magic
 // The magic at both ends and the .bin size make a half-written or foreign file refused, never read.
+//
+// A slot is the user's own conversation (a .meta's tokens decode to the prompt, a .bin holds its state), so on POSIX
+// every slot file is its owner's alone: created 0600 (create_private), and a previous version's files made so at start
+// (make_private).  On Windows the folder's inherited ACL decides.
 #pragma once
 
 #include <algorithm>
@@ -15,15 +19,49 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace strata::ds4::slotmeta {
 
 constexpr uint64_t kMagic = 0x324154454d345344ull;   // "DS4META2"
 
+// A new, empty file only the owner can read and write, for a stream to open and truncate next (the mode stays): the
+// mode is set as the file is made, so no other user can open it in between.  A file of that name is removed first - a
+// mode only applies to a file being created, and an earlier interrupted write may have left one with a looser mode.
+inline bool create_private(const std::string& path) {
+#ifndef _WIN32
+    ::unlink(path.c_str());
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    ::close(fd);
+#else
+    (void) path;
+#endif
+    return true;
+}
+
+// An existing slot file (a previous version wrote them with the umask's mode, often readable by every user) made the
+// owner's alone; false when that failed.
+inline bool make_private(const std::string& path) {
+#ifndef _WIN32
+    std::error_code ec;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, ec);
+    return !ec;
+#else
+    (void) path;
+    return true;
+#endif
+}
+
 // Written under a temporary name and renamed over `path` (an interrupted write leaves no half file).
 inline bool write(const std::string& path, const std::string& identity, const std::vector<int32_t>& toks,
                   uint64_t bytes, const std::vector<int64_t>& cks) {
     const std::string tmp = path + ".tmp";
+    if (!create_private(tmp)) return false;
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         const uint64_t il = identity.size(), nt = toks.size(), nc = cks.size();

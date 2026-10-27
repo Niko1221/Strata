@@ -452,10 +452,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const std::string path =
             (slot_dir / ("slot-" + std::to_string(stamp) + "-" + std::to_string(++slot_seq) + ".bin")).string();
         {
-            std::ofstream f(path + ".tmp", std::ios::binary | std::ios::trunc);
-            f.write((const char*) s.data->data(), (std::streamsize) s.data->size());
-            f.flush();
-            if (!f) {
+            std::ofstream f;
+            if (strata::ds4::slotmeta::create_private(path + ".tmp")) {   // (0600 as it is made: the user's conversation)
+                f.open(path + ".tmp", std::ios::binary | std::ios::trunc);
+                f.write((const char*) s.data->data(), (std::streamsize) s.data->size());
+                f.flush();
+            }
+            if (!f.is_open() || !f) {
                 std::filesystem::remove(path + ".tmp", ec);
                 std::fprintf(stderr, "ds4 slots: writing %s.tmp failed (disk full?)\n", path.c_str());
                 return false;
@@ -578,7 +581,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         slot_dir = std::getenv("STRATA_DS4_SLOT_DIR") ? std::filesystem::path(std::getenv("STRATA_DS4_SLOT_DIR"))
                                                       : std::filesystem::path(pack) / "slots";
         std::error_code ec;
-        std::filesystem::create_directories(slot_dir, ec);
+        // a folder made here is the owner's alone; one that was there already keeps its mode (STRATA_DS4_SLOT_DIR can
+        // name a folder of the user's own) - its slot files are 0600 either way (ds4_slotmeta.hpp)
+        if (std::filesystem::create_directories(slot_dir, ec))
+            std::filesystem::permissions(slot_dir, std::filesystem::perms::owner_all,
+                                         std::filesystem::perm_options::replace, ec);
         if (!std::filesystem::is_directory(slot_dir, ec)) {
             std::fprintf(stderr, "ds4 slots: %s is not writable - conversations are not set aside\n",
                          slot_dir.string().c_str());
@@ -606,9 +613,12 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 const std::string bin = p.substr(0, p.size() - 5) + ".bin";
                 Found fd{bin, {}, 0, {}, fs::last_write_time(de.path(), ec)};
                 const uint64_t have = fs::exists(bin, ec) ? (uint64_t) fs::file_size(bin, ec) : 0;
-                if (meta_read(p, fd.toks, fd.bytes, fd.cks) && have == fd.bytes && fd.bytes > 0 && slot_age_days(p) <= slot_days)
+                if (meta_read(p, fd.toks, fd.bytes, fd.cks) && have == fd.bytes && fd.bytes > 0 && slot_age_days(p) <= slot_days) {
+                    // (a previous version wrote them with the umask's mode: they are the user's conversations)
+                    if (!strata::ds4::slotmeta::make_private(p) || !strata::ds4::slotmeta::make_private(bin))
+                        std::fprintf(stderr, "ds4 slots: %s could not be made private to its owner\n", bin.c_str());
                     found.push_back(std::move(fd));
-                else {
+                } else {
                     ++refused;
                     std::filesystem::remove(p, ec);
                     std::filesystem::remove(bin, ec);

@@ -83,7 +83,8 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
 - Defaults when a request names none: temperature 1.0, top_p 1.0.
 - Agents and sub-agents that take turns do not read their prompts again. The engine sets a conversation aside when another request takes the model (about 17 MB per 6.5K tokens) and takes it
   back when the next prompt continues it, also after a restart. Slots live in `ds4-slots` next to the run log, are capped at 2 GB
-  (`STRATA_DS4_SLOT_GB`) and are removed after a week. The system prompt and tools shared by an agent
+  (`STRATA_DS4_SLOT_GB`) and are removed after a week. They hold your conversations, so on Linux only your user
+  can read them (files 0600; a folder the engine creates is 0700). The system prompt and tools shared by an agent
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
 
 Not in this version: several requests at once (`--parallel` is ignored with a warning) and pictures (`--vision` is ignored with a warning).

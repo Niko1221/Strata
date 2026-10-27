@@ -1,5 +1,6 @@
 // The kept conversations' bookkeeping without a GPU (src/dsv41/ds4_slotmeta.hpp): the .meta file's round trip and
-// every way it is refused, and which kept conversation a prompt continues, and from where.
+// every way it is refused, the slot files' owner-only mode (POSIX), and which kept conversation a prompt continues,
+// and from where.
 //   ds4_slot_test            exit 0: all passed
 #include "ds4_slotmeta.hpp"
 
@@ -8,6 +9,9 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace sm = strata::ds4::slotmeta;
 namespace fs = std::filesystem;
@@ -91,6 +95,36 @@ static void meta_tests(const fs::path& dir) {
     CHECK(!sm::write((dir / "nodir" / "x.meta").string(), id, toks, 1, {}));
 }
 
+#ifndef _WIN32
+static unsigned mode_of(const std::string& p) {
+    struct stat st {};
+    return ::stat(p.c_str(), &st) == 0 ? (unsigned) (st.st_mode & 0777) : 0xffffu;
+}
+
+// a slot is the user's conversation: its files are the owner's alone whatever the umask - a looser leftover .tmp of
+// an interrupted write included - and a previous version's files are made so
+static void private_tests(const fs::path& dir) {
+    const std::string id = "strata-ds4-session-2 engine=test", path = (dir / "slot-2.meta").string();
+    const mode_t umask0 = ::umask(0);   // (the loosest umask: the mode must not come from it)
+    CHECK(sm::write(path, id, seq(1, 8), 1, {}));
+    CHECK(mode_of(path) == 0600);
+    std::FILE* f = std::fopen((path + ".tmp").c_str(), "wb");
+    std::fclose(f);
+    ::chmod((path + ".tmp").c_str(), 0666);
+    CHECK(sm::write(path, id, seq(1, 8), 1, {}));
+    CHECK(mode_of(path) == 0600 && !fs::exists(path + ".tmp"));
+    const std::string bin = (dir / "slot-2.bin").string();
+    f = std::fopen(bin.c_str(), "wb");
+    std::fclose(f);
+    ::chmod(bin.c_str(), 0664);
+    CHECK(sm::make_private(bin) && mode_of(bin) == 0600);
+    CHECK(sm::create_private(bin + ".tmp") && mode_of(bin + ".tmp") == 0600 && fs::file_size(bin + ".tmp") == 0);
+    CHECK(!sm::create_private((dir / "nodir" / "x.tmp").string()));
+    CHECK(!sm::make_private((dir / "none.bin").string()));
+    ::umask(umask0);
+}
+#endif
+
 static size_t pick(const std::vector<std::vector<int32_t>>& toks, const std::vector<std::vector<int64_t>>& cks,
                    const std::vector<int>& prompt, size_t floor, size_t* len) {
     std::vector<sm::Cand> c;
@@ -146,6 +180,9 @@ int main() {
     fs::remove_all(dir, ec);
     fs::create_directories(dir);
     meta_tests(dir);
+#ifndef _WIN32
+    private_tests(dir);
+#endif
     pick_tests();
     fs::remove_all(dir, ec);
     std::printf(fails ? "FAILED: %d\n" : "slot_test: all passed\n", fails);
