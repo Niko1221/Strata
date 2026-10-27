@@ -6011,26 +6011,17 @@ struct Model::Impl {
                      all / 1e9, nr, (now_ms() - t0) / 1000.0);
         return true;
     }
-    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (128) by one reader for all files (DS4_STREAM_RANGES:
-    // a reader a range of a file), each filling one of its two arenas while its mover hands out the other's pieces
-    bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
-        std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
-            return a.file != b.file ? a.file < b.file : a.off < b.off;
-        });
+    // a stretch of a model file one unbuffered read brings in
+    struct StreamChunk {
+        int file;
+        uint64_t off, n;
+        size_t p0, p1;   // the pieces reaching into it
+    };
+    // the pieces (sorted by file, then offset) as reads of up to cs bytes, aligned for unbuffered reads
+    static std::vector<StreamChunk> stream_chunks(const std::vector<StreamPiece>& ps, uint64_t cs) {
         const uint64_t A = os::kDirectAlign;
-        const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 128.0f)) << 20;
-        const int forced = (int) env_f("DS4_STREAM_WORKERS", 0.0f);   // (N: N readers sharing every chunk, for tests)
-        const int most = (int) env_f("DS4_STREAM_RANGES", 0.0f);   // N: the files split, at most N readers a file (1: one a file)
         constexpr uint64_t kGap = 16ull << 20;   // a gap up to this is read through, so a tensor's pieces stay one stream
-        struct Chunk {
-            int file;
-            uint64_t off, n;
-            size_t p0, p1;   // the pieces reaching into it
-        };
-        std::vector<Chunk> chunks;
-        uint64_t bytes = 0, to_ram = 0, to_vram = 0;
-        for (const StreamPiece& p : ps) (p.dev < 0 ? to_ram : to_vram) += p.n;
-        const double t0 = now_ms();
+        std::vector<StreamChunk> chunks;
         for (size_t i = 0; i < ps.size();) {
             size_t k = i + 1;
             uint64_t end = ps[i].off + ps[i].n;
@@ -6043,10 +6034,61 @@ struct Model::Impl {
                 size_t q = p;
                 while (q < k && ps[q].off < ce) ++q;
                 chunks.push_back({ps[i].file, c, ce - c, p, q});
-                bytes += ce - c;
             }
             i = k;
         }
+        return chunks;
+    }
+    // each reader's chunks [first, last): one range over all files, or (most > 0) ranges of the smallest file's size
+    static std::vector<std::pair<size_t, size_t>> stream_ranges(const std::vector<StreamChunk>& chunks, int most) {
+        std::vector<std::pair<size_t, size_t>> rng;
+        if (most <= 0) {
+            if (!chunks.empty()) rng.push_back({0, chunks.size()});
+            return rng;
+        }
+        std::vector<std::pair<size_t, size_t>> fch;
+        std::vector<uint64_t> fb;
+        for (size_t c = 0; c < chunks.size(); ++c) {
+            if (c == 0 || chunks[c].file != chunks[c - 1].file) {
+                fch.push_back({c, c});
+                fb.push_back(0);
+            }
+            fch.back().second = c + 1;
+            fb.back() += chunks[c].n;
+        }
+        const uint64_t least = fb.empty() ? 1 : std::max<uint64_t>(1, *std::min_element(fb.begin(), fb.end()));
+        for (size_t f = 0; f < fch.size(); ++f) {
+            const int k = std::clamp((int) std::lround((double) fb[f] / (double) least), 1, most);
+            uint64_t acc = 0;
+            size_t start = fch[f].first;
+            int made = 0;   // (cuts at 1/k, 2/k, .. of the file's bytes; the rest is its last range)
+            for (size_t c = fch[f].first; c < fch[f].second; ++c) {
+                acc += chunks[c].n;
+                if (made < k - 1 && acc * (uint64_t) k >= fb[f] * (uint64_t) (made + 1)) {
+                    rng.push_back({start, c + 1});
+                    start = c + 1;
+                    ++made;
+                }
+            }
+            if (start < fch[f].second) rng.push_back({start, fch[f].second});
+        }
+        return rng;
+    }
+    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (128) by one reader for all files (DS4_STREAM_RANGES:
+    // a reader a range of a file), each filling one of its two arenas while its mover hands out the other's pieces
+    bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
+        std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
+            return a.file != b.file ? a.file < b.file : a.off < b.off;
+        });
+        const uint64_t A = os::kDirectAlign;
+        const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 128.0f)) << 20;
+        const int forced = (int) env_f("DS4_STREAM_WORKERS", 0.0f);   // (N: N readers sharing every chunk, for tests)
+        const int most = (int) env_f("DS4_STREAM_RANGES", 0.0f);   // N: the files split, at most N readers a file (1: one a file)
+        uint64_t bytes = 0, to_ram = 0, to_vram = 0;
+        for (const StreamPiece& p : ps) (p.dev < 0 ? to_ram : to_vram) += p.n;
+        const double t0 = now_ms();
+        const std::vector<StreamChunk> chunks = stream_chunks(ps, cs);
+        for (const StreamChunk& c : chunks) bytes += c.n;
         struct Arena {
             uint8_t* p = nullptr;
             size_t chunk = 0;
@@ -6057,37 +6099,8 @@ struct Model::Impl {
             std::mutex mu;
             std::condition_variable cv;
         };
-        // a reader a range, front to back: one over all files, or (DS4_STREAM_RANGES) ranges of about the smallest file's bytes
-        std::vector<std::pair<size_t, size_t>> rng;   // a reader's chunks [first, last) (chunks run in file order)
-        if (forced <= 0 && most <= 0 && !chunks.empty()) rng.push_back({0, chunks.size()});
-        if (forced <= 0 && most > 0) {
-            std::vector<std::pair<size_t, size_t>> fch;
-            std::vector<uint64_t> fb;
-            for (size_t c = 0; c < chunks.size(); ++c) {
-                if (c == 0 || chunks[c].file != chunks[c - 1].file) {
-                    fch.push_back({c, c});
-                    fb.push_back(0);
-                }
-                fch.back().second = c + 1;
-                fb.back() += chunks[c].n;
-            }
-            const uint64_t least = fb.empty() ? 1 : std::max<uint64_t>(1, *std::min_element(fb.begin(), fb.end()));
-            for (size_t f = 0; f < fch.size(); ++f) {
-                const int k = std::clamp((int) std::lround((double) fb[f] / (double) least), 1, most);
-                uint64_t acc = 0;
-                size_t start = fch[f].first;
-                int made = 0;   // (cuts at 1/k, 2/k, .. of the file's bytes; the rest is its last range)
-                for (size_t c = fch[f].first; c < fch[f].second; ++c) {
-                    acc += chunks[c].n;
-                    if (made < k - 1 && acc * (uint64_t) k >= fb[f] * (uint64_t) (made + 1)) {
-                        rng.push_back({start, c + 1});
-                        start = c + 1;
-                        ++made;
-                    }
-                }
-                if (start < fch[f].second) rng.push_back({start, fch[f].second});
-            }
-        }
+        std::vector<std::pair<size_t, size_t>> rng;   // (DS4_STREAM_WORKERS: the readers share all chunks)
+        if (forced <= 0) rng = stream_ranges(chunks, most);
         const int nw = forced > 0 ? forced : (int) rng.size();
         std::vector<Worker> ws((size_t) nw);
         bool ok = true;
@@ -6133,7 +6146,7 @@ struct Model::Impl {
                         w.cv.wait(lk, [&] { return x.full; });
                     }
                     if (x.last) break;
-                    const Chunk& c = chunks[x.chunk];
+                    const StreamChunk& c = chunks[x.chunk];
                     for (size_t q = c.p0; q < c.p1; ++q) {
                         const StreamPiece& p = ps[q];
                         const uint64_t b = std::max(p.off, c.off), e = std::min(p.off + p.n, c.off + c.n);
