@@ -865,6 +865,10 @@ class Runner:
     def setup_args(self) -> list[str]:
         cat, s = self.catalog, self.s
         fam, model = s.family, s.model
+        try:                     # a saved preset or choices file keeps the lower-case tag ("iq3_xxs", #4209), while setup's
+            fam, model = cat.resolve(str(model), None if fam is None else str(fam))    # --model takes the table's own key
+        except Exception:        # noqa: BLE001  a name the list does not hold, or a list that cannot be read here, is setup's
+            pass                 # to report: passing the values on unchanged keeps the launch behaving as it did before
         args = ["--yes", "--no-start", "--family", str(fam), "--model", str(model)]
         ctx = s.context
         if ctx:
