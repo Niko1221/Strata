@@ -7,7 +7,7 @@ restored on switch-back (should_restore + prefix_fidelity), which client header 
 the intake - ConvCacheLog.drain_events() events and the request path's DONE figures - and its LRU file
 retention; no imports from server.py; the only filesystem I/O this module performs itself is
 note_file_saved's removal of an over-capacity file - engine save/restore calls go through the caller's
-service.engine, in the F4 lock windows of on_arrival/on_idle/on_unload).
+service.engine, in the F4 lock windows of on_arrival/on_idle/on_unload/pre_save).
 
 Event vocabulary as the engine writes it (ConvCacheLog's lines, parsed upstream into ConvEvent):
 "conversation cache: parked N tokens in T ms; parked=P bytes=B evictions=E ...",
@@ -84,6 +84,9 @@ class LadderConfig:
     park_budget_mib: int
     idle_save_s: float = 8.0
     retention_max_files: int = 16
+    pre_save_idle_s: float | None = None  # unload-works Task 3: the pre-save quiet gate - None = adaptive
+    # (the queue must be quiet for at least this save's own expected length, expected_save_seconds),
+    # 0 = fire on any idle moment, a number > 0 = pinned seconds of quiet.
 
 
 def extract_session_id(headers: dict) -> str | None:
@@ -254,7 +257,8 @@ class _locked:
     (join -> park flag; on_turn_done create + anchor) are not atomic on their own, so every wrapped hook
     takes the ladder lock.  A wrapped body therefore calls the plain inner (`_x`), never the locked
     attribute - the lock is not reentrant - and never touches the engine (F4: engine I/O lives in the
-    unlocked windows of on_arrival/on_idle/on_unload, the only public hooks that are not wrapped)."""
+    unlocked windows of on_arrival/on_idle/on_unload/pre_save, the only public hooks that are not
+    wrapped)."""
 
     def __init__(self, fn):
         self.fn = fn
@@ -429,7 +433,9 @@ class SessionLadder:
         how much the conversation has grown since (a 30 s save of a 1 GB conversation predicts 60 s at
         2 GB); without one, the engine's ~100 MB/s write rate over the tracked byte_count is the first
         estimate.  Clamped to [5, 600] s: the floor keeps the estimate meaningful for any conversation,
-        the ceiling bounds it for the biggest ones."""
+        the ceiling bounds it for the biggest ones.  Lock context: it reads the session's fields without
+        taking the lock - holding it around the read is the caller's, per this file's convention
+        (decisions run in a lock window)."""
         if s.last_save_ms is not None and s.saved_at_bytes:
             est = s.last_save_ms / 1000 * max(1.0, s.byte_count / max(1, s.saved_at_bytes))
         else:
@@ -458,12 +464,41 @@ class SessionLadder:
             return
         self._idle_save_current(service)
 
+    def pre_save(self, service, idle_seconds: float) -> None:
+        """Task 3's pre-save hook (2026-10-26 spec §1): save the last-active session once the request
+        queue has been quiet long enough to keep the save out of the way of resumed work.  Task 4's
+        pre_save_pass calls it while the service FIFO is held, with the same idle measurement the
+        lazy-unload decision uses; idle_seconds is the caller's clock value (this hook never sleeps or
+        times).  The quiet gate is cfg.pre_save_idle_s: None (default) = adaptive - quiet must reach
+        THIS session's expected save length (expected_save_seconds: its measured save duration scaled
+        by growth, else the size estimate; the 5 s floor keeps a small conversation's gate
+        meaningful); 0 = fire on any idle moment; > 0 = pinned seconds of quiet.  All gates passing
+        run on_idle's body: the last-active session, dirty is its only gate, a clean checkpoint is not
+        rewritten.  F4: the adaptive decision reads the tracked session under the ladder lock (the
+        same decision window the hooks use); the engine I/O belongs to _idle_save_current's windows;
+        the cfg.enabled gate is checked here, as in every public hook."""
+        if not self.cfg.enabled:
+            return
+        gate = self.cfg.pre_save_idle_s
+        if gate is None:                               # adaptive: quiet >= this very save's expected length
+            with self._lock:
+                s = self.tracked.get(self.last_active) if self.last_active is not None else None
+                if s is None or not s.dirty:
+                    return
+                required = self.expected_save_seconds(s)
+            if idle_seconds < required:
+                return
+        elif gate > 0 and idle_seconds < gate:         # pinned seconds of quiet
+            return                                     # gate == 0: no quiet requirement
+        self._idle_save_current(service)
+
     def _idle_save_current(self, service) -> None:
         """The current (last-active) session's park: decision + engine save + ledger commit, in F4's
         windows (decide under the ladder lock, session_file outside it, commit the ledger back under it).
         The last-active session is always save-worthy - dirty is the only gate (2026-10-26 spec: always
-        park the current session, aux-sized conversations included).  on_idle's body now, and the
-        pre-stage timer's route (unload-works Task 3)."""
+        park the current session, aux-sized conversations included).  The cfg.enabled gate is the
+        caller's responsibility: on_idle, pre_save and on_unload each check it before reaching this
+        body.  on_idle's body, and the pre-save hook's route (unload-works Task 3)."""
         with self._lock:
             s = self.tracked.get(self.last_active) if self.last_active is not None else None
             if s is None or not s.dirty:
@@ -581,8 +616,13 @@ class SessionLadder:
         # joined parked=True forever and every switch-back silently pays the cold prefill.  The design floor's
         # one cold step is already paid by this turn; unparking lets the next switch-back reach should_restore's
         # file+fidelity gates (an aux without a file cannot restore anyway and is left untouched).
-        if not s.save_eligible:
-            self.last_prompts.pop(session_id, None)  # an aux-sized conversation earns no saves: no retained prefix
+        if not s.save_eligible and session_id != self.last_active:
+            self.last_prompts.pop(session_id, None)  # an aux-sized conversation earns no saves: no retained
+        # prefix - EXCEPT the current one (Task 1 review carry-over): the last-active session is saved on
+        # idle/unload regardless of eligibility (always park the current session), and its save records
+        # this prompt as the checkpoint's prefix - the value _on_start's warm handoff gate and a later
+        # prefix_fidelity compare against.  Popping a CURRENT aux's prompt would strand its checkpoint
+        # with saved_prefix None and the warm restore would skip it (test_aux_current_checkpoint_warms_the_next_start).
 
     def _note_switch_away(self, session_id: str) -> None:
         """The session's switch-away (Task 7 calls it after should_save was evaluated, which is why should_save
@@ -633,13 +673,14 @@ class SessionLadder:
     # Every public hook that only touches ladder state runs holding the ladder lock via _locked (see the
     # wrapper): on_conv_event/on_turn_done arrive from the metrics() drain, record_saved_prefix from a
     # FIFO-serialized request thread; track stays unlocked (a single dict read) so a caller holding nothing
-    # else can peek without serializing behind a save.  on_arrival/on_idle/on_unload are NOT wrapped (F4,
-    # final review): they take the lock themselves in short windows around their decisions and ledger
-    # commits and run the engine.session_file calls between the windows, lock-free - the single-lock-point
-    # pattern survives as "a wrapped body never takes the lock and never touches the engine": these three
-    # are plain methods managing their own windows, and every state mutation inside a window goes through
-    # the plain inners (_note_switch_away, _note_file_saved, _plan_save, _commit_save), never a _locked
-    # attribute, because the lock is not reentrant.  on_start stays wrapped: it only queues
+    # else can peek without serializing behind a save.  on_arrival/on_idle/on_unload/pre_save are NOT
+    # wrapped (F4, final review): they take the lock themselves in short windows around their decisions
+    # and ledger commits and run the engine.session_file calls between the windows, lock-free (pre_save
+    # adds only its adaptive-gate decision window; its engine I/O is _idle_save_current's windows) - the
+    # single-lock-point pattern survives as "a wrapped body never takes the lock and never touches the
+    # engine": these four are plain methods managing their own windows, and every state mutation inside a
+    # window goes through the plain inners (_note_switch_away, _note_file_saved, _plan_save, _commit_save),
+    # never a _locked attribute, because the lock is not reentrant.  on_start stays wrapped: it only queues
     # restore_after_load - it issues no engine I/O of its own.
     on_conv_event = _locked(_on_conv_event)
     on_turn_done = _locked(_on_turn_done)
