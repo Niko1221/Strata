@@ -7,7 +7,9 @@ mock.Mock; a `save` also materialises the file the engine would have written, so
 warm-restore handoff through svc.restore_after_load are checked without a server; the disabled
 config must keep all three hooks inert.  The unload-works Task 2 tests pin the save-duration
 bookkeeping (_commit_save records the engine's "ms" and the tracked byte_count) and the
-expected_save_seconds estimate the pre-save quiet gate will be derived from.
+expected_save_seconds estimate the pre-save quiet gate will be derived from; the Task 3 tests pin
+the pre_save hook's quiet gates (adaptive / pinned / zero) and the warm handoff a parked CURRENT
+aux earns by keeping its retained prompt.
 
     python -m pytest serve/test_session_ladder_lifecycle.py -v
 """
@@ -119,6 +121,49 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse(self.ladder.tracked["aux"].dirty)     # saved clean...
         self.ladder.on_idle(self.service, 8.0)                 # ...and the next idle window does not churn it
         self.assertEqual(len(self.actions("save")), 1)
+
+    def test_pre_save_adaptive_waits_one_save_length(self):
+        # Task 3's pre-save hook, adaptive gate (cfg.pre_save_idle_s None): the queue must have been
+        # quiet for at least THIS save's expected length - a small dirty last-active aux's
+        # expected_save_seconds is the 5.0 floor.  Pure clock values: no sleeping.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: dirty, current, expected 5.0
+        self.ladder.pre_save(self.service, 4.9)                # under one expected save: nothing
+        self.assertEqual(self.calls, [])
+        self.ladder.pre_save(self.service, 5.0)                # exactly one expected save: the save lands
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_pinned_gate(self):
+        # A configured number pins the quiet gate: the session's expected-length estimate is not consulted
+        # (the aux's 5.0 floor would fire at 5 - the pinned 20 holds it back until 20).
+        self.ladder.cfg.pre_save_idle_s = 20
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.ladder.pre_save(self.service, 19)                 # under the pinned gate: nothing
+        self.assertEqual(self.calls, [])
+        self.ladder.pre_save(self.service, 20)                 # at the gate: one save
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_zero_fires_on_any_idle_moment(self):
+        # gate 0: no quiet requirement at all.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.ladder.pre_save(self.service, 0)                  # zero quiet, gate 0: straight to the save
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_aux_current_checkpoint_warms_the_next_start(self):
+        # Task 1 review carry-over: the last_prompts pop for a non-eligible session SPARES the session
+        # that is self.last_active, so a parked CURRENT aux records its retained prompt as the
+        # checkpoint's prefix - and on_start's warm handoff (saved_prefix gate) then reaches its file.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: ineligible, dirty, CURRENT
+        self.ladder.on_idle(self.service, 8.0)                 # the current session is parked anyway
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertEqual(self.ladder.tracked["aux"].saved_prefix, P1)   # the retained prompt was recorded
+        self.ladder.on_start(self.service)                     # the warm handoff: the prefix gate passes
+        self.assertEqual(self.service.restore_after_load, self.path("aux"))
+        self.assertIsNone(self.ladder.tracked["aux"].file_path)         # consumed with the handoff
 
     def test_idle_save_then_switch_away_does_not_re_save(self):
         # F3 (final review): the switch-away save honors the dirty marker - an idle-save already wrote this
@@ -249,10 +294,13 @@ class Lifecycle(unittest.TestCase):
 
     def test_disabled_hooks_stay_inert(self):
         ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.dir.name,
-                                            park_budget_mib=4096))
+                                            park_budget_mib=4096, pre_save_idle_s=0))
         ladder.on_turn_done("ses-a", MID, 0, 0)
         ladder.on_arrival(self.service, "ses-a", P1)
+        ladder.last_active = "ses-a"                            # the state every hook would fire on
+        # with an enabled ladder: dirty current session, idle past every window, a fire-now pre-save gate
         ladder.on_idle(self.service, 60.0)
+        ladder.pre_save(self.service, 999.0)
         ladder.on_unload(self.service)
         ladder.on_start(self.service)
         self.assertEqual(self.calls, [])

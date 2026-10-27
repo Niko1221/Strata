@@ -504,6 +504,13 @@ class LadderConfigFromJson(unittest.TestCase):
         # a dict absent key keeps LadderConfig's pinned defaults
         cfg = ladder_config_of({"session_ladder": {}}, engine, "/d")
         self.assertEqual((cfg.idle_save_s, cfg.retention_max_files), (8.0, 16))
+        # pre_save_idle_s (unload-works Task 3): an absent key or an explicit null keeps the adaptive
+        # default None (quiet >= this save's expected length); a number pins the quiet gate.
+        self.assertIsNone(cfg.pre_save_idle_s)
+        cfg = ladder_config_of({"session_ladder": {"pre_save_idle_s": None}}, engine, "/d")
+        self.assertIsNone(cfg.pre_save_idle_s)
+        cfg = ladder_config_of({"session_ladder": {"pre_save_idle_s": 30}}, engine, "/d")
+        self.assertEqual(cfg.pre_save_idle_s, 30.0)
 
     def test_start_ladder_of_refuses_an_explicit_zero_budget(self):
         # F5 (final review): `park_budget_mib is None` let an explicit --conversation-cache-mib 0 start an
@@ -524,7 +531,8 @@ class LadderConfigFromJson(unittest.TestCase):
         # at startup.  The conversions are wrapped: SystemExit names the bad key AND the bad value.
         from serve.server import ladder_config_of
         engine = _FakeEngine(["--conversation-cache-mib", "8192"])
-        for key, bad in (("idle_save_s", "eight"), ("retention_max_files", "many")):
+        for key, bad in (("idle_save_s", "eight"), ("retention_max_files", "many"),
+                         ("pre_save_idle_s", "soon")):
             with self.assertRaises(SystemExit) as cm:
                 ladder_config_of({"session_ladder": {key: bad}}, engine, "/d")
             self.assertIn(key, str(cm.exception))            # names the bad key...

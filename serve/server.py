@@ -918,14 +918,16 @@ def conversation_cache_mib(engine) -> int | None:
 
 def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
-    enables the ladder with its values - idle_save_s and retention_max_files, absent keys keeping LadderConfig's
-    pinned defaults - and the slot save directory the service resolved.  Absent, false, or any non-dict leaves it
-    disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value today's disabled ladder carries;
-    nothing consults it while disabled).  An enabled ladder's park_budget_mib is the engine's own cache budget:
-    --conversation-cache-mib read exactly like conversation_slots() reads --conversation-cache-slots (spawn args
-    first, the INFO line after a start) - and stays None when neither names it, faithful to
-    conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to 0, because a 0 budget
-    makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the ladder exists to avoid)."""
+    enables the ladder with its values - idle_save_s, retention_max_files and pre_save_idle_s (unload-works
+    Task 3: a number or null; an absent key or an explicit null keeps the adaptive quiet gate), absent keys
+    keeping LadderConfig's pinned defaults - and the slot save directory the service resolved.  Absent, false,
+    or any non-dict leaves it disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value
+    today's disabled ladder carries; nothing consults it while disabled).  An enabled ladder's park_budget_mib
+    is the engine's own cache budget: --conversation-cache-mib read exactly like conversation_slots() reads
+    --conversation-cache-slots (spawn args first, the INFO line after a start) - and stays None when neither
+    names it, faithful to conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to
+    0, because a 0 budget makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the
+    ladder exists to avoid)."""
     block = cfg.get("session_ladder")
     if not isinstance(block, dict):
         return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
@@ -939,10 +941,22 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
         except (TypeError, ValueError):
             raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
 
+    def _num_or_none(key):
+        # The nullable variant of _num (unload-works Task 3): an absent key or an explicit `null` keeps None
+        # (the adaptive quiet gate); anything else converts like _num, same refusal naming key and value.
+        raw = block.get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
     return LadderConfig(enabled=True, slot_save_path=slot_save_path,
                         park_budget_mib=conversation_cache_mib(engine),
                         idle_save_s=_num("idle_save_s", 8.0, float),
-                        retention_max_files=_num("retention_max_files", 16, int))
+                        retention_max_files=_num("retention_max_files", 16, int),
+                        pre_save_idle_s=_num_or_none("pre_save_idle_s"))
 
 
 def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
