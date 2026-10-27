@@ -5,8 +5,9 @@ estimate gap - F1), whether a session should be saved to disk on switch-away (sh
 restored on switch-back (should_restore + prefix_fidelity), which client header names the session
 (extract_session_id)) plus the bookkeeping half (class SessionLadder: per-session TrackedSession state fed by
 the intake - ConvCacheLog.drain_events() events and the request path's DONE figures - and its LRU file
-retention; no imports from server.py; the only filesystem I/O this module performs itself is
-note_file_saved's removal of an over-capacity file - engine save/restore calls go through the caller's
+retention; no imports from server.py; its own filesystem I/O is note_file_saved's removal of an
+over-capacity file plus the R4 ledger sidecar the ladder's saves write and a restarted ladder reads
+(see _write_index/_load_index) - engine save/restore calls go through the caller's
 service.engine, in the F4 lock windows of on_arrival/on_idle/on_unload).
 
 Event vocabulary as the engine writes it (ConvCacheLog's lines, parsed upstream into ConvEvent):
@@ -18,6 +19,7 @@ touching the session), which is what the evictions-pressure signal compares agai
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -70,6 +72,12 @@ class TrackedSession:
     # dirties; a save the ladder itself routed (note_file_saved) cleans.  A save made outside the ladder
     # (an image job's, a /v1/slot save) is not visible here: the session stays dirty and the next ladder
     # save rewrites the file - a harmless duplicate, never a missed one (the pinned boundary).
+    resident: bool = False            # momo 2026-10-27 restore-churn finding: the engine's slot still
+    # holds THIS session's live conversation - set by a deep-reused DONE continuation (on_turn_done) or a
+    # landed ladder restore, cleared by the session's switch-away.  A RESTORE over a resident session would
+    # replace the deeper live state with the older file and re-read the difference every turn; resident
+    # beats any restore (evidence: momo-restore-churn-diagnosis-20261027T0900.md, re-reads grew
+    # 2045 -> 6869 -> 12471 tokens turn after turn).
 
 
 @dataclass
@@ -124,23 +132,44 @@ def join_event(ev: ConvEvent, tracked: dict) -> TrackedSession | None:
 SNAPSHOT_JOIN_TOLERANCE = 0.15
 JOIN_TOKEN_TOLERANCE = 0.01
 JOIN_TOKEN_TOLERANCE_FLOOR = 256
+# momo 2026-10-27 restore-churn finding: a DONE whose reused is at least this share of its prompt tokens
+# is the engine resuming THIS conversation from its own slot - the session is resident, and a RESTORE
+# of the older file over it would truncate the live state (churn rows 98.6-99.8% vs shallow resumes
+# like 56.8% (x-2 park-checkpoint) and 29.7% (post-cancel rebuild)).  The line sits above both.
+RESIDENT_REUSED_RATIO = 0.9
+# R4 (momo 2026-10-27 battery): the name of the ledger sidecar the ladder's saves write into the sessions
+# dir, so a restarted server re-adopts its checkpoints instead of meeting every session cold.  Distinct
+# from the engine's `llm-session-*` name pattern, and its disappearance is only ever a lost warm resume.
+INDEX_FILE_NAME = "ladder-index.json"
 TOLERANT_JOIN_KINDS = ("parked", "skipped_below_min", "restored")   # the lines whose tokens track a conversation
 # (a `dropped` line names no figures; a tokened `skipped 252953 ...` budget refusal keeps exact-only semantics,
 # as a wrong blame there would record pressure on the wrong mid).
 
 
 def join_event_tolerant(ev: ConvEvent, tracked: dict) -> TrackedSession | None:
-    """The fallback join after join_event's exact key matched nothing: the nearest tracked session whose
-    byte_count is within SNAPSHOT_JOIN_TOLERANCE of the event's byte_count AND whose tokens are within
-    max(JOIN_TOKEN_TOLERANCE x s.tokens, JOIN_TOKEN_TOLERANCE_FLOOR) of the event's.  Only the kinds listed
-    in TOLERANT_JOIN_KINDS; a tie (two candidates at the same gap) joins nothing - the refusal to guess
-    survives tolerance."""
+    """The fallback join after join_event's exact key matched nothing.  The TOKEN BAND is the primary
+    gate - every tracked session whose tokens sit within max(JOIN_TOKEN_TOLERANCE x s.tokens,
+    JOIN_TOKEN_TOLERANCE_FLOOR) of the event's is a candidate - and byte proximity is used only to
+    DISAMBIGUATE when the band holds more than one (SNAPSHOT_JOIN_TOLERANCE of the event's byte_count;
+    a tie, or a sizeless byte_count-0 line facing several candidates, joins nothing - the refusal to
+    guess survives tolerance).  Only the kinds listed in TOLERANT_JOIN_KINDS.
+    Why bytes demoted (momo 2026-10-27 battery, probe-A): the DONE side's byte anchor is the pinned
+    40.4 KiB/token estimate while park lines carry the engine's own measured snapshot_bytes - real
+    sizes run 33.6 KiB/token for big sessions and 55-68 KiB/token for small ones, so the two sides
+    miss each other's 15% band on any small mid (probe-A: ~363 MB estimate vs 603430952 measured:
+    a 66% gap) and every join starved, leaving the session parked=False and restore-owed.  Measured
+    vs measured varies more than 15% too (the same probe-A conversation parked at 603430952 and
+    485492400).  A lone in-band candidate mis-joining is benign in this file's own words - it skips a
+    save or defers a restore, and prefix_fidelity still gates every restore."""
     if ev.kind not in TOLERANT_JOIN_KINDS:
         return None
+    candidates = [s for s in tracked.values()
+                  if abs(ev.tokens - s.tokens) <= max(JOIN_TOKEN_TOLERANCE * s.tokens,
+                                                      JOIN_TOKEN_TOLERANCE_FLOOR)]
+    if len(candidates) == 1:
+        return candidates[0]
     best, best_gap, ties = None, None, 0
-    for s in tracked.values():
-        if abs(ev.tokens - s.tokens) > max(JOIN_TOKEN_TOLERANCE * s.tokens, JOIN_TOKEN_TOLERANCE_FLOOR):
-            continue
+    for s in candidates:
         gap = abs(ev.byte_count - s.byte_count)
         if gap > SNAPSHOT_JOIN_TOLERANCE * ev.byte_count:
             continue
@@ -170,9 +199,10 @@ def should_save(s: TrackedSession, tracked: dict, cfg: LadderConfig) -> bool:
 
 def should_restore(s: TrackedSession, cfg: LadderConfig) -> bool:
     """Restore s on switch-back only when a ladder file exists for it AND park demonstrably missed it
-    (parked is False - park hits beat any restore).  Ambiguous joins never restore: a missed mid costs
+    AND the engine does not still hold it live (parked is False and resident is False - park hits, and a
+    resident slot, beat any restore).  Ambiguous joins never restore: a missed mid costs
     one cold step, a needless restore costs seconds and churns park."""
-    return cfg.enabled and s.file_path is not None and not s.parked
+    return cfg.enabled and s.file_path is not None and not s.parked and not s.resident
 
 
 def prefix_fidelity(saved_prefix: str | None, incoming_prompt: str) -> bool:
@@ -293,6 +323,8 @@ class SessionLadder:
         # so the retained text can never outrun the 16-file bound (map §6) however many ids churn.
         self._lock = threading.Lock()
         self.last_active: str | None = None             # the session the engine is on right now (Task 7's on_arrival)
+        if self.cfg.enabled and self.cfg.slot_save_path:
+            self._load_index()                          # R4: adopt the ledger a previous server process left
 
     def track(self, session_id: str) -> TrackedSession | None:
         """The session's tracked state, or None when the ladder never saw it (an event never invents one)."""
@@ -368,7 +400,12 @@ class SessionLadder:
             with self._lock:                         # ledger window: the save landed, record it
                 self._commit_save(save_plan)
         if restore_path is not None:
-            self._engine_restore(service, session_id, restore_path)                  # engine I/O: no lock
+            landed = self._engine_restore(service, session_id, restore_path)          # engine I/O: no lock
+            if landed:
+                with self._lock:                      # ledger window: the restore put the file's
+                    s = self.tracked.get(session_id)  # conversation into the slot - resident from now
+                    if s is not None:
+                        s.resident = True
         if switched_from is not None:
             with self._lock:
                 self._note_switch_away(switched_from)   # after should_save saw its park state (Task 7's
@@ -411,15 +448,20 @@ class SessionLadder:
             s.saved_prefix = prefix or s.saved_prefix
         self._note_file_saved(sid, path)
 
-    def _engine_restore(self, service, session_id: str, path: str) -> None:
+    def _engine_restore(self, service, session_id: str, path: str) -> bool:
         """ENGINE I/O of a ladder restore (runs OUTSIDE the ladder lock - F4, same reasoning as
-        _engine_save): engine.session_file("restore", path).  A SessionRefused degrades to a plain prefill
-        with the ladder's log line, and the file stays in the ledger; an EngineDied propagates."""
+        _engine_save): engine.session_file("restore", path).  Returns True when it landed; a
+        SessionRefused degrades to a plain prefill with the ladder's log line and answers False, and the
+        file stays in the ledger; an EngineDied propagates."""
         try:
             service.engine.session_file("restore", path)
+            return True                             # landed: the engine's slot now holds this file's
+            # conversation - the caller records residency so the next arrival continues instead of
+            # restoring the same file again (momo 2026-10-27 churn).
         except _refused_class() as e:
             print(f"[strata] session ladder: the restore of {session_id} was refused "
                   f"({e.kind}); this conversation continues as a cold prefill", flush=True)
+            return False
 
     def on_idle(self, service, idle_seconds: float) -> None:
         """Task 8's idle hook, called while the service FIFO is held (the unload path's hold), with the
@@ -474,6 +516,9 @@ class SessionLadder:
             return
         for s in self.tracked.values():
             s.parked = False
+            s.resident = False                      # a fresh engine holds nothing either: residency
+            # claims from the previous engine die with it (the warm handoff below re-earns it, from
+            # its own restore, for exactly the one session it hands over)
         if getattr(service, "restore_after_load", None):
             return                                    # a pending restore owns this start: yield to it
         s = self.tracked.get(self.last_active) if self.last_active is not None else None
@@ -483,6 +528,8 @@ class SessionLadder:
         if path in self.saved_files:
             self.saved_files.remove(path)             # consumed by the restore below (it unlinks it)
         service.restore_after_load = path
+        self._write_index()                           # R4: the consumed checkpoint leaves the sidecar too -
+        # nothing re-adopts a file the load path is about to unlink
 
     def record_saved_prefix(self, session_id: str, prompt: str) -> None:
         """Task 7 re-anchors a checkpoint's prefix to the conversation as it now renders (the prompt text
@@ -502,16 +549,25 @@ class SessionLadder:
         """One drained engine event.  Joined by join_event's (tokens, byte_count) - except a
         skipped_over_budget line that names only a snapshot MiB, which joins the nearest estimated session
         (SNAPSHOT_JOIN_TOLERANCE above), and except that when the exact key matches nothing a
-        parked/skipped_below_min/restored line joins the nearest session within the pinned tolerances
-        (join_event_tolerant, F1: the request path's DONE-estimate bytes and a park line's snapshot bytes
-        are 3% apart on the same conversation).  Every join records the engine's running evictions counter
-        into that session's baseline, and the join sets the session's own park state: a `parked` event parks
-        it.  An unjoinable (or ambiguous) event records nothing: the engine's fingerprint validation is the
-        backstop."""
+        parked/skipped_below_min/restored line joins on the tolerant join's token band, bytes disambiguating
+        only a crowded band (join_event_tolerant, F1 + the 2026-10-27 battery: a DONE-estimate and a park
+        line's measured snapshot_bytes miss each other's byte band on any small mid - 33.6 to 68 KiB/token
+        in the fleet - while their tokens stay within 1%).  Every join records the engine's running
+        evictions counter
+        into that session's baseline, re-anchors the session's token and byte figures to the event's
+        (the engine's own - measured whenever the line names snapshot_bytes), and sets the session's own
+        park state: a `parked` event parks it.  An unjoinable (or ambiguous) event records nothing: the
+        engine's fingerprint validation is the backstop."""
         s = self._join(ev)
         if s is None:
             return
         s.evictions_at_last_switch = ev.evictions
+        if ev.tokens > 0:
+            s.tokens = ev.tokens                            # the join re-anchors the session to the
+        if ev.byte_count > 0:
+            s.byte_count = ev.byte_count                    # engine's own figures (measured whenever
+        # the line names snapshot_bytes): from the first landed join on, joins compare measured to
+        # measured instead of the pinned estimate against the engine's real sizes (probe-A battery).
         if ev.kind == "parked":
             s.parked = True
 
@@ -535,6 +591,11 @@ class SessionLadder:
         s.save_eligible = over_budget or tokens >= MIN_PARK_TOKENS
         s.dirty = True                                # Task 8: a completed turn is unsaved until the
         # ladder's next save of it (on_idle / on_unload / a switch-away save)
+        s.resident = s.resident or reused >= RESIDENT_REUSED_RATIO * s.tokens   # the slot holds THIS
+        # conversation: a deep-reused DONE is the engine continuing from its own live/park state (momo
+        # residency line above).  One-way grant: only the session's switch-away (_note_switch_away) and
+        # an engine restart (on_start) can make residency false again - a shallow DONE cannot mean the
+        # slot lost the conversation, because those two events are exactly what loses it.
         if reused == 0 and s.parked and s.file_path is not None:
             s.parked = False                          # park self-heal (the momo dormancy, recheck 2026-10-26):
         # DONE's reused is the engine's only session-attributed cache accounting - a park copy that held this
@@ -553,6 +614,8 @@ class SessionLadder:
         s = self.tracked.get(session_id)
         if s is not None:
             s.parked = False
+            s.resident = False                      # residency dies with the switch: from here the
+            # engine keeps or loses the conversation, and a later switch-back may owe it a restore.
 
     def _note_file_saved(self, session_id: str, path: str) -> None:
         """Task 7 records a ladder file it saved for this session: the file joins the LRU ledger (a re-save of
@@ -576,6 +639,76 @@ class SessionLadder:
                 os.remove(old)
             except OSError:
                 pass                                       # already gone (the age rule got there first): the ledger is what matters
+        self._write_index()       # R4: this save's file facts (entry, move, retirement) into the sidecar
+
+    def _index_path(self) -> str:
+        return os.path.join(self.cfg.slot_save_path, INDEX_FILE_NAME)
+
+    def _write_index(self) -> None:
+        """R4 (momo 2026-10-27 battery): the ledger - the file list in LRU order, and each file's session
+        with the save-time prefix and token anchor - survives the server process through a sidecar JSON in
+        the sessions dir.  Written on the ledger's FILE moments only: a save (with or without a retirement),
+        and the warm handoff's consumption - never per turn: record_saved_prefix's advance stays in memory,
+        so a persisted prefix always pairs with the file it was saved against (the same conservatism F8
+        states for the re-anchor; a restart between saves re-anchors from the file's own conversation).
+        saved_files order IS the LRU record (last item = last saved); entries sit on top of the files -
+        a ledger path whose tracked session is gone rides on with no entry, exactly as in memory.
+        Atomic (tmp + os.replace); a sidecar that cannot be written costs only the next restart's warm
+        resume - the in-memory ledger and the next save are untouched."""
+        entries = {}
+        for path in self.saved_files:
+            for sid, s in self.tracked.items():
+                if s.file_path == path:
+                    entries[sid] = {"file": path, "tokens": s.tokens,
+                                    "saved_prefix": s.saved_prefix or ""}
+        try:
+            tmp = self._index_path() + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"version": 1, "files": list(self.saved_files), "entries": entries}, f)
+            os.replace(tmp, self._index_path())
+        except OSError:
+            pass                                        # an unwritable dir degrades to no-sidecar behavior
+
+    def _load_index(self) -> None:
+        """R4's adoption at ladder start: rebuild the ledger from the sidecar.  A file the tmpfiles age rule
+        already removed is not adopted (and leaves the ledger - it is gone); a missing or corrupt sidecar is
+        no ledger at all - today's cold behavior, never a crash.  An adopted session IS its saved state:
+        clean (no instant re-save), unparked and non-resident (a fresh engine parks and holds nothing),
+        save_eligible from its tokens (the same shape on_turn_done computes), its prefix as the save paired
+        them.  last_active adopts the owner of the LAST saved file - exactly _on_start's warm-handoff
+        candidate.  File-system reads run in the constructor, before the ladder is shared."""
+        try:
+            with open(self._index_path()) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        files = [p for p in data.get("files", []) if isinstance(p, str) and os.path.exists(p)]
+        self.saved_files = files
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            entries = {}
+        for sid, e in entries.items():
+            if not isinstance(sid, str) or not isinstance(e, dict):
+                continue
+            path, tokens = e.get("file"), e.get("tokens")
+            if path not in files or isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+                continue
+            prefix = e.get("saved_prefix")
+            self.tracked[sid] = TrackedSession(
+                session_id=sid, tokens=tokens, parked=False,
+                save_eligible=(tokens * PARK_COST_KIB_PER_TOKEN / 1024.0 > self.cfg.park_budget_mib
+                               or tokens >= MIN_PARK_TOKENS),
+                file_path=path, saved_prefix=prefix if isinstance(prefix, str) and prefix else None,
+                last_active=0.0, evictions_at_last_switch=0, dirty=False,
+                byte_count=int(tokens * PARK_COST_KIB_PER_TOKEN * 1024))   # the same normalization an
+            # on_turn_done intake gives: the estimate stands in until a joined event re-anchors to measured
+        for path in reversed(files):
+            owner = next((sid for sid, s in self.tracked.items() if s.file_path == path), None)
+            if owner is not None:
+                self.last_active = owner
+                break
 
     def _join(self, ev: ConvEvent) -> TrackedSession | None:
         if ev.kind == "skipped_over_budget" and ev.tokens == 0:

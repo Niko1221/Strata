@@ -158,7 +158,9 @@ class LadderArrival(unittest.TestCase):
         self.ladder.on_arrival(self.service, "ses/../evil", P1)   # the evil id is the active session...
         self.ladder.on_arrival(self.service, "ses-a", P1)         # ...so its save-away builds the filename
         self.assertEqual(self.calls, [("save", str(Path(self.dir.name) / "llm-session-ses_.._evil.bin"))])
-        self.assertEqual(list(Path(self.dir.name).glob("*")), [])  # nothing landed outside the save dir
+        self.assertEqual([p.name for p in Path(self.dir.name).glob("*")], ["ladder-index.json"])
+        # nothing landed but the ladder's own ledger sidecar (the mock engine wrote no checkpoint file,
+        # and the sanitized name kept the evil id inside the save dir)
 
     def test_wiring_refused_class_is_the_server_class_object(self):
         """Eager registration: the ladder excepts the exact class object serve.server exports (module mode
@@ -263,8 +265,13 @@ class LadderHarness(MockEngine):
         self.calls = []
         self.last = None
         self.batch = 0
-        self.session_file = mock.Mock(side_effect=lambda action, path: (self.calls.append((action, path)),
-                                                                        {"tokens": 1})[1])
+        self.session_file = mock.Mock(side_effect=self._session_file)
+
+    def _session_file(self, action, path):
+        self.calls.append((action, path))
+        if action == "save":
+            open(path, "wb").close()      # the save's file, real: the R4 index adoption needs disk to match
+        return {"tokens": 1}
 
 
 def ladder_service(engine, directory):
@@ -308,6 +315,17 @@ class WiringHTTP(unittest.TestCase):
     def actions(self, wanted):
         return [a for a, _ in self.engine.calls if a == wanted]
 
+    def restart(self):
+        # momo's 2026-10-27 14:09 "switch" shape: a new engine and a new server over the same sessions
+        # directory - everything the ladder knew in memory is gone, only the disk is left.
+        self.httpd.shutdown()
+        self.engine = LadderHarness(ByteTokenizer(), "Answer.", max_context=32768)
+        self.svc = ladder_service(self.engine, self.dir.name)
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.addCleanup(self.httpd.shutdown)
+        self.addCleanup(self.httpd.server_close)
+
     def test_wiring_switch_saves_outgoing_when_lost(self):
         self.post("ses-a", LONG + " first")
         self.post("ses-b", LONG + " second")     # switch: ses-a is a tracked eligible mid whose park was never held
@@ -323,6 +341,34 @@ class WiringHTTP(unittest.TestCase):
         self.post("ses-a", LONG + " first")      # back to ses-a's own conversation: prefix intact
         self.assertEqual(self.actions("restore"), ["restore"])
         self.assertEqual(self.engine.calls[-1], ("restore", str(Path(self.dir.name) / "llm-session-ses-a.bin")))
+
+    def test_wiring_a_restored_session_continues_without_re_restoring(self):
+        # momo 2026-10-27 restore-churn (28 rows): after an engine reload, EVERY arrival of the session
+        # re-issued the RESTORE of the same file while the engine already held the conversation live -
+        # each one truncating the deeper live state back to the file's.  One restore is enough: a
+        # landed restore marks the session resident, and the next arrival continues from the slot.
+        self.post("ses-a", LONG + " first")
+        self.post("ses-b", LONG + " first")               # switch away: ses-a saved to its file
+        self.post("ses-a", LONG + " first")               # switch back: the file is restored (the one)
+        self.post("ses-a", LONG + " first")               # continuation: must NOT restore again
+        self.assertEqual(self.actions("restore"), ["restore"])
+
+    def test_wiring_warm_resume_survives_a_server_restart(self):
+        # R4 (momo 2026-10-27 14:09): the switch restarted the SERVER, the new ladder knew nothing about
+        # the files its own saves had landed, and every session's first turn re-prefilled cold.  The
+        # sessions dir now carries the ladder index: the restarted server adopts the checkpoints, and the
+        # first arrival of a session with a file and a faithful prefix restores warm.  (The last-active
+        # session's load-path handoff through restore_after_load is pinned in the ladder's own unit and
+        # lifecycle tests; this mock engine never reports itself unloaded, so ensure_loaded's load block
+        # is not this file's terrain.)
+        self.post("ses-a", LONG + " first")
+        self.post("ses-b", LONG + " second")             # switch away: ses-a's checkpoint lands
+        self.post("ses-c", LONG + " third")              # and ses-b's; ses-c is the current one
+        self.restart()
+        self.post("ses-a", LONG + " first")              # the deeper conversation, same prompt, new server
+        self.assertEqual([p for a, p in self.engine.calls if a == "restore"],
+                         [str(Path(self.dir.name) / "llm-session-ses-a.bin")])   # adopted from the sidecar: warm
+        self.assertEqual(self.actions("save"), [])       # the adopted sessions are clean on disk: no churn re-save
 
     def test_wiring_restores_a_grown_single_message_session(self):
         # The momo dormancy shape end-to-end (recheck 2026-10-26): a growing single user message re-renders
