@@ -7481,20 +7481,21 @@ struct Model::Impl {
                     if (!gemm_f16w(c, l.i_wproj, g.ix_heads, D, c.x16, D, T,
                                    1.0f / std::sqrt((float) g.ix_hd) / std::sqrt((float) g.ix_heads), c.iw, 64, err))
                         return false;
+                    // one GEMM for the step's T rows: gemm() reconstructs the whole weight block on every call, so a
+                    // call a row made the prompt read ~380x slower than the contiguous path at DS4_CHUNK=16
+                    if (!gemm(d, c, l.i_wq_b, c.qr16, g.q_lora, T, c.iq, g.ix_heads * g.ix_hd, 0.0f, err)) return false;
                     for (int t = 0; t < T; ++t) {
                         const int64_t p = step->pos[t];
                         const int nlast = (int) ((p + 1) / R);
                         if (nlast <= 0) continue;
-                        if (!gemm(d, c, l.i_wq_b, c.qr16 + (size_t) t * g.q_lora, g.q_lora, 1, c.iq,
-                                  g.ix_heads * g.ix_hd, 0.0f, err))
-                            return false;
+                        float* const iq = c.iq + (size_t) t * (size_t) g.ix_heads * (size_t) g.ix_hd;
                         Finish fi;
                         fi.rd = g.rd;
                         fi.pos = (int) p;
                         fi.vpp = g.ix_heads;
                         fi.freqs = freqs;
                         fi.quant = 3;
-                        finish(c.iq, g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
+                        finish(iq, g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
                         Rows lim;
                         lim.gen = 1;
                         lim.p0 = p;
@@ -7509,13 +7510,13 @@ struct Model::Impl {
                         if (l.uses_cand && (nlast + g.cand_blk - 1) / g.cand_blk > g.cand_topk) {
                             Rows cl = lim;
                             cl.gen = 2;
-                            index_score(c.iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
+                            index_score(iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
                                         g.cand_topk * g.cand_blk, cd, (int) cand_stride(), g.cand_blk, cl, c.scores, ss, s);
                             Rows tr = lim;
                             tr.gen = 3;
                             topk(c.scores, ss, 1, tr, cd, (int) cand_stride(), g.cand_blk, tk, (int) topk_stride(), s);
                         } else {
-                            index_score(c.iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
+                            index_score(iq, iw, ik_rows(ks, (size_t) l.dev, step->seq[t]), g.ix_heads, g.ix_hd, 1,
                                         nlast, nullptr, 0, 1, lim, c.scores, ss, s);
                             if (l.cand_src) {
                                 Rows cr = lim;

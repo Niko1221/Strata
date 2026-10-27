@@ -312,3 +312,38 @@ faults on its own, at a third site, after the two fixed ones (`pos_rows` pageabl
 `ext_to_ring`'s extra `win * HD`).  Next: a `cudaGetLastError()` clear + `cudaStreamSynchronize` around that `rows`
 call (env-gated) tells whether the kernel itself is out of bounds or an earlier launch's sticky error is surfacing
 there.
+
+
+## The per-row A/B was not testing the per-row path (2026-10-27, 11:30-12:45)
+
+**The harness's shape never reaches the per-row branch.**  `--prefill-chunk 8` is clamped at load
+(`chunk = min(kMaxChunk, max(256, chunk / 16 * 16))`), so the chunk is 256 and a 300-token prompt runs as two chunks
+of 150 rows; `chunk_rows` hands a chunk to the per-row path only when `T <= kWin` (16), so every chunk of that prompt
+takes the contiguous branch, `STRATA_DS4_STEPROWS` or not.  The two runs the check compared were the same code, and
+the illegal memory access it caught is not the per-row path's (below).
+
+**The per-row path at T=16 is ~270x slower than the contiguous one** (one sequence, `--tp 4`, 8K context, a 128-token
+prompt, `DS4_CHUNK=16` - the env is the only door below 256):
+
+| path | prompt read |
+|---|---|
+| contiguous, `DS4_CHUNK=16` | 128 tokens in 857 ms (149.3 tok/s) |
+| per-row, `DS4_CHUNK=16` | did not finish in 233 s (twice; stopped, no prompt line) |
+
+**One cause found and fixed; the gap remains.**  `gemm()` reconstructs the whole weight block into `c.w16` on every
+call and the per-row branch called `gemm(i_wq_b)` once a row, so a T-row chunk rebuilt the indexer's weight block T
+times.  One GEMM now writes the T rows into `c.iq` and the per-row `finish`/`index_score` read their row of it.  The
+128-token prompt still did not finish in 233 s with that in, so the dominant cost is elsewhere; `DS4_PROF` on the
+per-row run is the next step (the 96-token per-row run with events did not finish in 8.5 min, where the plain one
+prints its table for six chunks: attn rest 408 ms, q_b + rope 227 ms, experts 294 ms, shared 192 ms, 757 ms in all).
+
+**The illegal memory access is in the plain chunked path, and intermittent.**  With the A/B's own shape (300 tokens,
+chunk 256, T=150) the contiguous path faulted in `ds4_iq::dequant_rows` for `wq_b` (Q5_K, k 1280, n 32768, the first
+6528-column block) on some loads, and another load of the same shape read 300 tokens in 934 ms and generated its
+tokens.  `CUDA_LAUNCH_BLOCKING=1` puts the first error at that dequant; `c.w16` is 8 Mi elements and the block writes
+8,355,840, so the obvious overflow is not it.  compute-sanitizer on the failing shape is the next step.
+
+**Two window facts.**  `/data/works/services/boot.sh` runs from a login shell, so every `ssh bash -lc` can bring
+production's supervisor back mid-experiment (a request then loads the model into VRAM); move it aside for a window.
+And a killed engine can leave ~12 GB attributed to a vanished PID until the next process exits; wait for
+`nvidia-smi` < 2000 MiB before the next load.
