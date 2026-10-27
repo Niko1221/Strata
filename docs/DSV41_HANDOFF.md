@@ -347,3 +347,10 @@ tokens.  `CUDA_LAUNCH_BLOCKING=1` puts the first error at that dequant; `c.w16` 
 production's supervisor back mid-experiment (a request then loads the model into VRAM); move it aside for a window.
 And a killed engine can leave ~12 GB attributed to a vanished PID until the next process exits; wait for
 `nvidia-smi` < 2000 MiB before the next load.
+
+**The release gate, green (2026-10-27 12:38-12:51, commit `79fb10a`).**  `serve.test_server`: **348 tests, OK**
+(593.7 s - the box was loaded; the same tree passed in 286 s an hour earlier).  The batch probe with two slots
+(`--tp 2`): **all checks passed** (64 s).  Production was stopped for the window and came back `health 200` with its
+supervisor.  The first gate run had gone red only because the probe started the same second the suite ended, while
+the suite's last engine still held VRAM (the probe's engine exited in 3 s); the gate now waits for the GPUs to be
+free between the two and keeps `boot.sh` aside so a login shell cannot start production mid-window.
