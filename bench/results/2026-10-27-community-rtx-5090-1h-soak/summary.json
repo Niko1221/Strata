@@ -1,0 +1,49 @@
+{
+  "what": "one hour of back-to-back chat requests, concurrency 1, to the running Strata server",
+  "requests": 4578,
+  "ok": 4578,
+  "failed": 0,
+  "wall_clock_s": 3599.4,
+  "rate_requests_per_min": 76.31,
+  "generated_tokens": 844832,
+  "generated_tokens_per_min": 14082.9,
+  "end_to_end_tok_s": {
+    "median": 237.2,
+    "p10": 216.8,
+    "p90": 253.5
+  },
+  "latency_s": {
+    "median": 0.792,
+    "p95": 0.898,
+    "max": 1.446
+  },
+  "ttft_content_s": {
+    "median": 0.529,
+    "p95": 0.78,
+    "requests_without_visible_content": 254
+  },
+  "max_tokens": 192,
+  "capped_requests": 2822,
+  "drift": {
+    "first_10min": {
+      "n": 761,
+      "end_to_end_median": 236.9
+    },
+    "last_10min": {
+      "n": 765,
+      "end_to_end_median": 236.5
+    }
+  },
+  "gpu": {
+    "samples": 119,
+    "utilization_median": 98.0,
+    "temperature_c_max": 55.0,
+    "power_w_max": 372.9,
+    "clock_sm_mhz_max": 2865.0,
+    "memory_used_mib": [
+      31850
+    ]
+  },
+  "health_samples": 119,
+  "health_errors": 0
+}
