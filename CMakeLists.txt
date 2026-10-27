@@ -826,6 +826,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_kernels ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
+    if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)   # #4174: Pascal caches plain global loads in L2 only; the Q5_K dense
+      # GEMV (mv_kernel) read 5.3 GB at ~14 GB/s on a P40.  -dlcm=ca (as Maya's Pascal build) caches them in L1: attention
+      # 278 -> 34 ms a token, same output.  Volta already caches them in L1, and the ready-made engine has no SM60 build.
+      target_compile_options(strata-dsv41 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-dlcm=ca>)
+      target_compile_options(strata_dsv41_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-dlcm=ca>)
+    endif()
     if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/core/device.cu): on a Strix Halo the
       # carve-out is not all the GPU may use, and the engine sizes its expert tiers by what the budget says is free
       target_link_libraries(strata-dsv41 PRIVATE strata_core)
