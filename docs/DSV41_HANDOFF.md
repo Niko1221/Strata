@@ -397,3 +397,25 @@ branch or `compute-sanitizer` on that layer (a faulted kernel can leave a stream
 
 The plain path through the same build is fine: `plain: OK`, 96 tokens read in **760 ms** on the same load where the
 per-row run stops - so the control is clean and the shape (96 tokens, `DS4_CHUNK=16`, one server) is not the cause.
+
+
+**The per-row path is correct and as fast as the contiguous one; the *flow* is what deadlocks (2026-10-27 14:52-15:12).**
+With `DS4_FLOW=0` (the batch streaming in place of the GGUF in-place flow) the per-row path runs the whole 300-token
+prompt and is indistinguishable from the contiguous one:
+
+| 300 tokens, `DS4_CHUNK=16`, `--tp 4` | prompt read | 8 generated |
+|---|---:|---|
+| contiguous, `DS4_FLOW=0` | 1993 ms (150.5 tok/s) | `1021, 3174, 9515, 1613, 223, 29429, 201, 38348` |
+| per-row (`STRATA_DS4_STEPROWS=1`), `DS4_FLOW=0` | 1991 ms (150.7 tok/s) | the same 8 tokens |
+
+`tools/dsv41/steprows_check.py` now sets `DS4_FLOW=0` itself and its check passes on the 300-token prompt:
+"ok the contiguous path against itself (deterministic)", "ok the per-row chunk path writes what the contiguous one
+does (12 tokens)", "all checks passed".  So the "~270x" of the section above was this deadlock, not the path's
+arithmetic: with the flow on the per-row prompt stops at layer 2 and never returns (the `/proc` evidence above);
+with the flow off it is the same code at the same speed and the same tokens.
+
+`run_dev_chunks` now turns the flow off for a run whose `Run::rows` is set (a step) and restores it on exit
+(`FlowGuard`), so the eventual single-launch step runs on the batch streaming until the flow can pump a step's rows.
+The flow itself is the next investigation: `flow_layer`/`flow_pump` and the per-row branch's longer kernel sequence
+(the pump runs while the stream is busy; a step's extra per-row launches can leave the staging ring waiting for a
+pump the host never issues).

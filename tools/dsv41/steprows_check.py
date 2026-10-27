@@ -80,6 +80,7 @@ def run(exe, pack, steprows, prompt, n, timeout, tp=4):
             "--tp", str(tp), "--prefill-chunk", "8"]
     env = dict(os.environ)
     env['STRATA_PREFILL_CPU_SHARE'] = '0'   # (the CPU prefill share makes small chunks non-deterministic)
+    env['DS4_FLOW'] = '0'                   # (the GGUF flow deadlocks on the per-row path: docs/DSV41_HANDOFF.md)
     if steprows:
         env["STRATA_DS4_STEPROWS"] = str(steprows)
     e = Engine(argv, env)

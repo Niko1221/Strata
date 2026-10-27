@@ -8171,6 +8171,15 @@ struct Model::Impl {
         Chunk& c = *chunks[(size_t) di];
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
+        // a step's rows do not keep step with the flow's expert pumps yet (the flow deadlocks on a step:
+        // docs/DSV41_HANDOFF.md, 2026-10-27): a step runs on the batch streaming until the flow learns its rows
+        struct FlowGuard {
+            Chunk& c;
+            bool was;
+            explicit FlowGuard(Chunk& ch) : c(ch), was(ch.flow) {}
+            ~FlowGuard() { c.flow = was; }
+        } flow_guard{c};
+        if (run.rows != nullptr) c.flow = false;
         const int D = g.dim, H = g.hc, nk = (int) run.T.size();
         Streamer S;
         const int B = std::max(1, c.ring_n / Chunk::kParts);
