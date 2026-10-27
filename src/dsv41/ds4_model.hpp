@@ -90,7 +90,7 @@ struct Stats {
     double cpu_ms = 0.0, gpu_wait_ms = 0.0;   // the CPU lane's time; the host's waits for the routing
     int64_t card_experts = 0;         // (--expert-cache-device1) routed experts CUDA1 computed
     double card_wait_ms = 0.0;        // the host's waits for CUDA1's part after the CPU lane's
-    int64_t card_fills = 0;           // CUDA1 slots refilled after the main card took their expert
+    int64_t card_fills = 0;           // experts copied into CUDA1's slots: refills, swaps and demotions
     double layer_ms = 0.0, head_ms = 0.0, engram_ms = 0.0;   // the layers' host time in all; the head's wait; Engram reads
     int64_t eg_rows = 0, eg_hits = 0, eg_reads = 0;   // Engram rows asked for, served without a read, read from the files
     double eg_io_ms = 0.0;                            // the windows' Engram reads, issue to last done (mostly hidden)

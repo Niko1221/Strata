@@ -1373,6 +1373,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             continue;
         }
         m.begin_request();   // (DISK_SKIP_AUTO: between requests only)
+        const strata::ds4::Stats s_req = m.stats();
         Prompt P;
         if (!prompt_in(r, geni, "", [&in] { return in.stop.load(); }, P)) continue;
         const double t0 = P.t0;
@@ -1484,11 +1485,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      t1 > t0 ? 1000.0 * (double) (r.ids.size() - from) / (t1 - t0) : 0.0, produced, t2 - t1,
                      t2 > t1 ? 1000.0 * (double) produced / (t2 - t1) : 0.0,
                      s.experts ? 100.0 * (double) s.cpu_experts / (double) s.experts : 0.0);
-        if (s.card_experts > 0)
-            std::fprintf(stderr, "maya ds4 serve: CUDA1 (--expert-cache-device1) %.1f%% of the experts, %.0f ms waited for it, "
-                                 "%lld slots refilled\n",
-                         s.experts ? 100.0 * (double) s.card_experts / (double) s.experts : 0.0, s.card_wait_ms,
-                         (long long) s.card_fills);
+        if (s.card_experts > 0) {   // (the answer's routed experts; the waits and moves over the whole request)
+            const double ex = (double) (s.experts - s_dec.experts);
+            std::fprintf(stderr, "maya ds4 serve: CUDA1 (--expert-cache-device1) %.1f%% of the answer's experts, %.0f ms "
+                                 "waited for it, %lld moves in this request\n",
+                         ex > 0 ? 100.0 * (double) (s.card_experts - s_dec.card_experts) / ex : 0.0,
+                         s.card_wait_ms - s_req.card_wait_ms, (long long) (s.card_fills - s_req.card_fills));
+        }
         if (d_off > 0) std::fprintf(stderr, "maya ds4 serve: drafts %lld of %lld kept; %s\n", d_acc, d_off,
                                     per_position(s_dec, s).c_str());
         if (nan_stop) {   // (its state holds the NaNs: the next request starts from nothing)
