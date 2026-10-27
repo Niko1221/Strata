@@ -354,3 +354,30 @@ And a killed engine can leave ~12 GB attributed to a vanished PID until the next
 supervisor.  The first gate run had gone red only because the probe started the same second the suite ended, while
 the suite's last engine still held VRAM (the probe's engine exited in 3 s); the gate now waits for the GPUs to be
 free between the two and keeps `boot.sh` aside so a login shell cannot start production mid-window.
+
+
+**The per-row path's stall is one section, not a uniform slowdown (2026-10-27 13:20-13:45).**  `DS4_STEPDBG=1` (an
+env-gated, synced timer on the per-row branch's sections, reverted after measuring) on a 96-token prompt at
+`DS4_CHUNK=16` shows the first layers of the first chunk fast, then a stop in layer 2's compressor/indexer block:
+
+| section (T=16) | layer 0 | layer 1 |
+|---|---:|---:|
+| engram + attn mHC + norm | 9.8-11.4 ms | 3.5 ms |
+| attention projections | 1.8-3.2 ms | 0.1 ms |
+| q/kv finish + window (per row) | 0.5-2.1 ms | 0.2 ms |
+| compressor + indexer | 0.0 ms | 0.0 ms |
+| attention slabs | 10.8-11.5 ms | 2.6 ms |
+| MoE (mHC/router, shared expert, flow layer) | 3.1 ms | 2.3 ms |
+
+A per-row layer costs ~9-30 ms where the contiguous one costs ~3 ms, so the 270x is not a per-layer cost.  Layer 2 -
+the first with a compressed KV (`l.ratio > 0`) - enters, times its window at 0.2 ms, and never returns from the
+per-row compressor block: the calls between that mark and the next are the per-row `compress_win` loop and the
+completed group's `finish` / `gemm(i_wk)` / `finish`, and marks placed inside the block (before the group loop, and
+after each call in it) never print.  The process stays alive (no ERR line), so it blocks rather than faults; the
+suspects are the per-row `compress_win` arguments (the sequence's partial-group pointers) or a deadlock with the
+flow's expert copies while the compute stream waits.  The plain path through the same layer is fine.  Next: a mark a
+row of that loop (or compute-sanitizer on the layer), then the 300-token shape.
+
+Environment notes from the same window: a build's binary must not be copied over one a dying engine still holds
+(`Text file busy` until the process exits; use a fresh name), and a window's restore copies `strata-dsv41.prod` back
+over `build/strata-dsv41`, so keep the branch build under another name (`.dbg`, `.stepN`).
