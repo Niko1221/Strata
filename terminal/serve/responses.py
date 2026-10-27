@@ -31,7 +31,7 @@ import re
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, cut_arguments, declared_parameters, effort_kwargs
+from serve.frontend import Event, _late_system_to_user, _parts_of, cut_arguments, declared_parameters, effort_kwargs, tail_system_reminders
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -187,8 +187,10 @@ def _agent_message(item, param) -> str:
     return f"Message from {author} to {recipient}:\n{body}"
 
 
-def input_messages(req: dict) -> list[dict]:
-    """`instructions` + `input` -> the chat template's messages."""
+def input_messages(req: dict, reminders_tail: bool = False) -> list[dict]:
+    """`instructions` + `input` -> the chat template's messages.  `reminders_tail`: the config's
+    "system_reminders": "tail", the same rule as on the chat routes (see frontend.tail_system_reminders) -
+    this route builds its own messages, so the rule has to run here too."""
     messages = []
     instructions = req.get("instructions")
     if instructions not in (None, ""):
@@ -312,7 +314,8 @@ def input_messages(req: dict) -> list[dict]:
         lead += 1
     if lead > 1:
         messages[:lead] = [{"role": "system", "content": "\n\n".join(m["content"] for m in messages[:lead])}]
-    return _late_system_to_user(messages)
+    messages = _late_system_to_user(messages)
+    return tail_system_reminders(messages) if reminders_tail else messages
 
 
 def _order_tool_results(messages):
