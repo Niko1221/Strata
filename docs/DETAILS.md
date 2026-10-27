@@ -355,6 +355,14 @@ curl -X POST -H "Content-Type: application/json" localhost:8080/unload
 Monitor shows the state. Unloading ends the engine process and the image encoder, so their VRAM and RAM return at once. The
 model files stay in the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere.
 
+**Session ladder** (opt-in, `"session_ladder": {...}`): a per-conversation checkpoint ledger built on the engine's own
+session-file SAVE/RESTORE. A conversation that switches away is checkpointed at its turn end; `POST /unload` checkpoints
+every dirty conversation before the engine closes; the engine start after an unload hands the checkpoint back before the
+next request, so the prompt reads from the restored prefix instead of being re-prefilled. A refused save or restore degrades
+to a cold prefill with one log line and never fails the request. The block's keys are `idle_save_s` (8.0) and
+`retention_max_files` (16); the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
+without a resolvable budget refuses to start. Absent the block, everything above stays as it was.
+
 **Lazy start.** `serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true`) starts the HTTP
 API without the engine or the vision encoder. The first generation request or `POST /load` loads them, including
 `before_load` and `min_free_vram_mib`. `POST /v1/load` and `/v1/unload` are JSON control aliases (they need the API key,
