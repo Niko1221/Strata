@@ -193,6 +193,17 @@ void emit_lp_line(const strata::core::Verifier& ver, int t, int32_t token, int k
     std::printf("\n");
 }
 
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+// The ordinary decode path extracts all accepted rows in one GPU call. Keep
+// the LP wire and chosen-token-plus-top-K shape; GPU ties sort by token ID.
+void emit_lp_items_line(const strata::kernels::LogprobItem* row, int k) {
+    std::printf("LP %.6f", (double) row[0].logprob);
+    for (int j = 1; j <= k; ++j)
+        std::printf(" %d:%.6f", (int) row[j].id, (double) row[j].logprob);
+    std::printf("\n");
+}
+#endif
+
 namespace {
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
@@ -15247,9 +15258,30 @@ int main(int argc, char** argv) {
                     draft_accepted += a;
                 }
                 first_window = false;
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+                // Named allowed IDs use the existing CPU path, which emits every named
+                // ID rather than top K. Unsupported vocabulary/K sizes use it too.
+                const bool lp_gpu = req_logprobs >= 0 && req_allowed.empty() &&
+                                    ver.vocab() <= std::numeric_limits<int>::max() &&
+                                    strata::kernels::logprobs_scratch_bytes(1, (int) ver.vocab(), req_logprobs) != 0;
+                std::vector<strata::kernels::LogprobItem> lp_items;
+                if (lp_gpu) {
+                    lp_items.resize((size_t) (a + 1) * (req_logprobs + 1));
+                    if (!ver.logprobs(a + 1, outv.data(), req_logprobs, lp_items.data(), err)) {
+                        if (adapt_thr.joinable()) adapt_thr.join();
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
+                }
+#endif
                 bool eos = false;
                 for (int i = merged ? a : 0; i <= a && produced_n < max_new && !eos; ++i) {   // (merged: row T-1 only)
                     std::printf("T %d\n", (int) outv[(size_t) i]);
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_HIP_GFX906)
+                    if (lp_gpu)
+                        emit_lp_items_line(lp_items.data() + (size_t) i * (req_logprobs + 1), req_logprobs);
+                    else
+#endif
                     emit_lp_line(ver, i, outv[(size_t) i], req_logprobs, req_allowed);
                     strata::core::progress_beat();
                     ++produced_n;

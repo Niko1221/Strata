@@ -520,6 +520,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `--parallel`, only a `max_tokens` 1 request gets them: it is the one a batch slot decodes through the single-token
   path, which writes an LP line. A longer reply there is a 400, since the slot's `BT` lines carry none -- entries for
   a prefix only, which a client cannot tell from the model's own answer.
+  In serial CUDA and wave32 HIP decode, the engine scores accepted tokens and top IDs on the GPU and transfers
+  those scores. Equal-logit top IDs are ordered by token ID; score rounding can differ from the CPU path. Named
+  `allowed_token_ids` and pipelined windows keep the full-logit CPU scoring path.
 - **Non-finite logits end the request and drop the cached state (on by default).** If a verify window's logits are NaN, the
   window emits no tokens, the request ends, and the next request drops the live session, checkpoints and parked
   conversations and reads its prompt from token 0. The server retries a request that had sent nothing once, transparently.
