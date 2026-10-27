@@ -1,9 +1,8 @@
 # Strata in Docker
 
-Run Strata as a container: one command, nothing to install on the computer except Docker and your graphics card's driver.
-The images come with Strata's engine already built for your card, so nothing is compiled on your side. The model is
-downloaded on the first start into a volume (a download that stops continues where it stopped), and every later start goes
-straight to serving.
+Run Strata in a container with a prebuilt engine. Install Docker, the host GPU driver and the GPU-access
+requirements in the table below. NVIDIA and AMD images can download and prepare a model on first start;
+Intel Arc needs prepared model files. Keep the data volume to reuse downloads and settings.
 
 > **On this page:** [Which image](#which-image-for-which-card) · [One command per card](#one-command-per-card) ·
 > [Docker Compose](#docker-compose) · [Settings](#settings) · [The API key](#the-api-key) · [Connect your apps](#connect-your-coding-apps) ·
@@ -12,7 +11,7 @@ straight to serving.
 
 Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the Mac app or the Terminal
 ([MAC.md](MAC.md), [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md)). Docker Desktop on **Windows** passes NVIDIA cards through
-(WSL 2) but not Radeon or Arc cards; on Windows the app is the easier way for every card.
+(WSL 2) but not Radeon or Arc cards; on Windows use the native app for supported NVIDIA or AMD cards. Intel Arc has no native Windows engine; follow the Linux guide.
 
 ## Which image for which card
 
@@ -23,11 +22,11 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 | AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.3-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
 | AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.3-rocm-gfx110x` | the `amdgpu` kernel driver |
 | AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.3-rocm-gfx1151` | the `amdgpu` kernel driver |
-| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.3-sycl` (only for a release that carries the Intel engine package; otherwise [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
+| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.3-sycl` (if no image exists for a release, [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
-Size of the images on disk (built from the engine packages of the 0.2.0-beta release): `cuda13` 2.2 GB, `cuda12` 2.9 GB, `rocm-gfx120x` 2.8 GB,
-`rocm-gfx110x` 2.4 GB, `rocm-gfx1151` 1.5 GB; the download is about a third of that (measured on the 0.1.45 packages: `cuda13` 640 MB, `cuda12` 845 MB,
-`rocm-gfx120x` 505 MB, `rocm-gfx110x` 330 MB, `sycl` 450 MB). The model comes on top, on the first start.
+**Measured on:** images built from the 0.1.45 engine packages. Size on disk: `cuda13` 2.2 GB, `cuda12` 2.9 GB, `rocm-gfx120x` 2.8 GB,
+`rocm-gfx110x` 2.4 GB, `rocm-gfx1151` 1.5 GB. The download is about a third of that: `cuda13` 640 MB, `cuda12` 845 MB,
+`rocm-gfx120x` 505 MB, `rocm-gfx110x` 330 MB, `sycl` 450 MB. The model comes on top, on the first start. Current sizes may differ.
 
 Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or newer and the card is an RTX; otherwise `cuda12`.
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
@@ -40,7 +39,7 @@ tag if you want updates only when you decide. The examples below use these image
 ## One command per card
 
 Each command runs Strata in the background, keeps your files in the volume `strata-data`, and listens only on this computer
-(`127.0.0.1:8080`). Replace `MODEL` and the key. The first start downloads the model (tens of GB): watch it with
+(`127.0.0.1:8080`). Choose `FAMILY` and `MODEL`, and generate your own key. The examples select ISTA-DASLab originals explicitly. The first start downloads the model (tens of GB): watch it with
 `docker logs -f strata`. Already have the model's GGUF files? Add `-e MODEL_PATH=/models -v /your/folder:/models:ro` and nothing is
 downloaded for the model itself ([Files you already have](#files-you-already-have)).
 
@@ -49,7 +48,7 @@ downloaded for the model itself ([Files you already have](#files-you-already-hav
 ```sh
 docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
-  -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
+  -v strata-data:/data -e FAMILY=qwen -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
   ghcr.io/niko1221/strata:0.2.3-cuda13
 ```
 
@@ -59,7 +58,7 @@ docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
 docker run -d --name strata --device /dev/kfd --device /dev/dri \
   --group-add video --group-add $(getent group render | cut -d: -f3) -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
-  -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
+  -v strata-data:/data -e FAMILY=qwen -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
   ghcr.io/niko1221/strata:0.2.3-rocm-gfx120x
 ```
 
@@ -68,7 +67,7 @@ docker run -d --name strata --device /dev/kfd --device /dev/dri \
 ```sh
 docker run -d --name strata --device /dev/dri --group-add $(getent group render | cut -d: -f3) \
   -p 127.0.0.1:8080:8080 --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
-  -v strata-data:/data -e MODEL=IQ3_S -e MODEL_PATH=/models -v /srv/gguf/IQ3_S:/models:ro \
+  -v strata-data:/data -e FAMILY=qwen -e MODEL=IQ3_S -e MODEL_PATH=/models -v /srv/gguf/IQ3_S:/models:ro \
   -e API_KEY=$(openssl rand -hex 24) ghcr.io/niko1221/strata:0.2.3-sycl
 ```
 
@@ -96,7 +95,7 @@ Ready-made files are in [docker/compose/](../docker/compose): `docker-compose.nv
 
 ```sh
 cd docker/compose
-cp .env.example .env              # set MODEL=..., API_KEY=...
+cp .env.example .env              # set FAMILY=qwen, MODEL=..., API_KEY=...
 docker compose -f docker-compose.nvidia.yml up -d
 docker compose -f docker-compose.nvidia.yml logs -f
 ```
@@ -114,16 +113,17 @@ screens; leave out what you do not care about.
 | Variable | What it does | Default |
 | --- | --- | --- |
 | `MODEL` | model size: `IQ2_XS`, `IQ3_XXS`, `IQ3_S`, `Q2_0`, `UD-Q4_K_XL`, ... ([MODELS.md](MODELS.md)) | Strata picks what suits the card, and says so in the log |
-| `FAMILY` | `qwen`, `swift`, `coder`, ... when a size exists in several families | the usual one |
+| `FAMILY` | `qwen`, `unsloth`, `gyro`, `coder`, `swift`, ...; use `qwen` for the original ISTA-DASLab packs | installer recommendation; may differ by hardware |
 | `MODEL_PATH` | GGUF files you already have: a folder or one `.gguf`, **inside the container** (mount it with `-v`, `:ro` is fine) | download |
 | `CONTEXT` | how much text it remembers at once: `32k`, `64k`, `128k`, `256k` or a number | the largest that fits |
 | `PARALLEL` | requests answered at the same time, 1 to 8 | fitted to the card |
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
 | `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
 | `GPU` / `GPUS` | card numbers as the monitor lists them, `0` or `0,1`; empty or `all` = the engine's choice. Changing it later makes the model's run settings again (the files stay) | all that fit |
-| `GPU_ROLES` | a role for each card, `1=main,0=helper` (`main`, `helper`, `off`; cards you do not name are off; not together with `GPU` / `GPUS`). Passed to `launch --gpu-roles`; see [MULTI_GPU.md](MULTI_GPU.md) |
-| `TUNE` | `quick` (up to about 20 minutes, once), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
+| `GPU_ROLES` | a role for each card, `1=main,0=helper` (`main`, `helper`, `off`; cards you do not name are off; not together with `GPU` / `GPUS`). Passed to `launch --gpu-roles`; see [MULTI_GPU.md](MULTI_GPU.md) | none |
+| `TUNE` | `quick` (runtime depends on hardware and workload), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
 | `API_KEY` / `API_KEY_FILE` | the key clients must send ([below](#the-api-key)); the file form is for Docker secrets | made for you |
+| `TUNE_ALLOW_SMALL` | `1` passes `--tune-allow-small` to `launch` (allow tuning on a small card) | `0` |
 | `PORT` | the port inside the container | `8080` |
 | `PRESET` | the preset name in `/data` | `docker` |
 | `STRATA_SET` | advanced engine settings, space separated, like `strata launch --set` (`"prefill=65536 STRATA_PIN_BY_NEED=1"`) | none |
@@ -131,7 +131,7 @@ screens; leave out what you do not care about.
 Your choices are saved as a preset in the volume. Start again with no settings and the saved preset is used; start with
 settings and they replace the saved ones (tuning results are kept). To change one thing, recreate the container with the new
 variable; the model and tuning stay in `/data`. Anything else: `docker exec strata strata launch --help`, or
-`docker run --rm IMAGE strata launch --plan --model q2_0` to see what a choice would do without starting anything.
+`docker run --rm IMAGE strata launch --plan --family qwen --model q2_0` to see what a choice would do without starting anything.
 
 What is in the volume `/data`: `Strata-data/` (model files, the prepared pack), `state/` (presets, tuning, the key), `install/`
 (run settings and logs), `home/`. The engine and the Terminal are in the image, so updating the image never touches your files.
@@ -142,14 +142,14 @@ container's user). Nothing large is written anywhere else in the container.
 ### Files you already have
 
 Mount the folder with the model's GGUF files read-only and name it: `-v /srv/gguf/IQ3_XXS:/models:ro -e MODEL_PATH=/models
--e MODEL=IQ3_XXS`. Nothing is downloaded for the model itself; the prepared pack is made in the volume.
+-e FAMILY=qwen -e MODEL=IQ3_XXS`. Nothing is downloaded for the model itself; the prepared pack is made in the volume.
 
 - The folder holds the shards of one model directly (`...-00001-of-00002.gguf`, `...-00002-of-00002.gguf`), not a folder of folders.
   If you mount a parent folder, the container says which sub-folder to name in `MODEL_PATH`.
 - The folder has to be mounted: a `MODEL_PATH` that is not in the container, or a folder with no `.gguf` files, stops the start at
   once with a message, and nothing is downloaded.
 - Read-only (`:ro`) is fine. The pack (about 40 GB for IQ3_XXS) and the draft layer (about 6 GB, fetched once) are written to the
-  volume, so it needs that room. With pictures on (the default) the picture reader (0.9 GB) is fetched too; `VISION=off` skips it.
+  volume, so it needs that room. With `VISION=on` the picture reader (0.9 GB) is fetched too; `VISION=off` skips it.
 - Links to the files work when the links' targets are mounted too, and `MODEL` is set (without `MODEL`, Strata identifies the files itself
   and does not follow links).
 - Without `MODEL_PATH`, files you put into the volume by hand (`/data/Strata-data/models/<model folder>/`) are found as well, if they have the
@@ -284,9 +284,9 @@ This is the way to get an image for a computer without registry access or after 
 folder (made by `packaging/package_engine.py`, or fetched by `strata update` into a components folder) and Docker on Linux:
 
 ```sh
-docker/build.sh --flavor cuda --engine ~/components/engine/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.3-cuda13
-docker/build.sh --flavor hip  --engine ~/components/engine/0.1.45.3-linux-x86_64-hip-rx9070 --tag strata:0.2.3-rocm-gfx120x
-docker/build.sh --flavor sycl --engine ~/components/engine/<a-sycl-package-folder> --tag strata:0.2.3-sycl
+docker/build.sh --flavor cuda --engine ~/components/engine/<cuda13-package-folder> --tag strata:0.2.3-cuda13
+docker/build.sh --flavor hip  --engine ~/components/engine/<hip-rx9070-package-folder> --tag strata:0.2.3-rocm-gfx120x
+docker/build.sh --flavor sycl --engine ~/components/engine/<sycl-package-folder> --tag strata:0.2.3-sycl
 ```
 
 `build.sh` assembles the build context (the Terminal's files and the package) and runs `docker build`. The build makes the
@@ -332,26 +332,11 @@ the job starts the image once to see that the Terminal inside it runs.
 | `rocm-gfx120x` | `linux-x86_64`, hip, variant `rx9070` (gfx1200 / gfx1201) |
 | `rocm-gfx110x` | `linux-x86_64`, hip, variant `rx7900` (gfx1100 / gfx1101 / gfx1102) |
 | `rocm-gfx1151` | `linux-x86_64`, hip, variant `halo` (Strix Halo, gfx1151) |
-| `sycl` | `linux-x86_64`, sycl; **only when the feed lists one** (the 0.2.0-beta feed has none, so no Intel image is built from it) |
+| `sycl` | `linux-x86_64`, sycl; only when the feed lists one |
 
 A flavor the feed has no package for is left out, with a line in the log. The same steps run from a Linux computer with Docker:
 `docker/publish.sh --release-tag v0.2.3` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
 The images run on the runner without a graphics card, so the card checks (`docker/smoke-test.sh`) stay a manual step on a computer with the card.
-
-## Tested
-
-2026-10-19, images built from the engine packages of the 0.2.0-beta release (engine 0.1.45.3), fetched and checked against the signed feed by
-`docker/fetch-engines.py` (the packages are the ones `strata update` installs). Run on real cards with the checks below (`docker/smoke-test.sh`): `cuda13`
-and `cuda12` on one RTX A4000 (driver 580), `rocm-gfx120x` on one Radeon AI PRO R9700. All passed: serving 71-161 s after `docker run` with the prepared
-files, `docker stop` took 4-5 s with exit code 0, the card's memory was free again, and the second start reused the saved preset. `rocm-gfx110x` and
-`rocm-gfx1151` (Strix Halo) were built and passed the package and library checks but have not run on a card. On a computer without an AMD card the
-`rocm-gfx120x` container says in plain words that the engine does not match the card and exits with code 3.
-
-2026-10-17, images built from the 0.1.45 engine packages, on real cards: NVIDIA RTX 3060 (`cuda13`
-and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
-refuses a request without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works,
-`docker stop` ends it with exit code 0 and the graphics memory is free again, and a second start reuses the saved preset.
-Not run on a card: `cuda12` on Pascal / Volta (it ran on the RTX 3060), `rocm-gfx110x` (RX 7000). They are built and checked the same way.
 
 ## Known limits
 
@@ -361,3 +346,14 @@ Not run on a card: `cuda12` on Pascal / Volta (it ran on the RTX 3060), `rocm-gf
 - An Arc card needs prepared model files (see [Intel](#intel-arc)).
 - AMD **RX 7000** (gfx110x) and RDNA 3 iGPUs: the gfx110X image is built for gfx1100 / 1101 / 1102 (RX 7900, 7800, 7700, 7600). The
   Radeon 780M (gfx1103) is experimental and has its own engine package, not in these images.
+
+## History / older measurements
+
+**Tested on real cards.** Checks (`docker/smoke-test.sh`): the container serves, `GET /v1/models` answers (and refuses a request
+without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works, `docker stop` ends it with exit
+code 0 and the graphics memory is free again, and a second start reuses the saved preset.
+
+| Date | Images built from | Card | Result |
+| --- | --- | --- | --- |
+| 2026-10-19 | 0.2.0-beta engine packages (engine 0.1.45.3), fetched and checked against the signed feed | `cuda13` and `cuda12` on one RTX A4000 (driver 580); `rocm-gfx120x` on one Radeon AI PRO R9700 | All passed. Serving 71-161 s after `docker run` with the prepared files; `docker stop` took 4-5 s with exit code 0. `rocm-gfx110x` and `rocm-gfx1151` passed the package and library checks but did not run on a card. On a computer without an AMD card the `rocm-gfx120x` container says the engine does not match the card and exits with code 3. |
+| 2026-10-17 | 0.1.45 engine packages | RTX 3060 (`cuda13`, `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`) | All checks passed on each. Not run on a card: `cuda12` on Pascal / Volta (it ran on the RTX 3060), `rocm-gfx110x` (RX 7000). |

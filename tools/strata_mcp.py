@@ -551,6 +551,15 @@ class Strata:
                       "vision": bool(d.get("vision", False)), "own_path": True, "multi_file": True}
         return out
 
+    def own_size_names(self) -> list:
+        """The size names of the families that have an engine path of their own (Qwen3.6, DeepSeek-V4.1-Flash): the install tool accepts them as `model`."""
+        s = self.setup_module()
+        names = []
+        for table in ("OWN_PATH_FAMILIES", "MULTI_FILE_FAMILIES"):
+            for fam in (getattr(s, table, None) or {}).values():
+                names.extend(n for n in fam.get("models", {}) if n not in names)
+        return names
+
     def multi_family(self, family) -> dict | None:
         """setup.py's MULTI_FILE_FAMILIES entry (DeepSeek-V4.1-Flash), else None."""
         return (getattr(self.setup_module(), "MULTI_FILE_FAMILIES", None) or {}).get(family)
@@ -766,6 +775,17 @@ class Strata:
         return {"models": models, "shared_bytes": shared_bytes, "shared_gb": round(shared_bytes / 1e9, 2),
                 "total_bytes": total, "total_gb": round(total / 1e9, 2)}
 
+    @staticmethod
+    def made_by_strata(p: Path, is_dir: bool) -> bool:
+        """A download or pack Strata wrote itself, even in a models folder the person picked or the app chose: a finished GGUF has its
+        .done mark beside it, a prepared pack has its conversion record. The person's own GGUF files have neither (#3716)."""
+        try:
+            if is_dir:
+                return any((p / n).is_file() for n in ("conversions.json", "experts.bin.src.json"))
+            return p.with_name(p.name + ".done").is_file()
+        except OSError:
+            return False
+
     def removal_plan(self, config: Path) -> dict:
         """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
         (the shared MTP draft, a shared PLE shard) is kept; so is anything outside Strata's own folders."""
@@ -789,7 +809,7 @@ class Strata:
         for p, is_dir in [(x, False) for x in files] + [(x, True) for x in dirs]:
             if not p.exists():
                 continue
-            if not self.allowed(p):
+            if not self.allowed(p) and not self.made_by_strata(p, is_dir):
                 keep.append({"path": str(p), "reason": "outside Strata's folders"})
             elif shared(p, is_dir):
                 keep.append({"path": str(p), "reason": "another installed model still uses it"})
@@ -955,6 +975,8 @@ class Strata:
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
         hw["gpus"] = nv + amd
+        for g in hw["gpus"]:                            # each make numbers its cards from 0 (the engine drives one make): a stable id tells two cards apart
+            g.setdefault("id", f"{g.get('vendor') or 'gpu'}:{g.get('index')}")
         try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
             from strata_control import gpu_roles
             gpu_roles.add_speeds(hw["gpus"])
@@ -1933,7 +1955,8 @@ class Tools:
         self.s = strata
 
     def defs(self) -> list:
-        return tool_defs(*self.s.tables()[:3])
+        models, families, contexts = self.s.tables()[:3]
+        return tool_defs({**{name: {} for name in self.s.own_size_names() if name not in models}, **models}, families, contexts)
 
     def call(self, name: str, args) -> dict:
         defs = {d["name"]: d for d in self.defs()}

@@ -236,6 +236,24 @@ class ModelStep(Base):
             self.assertIn("The n-gram table stays on your SSD", t)
         self.run_app(case)
 
+    def test_the_verdict_column_is_not_cut_off_at_80_columns(self):                       # 0.2.5 list
+        ctx = make_ctx()
+        app = LaunchApp(ctx)
+
+        async def go():
+            async with app.run_test(size=(80, 34)) as pilot:
+                await pilot.pause(0.2)
+                await press(pilot, "enter")
+                t = text_of(app)
+                self.assertIn("Fits?", t)
+                rec = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S " in l)
+                self.assertIn("fits (recommended)", rec)
+                for model in ("Q2_0", "NVFP4 ", "UD-Q5_K_XL"):
+                    row = next(l for l in t.splitlines() if model in l and "GB" in l)
+                    self.assertTrue(any(w in row for w in ("fits", "tight", "too big")), row)
+                self.assertTrue(all(len(l) <= 80 for l in t.splitlines()))
+        asyncio.run(go())
+
     def test_choosing_a_model_and_going_on(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "up", "up", "up", "enter")
