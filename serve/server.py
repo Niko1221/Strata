@@ -4041,6 +4041,7 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
+        self.reminders_tail = False                       # opt-in: "system_reminders": "tail" (see frontend)
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.images = None                                # serve/images.py's ImageGen when the config has "images"
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
@@ -5226,9 +5227,44 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
+    def note_divergence(self, ids) -> None:
+        """Diagnostic for full re-reads: compares a request's tokens with what each batch slot holds for its
+        next turn (its prompt plus every token the engine generated), and logs one line when a slot's held
+        prefix is not fully shared - the restore fails, and this names why (a system prompt, a tool list, a
+        reply the client replays differently than the engine generated).  Written to <log>.divergence, never
+        to the engine's log.  Aids measurement only: nothing here changes what the engine reuses."""
+        held = getattr(self.engine, "slot_held", None)
+        path = getattr(self.engine, "log_path", None)
+        if not held or not path or len(ids) < 4096:
+            return
+        best, slot = 0, 0
+        for b, h in enumerate(held):
+            n = 0
+            for a, c in zip(ids, h):
+                if a != c:
+                    break
+                n += 1
+            if n > best:
+                best, slot = n, b
+        h = held[slot]
+        if best == len(h) or len(h) <= 4096:      # the slot's prefix is shared: its state is restored, only the
+            return                                 # tail is read - the normal case, nothing to name here
+        try:
+            was = self.tok.decode(h[max(0, best - 12): best + 12])
+            now = self.tok.decode(ids[max(0, best - 12): best + 12])
+            st = getattr(getattr(self, "conv_log", None), "state", {})
+            last = f" last_cache: {st['last_event']} {st['last_tokens']} " \
+                   f"{time.time() - st['last_at']:.0f} s ago" if st.get("last_event") else ""
+            with open(path + ".divergence", "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} prompt {len(ids)} slot {slot} holds {len(h)} "
+                        f"prefix {best} held: {was!r} now: {now!r}{last}\n")
+        except (OSError, ValueError):
+            pass
+
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
             declared_only=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
+        self.note_divergence(ids)
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
@@ -7590,7 +7626,7 @@ def make_handler(svc: Service):
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            messages, tools, kw = openai_to_messages(req)
+            messages, tools, kw = openai_to_messages(req, svc.reminders_tail)
             require_messages(messages)                # an empty conversation is a 400, as OpenAI answers it, not a reply to nothing
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
@@ -7854,7 +7890,7 @@ def make_handler(svc: Service):
             """Anthropic's token count, which Claude Code asks for its context figures: the prompt this server would
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked, svc.reminders_tail)
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
@@ -7862,7 +7898,7 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked, svc.reminders_tail)
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
@@ -9097,6 +9133,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
     svc.anthropic_think_unasked = mode == "model"
+    reminders = str(cfg.get("system_reminders") or "keep")   # "tail": move reminder blocks to the prompt's end
+    if reminders not in ("keep", "tail"):
+        raise SystemExit(f"[strata] config system_reminders must be \"keep\" or \"tail\", not {reminders!r}")
+    svc.reminders_tail = reminders == "tail"
     recovery = cfg.get("tool_call_recovery", False)     # opt-in: see OutputParser's recover
     if not isinstance(recovery, bool):
         raise SystemExit(f"[strata] config \"tool_call_recovery\" must be true or false, not {recovery!r}")
