@@ -77,6 +77,7 @@ import { findControl, createControl, componentsDirectory } from './control-runti
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
+import { nativeModelEntries } from './native-models.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem } from './ports.mjs';
@@ -2048,7 +2049,7 @@ async function api(req, res, path, method, url) {
 async function openai(req, res, path, method) {
   if (!serving.authorized(req)) return error(res, 401, 'Invalid API key');
   if(native.state().instances.length){
-    if(path==='/v1/models'&&method==='GET')return json(res,200,{object:'list',data:native.state().instances.filter(i=>i.status==='ready').map(i=>({id:i.apiModelId,object:'model',owned_by:'strata',meta:{instanceId:i.id,gpus:i.gpus,label:i.label,aliases:i.aliases}}))});
+    if(path==='/v1/models'&&method==='GET')return json(res,200,{object:'list',data:nativeModelEntries(native.state().instances)});
     if(method==='POST'&&['/v1/chat/completions','/v1/messages','/v1/responses'].includes(path)){if(store.get().serving?.pauseServing)return error(res,503,'New API requests are paused.');if(path==='/v1/responses'&&!native.state().capabilities.responses)return error(res,501,'Update the native Strata installation to use the Responses API.');return nativeGateway({req,res,path,body:await readBody(req,12*1024*1024),control:native,serving});}
   }
   if(path==='/v1/responses'&&method==='POST')return error(res,503,'Load a native Strata model to use the Responses API.');
