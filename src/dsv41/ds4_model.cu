@@ -2391,7 +2391,8 @@ struct Model::Impl {
                       dalloc(d, d.freqs_win, 64, err) && dalloc(d, d.freqs_comp, 64, err) &&
                       dalloc(d, d.topk, W * topk_stride(), err) && dalloc(d, d.cand, W * cand_stride(), err) &&
                       dalloc(d, d.tok, 16, err) && dalloc(d, d.emb_rows, W * D, err) &&
-                      dalloc(d, d.ext, ((size_t) g.win + W) * g.hd, err) && dalloc(d, d.xe, P * D, err) &&
+                      dalloc(d, d.ext, std::max((size_t) g.win + W, (size_t) kWin * ((size_t) g.win + 1)) * g.hd, err) &&
+                      dalloc(d, d.xe, P * D, err) &&
                       dalloc(d, d.xg, P * g.ff, err) && dalloc(d, d.xu, P * g.ff, err) && dalloc(d, d.xhh, P * g.ff, err) &&
                       dalloc(d, d.ed, P * D, err) && dalloc(d, d.plan_ptr, P, err);
             if (!ok) return false;
@@ -9417,13 +9418,13 @@ struct Model::Impl {
 
     // threads: each device's thread enqueues its layers (a group's members each their share) at once, the
     // devices waiting on each other through host-mapped flags (the window's seq)
-    bool forward_par(int64_t p0, int T, std::string& err) {
+    bool forward_par(int64_t p0, int T, std::string& err, const StepRows* step = nullptr) {
         wplan.win = ++win_seq;
         std::vector<std::string> errs(devs.size());
         for (size_t di = 0; di < devs.size(); ++di)
-            workers[di]->submit([this, di, p0, T, &errs] {
+            workers[di]->submit([this, di, p0, T, step, &errs] {
                 std::string e;
-                if (!run_dev((int) di, p0, T, wplan, e)) errs[di] = e.empty() ? "a device's thread failed" : e;
+                if (!run_dev((int) di, p0, T, wplan, e, step)) errs[di] = e.empty() ? "a device's thread failed" : e;
             });
         for (auto& w : workers) w->wait();
         for (const std::string& e : errs)
@@ -9451,7 +9452,7 @@ struct Model::Impl {
         return x;
     }
 
-    bool run_dev(int di, int64_t p0, int T, const WinPlan& wp, std::string& err) {
+    bool run_dev(int di, int64_t p0, int T, const WinPlan& wp, std::string& err, const StepRows* step = nullptr) {
         Dev& d = devs[(size_t) di];
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
@@ -9483,6 +9484,36 @@ struct Model::Impl {
                 if (L[(size_t) sr.layer].grp == L0.grp) continue;
                 const int64_t g_first = p0 / sr.ratio;
                 const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
+                if (step != nullptr) {   // (a step: the rows its own positions completed, staged one a row)
+                    const int R = std::max(1, sr.ratio);
+                    Xfer x;
+                    int trow = 0;
+                    bool first = true;
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        if ((p + 1) % R != 0) continue;
+                        const int64_t row = p / R;
+                        if (x.n + 2 > 4) {
+                            xfer_get(x, sr.x_flag, wp.win, s);
+                            x = Xfer{};
+                            first = false;
+                        }
+                        if (sr.ckv[(size_t) di] != nullptr) {
+                            x.src[x.n] = sr.x_stage + (size_t) trow * ckv_rb();
+                            x.dst[x.n] = sr.ckv[(size_t) di] + ckv_at(sr, row, step->seq[t]);
+                            x.bytes[x.n++] = ckv_rb();
+                        }
+                        if (sr.ik[(size_t) di] != nullptr) {
+                            x.src[x.n] = sr.x_stage + x_cap() * ckv_rb() + (size_t) trow * ik_rb();
+                            x.dst[x.n] = sr.ik[(size_t) di] + ik_at(sr, row, step->seq[t]);
+                            x.bytes[x.n++] = ik_rb();
+                        }
+                        ++trow;
+                    }
+                    if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, s);
+                    else if (first) wait_flags(sr.x_flag, 1, 32, wp.win, s);
+                    continue;
+                }
                 if (ng == 0) continue;
                 Xfer x;
                 if (sr.ckv[(size_t) di] != nullptr) {
@@ -9498,7 +9529,7 @@ struct Model::Impl {
                 if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, s);
             }
             if (mi == 0 && !tap(d, il, T, err)) return false;
-            if (!layer(L0, mi, p0, T, wp, err)) return false;
+            if (!layer(L0, mi, p0, T, wp, err, step)) return false;
             if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, il, p0, T);
             const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
             if (last && mi == 0 && il + 1 < g.nl) xfer_put(hand_xfer(d.hand, d, T, true), d.hand_flag, wp.win, d.xcnt, s);
@@ -9530,7 +9561,9 @@ struct Model::Impl {
 
     // layer L0 for the window, as group member mi (its share of the heads, of the output projection and of the FFNs;
     // the partial sums all-reduced across the group)
-    bool layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err) {
+    bool layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err,
+               const StepRows* step = nullptr) {
+        (void) step;   // (M2's step on this path: the row per-position work is the next piece - see DSV41_HANDOFF.md)
         Layer& l = member(L0, mi);
         Dev& d = devs[(size_t) l.dev];
         cudaSetDevice(d.id);
