@@ -103,6 +103,9 @@
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
 #endif
+#if defined(STRATA_HAVE_GFX1201_NVFP4)
+#include "strata/program/nvfp4_generate.hpp"
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -2410,6 +2413,35 @@ int main(int argc, char** argv) {
         }
         if (qwen35) return strata::qwen35::run(argc, argv);
         break;
+    }
+#endif
+#if defined(STRATA_HAVE_GFX1201_NVFP4)
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--gfx1201-nvfp4") == 0 || std::strcmp(argv[i], "--nvfp4") == 0 ||
+            std::strcmp(argv[i], "--safetensors") == 0) {
+            return strata::program::run_nvfp4(argc, argv);
+        }
+        if ((std::strcmp(argv[i], "--native") == 0 || std::strcmp(argv[i], "--model") == 0 ||
+             std::strcmp(argv[i], "--pack") == 0) &&
+            i + 1 < argc) {
+            std::error_code ec;
+            const std::filesystem::path p(argv[i + 1]);
+            if (p.extension() == ".safetensors") {
+                return strata::program::run_nvfp4(argc, argv);
+            }
+            if (std::filesystem::is_directory(p, ec)) {
+                bool has_safetensors = false;
+                bool has_gguf = false;
+                for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+                    const auto ext = entry.path().extension();
+                    if (ext == ".safetensors") has_safetensors = true;
+                    if (ext == ".gguf") has_gguf = true;
+                }
+                if (has_safetensors && !has_gguf) {
+                    return strata::program::run_nvfp4(argc, argv);
+                }
+            }
+        }
     }
 #endif
 #if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
