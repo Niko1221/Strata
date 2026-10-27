@@ -6011,8 +6011,8 @@ struct Model::Impl {
                      all / 1e9, nr, (now_ms() - t0) / 1000.0);
         return true;
     }
-    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by a worker a range of a file, each a
-    // reader filling one of its two arenas while its mover hands out the other's pieces
+    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by one reader for all files (DS4_STREAM_RANGES:
+    // a reader a range of a file), each filling one of its two arenas while its mover hands out the other's pieces
     bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
         std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
             return a.file != b.file ? a.file < b.file : a.off < b.off;
@@ -6020,7 +6020,7 @@ struct Model::Impl {
         const uint64_t A = os::kDirectAlign;
         const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 64.0f)) << 20;
         const int forced = (int) env_f("DS4_STREAM_WORKERS", 0.0f);   // (N: N readers sharing every chunk, for tests)
-        const int most = std::max(1, (int) env_f("DS4_STREAM_RANGES", 4.0f));   // a file's readers at most (1: one a file)
+        const int most = (int) env_f("DS4_STREAM_RANGES", 0.0f);   // N: the files split, at most N readers a file (1: one a file)
         constexpr uint64_t kGap = 16ull << 20;   // a gap up to this is read through, so a tensor's pieces stay one stream
         struct Chunk {
             int file;
@@ -6057,9 +6057,10 @@ struct Model::Impl {
             std::mutex mu;
             std::condition_variable cv;
         };
-        // a reader a range, front to back: each file cut into ranges of about the smallest file's bytes
+        // a reader a range, front to back: one over all files, or (DS4_STREAM_RANGES) ranges of about the smallest file's bytes
         std::vector<std::pair<size_t, size_t>> rng;   // a reader's chunks [first, last) (chunks run in file order)
-        if (forced <= 0) {
+        if (forced <= 0 && most <= 0 && !chunks.empty()) rng.push_back({0, chunks.size()});
+        if (forced <= 0 && most > 0) {
             std::vector<std::pair<size_t, size_t>> fch;
             std::vector<uint64_t> fb;
             for (size_t c = 0; c < chunks.size(); ++c) {
@@ -6170,10 +6171,11 @@ struct Model::Impl {
         for (Worker& w : ws)
             for (Arena& x : w.a)
                 if (x.p != nullptr) cudaFreeHost(x.p);
-        std::fprintf(stderr, "ds4: the experts streamed: %.1f GB in %zu reads of up to %llu MB (%d readers, %s, unbuffered) "
+        std::fprintf(stderr, "ds4: the experts streamed: %.1f GB in %zu reads of up to %llu MB (%d reader%s, %s, unbuffered) "
                              "in %.1f s, %.1f GB to RAM, %.1f GB to VRAM\n",
-                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw,
-                     forced > 0 ? "sharing the chunks" : "a range each", (now_ms() - t0) / 1000.0, to_ram / 1e9, to_vram / 1e9);
+                     bytes / 1e9, chunks.size(), (unsigned long long) (cs >> 20), nw, nw == 1 ? "" : "s",
+                     forced > 0 ? "sharing the chunks" : most > 0 ? "a range each" : "the files in order",
+                     (now_ms() - t0) / 1000.0, to_ram / 1e9, to_vram / 1e9);
         if (bad.load())
             err = ok ? "streaming the experts from the model's files failed" : "no pinned memory for the experts' stream";
         return !bad.load();
