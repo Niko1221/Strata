@@ -419,3 +419,16 @@ with the flow off it is the same code at the same speed and the same tokens.
 The flow itself is the next investigation: `flow_layer`/`flow_pump` and the per-row branch's longer kernel sequence
 (the pump runs while the stream is busy; a step's extra per-row launches can leave the staging ring waiting for a
 pump the host never issues).
+
+
+**Where the flow stops on a per-row run (2026-10-27 15:35-15:45).**  Print-bisection with the flow on puts the stop
+inside `flow_layer`: the last print is its entry for layer 1, and the per-row branch's prints before it (the four
+branch points and the attention) are all there; layer 2's prints never come, and the flow's own wait-loop print never
+fires either.  That is consistent with the block being the `cudaEventSynchronize(c.stage_ev[...])` in `flow_layer`'s
+"not all of the batch landed" branch: it is reached before the 1 s print can happen, and it waits on a staging event
+that `flow_pump` never records because the pump stopped earlier on an item whose layer-cache hand-off (`after`/`keep`)
+has not landed.  With `DS4_FLOW=0` the same prompt runs (1991 ms against 1993 ms, the same tokens), so the guard
+`run_dev_chunks` puts on a step's run (batch streaming instead of the flow) is the right default until the flow's
+layer cache can keep a step's rows.  gdb cannot attach on this box - the container blocks ptrace ("ptrace:
+Inappropriate ioctl for device"), even with gdb installed and through sudo - so the flow has to be bisected with
+prints.  (At 96 tokens the flow is also slower than the batch path: 760 ms against 665 ms of prompt read.)
