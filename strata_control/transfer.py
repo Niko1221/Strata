@@ -15,12 +15,19 @@ import hashlib
 import http.client
 import ipaddress
 import os
+import re
 import threading
+import email.utils
+import datetime as _dt
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable
+
+from strata_control import tls
+
+tls.install()      # #3722: the operating system's certificates, like the browser
 
 CHUNK = 1 << 20
 SMALL_LIMIT = 8 << 20
@@ -131,15 +138,53 @@ _opener = urllib.request.build_opener(_PolicyRedirects)
 _USER_AGENT = "strata-updater/1"
 
 
+_SERVER_DATE: list = []
+
+
+def server_date():
+    """The time the update server named in the `Date` header of its last answer (a timezone-aware datetime), or None. It lets a feed that
+    looks expired be told from a PC whose clock is wrong."""
+    return _SERVER_DATE[-1] if _SERVER_DATE else None
+
+
+def _remember_date(response) -> None:
+    try:
+        parsed = email.utils.parsedate_to_datetime(response.headers.get("Date") or "")
+        if parsed is not None:
+            _SERVER_DATE[:] = [parsed if parsed.tzinfo else parsed.replace(tzinfo=_dt.timezone.utc)]
+    except (TypeError, ValueError):
+        pass
+
+
+FIRST_TRY_SECONDS = 12.0
+
+
+def _open_small(request, timeout: float, limit: int) -> bytes:
+    with _opener.open(request, timeout=timeout) as response:
+        _remember_date(response)
+        return response.read(limit + 1)
+
+
 def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) -> bytes:
-    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated."""
+    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated.
+    A web address gets one more try when the first one times out or the connection fails: about one request in 25 to github.com hung for the whole
+    timeout on a PC whose next 24 answered in half a second (measured on a 3060 PC: the first-run card said "offline" a moment before the install's
+    own read worked). The first try therefore waits at most 12 s; the second the full `timeout`."""
     kind = kind_of(location)
+    _SERVER_DATE.clear()                                 # only the answer of this read counts
     try:
         if kind in ("http", "https"):
             check_url_policy(location)
             request = urllib.request.Request(location, headers={"User-Agent": _USER_AGENT, "Cache-Control": "no-cache"})
-            with _opener.open(request, timeout=timeout) as response:
-                data = response.read(limit + 1)
+            try:
+                data = _open_small(request, min(timeout, FIRST_TRY_SECONDS), limit)
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, OSError, TimeoutError) as first:
+                if tls.is_certificate_error(first):
+                    raise
+                _SERVER_DATE.clear()
+                data = _open_small(request, timeout, limit)
         else:
             path = _local_path(location)
             if path.stat().st_size > limit:
@@ -151,7 +196,10 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) 
         raise TransferError(f"the update server answered {exc.code} for {location}") from None
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason})") from None
+        hint = ""
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location))) from None
+        raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason}){hint}") from None
     if len(data) > limit:
         raise TransferError(f"{location} is larger than {limit} bytes")
     return data
@@ -202,8 +250,11 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                 headers["Range"] = f"bytes={have}-"
             request = urllib.request.Request(location, headers=headers)
             with _opener.open(request, timeout=timeout) as response:
-                if have and response.status != 206:
-                    have = done = 0                          # the server ignored the range: start over, never append to a prefix
+                if have and not _resumes_at(response, have, size):
+                    if response.status == 206:               # another range: its bytes are not the file's, ask again from the start
+                        partial.unlink(missing_ok=True)
+                        return _transfer(location, partial, 0, size, progress, cancel, timeout)
+                    have = done = 0                          # the server ignored the range and sent the whole file: start over, never append to a prefix
                 _copy(response, partial, "wb" if not have else "ab", done, size, progress, cancel)
         else:
             path = _local_path(location)
@@ -219,11 +270,24 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                                 resumable=False) from None
         raise TransferError(f"the update server answered {exc.code} for {location}") from None
     except (urllib.error.URLError, OSError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location)), resumable=True) from None
         got = partial.stat().st_size if partial.exists() else 0
         reason = getattr(exc, "reason", exc)
         raise TransferError(f"the download of {location} was interrupted after {got} of {size} bytes "
                             f"({type(exc).__name__}: {reason}); the partial file is kept and the next try resumes it",
                             resumable=True) from None
+
+
+_CONTENT_RANGE = re.compile(r"\s*bytes (\d+)-(\d+)/(\d+|\*)\s*$")
+
+
+def _resumes_at(response, have: int, size: int) -> bool:
+    """Whether a resumed answer is a 206 whose Content-Range starts at byte `have` of a file of `size` bytes."""
+    if response.status != 206:
+        return False
+    m = _CONTENT_RANGE.match(response.headers.get("Content-Range") or "")
+    return bool(m) and int(m.group(1)) == have and (m.group(3) == "*" or int(m.group(3)) == size)
 
 
 def _copy(source, partial: Path, mode: str, done: int, size: int, progress, cancel) -> None:

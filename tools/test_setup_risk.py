@@ -238,7 +238,7 @@ class LowRamGpus(unittest.TestCase):
     def test_asked_and_answered_two(self):
         ram, found = PROFILES["32GB-2x24GB"]
         code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                        answers={"Which GPUs?": "2", "Low-RAM mode: which GPUs?": "2"})     # the split asked for (the default is the largest card + RAM)
+                                        answers={"Low-RAM mode: which GPUs?": "2"})     # the roles are the default (Main last); the low-RAM question still defaults to one card
         self.assertEqual(code, 0, out)
         self.assertTrue(any("Low-RAM mode: which GPUs? [1]" in q for q in asked), asked)
         self.assertEqual(cfg["gpu"], [0, 1])
@@ -276,7 +276,7 @@ class LowRamGpus(unittest.TestCase):
         ram, found = PROFILES["32GB-2x24GB"]
         with mock.patch.object(setup, "MIN_ENGINE", setup.RESIDENT_SPLIT_ENGINE):
             code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                            answers={"Which GPUs?": "2"})          # the split chosen (the default is the largest card + RAM)
+                                            answers={"Use these roles?": "y"})     # the recommended roles: Main 0 (last), Helper 1
             self.assertEqual(code, 0, out)
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-experts", cfg["args"])
@@ -401,11 +401,12 @@ class SplitShortCard(unittest.TestCase):
         eights = [card(i, "NVIDIA GeForce RTX 3070", 8.0, "86") for i in range(2)]
         self.assertEqual(setup.split_short(eights), [])                   # neither card alone reads more
 
-    def test_yes_takes_the_first_card(self):
+    def test_yes_takes_the_recommended_roles(self):
+        """The 10 GB card is above the 8 GB line, so it starts as a Helper (the owner's rule); the first card is Main and goes last."""
         code, out, cfg, _ = install(127.8, self.FOUND, ["--family", "qwen", "--model", "Q2_0", "--no-start"])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["gpu"], 0)
-        self.assertIn("too small to lend a split its prompt buffers", out)
+        self.assertEqual(cfg["gpu"], [1, 0])
+        self.assertEqual(cfg["gpu_roles"], {"0": "main", "1": "helper"})
 
     def test_named_pair_is_kept(self):
         code, out, cfg, _ = install(127.8, self.FOUND, ["--family", "qwen", "--model", "Q2_0", "--no-start",

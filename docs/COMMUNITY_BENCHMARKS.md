@@ -3,9 +3,14 @@
 Share measurements from your own hardware so other users can judge how Strata
 might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
-The quickest way is the built-in benchmark: [`BENCH.bat` / `./bench.sh`](#run-the-benchmark) writes a report in this format.
+There are two ways to measure. For results other people can compare with, run the **standard benchmark**: `strata bench run`
+follows the draft protocol in [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md) (fixed prompts, thinking on, the model card's
+sampling, twelve sanity checks, about 2 to 4 minutes after the model has loaded on a fast card, more on a slow one) and writes `results.json` with
+the hardware, versions and every request. For a quick look at your own machine, [`BENCH.bat` / `./bench.sh`](#run-the-benchmark)
+takes 3 to 10 minutes and writes a report in the format below.
 
-A standard benchmark protocol for future submissions exists only as a **draft**: [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md). The tools described on this page do not implement it, and the reports below are not standard results; keep using this guide for now.
+The protocol is still a draft until a pilot has run on two kinds of hardware. The reports listed below were made before
+it existed and are not standard results; they stay valid under this guide.
 
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
@@ -69,12 +74,31 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+## Run the standard benchmark
+
+```sh
+strata bench run --profile NAME --track default --track-notes "release 0.2.1, setup defaults"
+strata bench run --url http://127.0.0.1:8080          # a server that is already running
+```
+
+With `--profile` the command starts that profile's engine, waits for the model, runs the protocol and stops the engine. With `--url`
+it uses the server that is running. Start from a freshly loaded engine and close other programs that use the GPU: the
+protocol counts a second run against the same engine as reuse of the cache and marks it `nonconforming`. The command prints a
+summary when it ends and writes a folder `<date>-standard-<gpu>-<run id>` with `README.md`, `results.json`, `outputs.jsonl`,
+the settings, the chat template and, when it started the engine, the engine log. `strata bench report FOLDER` shows it again.
+
+A run is `complete`, `partial` (something was skipped or cancelled) or `nonconforming` (for example a remote server, a missing
+commit or model hash, or reused prompt text). A complete run can still fail sanity checks; low scores and slow hardware are valid
+results. The runner does not know the quantization repository's revision, the original weights' revision or what else ran on the
+machine: pass `--model-revision`, `--source-revision` and `--background`, or the result says `null` with a reason. To share
+a result, follow [Submit and review](BENCHMARK_PROTOCOL.md#submit-and-review) in the protocol, not the pull request steps below.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
 `python tools/strata_bench.py` from the Strata folder. Setup also offers it at the end of an interactive install
-(default no). The Terminal's `strata bench run` ([TERMINAL.md](TERMINAL.md)) is a different tool: it measures serving suites and
-writes JSON evidence for your own comparisons, but not the `README.md` report in this format and not the draft standard protocol.
+(default no). The Terminal's `strata bench run` runs the standard benchmark (next section); its `--suite serving-smoke` and
+other serving suites ([TERMINAL.md](TERMINAL.md)) write JSON evidence for your own comparisons, not a report in this format.
 
 It starts the model with the settings you already have (the newest `strata-*.json`; `--config FILE` picks another one),
 or uses a Strata server that is already running on that port (`--url http://127.0.0.1:8080` for another address). It then

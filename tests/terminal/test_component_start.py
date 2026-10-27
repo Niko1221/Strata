@@ -202,6 +202,23 @@ class ComponentStart(unittest.TestCase):
             server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda"})
         self.assertEqual(caught.exception.code, 5)
 
+    def test_a_picture_reader_path_from_an_older_engine_folder_follows_the_installed_package(self):
+        """After an engine update the folder name changes; the run config's absolute vision exe must not stop the server."""
+        from serve import server
+        folder = install_fake_engine(self.components)
+        reader = folder / "strata-vision"
+        reader.write_text("x", encoding="utf-8")
+        gone = str(self.components / "engine" / "0.0.1-old" / "strata-vision")
+        cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda",
+                                            "vision": {"exe": gone, "cpu_exe": gone, "mmproj": "/m.gguf"}})
+        self.assertEqual(cfg["vision"]["exe"], str(reader))
+        self.assertEqual(cfg["vision"]["cpu_exe"], str(reader))
+        self.assertEqual(cfg["vision"]["mmproj"], "/m.gguf")
+        ok = {"exe": "component:strata-engine", "backend": "cuda", "vision": {"exe": str(reader)}}
+        self.assertEqual(server.with_component_engine(ok)["vision"], {"exe": str(reader)})
+        none = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "vision": {"exe": gone.replace("strata-vision", "other")}})
+        self.assertTrue(none["vision"]["exe"].endswith("other"))        # no such file in the package: left as it is
+
     def test_the_build_json_lib_dirs_follow_the_package_folder(self):
         """The Windows HIP package keeps the ROCm DLLs in rocm/bin (BUILD.json lib_dirs): strata.exe does not load without them on PATH."""
         from serve import server

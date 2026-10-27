@@ -24,6 +24,8 @@ The result goes to bench/results/<date>-community-<gpu>-<model>/ : README.md in 
 docs/COMMUNITY_BENCHMARKS.md, results.json (every request) and an engine log excerpt.  Home folders, user and host names,
 IP addresses and API keys are replaced by placeholders before anything is written; read it once before you share it.
 `--compare <older results folder>` prints the two side by side.  Standard library only.
+This is the quick speed check, not the standard benchmark: `strata bench run` follows docs/BENCHMARK_PROTOCOL.md (fixed prompts, thinking on,
+the model card sampling, twelve sanity checks) and writes results other people can compare with.
 """
 from __future__ import annotations
 
@@ -973,7 +975,8 @@ def main(argv=None) -> int:
     if a.url:
         base = a.url.rstrip("/")
     else:
-        base = server_base(cfg.get("host"), a.port or int(cfg.get("port", 8080)))
+        port = a.port or int(cfg.get("port", 8080))
+        base = server_base(cfg.get("host"), port)
     red = redactor(key=key)
     started = False
     try:
@@ -1027,6 +1030,7 @@ def main(argv=None) -> int:
         say(f"\nReport: {shown / 'README.md'}\nShare it: open a pull request that adds the folder {shown} (see docs/COMMUNITY_BENCHMARKS.md), "
             f"or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; "
             f"read it once before you share it.")
+        say("For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).")
         return 1 if out["failures"] and not any(out[k] for k in ("chat", "prompts", "agent")) else 0
     finally:
         if started:

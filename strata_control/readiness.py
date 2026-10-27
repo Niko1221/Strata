@@ -46,6 +46,8 @@ def _credential(source_bytes: bytes) -> str | None:
     if not isinstance(cfg, dict):
         raise ValueError("run config must be an object")
     raw = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
+    if str(raw).strip().lower() == "none":               # "api_key": "none" = served without a key on purpose
+        return None
     keys = key_list(api_key_of(raw))
     return keys[0] if keys else None
 
