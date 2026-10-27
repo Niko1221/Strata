@@ -209,6 +209,33 @@ class Structured(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parents[1]))
         self.assertEqual(r.returncode, 0)
 
+    def test_a_read_beat_reaches_the_client_before_the_answer(self):
+        # openai_chunks sends an empty delta every PREFILL_BEAT_S while a long prompt is read; the validation holds the
+        # answer back, but the beat carries nothing to validate and must go out at once (buffered, the read was silent
+        # to a client that counts events, not SSE comments)
+        from serve.server import structured_chunks
+
+        def chunk(delta, finish=None):
+            return {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+
+        sent = []
+
+        def engine():
+            yield chunk({"role": "assistant", "content": ""})
+            yield chunk({})                                # the read's beat
+            self.assertEqual(sent, [chunk({})])            # out before the next chunk is even made
+            yield chunk({"content": '{"a": 1}'})
+            yield {**chunk({}, "stop"), "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        accept = mock.Mock(iter_errors=lambda value: iter(()))   # (any object is valid: the beat is the point)
+        for c in structured_chunks(engine(), accept):
+            sent.append(c)
+        data = [c for c in sent if c is not None]
+        self.assertEqual(data[0], chunk({}))
+        self.assertEqual(json.loads(data[2]["choices"][0]["delta"]["content"]), {"a": 1})
+        self.assertEqual(data[-1]["choices"][0]["finish_reason"], "stop")
+
 
 if __name__ == "__main__":
     unittest.main()

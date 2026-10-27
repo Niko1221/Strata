@@ -5893,6 +5893,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 # is a real event it can count, and every OpenAI client ignores it.
                 beat = time.monotonic()
                 yield chunk({})
+            else:
+                yield None                         # the SSE comment between two beats, as before
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
@@ -5978,25 +5980,32 @@ def openai_collect(chunks) -> dict:
     return out
 
 
+def _empty_delta(chunk) -> bool:
+    """An OpenAI chunk that says nothing: no content, no role, no tool call, no finish, no MCP or progress field."""
+    choices = chunk.get("choices")
+    return (isinstance(choices, list) and len(choices) == 1 and choices[0].get("delta") == {}
+            and choices[0].get("finish_reason") is None and "strata_mcp" not in chunk and "prompt_progress" not in chunk)
+
+
 def structured_chunks(chunks, validator):
     """Buffer structured streams so a client never receives unvalidated content."""
     buffered = []
     heartbeat = time.monotonic()
-    event_beat = time.monotonic()
     try:
         for chunk in chunks:
+            if chunk is not None and _empty_delta(chunk):
+                # openai_chunks' beat while a long prompt is read (PREFILL_BEAT_S): it carries nothing to validate, and
+                # a client that counts events (not SSE comments) needs it now - buffered, it reached the client only
+                # after the answer, so the read was silent to that client
+                heartbeat = time.monotonic()
+                yield chunk
+                continue
             progress = chunk is not None and "prompt_progress" in chunk
             if chunk is not None and not progress:
                 buffered.append(chunk)      # a progress chunk carries no content: there is nothing in it to validate
             if chunk is None or progress or time.monotonic() - heartbeat >= 1:
                 heartbeat = time.monotonic()
-                if chunk is None and buffered and time.monotonic() - event_beat >= PREFILL_BEAT_S:
-                    # a ping while a long prompt is read: the validation holds content back, but a client that counts
-                    # events (not SSE comments) still needs one now and then - an empty delta carries nothing to validate
-                    event_beat = time.monotonic()
-                    yield {**buffered[0], "choices": [{"index": 0, "delta": {}, "finish_reason": None}]}
-                else:
-                    yield chunk if progress else None
+                yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])

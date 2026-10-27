@@ -737,7 +737,18 @@ each:
 | dialect | first byte | comments | real events | largest gap |
 |---|---:|---:|---:|---:|
 | `/v1/messages` | 0.1 s | 422 | 5 pings + 18 data | 10.0 s |
-| `/v1/chat/completions` + json_schema | 10.2 s (a queue wait) | 6 | 4 data | - |
+| `/v1/chat/completions` + json_schema | 0.1 s | 414 | **5 beats at 10.2/15.2/20.2/25.2/30.2 s** | **10.2 s** |
+
+(The structured row first read "0.0 s" because the beats were *buffered*: `0e16735` had dropped `openai_chunks`' `yield
+None`, so `structured_chunks` never saw a ping and the empty deltas it did get were held for validation until the answer
+came out in one burst.  `structured-beat.patch` restores the comment between beats and lets an empty delta through
+untouched - `_empty_delta` - which is what the 5 beats above measure.  The same regression broke
+`serve/test_queue_keepalive.py`, which is not part of `serve.test_server`; both modules pass now (11 tests, 3 tests).)
+
+**Seat-yield (`.step29`, 00:07).**  A solo read that gives way had its half-read state in the *solo* seat while the flag
+protected the seat the server reserved: the two are now swapped at the yield, so the request comes back to its own state
+(`seat-yield.patch`).  Re-run of the 40K promotion scenario: A 94.8 s (92.5 s before the fix, 184.3 s before the seat
+map), and the `seat 0 took seat 2's conversation` line is gone - the resume finds its state where it left it.
 
 (The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
 request.)  Both changes are in commit `0e16735`'s follow-up.  The structured row's "largest gap" measured 0.0 s - the

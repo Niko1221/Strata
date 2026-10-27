@@ -1437,7 +1437,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // prompt again and this read goes on from there - never from 0, so a long prompt cannot be starved
             const int ys = in.byield.load();
             in.byield.store(-1);
-            if (ys >= 0 && (size_t) ys < yielded.size()) yielded[(size_t) ys] = 1;   // (its half-read state is its own)
+            if (ys >= 0 && (size_t) ys < yielded.size()) {
+                // the half-read state goes to the seat the server reserved for it: a solo read's sits in the solo
+                // seat, and the request comes back with BGEN ys - the flag must protect the seat that holds it (the
+                // reserved seat is free, so what it held moves to the solo seat, kept)
+                if (live && ys != read_seq) std::swap(phys[(size_t) ys], phys[(size_t) read_seq]);
+                yielded[(size_t) ys] = 1;
+            }
             std::fprintf(stderr, "ds4 serve: the prompt read gave way after %lld of %zu tokens (slot %d, %.0f ms)\n",
                          (long long) gave_way, total, ys, now_ms() - t0);
             std::printf("YIELDED %d %lld\n", ys, (long long) gave_way);
