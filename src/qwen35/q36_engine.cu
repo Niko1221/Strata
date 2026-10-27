@@ -2822,8 +2822,20 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer& L : m.layers) main_need += L.stride * (size_t) ne + kMmqTail;
     const size_t slack = ((size_t) 512 << 20) + (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // reserve + scores
     const bool mtp_cpu_ok = m.has_mtp && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr;
+    // In the hybrid mode the decode waits on the CPU pool, not on the dense 1-4 column GEMVs the packed Q8_0 copies
+    // speed up: on a 16 GB RTX 4080 SUPER (UD-Q4_K_XL) they hold 1.78 GiB that buys 26 more expert slots a layer
+    // (66 -> 92 of 256 at 8192 cells), which measured 47.8 against 44.7 tok/s decode and 1,265 against 1,251 tok/s
+    // prompt (32768 cells: 46.9 against 45.0, slots 50 -> 76).  So they are given back there too, when the experts
+    // stay hybrid and the slots are the scarce thing (fewer than a third of the experts fit with them): a card that
+    // holds most of the experts keeps them, where the dense GEMVs are what the decode waits on.
+    // STRATA_Q36_KEEP_PACKED=1 keeps them either way.
+    const size_t staging_est = E.use_mmq ? 2 * (max_layer + kMmqTail) : 0;
+    const size_t room_before = budget > staging_est ? budget - staging_est : 0;
+    const bool packed_makes_it_fit = total <= budget + packed_bytes ||
+                                     (mtp_cpu_ok && main_need <= budget + packed_bytes + slack);
+    const bool slots_scarce = room_before / per_slot < (size_t) ne / 3;
     if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 &&
-        (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack)) &&
+        (packed_makes_it_fit || slots_scarce) &&
         std::getenv("STRATA_Q36_KEEP_PACKED") == nullptr) {
         CK(cudaDeviceSynchronize());
         for (const auto& pk : m.packed) {
@@ -2833,9 +2845,11 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         m.packed.clear();
         E.reset_graphs();
         CK(cudaMemGetInfo(&fr, &tot));
-        std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
-                     "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
-                     (double) packed_bytes / (1 << 30));
+        std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back %s "
+                     "(STRATA_Q36_KEEP_PACKED=1 keeps them)\n",
+                     (double) packed_bytes / (1 << 30),
+                     packed_makes_it_fit ? "so that every routed expert fits in VRAM"
+                                         : "to the expert slots: the hybrid mode's decode waits on the CPU pool");
     }
     size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
     // the MAIN layers' experts fit, the MTP block's not all (UD-Q6_K_XL on 32 GB): the main layers all in VRAM - the
