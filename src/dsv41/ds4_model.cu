@@ -1952,6 +1952,7 @@ struct Model::Impl {
             if (ram_pinned || (i < zc_chunk.size() && zc_chunk[i] == 1)) (void) cudaHostUnregister(ram_chunks[i]);
             os::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
         }
+        if (staged != nullptr) os::anon_free(staged, staged_bytes);
         for (size_t di = 0; di < prof_pool.size(); ++di) {
             if (cudaSetDevice((int) di) != cudaSuccess) continue;
             for (cudaEvent_t e : prof_pool[di]) (void) cudaEventDestroy(e);
@@ -5943,7 +5944,8 @@ struct Model::Impl {
     };
     std::vector<StreamPiece> st_vram;   // (DS4_COPY_STREAM) VRAM experts' pieces, streamed with the copy's
     std::vector<StreamPiece> st_dense;   // (defer) the dense weights' ranges, streamed with the experts' into staged
-    std::unique_ptr<uint8_t[]> staged;   // (defer) the dense weights' bytes, until their fills ran
+    uint8_t* staged = nullptr;   // (defer) the dense weights' bytes, on huge pages like the copy's arena, until filled
+    size_t staged_bytes = 0;
     std::vector<Pack::Held> staged_at;   // (defer) where each range of them lies in staged
     // the held fills' ranges merged, one buffer for them that the stream fills
     bool stage_dense(std::string& err) {
@@ -5958,15 +5960,16 @@ struct Model::Impl {
         wants.clear();
         uint64_t all = 0;
         for (const Pack::Held& r : staged_at) all += r.n;
-        staged.reset(new (std::nothrow) uint8_t[all]);
+        staged = (uint8_t*) node_map(all, -1, 1);
+        staged_bytes = all;
         if (staged == nullptr) {
             err = "no memory to stage the dense weights (" + std::to_string(all >> 20) + " MiB)";
             return false;
         }
         uint64_t at = 0;
         for (Pack::Held& r : staged_at) {
-            r.p = staged.get() + at;
-            st_dense.push_back({r.file, r.off, r.n, staged.get() + at, -1});
+            r.p = staged + at;
+            st_dense.push_back({r.file, r.off, r.n, staged + at, -1});
             at += r.n;
         }
         return true;
@@ -5994,7 +5997,8 @@ struct Model::Impl {
             if (!f(errs.back())) break;
         for (auto& t : th) t.join();
         pk.held.clear();
-        staged.reset();
+        os::anon_free(staged, staged_bytes);
+        staged = nullptr;
         host_fills.clear();
         for (Dev& d : devs) d.fills.clear();
         defer = false;
