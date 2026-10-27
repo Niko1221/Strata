@@ -9377,13 +9377,14 @@ struct Model::Impl {
             return false;
         }
         for (int t = 0; t < T; ++t) seqs[(size_t) rows.seq[t]].slot_held = false;   // (their states grow now)
-        // (DS4_STEPCHECK=1: the shape of every pass - how many rows, where each stands, in which sequence)
-        if (std::getenv("DS4_STEPCHECK") != nullptr) {
+        // (DS4_STEPCHECK: the shape of every pass - how many rows, where each stands, in which sequence, and the switch's
+        // own value, which the layer checks below read)
+        if (const char* chk = std::getenv("DS4_STEPCHECK")) {
             std::fprintf(stderr, "tr step T %d pos", T);
             for (int t = 0; t < T; ++t) std::fprintf(stderr, " %d", (int) rows.pos[t]);
             std::fprintf(stderr, " seq");
             for (int t = 0; t < T; ++t) std::fprintf(stderr, " %d", rows.seq[t]);
-            std::fprintf(stderr, "\n");
+            std::fprintf(stderr, " check %s\n", chk);
         }
         // the Engram rows: each row its own sequence's tokens (asked for now, collected before its layer)
         const double te = now_ms();
@@ -9407,6 +9408,8 @@ struct Model::Impl {
         if (std::getenv("DS4_STEP_SYNCROUTE") != nullptr) wplan.async = false;
         prof_window = prof_on && T == 1;
         n_logits = T;   // (every row's logits: the serve loop samples one a row)
+        if (std::getenv("DS4_STEPCHECK") != nullptr)
+            std::fprintf(stderr, "tr step path par %d serial %d\n", (int) (par && !step_serial), (int) step_serial);
         const double tl = now_ms();
         if (par && !step_serial) {
             if (!forward_par(0, T, err, &rows)) return false;
@@ -9464,6 +9467,26 @@ struct Model::Impl {
             }
             if (!tap(devs[(size_t) l.dev], il, T, err)) return false;
             if (!layer(l, 0, p0, T, wplan, err, step)) return false;
+            if (step != nullptr) {   // (DS4_STEPCHECK >= 2: a hash of row 0's h after every layer - two runs compared)
+                static const int sc = std::getenv("DS4_STEPCHECK") ? std::atoi(std::getenv("DS4_STEPCHECK")) : 0;
+                if (sc >= 2) {
+                    Dev& dd = devs[(size_t) l.dev];
+                    std::vector<float> hv((size_t) H * D);
+                    cudaSetDevice(dd.id);
+                    CK(cudaMemcpyAsync(hv.data(), dd.h, hv.size() * 4, cudaMemcpyDeviceToHost, dd.st));
+                    CK(cudaStreamSynchronize(dd.st));
+                    unsigned long long hs = 1469598103934665603ull;
+                    double sum = 0.0;
+                    for (float v : hv) {
+                        unsigned u = 0;
+                        std::memcpy(&u, &v, 4);
+                        hs = (hs ^ u) * 1099511628211ull;
+                        sum += (double) v;
+                    }
+                    std::fprintf(stderr, "tr shash dev %d il %d %016llx %.9g %.9g %.9g\n", l.dev, il, hs, hv[0], hv[1],
+                                 sum);
+                }
+            }
             if (dump_h != nullptr) {   // DS4_DUMP_H: every layer's residual stream, for tools/ds4/compare.py --layers
                 Dev& dd = devs[(size_t) l.dev];
                 std::vector<float> hv((size_t) T * H * D);
@@ -9528,6 +9551,7 @@ struct Model::Impl {
         // >= 2: rows 0 and 2 of a pass with the same prompt must stay bit-identical - the first layer and device where
         // they are not is printed; >= 3: a hash of row 0's h after every layer, which compares two runs layer by layer)
         static const int step_check = std::getenv("DS4_STEPCHECK") != nullptr ? std::atoi(std::getenv("DS4_STEPCHECK")) : 0;
+        if (step_check > 0) std::fprintf(stderr, "tr dev %d run_dev T %d check %d win %u\n", di, T, step_check, wp.win);
         bool started = false;
         std::vector<char> got(srcs.size(), 0);
         for (int il = 0; il < g.nl; ++il) {

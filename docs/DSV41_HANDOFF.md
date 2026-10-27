@@ -592,28 +592,31 @@ Debug switches the hunt left behind, both off by default: `DS4_STEP_SERIAL=1` ru
 `DS4_STEPCHECK=1` prints every pass's shape (`tr step T <n> pos ... seq ...`) and checks that rows 0 and 2 of a pass
 with the same prompt stay bit-identical after every layer (it syncs a device a layer, so use it on short runs).
 
-**Still open at 20:00: it is the pass's row count, not the sequences - 8 rows are exact, 9 are not.**  Rounding out the
-picture with the race fix in: 2 slots exact (96 tokens, 59.9 tok/s against the bursts' 43.0); 8 slots exact (24 tokens
-of alternating prompts against a 4-slot burst reference, and 32 tokens of eight different prompts); 9, 12, 15 and 16
-slots all drift, at the same *token* (6 for prompt A, 13 for B - A's margin is thinner, the error is older), and a
+**Still open at 20:30: it is the pass's row count - and above 8 rows the drift starts as rounding, not as a bug.**
+Rounded out with the race fix in: 2 slots exact (96 tokens, 59.9 tok/s against the bursts' 43.0); 8 slots exact (24
+tokens of alternating prompts against a 4-slot burst reference, and 32 tokens of eight different prompts); 9, 12, 15
+and 16 slots drift, at the same *token* (6 for prompt A, 13 for B - A's margin is thinner, the error is older), and a
 9-slot run whose nine prompts are *identical* drifts the same way, so the error is the same for every row.  Ruled out
-one by one:
+one by one: the staged hand-off (`DS4_STEP_SERIAL=1` drifts the same), the routing mailbox (`DS4_STEP_SYNCROUTE=1`
+drifts the same), the sequence count (8 rows with `STRATA_DS4_NSEQ=10` matches exactly, so it is `T`), and a per-row
+region or ring misaddressed (rows 0 and 2 stay bit-identical after every layer, and every pass's shape is clean:
+`tr step T 9 pos 64 64 ... seq 0 1 ... 8`).
 
-* **the staged cross-group hand-off**: `DS4_STEP_SERIAL=1` (one thread, `replicate`, no staging) drifts at 9 rows
-  exactly as the threads' path does - it drifts at *8* rows, where the threads' path is clean, so the two paths fail at
-  different row counts with the same signature and the trigger is not "N rows in a pass";
-* **the routing mailbox**: `DS4_STEP_SYNCROUTE=1` (the route planned on the device, `wplan.async = false`, no service
-  thread) drifts identically;
-* **the sequence count**: 8 rows with `STRATA_DS4_NSEQ=10` forced (the 9-slot run's `nseq`) matches the reference
-  exactly, so it is `T`, the rows a pass carries, and not how many sequences the tables hold;
-* **a per-row region or ring misaddressed**: rows 0 and 2 of an alternating run stay bit-identical after *every* layer
-  (`DS4_STEPCHECK=2`), and the shape lines show clean passes (`tr step T 9 pos 64 64 ... seq 0 1 ... 8`).
+The per-layer hash of row 0 (`DS4_STEPCHECK=2`, `tr shash`, compared with `tools/dsv41/cmp_hash.py` /
+`work/cmp_num.py`) says what the difference *is*: in the very first pass, layers 0 through 12 agree to **1e-7** (the
+last bits of a float sum), and **layer 13 jumps to 1.2e-2** - nine orders of magnitude - then the rest of the run
+follows.  A jump of that shape is not a wrong tensor: it is a *discrete* decision flipping on a 1-ulp difference, and
+layer 13 is the first layer whose indexer's top-k has a tie close enough to be flipped by it (the indexer picks its
+compressed rows by score; a last-bit difference moves the cut).  Greedy decode then amplifies it into different
+tokens, which is why the divergence always looks total and early.
 
-Every per-pass buffer the step touches is `kWin` (16) wide, so a plain overflow is out; what is left is a kernel whose
-*behaviour* changes with T: the grouped expert pass (`moe_win_*`, whose entries are `T * 8` - 48 at 8 rows, 54 at 9),
-`hc_mix_split`, `head_share`'s slabs, or the answer path.  The instrumentation for the next step is the per-layer hash
-of row 0 that `DS4_STEPCHECK>=2` now prints (`tr hhash dev <d> il <l> <hash>`) - the two runs' logs compare layer by
-layer with `work/cmp_hash.py` - but the first attempt printed the shape lines and *no* hashes with `DS4_STEPCHECK=3`,
-i.e. the switch's value did not reach the engine the way it should have; the thing to add next is the *value* in the
-shape line (`tr step T .. check ..`), which closes that loop in one run.
+Where the 1-ulp comes from: the EXL3 GEMV is an MMA kernel with **n = 8** (`kTok = 8`, "activations a block takes at
+once (the MMA's n)"), and a job's activations are split into runs of exactly 8 (`units[nu++] = {j, c0, kTok}`): 8 rows
+are one unit, 9 rows are two (8 + 1) and take a different launch shape, i.e. a different reduction order over K for
+*every* column.  So the step's pass above 8 rows is the same computation with a different summation order - valid
+arithmetic, not a per-row defect - and it cannot be bit-identical to the single-token decode while the batch changes the
+kernel's shape.  Two ways forward, to choose deliberately: (a) slab the step's GEMV calls at 8 rows (`mv` with
+`ncol <= 8` in runs), which makes any T bit-identical to the decode at the cost of more launches per layer, or (b)
+accept batch-shape-dependent rounding, which is what every batched engine does - and then say so in the docs and stop
+comparing tokens at T > 8 (the 2- and 8-slot comparisons stay the exactness evidence).
 

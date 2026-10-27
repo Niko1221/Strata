@@ -1,23 +1,26 @@
-"""Compare two runs' per-layer row-0 h hashes (DS4_STEPCHECK=3): which layer and device first differ, and in which pass."""
+"""Compare two runs' per-layer row-0 h hashes: which layer and device first differ, and in which pass.
+
+Reads either prefix (`tr hhash` from run_dev, `tr shash` from forward_serial); a pass starts at a `tr step T` line.
+"""
 import sys
 
 
 def passes(path):
-    out = []
-    cur = None
+    out, cur = [], None
     for line in open(path, encoding="utf-8", errors="replace"):
         if line.startswith("tr step T "):
             cur = {}
             out.append(cur)
-        elif line.startswith("tr hhash ") and cur is not None:
+        elif (line.startswith("tr hhash ") or line.startswith("tr shash ")) and cur is not None:
             f = line.split()
-            cur[(int(f[2]), int(f[4]))] = f[5]
+            cur[(int(f[3]), int(f[5]))] = f[6]
     return out
 
 
 a = passes(sys.argv[1])
 b = passes(sys.argv[2])
 print("passes: %d vs %d" % (len(a), len(b)))
+shown = 0
 for i in range(min(len(a), len(b))):
     ka, kb = a[i], b[i]
     keys = sorted(set(ka) | set(kb))
@@ -25,7 +28,8 @@ for i in range(min(len(a), len(b))):
     if not diff:
         print("pass %d: %d layers, identical" % (i, len(keys)))
         continue
-    print("pass %d: first difference at dev %d il %d" % (i, diff[0][0], diff[0][1]))
-    print("   %d of %d (dev, layer) differ" % (len(diff), len(keys)))
-    print("   differing: %s%s" % (diff[:10], " ..." if len(diff) > 10 else ""))
-    break
+    print("pass %d: %d of %d layers differ; first dev %d il %d" % (i, len(diff), len(keys), diff[0][0], diff[0][1]))
+    print("   differing: %s%s" % (diff[:12], " ..." if len(diff) > 12 else ""))
+    shown += 1
+    if shown >= 4:
+        break
