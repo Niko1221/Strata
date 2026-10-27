@@ -4781,22 +4781,30 @@ class Service:
         """Task 4 (unload-works): one opportunistic pre-save pass for the idle queue - the dirty checkpoint
         reaches disk while the queue is quiet, before any unload is ever asked for.  Both gates are
         non-blocking: an engine not in memory (unloaded flag: True before the first start and after close(),
-        server.py:1108/1396 - getattr's default covers engines that carry no such flag) has nothing to
-        pre-stage, and a held FIFO means a live request or unload owns the engine: skip, never wait.  With
-        the FIFO grabbed the ladder's pre_save hook runs (its own quiet gate: cfg.pre_save_idle_s).  An
-        EngineDied found mid-save is logged and swallowed here - the thread polls forever and a dead engine
-        is the next request's to restart, exactly as start_idle_unload's loop reasons."""
+        server.py:1108/1396 - getattr's default covers engines that carry no such flag; and final review A's
+        other half: a died engine keeps that flag False while loaded() is False, so `not self.loaded()`
+        covers it too) has nothing to pre-stage, and a held FIFO means a live request or unload owns the
+        engine: skip, never wait.  Final review A (Recommendation 6) puts the LADDER's gates first:
+        SessionLadder.pre_save_due - quiet gate, dirty last-active session, refused-save cooldown - answers
+        as an engine-free question, and a not-due pass returns False without touching the FIFO at all; only a
+        due pass grabs it (still non-blocking) and runs pre_save, which re-evaluates its gates inside the
+        hold (the state only moves under the ladder lock, so the earlier read is harmless).  Returns the
+        ladder's outcome (final review A, honest results): True only when a save committed - every skip and
+        every refused attempt answers False.  An EngineDied found mid-save is logged and swallowed here - the
+        thread polls forever and a dead engine is the next request's to restart, exactly as start_idle_unload's
+        loop reasons."""
         ladder = self.session_ladder
         if ladder is None or not ladder.cfg.enabled:
             return False
-        if getattr(self.engine, "unloaded", False):
+        if getattr(self.engine, "unloaded", False) or not self.loaded():
             return False            # not started (or already gone): nothing in memory to pre-stage
         idle = time.time() - (self.last_request_at or self.started_at)
+        if not ladder.pre_save_due(idle):
+            return False            # not quiet, nothing dirty, or a refused save is cooling down
         if not self.fifo.acquire(blocking=False):
             return False            # a live request or unload owns the engine: skip, never wait
         try:
-            ladder.pre_save(self, idle)
-            return True
+            return ladder.pre_save(self, idle)
         except EngineDied as e:
             print(f"[strata] session pre-save: {e}", flush=True)
             return False

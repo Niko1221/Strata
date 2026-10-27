@@ -407,7 +407,9 @@ class PreSavePass(unittest.TestCase):
     """Task 4: Service.pre_save_pass - one opportunistic non-blocking pass: grab the FIFO (never wait), skip
     a busy queue and an engine not in memory, survive engine death mid-save, and park the dirty current
     session when the queue is free and quiet (cfg.pre_save_idle_s = 0 here: the quiet gate is Task 3's, the
-    pass's own gates - FIFO grab, engine state, engine trouble - are what these tests drive)."""
+    pass's own gates - FIFO grab, engine state, engine trouble - are what these tests drive).  Fix wave A
+    adds: the in-memory gate also covers a died engine (loaded() False, unloaded False), the ladder's gates
+    answer before the FIFO is touched, and a refused save arms a doubling retry cooldown."""
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -441,6 +443,71 @@ class PreSavePass(unittest.TestCase):
         self.assertEqual(self.engine.calls, [])            # ...nothing was recorded...
         self.assertTrue(self.svc.fifo.acquire(blocking=False))  # ...and the FIFO came back clean
         self.svc.fifo.release()
+
+    def test_pre_save_pass_skips_a_died_engine(self):
+        # Fix wave A (Important 1): a died engine keeps `unloaded` False while Service.loaded() is False
+        # - the gate covers both, so the 2 s loop stops hammering a dead engine.
+        self.seen_turn("ses-a")
+        self.engine.alive = lambda: False                  # died: loaded() is False...
+        self.engine.unloaded = False                       # ...while the resident flag still says "in memory"
+        self.assertFalse(self.svc.pre_save_pass())
+        self.assertEqual(self.engine.calls, [])
+
+    def test_pre_save_pass_grabs_the_fifo_only_when_due(self):
+        # Fix wave A (Recommendation 6): the ladder's quiet gates answer BEFORE the FIFO is touched -
+        # a not-due pass never reaches the grab, and a due pass still grabs it non-blocking.
+        self.svc.session_ladder.cfg.pre_save_idle_s = 20   # pinned quiet gate
+        self.seen_turn("ses-a")
+        self.svc.last_request_at = time.time()             # no quiet at all yet: not due
+        grabs, inner = [], self.svc.fifo
+
+        class Counting:
+            def acquire(self, blocking=True, timeout=-1):
+                grabs.append(blocking)
+                return inner.acquire(blocking, timeout)
+
+            def release(self):
+                return inner.release()
+
+            def __enter__(self):
+                return inner.__enter__()
+
+            def __exit__(self, *exc):
+                return inner.__exit__(*exc)
+
+        self.svc.fifo = Counting()
+        self.addCleanup(setattr, self.svc, "fifo", inner)
+        self.assertFalse(self.svc.pre_save_pass())         # not due...
+        self.assertEqual(grabs, [])                        # ...the FIFO was never grabbed
+        self.assertEqual(self.engine.calls, [])
+        self.svc.session_ladder.cfg.pre_save_idle_s = 0    # due now: the same pass reaches the queue
+        self.assertTrue(self.svc.pre_save_pass())
+        self.assertEqual(grabs, [False])                   # non-blocking grab only, as ever
+        self.assertEqual(self.engine.calls,
+                         [("save", str(Path(self.dir.name) / "llm-session-ses-a.bin"))])
+
+    def test_pre_save_refusal_arms_a_retry_cooldown(self):
+        # Fix wave A (Minor 4), Service side: with a refusing engine and gate 0 the first pass attempts
+        # the save, an immediate second pass issues NO new session_file call (the cooldown holds it),
+        # and a fresh refusal arms again with the recorded delay doubled.  No clock games.
+        self.seen_turn("ses-a")
+        self.engine.session_file = mock.Mock(side_effect=REFUSED_MEMORY)
+        self.assertFalse(self.svc.pre_save_pass())         # the first pass attempts the save...
+        self.assertEqual(self.engine.session_file.call_count, 1)
+        s = self.svc.session_ladder.tracked["ses-a"]
+        self.assertEqual(s.save_retry_delay_s, 5.0)        # ...and arms a 5 s retry cooldown
+        self.assertFalse(self.svc.pre_save_pass())         # an immediate second pass issues no new call...
+        self.assertEqual(self.engine.session_file.call_count, 1)
+        self.svc.session_ladder.on_unload(self.svc)        # a fresh refusal (the unload route) arms it too
+        self.assertEqual(s.save_retry_delay_s, 10.0)       # ...and the recorded delay has doubled
+        self.assertFalse(self.svc.pre_save_pass())
+        self.assertEqual(self.engine.session_file.call_count, 2)   # the pass still stayed out of the engine
+        self.engine.session_file = mock.Mock(side_effect=lambda a, p: (self.engine.calls.append((a, p)),
+                                                                        {"tokens": 1})[1])
+        self.svc.session_ladder.on_unload(self.svc)        # a save commits: the cooldown resets
+        self.assertEqual((s.save_retry_delay_s, s.save_retry_until), (0.0, 0.0))
+        self.svc.session_ladder.on_turn_done("ses-a", MID, 0, 0)   # dirty again...
+        self.assertTrue(self.svc.session_ladder.pre_save_due(0))   # ...and the pass is free to try
 
     def test_pre_save_pass_parks_the_current_session(self):
         self.seen_turn("ses-a")                            # completed turn, FIFO free, quiet gate open

@@ -9,7 +9,10 @@ config must keep all three hooks inert.  The unload-works Task 2 tests pin the s
 bookkeeping (_commit_save records the engine's "ms" and the tracked byte_count) and the
 expected_save_seconds estimate the pre-save quiet gate will be derived from; the Task 3 tests pin
 the pre_save hook's quiet gates (adaptive / pinned / zero) and the warm handoff a parked CURRENT
-aux earns by keeping its retained prompt.
+aux earns by keeping its retained prompt.  The final-review fix wave (A) pins those gates as an
+engine-free question (pre_save_due), the honest bool result of pre_save (True only for a committed
+save), and the refused-save retry cooldown (5 s, doubling per successive refusal to a 300 s cap,
+cleared by a committed save).
 
     python -m pytest serve/test_session_ladder_lifecycle.py -v
 """
@@ -23,7 +26,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service
+from serve.server import ByteTokenizer, Service, SessionRefused
 from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, TrackedSession, should_restore
 from serve.test_session_ladder_wiring import LadderHarness, ladder_service
 
@@ -31,6 +34,7 @@ MID = 20000                     # a mid: above the engine's 8192-token park mini
 MID_BYTES = 800_000_000         # its joined byte figure (the engine's snapshot scale)
 P1 = "HEAD one"
 P2 = "HEAD two"
+REFUSED_MEMORY = SessionRefused("memory", "not enough RAM to save the session")
 
 
 class Lifecycle(unittest.TestCase):
@@ -151,6 +155,95 @@ class Lifecycle(unittest.TestCase):
         self.ladder.on_turn_done("aux", 100, 0, 0)
         self.ladder.pre_save(self.service, 0)                  # zero quiet, gate 0: straight to the save
         self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_due_answers_the_gates_without_touching_the_engine(self):
+        # Fix wave A (Important 1, Recommendation 6): the same gates as pre_save's, asked as an
+        # engine-free question - Service.pre_save_pass consults it BEFORE the FIFO grab and only a due
+        # pass reaches the queue.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # dirty current session, expected 5.0
+        self.assertFalse(self.ladder.pre_save_due(4.9))        # under the adaptive gate: not due
+        self.assertTrue(self.ladder.pre_save_due(5.0))         # at it: due
+        self.ladder.cfg.pre_save_idle_s = 20
+        self.assertFalse(self.ladder.pre_save_due(19))         # pinned gate
+        self.assertTrue(self.ladder.pre_save_due(20))
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.assertTrue(self.ladder.pre_save_due(0))           # zero gate: any idle moment
+        self.assertEqual(self.calls, [])                       # answering asked the engine nothing
+        self.ladder.on_idle(self.service, 8.0)                 # a save lands: the session is clean now
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertFalse(self.ladder.pre_save_due(999.0))      # a clean checkpoint is not due
+
+    def test_pre_save_due_is_false_on_a_disabled_ladder(self):
+        # Disabled-ladder inertia: the gate answers False on a disabled ladder, and pre_save keeps its
+        # own enabled gate (the disabled hooks stay inert).
+        ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.dir.name,
+                                            park_budget_mib=4096, pre_save_idle_s=0))
+        ladder.on_turn_done("ses-a", MID, 0, 0)
+        ladder.on_arrival(self.service, "ses-a", P1)
+        ladder.last_active = "ses-a"
+        self.assertFalse(ladder.pre_save_due(999.0))
+        self.assertFalse(ladder.pre_save(self.service, 999.0))
+        self.assertEqual(self.calls, [])
+
+    def test_pre_save_reports_whether_a_save_committed(self):
+        # Fix wave A (Minor 1): honest results.  pre_save (and _idle_save_current behind it) answer True
+        # only when a save committed - every skip and every refused attempt answers False.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.assertTrue(self.ladder.pre_save(self.service, 0))          # landed: True
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # clean since: skipped, False
+        self.assertFalse(self.ladder.pre_save(self.service, 4.9))       # quiet gate: skipped, False
+        self.ladder.on_turn_done("aux", 100, 0, 0)                      # dirty again
+        refusals = 0
+
+        def refusing(action, path):
+            nonlocal refusals
+            refusals += 1
+            self.calls.append((action, path))
+            raise REFUSED_MEMORY
+
+        self.engine.session_file = mock.Mock(side_effect=refusing)
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # attempted and refused: False
+        self.assertEqual(refusals, 1)                                   # ...one attempt, no retry...
+        self.assertEqual(self.actions("save"), ["save", "save"])        # ...landed + refused in the log
+        s = self.ladder.tracked["aux"]
+        self.assertEqual(s.file_path, self.path("aux"))                 # the ledger still describes the
+        self.assertTrue(s.dirty)                                        # landed save only: the refusal
+        self.assertEqual(len(self.ladder.saved_files), 1)               # recorded nothing
+
+    def test_a_refused_save_arms_a_doubling_retry_cooldown(self):
+        # Fix wave A (Minor 4): a refused engine save is not retried at the next 2 s beat - the session
+        # gets a retry cooldown: 5.0 s on the first refusal, doubling per successive refusal, capped at
+        # 300.0; pre_save_due says False inside it; a committed save resets it.  Clock-free: the
+        # cooldown is read from the recorded state, and the fresh refusals come from the unload route.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+
+        def refusing(action, path):
+            self.calls.append((action, path))
+            raise REFUSED_MEMORY
+
+        self.engine.session_file = mock.Mock(side_effect=refusing)
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # attempted and refused...
+        s = self.ladder.tracked["aux"]
+        self.assertEqual(s.save_retry_delay_s, 5.0)                     # ...5 s of cooldown armed
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # inside it: no new attempt...
+        self.assertFalse(self.ladder.pre_save_due(0))                   # ...neither by hook nor by gate
+        self.assertEqual(self.engine.session_file.call_count, 1)
+        self.ladder.on_unload(self.service)                             # a fresh refusal (the unload
+        self.assertEqual(s.save_retry_delay_s, 10.0)                    # route) arms it again: doubled
+        self.assertFalse(self.ladder.pre_save_due(0))
+        self.assertEqual(self.engine.session_file.call_count, 2)
+        self.engine.session_file = mock.Mock(side_effect=lambda a, p: (self.calls.append((a, p)),
+                                                                       {"tokens": MID})[1])
+        self.ladder.on_unload(self.service)                             # a save commits...
+        self.assertEqual((s.save_retry_delay_s, s.save_retry_until), (0.0, 0.0))  # ...the cooldown goes
+        self.assertFalse(self.ladder.pre_save_due(0))                   # clean now: not dirtiness anyway
+        self.ladder.on_turn_done("aux", 100, 0, 0)                      # dirty again...
+        self.assertTrue(self.ladder.pre_save_due(0))                    # ...and the pass may try again
 
     def test_aux_current_checkpoint_warms_the_next_start(self):
         # Task 1 review carry-over: the last_prompts pop for a non-eligible session SPARES the session

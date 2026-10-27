@@ -35,6 +35,13 @@ MIN_PARK_TOKENS = 8192
 # Session identity headers, pinned first-wins precedence (OpenCode's native family; serve stamps them).
 SESSION_HEADERS = ("x-session-id", "x-opencode-session-id", "x-session-affinity", "x-opencode-session")
 
+# Pinned refused-save backoff (unload-works final review A): a save the engine refused is not retried on
+# the next 2 s pre-save beat - the refused session arms a retry cooldown that doubles from 5 s per successive
+# refusal up to 300 s, so a session the engine cannot save (out of RAM, out of room) costs the pre-save
+# thread a bounded trickle instead of an attempt every beat.  A save that lands resets it.
+SAVE_RETRY_BASE_S = 5.0
+SAVE_RETRY_CAP_S = 300.0
+
 
 @dataclass
 class ConvEvent:
@@ -75,6 +82,11 @@ class TrackedSession:
     # session's last landed save (the save result's "ms"; None when never saved or unmeasured)
     saved_at_bytes: int = 0           # its byte_count at that save moment: the growth reference the
     # expected_save_seconds estimate scales last_save_ms against
+    save_retry_delay_s: float = 0.0   # final review A: the delay of the retry cooldown the LAST refused
+    # save armed (SAVE_RETRY_BASE_S on the first refusal, doubling per successive refusal to
+    # SAVE_RETRY_CAP_S; 0.0 when nothing is refused or a save landed)
+    save_retry_until: float = 0.0     # time.monotonic() deadline of that cooldown (0.0 = none armed):
+    # pre_save_due answers False while now < until - the engine is not asked again until it expires
 
 
 @dataclass
@@ -401,13 +413,32 @@ class SessionLadder:
         result dict (production: {"tokens", "bytes", "ms"}) - handed on to _commit_save for the save-duration
         bookkeeping - when the save landed; None exactly when refused: a SessionRefused is swallowed with the
         ladder's log line and the ledger records nothing (no phantom file state); an EngineDied propagates
-        (the caller's engine is gone - the request path / unload handles it as it always has)."""
+        (the caller's engine is gone - the request path / unload handles it as it always has).  A refusal
+        also arms the session's retry cooldown (final review A): the bookkeeping burst takes the lock after
+        the engine call, in F4's ledger window - which is why every save route (switch, idle, unload,
+        pre-save) arms it and only pre_save_due consults it."""
         try:
             return service.engine.session_file("save", plan[1])
         except _refused_class() as e:
             print(f"[strata] session ladder: the save of {plan[0]} was refused ({e.kind}); "
                   "this conversation continues as a cold prefill", flush=True)
+            with self._lock:
+                self._arm_save_refusal(plan[0])
             return None
+
+    def _arm_save_refusal(self, session_id: str) -> None:
+        """LEDGER half of a refused save (called holding the LADDER LOCK): the session's retry cooldown -
+        SAVE_RETRY_BASE_S for the first refusal, then doubling per successive refusal, capped at
+        SAVE_RETRY_CAP_S - and its monotonic deadline.  A fresh failure is a fresh failure: the switch and
+        unload routes arm it too, and only the pre-save gate is held back by it (a switch-away save is the
+        request path's own moment and is never deferred).  _commit_save clears what a landed save resets."""
+        s = self.tracked.get(session_id)
+        if s is None:
+            return
+        delay = SAVE_RETRY_BASE_S if s.save_retry_delay_s <= 0 else min(SAVE_RETRY_CAP_S,
+                                                                         s.save_retry_delay_s * 2)
+        s.save_retry_delay_s = delay
+        s.save_retry_until = time.monotonic() + delay
 
     def _commit_save(self, plan, result: dict | None = None) -> None:
         """LEDGER half of a ladder save (called holding the LADDER LOCK): the landed file becomes the
@@ -417,14 +448,18 @@ class SessionLadder:
         carries the save-duration bookkeeping: last_save_ms the engine's measured "ms" when reported (a
         result without the key stays tolerated - the duration is simply unknown), saved_at_bytes this
         session's tracked byte_count at the save moment - the pair expected_save_seconds scales a future
-        save's estimate from.  Split out of the old _save_session by F4 so the engine call sits between
-        lock windows."""
+        save's estimate from.  A None result records nothing at all (final review A): an absent duration is
+        not a licence to erase the one already on record.  A landed save also clears the refused-save retry
+        cooldown (a save that works has nothing to back off from).  Split out of the old _save_session by
+        F4 so the engine call sits between lock windows."""
         sid, path, prefix = plan
         s = self.tracked.get(sid)
         if s is not None:
             s.saved_prefix = prefix or s.saved_prefix
-            s.last_save_ms = (result or {}).get("ms")
-            s.saved_at_bytes = s.byte_count
+            if result is not None:
+                s.last_save_ms = (result or {}).get("ms")
+                s.saved_at_bytes = s.byte_count
+            s.save_retry_delay_s, s.save_retry_until = 0.0, 0.0
         self._note_file_saved(sid, path)
 
     def expected_save_seconds(self, s: TrackedSession) -> float:
@@ -464,50 +499,66 @@ class SessionLadder:
             return
         self._idle_save_current(service)
 
-    def pre_save(self, service, idle_seconds: float) -> None:
+    def _pre_save_due(self, idle_seconds: float) -> bool:
+        """The one place the pre-save gates live (the plain inner behind the locked `pre_save_due`; it
+        asks the engine nothing).  cfg.enabled; the last-active session exists and is dirty; no refused-save
+        retry cooldown is armed on it (the engine is held off while now < save_retry_until); and the quiet
+        gate cfg.pre_save_idle_s: None = adaptive (quiet must reach THIS session's expected save length,
+        expected_save_seconds - its measured save duration scaled by growth, else the size estimate, 5 s
+        floor), 0 = fire on any idle moment, > 0 = pinned seconds of quiet."""
+        if not self.cfg.enabled:
+            return False
+        s = self.tracked.get(self.last_active) if self.last_active is not None else None
+        if s is None or not s.dirty:
+            return False
+        if time.monotonic() < s.save_retry_until:
+            return False                              # refused recently: wait the cooldown out
+        gate = self.cfg.pre_save_idle_s
+        if gate is None:                              # adaptive: quiet >= this very save's expected length
+            return idle_seconds >= self.expected_save_seconds(s)
+        return gate <= 0 or idle_seconds >= gate      # gate == 0: no quiet requirement
+
+    def pre_save(self, service, idle_seconds: float) -> bool:
         """Task 3's pre-save hook (2026-10-26 spec §1): save the last-active session once the request
         queue has been quiet long enough to keep the save out of the way of resumed work.  Task 4's
         pre_save_pass calls it while the service FIFO is held, with the same idle measurement the
         lazy-unload decision uses; idle_seconds is the caller's clock value (this hook never sleeps or
-        times).  The quiet gate is cfg.pre_save_idle_s: None (default) = adaptive - quiet must reach
-        THIS session's expected save length (expected_save_seconds: its measured save duration scaled
-        by growth, else the size estimate; the 5 s floor keeps a small conversation's gate
-        meaningful); 0 = fire on any idle moment; > 0 = pinned seconds of quiet.  All gates passing
-        run on_idle's body: the last-active session, dirty is its only gate, a clean checkpoint is not
-        rewritten.  F4: the adaptive decision reads the tracked session under the ladder lock (the
-        same decision window the hooks use); the engine I/O belongs to _idle_save_current's windows;
-        the cfg.enabled gate is checked here, as in every public hook."""
-        if not self.cfg.enabled:
-            return
-        gate = self.cfg.pre_save_idle_s
-        if gate is None:                               # adaptive: quiet >= this very save's expected length
-            with self._lock:
-                s = self.tracked.get(self.last_active) if self.last_active is not None else None
-                if s is None or not s.dirty:
-                    return
-                required = self.expected_save_seconds(s)
-            if idle_seconds < required:
-                return
-        elif gate > 0 and idle_seconds < gate:         # pinned seconds of quiet
-            return                                     # gate == 0: no quiet requirement
-        self._idle_save_current(service)
+        times).  The gates are `pre_save_due`'s own (the plain inner _pre_save_due, the shared helper -
+        quiet gate cfg.pre_save_idle_s: None adaptive, 0 any idle moment, > 0 pinned seconds): pre_save
+        re-evaluates them in its own decision window, which is what makes the pass's earlier gate read
+        harmless (the state only moves under this same lock).  All gates passing run on_idle's body: the
+        last-active session, dirty is its only gate, a clean checkpoint is not rewritten.  Returns True
+        only when a save committed (final review A: an honest result - every skip and every refused
+        attempt answers False).  F4: the gate decision reads the tracked session under the ladder lock (the
+        same decision window the hooks use); the engine I/O belongs to _idle_save_current's windows; the
+        cfg.enabled gate is checked in the gate helper, as in every public hook."""
+        with self._lock:
+            if not self._pre_save_due(idle_seconds):
+                return False
+        return self._idle_save_current(service)
 
-    def _idle_save_current(self, service) -> None:
+    def _idle_save_current(self, service) -> bool:
         """The current (last-active) session's park: decision + engine save + ledger commit, in F4's
         windows (decide under the ladder lock, session_file outside it, commit the ledger back under it).
         The last-active session is always save-worthy - dirty is the only gate (2026-10-26 spec: always
         park the current session, aux-sized conversations included).  The cfg.enabled gate is the
         caller's responsibility: on_idle, pre_save and on_unload each check it before reaching this
-        body.  on_idle's body, and the pre-save hook's route (unload-works Task 3)."""
+        body.  Returns True only when a save committed (final review A): a skipped dirty check, a batch-
+        mode plan, and a refused save each answer False.  on_idle's body, and the pre-save hook's route
+        (unload-works Task 3)."""
         with self._lock:
             s = self.tracked.get(self.last_active) if self.last_active is not None else None
             if s is None or not s.dirty:
-                return
+                return False
             plan = self._plan_save(service, s)
-        res = self._engine_save(service, plan) if plan is not None else None
-        if res is not None:
-            with self._lock:
-                self._commit_save(plan, res)
+        if plan is None:
+            return False
+        res = self._engine_save(service, plan)
+        if res is None:
+            return False                              # refused: _engine_save armed the retry cooldown
+        with self._lock:
+            self._commit_save(plan, res)
+        return True
 
     def on_unload(self, service) -> None:
         """Task 8's unload hook, called while the FIFO is held, immediately before engine.unload() drops
@@ -672,19 +723,21 @@ class SessionLadder:
 
     # Every public hook that only touches ladder state runs holding the ladder lock via _locked (see the
     # wrapper): on_conv_event/on_turn_done arrive from the metrics() drain, record_saved_prefix from a
-    # FIFO-serialized request thread; track stays unlocked (a single dict read) so a caller holding nothing
+    # FIFO-serialized request thread, pre_save_due is the engine-free pre-save gate Service.pre_save_pass
+    # asks before it touches the FIFO.  track stays unlocked (a single dict read) so a caller holding nothing
     # else can peek without serializing behind a save.  on_arrival/on_idle/on_unload/pre_save are NOT
     # wrapped (F4, final review): they take the lock themselves in short windows around their decisions
     # and ledger commits and run the engine.session_file calls between the windows, lock-free (pre_save
-    # adds only its adaptive-gate decision window; its engine I/O is _idle_save_current's windows) - the
+    # adds only its gate decision window; its engine I/O is _idle_save_current's windows) - the
     # single-lock-point pattern survives as "a wrapped body never takes the lock and never touches the
     # engine": these four are plain methods managing their own windows, and every state mutation inside a
-    # window goes through the plain inners (_note_switch_away, _note_file_saved, _plan_save, _commit_save),
-    # never a _locked attribute, because the lock is not reentrant.  on_start stays wrapped: it only queues
-    # restore_after_load - it issues no engine I/O of its own.
+    # window goes through the plain inners (_note_switch_away, _note_file_saved, _plan_save, _commit_save,
+    # _arm_save_refusal, _pre_save_due), never a _locked attribute, because the lock is not reentrant.
+    # on_start stays wrapped: it only queues restore_after_load - it issues no engine I/O of its own.
     on_conv_event = _locked(_on_conv_event)
     on_turn_done = _locked(_on_turn_done)
     note_switch_away = _locked(_note_switch_away)
     note_file_saved = _locked(_note_file_saved)
     record_saved_prefix = _locked(record_saved_prefix)
     on_start = _locked(_on_start)
+    pre_save_due = _locked(_pre_save_due)
