@@ -7486,7 +7486,13 @@ def make_handler(svc: Service):
                 except EngineStuck as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                self._json(409 if r == "busy" else 200, {"status": r})
+                except EngineDied as e:                      # the engine ended mid-unload (the save before it):
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return                                   # the same 503 as EngineStuck, not a leaked traceback
+                body = {"status": r}
+                if r == "busy":                              # 409 with a message the webui can show, not a bare status
+                    body["error"] = {"message": "a request is running or queued; try again when it is quiet"}
+                self._json(409 if r == "busy" else 200, body)
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
@@ -7531,7 +7537,11 @@ def make_handler(svc: Service):
                     if path == "/v1/unload":
                         wait_s = unload_wait(parse_qs(urlsplit(self.path).query).get("wait", [None])[0],
                                              svc.UNLOAD_WAIT_S)
-                        result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        try:
+                            result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        except (EngineStuck, EngineDied) as e:   # stuck or ended mid-unload (the save before it):
+                            self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                            return                                # the plain 503 shape, as /unload answers
                         if result == "busy":
                             raise ModelBusy("a request is running or queued")
                     else:

@@ -3967,6 +3967,35 @@ class SharingTheGpu(unittest.TestCase):
             self.assertEqual(self.svc.unload(), "busy")
         self.assertTrue(self.engine.alive())
 
+    def test_unload_busy_answers_with_a_readable_message(self):
+        """A busy POST /unload answers 409 with a message the webui can show, not a bare status."""
+        with self.svc.fifo:                                   # a request holds the queue (#1997)
+            status, body = self.req("/unload", {})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["status"], "busy")
+        self.assertEqual(body["error"]["message"], "a request is running or queued; try again when it is quiet")
+
+    def test_unload_answers_engine_death_with_503(self):
+        """EngineDied from unload() (e.g. the save before it found the engine ended): a 503 JSON that
+        carries the engine's reason - not a traceback out of _post and a dropped connection."""
+        def dying_unload():
+            raise EngineDied("the engine ended")
+        self.engine.unload = dying_unload                     # alive() still True
+        status, body = self.req("/unload", {})
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["type"], "server_error")
+        self.assertEqual(body["error"]["message"], "the engine ended")
+
+    def test_v1_unload_answers_engine_death_with_503(self):
+        """The same on POST /v1/unload (own-page JSON headers): 503 JSON whose message is the engine's,
+        the same shape /unload answers - the busy case (ModelBusy's 409) is untouched."""
+        def dying_unload():
+            raise EngineDied("the engine ended")
+        self.engine.unload = dying_unload
+        status, body = self.req("/v1/unload", {})             # req sends application/json with no Origin
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["message"], "the engine ended")
+
     def test_idle_unload(self):
         self.svc.idle_unload_s = 1
         self.svc.last_request_at = time.time()
@@ -4081,7 +4110,9 @@ class SharingTheGpu(unittest.TestCase):
         self.svc.fifo.acquire()
         threading.Timer(1.0, self.svc.fifo.release).start()
         t0 = time.time()
-        self.assertEqual(self.req("/unload", {}), (409, {"status": "busy"}))
+        self.assertEqual(self.req("/unload", {}),
+                         (409, {"status": "busy",
+                                "error": {"message": "a request is running or queued; try again when it is quiet"}}))
         self.assertLess(time.time() - t0, 0.9)
         status, body = self.req("/unload?wait=1", {})
         self.assertEqual((status, body), (200, {"status": "unloaded"}))
@@ -4092,7 +4123,8 @@ class SharingTheGpu(unittest.TestCase):
         with self.svc.fifo:
             t0 = time.time()
             self.assertEqual(self.req("/unload?wait=0.6", {}),
-                             (409, {"status": "busy"}))
+                             (409, {"status": "busy",
+                                    "error": {"message": "a request is running or queued; try again when it is quiet"}}))
             self.assertLess(time.time() - t0, 5)
         self.assertTrue(self.engine.alive())
 
