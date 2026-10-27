@@ -778,6 +778,38 @@ What the table says:
   recommendation stands: one stream for this workload, and if slots are wanted, `--read-slice 32768` (the yield
   granularity becomes one 32K feed, i.e. a short request waits at most ~25 s to get in).
 
+**Why 8K -> 32K doubles it: the cards' pipeline, not a per-feed constant.**  `forward_chunks` runs a feed's chunks
+through the four stages (CUDA0 [0,6], CUDA1 [7,17], CUDA2 [18,28], CUDA3 [29,39] + head - the split in the engine's own
+log) as a pipeline, so a feed that holds one 8K chunk has no overlap to give: seven feeds pay seven fills and drains.
+Fitting the two measured points (one feed 33.3 s, seven feeds 86.4 s) gives a pipeline depth of ~3.5 stages and ~3.5 s
+a chunk; that model predicts the 32K row at 42.1 s, and the measurement was 42.1 s.  So for a two-slot deployment the
+fix is not the slice default (8K would only move 572 -> 634); it is to stop a read at chunk boundaries (`halt_k`, already
+in the model) and hand the rest back as one feed - in single-GPU mode the yoco layer skip makes a mid-read stop
+inconsistent, so that path keeps the slices.
+
+
+## Conversation slots were off in production (00:54) - now on
+
+`slot_keep` is off unless `STRATA_DS4_SLOT_KEEP` is set, and the production launcher had no such line: `slot_max = 0`, so
+**every time the second agent took a turn the first one's conversation was not kept at all** - the source's own note says
+75-200 s a switch for 70k and 185k tokens alternating.  It is now `export STRATA_DS4_SLOT_KEEP=1` in the launcher
+(defaults: 4 conversations in RAM, a 16 GB folder cap, 7 days).
+
+A/B/A/B with two ~60K-token conversations (fresh nonces, greedy, 120 tokens out):
+
+| | prompt tokens | reused | read | wall |
+|---|---:|---:|---:|---:|
+| A1 | 53,925 | 0 | 32.9 s (1,641 tok/s) | 39 s |
+| B1 | 59,904 | 0 | 35.3 s (1,698 tok/s) | 41 s |
+| A2 | 59,966 | **59,903** (`took back ... at token 59903 of 59966 from RAM (0.0 s); 1 new tokens to read`) | 0.09 s | **1.9 s** |
+| B2 | 60,336 | **60,273** | 0.12 s | **2.6 s** |
+
+An alternating turn now costs a state load from RAM (~0.1 s) instead of a re-read of the whole prompt (~35 s here; a
+190K context would have been ~2 min).  The folder holds a 60K conversation as a 67 MB `.bin` + `.meta` pair.
+
+**A 190K cold read, measured on the single stream**: a 233,123-token prompt read in **122.3 s (1,906 tok/s)**, so an
+agent's first turn after a compaction is ~2 min, and the read's beats keep its stream alive meanwhile.
+
 (The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
 request.)  Both changes are in commit `0e16735`'s follow-up.  The structured row's "largest gap" measured 0.0 s - the
 four empty deltas landed together - and its bound is `PREFILL_BEAT_S`, i.e. 10 s at most.
