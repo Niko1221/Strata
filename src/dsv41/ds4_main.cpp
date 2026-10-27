@@ -120,7 +120,7 @@ void usage() {
                  "           [--vision on|off] [--vision-resident (--serve: keep the picture tower on the card; default: in RAM between pictures)] [--mmap-experts on|off|auto] [--parallel N (--serve: N conversations at once)]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
-                 "           | --pack-info)\n");
+                 "           | --pack-info | --stream-probe)\n");
 }
 
 // stdin lines on a thread, so a request can see STOP while it decodes.  read(2), not std::cin - glibc's exit()
@@ -2505,6 +2505,7 @@ int main(int argc, char** argv) {
     unsigned long long cli_seed = 1;
     bool serve_mode = false, multi_check = false, vision_resident = false, vision_lazy_asked = false;   // (--vision-lazy: the default now, still accepted)
     bool pack_info_mode = false;
+    bool stream_probe_mode = false;
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -2589,6 +2590,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--multi-check") multi_check = true;   // (tests: --parallel's rows against each alone)
         else if (a == "--pack-info") pack_info_mode = true;
+        else if (a == "--stream-probe") stream_probe_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
             usage();
@@ -2605,6 +2607,13 @@ int main(int argc, char** argv) {
             return 2;
         }
         return strata::ds4::pack_info(o.pack, stdout);
+    }
+    if (stream_probe_mode) {   // the drives' read speed in the experts' stream's settings, on the host alone
+        if (o.pack.empty()) {
+            usage();
+            return 2;
+        }
+        return strata::ds4::stream_probe(o.pack, stdout);
     }
     if (multi_check && (o.seqs < 2 || ids_s.empty())) {
         std::fprintf(stderr, "--multi-check needs --parallel 2..8 and --ids\n");

@@ -15435,4 +15435,109 @@ const Stats& Model::stats() const {
 std::string Model::describe() const { return p_->describe(); }
 std::vector<std::string> Model::info_lines() const { return p_->info_lines(); }
 
+int stream_probe(const std::string& dir, std::FILE* out) {
+    Pack pk;
+    std::string err;
+    if (!pk.load(dir, err)) {
+        std::fprintf(out, "ds4: stream probe: %s\n", err.c_str());
+        return 1;
+    }
+    std::vector<int> files;   // the files with the routed experts, the ones the stream reads
+    for (const auto& [name, t] : pk.t)
+        if (name.find(".ffn.experts.") != std::string::npos && name.rfind("mtp.", 0) != 0) files.push_back(t.file);
+    std::sort(files.begin(), files.end());
+    files.erase(std::unique(files.begin(), files.end()), files.end());
+    std::vector<uint64_t> size(pk.fds.size(), 0);
+    uint64_t all = 0;
+    for (int f : files) {
+        if ((size_t) f >= pk.dfds.size() || pk.dfds[(size_t) f] == os::kBadFd) {
+            std::fprintf(out, "ds4: stream probe: %s takes no unbuffered reads, which the stream needs\n",
+                         pk.files[(size_t) f].c_str());
+            return 1;
+        }
+        size[(size_t) f] = os::file_size(pk.fds[(size_t) f]);
+        all += size[(size_t) f];
+    }
+    if (files.empty()) {
+        std::fprintf(out, "ds4: stream probe: no routed experts in %s\n", dir.c_str());
+        return 1;
+    }
+    constexpr int kTrials = 5;   // (each reads a slice of every file of its own: fresh bytes for every trial)
+    std::fprintf(out, "ds4: stream probe: %zu files, %.1f GB, unbuffered reads; %d trials of %.1f GB, each on bytes of its own\n",
+                 files.size(), all / 1e9, kTrials, all / 1e9 / kTrials);
+    std::fprintf(out, "  %-34s %7s %7s\n", "readers", "read MB", "GB/s");
+    std::fflush(out);
+    // one trial: slice `slot` of every file read by the stream's readers (ranges `most`, reads of `mb`), GB/s; < 0: failed
+    auto trial = [&](int slot, int most, int mb, std::string& layout) -> double {
+        std::vector<Model::Impl::StreamPiece> ps;
+        for (int f : files) {
+            const uint64_t z = size[(size_t) f], a = z * (uint64_t) slot / kTrials, b = z * (uint64_t) (slot + 1) / kTrials;
+            ps.push_back({f, a, b - a, nullptr, -1});
+        }
+        const uint64_t cs = (uint64_t) mb << 20, nb = cs + os::kDirectAlign;
+        const std::vector<Model::Impl::StreamChunk> chunks = Model::Impl::stream_chunks(ps, cs);
+        const std::vector<std::pair<size_t, size_t>> rng = Model::Impl::stream_ranges(chunks, most);
+        std::vector<int> per(pk.fds.size(), 0);   // (a file's readers)
+        for (const auto& r : rng) ++per[(size_t) chunks[r.first].file];
+        layout = std::to_string(rng.size()) + (most <= 0 ? ", the files in order" : ":");
+        for (size_t i = 0; most > 0 && i < files.size(); ++i) layout += (i ? "," : " ") + std::to_string(per[(size_t) files[i]]);
+        if (most > 0) layout += " a file";
+        std::vector<uint8_t*> bufs;
+        for (size_t i = 0; i < rng.size(); ++i) {
+            bufs.push_back((uint8_t*) os::anon_alloc(nb, -1, 1));
+            if (bufs.back() == nullptr) {
+                for (uint8_t* p : bufs)
+                    if (p != nullptr) os::anon_free(p, nb);
+                return -1.0;
+            }
+            std::memset(bufs.back(), 0, nb);   // (faulted in before the clock starts, as the stream's arenas are)
+        }
+        uint64_t bytes = 0;
+        for (const Model::Impl::StreamChunk& c : chunks) bytes += c.n;
+        std::atomic<bool> bad{false};
+        std::vector<std::thread> th;
+        const double t0 = now_ms();
+        for (size_t i = 0; i < rng.size(); ++i)
+            th.emplace_back([&, i] {
+                for (size_t c = rng[i].first; c < rng[i].second && !bad.load(); ++c)
+                    if (!os::pread_direct(pk.dfds[(size_t) chunks[c].file], bufs[i], chunks[c].n, chunks[c].off)) bad.store(true);
+            });
+        for (auto& t : th) t.join();
+        const double s = (now_ms() - t0) / 1000.0;
+        for (uint8_t* p : bufs) os::anon_free(p, nb);
+        return bad.load() ? -1.0 : bytes / 1e9 / s;
+    };
+    struct Pick {
+        int most, mb;
+        double gbs;
+    };
+    std::vector<Pick> done;
+    auto run = [&](int most, int mb) -> bool {
+        std::string layout;
+        const double g = trial((int) done.size(), most, mb, layout);
+        if (g < 0) {
+            std::fprintf(out, "ds4: stream probe: reading the model's files failed (%s, %d MB reads)\n", layout.c_str(), mb);
+            return false;
+        }
+        done.push_back({most, mb, g});
+        std::fprintf(out, "  %-34s %7d %7.2f\n", (layout + (done.size() == 1 ? " (default)" : "")).c_str(), mb, g);
+        std::fflush(out);
+        return true;
+    };
+    if (!run(0, 128) || !run(1, 128) || !run(2, 128)) return 1;   // the reader layouts at the default read size
+    int best = 0;
+    for (int i = 1; i < (int) done.size(); ++i)
+        if (done[(size_t) i].gbs > done[(size_t) best].gbs) best = i;
+    const int lay = done[(size_t) best].most;
+    if (!run(lay, 64) || !run(lay, 256)) return 1;   // the read sizes for the fastest layout
+    for (int i = 0; i < (int) done.size(); ++i)
+        if (done[(size_t) i].gbs > done[(size_t) best].gbs) best = i;
+    const bool better = done[(size_t) best].gbs > done[0].gbs * 1.05;   // (5%: past a trial's noise)
+    const Pick& use = better ? done[(size_t) best] : done[0];
+    std::fprintf(out, "ds4: the reads alone, not the copy into memory a load adds\n");
+    std::fprintf(out, "ds4: the settings for these drives:\n");
+    std::fprintf(out, "DS4_COPY_STREAM=1 DS4_STREAM_MB=%d DS4_STREAM_RANGES=%d\n", use.mb, use.most);
+    return 0;
+}
+
 }  // namespace strata::ds4
