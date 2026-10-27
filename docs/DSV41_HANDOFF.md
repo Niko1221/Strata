@@ -592,15 +592,13 @@ Debug switches the hunt left behind, both off by default: `DS4_STEP_SERIAL=1` ru
 `DS4_STEPCHECK=1` prints every pass's shape (`tr step T <n> pos ... seq ...`) and checks that rows 0 and 2 of a pass
 with the same prompt stay bit-identical after every layer (it syncs a device a layer, so use it on short runs).
 
-**Still open at 19:20: a pass of 8 rows and more drifts with a prompt a slot.**  With the race fixed, 2 slots are
-exact (96 tokens, 59.9 tok/s against the bursts' 43.0, `--ref` true) and the alternating-prompt probes are clean at 4
-slots (3 of 3) and 16 (1 of 1).  But 16 slots with a *different prompt each* (the bench's own) still drift: 12 of the
-16 slots differ from their burst reference, from token 1 on for slot 5 and 2-8 for most.  The alternating probe only
-says every even slot answers every other even slot; it cannot see a wrong answer that all of them share.  Two
-candidate boundaries, both at 7/8 rows: `kAttnScratchT = 7` (a step of up to 7 rows takes `sparse_attn`'s staged,
-scratch-decoded kernel; 8 rows switch it to `sparse_attn_packed_kernel`, which no step had used before this one) and
-`async_max_t = 8` (the routing mailbox: up to 8 rows async, above it the synchronous route - in the threads' path
-`wp.par` forces async anyway, so this one only matters without `--threads`).  The next probe: 4 and 8 slots with a
-burst reference each on this binary, which says whether the drift starts at 8 (then `DS4_ATTN_STAGED=1`, forcing
-`heads_per_block = -1` so that every T takes the staged kernel, separates the two).
+**Still open at 19:25: a pass of 16 rows drifts with a prompt a slot - 8 rows do not.**  With the race fixed: 2 slots
+are exact (96 tokens, 59.9 tok/s against the bursts' 43.0), 8 slots are exact (32 tokens, 50.7 against 31.8), the
+alternating-prompt probes are clean at 4 slots (3 of 3) and 16 (1 of 1) - and 16 slots with a *different prompt each*
+still drift, 12 of the 16 slots, from token 1 on for slot 5 and 2-8 for most.  So the boundary is between 8 and 16
+rows, not the 7/8 one this note first guessed; 16 is `kWin`, the width every per-pass array (`Rows::n`, `AttnRows`,
+`StepRows`' row table, `kStepRows` in the serve loop) is cut to, and it is also 8 flushes of the 4-segment descriptor a
+pass.  Next: 12 slots and 16 with `--slot-context 32768` (same run shape), then a pass whose rows are 12 and 15 - which
+separates "kWin's arrays" from "more than 8 rows" - and `DS4_STEPCHECK`'s shape print on a 16-row pass, which shows
+whether the pass really carries 16 rows at the same position.
 
