@@ -48,7 +48,8 @@ struct Finish {
     const float* w = nullptr;
     float eps = 1e-20f;
     int rd = 0, pos = 0, inverse = 0, vpp = 1, pos_step = 1;
-    const int* pos_rows = nullptr;   // row v's position outright (M2's batched step: several sequences' tokens in one pass)
+    const int* pos_rows = nullptr;   // row v's query's position (row v / vpp) outright (M2's batched step: several
+                                     // sequences' tokens in one pass)
     const float* freqs = nullptr;   // rd / 2 values
     int quant = 0;
     uint16_t* dst = nullptr;

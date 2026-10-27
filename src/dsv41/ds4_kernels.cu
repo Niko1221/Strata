@@ -160,7 +160,8 @@ __global__ void __launch_bounds__(kThreads) finish_kernel(float* x, int len, lon
     }
     if (f.rd > 0) {
         const int r0 = len - f.rd;
-        const int pos = f.pos_rows != nullptr ? f.pos_rows[blockIdx.x] : f.pos + (int) (blockIdx.x / f.vpp) * f.pos_step;
+        const int pos = f.pos_rows != nullptr ? f.pos_rows[blockIdx.x / (f.vpp > 0 ? f.vpp : 1)]
+                                            : f.pos + (int) (blockIdx.x / f.vpp) * f.pos_step;
 #pragma unroll
         for (int j = 0; j < kFinMax; ++j) {
             if (j >= nj) break;

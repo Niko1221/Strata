@@ -1392,6 +1392,7 @@ struct Model::Impl {
         return true;
     }
 
+
     // ---- weights
     bool upload(Dev& d, const Tensor& t, void* dst, std::string& err) {
         std::vector<uint8_t> tmp(t.bytes);
@@ -8888,7 +8889,13 @@ struct Model::Impl {
         StepRows rows{pos, seq};
         if (!step_pos_mapped(pos, T, err)) return false;
         rows.pos_dev = h_step_pos;
-        if (!forward_chunks(tk, T, T, err, -1, &rows)) return false;
+        // (DS4_STEP_CHUNK=1: the chunk path's step, the host-lane arithmetic a step was first measured on - kept for an A/B
+        // of the two; the window path is the decode path's own kernels, ~16 ms a pass instead of ~200)
+        static const bool step_chunk = std::getenv("DS4_STEP_CHUNK") != nullptr &&
+                                       std::atoi(std::getenv("DS4_STEP_CHUNK")) != 0;
+        if (step_chunk) {
+            if (!forward_chunks(tk, T, T, err, -1, &rows)) return false;
+        } else if (!forward_step(rows, T, err)) return false;
         for (int t = 0; t < T; ++t) seqs[(size_t) seq[t]].pos += 1;
         return true;
     }
@@ -9360,8 +9367,50 @@ struct Model::Impl {
         return true;
     }
 
+    // M2's batched step on the window path: one pass over T rows, a token of a sequence each, through the same kernels
+    // in the same arithmetic as a decode window - each row its own position (rope, ring, compressor, tables, logits row),
+    // instead of p0 .. p0 + T - 1 of one conversation.  The caller has put the rows' embeddings in h_emb and their tokens
+    // in their own sequences; the logits land in the head's rows 0 .. T - 1, row t this pass's row t (a row a sample)
+    bool forward_step(const StepRows& rows, int T, std::string& err) {
+        if (T < 1 || T > kWin) {
+            err = "a step of " + std::to_string(T) + " rows";
+            return false;
+        }
+        for (int t = 0; t < T; ++t) seqs[(size_t) rows.seq[t]].slot_held = false;   // (their states grow now)
+        // the Engram rows: each row its own sequence's tokens (asked for now, collected before its layer)
+        const double te = now_ms();
+        const int64_t eg_w0 = eg_wait_ns.load();
+        for (int li = 0; li < pk.eg_layers; ++li) {
+            EgBatch& b = *eg_win[(size_t) li];
+            if (b.live) eg_finish(b);   // (a pass that failed midway: its reads end before h_eg is reused)
+            eg_issue(0, T, li, nullptr, b, &rows);
+        }
+        st.engram_ms += now_ms() - te;
+        plan_window(0, T, wplan, &rows);   // (the rows' own positions: the indexer's counts and the candidate plans)
+        prof_window = prof_on && T == 1;
+        n_logits = T;   // (every row's logits: the serve loop samples one a row)
+        const double tl = now_ms();
+        if (par) {
+            if (!forward_par(0, T, err, &rows)) return false;
+        } else if (!forward_serial(0, T, err, &rows)) return false;
+        st.layer_ms += now_ms() - tl;
+        for (auto& b : eg_win)
+            if (b->live) eg_finish(*b);
+        st.engram_ms += (double) (eg_wait_ns.load() - eg_w0) / 1e6;
+        eg_stats();
+        Dev& d = devs[(size_t) head_dev];
+        cudaSetDevice(d.id);
+        const double th = now_ms();
+        CK(cudaStreamSynchronize(d.st));
+        st.head_ms += now_ms() - th;
+        prof_collect();
+        st.tokens += T;
+        cache_tick(T);
+        return true;
+    }
+
     // one thread: the layers device after device, the hand-offs through pinned memory and events
-    bool forward_serial(int64_t p0, int T, std::string& err) {
+    bool forward_serial(int64_t p0, int T, std::string& err, const StepRows* step = nullptr) {
         const int D = g.dim, H = g.hc;
         int cur = L[0].dev;
         {
@@ -9396,7 +9445,7 @@ struct Model::Impl {
                 cur = l.dev;
             }
             if (!tap(devs[(size_t) l.dev], il, T, err)) return false;
-            if (!layer(l, 0, p0, T, wplan, err)) return false;
+            if (!layer(l, 0, p0, T, wplan, err, step)) return false;
             if (dump_h != nullptr) {   // DS4_DUMP_H: every layer's residual stream, for tools/ds4/compare.py --layers
                 Dev& dd = devs[(size_t) l.dev];
                 std::vector<float> hv((size_t) T * H * D);
@@ -9563,7 +9612,9 @@ struct Model::Impl {
     // the partial sums all-reduced across the group)
     bool layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err,
                const StepRows* step = nullptr) {
-        (void) step;   // (M2's step on this path: the row per-position work is the next piece - see DSV41_HANDOFF.md)
+        // (`step`: M2's batched step on this path - T rows, a token of another sequence each, so every per-position
+        // piece below is a row's own: the rope's pos_rows, its own ring block in ext, its own compressor group and its
+        // own rows of the compressed tables; p0 is then unused)
         Layer& l = member(L0, mi);
         Dev& d = devs[(size_t) l.dev];
         cudaSetDevice(d.id);
@@ -9681,6 +9732,12 @@ struct Model::Impl {
             const int64_t g_first = p0 / R;              // the first group whose last position is >= p0
             const int64_t g_end = (p0 + T) / R;          // groups completed by p0 + T - 1
             const int ng = (int) std::max<int64_t>(0, g_end - g_first);
+            // (a step: the rows that complete a group - each its own position, its own sequence, its own group of that
+            // sequence's tables; the rows of the pass, in row order, are what its readers hold a descriptor of)
+            int nrow = 0;
+            if (step != nullptr)
+                for (int t = 0; t < T; ++t)
+                    if (((int) step->pos[t] + 1) % R == 0) ++nrow;
             if (l.kv_src) {
                 if (R == 1) {
                     Finish fc;
@@ -9712,6 +9769,128 @@ struct Model::Impl {
                 lim.k[t] = std::min(g.ix_topk, lim.n[t]);
                 clen_max = std::max(clen_max, lim.n[t]);
             }
+            if (step != nullptr) {
+                // ---- a step on the window path: one pass over T rows, a token of a sequence each.  Each row its own
+                // position, its own sequence, its own region of the tables: the rows that complete a group are written
+                // one a row (the descriptor's destination and position are that row's own), and the readers of the other
+                // groups place the same rows in their copies in row order (run_dev's step branch holds the descriptor).
+                const bool par_remote = wp.par && mi == 0 && sr.remote;
+                if (l.kv_src && nrow > 0) {   // the compressed rows this pass completed, one row at a time
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        if ((p + 1) % R != 0) continue;
+                        const int64_t row = p / R;
+                        const int sq = step->seq[t];
+                        Finish fc;
+                        fc.rd = g.rd;
+                        fc.pos = (int) (row * R);   // (the group's first position: where its rope sits)
+                        fc.freqs = freqs;
+                        fc.quant = 2;
+                        fc.pdst = sr.ckv[(size_t) l.dev] + ckv_at(sr, row, sq);
+                        finish(d.latent + (size_t) t * HD, 1, HD, HD, fc, s);
+                        if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, ckv_at(sr, row, sq), ckv_rb(),
+                                                  l.dev, err))
+                            return false;
+                    }
+                }
+                if (l.ix_src && l.owns_k && nrow > 0) {   // their index keys (one matvec over the pass's rows)
+                    Src& ks = srcs[(size_t) l.ik_src];
+                    if (!mv(d, {job(l.i_wk, d.latent, d.ikr, T, HD, g.ix_hd)}, err)) return false;
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        if ((p + 1) % R != 0) continue;
+                        const int64_t row = p / R;
+                        const int sq = step->seq[t];
+                        Finish fi;
+                        fi.w = l.ik_norm;
+                        fi.eps = g.eps;
+                        fi.rd = g.rd;
+                        fi.pos = (int) (row * R);
+                        fi.freqs = freqs;
+                        fi.quant = 3;
+                        fi.pdst = ks.ik[(size_t) l.dev] + ik_at(ks, row, sq);
+                        finish(d.ikr + (size_t) t * g.ix_hd, 1, g.ix_hd, g.ix_hd, fi, s);
+                        if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, ik_at(ks, row, sq), ik_rb(),
+                                                  l.dev, err))
+                            return false;
+                    }
+                }
+                if (l.kv_src && par_remote) {   // the pass's rows for the other groups' readers
+                    int n = 0;                  // (the same descriptor the readers hold: ckv then ik a row)
+                    Xfer x;
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        if ((p + 1) % R != 0) continue;
+                        const int64_t row = p / R;
+                        const int sq = step->seq[t];
+                        if (x.n + 2 > 4) {
+                            xfer_put(x, nullptr, 0, nullptr, s);
+                            x = Xfer{};
+                        }
+                        if (sr.ckv[(size_t) l.dev] != nullptr) {
+                            x.src[x.n] = sr.ckv[(size_t) l.dev] + ckv_at(sr, row, sq);
+                            x.dst[x.n] = sr.x_stage + (size_t) n * ckv_rb();
+                            x.bytes[x.n++] = ckv_rb();
+                        }
+                        if (sr.ik[(size_t) l.dev] != nullptr) {
+                            x.src[x.n] = sr.ik[(size_t) l.dev] + ik_at(sr, row, sq);
+                            x.dst[x.n] = sr.x_stage + x_cap() * ckv_rb() + (size_t) n * ik_rb();
+                            x.bytes[x.n++] = ik_rb();
+                        }
+                        ++n;
+                    }
+                    if (x.n > 0) xfer_put(x, nullptr, 0, nullptr, s);
+                    set_flag(sr.x_flag, wp.win, s);   // (0 rows too: a reader waits on it)
+                }
+                if (l.ix_src && clen_max > 0) {   // the indexer: each row its own sequence's keys, its own picks
+                    Src& ks = srcs[(size_t) l.ik_src];
+                    if (!mv(d, {job(l.i_wq_b, d.qr, d.iq, T, g.q_lora, (size_t) g.ix_heads * g.ix_hd)}, err)) return false;
+                    Finish fi;
+                    fi.rd = g.rd;
+                    fi.pos_rows = step->pos_dev;
+                    fi.vpp = g.ix_heads;
+                    fi.freqs = freqs;
+                    fi.quant = 3;
+                    finish(d.iq, T * g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
+                    gemv_f16_rows(l.i_wproj, d.x, (size_t) D, g.ix_heads, D, T,
+                                  1.0f / std::sqrt((float) g.ix_hd) / std::sqrt((float) g.ix_heads), d.iw, 64, s);
+                    const long long ss = (long long) o.max_context + 64;
+                    for (int t = 0; t < T; ++t) {
+                        const int p = (int) step->pos[t];
+                        const int nl = (int) ((p + 1) / R);
+                        if (nl <= 0) continue;
+                        const int sq = step->seq[t];
+                        float* const iq = d.iq + (size_t) t * (size_t) g.ix_heads * (size_t) g.ix_hd;
+                        const float* const iw = d.iw + (size_t) t * 64;
+                        int* const tk = d.topk + (size_t) t * topk_stride();
+                        int* const cd = d.cand + (size_t) t * cand_stride();
+                        const void* const keys = ik_rows(ks, (size_t) l.dev, sq);
+                        Rows r1;   // (one query: its own counts, its own row of the top-k buffer)
+                        r1.n[0] = nl;
+                        r1.k[0] = std::min(g.ix_topk, nl);
+                        if (l.uses_cand && (nl + g.cand_blk - 1) / g.cand_blk > g.cand_topk) {
+                            Rows cl = r1;
+                            cl.k[0] = wp.cand[l.il][t];
+                            index_score(iq, iw, keys, g.ix_heads, g.ix_hd, 1, cl.k[0] * g.cand_blk, cd,
+                                        (int) cand_stride(), g.cand_blk, cl, d.scores, ss, s);
+                            Rows tr;
+                            tr.n[0] = cl.k[0] * g.cand_blk;
+                            tr.k[0] = r1.k[0];
+                            topk(d.scores, ss, 1, tr, cd, (int) cand_stride(), g.cand_blk, tk, (int) topk_stride(), s);
+                        } else {
+                            index_score(iq, iw, keys, g.ix_heads, g.ix_hd, 1, nl, nullptr, 0, 1, r1, d.scores, ss, s);
+                            if (l.cand_src) {
+                                Rows cr = r1;
+                                cr.k[0] = g.cand_topk;
+                                cand_blocks(d.scores, ss, 1, cr, g.cand_blk, d.bm, (long long) bm_stride(), cd,
+                                            (int) cand_stride(), s);
+                            }
+                            topk(d.scores, ss, 1, r1, nullptr, 0, 1, tk, (int) topk_stride(), s);
+                        }
+                        rows_add_i(tk, 1, (int) topk_stride(), (int) kv_base(sr, sq), s);   // (its own sequence's rows)
+                    }
+                }
+            } else {
             if (l.ix_src) {
                 Src& ks = srcs[(size_t) l.ik_src];
                 if (l.owns_k && ng > 0) {
@@ -9809,6 +9988,7 @@ struct Model::Impl {
                     xfer_put(x, sr.x_flag, wp.win, d.xcnt, s);
                 }
             }
+            }
             for (int t = 0; t < T; ++t) ar.nsel[t] = lim.n[t] > 0 ? wp.topk[l.il][t] : 0;
             ckv = sr.ckv[(size_t) l.dev];   // (the picks are absolute rows of the one table: rows_add_i above)
         }
@@ -9822,7 +10002,8 @@ struct Model::Impl {
                         1.0f / std::sqrt((float) HD), d.o, s, ckv_fmt, 0, &d.attn_scr);
             Finish fo;
             fo.rd = g.rd;
-            fo.pos = (int) p0;
+            if (step != nullptr) fo.pos_rows = step->pos_dev;   // (a step: each row its own position's rope, inverse)
+            else fo.pos = (int) p0;
             fo.vpp = NHL;
             fo.freqs = freqs;
             fo.inverse = 1;
