@@ -457,6 +457,90 @@ class SessionLadderIntake(unittest.TestCase):
             self.assertIsNone(lad.track("sid-3"))  # ...sid-3 is the least recent now, so it goes
             self.assertEqual(len(lad.saved_files), cfg.retention_max_files)
 
+    def _retention_ladder(self, d, cap):
+        """A small-cap ladder plus `save(session_id, tokens)`: a completed turn's tracked state (which is
+        what decides save_eligible: 20000 tokens is a mid, 100 tokens an aux) and the landed ledger entry,
+        in the order a real save commits them."""
+        cfg = LadderConfig(enabled=True, slot_save_path=d, park_budget_mib=4096, retention_max_files=cap)
+        lad = SessionLadder(cfg)
+
+        def save(session_id, tokens):
+            lad.on_turn_done(session_id, tokens, int(tokens * PARK_COST_KIB_PER_TOKEN * 1024), 0)
+            path = os.path.join(d, f"llm-session-{session_id}.bin")
+            Path(path).write_bytes(b"checkpoint")
+            lad.note_file_saved(session_id, path)
+            return path
+
+        return lad, save
+
+    def test_an_aux_park_does_not_evict_an_older_mid(self):
+        # Final review B: the always-park-current rule saves the CURRENT session whatever its size, so a
+        # plain least-recent pop let a 100-token aux park evict an older mid checkpoint - the loss the cap
+        # exists to bound, not to cause.  An over-cap save retires the least-recent entry whose tracked
+        # session is not save_eligible first.
+        with tempfile.TemporaryDirectory() as d:
+            lad, save = self._retention_ladder(d, 3)
+            mid1 = save("mid-1", 20000)                       # the oldest file: a mid checkpoint
+            aux1 = save("aux-1", 100)
+            aux2 = save("aux-2", 100)                         # three files: exactly at the cap
+            aux3 = save("aux-3", 100)                         # a current aux's park goes over it...
+            self.assertEqual(lad.saved_files, [mid1, aux2, aux3])  # ...the mid is not the victim:
+            self.assertTrue(lad.track("mid-1"))              # its tracked state and file survive...
+            self.assertTrue(os.path.exists(mid1))
+            self.assertIsNone(lad.track("aux-1"))            # the least-recent aux is the cheap one...
+            self.assertFalse(os.path.exists(aux1))           # ...gone from disk with its state
+            self.assertEqual(len(lad.saved_files), 3)        # the hard cap still holds
+
+    def test_a_new_mid_save_over_cap_retires_an_aux_first(self):
+        # The other direction of the same rule: a new MID's save over the cap retires a retireable aux
+        # entry too - the mid checkpoints keep their places.
+        with tempfile.TemporaryDirectory() as d:
+            lad, save = self._retention_ladder(d, 3)
+            mid1 = save("mid-1", 20000)
+            aux1 = save("aux-1", 100)
+            aux2 = save("aux-2", 100)
+            mid2 = save("mid-2", 20000)                       # a new mid over the cap...
+            self.assertEqual(lad.saved_files, [mid1, aux2, mid2])  # ...retires aux-1, not mid-1
+            self.assertTrue(lad.track("mid-1"))
+            self.assertTrue(lad.track("mid-2"))
+            self.assertIsNone(lad.track("aux-1"))
+            self.assertFalse(os.path.exists(aux1))
+
+    def test_retention_without_a_retireable_entry_still_pops_the_least_recent(self):
+        # The fallback half stays exactly the old behavior: with nothing aux-sized to lose (every tracked
+        # owner is save-eligible), the plain LRU pop retires the least-recent file.
+        with tempfile.TemporaryDirectory() as d:
+            lad, save = self._retention_ladder(d, 3)
+            mid1 = save("mid-1", 20000)
+            mid2 = save("mid-2", 20000)
+            mid3 = save("mid-3", 20000)
+            mid4 = save("mid-4", 20000)
+            self.assertEqual(lad.saved_files, [mid2, mid3, mid4])   # mid-1 went...
+            self.assertIsNone(lad.track("mid-1"))             # ...with its tracked state...
+            self.assertFalse(os.path.exists(mid1))            # ...and off disk
+            self.assertEqual(len(lad.saved_files), 3)
+
+    def test_a_ledger_entry_whose_tracked_session_is_gone_is_retireable(self):
+        # "A tracked entry already gone counts as a candidate": a ledger path with no tracked session
+        # behind it has nothing left to protect, so an over-cap save retires it before a mid's file.
+        with tempfile.TemporaryDirectory() as d:
+            cfg = LadderConfig(enabled=True, slot_save_path=d, park_budget_mib=4096, retention_max_files=2)
+            lad = SessionLadder(cfg)
+            ghost = os.path.join(d, "llm-session-ghost.bin")
+            Path(ghost).write_bytes(b"checkpoint")
+            lad.note_file_saved("ghost", ghost)              # a ledger entry with no tracked session
+            lad.on_turn_done("mid-1", 20000, 0, 0)
+            mid1 = os.path.join(d, "llm-session-mid-1.bin")
+            Path(mid1).write_bytes(b"checkpoint")
+            lad.note_file_saved("mid-1", mid1)               # exactly at the cap
+            lad.on_turn_done("aux-1", 100, 0, 0)
+            aux1 = os.path.join(d, "llm-session-aux-1.bin")
+            Path(aux1).write_bytes(b"checkpoint")
+            lad.note_file_saved("aux-1", aux1)               # over the cap...
+            self.assertEqual(lad.saved_files, [mid1, aux1])  # ...the ownerless entry retired first
+            self.assertFalse(os.path.exists(ghost))
+            self.assertTrue(lad.track("mid-1"))              # the mid checkpoint is untouched
+
 
 class _FakeEngine:
     """An engine as the ladder's config reader sees it (Task 9): the spawn args, else the INFO line it
