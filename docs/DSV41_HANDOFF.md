@@ -788,14 +788,20 @@ in the model) and hand the rest back as one feed - in single-GPU mode the yoco l
 inconsistent, so that path keeps the slices.
 
 
-## Conversation slots were off in production (00:54) - now on
+## Conversation slots: ALREADY ON - my "off" was wrong (corrected 01:40)
 
-`slot_keep` is off unless `STRATA_DS4_SLOT_KEEP` is set, and the production launcher had no such line: `slot_max = 0`, so
-**every time the second agent took a turn the first one's conversation was not kept at all** - the source's own note says
-75-200 s a switch for 70k and 185k tokens alternating.  It is now `export STRATA_DS4_SLOT_KEEP=1` in the launcher
-(defaults: 4 conversations in RAM, a 16 GB folder cap, 7 days).
+Earlier in this file I wrote that production ran with the conversation slots off because the *launcher* had no
+`STRATA_DS4_SLOT_KEEP` line.  That was the wrong place to look: `serve/server.py`'s `deepseek_slot_env()` sets
+`env.setdefault("STRATA_DS4_SLOT_KEEP", "1")` (and `SLOT_GB=2`, `SLOT_DIR=<log dir>/ds4-slots`) for every DeepSeek
+engine it spawns, and production's engine is spawned by it.  The slot folder proves it: its oldest conversation is
+`slot-1793034255094-1.bin`, dated **2026-10-27 01:04**, a day before the launcher line was added, and 11 `.bin` files
+predate it.  The launcher's `export STRATA_DS4_SLOT_KEEP=1` is therefore **redundant** (harmless).  What this round did
+change is real but smaller: `STRATA_DS4_SLOT_DAYS=2` (the `.meta` files carry the conversations' token ids, so they are
+now dropped after two days instead of seven) and `chmod 700` on the folder (it was 775, files 664 - readable by other
+users of the box).
 
-A/B/A/B with two ~60K-token conversations (fresh nonces, greedy, 120 tokens out):
+The A/B/A/B measurement below stands as evidence of what the slots do on the single stream (it measured the existing
+behaviour, not a change):
 
 | | prompt tokens | reused | read | wall |
 |---|---:|---:|---:|---:|
@@ -804,11 +810,18 @@ A/B/A/B with two ~60K-token conversations (fresh nonces, greedy, 120 tokens out)
 | A2 | 59,966 | **59,903** (`took back ... at token 59903 of 59966 from RAM (0.0 s); 1 new tokens to read`) | 0.09 s | **1.9 s** |
 | B2 | 60,336 | **60,273** | 0.12 s | **2.6 s** |
 
-An alternating turn now costs a state load from RAM (~0.1 s) instead of a re-read of the whole prompt (~35 s here; a
-190K context would have been ~2 min).  The folder holds a 60K conversation as a 67 MB `.bin` + `.meta` pair.
+An alternating turn costs a state load from RAM (~0.1 s) instead of a re-read of the whole prompt (~35 s here; a 190K
+context would have been ~2 min).  The folder holds a 60K conversation as a 67 MB `.bin` + `.meta` pair (~1.1 KB a token,
+so a 190K conversation is ~210 MB and the 2 GB folder cap holds ~9).
 
 **A 190K cold read, measured on the single stream**: a 233,123-token prompt read in **122.3 s (1,906 tok/s)**, so an
 agent's first turn after a compaction is ~2 min, and the read's beats keep its stream alive meanwhile.
+
+**Since every DeepSeek user gets the slots by default**, the file permissions are not this box's problem alone: the
+engine creates its slot files with the process umask (664 here) and the folder 755-775, so a `.meta` (the conversation's
+token ids, i.e. the prompt in full) is readable by other users of the machine.  A small `[Engine]` PR with
+`O_CREAT|O_EXCL` + `fchmod 0600` on the files and 0700 on the folder would fix it for everyone; this box is fixed by the
+`chmod` above.
 
 (The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
 request.)  Both changes are in commit `0e16735`'s follow-up.  The structured row's "largest gap" measured 0.0 s - the
