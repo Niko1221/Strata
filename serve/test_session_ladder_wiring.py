@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -373,6 +374,23 @@ class WiringHTTP(unittest.TestCase):
         self.post("ses-b", LONG + " second")     # a real switch would have saved... nothing is called
         self.assertEqual(self.engine.calls, [])
 
+    def test_pre_save_thread_parks_after_a_turn(self):
+        # Task 4's timer thread end-to-end: cfg.pre_save_idle_s = 0.1, start_session_pre_save() running,
+        # one big completed turn, then quiet - the pass parks the session while the engine stays resident
+        # (no unload: the save lands through the ladder's pre-save route, nothing closes the engine).
+        self.svc.session_ladder.cfg.pre_save_idle_s = 0.1
+        self.svc.start_session_pre_save()
+        self.post("ses-a", LONG + " first")
+        path = str(Path(self.dir.name) / "llm-session-ses-a.bin")
+        deadline = time.monotonic() + 12                    # the thread's 2.0 s cadence; the plan's poll cap
+        while time.monotonic() < deadline and ("save", path) not in self.engine.calls:
+            time.sleep(0.25)
+        self.assertIn(("save", path), self.engine.calls)    # the pre-staged checkpoint landed...
+        self.assertEqual(self.actions("save"), ["save"])    # ...exactly one save...
+        self.assertEqual(self.actions("restore"), [])       # ...no restore churn...
+        self.assertTrue(self.svc.loaded())                  # ...the engine was never unloaded...
+        self.assertIn("choices", self.post("ses-a", "ping"))  # ...and still serves the next request
+
     def test_wiring_conv_events_flow_through_metrics(self):
         log = Path(self.dir.name) / "engine.log"
         log.write_text("conversation cache: parked 1234 tokens in 10.0 ms; parked=1 bytes=50000000 evictions=7\n")
@@ -383,6 +401,52 @@ class WiringHTTP(unittest.TestCase):
         self.assertFalse(before)
         self.assertTrue(self.svc.session_ladder.tracked["ses-m"].parked)
         self.assertIn("conversation_cache", view)
+
+
+class PreSavePass(unittest.TestCase):
+    """Task 4: Service.pre_save_pass - one opportunistic non-blocking pass: grab the FIFO (never wait), skip
+    a busy queue and an engine not in memory, survive engine death mid-save, and park the dirty current
+    session when the queue is free and quiet (cfg.pre_save_idle_s = 0 here: the quiet gate is Task 3's, the
+    pass's own gates - FIFO grab, engine state, engine trouble - are what these tests drive)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.engine = LadderHarness(ByteTokenizer(), "Answer.", max_context=32768)
+        self.svc = ladder_service(self.engine, self.dir.name)
+        self.svc.session_ladder.cfg.pre_save_idle_s = 0
+
+    def seen_turn(self, session_id):
+        self.svc.session_ladder.on_arrival(self.svc, session_id, P1)      # the request path's arrival...
+        self.svc.session_ladder.on_turn_done(session_id, MID, 0, 0)       # ...and its DONE figures: a
+        # completed mid turn, tracked, dirty, last_active - the state a real turn leaves the queue in.
+
+    def test_pre_save_pass_skips_a_busy_queue(self):
+        self.seen_turn("ses-a")
+        self.svc.fifo.acquire()                            # a live request (or unload) owns the engine
+        self.addCleanup(self.svc.fifo.release)
+        self.assertFalse(self.svc.pre_save_pass())         # the grab is non-blocking: skip, never wait
+        self.assertEqual(self.engine.calls, [])
+
+    def test_pre_save_pass_skips_an_unstarted_engine(self):
+        self.seen_turn("ses-a")
+        self.engine.unloaded = True                        # the engine flag (server.py:1108/1396): nothing
+        self.assertFalse(self.svc.pre_save_pass())         # in memory to pre-stage
+        self.assertEqual(self.engine.calls, [])
+
+    def test_pre_save_pass_survives_engine_death(self):
+        self.seen_turn("ses-a")
+        self.engine.session_file = mock.Mock(side_effect=EngineDied("engine died mid-save"))
+        self.assertFalse(self.svc.pre_save_pass())         # EngineDied is caught: no exception escapes...
+        self.assertEqual(self.engine.calls, [])            # ...nothing was recorded...
+        self.assertTrue(self.svc.fifo.acquire(blocking=False))  # ...and the FIFO came back clean
+        self.svc.fifo.release()
+
+    def test_pre_save_pass_parks_the_current_session(self):
+        self.seen_turn("ses-a")                            # completed turn, FIFO free, quiet gate open
+        self.assertTrue(self.svc.pre_save_pass())
+        self.assertEqual(self.engine.calls,
+                         [("save", str(Path(self.dir.name) / "llm-session-ses-a.bin"))])
 
 
 class NearTie(unittest.TestCase):
