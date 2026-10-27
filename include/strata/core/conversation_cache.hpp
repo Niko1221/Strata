@@ -299,9 +299,8 @@ public:
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
-    /// with one long conversation spends the cache on the side requests and, once full, can push the long one out -
-    /// exactly the reuse it wanted; a full cache with byte budget to spare evicts the smallest, so the long one stays.
-    /// 0 parks every conversation, whatever its size.
+    /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
+    /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
@@ -444,28 +443,20 @@ public:
         }
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // Two pressures, two victims. When the BYTES do not fit, the oldest unpinned entry leaves, as
-            // always: age is the best guess of what comes back. When only the SLOT COUNT is full and the
-            // byte budget has room, the SMALLEST parked conversation leaves - a slot costs the same whatever
-            // sits in it, and losing the smallest snapshot is the cheapest re-read (a 190k-token parent
-            // evicted oldest-first among short subagent copies reads again for a minute). Ties go to the
-            // oldest of the smallest, so equal-sized entries keep the old order. With only pinned ones left
-            // the new image does not fit (the caller skips parking it - the pinned prefix is what the
-            // queries come back to).
-            const bool byte_bound = bytes_ > budget_ - held - incoming;
-            if (!(byte_bound ? evict_oldest() : evict_smallest())) return false;
+            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
+            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            if (!evict_oldest()) return false;
         }
         return true;
     }
 
-    // The parked conversation that has gone unused the longest.  This is make_room()'s byte-bound loop
-    // body, ConversationCache::shrink()'s victim and session_save_reclaim()'s lever.  A ConversationBuffer
-    // is a list of 16 MiB
-    // segments and each segment is its own allocation - but on the reported box an emptied 10.4 GiB
-    // cache still left only 5285 MiB free against a 6262 MiB need (log
-    // 2786/2791), so eviction may be necessary and is never
-    // promised; the physical-RAM admission gate in generate.cpp therefore MEASURES its empty-cache
-    // ceiling instead of trusting these ledgers (F2).
+    // The parked conversation that has gone unused the longest.  This is make_room()'s loop body and
+    // ConversationCache::shrink()'s victim, so the parking path can also free RAM one entry at a time on
+    // demand (see the physical-RAM admission gate in generate.cpp).  A ConversationBuffer is a list of
+    // 16 MiB segments and each segment is its own allocation - but on the reported box an emptied 10.4 GiB
+    // cache still left only 5285 MiB free against a 6262 MiB need (log 2786/2791), so eviction may be
+    // necessary and is never promised; the physical-RAM admission gate in generate.cpp therefore MEASURES
+    // its empty-cache ceiling instead of trusting these ledgers (F2).
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
     bool evict_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
@@ -477,22 +468,6 @@ public:
             return true;
         }
         return false;
-    }
-
-    // The smallest parked conversation that can go: under slot pressure with byte budget to spare this is
-    // the cheapest snapshot to lose (the re-read scales with its size). Ties go to the oldest of the
-    // smallest. Pinned and guarded entries are kept, exactly as in evict_oldest(). False when none can go.
-    bool evict_smallest() {
-        size_t pick = SIZE_MAX;
-        for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            if (pick == SIZE_MAX || entries_[i].bytes() < entries_[pick].bytes()) pick = i;
-        }
-        if (pick == SIZE_MAX) return false;
-        bytes_ -= entries_[pick].bytes();
-        erase(pick);
-        ++evictions_;
-        return true;
     }
 
     // True when no future attempt could free more RAM: every remaining entry is PINNED.  A guarded

@@ -819,8 +819,7 @@ struct Options {
     int64_t conversation_cache_min_free_mib = 2560;
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
     /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
-    /// with one long conversation spends the slots on the side requests; the slot victims are then the SMALLEST
-    /// parked conversations, and only when nothing smaller is left does the long one go.  0 = park every conversation.
+    /// with one long conversation evicts the long one (oldest first).  0 = park every conversation.
     int64_t conversation_cache_min_tokens = 0;
     /// --serve: park only after the conversation has advanced this many tokens past the copy it would supersede.
     /// A conversation that moved a few hundred tokens writes a full snapshot again, and the turn after that drops it
@@ -10653,7 +10652,7 @@ int main(int argc, char** argv) {
                 // above only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
                 // away the whole prompt read that produced this snapshot (measured: 270k tokens, 96 s).
-                // Evict the smallest parked conversations until it fits, or until none are
+                // Evict the least recently active parked conversations until it fits, or until none are
                 // left.  Each ConversationBuffer is a list of 16 MiB segments, each segment its own
                 // allocation, so an evicted entry is back with the kernel before the next check reads
                 // /proc/meminfo; no waiting is needed.  slots() bounds the loop, and the lines
@@ -10681,9 +10680,8 @@ int main(int argc, char** argv) {
                     // Free RAM climbing back to the recorded ceiling makes the number stale: it is
                     // cleared, and the next hopeless attempt runs the evict loop first and relearns a
                     // ceiling only when that runs dry - only then do the caps shrink again.
-                    // try_regrow() puts cut caps back at every park and restore.  The evict loop's
-                    // victim is the smallest (a shrink takes its own oldest-first victims inside the
-                    // new caps), so even the last destructive attempt does not start by killing the
+                    // try_regrow() puts cut caps back at every park and restore.  The loop's victim is the
+                    // oldest, so even this last destructive attempt does not start by killing the
                     // conversation that has waited longest.
                     // A conversation EXCHANGE parks with the incoming image's RAM (held), and any warm
                     // park runs with its retained reuse buffers (retained) still in hand: the cache
@@ -10727,7 +10725,7 @@ int main(int argc, char** argv) {
                         }
                     } else {
                         while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
-                               conversations.evict_smallest())
+                               conversations.evict_oldest())
                             ++evicted;
                         if (!admit()) {
                             // The reading is this box's ceiling only if the loop ran the cache dry of

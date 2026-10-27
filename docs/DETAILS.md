@@ -698,10 +698,8 @@ the engine (v2 `memory.max` and `memory.high`, v1 `memory.limit_in_bytes`, less 
 `--memory-limit-mib` cap. The startup line `strata generate: memory guard: limit X GiB (source: flag|cgroup|meminfo) ...` names
 the source. It covers parking and session files only, not the startup sizing of the arena, the resident budget or the Windows commit check.
 
-Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. When a new park
-needs room, which parked entry gives it up depends on the reason: with the byte budget still free and only the slots full,
-the SMALLEST parked conversation goes (the cheapest to read again; ties oldest-first); when the bytes themselves do not fit,
-the oldest goes. Pinned conversations and a conversation borrowed mid-attempt stay. A new conversation that starts at a checkpoint inside
+Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
+are evicted first (pinned ones and a conversation borrowed mid-attempt stay). A new conversation that starts at a checkpoint inside
 a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
 allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
@@ -711,7 +709,7 @@ prompt tokens the cache gave back; `/metrics` has the same under `"conversation_
 
 RAM is a third limit beside the cache's budget and slots. A park needs its snapshot plus
 `--conversation-cache-min-free-mib` standing in the free RAM (sources above); when it does not fit, the engine evicts parked
-conversations, the smallest first, until it fits or none can go. Emptying the cache does not always return what its ledger
+conversations, oldest first, until it fits or none can go. Emptying the cache does not always return what its ledger
 promised: an attempt that ran the cache dry (or found only pinned conversations) and still refuses records the free RAM it
 measured as this box's **empty-cache ceiling**, and from then on predicts from that measured number, not the ledger. A park
 that could not fit even at the ceiling gives up ONE slot, scales the budget with it and tries admission once with the freed
