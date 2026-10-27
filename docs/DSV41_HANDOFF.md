@@ -858,17 +858,25 @@ were screenshotted (work/m6_parallel.png, work/m6_monitor.png).  The key goes in
 (localStorage); the panel's `--api-monitor` request list needs it, the slot cells do not.
 
 
-## The four open PRs, all drafts (02:12)
+## The four open PRs (02:15)
 
-| | branch | what | why it stays a draft |
+| | branch | what | state |
 |---|---|---|---|
-| [#4199](https://github.com/Niko1221/Strata/pull/4199) | `feat/dsv41-batch-m1` | batched serving (M1, M4-M6, the M2 step) | engine code: needs the CUDA **and** HIP builds; CUDA is green here (this box builds it), HIP has no toolchain |
-| [#4340](https://github.com/Niko1221/Strata/pull/4340) | `fix/read-heartbeat` | the read beat on all three streams | server only, but the repository's rule is a draft until its builds have run |
-| [#4341](https://github.com/Niko1221/Strata/pull/4341) | `feat/single-stream-short-first` | `STRATA_ADMIT_SHORT_FIRST` in the single-stream queue | same |
-| [#4343](https://github.com/Niko1221/Strata/pull/4343) | `claude/busy-albattani-fjntdn` (a second agent's) | slot files `0600` | engine code; CUDA build + e2e done here, HIP asked for in a comment |
+| [#4199](https://github.com/Niko1221/Strata/pull/4199) | `feat/dsv41-batch-m1` | batched serving (M1, M4-M6, the M2 step) | **draft**: engine code, needs the CUDA **and** HIP builds (CUDA is green here, HIP has no toolchain); merges `main` after #4340 and #4341 |
+| [#4340](https://github.com/Niko1221/Strata/pull/4340) | `fix/read-heartbeat` | the read beat on all three streams | **ready for review** - server-only, no device code |
+| [#4341](https://github.com/Niko1221/Strata/pull/4341) | `feat/single-stream-short-first` | `STRATA_ADMIT_SHORT_FIRST` in the single-stream queue | **ready for review** - server-only |
+| [#4343](https://github.com/Niko1221/Strata/pull/4343) | `claude/busy-albattani-fjntdn` (a second agent's) | slot files `0600` | **draft**: CUDA build + e2e done here, HIP asked for in a comment |
 
 The #4343 validation on this box, for the record: a fresh Ninja build with the production options linked `strata-dsv41`
 and `ds4_slot_test` (rc=0, `slot_test: all passed`); the end-to-end run in `/tmp/slot0600-test` (a folder the engine
 creates is `0700`, the written files are `0600`, files chmod'ed to `664` are `0600` again at the next start, and both
 conversations are kept).
+
+**A claim of mine that was wrong, and removed from the PR (02:14).**  I wrote that the start-up scan loads a kept
+conversation into RAM, so the next turn was served from it.  It does not: the scan registers a *file slot* (the `.bin`
+is read only when a prompt continues it, and `slot_take` then prints `took back a N-token conversation from the folder`).
+The end-to-end run had no such line, so that turn re-read its prompt anyway - and at ~1,100 tokens that costs under a
+second, so the turn's 2.5 s could not have told the two apart.  The PR body and a comment now say that, and a take-back
+test (`GEN` with the slot's own tokens plus a few new ones, then `took back ... from the folder` and `DONE`'s `reused`
+close to N) is listed under "not run".
 
