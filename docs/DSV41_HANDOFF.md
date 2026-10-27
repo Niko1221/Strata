@@ -678,12 +678,14 @@ collected (8 slots at 1M), and flow+step proven on the window path at 1M - with 
 
 **The build is production now.**  `build/strata-dsv41.step26` (md5 `9d0892c98f9f`) -> `build/strata-dsv41` and
 `build/strata-dsv41.prod` (the old stock is kept as `build/strata-dsv41.prod.stock`; the config and the launcher each have
-a `.prod.bak`).  The production config gained **`--batch 4 --slot-context 262144`** (four slots, 256K a conversation;
-23 of 4224 experts go to the host lane, 0.2 GB, so nothing is streamed) and the launcher gained
-`STRATA_DS4_BATCH_LIVE=1`, `STRATA_DS4_STEP=1` and `server.py --api-monitor`.  After the restart: `health 200`, the key
-is enforced again (`/v1/status` 401 without it), one short answer in 0.63 s ("The capital of France is Paris."), and two
-requests at once answer in 2.9 s each through two slots ("11, 13, 17" and "12, 14, 16").  The machine's public port
-53080 maps to the container's 8080 (8080 is not reachable from the outside, 53080 is).
+a `.prod.bak`).  The production config gained **`--batch 2 --slot-context 1048576`** (two slots, a full 1M conversation
+each: 125 of 4224 experts go to the host lane, 1.3 GB, and a pass still reads mostly VRAM) and the launcher gained
+`STRATA_DS4_BATCH_LIVE=1`, `STRATA_DS4_STEP=1` and `server.py --api-monitor`.  (The first deployment was 4 slots at
+256K; 1M with two slots is the setting that was kept.)  After the restart: `health 200`, `/v1/status` reads
+`context.native 1048576` and `serving 2` with slots 0 and 1, the key is enforced (`/v1/status` 401 without it), one
+short answer in 0.63 s ("The capital of France is Paris."), and two requests at once answer in 2.2 s each through the
+two slots ("11, 13, 17" and "12, 14, 16").  The machine's public port 53080 maps to the container's 8080 (8080 is not
+reachable from the outside, 53080 is).
 
 **M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
 `/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
