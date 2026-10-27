@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, EngineStuck, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
@@ -3968,12 +3968,42 @@ class SharingTheGpu(unittest.TestCase):
         self.assertTrue(self.engine.alive())
 
     def test_unload_busy_answers_with_a_readable_message(self):
-        """A busy POST /unload answers 409 with a message the webui can show, not a bare status."""
+        """A busy POST /unload answers 409 with a message the webui can show, not a bare status.  Final
+        review C: the wording names both reasons the queue can be held - a running request and the
+        ladder's background pre-staging save - so a save is never reported to the owner as a request."""
         with self.svc.fifo:                                   # a request holds the queue (#1997)
             status, body = self.req("/unload", {})
         self.assertEqual(status, 409)
         self.assertEqual(body["status"], "busy")
-        self.assertEqual(body["error"]["message"], "a request is running or queued; try again when it is quiet")
+        self.assertEqual(body["error"]["message"],
+                         "a request is running or the model is saving; try again when it is quiet")
+
+    def test_load_answers_engine_death_with_503(self):
+        """Final review C: POST /load catches EngineDied too (the engine ended while it was starting, or
+        the warm handoff around the start found it gone) and answers the 503 JSON shape /unload gives for
+        engine death - not a traceback out of _post and a dropped connection."""
+        def dying_restart():
+            raise EngineDied("the engine ended")
+        self.assertEqual(self.svc.unload(), "unloaded")
+        self.engine.restart = dying_restart                   # alive() False: the load must start it
+        status, body = self.req("/load", {})
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["type"], "server_error")
+        self.assertEqual(body["error"]["message"], "the engine ended")
+        self.assertFalse(self.engine.alive())
+
+    def test_load_answers_a_stuck_engine_with_503(self):
+        """EngineStuck on the load side gets the same answer as on the unload routes (symmetry): the
+        engine exists but could not be released or restarted."""
+        def stuck_restart():
+            raise EngineStuck("Strata is still releasing GPU/RAM; retry unloading after it exits")
+        self.assertEqual(self.svc.unload(), "unloaded")
+        self.engine.restart = stuck_restart
+        status, body = self.req("/load", {})
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["type"], "server_error")
+        self.assertIn("still releasing", body["error"]["message"])
+        self.assertFalse(self.engine.alive())
 
     def test_unload_answers_engine_death_with_503(self):
         """EngineDied from unload() (e.g. the save before it found the engine ended): a 503 JSON that
@@ -3994,6 +4024,7 @@ class SharingTheGpu(unittest.TestCase):
         self.engine.unload = dying_unload
         status, body = self.req("/v1/unload", {})             # req sends application/json with no Origin
         self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["type"], "server_error")   # the same contract as the /unload twin
         self.assertEqual(body["error"]["message"], "the engine ended")
 
     def test_idle_unload(self):
@@ -4112,7 +4143,8 @@ class SharingTheGpu(unittest.TestCase):
         t0 = time.time()
         self.assertEqual(self.req("/unload", {}),
                          (409, {"status": "busy",
-                                "error": {"message": "a request is running or queued; try again when it is quiet"}}))
+                                "error": {"message": "a request is running or the model is saving; "
+                                                     "try again when it is quiet"}}))
         self.assertLess(time.time() - t0, 0.9)
         status, body = self.req("/unload?wait=1", {})
         self.assertEqual((status, body), (200, {"status": "unloaded"}))
@@ -4124,7 +4156,8 @@ class SharingTheGpu(unittest.TestCase):
             t0 = time.time()
             self.assertEqual(self.req("/unload?wait=0.6", {}),
                              (409, {"status": "busy",
-                                    "error": {"message": "a request is running or queued; try again when it is quiet"}}))
+                                    "error": {"message": "a request is running or the model is saving; "
+                                                         "try again when it is quiet"}}))
             self.assertLess(time.time() - t0, 5)
         self.assertTrue(self.engine.alive())
 
