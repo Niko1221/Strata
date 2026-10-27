@@ -73,5 +73,62 @@ class QueueKeepAlive(unittest.TestCase):
         self.assertEqual(self.svc.status["queued"], 0)
 
 
+class QueueShortFirst(unittest.TestCase):
+    """STRATA_ADMIT_SHORT_FIRST without --batch: the requests waiting for the single turn take it short prompts first;
+    the request that holds the turn is never interrupted, and a long one that waited long enough counts as short."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.svc = Service(MockEngine(tok, "ok"), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        for name, value in (("QUEUE_BEAT_S", 0.1), ("ADMIT_SHORT_FIRST", 64)):
+            p = mock.patch.object(server, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _race(self):
+        """A long prompt queues first, a short one after it, then the turn frees: the order they finished in."""
+        order, lock = [], threading.Lock()
+
+        def run(name, text):
+            for kind, _ in self.svc.run(self.svc.tok.encode(text), False, None, 8, {}, threading.Event()):
+                if kind == "done":
+                    with lock:
+                        order.append(name)
+
+        self.svc.fifo.acquire()                           # another request holds the turn
+        threads = [threading.Thread(target=run, args=("long", "x" * 400), daemon=True)]
+        try:
+            threads[0].start()
+            time.sleep(0.3)
+            threads.append(threading.Thread(target=run, args=("short", "hi"), daemon=True))
+            threads[1].start()
+            time.sleep(0.3)
+            waiting = len(getattr(self.svc, "queue_waiters", []))
+        finally:
+            self.svc.fifo.release()                       # (also when the check above fails: no thread is left blocked)
+        for t in threads:
+            t.join(10)
+        self.assertEqual(waiting, 2)
+        self.assertEqual(self.svc.queue_waiters, [])
+        return order
+
+    def test_a_short_prompt_takes_the_turn_before_a_longer_one_that_came_first(self):
+        for _ in range(3):                                # (the order must not depend on which thread wakes first)
+            self.assertEqual(self._race(), ["short", "long"])
+
+    def test_a_long_prompt_that_waited_long_enough_counts_as_short(self):
+        with mock.patch.object(server, "ADMIT_MAX_WAIT_S", 0.2):
+            self.assertEqual(self._race(), ["long", "short"])
+
+    def test_an_ordered_wait_still_beats(self):
+        self.svc.fifo.acquire()
+        self.addCleanup(self.svc.fifo.release)
+        run = self.svc.run(self.svc.tok.encode("hi"), False, None, 8, {}, threading.Event())
+        self.assertEqual(next(run), ("ping", None))
+        self.assertEqual(next(run), ("ping", None))
+        run.close()
+        self.assertEqual(self.svc.queue_waiters, [])     # a request that left gave its place up
+
+
 if __name__ == "__main__":
     unittest.main()
