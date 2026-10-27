@@ -523,6 +523,23 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   In serial CUDA and wave32 HIP decode, the engine scores accepted tokens and top IDs on the GPU and transfers
   those scores. Equal-logit top IDs are ordered by token ID; score rounding can differ from the CPU path. Named
   `allowed_token_ids` and pipelined windows keep the full-logit CPU scoring path.
+- **The sequence a reply was made of: `"strata_rollout": true` (training).** With `logprobs` on, a top-level
+  `strata_rollout` carries `prompt_ids`, the prompt the reply continues exactly as the engine read it (requests are
+  never truncated, so it is the whole prompt), and `tokens[]`, one per generated token in order, each with the
+  vocabulary `id` it was sampled
+  from, the `logprob` the engine wrote, and the `field` it spells: `reasoning_content`, `content`, `gap` for a token
+  no piece of text claimed (the blank run before the answer, say), `stop` for the end token, `tail` for anything after
+  the reply's last text. `token`/`bytes` come with them, and `top_logprobs` (ids and values) when the engine sent
+  alternatives. `len(tokens)` equals `usage.completion_tokens` and the last entry is the end token, which the two
+  OpenAI arrays do not have: they are a projection of this sequence, not the sequence. `logprob` here is the engine's
+  own value, before `allowed_token_ids` renormalises what the text view reports, and `logprobs_mode` says `raw` (before
+  penalties, temperature and truncation). `sampling` echoes the temperature, truncation and penalties the request was
+  run with; a key that is absent was left to the engine's default. This is the view a trainer reads -- with the ids it
+  re-runs the forward pass itself and back-propagates through it, and these numbers are its cross-check -- so a
+  `strata_rollout` request without `logprobs` is a 400 rather than an empty sequence, and one that offers MCP tools is
+  a 400 too: an MCP request generates once per round with tool results in between, and no LP line covers those, so its
+  tokens are several generations rather than one sequence. It travels with the last chunk
+  when streamed, as `usage` does, and needs the whole reply in one place as a non-streamed one already does.
 - **Non-finite logits end the request and drop the cached state (on by default).** If a verify window's logits are NaN, the
   window emits no tokens, the request ends, and the next request drops the live session, checkpoints and parked
   conversations and reads its prompt from token 0. The server retries a request that had sent nothing once, transparently.

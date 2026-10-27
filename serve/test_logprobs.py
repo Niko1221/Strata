@@ -415,6 +415,80 @@ class Api(unittest.TestCase):
     def test_not_asked_no_logprobs(self):
         out = self.post({})
         self.assertNotIn("logprobs", out["choices"][0])
+        self.assertNotIn("strata_rollout", out)
+
+    def test_rollout_is_the_whole_sequence(self):
+        # the sequence the reply was made of, which the two OpenAI arrays are a projection of: one entry per
+        # generated token, in order, with the id it was sampled from and the field it spells -- the think end,
+        # the blanks before the answer and the end token included, which no OpenAI array carries
+        tok = ThinkTokenizer()
+        svc = Service(LpEngine(tok, "Two times three.</think>\n\nSix."), tok, TEMPLATE)
+        httpd = serve(svc, port=0)
+        try:
+            self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            for stream in (False, True):
+                out = self.post({"logprobs": True, "strata_rollout": True,
+                                 "chat_template_kwargs": {"enable_thinking": True}}, stream)
+                if stream:
+                    out, end = {"usage": out[-1]["usage"]}, out[-1]
+                else:
+                    end = out
+                roll = end["strata_rollout"]
+                toks = roll["tokens"]
+                self.assertEqual(len(toks), out["usage"]["completion_tokens"], stream)   # nothing dropped
+                self.assertEqual([t["field"] for t in toks].count("stop"), 1, stream)
+                self.assertEqual(toks[-1]["field"], "stop", stream)
+                self.assertTrue(all(isinstance(t["id"], int) for t in toks), stream)
+                self.assertEqual("".join(t["token"] for t in toks if t["field"] == "reasoning_content"),
+                                 "Two times three.", stream)
+                self.assertEqual("".join(t["token"] for t in toks if t["field"] == "content"), "Six.", stream)
+                # the tokens the text view could not place are named, not lost: the think end and the blank run
+                self.assertEqual("".join(t["token"] for t in toks if t["field"] == "gap"), "</think>\n\n", stream)
+                self.assertEqual(roll["logprobs_mode"], "raw", stream)
+                # the prompt the tokens continue, as the engine read it: a trainer re-tokenizing the prompt on
+                # its own side can apply a different chat template, and then every later position is off
+                self.assertEqual(len(roll["prompt_ids"]), out["usage"]["prompt_tokens"], stream)
+                self.assertTrue(all(isinstance(t, int) for t in roll["prompt_ids"]), stream)
+                self.assertIn("hi", tok.decode(roll["prompt_ids"]), stream)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_rollout_keeps_the_logprob_the_engine_wrote(self):
+        # allowed_token_ids renormalises what the text view reports (naming only the chosen id makes it 1, logprob
+        # 0); the rollout reports the engine's own value, which is what a trainer compares its forward pass to
+        out = self.post({"logprobs": True, "strata_rollout": True, "allowed_token_ids": [67]})
+        self.assertEqual(out["choices"][0]["logprobs"]["content"][0]["logprob"], 0.0)
+        self.assertEqual(out["strata_rollout"]["tokens"][0]["logprob"], -0.01)
+
+    def test_rollout_needs_logprobs(self):
+        # the sequence is read from the engine's LP lines, and it writes none unless logprobs was asked for:
+        # an empty rollout would read as a reply with no tokens
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post({"strata_rollout": True})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIn("strata_rollout", cm.exception.read().decode())
+
+    def test_rollout_with_mcp_tools_is_refused(self):
+        # one rollout is one generation.  An MCP request runs a tool and generates again from a longer prompt, so
+        # its tokens are several generations with tool results between them -- tokens no LP line covers.  Refused
+        # up front rather than handing over a sequence whose gaps look like the model's own output.
+        class Hub:
+            settings = {"max_rounds": 3}
+
+            def wait(self, _seconds):
+                pass
+
+            def template_tools(self, exclude=()):
+                return [{"type": "function", "function": {"name": "probe", "parameters": {}}}]
+
+        self.svc.mcp = Hub()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post({"logprobs": True, "strata_rollout": True, "strata_mcp": True})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIn("strata_mcp", cm.exception.read().decode())
+        self.svc.mcp = None
+        self.assertIn("strata_rollout", self.post({"logprobs": True, "strata_rollout": True}))
 
     def test_an_engine_without_lp_lines_gives_none(self):
         self.engine.with_lines = False

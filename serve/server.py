@@ -5170,16 +5170,22 @@ class Service:
             if ka is not None:
                 ka.release()
 
+    def sampling_for(self, sampling, thinking) -> dict:
+        """The sampling the engine is run with: the model card's for this thinking state, then the config's block,
+        then the Chat settings shared with apps, then the request's own fields (explicit 0 stays greedy).
+
+        One function so that what a request is run with and what a rollout says it was run with cannot drift."""
+        defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
+        if defaults:
+            req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
+            return {**defaults, **req_values}
+        return sampling
+
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
              declared_only=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
-        # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
-        # apps; the request's own fields win over all of them
-        defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
-        if defaults:                   # the request's own fields win (explicit 0 stays greedy)
-            req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
-            sampling = {**defaults, **req_values}
+        sampling = self.sampling_for(sampling, thinking)
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
@@ -5921,15 +5927,29 @@ class LPLines(collections.deque):
         self.owner = owner
 
 
+# The sampling a rollout echoes: a stored logprob is only comparable to a forward pass run later if the temperature,
+# the truncation and the penalties it was taken under are known too.  The values are the ones the engine was given
+# (Service.sampling_for), verbatim -- it clamps top_k past 64 and reads seed <= 0 as unset.
+ROLLOUT_SAMPLING = ("temperature", "top_p", "top_k", "min_p", "frequency_penalty", "presence_penalty",
+                    "repetition_penalty", "penalty_last_n", "seed")
+
+
 class LogprobEntries:
-    """The engine's LP lines as OpenAI's logprobs.content entries.
+    """The engine's LP lines: one record per generated token (the sequence), and OpenAI's logprobs.content
+    entries as one projection of it (each token's text, given to the piece of text that spells it).
+
+    The sequence is read first and kept whole (`seq`): every token, with the id it was sampled from and the
+    logprob as the engine wrote it, whatever the text view later does with it.  The text view is derived from
+    it, so a token no piece of text claims -- the blank run between the thinking and the answer, say -- keeps
+    its place in the sequence and is labelled "gap" instead of being dropped, and the end token is labelled
+    "stop" rather than being skipped.  Nothing a caller may want back is destroyed by reading the text.
 
     Each token's "token" is the text it completes (an incremental UTF-8 decode, as the reply's
     text is made), so a character split across tokens lands in the token that finishes it and
     the tokens, joined, spell the reply.  "bytes" are the token's own bytes.  The stop token
     ends the reply and is not listed (OpenAI does not list it either).  Tokens that make no
-    text of the reply are left out, because spell() gives each piece of text the tokens that
-    spell it.
+    text of the reply are left out of the text view, because spell() gives each piece of text
+    the tokens that spell it.
 
     `allowed_token_ids`: only those ids are kept, and the logprobs are renormalised over them,
     so a caller asking about specific candidates gets a distribution over exactly those instead
@@ -5945,17 +5965,25 @@ class LogprobEntries:
         self.tok, self.stop_ids = svc.tok, svc.stop_ids
         self.allowed = [i for i in allowed]
         self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        self.pending = []                          # entries read but not yet given to a piece of text
+        self.seq = []                              # every token read, in order: the sequence (see read())
+        self.pending = []                          # records read but not yet given to a piece of text
         self.owner = owner                         # the request's cancel Event (LPLines)
         self.lines = None                          # this request's current LPLines, kept once seen
 
-    def spell(self, eng, text: str) -> list:
-        """The entries whose tokens spell `text`, the next piece of the reply."""
-        self.pending += self.take(eng)
+    def spell(self, eng, text: str, field: str = "content") -> list:
+        """The entries whose tokens spell `text`, the next piece of the reply, and the field they belong to.
+
+        The records stay in `seq` with the field written on them: this is a projection of the sequence, not a
+        way of consuming it.  A token before the piece (a blank run the parser left out of the text) is
+        labelled "gap" and kept; it used to be dropped here, which is why the entries stopped being a
+        sequence and a caller had no way to tell.
+        """
+        self.pending += self.read(eng)
+        recs = self.pending
         at = [0]
-        for e in self.pending:
-            at.append(at[-1] + len(e["token"]))
-        joined = "".join(e["token"] for e in self.pending)
+        for r in recs:
+            at.append(at[-1] + len(r["e"]["token"]))
+        joined = "".join(r["e"]["token"] for r in recs)
         i = joined.find(text)
         while i >= 0 and text:
             if i in at:
@@ -5963,11 +5991,17 @@ class LogprobEntries:
                 end = i + len(text)
                 b = next((j for j in range(a + 1, len(at)) if at[j] == end), None)
                 if b is not None:
-                    out, self.pending = self.pending[a:b], self.pending[b:]
-                    return out
+                    out, self.pending = recs[a:b], recs[b:]
+                    for r in recs[:a]:
+                        r["field"] = "gap"
+                    for r in out:
+                        r["field"] = field
+                    return [r["e"] for r in out]
             i = joined.find(text, i + 1)
-        out, self.pending = self.pending, []
-        return out
+        out, self.pending = recs, []
+        for r in out:
+            r["field"] = field
+        return [r["e"] for r in out]
 
     def raw(self, t):
         if hasattr(self.tok, "token_bytes"):
@@ -5975,6 +6009,18 @@ class LogprobEntries:
         return self.tok.decode([t]).encode("utf-8")
 
     def take(self, eng) -> list:
+        """The OpenAI entries for the tokens read since the last call (see read())."""
+        return [r["e"] for r in self.read(eng) if r["e"] is not None]
+
+    def read(self, eng) -> list:
+        """Every token the engine has written since the last call, in order: one record per generated token.
+
+        A record is `{"id", "logprob", "field", "top", "e"}`: the id it was sampled from, the logprob the engine
+        wrote for it (raw: before penalties, temperature and truncation), the field it spells once a piece of
+        text claims it (None until then), the ids that line carried, and `e`, the OpenAI entry.  `e` is None for
+        a stop token: its bytes are not part of the reply's text, and decoding them would move the incremental
+        decoder that text is made by.
+        """
         # the engine's current lines are this request's only when they carry its Event (a later generate pass
         # of the same request makes new ones: the old ones are read to the end first); another request's never are.
         # A batch admission keeps its own lines on the request's cancel Event: the engine's is one attribute, and
@@ -5987,21 +6033,27 @@ class LogprobEntries:
         for lines in (old, self.lines):
             while lines:
                 t, line = lines.popleft()
-                if t in self.stop_ids:
-                    continue
+                stop = t in self.stop_ids
                 f = line.split()
-                if len(f) < 2:
+                lp, alts = None, []
+                if len(f) >= 2:
+                    try:                           # "nan" (no head logits for that window row), "-nan(ind)"
+                        lp = float(f[1])           # (MSVC) or a cut line: no record for that token
+                        alts = [(int(i), float(v)) for i, _, v in (x.partition(":") for x in f[2:])]
+                    except ValueError:
+                        lp, alts = None, []
+                if lp is None or not math.isfinite(lp) or not all(math.isfinite(v) for _, v in alts):
+                    lp, alts = None, []
+                if stop:                           # the end token is in the sequence, not in any text
+                    self.seq.append({"id": t, "logprob": lp, "field": "stop", "top": alts, "e": None})
                     continue
-                try:                               # "nan" (no head logits for that window row), "-nan(ind)"
-                    lp = float(f[1])               # (MSVC) or a cut line: no entry for that token
-                    alts = [(int(i), float(v)) for i, _, v in (x.partition(":") for x in f[2:])]
-                except ValueError:
-                    continue
-                if not math.isfinite(lp) or not all(math.isfinite(v) for _, v in alts):
+                if lp is None:
                     continue
                 b = self.raw(t)
                 e = {"token": self.inc.decode(b), "logprob": lp, "bytes": list(b),
                      "top_logprobs": []}
+                rec = {"id": t, "logprob": lp, "field": None, "top": alts, "e": e}
+                self.seq.append(rec)
                 if self.allowed:
                     alts = [(i, v) for i, v in alts if i in self.allowed]
                 for i, v in alts:
@@ -6010,7 +6062,7 @@ class LogprobEntries:
                                               "logprob": v, "bytes": list(alt)})
                 if self.allowed:
                     e = self._renormalise(e, t, lp)
-                out.append(e)
+                out.append(rec)
         return out
 
     def _renormalise(self, e, t, lp):
@@ -6043,6 +6095,47 @@ class LogprobEntries:
         if own is not None:                        # the chosen token is in the distribution: report its own value
             e["logprob"] = own["logprob"]           # (it used to copy the first alternative's, another token's)
         return e
+
+    def finish(self, eng) -> None:
+        """Read what is left after the reply's last piece of text, and label what no piece claimed.
+
+        Such a token is "tail": in the sequence because the engine generated it, in no OpenAI array because it
+        spells no text of the reply.  Reading the rest here is what makes `seq` the whole reply rather than a
+        prefix of it.
+        """
+        for r in self.pending + self.read(eng):
+            if r["field"] is None:
+                r["field"] = "tail"
+        self.pending = []
+
+    def rollout(self, sampling=None, prompt_ids=None) -> dict:
+        """The whole sequence this request generated: one entry per token, in order, from its id.
+
+        This is what a trainer reads, and `choices[0].logprobs` is not: same tokens, but nothing dropped at a
+        field boundary, every token carrying the id it was sampled from, and `logprob` the engine's own value
+        before `allowed_token_ids` renormalises what the text view reports (that projection answers "how likely
+        among the ids I named"; this one answers "how likely").  With the ids a trainer re-runs the forward pass
+        itself and back-propagates through it; the numbers here are the cross-check.
+
+        `prompt_ids` is the prompt those tokens continue, as the engine read it.  A trainer needs it because the
+        alternative -- tokenizing the prompt again on its own side -- can apply a different chat template and
+        then every position after the first difference is off: the logprobs here would look like a mismatch of
+        the model rather than of the template.  These are the ids `prepare()` handed the engine, and since
+        requests are never truncated they are the whole prompt, not a prefix of it.
+        """
+        tokens = []
+        for r in self.seq:
+            e = r["e"]
+            b = e["bytes"] if e is not None else list(self.raw(r["id"]))
+            tok = {"id": r["id"], "logprob": r["logprob"], "field": r["field"] or "gap",
+                   "token": e["token"] if e is not None else bytes(b).decode("utf-8", "replace"),
+                   "bytes": b}
+            if r["top"]:
+                tok["top_logprobs"] = [{"id": i, "logprob": v} for i, v in r["top"]]
+            tokens.append(tok)
+        return {"prompt_ids": [int(t) for t in prompt_ids] if prompt_ids else [],
+                "tokens": tokens, "logprobs_mode": "raw",
+                "sampling": {k: sampling[k] for k in ROLLOUT_SAMPLING if (sampling or {}).get(k) is not None}}
 
 def prompt_progress(svc: Service):
     """The last PP line as llama.cpp's `prompt_progress`, so a client written for llama.cpp reads both servers: the
@@ -6078,9 +6171,10 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
 
     yield chunk({"role": "assistant", "content": ""})
     lp = LogprobEntries(svc, allowed_ids(req), cancel) if top_logprobs(req) is not None else None
+    rollout = lp is not None and req.get("strata_rollout") is True
 
     def with_lp(c, key):
-        got = lp.spell(svc.engine, c["choices"][0]["delta"][key]) if lp is not None else None
+        got = lp.spell(svc.engine, c["choices"][0]["delta"][key], key) if lp is not None else None
         if got:
             c["choices"][0]["logprobs"] = {key: got}
         return c
@@ -6129,6 +6223,11 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if rollout:
+                # the sequence travels with the last chunk, as usage does: the tokens after the reply's last
+                # piece of text (its end token) are only known here, and a trainer reads a whole reply anyway
+                lp.finish(svc.engine)
+                last["strata_rollout"] = lp.rollout(svc.sampling_for(req, thinking), ids)
             yield last
 
 
@@ -6181,6 +6280,8 @@ def openai_collect(chunks) -> dict:
             {"reasoning_content": lps["reasoning_content"]} if lps.get("reasoning_content") else {})}
     if last.get("timings"):
         out["timings"] = last["timings"]
+    if last.get("strata_rollout"):
+        out["strata_rollout"] = last["strata_rollout"]     # the sequence the last chunk carried (see openai_chunks)
     return out
 
 
@@ -7470,6 +7571,11 @@ def make_handler(svc: Service):
             # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
             # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
             # alternatives) until it ends, so a long one holds a lot: streaming hands each entry out with its chunk.
+            if req.get("strata_rollout") is True and top_logprobs(req) is None:
+                # the sequence is built from the engine's LP lines, and it writes none unless logprobs was asked for:
+                # an empty rollout would look like a reply with no tokens
+                raise ValueError('strata_rollout needs "logprobs": true: the sequence it returns is read from the '
+                                 "engine's LP lines, which a request without logprobs is not sent")
             if top_logprobs(req) is not None and batch_slots_on(svc.engine) and max_req != 1:
                 # --parallel/--batch: a slot's "BT <slot> <id>" lines carry no LP line, and the batched loop never
                 # calls emit_lp_line (src/program/generate.cpp); an admission -- a max_tokens 1 request -- is read
@@ -7497,6 +7603,14 @@ def make_handler(svc: Service):
                 tools = (tools or []) + extra or None
             if force and use_mcp:
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
+            if use_mcp and req.get("strata_rollout") is True:
+                # one rollout is one generation.  An MCP request writes a tool call, runs it, and generates again
+                # from a longer prompt, so the reply's tokens are several generations with tool results between
+                # them -- tokens no LP line covers.  Handing that over as one sequence would put tokens that were
+                # never sampled next to each other and leave `prompt_ids` describing only the last round.
+                raise ValueError('strata_rollout cannot be combined with MCP tools (strata_mcp): a rollout is one '
+                                 "generation, and an MCP request generates once per round. Ask for it on a request "
+                                 "that offers no MCP tools")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
