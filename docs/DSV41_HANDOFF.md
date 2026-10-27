@@ -610,13 +610,19 @@ layer 13 is the first layer whose indexer's top-k has a tie close enough to be f
 compressed rows by score; a last-bit difference moves the cut).  Greedy decode then amplifies it into different
 tokens, which is why the divergence always looks total and early.
 
-Where the 1-ulp comes from: the EXL3 GEMV is an MMA kernel with **n = 8** (`kTok = 8`, "activations a block takes at
-once (the MMA's n)"), and a job's activations are split into runs of exactly 8 (`units[nu++] = {j, c0, kTok}`): 8 rows
-are one unit, 9 rows are two (8 + 1) and take a different launch shape, i.e. a different reduction order over K for
-*every* column.  So the step's pass above 8 rows is the same computation with a different summation order - valid
-arithmetic, not a per-row defect - and it cannot be bit-identical to the single-token decode while the batch changes the
-kernel's shape.  Two ways forward, to choose deliberately: (a) slab the step's GEMV calls at 8 rows (`mv` with
-`ncol <= 8` in runs), which makes any T bit-identical to the decode at the cost of more launches per layer, or (b)
-accept batch-shape-dependent rounding, which is what every batched engine does - and then say so in the docs and stop
-comparing tokens at T > 8 (the 2- and 8-slot comparisons stay the exactness evidence).
+Where the 1-ulp comes from: the first guess was the EXL3 GEMV's shape.  It is an MMA kernel with **n = 8** (`kTok = 8`,
+"activations a block takes at once (the MMA's n)") and a job's activations are split into runs of 8, so 9 rows are two
+units (8 + 1) where 8 rows are one.  **That was tested and refuted** (20:30-20:35): with a step's `mv` calls split into
+slabs of 8 rows (`mv()` with `ncol <= 8` a call, so every row's job has the shape a one-row job has), 9 and 16 rows
+drift at exactly the same token as before, and the 16-slot aggregate is unchanged (86.7 tok/s) - so the rounding does
+not come from `mv`.  What is left is another kernel whose behaviour is shaped by T: the router gate's `gemv_f32`, the
+indexer's `gemv_f16_rows`, `sparse_attn`'s head-splitting choice, `hc_mix_split`, or the grouped MoE's grouping.  The
+way to split it in one run: a second hash *after the attention* (the `dump_layer(d, d.h, 1000 + l.il, ...)` point
+inside `layer()`), which says whether layer 0's 1-ulp difference is in its attention half or its MoE half.
+
+**Where that leaves exactness.**  At 2 and 8 rows the step's tokens are the burst path's, bit for bit (24, 32 and 96
+tokens).  Above 8 rows the pass is deterministic and self-consistent (every row of a same-prompt pass is identical, the
+run repeats), but it rounds differently from a one-token decode, and greedy decode amplifies that into other tokens.  It
+is not a per-row defect and not a data race; if the project needs bit-identical tokens above 8 rows as well, the next
+step is the attention-half hash above, not another guess.
 
