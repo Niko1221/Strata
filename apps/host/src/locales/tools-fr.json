@@ -1,0 +1,6 @@
+{
+ "tl01": "Utilisez un nom de serveur simple de 32 caractères maximum : lettres, chiffres, tirets ou tirets bas.",
+ "tl02": "Ces serveurs d’outils ont été laissés de côté car leurs noms ne sont pas autorisés : {0}. Un nom peut contenir jusqu’à 32 lettres, chiffres, tirets ou tirets bas.",
+ "tl03": "Ces serveurs d’outils ont été laissés de côté car ils n’ont ni programme ni adresse web : {0}.",
+ "tl04": "Ces serveurs d’outils ont été laissés de côté car un autre a presque le même nom : {0}."
+}

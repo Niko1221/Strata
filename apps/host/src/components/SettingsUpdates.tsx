@@ -96,7 +96,7 @@ export function SettingsUpdates() {
   </>;
 }
 
-/** "Strata 0.2.6 · Engine 0.1.51": the app's own version first, the engine's beside it (About). */
+/** "Strata 0.2.7 · Engine 0.1.52": the app's own version first, the engine's beside it (About). */
 export function AboutVersions() {
     const native = useNative();
     const app = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);

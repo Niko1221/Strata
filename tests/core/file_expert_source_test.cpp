@@ -979,6 +979,28 @@ void test_replace_resident(bool pin) {
     require(src.commit_exchanges() == 1 && src.has_resident(0, 3) && holds(3) && !src.has_resident(0, 1),
             "exchange after replace wrong");
     require(src.ram_adapts() == 2, "accounting wrong");
+    // a staged incoming blob: RAM {2,3}, VRAM {0,1}, 4 on the file tier
+    require(!src.replace_resident_staged(0, 4, 3) && src.has_resident(0, 3) && src.ram_adapts() == 2,
+            "an unstaged expert moved");
+    std::string why;
+    set_env("STRATA_UNBUFFERED_LOAD", "1");
+    const bool unbuffered = src.set_unbuffered(0, why);
+    set_env("STRATA_UNBUFFERED_LOAD", nullptr);
+    if (unbuffered && src.stages_blobs()) {
+        require(!src.replace_resident_staged(0, 4, 3) && holds(3), "moved before any demand read");
+        require(!src.has_resident(0, 4) && holds(4), "demand read wrong");   // leaves 4 in a stage buffer
+        require(!src.replace_resident_staged(0, 4, 0) && !src.replace_resident_staged(0, 2, 3),
+                "invalid staged pair accepted");
+        require(src.replace_resident_staged(0, 4, 3) && src.has_resident(0, 4) && !src.has_resident(0, 3),
+                "staged replacement residency wrong");
+        require(src.resident_blob(0, 4) != nullptr && !std::memcmp(src.resident_blob(0, 4), truth[4].data(), bytes),
+                "staged replacement bytes wrong");
+        require(holds(2) && holds(3) && src.ram_adapts() == 3 && src.ram_staged() == 1,
+                "staged replacement changed another expert");
+        std::cout << "replace_resident_staged: pinned=" << pin << " exact_bytes=PASS\n";
+    } else {
+        std::cout << "replace_resident_staged: pinned=" << pin << " unbuffered unavailable here (" << why << "), positive case SKIPPED\n";
+    }
     std::cout << "replace_resident: pinned=" << pin << " exact_bytes=PASS\n";
 }
 

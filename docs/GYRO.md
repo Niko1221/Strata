@@ -39,8 +39,10 @@ ready-made engine is too old for the pack, setup replaces it or the app offers U
 About half of each file is the n-gram (PLE) table. It stays on the SSD and is read row by row for every token, so keep
 the file on a fast local drive. The memory figure is what the weights take once loaded.
 
-Gyro-L (agentionai's 50 GiB file) is not supported. It uses another trellis family (types 147 to 149) that the engine
-does not have.
+Gyro-L (agentionai's 50 GiB file) uses another trellis family, the pair trellis (types 147 to 149, TQP5 to TQP7). The
+engine reads it with the same pack step and expert kernels as the other Gyro files, on the CPU and on CUDA cards. The
+prompt path uses the trellis MMQ build where the build has it; Metal and SYCL have no kernels for it, so they use the CPU
+rows and the FP16 prompt path. We have not run the 50 GiB file ourselves yet.
 
 **Pictures.** Gyro reads pictures with the original model's picture reader file, the same one every
 Qwen3.8-Flash-Next model uses. Setup downloads it with the model. The reader opens only the vocabulary and the header of

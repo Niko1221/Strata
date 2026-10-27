@@ -113,7 +113,9 @@ and starts the encoder with the model, as before) the GPU encoder is not started
 - **A picture's turn** (the same FIFO turn an encode always takes): if the encoder is not running, the engine's
   `VRAM` command first keeps `"elastic_mib"` (default 2048) free on top of the reserve - the last `POST /v1/vram`, or 0
   when none was made - and then the encoder starts. If the cache cannot shrink (the resident low-RAM mode, an engine
-  without `--vram-elastic`) it starts anyway, as a non-elastic encoder would, and the log says why.
+  without `--vram-elastic`, a layer split) it starts anyway, as a non-elastic encoder would, and the log says why; on a
+  layer split the server says at start that the encoder's VRAM has to be kept free with `--vram-reserve-mib`. An
+  encoder that fails to start (out of VRAM) ends the request with a `503`; the next picture tries again.
 - **Idle** for `"elastic_idle_s"` (default 120) without a picture: a thread stops the encoder between requests and
   sends `VRAM` with that reserve again, so the cache grows back to the size it had (0, not the start's reserve: that
   would leave it a segment or more smaller).

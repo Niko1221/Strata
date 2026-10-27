@@ -89,3 +89,12 @@
   .monitor-spark .spark__readout { right: auto; left: 0; max-width: 230px; }
   .monitor-metric:nth-child(even) .monitor-spark .spark__readout { right: 0; left: auto; }
 }
+
+/* The energy and temperature readings (#3628): one thin row under the cards, a label and a value each, wrapping to 3 and 2 columns on narrow windows. */
+.monitor-readings { padding: 12px 20px; }
+.monitor-readings dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 24px; }
+.monitor-readings dl > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.monitor-readings dt { color: var(--st-ink-muted); font-size: 12px; }
+.monitor-readings dd { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .monitor-readings dl { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .monitor-readings { padding: 12px 16px; } .monitor-readings dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
