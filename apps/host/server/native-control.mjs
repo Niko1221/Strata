@@ -223,24 +223,33 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  const DS_EXPERTS_MIN=[0,1,50];
  function dsEngineVersion(config){const m=/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String(config?.exe??''))||/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String((config?.lib_dirs??[])[0]??''));return m?m[1].split('.').map(Number):null;}
  function dsExpertsSupported(config){const v=dsEngineVersion(config);if(!v)return false;for(let i=0;i<DS_EXPERTS_MIN.length;i++){const a=v[i]??0,b=DS_EXPERTS_MIN[i];if(a!==b)return a>b;}return true;}
- /* Control's ceiling for one start wait, read from the Control this app actually found rather than guessed from its version: the owner
-    runtime takes MAX_START_WAIT (#3949), but `strata runtime start --wait` - the command the app starts a model with - validates the
-    wait itself, and that validator was left at 600 s by the same change (the app says `start wait must be finite seconds in 0..600`).
-    A wait above what that file accepts is refused before anything loads, so the app asks for the ceiling of the Control it has and
-    keeps today's 600 s whenever it cannot read one. Reading the installed Control to learn what it supports is what the field list
-    and the /v1/responses capability already do; here it reads Control's own validator instead of the server. */
+ /* Control's ceiling for one start wait, read from the Control this app actually found rather than guessed from its version. The
+    app starts a model with `strata runtime start --wait`, and that wait is checked three times before the engine is reached: by
+    management.runtime_action, by the operation record written before the start (journal), and by runtime.start itself. 27cbbfe6
+    raised only the runtime's, so a longer wait died with `start wait must be finite seconds in 0..600` and then with
+    `direct runtime intent has an invalid timeout`. The app therefore asks for the longer wait only when a Control's own sources
+    say all three agree, and keeps today's 600 s whenever one of them still names a ceiling of its own. Reading the installed
+    Control to learn what it supports is what the field list and the /v1/responses capability already do. */
  const START_WAIT_CEILING=600;
  let ceilingCache={dir:'',time:0,value:START_WAIT_CEILING};
+ function followsRuntimeCeiling(text,marker){
+  /* The marker picks the one line that bounds the wait (`"wait_s": (` in the record's range table, `"start wait"` in the CLI
+     validator), because both files name those keys elsewhere. A line that still spells out 600 is a ceiling of its own. */
+  const line=(String(text).split(/\r?\n/).find(l=>l.includes(marker))??'');
+  return /runtime\.MAX_START_WAIT|start_wait_max/.test(line)&&!/\b600\b/.test(line);
+ }
  function startWaitCeiling(){
   const dir=control?.control?.dir??'';if(!dir)return START_WAIT_CEILING;
-  let time=0;const file=join(dir,'strata_control','management.py');
-  try{time=statSync(file).mtimeMs;}catch{return START_WAIT_CEILING;}
+  const files=['management.py','journal.py','runtime.py'].map(name=>join(dir,'strata_control',name));
+  let time=0;
+  try{time=Math.max(...files.map(f=>statSync(f).mtimeMs));}catch{return START_WAIT_CEILING;}
   if(ceilingCache.dir===dir&&ceilingCache.time===time)return ceilingCache.value;
   let value=START_WAIT_CEILING;
   try{
-   const line=(readFileSync(file,'utf8').split(/\r?\n/).find(l=>l.includes('"start wait"'))??'');
-   if(/runtime\.MAX_START_WAIT/.test(line)){    // a Control whose CLI takes the runtime's own ceiling, whatever it is
-    const declared=Number(readFileSync(join(dir,'strata_control','runtime.py'),'utf8').match(/^MAX_START_WAIT\s*=\s*(\d+)/m)?.[1]);
+   const [management,journal]=files.slice(0,2).map(f=>readFileSync(f,'utf8'));
+   // both gates must hand the ceiling to the runtime, or the wait would be refused on the way to it
+   if(followsRuntimeCeiling(management,'"start wait"')&&followsRuntimeCeiling(journal,'"wait_s": (')){
+    const declared=Number(readFileSync(files[2],'utf8').match(/^MAX_START_WAIT\s*=\s*(\d+)/m)?.[1]);
     if(Number.isFinite(declared)&&declared>value)value=declared;
    }
   }catch{value=START_WAIT_CEILING;}

@@ -92,16 +92,22 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
-  /* The Control this app found, as it is on disk: the app reads the start-wait ceiling out of these two files instead of
-     trusting the version, because the released Control validates the wait twice and the two numbers can disagree.
-     'old': no runtime ceiling at all, CLI takes 600. 'split': the runtime takes 1800 but the CLI still stops at 600
-     (what every Control up to 0.1.52 ships). 'runtime': the CLI follows the runtime's own ceiling. */
+  /* The Control this app found, as it is on disk. The app reads the start-wait ceiling out of these files instead of trusting
+     the version, because a start wait is checked three times before the engine is reached and a released Control has those
+     three ceilings disagreeing:
+       'old'        no runtime ceiling at all, both gates 600 (Control before #3949)
+       'split'      the runtime takes 1800, the CLI and the record still stop at 600 (every Control 0.1.50 to 0.1.52)
+       'cli-only'   the CLI follows the runtime, the record still stops at 600 (`direct runtime intent has an invalid timeout`)
+       'runtime'    all three hand the wait to the runtime's own ceiling */
   const controlSource = join(root, 'control', 'strata_control');
   mkdirSync(controlSource, { recursive: true });
   writeFileSync(join(controlSource, 'runtime.py'), cliStartWait === 'old' ? '' : 'MAX_START_WAIT = 1800\n');
-  writeFileSync(join(controlSource, 'management.py'), cliStartWait === 'runtime'
+  writeFileSync(join(controlSource, 'management.py'), ['cli-only', 'runtime'].includes(cliStartWait)
     ? '        wait = _seconds(wait, 0, runtime.MAX_START_WAIT, "start wait")\n'
     : '        wait = _seconds(wait, 0, 600, "start wait")\n');
+  writeFileSync(join(controlSource, 'journal.py'), cliStartWait === 'runtime'
+    ? '        ranges = {"wait_s": (0, start_wait_max) if kind == "runtime.start" else\n'
+    : '        ranges = {"wait_s": (0, 600) if kind == "runtime.start" else\n');
   const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
   process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
   const configs = ids.map(id => {
@@ -632,8 +638,9 @@ test('packaged: a big model is waited for by its size, inside the ceiling of the
       return { wait: start[2], ready: saved.engine_ready_s };
     } finally { f.cleanup(); }
   };
-  assert.equal((await run('old', 180)).wait, 600, 'a Control whose CLI takes 600 s at most is asked for 600 s, as today');
+  assert.equal((await run('old', 180)).wait, 600, 'a Control with no long-wait ceiling at all is asked for 600 s, as today');
   assert.equal((await run('split', 180)).wait, 600, 'a Control whose runtime takes 1800 s but whose CLI still stops at 600 is asked for 600 s: the CLI would refuse the start outright (#3949)');
+  assert.equal((await run('cli-only', 180)).wait, 600, 'a Control whose CLI takes it but whose operation record still stops at 600 is asked for 600 s too: the record is written before the start runs');
   const long = await run('runtime', 180);
   assert.equal(long.wait, 1720, '600 s + 8 s per GB above 40 GB, as in strata launch, once the CLI really takes it');
   assert.equal(long.ready, 1780, 'the server readies after the start gave up, never before it');
