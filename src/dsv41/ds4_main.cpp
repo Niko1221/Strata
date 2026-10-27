@@ -767,6 +767,15 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     if (std::getenv("STRATA_DS4_STEP") != nullptr && !live)
         std::fprintf(stderr, "ds4 serve: STRATA_DS4_STEP needs STRATA_DS4_BATCH_LIVE=1 (a step's rows are sequences)\n");
     const int solo_seq = live ? (int) bslots.size() : 0;
+    // SEATS: what each seat holds (0..N-1 the batch slots, N the solo GEN) is a *physical* sequence, and a swap of two
+    // entries moves a whole conversation to another seat without copying a byte.  That is how a solo request the server
+    // promotes into a slot keeps its state instead of reading its prompt again: it takes the seat that holds its own
+    // conversation.  `yielded` marks a seat whose read gave way - that half-read state belongs to the request that will
+    // come back for it, so another one must not take it.
+    std::vector<int> phys(bslots.size() + 1);
+    for (size_t i = 0; i < phys.size(); ++i) phys[i] = (int) i;
+    std::vector<char> yielded(phys.size(), 0);
+    const auto seq_of = [&](int seat) -> int { return phys[(size_t) (seat < 0 ? solo_seq : seat)]; };
     const int slice_tokens = read_slice > 0 ? read_slice : 1024;   // (--read-slice: how much of a prompt one feed reads)
     const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
     // (STRATA_DS4_PARK_DEVICE=1: a slot's turn switch copies the state device to device instead of through the host)
@@ -810,7 +819,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     // with the first, and the end checks.  The token is the caller's to feed - a slot's own decode feeds it here
     // (run_advance), M2's step feeds every active slot's in one pass (step_round).
     const auto run_pos = [&](const Run& run) -> int64_t {   // (the run's own sequence: a step must not read another's)
-        return live && run.slot >= 0 ? m.seq_pos(run.slot) : m.pos();
+        return live ? m.seq_pos(seq_of(run.slot)) : m.pos();
     };
     const auto run_emit = [&](Run& run) -> bool {
         if (in.stop.load() || (run.produced > 0 && run.slot >= 0 && in.bstop.load() == run.slot)) {
@@ -911,6 +920,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     // a slot ends here: BDONE for a continued answer, the admission's DONE + BADM for one that never got its token
     const auto end_slot = [&](int s, const char* why) {
         Run& o = bslots[(size_t) s];
+        yielded[(size_t) s] = 0;   // (a finished slot's state is stale: nothing is coming back for it)
         if (o.continued) {
             stat_line(o);
             const double t2 = now_ms();
@@ -958,7 +968,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 continue;
             }
             who[T] = i;
-            sq[T] = i;
+            sq[T] = seq_of(i);   // (the seat's physical sequence: a step feeds every row into its own)
             tk[T] = run.tok;   // (the token just printed: it goes into its own sequence now)
             ++T;
         }
@@ -990,7 +1000,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         if (cur != s) {
             const double t_switch = now_ms();
             if (live) {   // (its state is its own sequence: nothing to copy in)
-                m.use_seq(s);
+                m.use_seq(seq_of(s));
             } else if (cur >= 0) {
                 if (!park_slot(cur)) end_slot(cur, "cancel");   // (its bytes cannot be kept: it ends rather than be lost)
                 cur = -1;
@@ -1144,8 +1154,40 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // the model holds one conversation: if it is an active slot's, set it aside in that slot's own bytes first (the
         // admission below then starts from an empty state, and may still take a kept conversation from the folder)
         const int read_seq = admit_slot >= 0 ? admit_slot : solo_seq;
+        // A prompt that continues an idle conversation takes that conversation's *seat* (a swap of two integers, above):
+        // the case it exists for is the solo request the server has just promoted into a slot - its state sits in the
+        // solo sequence, and without this the promotion re-reads the whole prompt.  Only a seat that holds the same
+        // conversation may be taken: a shared opening (a system prompt) is not enough.
+        if (live && reuse && pics.empty()) {
+            yielded[(size_t) read_seq] = 0;          // (this request is back for its own half-read state)
+            const auto gain = [&](int seat) -> int64_t {
+                m.use_seq(seq_of(seat));
+                const auto& t = m.tokens();
+                size_t n = 0;
+                while (n < t.size() && n < r.ids.size() && t[n] == r.ids[n]) ++n;
+                if (t.empty() || n * 2 < t.size()) return -1;                 // another conversation, not this one
+                if (n == t.size() && n < r.ids.size()) return (int64_t) n;    // the prompt just goes on
+                return m.restorable((int64_t) std::min(n, r.ids.size() - 1));
+            };
+            int best = read_seq;
+            int64_t best_g = gain(read_seq);
+            for (int s = 0; s <= (int) bslots.size(); ++s) {
+                if (s == read_seq || yielded[(size_t) s]) continue;
+                if (s < (int) bslots.size() && bslots[(size_t) s].active) continue;   // (a decoding slot is not moved)
+                const int64_t g = gain(s);
+                if (g > best_g) {
+                    best = s;
+                    best_g = g;
+                }
+            }
+            if (best != read_seq) {
+                std::swap(phys[(size_t) read_seq], phys[(size_t) best]);
+                std::fprintf(stderr, "ds4 serve: seat %d took seat %d's conversation (%lld tokens of the prompt)\n",
+                             read_seq, best, (long long) std::max<int64_t>(best_g, 0));
+            }
+        }
         if (live) {
-            m.use_seq(read_seq);   // (its own state: a prompt that continues it goes on, anything else resets below)
+            m.use_seq(seq_of(read_seq));   // (its own state: a prompt that continues it goes on, anything else resets below)
             cur = -1;
         } else if (cur >= 0) {
             if (!park_slot(cur)) end_slot(cur, "cancel");
@@ -1350,7 +1392,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                         if (s < 0) break;
                         run_slot(s);
                     }
-                    m.use_seq(read_seq);
+                    m.use_seq(seq_of(read_seq));
                     cur = -1;
                 } else {
                 std::vector<uint8_t> read_state;
@@ -1395,6 +1437,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // prompt again and this read goes on from there - never from 0, so a long prompt cannot be starved
             const int ys = in.byield.load();
             in.byield.store(-1);
+            if (ys >= 0 && (size_t) ys < yielded.size()) yielded[(size_t) ys] = 1;   // (its half-read state is its own)
             std::fprintf(stderr, "ds4 serve: the prompt read gave way after %lld of %zu tokens (slot %d, %.0f ms)\n",
                          (long long) gave_way, total, ys, now_ms() - t0);
             std::printf("YIELDED %d %lld\n", ys, (long long) gave_way);

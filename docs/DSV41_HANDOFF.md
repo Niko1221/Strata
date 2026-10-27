@@ -740,7 +740,28 @@ each:
 | `/v1/chat/completions` + json_schema | 10.2 s (a queue wait) | 6 | 4 data | - |
 
 (The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
-request.)  Both changes are in commit `0e16735`'s follow-up.
+request.)  Both changes are in commit `0e16735`'s follow-up.  The structured row's "largest gap" measured 0.0 s - the
+four empty deltas landed together - and its bound is `PREFILL_BEAT_S`, i.e. 10 s at most.
+
+
+## The solo->slot promotion no longer re-reads the prompt (23:39, `.step28`)
+
+`ds4_main.cpp` got a **seat map**: what each seat holds (0..N-1 the batch slots, N the solo GEN) is a *physical*
+sequence, and moving a conversation to another seat is a swap of two integers - nothing is copied.  At admission the
+engine looks for the idle seat whose sequence holds the longest real prefix of the prompt (a shared opening alone is not
+enough: `n * 2 < t.size()` means "another conversation") and takes that seat; a seat whose read gave way stays marked so
+another request cannot take its half-read state, and a slot that ends clears the mark.
+
+Measured with a 40K-token prompt (a 24-character nonce at the front so nothing can be cached), 600 tokens out, and a
+short request four seconds in (which makes the server promote the solo request into a slot):
+
+| | A's wall | A's first token | B's wall | engine |
+|---|---:|---:|---:|---|
+| before (`.step26`) | **184.3 s** | 0.1 s | 1.8 s | the read gave way at 3,072 of 48,592 tokens, then re-read |
+| after (`.step28`) | **92.5 s** | 0.1 s | 1.9 s | `seat 0 took seat 2's conversation (3072 tokens)`, then `seat 1 took seat 0's conversation (46981 tokens)` |
+
+So the promotion costs a re-read of the whole prompt before and a swap after: **2.0x** on that request, and the short
+request is unaffected.  What is left of the 92.5 s is the 46,981-token read (~37 s) plus the 600-token answer.
 
 **M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
 `/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
