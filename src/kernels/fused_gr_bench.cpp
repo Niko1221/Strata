@@ -55,6 +55,12 @@ static std::vector<uint8_t> q8_0_of_bf16(const std::vector<uint16_t>& w, size_t 
 }
 
 int main(int argc, char** argv) {
+    // the bench's contract is the default kernels' bitwise hashes; the split read (a default on a 12.0 card since 0.2.7) is another summation order
+#if defined(_WIN32)
+    if (std::getenv("STRATA_GR_V3") == nullptr) _putenv_s("STRATA_GR_V3", "0");
+#else
+    if (std::getenv("STRATA_GR_V3") == nullptr) setenv("STRATA_GR_V3", "0", 1);
+#endif
     setvbuf(stdout, nullptr, _IONBF, 0);
     const int iters = argc > 1 ? std::atoi(argv[1]) : 500;
     const int t_lo = argc > 2 ? std::atoi(argv[2]) : 1, t_hi = argc > 3 ? std::atoi(argv[3]) : 6;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -13,6 +14,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from strata_control import private_files as pf  # noqa: E402
+
+
+def resolved(sddl: str) -> str:
+    """``sddl`` with every trustee alias (``LA`` is the built-in Administrator) written as its string SID."""
+    return re.sub(r";;;([^)]*)\)", lambda match: f";;;{pf._string_sid(match.group(1))})", sddl)
 
 
 class PrivateFileTests(unittest.TestCase):
@@ -39,7 +45,7 @@ class PrivateFileTests(unittest.TestCase):
         if pf.WINDOWS:
             # the child inherits the directory's single entry rather than the profile's
             sddl = pf.dacl_sddl(child)
-            self.assertIn(pf.current_user_sid(), sddl)
+            self.assertIn(pf.current_user_sid(), resolved(sddl))
             self.assertNotIn("S-1-1-0", sddl)
             self.assertNotIn(";;;SY)", sddl)
             self.assertNotIn(";;;BA)", sddl)
@@ -63,7 +69,7 @@ class PrivateFileTests(unittest.TestCase):
         self.assertFalse(pf.is_private(path), "a fresh file inherits SYSTEM/Administrators entries")
         pf.restrict_to_current_user(path)
         sddl = pf.dacl_sddl(path)
-        self.assertEqual(sddl, f"D:PAI(A;;FA;;;{pf.current_user_sid()})")
+        self.assertEqual(resolved(sddl), f"D:PAI(A;;FA;;;{pf.current_user_sid()})")
         # nobody else: no Everyone, Users, Authenticated Users, SYSTEM or Administrators
         for sid in ("WD", "BU", "AU", "SY", "BA", "S-1-1-0", "S-1-5-32-545"):
             self.assertNotIn(f";;;{sid})", sddl)
@@ -71,9 +77,18 @@ class PrivateFileTests(unittest.TestCase):
     def test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private(self):
         path = self.root / "inherited.json"
         path.write_text("{}")
+        if not pf.WINDOWS:
+            # POSIX files have mode bits rather than an inherited profile ACL.
+            # Specify the private mode instead of depending on the process umask.
+            path.chmod(0o600)
         self.assertTrue(pf.is_unshared(path))
         if pf.WINDOWS:
             self.assertFalse(pf.is_private(path))   # SYSTEM and Administrators still inherit
+        else:
+            self.assertTrue(pf.is_private(path))
+            path.chmod(0o644)
+            self.assertFalse(pf.is_unshared(path))
+            self.assertFalse(pf.is_private(path))
 
     @unittest.skipUnless(pf.WINDOWS, "NTFS ACLs")
     def test_everyone_is_noticed_by_the_relaxed_check_too(self):
@@ -126,7 +141,7 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             path.read_bytes()
         self.assertEqual(pf.read_bytes_repairing(path), b'{"name": "x"}')
-        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(path))
+        self.assertIn(pf.current_user_sid(), resolved(pf.dacl_sddl(path)))
         self.assertEqual(path.read_bytes(), b'{"name": "x"}')
 
     def test_a_locked_folder_and_what_is_inside_are_repaired_as_a_tree(self):
@@ -146,14 +161,14 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         self.assertEqual(report["failed"], 0)
         self.assertEqual((folder / "a.json").read_bytes(), b"{}")
         self.assertEqual((folder / "sub" / "b.json").read_bytes(), b"{}")
-        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(folder / "sub" / "b.json"))
+        self.assertIn(pf.current_user_sid(), resolved(pf.dacl_sddl(folder / "sub" / "b.json")))
 
     def test_a_folder_made_with_private_mkdir_names_the_user_explicitly(self):
         made = pf.private_mkdir(self.root / "x" / "y", parents=True)
-        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made))
-        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made.parent))
+        self.assertIn(pf.current_user_sid(), resolved(pf.dacl_sddl(made)))
+        self.assertIn(pf.current_user_sid(), resolved(pf.dacl_sddl(made.parent)))
         (made / "file.json").write_text("{}")
-        self.assertIn(pf.current_user_sid(), pf.dacl_sddl(made / "file.json"))
+        self.assertIn(pf.current_user_sid(), resolved(pf.dacl_sddl(made / "file.json")))
         self.assertEqual((made / "file.json").read_text(), "{}")
 
     def test_the_process_defaults_can_be_set_for_the_user(self):
@@ -162,6 +177,37 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         path = self.root / "new.json"
         path.write_text("{}")
         self.assertEqual(path.read_text(), "{}")
+
+    def test_default_dacl_allows_reopening_child_process_for_qos(self):
+        import subprocess
+        import sys
+        # Isolate token changes and keep this test independent of the test runner's defaults.
+        script = '''
+import ctypes
+from ctypes import wintypes
+import subprocess
+import sys
+from strata_control import private_files as pf
+from serve import winjob
+assert pf.adopt_user_defaults()
+k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+k32.OpenProcess.restype = wintypes.HANDLE
+k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+try:
+    handle = k32.OpenProcess(0x1000 | 0x0200, False, child.pid)
+    assert handle, "OpenProcess failed: %s" % ctypes.get_last_error()
+    try:
+        assert winjob.no_throttle(handle), "Setting child QoS failed"
+    finally:
+        k32.CloseHandle(handle)
+finally:
+    child.terminate()
+    child.wait()
+'''
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_only_the_users_own_folders_are_ever_repaired(self):
         self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))

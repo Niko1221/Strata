@@ -186,7 +186,9 @@ def run(a) -> int:
     try:
         hardware = updater.detect_hardware()
         if a.backend:
-            hardware["backend"] = a.backend
+            hardware["backend"], variant = ec.split_backend(a.backend)    # --backend hip-rdna2 = the hip family, the rdna2 package (#4013)
+            if variant:
+                hardware["variant_wanted"] = variant
             hardware["backend_source"] = "requested"             # the person's own decision: the make guard lets it through
         lines: list = []
         cancel = threading.Event()

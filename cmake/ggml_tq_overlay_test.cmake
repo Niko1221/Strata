@@ -1,6 +1,8 @@
 # cmake -DLLAMA=<llama.cpp dir> -DOUT=<scratch dir> -P cmake/ggml_tq_overlay_test.cmake
 # The trellis MMQ overlay on a pinned llama.cpp: it generates, every copied header is the pinned one except the patched
 # ones, and the patched ones only gain lines (TQ routing, three externs, config copies of IQ2_XS's).
+# a -P script has no cmake_minimum_required, so CMake 3.x applies the OLD CMP0057 and IN_LIST below is not an operator (#3412)
+cmake_policy(SET CMP0057 NEW)
 get_filename_component(CMAKE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 include(${CMAKE_CURRENT_LIST_DIR}/strata_ggml_tq_overlay.cmake)
 file(REMOVE_RECURSE "${OUT}")
@@ -24,7 +26,8 @@ foreach(_f IN LISTS _cuh)
 endforeach()
 file(READ "${OUT}/mmq.cuh" _m)
 foreach(_pat "case GGML_TYPE_TQ2_T:   return MMQ_DP4A_TXS_Q8_0_16;" "ggml_cuda_mmq_load_tiles_tq<type, J, fallback>,\n                    ggml_cuda_mmq_vec_dot_q8_0_16_q8_1_dp4a"
-             "extern DECL_MMQ_CASE(GGML_TYPE_TQK7);")
+             "extern DECL_MMQ_CASE(GGML_TYPE_TQK7);" "extern DECL_MMQ_CASE(GGML_TYPE_TQP5);" "extern DECL_MMQ_CASE(GGML_TYPE_TQP7);"
+             "case GGML_TYPE_TQP6:    return MMQ_DP4A_TXS_Q8_0_16;")
   string(FIND "${_m}" "${_pat}" _p)
   if(_p LESS 0)
     message(FATAL_ERROR "mmq.cuh lacks: ${_pat}")
@@ -35,6 +38,15 @@ string(FIND "${_g}" "GGML_TYPE_TQK7    = 146," _p)
 if(_p LESS 0)
   message(FATAL_ERROR "ggml.h lacks the trellis enumerators")
 endif()
+string(FIND "${_g}" "GGML_TYPE_TQP7    = 149," _p)   # Gyro-L's pair trellis
+if(_p LESS 0)
+  message(FATAL_ERROR "ggml.h lacks the pair-trellis enumerators")
+endif()
+foreach(_t tqp5 tqp6 tqp7)
+  if(NOT EXISTS "${OUT}/template-instances/mmq-instance-${_t}.cu")
+    message(FATAL_ERROR "the overlay has no MMQ instance for ${_t}")
+  endif()
+endforeach()
 foreach(_c IN ITEMS ampere rdna4)
   file(READ "${CU}/mmq-config-${_c}.cuh" _o)
   file(READ "${OUT}/mmq-config-${_c}.cuh" _n2)

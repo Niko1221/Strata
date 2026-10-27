@@ -832,6 +832,26 @@ class FlagsCommand(unittest.TestCase):
         self.assertNotIn("--pool-cores", p["settings"]["extra"])
         self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
 
+    def test_dspark_takes_a_word_and_the_word_reaches_the_engine_line(self):
+        # --set dspark=on used to start strata-dsv41 with a lone "--dspark" ("--dspark needs a value", #3959)
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        base = ["--pack", "p", "--max-context", "262144"]
+        for word in ("on", "off", "auto", "none"):
+            a, _ = S.as_argv_changes({"--dspark": word}, tune_knobs.BOOL_FLAGS)
+            self.assertEqual(a, {"--dspark": word})
+            out = tune_knobs.apply_to_argv(base + ["--dspark", "auto"], a)
+            self.assertEqual(out[out.index("--dspark") + 1], word, word)
+            self.assertEqual(out.count("--dspark"), 1)
+        a, _ = S.as_argv_changes({"--dspark": "ON", "--dspark-conf": "0.7"}, tune_knobs.BOOL_FLAGS)
+        self.assertEqual(a, {"--dspark": "on", "--dspark-conf": "0.7"})
+        self.assertEqual(S.as_argv_changes({"--dspark": ""}, tune_knobs.BOOL_FLAGS)[0], {})
+        code, out, _err = run_cli(["launch", "--help"])
+        self.assertIn("--dspark", out)
+        p = self.plan("--model", "q2_0", "--dspark", "on")
+        self.assertEqual(p["settings"]["extra"], {"--dspark": "on"})
+        self.assertIn("--set dspark=on", p["flags"])
+
     def test_api_key_flags(self):
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-mine")
         self.assertEqual(p["settings"]["api_key"], "set")

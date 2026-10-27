@@ -63,6 +63,10 @@ build-vision-cuda12.bat
 /.ccache/
 /.rocm-win/
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 

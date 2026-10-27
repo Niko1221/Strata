@@ -86,6 +86,9 @@ struct SetArgs {
     const float* xf = nullptr;
     const int* idx = nullptr;
     const uint16_t* xh = nullptr;
+    // gate / up from the caller's F16 copy of the activations (the same rounding the tiles make themselves: the same
+    // bits), so the F32 rows are not read 18+ times a prompt (MarLin's "keep the small operand in its cheap format")
+    const uint16_t* xf16 = nullptr;
     int ldx = 0;
     uint16_t* h = nullptr;
     float* y = nullptr;

@@ -26,7 +26,7 @@ async function startOfflineHost() {
   let output = '';
   const host = spawn(process.execPath, ['--import', preload, 'server/index.mjs'], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_PACKAGED: '1', STRATA_NET_LOG: log, STRATA_NO_ACQUIRE: '1', STRATA_REAL_ENGINE: '0', STRATA_TEST_HARDWARE: ROOMY_HOST },
+    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_PACKAGED: '1', STRATA_COMPONENTS_DIR: join(home, 'components'), STRATA_NET_LOG: log, STRATA_NO_ACQUIRE: '1', STRATA_REAL_ENGINE: '0', STRATA_TEST_HARDWARE: ROOMY_HOST },
   });
   host.stdout.on('data', d => { output += d; }); host.stderr.on('data', d => { output += d; });
   let up = false;

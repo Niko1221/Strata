@@ -412,7 +412,8 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     if not fitting:
         return None, reasons
     best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
-                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1))
+                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1,
+                                       ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False))
     kept = str(hardware.get("installed_variant") or "")
     if best.backend == "cuda" and kept and best.variant != kept:
         # An update never switches the CUDA build (#3835): a model on the CUDA 12 engine (its card is one CUDA 13 has no code for) must not

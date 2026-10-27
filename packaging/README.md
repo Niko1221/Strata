@@ -34,10 +34,19 @@ Each row is an OS, CPU ABI and backend. A row is `qualified` only after the acce
 | `windows-x86_64-sycl` | none | none | Gated. No native Windows SYCL path exists upstream. |
 | `macos-x86_64-*` | none | none | Unsupported. The macOS engine is Apple Silicon only. |
 
-**DeepSeek V4.1-Flash.** Three packages carry engine 0.1.50 with the DeepSeek engine `strata-dsv41`: Windows NVIDIA `cuda13`,
-Linux NVIDIA `cuda13` and Linux AMD `rx9070`. All other packages carry engine 0.1.50. Build `strata-dsv41` with
-`packaging/build_dsv41_cuda.sh` (Linux) or `packaging/build_dsv41_windows.bat` (Windows), then package it with
-`package_engine.py --require-dsv41`. The DeepSeek engine can also be a separate download (feed member `dsv41`, see [UPDATES.md](UPDATES.md#the-feed)).
+**DeepSeek V4.1-Flash.** The signed feed's `dsv41` member carries the DeepSeek engine `strata-dsv41` as its own package: Windows
+NVIDIA `cuda13`, Linux NVIDIA `cuda13`, Linux AMD `rx9070`, and since 0.2.7 Windows AMD `rdna3` (Ryzen AI Max, gfx1151). All other
+engine packages carry no DeepSeek engine. Build `strata-dsv41` with `packaging/build_dsv41_cuda.sh` (Linux) or
+`packaging/build_dsv41_windows.bat` (Windows), then package it with `package_engine.py --require-dsv41`; or pack it as the separate
+download (`feed_tool.py pack-engine --prefix strata-dsv41`, [UPDATES.md](UPDATES.md#the-feed)).
+
+Windows AMD (gfx1151): build `strata-dsv41` with `tools\dsv41\win\build_hip_win.bat` (the ROCm venv, default `gfx1151`) and stage
+it with the ROCm runtime the Qwen Windows `rdna3` package already carries: the HIP and C++ runtime DLLs beside the program,
+`rocm/bin` (hipBLAS / rocBLAS / hipBLASLt and their imports), `rocm/bin/rocblas/library/gfx1151`,
+`rocm/bin/hipblaslt/library/gfx1151`, `rocm/.kpack/blas_lib_gfx1151.kpack`, `rocm/licenses`, and a `BUILD.json` that names
+`"lib_dirs": ["rocm/bin"]`. Package it with `package_engine.py --backend hip --platform windows-x86_64 --arch gfx1151 --entrypoint
+strata-dsv41.exe --variant rdna3` (about 240 MiB, 280 files). Strata puts the package's `lib_dirs` on the engine's library path
+(`strata_control/dsv41_engine.py lib_dirs`), so the HIP runtime is found the same way the Qwen engine finds it.
 
 Cross-compilation is not attempted for the desktop app. Tauri bundles are per OS, and the Windows installer is built on Windows.
 The Python contracts, the owner transport, the checks and the engine build recipes are portable.

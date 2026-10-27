@@ -137,6 +137,58 @@ class Procs(unittest.TestCase):
         self.assertIsNone(live.poll())
         self.assertIsNone(procs.start_token(orphan_pid))
 
+class SubreaperOrphans(unittest.TestCase):
+    """An engine adopted by `systemd --user` is an orphan (#3254), and a dying process is waited for by its start token."""
+
+    class Gone(Exception):
+        pass
+
+    def fake_psutil(self, ancestors, parent_name):
+        class Err(Exception):
+            pass
+
+        class NoSuch(Err):
+            pass
+
+        def proc(pid, name, ppid=1):
+            return mock.Mock(pid=pid, **{"name.return_value": name, "exe.return_value": "/x/engine", "info": {
+                "pid": pid, "ppid": ppid, "cmdline": ["engine", "--serve"], "create_time": 100.0}})
+
+        me = mock.Mock(**{"parents.return_value": [proc(p, n) for p, n in ancestors]})
+        engine = proc(7000, "engine", ppid=5000)
+        parent = proc(5000, parent_name)
+        parent.create_time.return_value = 50.0
+        parent.status.return_value = "running"
+        fake = mock.Mock(Error=Err, NoSuchProcess=NoSuch, STATUS_ZOMBIE="zombie")
+        fake.Process.side_effect = lambda pid=None: me if pid is None else parent
+        fake.process_iter.return_value = [engine]
+        return fake
+
+    def found(self, ancestors, parent_name):
+        fake = self.fake_psutil(ancestors, parent_name)
+        with mock.patch.object(procs, "psutil", fake), mock.patch.object(procs, "same_file", return_value=True), \
+                mock.patch.object(procs, "identify", side_effect=lambda pid: ("ident", pid)):
+            return procs.orphans_of("/x/engine")
+
+    def test_an_engine_adopted_by_systemd_user_is_an_orphan_even_when_it_is_an_ancestor_of_the_terminal(self):
+        # systemd --user (pid 5000) is an ancestor of every desktop terminal and adopts what loses its parent
+        self.assertEqual(self.found([(5000, "systemd"), (6000, "bash")], "systemd"), [("ident", 7000)])
+
+    def test_an_engine_whose_parent_is_a_real_ancestor_is_not_an_orphan(self):
+        # started by this server's own shell: not touched
+        self.assertEqual(self.found([(5000, "bash"), (6000, "tmux")], "bash"), [])
+
+    def test_ending_waits_on_the_start_token_not_on_an_empty_command_line(self):
+        record = {"pid": 4242, "token": "t1", "cmd": ["engine", "--serve"]}
+        answers = ["t1", "t1"]                                   # still exiting twice, then gone
+        def token(pid):
+            return answers.pop(0) if answers else None
+        with mock.patch.object(procs, "WINDOWS", False), mock.patch.object(procs, "is_same", side_effect=[True, False, False]) as same, \
+                mock.patch.object(procs, "_signal_verified"), mock.patch.object(procs, "start_token", side_effect=token), \
+                mock.patch.object(procs, "drop_record"), mock.patch.object(procs.time, "sleep"):
+            self.assertEqual(procs.end_one(record, grace=5), "ended")
+        self.assertGreaterEqual(same.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
