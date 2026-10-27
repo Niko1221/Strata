@@ -5,7 +5,9 @@ serve/test_session_ladder_wiring.py (a SimpleNamespace service whose engine.sess
 mock.Mock; a `save` also materialises the file the engine would have written, so the start hook's
 "has a valid file" check sees a real path).  The idle window, the save-all unload, and the
 warm-restore handoff through svc.restore_after_load are checked without a server; the disabled
-config must keep all three hooks inert.
+config must keep all three hooks inert.  The unload-works Task 2 tests pin the save-duration
+bookkeeping (_commit_save records the engine's "ms" and the tracked byte_count) and the
+expected_save_seconds estimate the pre-save quiet gate will be derived from.
 
     python -m pytest serve/test_session_ladder_lifecycle.py -v
 """
@@ -20,7 +22,7 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service
-from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, should_restore
+from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, TrackedSession, should_restore
 from serve.test_session_ladder_wiring import LadderHarness, ladder_service
 
 MID = 20000                     # a mid: above the engine's 8192-token park minimum
@@ -256,6 +258,49 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertIsNone(self.service.restore_after_load)
         self.assertIsNone(ladder.tracked["ses-a"].file_path)
+
+    def test_expected_save_seconds_first_estimate_from_size(self):
+        # No measured save yet: the conversation's byte_count at the engine's ~100 MB/s
+        # save rate is the first estimate.
+        s = TrackedSession(session_id="ses-a", tokens=MID, parked=False, save_eligible=True,
+                           file_path=None, saved_prefix=None, last_active=0.0,
+                           evictions_at_last_switch=0, byte_count=4_040_000_000)
+        self.assertIsNone(s.last_save_ms)                     # the new fields default to unknown
+        self.assertEqual(s.saved_at_bytes, 0)
+        self.assertAlmostEqual(40.4, self.ladder.expected_save_seconds(s), delta=0.5)
+
+    def test_expected_save_seconds_scales_measured_time_with_growth(self):
+        # A landed save with an engine-measured duration is the anchor: the estimate scales
+        # that measured time by how much the conversation has grown since the save.
+        s = TrackedSession(session_id="ses-a", tokens=MID, parked=False, save_eligible=True,
+                           file_path=None, saved_prefix=None, last_active=0.0,
+                           evictions_at_last_switch=0, byte_count=2_000_000_000)
+        s.last_save_ms, s.saved_at_bytes = 30_000.0, 1_000_000_000
+        self.assertAlmostEqual(60.0, self.ladder.expected_save_seconds(s))
+        # The estimate clamps to [5.0, 600.0]: a fresh zero-byte session floors at 5.0.
+        fresh = TrackedSession(session_id="fresh", tokens=0, parked=False, save_eligible=False,
+                               file_path=None, saved_prefix=None, last_active=0.0,
+                               evictions_at_last_switch=0)
+        self.assertEqual(5.0, self.ladder.expected_save_seconds(fresh))
+
+    def test_commit_records_duration_and_bytes(self):
+        # Every landed save books the engine's measured duration (the result's "ms") and this
+        # session's tracked size at save time - the data the pre-save quiet gate derives from.
+        self.seen("ses-a")                                    # dirty; byte_count = MID_BYTES
+        self.engine.session_file = mock.Mock(return_value={"tokens": 1, "ms": 1234.0, "bytes": 7})
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_idle(self.service, 8.0)                # the save lands: bookkeeping recorded
+        s = self.ladder.tracked["ses-a"]
+        self.assertEqual(s.last_save_ms, 1234.0)
+        self.assertEqual(s.saved_at_bytes, s.byte_count)      # the tracked figure, not the engine's "bytes"
+        # A result without "ms" (the harness idiom returns {"tokens": 1}) stays tolerated: the save
+        # lands, its duration is simply unknown, and the estimate falls back to the size figure.
+        self.engine.session_file = mock.Mock(return_value={"tokens": 1})
+        self.ladder.on_turn_done("ses-a", MID, 0, 0)          # dirty again...
+        self.ladder.on_idle(self.service, 8.0)                # ...and the second save lands without a duration
+        self.assertIsNone(s.last_save_ms)
+        self.assertEqual(s.saved_at_bytes, s.byte_count)
+        self.assertAlmostEqual(s.byte_count / 1e8, self.ladder.expected_save_seconds(s))
 
 
 class LifecycleEngine(LadderHarness):
