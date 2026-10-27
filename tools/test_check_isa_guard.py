@@ -34,6 +34,17 @@ class Policy(unittest.TestCase):
         self.assertIsNone(G.judge("strata::kernels::cpu::(anonymous namespace)::gu_rows<18, 1>(int)", None, "", False,
                                   False, True))
 
+    def test_iq512_entry_points_are_fine(self):
+        """#4213: the iq512 exact rows are behind has_vpopcnt()/cpu_avx512_ok() like the other wide kernels."""
+        names = ("strata::kernels::cpu::iq512x_rows(int, unsigned char const*, unsigned long, int, "
+                 "void const* const*, int, float* const*, int, int)",
+                 "strata::kernels::cpu::iq512_reference_gu_rows(int, unsigned char const*, unsigned long, "
+                 "unsigned long, int, void const* const*, int, float* const*, int, int)")
+        for name in names:
+            self.assertIsNone(G.judge(name, "iq_avx512.cpp.o", "", False, False, True))
+            # the same code in an AVX1 object is still a violation
+            self.assertIsNotNone(G.judge(name, "iq_avx1.cpp.o", "", False, False, True))
+
     def test_trellis_rows_entry_point_is_fine(self):
         """#3358: tq_avx512.cpp's rows function is behind cpu_avx512_ok() like the other wide kernels."""
         name = "strata::kernels::cpu::tq_detail::tq_rows_avx512(int, unsigned char const*, unsigned long, int)"

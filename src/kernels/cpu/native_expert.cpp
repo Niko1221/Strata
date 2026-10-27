@@ -77,6 +77,9 @@ bool iq4nl_reference_ok() {
 
 // The same check for the AVX-512 accumulation of IQ3_XXS / IQ3_S / IQ2_S gate/up rows (types 18, 21, 22), SwiGLU included.
 bool iq512_reference_ok(int type) {
+    // A CPU without AVX-512 must never reach the wide rows below, even if a future caller forgets the check:
+    // this probe itself calls iq512_reference_gu_rows.
+    if (!cpu_avx512_ok()) return false;
     static std::mutex mu;
     static std::map<int, bool> memo;
     std::lock_guard<std::mutex> lk(mu);
