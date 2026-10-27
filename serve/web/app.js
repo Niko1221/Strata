@@ -14,7 +14,7 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
+  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -87,15 +87,24 @@ for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------------ server access
+let apiKey = store.get("apikey", "");
 function headers(json = false) {
   const h = {};
-  const key = store.get("apikey", "");
-  if (key) h.Authorization = "Bearer " + key;
+  if (apiKey) h.Authorization = "Bearer " + apiKey;
   if (json) h["Content-Type"] = "application/json";
   return h;
 }
-$("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").value = apiKey;
+function saveApiKey(notify = false) {
+  apiKey = $("api-key").value.trim();                // usable even when browser storage is blocked or full
+  const saved = store.set("apikey", apiKey);
+  if (notify) {
+    if (saved) toast("success", "API key saved", "Kept in this browser only.");
+    else toast("warn", "API key used for this page only", "Browser storage is unavailable. Enter it again after reloading.");
+  }
+}
+$("api-key").oninput = () => saveApiKey();
+$("api-key").onchange = () => saveApiKey(true);
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {

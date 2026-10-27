@@ -58,6 +58,7 @@ bool Window::pc_setup(int C) {
         b.k4 = coop_k4();
     }
     b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk
+    b.v3e = b.k4 && T("blk.0.ffn_gate_exps.weight").type < 144;   // the trellis experts have the v2 kernels only
     b.C = C;
     const size_t MT = (size_t) C;
     const int MB = (int) max_cells_ / 4 + 2;
@@ -88,13 +89,14 @@ bool Window::pc_setup(int C) {
     // the PLE block's rows and projections
     b.pemb = F32(MT * N); b.pembh = F16(MT * N); b.pkey = F32(MT * 10240); b.pval = F32(MT * N); b.keyn = F32(MT * 10240);
     b.qn = F32(MT * 10240); b.gated = F32(MT * 10240); b.normW = F32(MT * 10240);
+    if (had_on_) b.mixr = F32(MT * N);
     b.Wpk = F16((size_t) 10240 * N); b.Wpv = F16((size_t) N * N);
     // the expert GEMM tiles (prompt_chain's defaults): v3 gate/up 16,32,32,4 and down 16,64,32,2 with the M5 layout,
     // else v2
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
     b.dn3[0] = 16; b.dn3[1] = 64; b.dn3[2] = 32; b.dn3[3] = 2;
-    b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
-    b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
+    b.meta.as<uint32_t>()[2] = b.v3e ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
+    b.meta.as<uint32_t>()[5] = b.v3e ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
     std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s, ready in %.0f ms\n",
                  C, b.k4 ? "matrix-unit register operands (COOP_K4)" : "the older expert / attention kernels (no M5 layout)",
                  now_ms() - t0);
@@ -290,16 +292,18 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         ma.d_stride = (uint64_t) ma.d_row * N;
         const size_t ebase = moe_rebase(ma.gate_off, ma.up_off, ma.down_off);
         const uint32_t ne = N;
+        const bool hg = had_gu(l), hd = had_dn(l);
+        if (hg) had_rows(ds, b.lib, "pc:", b.mixed, 0, b.mixr, 0, nT, N, hsx_.handle ? &hsx_ : nullptr, false);
         mtl::Dispatch g;
         g.p = P_(b.lib, "mm_gather");
-        g.args = {mtl::Arg::B(b.mixed), mtl::Arg::B(b.stok), mtl::Arg::B(b.XS), mtl::Arg::V(ne)};
+        g.args = {mtl::Arg::B(hg ? b.mixr : b.mixed), mtl::Arg::B(b.stok), mtl::Arg::B(b.XS), mtl::Arg::V(ne)};
         g.tg[0] = 256;
         g.indirect = &b.meta;
         g.ind_off = 8 * 4;
         ds.push_back(g);
         auto tl3 = [](const int* t) { return std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]) + "_" + std::to_string(t[3]); };
         mtl::Dispatch gu;
-        if (b.k4) {
+        if (b.v3e) {
             const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_" + tl3(b.gu3);
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
@@ -307,19 +311,20 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
         gu.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
-        gu.tg[0] = b.k4 ? 32 * b.gu3[3] : 64;
+        gu.tg[0] = b.v3e ? 32 * b.gu3[3] : 64;
         gu.indirect = &b.meta;
         gu.ind_off = 2 * 4;
         ds.push_back(gu);
+        if (hd) had_rows_ind(ds, b.lib, "pc:", b.HS, b.meta);
         mtl::Dispatch dn;
-        if (b.k4) {
+        if (b.v3e) {
             const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_" + tl3(b.dn3);
             dn.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
             dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type));
         }
         dn.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
-        dn.tg[0] = b.k4 ? 32 * b.dn3[3] : 64;
+        dn.tg[0] = b.v3e ? 32 * b.dn3[3] : 64;
         dn.indirect = &b.meta;
         dn.ind_off = 5 * 4;
         ds.push_back(dn);

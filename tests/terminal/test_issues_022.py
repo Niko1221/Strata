@@ -84,7 +84,7 @@ class Issue3403MacBuildTools(unittest.TestCase):
             for p in packages:
                 installed[p.split("==")[0]] = "/venv/bin/" + p.split("==")[0]
 
-        with mock.patch.object(setup, "find_tool", side_effect=find), mock.patch.object(setup, "pip_install", side_effect=pip) as pi:
+        with mock.patch.object(setup, "find_tool", side_effect=find), mock.patch.object(setup, "pip_install", side_effect=pip) as pi,                 mock.patch.object(setup, "_tool_version", return_value=(True, (3, 31, 0))):
             self.assertEqual(setup.ensure_build_tools(), ("/venv/bin/cmake", "/venv/bin/ninja"))
             self.assertEqual(pi.call_count, 1)
             setup.ensure_build_tools()                       # present now: nothing more is installed
@@ -386,6 +386,75 @@ class Issue3302AdministratorAlias(unittest.TestCase):
                 self.mock.patch.object(pf, "dacl_sddl", return_value="D:PAI(A;OICI;FA;;;LA)(A;OICI;FR;;;WD)"):
             self.assertFalse(pf.is_private("x"))
             self.assertFalse(pf.is_unshared("x"))
+
+
+
+class Issue3488IntegrityRetry(unittest.TestCase):
+    """A hash that reads wrong once (file just unpacked, or held by a virus scanner) must not stick."""
+
+    def test_second_read_decides(self):
+        from unittest import mock
+        from strata_control import engine_component as ec
+        path = Path("x")
+        with mock.patch.object(ec, "_sha256", side_effect=["bad", "good"]) as sha, mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "good")
+            self.assertEqual(sha.call_count, 2)
+        with mock.patch.object(ec, "_sha256", side_effect=[PermissionError(), "good"]), mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "good")
+        with mock.patch.object(ec, "_sha256", return_value="bad"), mock.patch.object(ec.time, "sleep"):
+            self.assertEqual(ec._hash_settled(path, "good"), "bad")      # still wrong after the retry: refuse
+
+
+
+class Issue3501TrashOnPosix(unittest.TestCase):
+    """A Windows Recycle Bin path read on Linux: Path does not split backslashes there."""
+
+    def test_windows_path_on_a_posix_path_class(self):
+        from pathlib import PurePosixPath
+        from unittest import mock
+        from strata_control import discovery
+        with mock.patch.object(discovery, "Path", PurePosixPath):
+            self.assertTrue(discovery.in_trash(r"C:\$Recycle.Bin\S-1-5-21\$R123\Strata"))
+            self.assertTrue(discovery.in_trash("/mnt/d/$RECYCLE.BIN/S-1/Strata"))
+            self.assertFalse(discovery.in_trash(r"C:\Users\a\Strata"))
+
+
+
+class Issue3504MultiValueArgs(unittest.TestCase):
+    """Advanced settings: a two-value option is two argv entries, `off` removes all of its values, an empty value is no bare flag."""
+
+    ARGS = ["--max-context", "131072", "--control-vector-layer-range", "4", "44", "--cvec-dir", "per-layer",
+            "--conversation-cache-mib", "8192"]
+
+    def test_two_values_are_two_entries(self):
+        from strata_control import tune_knobs
+        for typed in ("4,44", "4 44", "4-44"):
+            out = tune_knobs.apply_to_argv(self.ARGS, {"--control-vector-layer-range": typed})
+            i = out.index("--control-vector-layer-range")
+            self.assertEqual(out[i + 1:i + 3], ["4", "44"], typed)
+            self.assertEqual(out.count("--control-vector-layer-range"), 1)
+
+    def test_off_removes_the_option_and_every_value(self):
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        extra = {"--control-vector-layer-range": "off", "--cvec-dir": "off"}
+        a, _ = S.as_argv_changes(extra, tune_knobs.BOOL_FLAGS)
+        out = tune_knobs.apply_to_argv(self.ARGS, a)
+        self.assertEqual(out, ["--max-context", "131072", "--conversation-cache-mib", "8192"])
+
+    def test_an_empty_value_is_no_bare_flag(self):
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        a, _ = S.as_argv_changes({"--cvec-dir": "", "--kv-grow": ""}, tune_knobs.BOOL_FLAGS)
+        self.assertEqual(a, {"--kv-grow": True})
+        self.assertEqual(tune_knobs.apply_to_argv(self.ARGS, a)[:-1].count("--cvec-dir"), 1)
+
+    def test_set_flag_and_the_table_keep_both_values(self):
+        from strata_cli.launch import params
+        from strata_control import user_args
+        self.assertEqual(user_args.set_flag([], "--control-vector-layer-range", "4,44"),
+                         ["--control-vector-layer-range", "4", "44"])
+        self.assertEqual(params.argv_to_dict(self.ARGS)["--control-vector-layer-range"], "4 44")
 
 
 if __name__ == "__main__":

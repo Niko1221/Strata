@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import re
 import shutil
 import subprocess
@@ -382,6 +383,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _hash_settled(path: Path, digest: str) -> str | None:
+    """The file's SHA-256, read again once when the first read fails or differs: a file that was just unpacked or is
+    being scanned by a virus checker can read short or locked for a moment, and a failure must not be kept (#3488)."""
+    actual = None
+    for attempt in range(2):
+        try:
+            actual = _sha256(path)
+        except OSError:
+            actual = None
+        if actual == digest:
+            break
+        if attempt == 0:
+            time.sleep(0.5)
+    return actual
+
+
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
     the entrypoint is hashed (sizes are always checked)."""
@@ -401,8 +418,11 @@ def verify(component: EngineComponent, *, full: bool = False) -> None:
             raise IntegrityProblem(f"{rel} resolves outside the component folder")
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
-        if (full or rel == component.entrypoint) and _sha256(target) != digest:
-            raise IntegrityProblem(f"{rel} does not match its recorded SHA-256")
+        if full or rel == component.entrypoint:
+            actual = _hash_settled(target, digest)
+            if actual != digest:
+                raise IntegrityProblem(f"{rel} does not match its recorded SHA-256 (expected {digest[:12]}, "
+                                       f"found {actual[:12] if actual else 'unreadable'})")
     if os.name != "nt" and not os.access(component.exe, os.X_OK):
         raise IntegrityProblem(f"{component.entrypoint} is not executable")
 
@@ -427,10 +447,21 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         return forced, "environment"
     if host_platform().startswith("macos"):
         return "metal", "platform"
+    # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover
+    # nvidia-smi from a card that was taken out, or a toolkit installed for another card, must never outvote them: that is how an
+    # AMD PC was given a CUDA engine (#3688). A tool is only asked about a make that has an adapter here.
+    adapters = windows_display_adapters() if host_platform().startswith("windows") else []
+    present = adapter_makes(adapters)
+    if present:
+        return _first_make(present), "display adapters"
     probes = (("cuda", ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")),
               ("hip", ("rocminfo",) if os.name != "nt" else ("hipInfo",)),
               ("sycl", ("sycl-ls",)))
+    vendors_here = {a.get("vendor") for a in adapters}
+    vendor_of = {"cuda": "10de", "hip": "1002", "sycl": "8086"}
     for backend, command in probes:
+        if vendors_here and vendor_of[backend] not in vendors_here:
+            continue                                  # the adapters list no card of this make: a tool that answers is a leftover
         tool = shutil.which(command[0])
         if not tool:
             continue
@@ -451,15 +482,73 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
     return None, "no GPU tool answered"
 
 
-def _drm_vendor_backend() -> str | None:
+def _first_make(makes) -> str:
+    """The make Strata uses when a PC has cards of several: NVIDIA, then AMD, then Intel (the order of every probe)."""
+    return next(m for m in ("cuda", "hip", "sycl") if m in makes)
+
+
+def adapter_makes(adapters: list[dict] | None) -> set[str]:
+    """The engine families the Windows display adapters call for: cuda (an NVIDIA adapter), hip (an AMD card, not an integrated
+    Radeon), sycl (an Intel adapter). Empty when the list is empty. Read-only, nothing is run."""
+    makes = set()
+    for adapter in adapters or []:
+        vendor = adapter.get("vendor")
+        if vendor == "10de":
+            makes.add("cuda")
+        elif vendor == "8086":
+            makes.add("sycl")
+    if windows_amd_cards(adapters or []):
+        makes.add("hip")
+    return makes
+
+
+def gpu_makes_present() -> set[str]:
+    """The engine families this PC has a graphics card for, from the display adapters (Windows) or the PCI vendors (Linux); empty
+    when that cannot be read. Used to keep an update on the make the installation was built for (#3688)."""
+    if os.name == "nt":
+        return adapter_makes(windows_display_adapters())
+    return _drm_vendor_makes()
+
+
+def _drm_vendor_makes(root: str = "/sys/class/drm") -> set[str]:
+    vendors = set()
+    try:
+        for card in sorted(Path(root).glob("card[0-9]*")):
+            if "-" not in card.name:
+                try:
+                    vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                except OSError:
+                    continue
+    except OSError:
+        return set()
+    return {backend for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")) if vendor in vendors}
+
+
+def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None = None) -> str | None:
+    """Under WSL (the GPU is reached through /dev/dxg, there is no /dev/kfd) the Linux AMD (HIP) engines hang: librocdxg 1.2.2
+    never completes a barrier-AND packet, so the first GPU command never returns. A plain sentence with one next step for that
+    case, else None. A warning only: the caller goes on (recommend, never force)."""
+    if backend != "hip":
+        return None
+    if wsl is None:
+        import platform
+        import sys
+        wsl = sys.platform.startswith("linux") and "microsoft" in platform.uname().release.lower()
+    if not wsl or not Path(dev_root, "dxg").exists() or Path(dev_root, "kfd").exists():
+        return None
+    return ("The AMD engines do not run under WSL yet: the driver layer WSL uses for the card never finishes a GPU command, so the engine "
+            "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
+
+
+def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
     order. Read-only sysfs, nothing is run."""
-    if not os.path.isdir("/sys/class/drm"):
+    if not os.path.isdir(root):
         return None
     vendors = set()
     try:
-        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+        for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:
@@ -554,7 +643,15 @@ def windows_display_adapters() -> list[dict]:
     """The display adapters Windows has a driver for: the display-class registry key (readable without admin and without running
     anything), then Win32_VideoController when the key lists nothing: {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name",
     "vram_gb"}. Empty off Windows or when neither can be read."""
-    return _windows_display_adapters_registry() or _windows_adapters_cim()
+    found = _windows_display_adapters_registry()
+    if len({a.get("vendor") for a in found} & {"10de", "1002"}) > 1:
+        # The registry keeps the driver entry of a card that was taken out (an NVIDIA card swapped for a Radeon, #3892): when two makes are
+        # listed, only the adapters Windows reports as present now count.
+        present = {(a["vendor"], a["device"]) for a in _windows_adapters_cim()}
+        now = [a for a in found if (a["vendor"], a["device"]) in present]
+        if now:
+            return now
+    return found or _windows_adapters_cim()
 
 
 def _windows_display_adapters_registry() -> list[dict]:
@@ -685,19 +782,28 @@ def nvidia_driver_version() -> str | None:
     return min(versions, key=_version_key) if versions else None
 
 
+def _capability(number: str) -> tuple[int, int]:
+    """``86`` -> (8, 6), ``120`` -> (12, 0): the last digit is the minor version."""
+    return int(number[:-1] or 0), int(number[-1])
+
+
 def arch_covers(archs, present: list[str]) -> bool:
     """Whether a build with `archs` (``sm_86`` = machine code for that card, ``compute_89`` = PTX that any card of
-    that generation or newer can JIT) can run on at least one of the `present` cards (``sm_XX``)."""
-    cards = {int(item[3:]) for item in present if item.startswith("sm_") and item[3:].isdigit()}
+    that generation or newer can JIT) can run on at least one of the `present` cards (``sm_XX``).
+    Machine code also runs on a card of the same major version with an equal or newer minor version (CUDA's cubin
+    compatibility rule): ``sm_86`` code runs on an ``sm_89`` card (RTX 40) but not on ``sm_80`` (older minor),
+    ``sm_90`` (other major) or ``sm_75``; ``sm_120`` code runs on ``sm_121``."""
+    cards = {item[3:] for item in present if item.startswith("sm_") and item[3:].isdigit()}
     if not cards:
         return True              # cannot tell: not a refusal
     for arch in archs:
         kind, _, number = arch.partition("_")
         if not number.isdigit():
             continue
-        if kind == "sm" and int(number) in cards:
+        if kind == "sm" and any(number == card or (len(number) > 1 and len(card) > 1 and _capability(card)[0] == _capability(number)[0]
+                                                   and _capability(card)[1] >= _capability(number)[1]) for card in cards):
             return True
-        if kind == "compute" and any(card >= int(number) for card in cards):
+        if kind == "compute" and any(int(card) >= int(number) for card in cards):
             return True
     return False
 
@@ -738,9 +844,10 @@ def hip_family(arch: str) -> str:
     return next((name for name, archs in HIP_FAMILIES if arch in archs), arch)
 
 
-#: AMD architectures no ready-made engine package of this release covers (the packages: RX 9000, RX 7000 + Ryzen AI Max): the RX 6000 series.
-#: Setup and a source build can still target them (docs/AMD_HIP.md); the app's one-click engine cannot.
-NO_PACKAGE_HIP = {"gfx1030": "RX 6000", "gfx1031": "RX 6000"}
+#: AMD architectures no ready-made engine package of this release covers. Empty since 0.2.2: the RX 6000 series (gfx1030 / gfx1031) has
+#: its own package (Linux `rx6000`, Windows `rdna2`; built, not tested on a real RX 6000 card). The mechanism stays for the next card family
+#: that has none: a family in this table gets the plain "no ready-made engine" line instead of "Ask for the X build".
+NO_PACKAGE_HIP: dict[str, str] = {}
 NO_PACKAGE_SENTENCE = ("This release has no ready-made Strata engine for the AMD {0} series. Strata can only run on it with an engine built for "
                        "that card (docs/AMD_HIP.md, \"RDNA2\").")
 
@@ -749,6 +856,13 @@ def no_package_note(archs) -> str | None:
     """One plain sentence when some of these architectures (gfx1030 ...) have no ready-made package in this release, else None."""
     families = sorted({NO_PACKAGE_HIP[a] for a in archs if a in NO_PACKAGE_HIP})
     return NO_PACKAGE_SENTENCE.format(" and ".join(families)) if families else None
+
+
+def hip_preference(archs) -> int:
+    """Tie-break between two AMD engine packages of one version that both cover a PC (a computer with an RX 7900 beside an RX 6800): the
+    RX 6000 package (gfx103x code only) never wins over another family's, so adding it changed nothing for a PC that was served before."""
+    archs = [str(a) for a in archs or ()]
+    return 0 if archs and all(a.startswith("gfx103") for a in archs) else 1
 
 
 def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
@@ -859,7 +973,8 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
             if item.root.name == pin:
                 return item
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
-    return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0"))))
+    return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0")),
+                                         hip_preference(item.hip_archs)))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the

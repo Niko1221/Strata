@@ -254,6 +254,34 @@ def _pid_exists(pid: int, started: int | None = None) -> bool:
     return True
 
 
+_MARKER_SLACK = 2.0   # seconds: the child starts before its marker is written; this much of clock rounding is allowed
+
+
+def _child_present(child: dict, written: float | None = None) -> bool:
+    """Whether the child recorded in an owner marker is still there. A marker without a creation time (Windows could not
+    read it when the child started) cannot tell the recorded server from a later process that reused the number, so
+    a live process that is not a Python or Strata executable is a reused number: the child is gone (#3488).
+
+    `written` is when the marker was written (its file time). The child was started before that, so a process that was created
+    AFTER it cannot be the child, whatever its image: the number was reused. This is what clears a marker left by a force-killed app
+    when the number now belongs to another Python program (2026-10-22: every load said "still present", and removing the marker by
+    hand was the only way out)."""
+    started = child.get("started") if type(child.get("started")) is int else None
+    if not _pid_exists(child["pid"], started):
+        return False
+    if started is None and written is not None:
+        created = procs.started_epoch(child["pid"])
+        if created is not None and created > written + _MARKER_SLACK:
+            return False
+    if WINDOWS and started is None:
+        image = winproc.process_image(child["pid"])
+        if image is not None:
+            name = os.path.basename(image).lower()
+            if "python" not in name and "strata" not in name:
+                return False
+    return True
+
+
 def _host_lease_active(name: str) -> bool:
     path, _, _ = _paths(name)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -291,10 +319,10 @@ def _recover_stale(name: str, *, wait: float) -> bool:
                 child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
         deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        started = child.get("started") if type(child.get("started")) is int else None
-        while _pid_exists(child["pid"], started) and time.monotonic() < deadline:
+        written = details.st_mtime
+        while _child_present(child, written) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _pid_exists(child["pid"], started):
+        if _child_present(child, written):
             raise ProfileError("lost host child is still present; retry after it exits", 6)
         if not isinstance(child.get("ready"), str):
             raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
@@ -453,6 +481,30 @@ def _engine_preflight(plan: dict) -> None:
         raise ProfileError(str(exc), exc.exit_code) from None
 
 
+def _ready_pid_is_child(ready_pid, child_pid: int) -> bool:
+    """Is the process named in the ready file the one this host started?
+
+    Normally the pids are equal. A Windows venv (the python.exe of a source checkout's .venv) starts its real interpreter as a
+    CHILD of the launcher it was given, so the server that writes the ready file is one process below the pid ``Popen`` returned
+    (#3683: the staged engine was ready, this check never matched, and the start waited out its whole deadline). Only on Windows,
+    and only for a process that sits within three parents of the process this host started, so another process cannot pass."""
+    if type(ready_pid) is not int or ready_pid <= 0:
+        return False
+    if ready_pid == child_pid:
+        return True
+    if not WINDOWS:
+        return False
+    current = ready_pid
+    for _ in range(3):
+        parent = procs.parent_of(current)
+        if parent is None or parent <= 0:
+            return False
+        if parent == child_pid:
+            return True
+        current = parent
+    return False
+
+
 def _check_start_candidate(name: str, expected_profile_revision: str | None,
                            expected_source_sha256: str | None) -> tuple[dict, str]:
     plan, digest = _start_candidate(name)
@@ -463,11 +515,18 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
     return plan, digest
 
 
+MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB DeepSeek set on a slow disk needs more than 10 minutes (#3949)
+
+
 def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
           expected_profile_revision: str | None = None,
           expected_source_sha256: str | None = None,
-          die_with_pid: int | None = None) -> dict:
+          die_with_pid: int | None = None, on_status=None) -> dict:
     """Start the saved profile under a new owner host.
+
+    ``on_status`` (optional) is called with each status answer while the start waits (about every 0.2 s; the caller throttles), so a
+    caller can show progress. The result of a wait that ran out names the last phase (``loading``, ``verifying_generation``,
+    ``ready_file_not_matched``).
 
     The owner host is a background service: it is not tied to the terminal or the process that ran this command and
     keeps serving after they end. It stops on `runtime stop`, when its server ends, or - only if `die_with_pid`
@@ -479,8 +538,8 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
         if token is None:
             raise ProfileError("the process to follow with --die-with-pid is not running")
         die_with = (die_with_pid, token)
-    if not 0 <= wait <= 600 or not 0 <= shutdown_timeout <= 300:
-        raise ProfileError("start wait must be 0..600 and shutdown timeout 0..300 seconds")
+    if not 0 <= wait <= MAX_START_WAIT or not 0 <= shutdown_timeout <= 300:
+        raise ProfileError(f"start wait must be 0..{MAX_START_WAIT} and shutdown timeout 0..300 seconds")
     if expected_profile_revision is not None and (not isinstance(expected_profile_revision, str) or
             not re.fullmatch(r"[0-9a-f]{16}", expected_profile_revision)):
         raise ProfileError("expected profile revision must be 16 lowercase hex characters")
@@ -527,14 +586,20 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
     if wait == 0:
         return {"ok": True, "profile": name, "state": "starting", "plan": plan}
     deadline = time.monotonic() + wait
+    result: dict = {}
     while time.monotonic() < deadline:
         result = _rpc(name, "status")
+        if on_status is not None:
+            try:
+                on_status(result)
+            except Exception:                                   # noqa: BLE001 - progress must never break a start
+                on_status = None
         if result.get("state") in ("ready", "failed"):
             return {**result, "ok": result["state"] == "ready",
                     "exit_code": 6 if result["state"] == "failed" else 0}
         time.sleep(0.2)
     return {"ok": False, "profile": name, "state": "starting", "error": "startup_wait_expired",
-            "exit_code": 8}
+            "phase": result.get("phase"), "exit_code": 8}
 
 
 def plan_stop(name: str) -> dict:
@@ -644,9 +709,9 @@ def restart(name: str, *, timeout: float = 1000, startup_wait: float = 300,
             allow_source_switch: bool = False,
             allow_source_migration: bool = False,
             expected_source_sha256: str | None = None) -> dict:
-    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= 600 or
+    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= MAX_START_WAIT or
             type(allow_source_switch) is not bool or type(allow_source_migration) is not bool):
-        raise ProfileError("restart wait must be 1..1800 and startup wait 1..600 seconds")
+        raise ProfileError(f"restart wait must be 1..1800 and startup wait 1..{MAX_START_WAIT} seconds")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
                                                not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source SHA-256 must be 64 lowercase hex characters")
@@ -715,6 +780,9 @@ class Host:
             payload.update(pid=pid, ready=str(ready))
             if WINDOWS:
                 started = winproc.process_started(pid)
+                if started is None:
+                    time.sleep(0.05)
+                    started = winproc.process_started(pid)     # one more try: the child may not be queryable yet
                 if started is not None:
                     payload["started"] = started   # tells this process from a later one with the same number
         profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())
@@ -883,7 +951,7 @@ class Host:
         if self.ready_path is not None:
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") == child.pid and isinstance(ready.get("instance_id"), str):
+                if _ready_pid_is_child(ready.get("pid"), child.pid) and isinstance(ready.get("instance_id"), str):
                     key = (child.pid, ready["instance_id"])
                     if self.probe_key != key:
                         self.probe_key, self.probe_result = key, None
@@ -902,9 +970,13 @@ class Host:
                     return {**base, "state": "ready", "instance_id": ready["instance_id"],
                             "model_state": ready.get("model_state"),
                             **self.probe_result}
+                if isinstance(ready, dict):
+                    # the server published its ready file but it is not the process this host started: say so, so a wait that
+                    # ends can name it (before #3683 this looked exactly like a model that was still loading)
+                    return {**base, "state": "starting", "phase": "ready_file_not_matched"}
             except (OSError, ValueError):
                 pass
-        return {**base, "state": "starting"}
+        return {**base, "state": "starting", "phase": "loading"}
 
     def _wait_ready(self, timeout: float) -> dict:
         deadline = time.monotonic() + timeout
@@ -1121,7 +1193,7 @@ class Host:
                 return {"ok": False, "state": current["state"], "error": "runtime_not_ready", "exit_code": 6}
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") != self.child.pid or ready.get("instance_id") != current["instance_id"]:
+                if not _ready_pid_is_child(ready.get("pid"), self.child.pid) or ready.get("instance_id") != current["instance_id"]:
                     raise readiness.ReadinessError("probe_instance_mismatch")
                 host = self.args[self.args.index("--host") + 1]
                 result = readiness.verify(ready, self.source_bytes, expected_host=host,
@@ -1155,7 +1227,7 @@ class Host:
             return {**result, "profile": self.name}
         if command == "restart":
             startup_wait = request.get("startup_wait", 300)
-            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= 600:
+            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= MAX_START_WAIT:
                 return {"ok": False, "error": "invalid_startup_wait", "exit_code": 2}
             revision = request.get("expected_profile_revision")
             if revision is not None and (not isinstance(revision, str) or
@@ -1299,7 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--die-with-pid", type=int)
     parser.add_argument("--die-with-token")
     args = parser.parse_args(argv)
-    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= 600:
+    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= MAX_START_WAIT:
         parser.error("shutdown timeout must be 0..300")
     if args.expected_profile_revision is not None and not re.fullmatch(r"[0-9a-f]{16}", args.expected_profile_revision):
         parser.error("expected profile revision must be 16 lowercase hex characters")

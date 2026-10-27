@@ -100,7 +100,7 @@ def in_trash(path: str | os.PathLike) -> bool:
     """#3410: True when ``path`` is inside a Trash / Recycle Bin folder (a Strata folder that was deleted with the file manager
     is still a folder there, and was remembered as an install): ~/.local/share/Trash/files/.., /.Trash-1000/.., ~/.Trash/..,
     $RECYCLE.BIN\\.."""
-    parts = [x.lower() for x in Path(path).parts]
+    parts = [x.lower() for p in Path(path).parts for x in str(p).split("\\")]   # a Windows-shaped path read on Linux has no separators for Path
     for i, x in enumerate(parts):
         if x in (".trash", "$recycle.bin", "recycler", "$recycle.bin.old") or x.startswith(".trash-"):
             return True
@@ -166,6 +166,9 @@ def places(*, here: Path | None = None, explicit: str | os.PathLike | None = Non
         p = Path(raw).expanduser()
         return [Place(p, "explicit", len(config_files(p)))]
     cands: list[tuple[Path, str]] = []
+    data_root = environ.get("STRATA_DATA_DIR")
+    if data_root:                                    # the installer's own folder (install.sh / install.ps1): an install kept inside it comes first
+        cands.append((Path(data_root).expanduser() / "install", "datadir"))
     if here is not None:
         cands.append((Path(here), "here"))
     own = own_settings_file(environ, windows=windows, home=home)
@@ -202,25 +205,79 @@ def find_install(*, here: Path | None = None, explicit: str | os.PathLike | None
 
 # ----------------------------------------------------------------------------------------------- the data folder
 
+def _data_dir_entry(file: Path) -> tuple[str, float] | None:
+    """(the data folder a settings file names, when it was last changed): ``data_dir_at`` (seconds), else the file's own time."""
+    data = _read_json(file)
+    folder = data.get("data_dir")
+    if not isinstance(folder, str) or not folder:
+        return None
+    at = data.get("data_dir_at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or at <= 0:
+        try:
+            at = file.stat().st_mtime
+        except OSError:
+            at = 0.0
+    return folder, float(at)
+
+
+def _same(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _write_data_dir(file: Path, folder: str, at: float) -> bool:
+    """Merge the data folder and its time into a settings file (atomic). False when the disk refuses; never raises."""
+    try:
+        current = _read_json(file)
+        current["data_dir"], current["data_dir_at"] = folder, at
+        file.parent.mkdir(parents=True, exist_ok=True)
+        temp = file.with_name(f"{file.name}.{os.getpid()}.tmp")
+        temp.write_text(json.dumps(current, indent=1), encoding="utf-8")
+        os.replace(temp, file)
+        return True
+    except OSError:
+        return False
+
+
+def sync_data_dir(*, environ=None, windows: bool | None = None, home: Path | None = None) -> tuple[Path, str] | None:
+    """One models folder for the Terminal and the desktop app. The Terminal's settings file and the app's (``app-settings.json``) each name
+    a data folder; when they disagree the one changed last wins and the other file is updated. Nothing is moved. Returns (folder, source of
+    the winner) or None when neither names one. The app's own processes never call this (the app syncs from its host)."""
+    environ = os.environ if environ is None else environ
+    if in_app_mode(environ):
+        return None
+    mine_file = own_settings_file(environ, windows=windows, home=home)
+    app_file = app_settings_file(environ, windows=windows, home=home)
+    mine, app = _data_dir_entry(mine_file), _data_dir_entry(app_file)
+    if mine and app and not _same(mine[0], app[0]):
+        newer, older_file, source = (mine, app_file, "settings") if mine[1] >= app[1] else (app, mine_file, "app")
+        if source == "app" and not Path(app[0]).is_dir():          # a disk that is not connected is never adopted
+            return Path(mine[0]), "settings"
+        _write_data_dir(older_file, newer[0], newer[1])
+        return Path(newer[0]), source
+    if mine:
+        return Path(mine[0]), "settings"
+    return (Path(app[0]), "app") if app else None
+
+
 def data_dir_choices(*, environ=None, windows: bool | None = None, home: Path | None = None) -> list[tuple[Path, str]]:
     """Candidate data folders with their source, best first (not checked for existence)."""
     environ = os.environ if environ is None else environ
     out: list[tuple[Path, str]] = []
-    own = _read_json(own_settings_file(environ, windows=windows, home=home)).get("data_dir")
-    if isinstance(own, str) and own:
-        out.append((Path(own), "settings"))
+    own = _data_dir_entry(own_settings_file(environ, windows=windows, home=home))
+    app = None if in_app_mode(environ) else _data_dir_entry(app_settings_file(environ, windows=windows, home=home))
+    entries = [(Path(e[0]), src, e[1]) for e, src in ((own, "settings"), (app, "app")) if e]
+    entries.sort(key=lambda x: -x[2])                              # the folder changed last first, whichever file it is in
+    out.extend((p, src) for p, src, _ in entries)
     if not in_app_mode(environ):
-        app = _read_json(app_settings_file(environ, windows=windows, home=home)).get("data_dir")
-        if isinstance(app, str) and app:
-            out.append((Path(app), "app"))
         for d in documents_dirs(environ, windows=windows, home=home):
             out.append((d / "Strata", "documents"))
     return out
 
 
 def data_dir(default: Path, *, environ=None, windows: bool | None = None, home: Path | None = None) -> tuple[Path, str]:
-    """(the data folder, source). The person's own setting wins; then the app's folder, then a ``Documents/Strata`` that holds models;
-    else `default`."""
+    """(the data folder, source). Of the Terminal's own setting and the app's folder the one changed last wins (the other file is brought up
+    to date); then a ``Documents/Strata`` that holds models; else `default`."""
+    sync_data_dir(environ=environ, windows=windows, home=home)
     choices = data_dir_choices(environ=environ, windows=windows, home=home)
     for path, source in choices:
         if source == "settings":

@@ -67,13 +67,29 @@ export function nvidiaDriverVersion() {
 /** Where the builds are published; the wrong-make sentence points here. */
 export const RELEASES_URL = 'https://github.com/Niko1221/Strata/releases';
 
+/** The PCI vendor ids (`10de`, `1002`, `8086`) of the Windows display adapters; empty off Windows or when the registry cannot be read. */
+export function windowsDisplayVendors({ platform = process.platform, run = execFileSync } = {}) {
+  const found = new Set();
+  if (platform !== 'win32') return found;
+  try {
+    const out = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}', '/s', '/v', 'MatchingDeviceId'], { encoding: 'utf8', timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const match of String(out).matchAll(/VEN_([0-9A-F]{4})/gi)) found.add(match[1].toLowerCase());
+  } catch { /* no registry access: the tools decide */ }
+  return found;
+}
+
 /**
  * The engine family this PC's graphics card needs ('cuda', 'hip', 'sycl'), or null when it cannot be told. The same order as Control
  * (NVIDIA first, then AMD, then Intel); STRATA_ENGINE_BACKEND wins. Reads only the driver and (Linux) the PCI vendor of the display adapters.
  */
-export function gpuBackendHere(env = process.env) {
+export function gpuBackendHere(env = process.env, { vendors = windowsDisplayVendors() } = {}) {
   const forced = String(env.STRATA_ENGINE_BACKEND ?? '').trim().toLowerCase();
   if (forced) return ['cuda', 'hip', 'sycl'].includes(forced) ? forced : null;
+  // Windows: the display adapters are the machine's own statement of which cards it has; a leftover nvidia-smi from a card that was
+  // taken out must not outvote them (#3688). Same order as Control: NVIDIA, then AMD, then Intel.
+  if (vendors.size) {
+    for (const [vendor, backend] of [['10de', 'cuda'], ['1002', 'hip'], ['8086', 'sycl']]) if (vendors.has(vendor)) return backend;
+  }
   if (nvidiaDriverVersion()) return 'cuda';
   try {
     const base = '/sys/class/drm';
@@ -217,4 +233,56 @@ export async function installBundledEngine({ bundleDir, components, platform = n
   } catch (error) {
     return { action: 'refused', reason: error?.message ?? String(error) };
   }
+}
+
+/**
+ * After an update from an installer that carried an engine (a per-GPU build), its `engine-bundle` folder is still in the install folder
+ * (about 570 MB) although the engine was copied to the engine store long ago. It is removed only when EVERY package in it exists complete in
+ * the store (every file there with the size and SHA-256 its manifest lists); otherwise it stays and one line says why.
+ * Returns { removed: bool, reason?: string, packages?: number }; never throws.
+ */
+export async function removeVerifiedBundle({ bundleDir, components, log = () => {} } = {}) {
+  try {
+    if (!bundleDir || !components || !existsSync(bundleDir)) return { removed: false, reason: 'no bundle' };
+    // Files inside a signed macOS app must stay intact after installation.
+    if (process.platform === 'darwin' && resolve(bundleDir).split(sep).some(part => part.toLowerCase().endsWith('.app'))) return keepBundle(log, 'macOS app bundles must remain unchanged after signing');
+    const packages = [];
+    for (const entry of await readdir(bundleDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const folder = join(bundleDir, entry.name);
+      const manifest = await readManifest(folder);
+      packages.push({ folder, manifest, name: entry.name });
+    }
+    if (!packages.length) return { removed: false, reason: 'nothing in the bundle' };
+    const store = join(components, 'engine');
+    const stored = existsSync(store) ? (await readdir(store, { withFileTypes: true })).filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => join(store, e.name)) : [];
+    for (const pkg of packages) {
+      if (!pkg.manifest) return keepBundle(log, `${pkg.name} has no readable manifest`);
+      let found = false;
+      for (const candidate of stored) {
+        const theirs = await readManifest(candidate);
+        if (!theirs || theirs.version !== pkg.manifest.version || theirs.platform !== pkg.manifest.platform || theirs.backend !== pkg.manifest.backend
+          || (theirs.variant ?? '') !== (pkg.manifest.variant ?? '') || (theirs.build_id ?? '') !== (pkg.manifest.build_id ?? '')) continue;
+        if (await packageIsWhole(candidate, pkg.manifest, { deep: true })) { found = true; break; }
+      }
+      if (!found) return keepBundle(log, `${pkg.name} is not (or not completely) in the engine store`);
+    }
+    for (const pkg of packages) await rm(pkg.folder, { recursive: true, force: true });
+    log(`engine bundle: the copy that came with the installer (${packages.map(p => p.name).join(', ')}) was removed; the same engine is complete in the engine store`);
+    return { removed: true, packages: packages.length };
+  } catch (error) {
+    return keepBundle(log, `could not be checked (${error?.message ?? error})`);
+  }
+}
+function keepBundle(log, why) {
+  log(`engine bundle: kept in the install folder (${why})`);
+  return { removed: false, reason: why };
+}
+
+/**
+ * What the host does once its engine step has settled: for an engine that is (or was) there, look at the install folder's leftover bundle.
+ * The lines go to the host's output (console.log), which the desktop shell copies to its log file (`[host] engine bundle: ...`).
+ */
+export function cleanupAfterInstall(settled, { bundleDir, components, log = line => console.log(line) } = {}) {
+  return Promise.resolve(settled).then(result => (['installed', 'kept', 'repaired'].includes(result?.action) ? removeVerifiedBundle({ bundleDir, components, log }) : null), () => null);
 }

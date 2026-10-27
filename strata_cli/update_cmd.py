@@ -56,7 +56,10 @@ def add_parsers(sp, components_sp) -> list:
     comp_update.add_argument("--no-control", action="store_true")
     rollback = components_sp.add_parser("rollback", help="return to the previous engine version the last update kept")
     _common(rollback)
-    return [update, comp_update, rollback]
+    install_file = components_sp.add_parser("install-file", help="install an engine package you downloaded yourself (no network; the package's signature is checked)")
+    install_file.add_argument("file", help="the engine package (.tar.gz or .zip) from the release page")
+    _common(install_file)
+    return [update, comp_update, rollback, install_file]
 
 
 def _emit_factory(a, lines: list):
@@ -72,7 +75,7 @@ def _emit_factory(a, lines: list):
         if event.get("event") == "progress":
             pct = event.get("percent", 0)
             if sys.stdout.isatty():
-                print(f"\r  downloading {event.get('label', '')}: {pct}%  ({event['done'] / (1 << 20):.0f} of {event['total'] / (1 << 20):.0f} MiB)   ",
+                print(f"\r  downloading {event.get('label', '')}: {pct}%  ({event['done'] // 1_000_000} of {event['total'] // 1_000_000} MB)   ",
                       end="" if pct < 100 else "\n", flush=True)
             elif pct >= state["pct"] + 10 or pct == 100:
                 state["pct"] = pct
@@ -91,11 +94,19 @@ def _feed_source(a, root: Path) -> str:
     if os.environ.get(ENV_FEED):
         return os.environ[ENV_FEED]
     remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    return remembered or DEFAULT_FEED
+    return remembered if _may_be_remembered(remembered) else DEFAULT_FEED
+
+
+def _may_be_remembered(source) -> bool:
+    """Only an https address is carried over to later runs. A loopback address or a folder is what a test of an update feed uses; once
+    one such run had been made on a PC, every later check (the app's Settings included) tried that dead address and said "No internet
+    connection". Those runs name their feed again each time (--feed or STRATA_UPDATE_FEED)."""
+    return isinstance(source, str) and source.lower().startswith("https://")
 
 
 def _mib(n: int | None) -> str:
-    return f"{(n or 0) / (1 << 20):.0f} MiB"
+    from strata_control.updater import megabytes
+    return f"{megabytes(n)} MB"
 
 
 def _line(name: str, result: dict) -> str:
@@ -136,9 +147,16 @@ def _print_check(report: dict) -> None:
     offered = (eng["offered"] or {}).get("version")
     text = {"available": f"update available: {installed} -> {offered} ({_mib(eng['download_bytes'])})",
             "install": f"no engine installed yet; {offered} is the one for this PC ({_mib(eng['download_bytes'])})",
-            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC",
+            "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC", "wrong-make": eng.get("note") or "nothing was changed",
             "not-in-feed": "the feed lists no engines"}.get(eng["status"], eng.get("note") or eng["status"])
     print(f"  Engine   {text}")
+    pick = eng.get("offered")
+    if pick and eng["status"] in ("available", "install", "current"):
+        # round 8, N9: the list below names only the packages that were NOT chosen; say which one was
+        label = pick.get("label") or (f"{pick.get('version')} {pick.get('platform')}-{pick.get('backend')}" + (f"-{pick['variant']}" if pick.get("variant") else ""))
+        print(f"           selected for this PC: {label}")
+    if eng.get("reasons"):
+        print("           not used for this PC:")
     for reason in eng.get("reasons") or []:
         print(f"           - {reason}")
     if eng.get("note") and eng["status"] not in ("failed-before", "skipped", "current"):
@@ -169,6 +187,7 @@ def run(a) -> int:
         hardware = updater.detect_hardware()
         if a.backend:
             hardware["backend"] = a.backend
+            hardware["backend_source"] = "requested"             # the person's own decision: the make guard lets it through
         lines: list = []
         cancel = threading.Event()
         ctx = updater.Context(components=root, source="", trusted={}, hardware=hardware, emit=_emit_factory(a, lines), cancel=cancel,
@@ -185,6 +204,16 @@ def run(a) -> int:
                 print("Saved tuning presets are marked for the short re-check; none were deleted." if out["presets_marked"] else
                       "Saved tuning presets are unchanged.")
                 print("Run `strata update --force` to try the newer version again.")
+            return 0
+        if getattr(a, "components_command", None) == "install-file":
+            ctx.trusted = signing.load_trusted_keys()
+            ctx.serving = updater.serving_now
+            _maybe_wait(a, ctx, machine)
+            out = updater.install_engine_file(ctx, Path(a.file))
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": True, **out}, ensure_ascii=False))
+            else:
+                print(out.get("note") or _line("Engine", out))
             return 0
         acquisition.require("the update", "`strata update` from a terminal")
         trusted = signing.load_trusted_keys()
@@ -235,6 +264,8 @@ def _maybe_wait(a, ctx, machine: bool) -> None:
     if not serving:
         return
     names = ", ".join(item.get("profile", "an engine") for item in serving)
+    if any(str(item.get("profile", "")).startswith("launch-") for item in serving):
+        return                                   # Strata's own launch: run_update says the one next step (stop the model first) instead of asking
     if machine or not sys.stdin.isatty():
         return                                   # run_update raises Busy (exit 7) with the same names
     answer = input(f"{names} is serving. Wait for it to stop and then update? [y/N] ").strip().lower()

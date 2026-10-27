@@ -30,16 +30,27 @@ export function memoryNeeded(v: FitInput): number {
   return round1((v.experts_gb ?? v.ram_needed_gb ?? 0) + DENSE_EXTRA_GB);
 }
 
-export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = true): Fit {
+/** The conversation cache of Flash-Next: 13 attention layers, bytes per token per layer by cache format, 5.4% over the bare cache
+ *  (strata_control/vram_fit.py KV_BYTES, KV_MEASURED_FACTOR; setup.py UD_FIT_KV_BYTES). */
+const KV_BYTES: Record<string, number> = { fp16: 2112, int8: 1056, q4_0: 576, k8v4: 816 };
+const KV_LAYERS = 13, KV_FACTOR = 1.054, BASE_CONTEXT = 32768;
+export function cacheGb(context: number, kv = 'int8'): number {
+  return (121 + context * KV_LAYERS * (KV_BYTES[String(kv).toLowerCase()] ?? KV_BYTES.int8) * KV_FACTOR / 2 ** 20) / 1024;   // 121 MiB fixed per session
+}
+export interface CacheChoice { context: number; kv?: string }
+
+export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = true, cache?: CacheChoice | null): Fit {
   const memoryGb = memoryNeeded(v);
+  // DENSE_GB already holds a 32K cache in the default format; the person's context and format replace it (#3832).
+  const denseGb = cache && cache.context > 0 ? Math.max(DENSE_GB - cacheGb(BASE_CONTEXT), 0) + cacheGb(cache.context, cache.kv) : DENSE_GB;
   const ram = Number(hw?.ram_gb), vram = Number(hw?.vram_gb) || 0;
   if (!Number.isFinite(ram) || ram <= 0) return { memoryGb, vramUseGb: 0, ramUseGb: 0, spillGb: 0, known: false };
   const experts = Math.max(0, memoryNeeded(v) - DENSE_EXTRA_GB);
-  const onGpu = Math.max(0, Math.min(experts, vram - DENSE_GB - (mtp && vram > 0 ? MTP_VRAM_GB : 0)));
+  const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (mtp && vram > 0 ? MTP_VRAM_GB : 0)));
   const ramRoom = Math.max(0, ram - SYSTEM_ROOM_GB);
   const spillGb = Math.max(0, experts - onGpu - ramRoom);
   const inRam = Math.max(0, experts - onGpu - spillGb);
-  const vramUseGb = vram > 0 ? Math.min(vram, DENSE_GB + (mtp ? MTP_VRAM_GB : 0) + onGpu) : 0;
+  const vramUseGb = vram > 0 ? Math.min(vram, denseGb + (mtp ? MTP_VRAM_GB : 0) + onGpu) : 0;
   return { memoryGb, vramUseGb: round1(vramUseGb), ramUseGb: round1(inRam + DENSE_EXTRA_GB * (vram > 0 ? 0 : 1)), spillGb: round1(spillGb), known: true };
 }
 

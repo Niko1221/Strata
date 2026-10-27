@@ -25,6 +25,10 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from strata_control import tls
+
+tls.install()      # #3722: the operating system's certificates, like the browser
+
 CHUNK = 1 << 20
 SMALL_LIMIT = 8 << 20
 ENV_ALLOW_HTTP = "STRATA_UPDATE_ALLOW_HTTP"
@@ -152,17 +156,35 @@ def _remember_date(response) -> None:
         pass
 
 
+FIRST_TRY_SECONDS = 12.0
+
+
+def _open_small(request, timeout: float, limit: int) -> bytes:
+    with _opener.open(request, timeout=timeout) as response:
+        _remember_date(response)
+        return response.read(limit + 1)
+
+
 def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) -> bytes:
-    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated."""
+    """A small document (the feed, its signature). Larger than `limit` is refused, not truncated.
+    A web address gets one more try when the first one times out or the connection fails: about one request in 25 to github.com hung for the whole
+    timeout on a PC whose next 24 answered in half a second (measured on a 3060 PC: the first-run card said "offline" a moment before the install's
+    own read worked). The first try therefore waits at most 12 s; the second the full `timeout`."""
     kind = kind_of(location)
     _SERVER_DATE.clear()                                 # only the answer of this read counts
     try:
         if kind in ("http", "https"):
             check_url_policy(location)
             request = urllib.request.Request(location, headers={"User-Agent": _USER_AGENT, "Cache-Control": "no-cache"})
-            with _opener.open(request, timeout=timeout) as response:
-                _remember_date(response)
-                data = response.read(limit + 1)
+            try:
+                data = _open_small(request, min(timeout, FIRST_TRY_SECONDS), limit)
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, OSError, TimeoutError) as first:
+                if tls.is_certificate_error(first):
+                    raise
+                _SERVER_DATE.clear()
+                data = _open_small(request, timeout, limit)
         else:
             path = _local_path(location)
             if path.stat().st_size > limit:
@@ -175,9 +197,8 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) 
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         hint = ""
-        if "CERTIFICATE_VERIFY_FAILED" in str(reason):
-            hint = (". This computer did not accept the update server's certificate: check that its date and time are right, "
-                    "or that a company proxy is not replacing the certificate")
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location))) from None
         raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason}){hint}") from None
     if len(data) > limit:
         raise TransferError(f"{location} is larger than {limit} bytes")
@@ -249,6 +270,8 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                                 resumable=False) from None
         raise TransferError(f"the update server answered {exc.code} for {location}") from None
     except (urllib.error.URLError, OSError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location)), resumable=True) from None
         got = partial.stat().st_size if partial.exists() else 0
         reason = getattr(exc, "reason", exc)
         raise TransferError(f"the download of {location} was interrupted after {got} of {size} bytes "

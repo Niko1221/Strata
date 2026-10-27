@@ -70,4 +70,25 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     return set;
 }
 
+void apply_spec_adapt_default(int major, int minor) {
+    const int mj = strata::cc_major_of(major), mn = strata::cc_minor_of(minor);
+    // sm_86 only: the P100 (sm_60) gained 4-16% on JSON/code/chat/tool calls but lost 3% on the 4K agent transcript (5/5 pairs), so there it stays opt-in
+    // Owner round 9 (2026-10-22): on the z440 A4000s the 5-pair A/B against 0.2.2 was 0.995 (code 0.996, json 1.019, tool 0.973,
+    // agent 0.991) and the 3060 was length-confounded, so the earlier +9..17% did not reproduce: opt-in (STRATA_SPEC_ADAPT_SM86=1)
+    // until a clean A/B shows it.
+    const bool sm86 = mj == 8 && mn == 6;
+    if (!sm86) return;
+    if (const char* v = std::getenv("STRATA_SPEC_ADAPT_SM86"); v == nullptr || v[0] != '1') return;
+    if (off("STRATA_SM86_PERF")) return;
+    const std::pair<const char*, const char*> kv[2] = {{"STRATA_SPEC_ADAPT_EVERY", "2"}, {"STRATA_SPEC_ADAPT_WARM", "200"}};
+    for (const auto& p : kv) {
+        if (std::getenv(p.first) != nullptr) continue;
+#if defined(_WIN32)
+        _putenv_s(p.first, p.second);
+#else
+        setenv(p.first, p.second, 0);
+#endif
+    }
+}
+
 }  // namespace strata::core

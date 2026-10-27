@@ -6,16 +6,7 @@ import { Icon } from './ui';
 
 /** Files dropped on the chat go where the attach button would put them: the composer reads the 'strata:drop-files' event. */
 export const DROP_EVENT = 'strata:drop-files';
-/** The pictures on the clipboard, named so each one is told apart in the composer (a pasted screenshot arrives as "image.png"). */
-export function pastedFiles(data: DataTransfer | null | undefined): File[] {
-  const out: File[] = [];
-  for (const file of Array.from(data?.files ?? [])) {
-    if (!file.type.startsWith('image/')) continue;
-    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg').replace(/[+].*/, '') || 'png';
-    out.push(new File([file], `Pasted picture ${new Date().toLocaleTimeString().replace(/[^0-9]+/g, '-').replace(/-$/, '')}${out.length ? `-${out.length + 1}` : ''}.${extension}`, { type: file.type }));
-  }
-  return out;
-}
+export { pastedFiles } from '../lib/pasted-files';
 const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
 
 /** A file dropped outside the chat must not take the window to that file: the page ignores it (called once at start). */

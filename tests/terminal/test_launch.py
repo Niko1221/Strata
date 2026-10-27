@@ -109,6 +109,9 @@ class CatalogRules(unittest.TestCase):
             models, families, contexts, source = cat.tables()
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
+                if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3}[r.model], delta=0.1)
+                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
@@ -141,7 +144,7 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S"})
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M"})
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
             self.assertEqual(rows["IQ3_S"].verdict, "tight")
@@ -353,6 +356,26 @@ class SetupArgs(unittest.TestCase):
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
 
+    def test_an_arc_b_series_card_is_allowed_with_pictures_on_the_cpu_reader_and_one_plain_line(self):
+        """Owner decision 2026-10-22: Arc B-series (Battlemage) runs like any Arc. An Arc Pro B70 (32 GB) gets pictures on, with the CPU reader (the GPU
+        reader has not run on a 24 GB+ Arc), and a warn-level note that it is new and how to report a problem. An A-series card gets no such note."""
+        from strata_cli.launch import cmd
+        for name, vram, note in (("Intel Arc Pro B70", 32.0, True), ("Intel Arc B580", 12.0, True), ("Intel Arc A750", 8.0, False)):
+            hw = {"ram_gb": 64.0, "os": "Linux", "cpu": {"avx2": True, "name": "x"},
+                  "gpus": [{"index": 0, "name": name, "vendor": "intel", "vram_gb": vram, "usable": True}]}
+            with Home():
+                from strata_cli.launch.catalog import Computer
+                cat = catalog(hw)
+                comp = Computer(ram_gb=64.0, gpus=hw["gpus"], disk_free_gb=500.0, os="Linux", avx2=True, raw=hw, engine_vendor="intel")
+                with mock.patch.object(type(cat), "reader_state", lambda self: "present"), mock.patch.object(type(cat), "computer", lambda self, fresh=False: comp):
+                    self.assertEqual(cat.picture_default(True), "cpu", name)
+                self.assertEqual(bool(comp.new_card_note), note, name)
+                if note:
+                    text, nxt = comp.new_card_note
+                    self.assertIn("new to Strata", text)
+                    self.assertIn("--vision off", nxt)
+                    self.assertIn("github.com/Niko1221/Strata/issues", nxt)
+
     def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
         for gb in (16.0, 32.0, 128.0):
             hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
@@ -506,9 +529,10 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(cfg)
             self.assertTrue(any("prepared pack" in p for p in problems))
             self.assertTrue(any("tokenizer" in p for p in problems))
-            cfg, problems = adopt.plan(family="gyro", model="Gyro-S", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+            cfg, problems = adopt.plan(family="unsloth", model="UD-Q4_K_XL", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
+            self.assertNotIn("..", problems[0] + ".")                           # round 8, N11: the caller adds the full stop
 
     def test_pictures_on_is_setups_yes_and_setup_picks_the_encoder(self):
         with Home() as h:
@@ -580,10 +604,12 @@ class AdoptRules(unittest.TestCase):
             cfg = derive_config(split_base, S.LaunchSettings(), bool_flags=tune_knobs.BOOL_FLAGS)
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertEqual(base["gpu"], 0)                                   # the installed config itself is never changed
+            aged = derive_config({**base, "backend": "hip", "hip_ordinal": 1}, S.LaunchSettings(), bool_flags=tune_knobs.BOOL_FLAGS, gpus=[0])
+            self.assertNotIn("hip_ordinal", aged)                              # a card named now is not overruled by an old config's ordinal
             # which cards: named ones win (one card too: --gpu 1 on a box that has them), else the fit rule on a box with several cards
             two = catalog(HW_2X16)
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[1, 0]), two), [1, 0])
-            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), two), [0])           # fits one card + RAM
+            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), two), [0, 1])     # roles: card 0 Main (last), card 1 Helper
             one = catalog(HW_12)
             self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[1]), one), [1])
             self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), one))
@@ -595,6 +621,34 @@ class AdoptRules(unittest.TestCase):
             out = r.build_config(installed)
             self.assertEqual(json.loads(out.read_text())["gpu"], 1)
             self.assertEqual(json.loads(installed.read_text())["gpu"], 0)
+
+    def test_a_card_the_installed_model_was_set_to_is_not_replaced_by_the_automatic_pick(self):
+        """Two equal cards: the fit rule recommends card 0, so a person's earlier choice (setup --gpu 1, the app's card pick: "gpus_asked")
+        must survive a `strata launch` that names no cards - in its order, with "gpu_order": "as_given" too."""
+        import json
+        from tests.terminal.launch_support import HW_2X16
+        from strata_cli.launch.runner import cards_for_launch, installed_cards
+        with Home() as h:
+            two = catalog(HW_2X16)
+            plain = S.LaunchSettings(family="qwen", model="IQ3_XXS")
+            chosen = {"exe": "component:strata-engine", "args": ["--max-context", "32768"], "gpu": 1, "gpus_asked": True, "port": 8080}
+            self.assertEqual(installed_cards(chosen), [1])
+            self.assertEqual(installed_cards({**chosen, "gpu": [1, 0], "gpu_order": "as_given"}), [1, 0])
+            self.assertEqual(installed_cards({**chosen, "gpu": "1,0"}), [1, 0])
+            self.assertIsNone(installed_cards({**chosen, "gpus_asked": False}))               # never asked: setup's default, not a choice
+            self.assertIsNone(installed_cards({"gpu": 1}))
+            self.assertIsNone(cards_for_launch(plain, two, base=chosen))                      # the installed choice stays
+            self.assertEqual(cards_for_launch(plain, two, base={**chosen, "gpus_asked": False}), [0, 1])    # no choice recorded: the recommended roles
+            self.assertEqual(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpus=[0]), two, base=chosen), [0])   # --gpu 0 wins
+            if True:
+                installed = h.base / "strata-iq3_xxs.json"
+                for gpu, extra in ((1, {}), ([1, 0], {"gpu_order": "as_given", "layer_split": "auto"})):
+                    base = {**chosen, "gpu": gpu, **extra}
+                    installed.write_text(json.dumps(base))
+                    r = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", name="keep"), catalog=two)
+                    cfg = json.loads(r.build_config(installed).read_text())
+                    self.assertEqual(cfg["gpu"], gpu)
+                    self.assertEqual(cfg.get("gpu_order"), extra.get("gpu_order"))
 
     def test_pictures_asked_but_still_off_is_said_in_plain_words(self):
         with Home() as h:
@@ -757,12 +811,26 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):
-        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", "/data/x",
+        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", str(self.home.base / "data-x"),
                       "--set", "prefill=65536", "--set", "STRATA_PIN_BY_NEED=1", "--tune-allow-small")
         s = p["settings"]
-        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], "/data/x", True))
+        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], str(self.home.base / "data-x"), True))
         self.assertEqual(s["extra"], {"--prefill": "65536", "STRATA_PIN_BY_NEED": "1"})
         self.assertIn("--set prefill=65536", p["flags"])
+
+    def test_pool_cores_is_an_experimental_advanced_setting(self):
+        code, out, err = run_cli(["launch", "--help"])
+        self.assertIn("--pool-cores", out)
+        p = self.plan("--model", "q2_0", "--pool-cores", "2,4, 6,8")
+        self.assertEqual(p["settings"]["extra"], {"--pool-cores": "2,4,6,8"})
+        self.assertIn("--set pool-cores=2,4,6,8", p["flags"])                # the copyable line says the same
+        p = self.plan("--model", "q2_0", "--pool-cores", "2-14:2")
+        self.assertEqual(p["settings"]["extra"], {"--pool-cores": "2-14:2"})
+        p = self.plan("--model", "q2_0")                                    # off by default: nothing is added
+        self.assertNotIn("--pool-cores", p["settings"]["extra"])
+        p = self.plan("--model", "q2_0", "--pool-cores", "two,four")        # a list that cannot be read: a warning, never a refusal
+        self.assertNotIn("--pool-cores", p["settings"]["extra"])
+        self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
 
     def test_api_key_flags(self):
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-mine")
@@ -884,6 +952,24 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("Nothing was changed.", out)
         self.assertEqual(store.list_presets(), [])
 
+    def test_the_access_help_names_the_flags_for_showing_and_setting_a_key(self):             # #3713 #3951
+        from strata_cli.launch import screens
+        self.assertIn("strata launch --show-key", screens.AccessScreen.help_text)
+        self.assertIn("--api-key YOUR-KEY", screens.AccessScreen.help_text)
+
+    def test_the_summary_says_where_the_engine_log_is(self):                                  # #3656
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "x.json"
+            cfg.write_text(json.dumps({"log": str(Path(d) / "office.engine.log"), "args": []}), encoding="utf-8")
+            fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080"], key=None, tune_word=None, notices=[], config=str(cfg))
+            with mock.patch.object(Runner, "run", return_value=fake):
+                code, out, err = run_cli(["launch", "--no-tui", "--model", "q2_0"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Engine log", out)
+        self.assertIn("office.engine.log", out)
+        self.assertIn("strata logs --follow", out)
+
     def test_run_without_screens_prints_the_address_and_saves_the_preset(self):
         fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080", "http://192.168.1.5:8080"], key="sk-strata-abcdefghijkl",
                       tune_word=None, notices=[], config="/x")
@@ -901,6 +987,17 @@ class FlagsCommand(unittest.TestCase):
         code, out, _ = run_cli(["launch", "--show-key", "--preset", "Office"])
         self.assertEqual(code, 0)                                              # the preset's own key
         self.assertTrue(out.strip().startswith("sk-strata-"))
+
+    def test_a_setup_line_joined_after_the_model_could_not_be_installed_starts_with_a_capital(self):
+        from strata_cli.launch.runner import setup_failure
+        e = setup_failure([], "the model does not answer sensibly after the preparation: no answer", "", None, False)
+        self.assertTrue(e.text.startswith("The model could not be installed. The model does not answer sensibly"), e.text)
+
+    def test_a_reason_joined_after_a_sentence_starts_with_a_capital(self):
+        from strata_cli.launch.runner import capital
+        self.assertEqual(capital("the update feed could not be read: no route"), "The update feed could not be read: no route")
+        self.assertEqual(capital("Already fine."), "Already fine.")
+        self.assertEqual(capital(""), "")
 
     def test_launch_error_is_one_plain_sentence(self):
         from strata_cli.launch.runner import LaunchError
@@ -1157,7 +1254,80 @@ class ConnectCommand(unittest.TestCase):
     def test_context_flag_reaches_the_config(self):
         code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
         self.assertIn('"contextWindow": 65536', out)
-        self.assertIn('"reserveTokens": 50536', out)
+        self.assertIn('"reserveTokens": 33394', out)             # 65536 - 32142: the tested 52.3% share, not a flat 15K
+
+    def test_the_compaction_point_scales_with_the_window(self):
+        """A wider server must not be summarised every 15,000 tokens: the share the tested 32K configs used carries over."""
+        wide = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 262144)
+        self.assertEqual(harness.compact_at(wide), 135000)                     # 52.3% of the 258048 input limit
+        cfg = json.loads(self.render("opencode", context=262144)["files"][0]["text"])
+        self.assertEqual(wide.input_limit - cfg["compaction"]["buffer"], 135000)
+        self.assertIn("model_auto_compact_token_limit = 135000", self.render("codex", context=262144)["files"][0]["text"])
+        self.assertIn("thresholdTokens: 135000", self.render("omp", context=262144)["files"][1]["text"])
+        # the window every config was tested on keeps exactly the value it was tested at
+        tested = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 32768)
+        self.assertEqual(harness.compact_at(tested), 15000)
+
+
+class GpuRolesFlag(unittest.TestCase):
+    """--gpu-roles: a role for each card (strata_control/gpu_roles.py); unnamed cards are Off."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+        p = mock.patch.object(Catalog, "hardware", lambda self, fresh=False: dict(HW_2X16, disk_free_gb=500.0))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_roles_reach_the_settings_and_the_plan_says_who_does_what(self):
+        code, out, err = run_cli(["launch", "--plan", "--output", "json", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
+        self.assertEqual(code, 0, err or out)
+        s = json.loads(out)["plan"]["settings"]
+        self.assertEqual(s["gpu_roles"], {"1": "main", "0": "helper"})
+        self.assertIsNone(s["gpus"])
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
+        self.assertEqual(code, 0, err or out)
+        self.assertIn("cards     Main: GPU 2 RTX A4000. Helper: GPU 1 RTX A4000.", out)
+        self.assertIn("--gpu-roles 0=helper,1=main", out)                 # the copyable line says the same
+
+    def test_one_card_named_leaves_the_other_off(self):
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main"])
+        self.assertEqual(code, 0, err or out)
+        self.assertIn("Main: GPU 2 RTX A4000. Off: GPU 1 RTX A4000.", out)
+
+    def test_bad_roles_are_plain_sentences(self):
+        for argv, word in ((["--gpu-roles", "1=boss"], "main, helper, off"), (["--gpu-roles", "0=main,1=main"], "only one card can be Main"),
+                           (["--gpu-roles", "1"], "number=role"), (["--gpu", "0", "--gpu-roles", "1=main"], "not both")):
+            code, out, err = run_cli(["launch", "--plan", *argv])
+            self.assertEqual(code, 2, argv)
+            self.assertIn(word, err, argv)
+        code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "7=main"])
+        self.assertIn("There is no card 7", out + err)
+
+    def test_the_launch_config_gets_the_roles_and_the_mirror_with_main_last(self):
+        from strata_cli.launch.runner import cards_for_launch
+        two = catalog(HW_2X16)
+        mirror = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"1": "main", "0": "helper"}), two)
+        self.assertEqual((mirror["gpu"], mirror["gpu_order"]), ([0, 1], "as_given"))
+        self.assertEqual(mirror["gpu_roles"], {"0": "helper", "1": "main"})
+        base = {"exe": "x", "args": [], "gpu": 1, "gpus_asked": True, "hip_ordinal": 0, "gpu_roles": {"0": "off", "1": "main"}}
+        cfg = derive_config(base, S.LaunchSettings(family="qwen", model="IQ3_XXS"), bool_flags=frozenset(), gpus=mirror)
+        self.assertEqual((cfg["gpu"], cfg["layer_split"], cfg["gpu_order"]), ([0, 1], "auto", "as_given"))
+        self.assertNotIn("hip_ordinal", cfg)
+        one = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"0": "main"}), two)
+        cfg = derive_config(base, S.LaunchSettings(family="qwen", model="IQ3_XXS"), bool_flags=frozenset(), gpus=one)
+        self.assertEqual((cfg["gpu"], cfg["gpu_roles"], "layer_split" in cfg), (0, {"0": "main", "1": "off"}, False))
+        none = cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS", gpu_roles={"0": "off", "1": "off"}), two)
+        self.assertEqual((none["gpu"], none["gpu_none"]), ([], True))
+
+    def test_a_plain_card_list_replaces_an_earlier_roles_choice_and_the_installed_roles_are_kept(self):
+        from strata_cli.launch.runner import apply_cards, cards_for_launch, installed_cards
+        cfg = {"gpu": 1, "gpu_roles": {"0": "off", "1": "main"}, "gpu_cards": {}, "gpus_asked": True}
+        apply_cards(cfg, [0, 1])
+        self.assertEqual((cfg["gpu"], "gpu_roles" in cfg), ([0, 1], False))
+        saved = {"gpu": [0, 1], "gpu_order": "as_given", "gpu_roles": {"0": "helper", "1": "main"}}
+        self.assertEqual(installed_cards(saved), [0, 1])
+        self.assertIsNone(cards_for_launch(S.LaunchSettings(family="qwen", model="IQ3_XXS"), catalog(HW_2X16), base=saved))
 
 
 if __name__ == "__main__":

@@ -393,7 +393,9 @@ MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_
 MMGU2(T_IQ4_XS, 16, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 64, 64, 2) MMGU2(T_IQ4_XS, 32, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 32, 32, 2)
 MMGU2(T_IQ4_XS, 64, 64, 32, 4)
 MM_GU2_SET(T_Q2_0) MM_GU2_SET(T_IQ3_XXS) MM_GU2_SET(T_IQ2_XXS) MM_GU2_SET(T_IQ2_XS) MM_GU2_SET(T_IQ2_S) MM_GU2_SET(T_IQ3_S)
+MM_GU2_SET(T_TQK6) MM_GU2_SET(T_TQ2T)   // Gyro: the trellis gate/up (units of 16 weights: TK 16 or a multiple)
 MM_DN2_SET(T_Q2_0)
+MM_DN2_SET(T_TQK7) MM_DN2_SET(T_TQ2T)
 MMDN2(T_IQ4_NL, 16, 64, 32, 2) MMDN2(T_IQ4_NL, 16, 64, 64, 2) MMDN2(T_IQ4_NL, 16, 32, 32, 2) MMDN2(T_IQ4_NL, 32, 32, 32, 2) MMDN2(T_IQ4_NL, 16, 128, 32, 4)
 
 // ---- v3: the weights decoded straight into matmul2d's right-input cooperative tensor (single-simdgroup scope),

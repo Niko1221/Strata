@@ -1,6 +1,9 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
+#if defined(STRATA_HAVE_DFLASH2)
+#include "strata/kernels/dflash2.hpp"
+#endif
 #include "strata/prefill/warm_policy.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
@@ -383,6 +386,7 @@ struct HandWorker {
     std::thread th;
     HandWorker() {
         th = std::thread([this] {
+            strata::platform::name_this_thread("strata-hand");
             strata::aux_cpus::pin_current_thread();
             for (;;) {
                 std::packaged_task<bool()> job;
@@ -467,7 +471,16 @@ inline bool cvec_fuse() {
 inline bool pf_pad() {
     static const bool v = [] {
         const char* p = std::getenv("STRATA_PF_PAD"); const char* g = std::getenv("STRATA_PF_GEMM");
-        return p && p[0] == '1' && g && g[0] == '1';
+        if (!(p && p[0] == '1' && g && g[0] == '1')) return false;
+        // The padded stride pays only for strata_pf_gemm_f16_ld, which is built for the gfx11 matrix cores.  On another
+        // card nothing takes a padded X (it used to end the engine: "a padded X ... needs STRATA_PF_PAD's path", #1237):
+        // do not pad, and say so once.
+        if (!strata_pf_padded_gemm_available()) {
+            std::fprintf(stderr, "prefill gemm: STRATA_PF_PAD needs the padded gfx11 product, which this card does not run; "
+                                 "not padding\n");
+            return false;
+        }
+        return true;
     }();
     return v;
 }
@@ -569,6 +582,7 @@ struct Stager {
             threads.emplace_back([this] {
                 // --aux-cpus: the copy threads go to the spare CPUs with the other helpers; STRATA_AUX_STAGER=0 leaves them where
                 // they were created (a small spare set would then hold all of them: it limits the copy rate of a long read)
+                strata::platform::name_this_thread("strata-stage");
                 static const bool keep = [] { const char* v = std::getenv("STRATA_AUX_STAGER"); return v != nullptr && std::atoi(v) == 0; }();
                 if (keep) strata::aux_cpus::note_owned_thread();
                 else strata::aux_cpus::pin_current_thread();
@@ -1040,7 +1054,19 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 }  // namespace
 
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() { release(); }
+Prefill::~Prefill() {
+    clear_taps();
+    release();
+}
+
+void Prefill::clear_taps() {
+    if (tap_dev_ != nullptr) {
+        cudaFree(tap_dev_);
+        tap_dev_ = nullptr;
+    }
+    tap_layers_.clear();
+    on_taps = nullptr;
+}
 
 void Prefill::reset() {
     release();
@@ -2669,6 +2695,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     int ple_buf = 0;
 
     if (hand_in_ == nullptr) stopped_at_ = -1;
+#if defined(STRATA_HAVE_DFLASH2)
+    std::vector<int> tap_slot;
+    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+        if (tap_dev_ == nullptr &&
+            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
+            (void) cudaGetLastError();
+            tap_dev_ = nullptr;
+            err = "prefill: the DFlash2 tap staging does not fit in VRAM";
+            return false;
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    }
+#endif
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -2680,6 +2720,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(C, n - c0), p0 = pos0 + c0;
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
+#if defined(STRATA_HAVE_DFLASH2)
+        // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
+        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_rows = T - tap_t0;
+        if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
+#else
+        const int64_t tap_t0 = 0, tap_rows = 0;
+#endif
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
@@ -2996,6 +3044,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         const bool threaded_issue = stream_all && issuer_on;
         if (threaded_issue) {
             issuer = std::thread([&] {
+                strata::platform::name_this_thread("strata-issue");
                 strata::aux_cpus::pin_current_thread();
                 const core::OnDevice od(m.device);
                 for (size_t idx = 0; idx < seq.size(); ++idx) {
@@ -4824,6 +4873,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+#if defined(STRATA_HAVE_DFLASH2)
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                                                  (int) HC, (int) tap_rows, m.cs);
+#endif
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
@@ -4921,6 +4975,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 std::fclose(f);
             }
         }
+#if defined(STRATA_HAVE_DFLASH2)
+        if (tap_rows > 0 && on_taps) {
+            if (cudaStreamSynchronize(m.cs) != cudaSuccess) { err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+            if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
+        }
+#endif
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
