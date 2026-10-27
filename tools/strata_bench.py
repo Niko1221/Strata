@@ -55,6 +55,7 @@ from agent_turns_bench import SYSTEM, TOOLS         # noqa: E402  the same agent
 import serve_load                                   # noqa: E402  the burst client for --clients
 
 SCHEMA = 1
+STANDARD_FORMAT = "strata-standard-benchmark"      # what `strata bench run` (suite standard-v1) writes; this tool writes its own
 CHAT_MAX_TOKENS = 100
 LONG_MAX_TOKENS = 24
 AGENT_MAX_TOKENS = 64
@@ -983,7 +984,16 @@ def load_results(path: Path) -> dict:
     p = Path(path)
     if p.is_dir():
         p = p / "results.json"
-    return json.loads(p.read_text(encoding="utf-8"))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("format") == STANDARD_FORMAT:
+        # The tool's own runs keep their numbers under "results"; a standard benchmark (strata bench run, the default
+        # --suite standard-v1) keeps them under "summaries", and reading it here used to end in KeyError: 'results'.
+        print(f"strata_bench: {p} is a standard benchmark report (`strata bench run`, suite standard-v1). "
+              "This comparison reads the serving-suite reports the tool writes itself; "
+              f"`strata bench report {p.parent}` shows this one. Comparing two standard runs is #4325.",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return data
 
 
 def short_table(res: dict) -> str:
