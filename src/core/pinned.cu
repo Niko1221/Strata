@@ -343,9 +343,16 @@ namespace {
 bool clear_error() { (void) cudaGetLastError(); return true; }
 }  // namespace
 
+bool arena_no_register() {
+    const char* e = std::getenv("STRATA_ARENA_PIN_GIB");
+    if (e != nullptr && *e != '\0') return std::string(e) == "none";   // an explicit setting wins over the engine's flag
+    return arena_uma_no_register_flag().load(std::memory_order_relaxed);
+}
+
 int arena_pin_cap_gib() {
     const char* e = std::getenv("STRATA_ARENA_PIN_GIB");
     if (e == nullptr || *e == '\0') return -1;
+    if (std::string(e) == "none") return -1;   // 153-igpu: handled by arena_no_register(); no cap otherwise
     if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
     const int v = std::atoi(e);
     return v < 0 ? -1 : v;
@@ -410,6 +417,22 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
+    if (base && arena_no_register()) {
+        // 153-igpu (UMA mode): nothing is registered; the whole arena stays resident through the working-set lock instead
+        slice_bytes = 1;   // "sliced" with no slice registered: the destructor unlocks from offset registered_bytes (0)
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing == PageBacking::LargePages) {
+            note = "large pages are resident without a lock; " + note;
+        } else if (env == nullptr || std::string(env) != "0") {
+            const strata::platform::LockResult lr = strata::platform::lock_resident((uint8_t*) base, bytes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + "; " + note;
+        } else {
+            note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+        }
+        note = "NOT registered with the GPU driver (integrated GPU, UMA mode; STRATA_ARENA_PIN_GIB=0 registers it); " + note;
+        return;
+    }
     if (base) {
         // #243: STRATA_ARENA_PIN_GIB=N caps the registration from the start where the caller set no cap
         const int env_gib = arena_pin_cap_gib();
@@ -531,7 +554,9 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     uint64_t total = 0;
     int refused = 0;
     bool capped = false;
+    const bool none = arena_no_register();   // 153-igpu UMA mode: register no range at all; every byte is a locked "hole" below
     for (const auto& rg : ranges) {
+        if (none) break;
         if (rg.second == 0 || rg.first >= bytes) continue;
         // INWARD: a registered page holds no byte of an unpinned neighbour blob (a copy that STARTS in a registered page
         // and runs past the registration is rejected by CUDA); the boundary pages stay unregistered

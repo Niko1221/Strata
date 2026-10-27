@@ -41,9 +41,9 @@ test('domain tunnel validates hostnames and keeps the token out of arguments and
   await f.connector.stop();
 });
 test('missing prerequisites and connector failure leave no inference listener running', async () => {
-  const noKey = fixture({ hasKey: () => false });
-  await assert.rejects(noKey.connector.start({ mode: 'quick' }), /API key/);
-  assert.equal(noKey.launched(), undefined);
+  const noKey = fixture({ hasKey: () => false });          // without a key the tunnel starts (owner decision, 0.2.2) and the state carries a warning
+  await noKey.connector.start({ mode: 'quick' });
+  assert.notEqual(noKey.launched(), undefined);
   const missing = fixture({ locate: async () => null });
   await assert.rejects(missing.connector.start({ mode: 'quick' }), /connector could not be prepared automatically/i);
   assert.equal(missing.connector.state().status, 'error');

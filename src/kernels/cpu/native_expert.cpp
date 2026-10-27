@@ -16,11 +16,14 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace strata::kernels::cpu {
@@ -34,6 +37,40 @@ bool tq_rows_own(int type) {
     if (!tq_supported(type)) return false;
     if (tq_kernels_enabled()) return true;
     return type >= (int) GGML_TYPE_COUNT || traits(type) == nullptr || traits(type)->vec_dot == nullptr;
+}
+
+// 0.2.5: the 512-bit exact rows (iq512x_rows) take one token of an IQ3_XXS / IQ3_S expert only if this build's ggml-cpu dot gives
+// the same bits on synthetic blocks of that type (a ggml built for AVX-512 may carry another summation order): checked once a type.
+bool x512_one_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr && iq512x_supported(type)) {
+        constexpr int n = 2560, rows = 24;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_K, n));
+        uint32_t seed = 12345u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }   // d = ~0.1 (f16)
+        std::vector<float> x(n);
+        for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+        t8->from_float(x.data(), act.data(), n);
+        std::vector<float> got((size_t) rows), want((size_t) rows);
+        const void* ap[1] = {act.data()};
+        float* op[1] = {got.data()};
+        iq512x_rows(type, w.data(), rb, n, ap, 1, op, 0, rows);
+        for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the 512-bit exact one-token rows of type %d differ from this ggml-cpu's dot: not used\n", type);
+    }
+    memo[type] = ok;
+    return ok;
 }
 
 void init_once() {
@@ -129,6 +166,88 @@ bool q8k_avx1(int type) {
 }
 }  // namespace
 
+// STRATA_ACT_DUMP=<prefix> (research, off by default): the second moments of the vectors that enter the CPU experts, in the
+// basis the experts use (after the Hadamard rotation of a folded layer): per layer the gate/up input (the token's hidden
+// state, once per token) and the down input (the SwiGLU output, once per routed expert).  STRATA_ACT_DUMP_LAYERS=10,20 picks
+// the layers (default none), STRATA_ACT_DUMP_COV=1 adds the full covariance.  Files <prefix>_L<l>_<gu|dn>.bin: int64 n,
+// int64 count, double sum x^2 [n], (double sum x x^T [n*n]); rewritten every 2000 records and at exit.
+namespace {
+struct ActAcc {
+    int64_t n = 0, count = 0;
+    std::vector<double> sq, cov;
+};
+struct ActDump {
+    bool on = false, cov = false;
+    std::string prefix;
+    std::vector<int> layers;
+    std::map<std::pair<int, int>, ActAcc> acc;
+    std::mutex mu;
+    int64_t records = 0;
+    ActDump() {
+        const char* p = std::getenv("STRATA_ACT_DUMP");
+        if (p == nullptr || *p == 0) return;
+        prefix = p;
+        cov = std::getenv("STRATA_ACT_DUMP_COV") != nullptr && std::atoi(std::getenv("STRATA_ACT_DUMP_COV")) != 0;
+        if (const char* l = std::getenv("STRATA_ACT_DUMP_LAYERS")) {
+            std::string s(l);
+            size_t at = 0;
+            while (at < s.size()) {
+                layers.push_back(std::atoi(s.c_str() + at));
+                const size_t c = s.find(',', at);
+                if (c == std::string::npos) break;
+                at = c + 1;
+            }
+        }
+        on = !layers.empty();
+        if (on) std::atexit([] { act_dump_flush(); });
+    }
+    static void act_dump_flush();
+};
+ActDump& act_dump() {
+    static ActDump* d = new ActDump;   // never destroyed: the atexit flush must still find it
+    return *d;
+}
+void ActDump::act_dump_flush() {
+    ActDump& d = act_dump();
+    std::lock_guard<std::mutex> lk(d.mu);
+    for (auto& kv : d.acc) {
+        const std::string path = d.prefix + "_L" + std::to_string(kv.first.first) + (kv.first.second ? "_dn.bin" : "_gu.bin");
+        FILE* f = std::fopen((path + ".tmp").c_str(), "wb");
+        if (!f) continue;
+        std::fwrite(&kv.second.n, 8, 1, f);
+        std::fwrite(&kv.second.count, 8, 1, f);
+        std::fwrite(kv.second.sq.data(), 8, kv.second.sq.size(), f);
+        if (!kv.second.cov.empty()) std::fwrite(kv.second.cov.data(), 8, kv.second.cov.size(), f);
+        std::fclose(f);
+        std::rename((path + ".tmp").c_str(), path.c_str());
+    }
+}
+void act_dump_record(int layer, int kind, const float* v, int64_t n) {
+    ActDump& d = act_dump();
+    if (std::find(d.layers.begin(), d.layers.end(), layer) == d.layers.end()) return;
+    std::lock_guard<std::mutex> lk(d.mu);
+    ActAcc& a = d.acc[{layer, kind}];
+    if (a.n == 0) {
+        a.n = n;
+        a.sq.assign((size_t) n, 0.0);
+        if (d.cov) a.cov.assign((size_t) n * (size_t) n, 0.0);
+    }
+    for (int64_t i = 0; i < n; ++i) a.sq[(size_t) i] += (double) v[i] * v[i];
+    if (d.cov)
+        for (int64_t i = 0; i < n; ++i) {
+            double* row = a.cov.data() + (size_t) i * (size_t) n;
+            const double vi = v[i];
+            for (int64_t j = 0; j < n; ++j) row[j] += vi * v[j];
+        }
+    ++a.count;
+    if (++d.records % (d.cov ? 400000 : 2000) == 0) {
+        d.mu.unlock();
+        ActDump::act_dump_flush();
+        d.mu.lock();
+    }
+}
+}  // namespace
+
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
     if (f.had_gu) {   // Hadamard-folded gate/up: quantize H (s * x), never x itself (hadamard.hpp)
         thread_local std::vector<float> tmp;
@@ -136,6 +255,7 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
         hadamard_rotate(tmp.data(), (int) f.n_embd, f.had_block, f.gu_signs);
         x = tmp.data();
     }
+    if (act_dump().on) act_dump_record(f.layer, 0, x, f.n_embd);
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
@@ -148,6 +268,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         hadamard_rotate(tmp.data(), (int) f.n_ff, f.had_block, f.d_signs);
         h = tmp.data();
     }
+    if (act_dump().on) act_dump_record(f.layer, 1, h, f.n_ff);
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
@@ -210,6 +331,25 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         static std::once_flag announced;
         std::call_once(announced, [] { std::fprintf(stderr, "strata ab: GATE=STRATA_CPU_IQ_ALL_EXACT1 active=1\n"); });
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
+        return;
+    }
+    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later): ONE token of an IQ3_XXS / IQ3_S expert on the
+    // 512-bit exact rows, ggml-cpu's single-token AVX2 dot bit for bit with the grid words gathered: 1.3x ggml's dot on a Xeon 8468
+    // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
+    // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.
+    static const bool x512_one = avx512 && iq512_gather_on() && std::getenv("STRATA_NO_IQ512X1") == nullptr;
+    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && (f.gu_type == 18 || f.gu_type == 21) &&
+        x512_one_ok(f.gu_type)) {
+        const int n1 = (int) f.n_embd;
+        float g[64], u[64];
+        float* gp[1] = {g};
+        float* up[1] = {u};
+        for (int c0 = r0; c0 < r1; c0 += 64) {
+            const int c1 = std::min(r1, c0 + 64);
+            iq512x_rows(f.gu_type, blob + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, gp, 0, c1 - c0);
+            iq512x_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, up, 0, c1 - c0);
+            for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
+        }
         return;
     }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152

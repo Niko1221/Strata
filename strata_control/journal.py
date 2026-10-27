@@ -19,6 +19,7 @@ from pathlib import Path
 
 from strata_control import profiles, recipes
 from strata_control.profiles import ProfileError
+from strata_control import posix_owner
 
 
 MAX_RECORDS = 500
@@ -51,8 +52,8 @@ def _directory(profile: str, *, create: bool = False) -> Path:
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode):
             raise ProfileError("operation journal directory must not be a symlink", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("operation journal directory must be owner-only", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(directory, details)):
+            raise ProfileError(posix_owner.owner_only_text("operation journal directory must be owner-only", directory), 5)
     return directory
 
 
@@ -186,8 +187,8 @@ def _load_file(path: Path, profile: str) -> dict:
         details = path.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_RECORD_BYTES:
             raise ProfileError("operation record must be a regular file under 64 KiB", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("operation record must be owner-only", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(path, details)):
+            raise ProfileError(posix_owner.owner_only_text("operation record must be owner-only", path), 5)
         record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ProfileError("operation record was not found", 5) from None

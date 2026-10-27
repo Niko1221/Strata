@@ -29,6 +29,19 @@ enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
 
+/// 153-igpu, UMA mode: the engine sets this on an integrated GPU whose firmware cannot survive a KFD queue eviction (the Radeon
+/// 780M, gfx1103).  The expert arena is then NOT registered with the GPU driver: a registered range is a userptr that the
+/// kernel's page migration (compaction, reclaim) invalidates, and every invalidation evicts the process's GPU queues (MES
+/// REMOVE_QUEUE), which resets that GPU while a dispatch sits in a barrier.  The arena stays resident through the working-set
+/// lock (no experts are reachable over "PCIe": there is none), and the GPU gets what it needs by copy.
+inline std::atomic<bool>& arena_uma_no_register_flag() {
+    static std::atomic<bool> f{false};
+    return f;
+}
+/// True when the arena is to stay unregistered: STRATA_ARENA_PIN_GIB=none always, otherwise the flag above unless the user set
+/// STRATA_ARENA_PIN_GIB to a number (STRATA_ARENA_PIN_GIB=0 registers the whole arena as before).
+bool arena_no_register();
+
 struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;

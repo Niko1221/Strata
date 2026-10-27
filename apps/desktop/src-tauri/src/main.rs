@@ -38,7 +38,6 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
-#[cfg(target_os = "linux")]
 mod desktoplog;
 #[cfg(target_os = "linux")]
 mod supervisor;
@@ -491,9 +490,23 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
 
     let node = node_binary(&res)?;
-    let child = cmd
+    // The host's lines go to the run log (a packaged Windows app has no console, so they were lost before).
+    let log = desktoplog::run_log();
+    if log.is_some() {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start the App Host on {}: {e}", node.display()))?;
+    if let Some(log) = log {
+        let ring = desktoplog::Ring::default();
+        if let Some(out) = child.stdout.take() {
+            desktoplog::tee(out, "host", false, ring.clone(), log.clone());
+        }
+        if let Some(err) = child.stderr.take() {
+            desktoplog::tee(err, "host", true, ring, log);
+        }
+    }
     *app.state::<HostProcess>().0.lock().unwrap() = Some(child);
     *app.state::<HostPort>().0.lock().unwrap() = Some(port);
 
@@ -525,6 +538,19 @@ fn stop_host(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<HostProcess>() {
         if let Some(mut child) = state.0.lock().unwrap().take() {
             stop_host_child(&mut child, port, token.as_deref());
+        }
+    }
+}
+
+/// End the host at once, without the clean stop (a start that failed: there is nothing to drain).
+#[cfg(not(target_os = "linux"))]
+fn kill_host(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<HostProcess>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -803,6 +829,10 @@ fn main() {
     // at the screen — the lesson from the Electron attempt, where a packaged app that never started
     // its host hung with no output at all.
     let args: Vec<String> = std::env::args().collect();
+    // Windows and macOS: the run log and the panic hook come first, before anything that can fail. A start that goes wrong then leaves a
+    // log, a crash file and a message box instead of a process that is gone with 0xc0000409 and nothing else (Linux: supervisor.rs).
+    #[cfg(not(target_os = "linux"))]
+    desktoplog::init_startup(self_test_path(&args).is_none());
     contain_app();
     #[cfg(target_os = "linux")]
     {
@@ -849,14 +879,25 @@ fn run_embedded() {
         .manage(HostPort(Mutex::new(None)))
         .manage(ShutdownToken(Mutex::new(None)))
         .setup(|app| {
+            // A way to prove the safety net on a computer where the app starts fine (tests only): a panic at the place a setup error ends in.
+            if std::env::var_os("STRATA_DESKTOP_TEST_PANIC").is_some() {
+                panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");
+            }
             let handle = app.handle().clone();
-            let port = start_host(&handle).map_err(|e| {
-                // A startup failure must be visible, not a blank window.
-                eprintln!("[strata] {e}");
-                Box::<dyn std::error::Error>::from(e)
-            })?;
-            let shell_token = handle.state::<ShutdownToken>().0.lock().unwrap().clone().unwrap_or_default();
-            open_window(app, port, &shell_token)?;
+            // A setup error would become a panic inside Tauri ("Failed to setup app"), and with panic = "abort" a crash with no message.
+            // A failed start is reported (log, crash file, message box) and ends the app here instead.
+            let port = match start_host(&handle) {
+                Ok(port) => port,
+                Err(e) => {
+                    kill_host(&handle);
+                    desktoplog::startup_failed(&e)
+                }
+            };
+            let shell_token = handle.state::<ShutdownToken>().0.lock().map(|t| t.clone().unwrap_or_default()).unwrap_or_default();
+            if let Err(e) = open_window(app, port, &shell_token) {
+                kill_host(&handle);
+                desktoplog::startup_failed(&format!("the Strata window could not be opened: {e}"))
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -865,7 +906,7 @@ fn run_embedded() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building the Strata application")
+        .unwrap_or_else(|e| desktoplog::startup_failed(&format!("the Strata application could not be built: {e}")))
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 stop_host(app);

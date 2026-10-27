@@ -159,6 +159,18 @@ def parser() -> argparse.ArgumentParser:
     models_import.add_argument("--plan", action="store_true", required=True,
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
+    models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
+    models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
+    models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
+    models_move.add_argument("--leave", action="store_true", help="give up an interrupted move: keep the old folder and remove the partial copies")
+    models_move.add_argument("--status", action="store_true", help="say whether a move was interrupted (changes nothing)")
+    models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help="the folder the models are in now (default: the data folder in use)")
+    models_move.add_argument("--install-dir", help="absolute path to a Strata installation whose run configs should follow the files")
+    models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
+    models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
+    models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
+    from strata_cli import drafting_cmd
+    drafting_cmd.add_parser(sp)
     engine = sp.add_parser("engine", help="engine tuning and component actions")
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
     calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
@@ -278,24 +290,48 @@ def parser() -> argparse.ArgumentParser:
                               help="require the candidate run-config bytes shown in a restart recipe plan")
     bench = sp.add_parser("bench", help="explicit serving benchmark with local JSON evidence")
     bench_sp = bench.add_subparsers(dest="bench_command", required=True)
-    bench_run = bench_sp.add_parser("run", help="measure streaming requests and sample serving telemetry")
+    bench_run = bench_sp.add_parser("run", help="the standard benchmark (docs/BENCHMARK_PROTOCOL.md), or a serving suite")
     bench_source = bench_run.add_mutually_exclusive_group(required=True)
     bench_source.add_argument("--profile", help="saved serving profile or installed run config")
     bench_source.add_argument("--url", help="server root; remote connections require HTTPS")
-    bench_run.add_argument("--suite", choices=("serving-smoke", "parallel-mixed-v1", "parallel-overload-v1",
+    bench_run.add_argument("--suite", choices=("standard-v1", "serving-smoke", "parallel-mixed-v1", "parallel-overload-v1",
                                                "parallel-cancel-v1", "parallel-prefill-cancel-v1"),
-                           default="serving-smoke")
-    bench_run.add_argument("--concurrency", type=int, default=4,
-                           help="simultaneous requests (1..16, or 1..64 for parallel-overload-v1)")
-    bench_run.add_argument("--repeat", type=int, default=1, help="repeat measured phases (1..5)")
-    bench_run.add_argument("--condition", help="operator label for this run, e.g. baseline or monitor-default")
+                           default="standard-v1",
+                           help="standard-v1 (default) follows docs/BENCHMARK_PROTOCOL.md; the others are serving suites for your own comparisons")
+    bench_run.add_argument("--concurrency", type=int, default=None,
+                           help="serving suites: simultaneous requests (1..16, or 1..64 for parallel-overload-v1; default 4)")
+    bench_run.add_argument("--repeat", type=int, default=None, help="serving suites: repeat measured phases (1..5; default 1)")
+    bench_run.add_argument("--condition", help="serving suites: operator label for this run, e.g. baseline or monitor-default")
     bench_run.add_argument("--require-managed-match", action="store_true",
-                           help="require the local owner host and current profile to match the serving instance")
-    bench_run.add_argument("--request-timeout", type=float, default=120)
-    bench_run.add_argument("--out", required=True, metavar="NEW_DIRECTORY")
+                           help="serving suites: require the local owner host and current profile to match the serving instance")
+    bench_run.add_argument("--request-timeout", type=float, default=None,
+                           help="serving suites: seconds per request (1..600; default 120). The standard suite fixes it at 1800")
+    bench_run.add_argument("--out", metavar="NEW_DIRECTORY",
+                           help="new output directory (required for serving suites). Standard suite: a new folder "
+                                "<date>-standard-<gpu>-<run id> under ./bench/results or ./bench-results")
     bench_run.add_argument("--credential-env", default="STRATA_API_KEY")
     bench_run.add_argument("--telemetry-credential-env", default=None)
     bench_run.add_argument("--output", choices=("human", "json"), default="human")
+    standard = bench_run.add_argument_group("standard suite (docs/BENCHMARK_PROTOCOL.md)")
+    standard.add_argument("--optional-concurrency", action="store_true",
+                          help="also run the optional stage: four short requests released together, three rounds")
+    standard.add_argument("--no-start", action="store_true",
+                          help="with --profile: never start the engine; use only a server that is already running")
+    standard.add_argument("--load-timeout", type=float, default=1800, metavar="SECONDS",
+                          help="with --profile: how long to wait for the engine to load the model (default 1800)")
+    standard.add_argument("--track", choices=("default", "custom"), default="custom",
+                          help="default: an unmodified release's setup-generated settings; custom (the default here): anything else")
+    standard.add_argument("--track-notes", default=None, metavar="TEXT",
+                          help="the release and setup choices (default track) or the changes made (custom track)")
+    standard.add_argument("--model-revision", metavar="REV", help="immutable revision of the quantization repository")
+    standard.add_argument("--source-revision", metavar="REV", help="revision of the original Qwen/Qwen3.8-Flash-Next weights")
+    standard.add_argument("--tokenizer-revision", metavar="REV")
+    standard.add_argument("--quantization", metavar="NAME", help="when it cannot be read from the model file names")
+    standard.add_argument("--custom-pack", metavar="TEXT", help="describe a prepared pack or custom expert profile")
+    standard.add_argument("--background", action="append", metavar="TEXT", help="a program that ran during the benchmark (repeatable)")
+    standard.add_argument("--build-options", metavar="LIST", help="comma-separated build options of a source build")
+    standard.add_argument("--skip-model-hash", action="store_true",
+                          help="do not hash the model files (the run is then marked nonconforming)")
     bench_cancel = bench_sp.add_parser("cancel", help="stop the exact active saved-profile benchmark")
     bench_cancel.add_argument("--profile", required=True, help="saved serving profile")
     bench_cancel.add_argument("--path", required=True, help="absolute run directory or results.json")
@@ -471,13 +507,21 @@ def parser() -> argparse.ArgumentParser:
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
-                     components_verify, models_list, models_inspect, models_import, calibrate,
+                     components_verify, models_list, models_inspect, models_import, models_move, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
                               help="suppress human informational output")
     return ap
+
+
+def _file_words(exc: BaseException) -> str:
+    try:
+        from strata_control import longpath
+    except ImportError:
+        return f"local file operation failed ({type(exc).__name__})"
+    return longpath.file_words(exc)
 
 
 def _error(message: str, code: int, machine: bool = False) -> int:
@@ -515,6 +559,8 @@ def _models(a: argparse.Namespace) -> int:
                 print(_import_problem(result), file=sys.stderr)
             return 5
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
+    if a.models_command == "move":
+        return _models_move(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -559,19 +605,104 @@ def _models(a: argparse.Namespace) -> int:
 
 def _import_problem(plan: dict) -> str:
     """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
-    from strata_cli.launch.runner import plain_issue
-    issues = [str(x) for x in plan.get("issues") or []]
-    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
-        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
-    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    from strata_control import models as own_models
+    words = own_models.problem_words(plan.get("issues") or [], missing=plan.get("missing_shards"))
     text = f"These files cannot be used as they are: {words}."
-    holds = plan.get("folder_holds") or []
+    holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
-        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
-        other = [h["file"] for h in holds if not h.get("model")]
-        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
-            ". Point at the .gguf file of the one you want."
+        text += " " + holds
     return text
+
+
+def _models_move(a: argparse.Namespace) -> int:
+    from strata_control import discovery, models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    old = Path(a.source) if a.source else discovery.data_dir(Path.home() / "Strata")[0]
+    if a.status or a.resume or a.leave:
+        return _models_move_unfinished(a, old)
+    if not a.to:
+        print("strata: name the new folder, or use --resume / --leave / --status for an interrupted move.", file=sys.stderr)
+        return 2
+    new = Path(a.to).expanduser()
+    if a.plan:
+        result = mm.plan(old, new)
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": result["ok"], "plan": result}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(result["issue"]["message"] if result["issue"] else
+                  f"{len(result['models'])} model(s), {result['models_bytes'] / 1e9:.1f} GB; {result['free_bytes'] / 1e9:.1f} GB free in {new}.")
+        return 0 if result["ok"] else 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    cancel = Path(a.cancel_file) if a.cancel_file else None
+
+    def show(event: dict) -> None:
+        if a.output == "jsonl":
+            print(json.dumps(event, ensure_ascii=False, allow_nan=False), flush=True)
+        elif not machine:
+            print(f"\r{event['done'] / 1e9:.1f} of {event['total'] / 1e9:.1f} GB  {event['file']}", end="", flush=True)
+    try:
+        summary = mm.move(old, new, on_progress=show, cancelled=(lambda: cancel.exists()) if cancel else None, configs=configs)
+    except mm.MoveError as e:
+        extra = getattr(e, "summary", {})
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}, **extra}, ensure_ascii=False))
+        else:
+            print(f"\nstrata: {e} {e.details}".rstrip(), file=sys.stderr)
+        return 5
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": True, "event": "result", **summary}, ensure_ascii=False))
+    else:
+        print("\n" + ("Your models are moved." if summary["done"] else "Moving stopped. Nothing was lost."))
+    return 0 if summary["done"] else 6
+
+
+def _interrupted_words(st: dict) -> str:
+    return (f"A move of your models was interrupted. They are in {st['from']} and {st['to']}. "
+            "Finish it: strata models move --resume. Leave it (keep the models in the first folder): strata models move --leave.")
+
+
+def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
+    """`strata models move --status | --resume | --leave`: the move the last run left unfinished (A move was interrupted. Finish it or leave it)."""
+    from strata_control import models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    st = mm.interrupted(old)
+    if a.status:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "interrupted": st}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(_interrupted_words(st) if st else "No move was interrupted.")
+        return 0
+    if not st:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "nothing", "message": "No move was interrupted.", "details": ""}}))
+        else:
+            print("strata: no move was interrupted.", file=sys.stderr)
+        return 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    if a.leave:
+        try:
+            result = mm.leave(Path(st["from"]), Path(st["to"]), configs=configs)
+        except mm.MoveError as e:
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}}, ensure_ascii=False))
+            else:
+                print(f"strata: {e} {e.details}".rstrip(), file=sys.stderr)
+            return 5
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "event": "result", "left": True, **result}, ensure_ascii=False))
+        else:
+            print(f"Done. Your models stay in {st['from']}; the partial copies in {st['to']} were removed.")
+        return 0
+    a.to, a.source, a.resume, a.status, a.leave = st["to"], st["from"], False, False, False
+    return _models_move(a)
 
 
 def _import_words(plan: dict) -> str:
@@ -652,13 +783,14 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, key_list
-    try:
-        has_key = bool(key_list(api_key_of(os.environ.get("STRATA_API_KEY") or cfg.get("api_key", ""))))
-    except ValueError:
-        raise ProfileError("the inference API key is invalid", 5) from None
-    if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
-        raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
+    from serve.server import api_key_of, explicit_no_key, key_list
+    raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
+    if not explicit_no_key(raw_key):
+        try:
+            key_list(api_key_of(raw_key))
+        except ValueError:
+            raise ProfileError("the inference API key is invalid", 5) from None
+    # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
     if cli is not None:
@@ -1000,6 +1132,22 @@ def _bench(a: argparse.Namespace) -> int:
     if a.bench_command in ("report", "compare") and a.out and a.output != "markdown":
         return _error("--out requires --output markdown", 2, machine)
     if a.bench_command == "report":
+        from strata_cli import bench_standard
+        standard_report = bench_standard.load_if_standard(Path(a.path))
+        if standard_report is not None:
+            if a.output == "markdown":
+                rendered = bench_standard.report_markdown(standard_report)
+                if a.out:
+                    bench.write_markdown(Path(a.out), rendered)
+                    print(f"Markdown report: {Path(a.out).resolve()}")
+                else:
+                    print(rendered, end="")
+                return 0
+            return _success({"summary": {"format": standard_report["format"], "run_id": standard_report["run"]["id"],
+                                         "status": standard_report["run"]["status"],
+                                         "quality": standard_report["quality"],
+                                         "summaries": standard_report["summaries"]}}, machine=machine,
+                            human=bench_standard.format_plain(standard_report))
         report = bench.load(Path(a.path))
         result = bench.summary(report)
         if a.output == "markdown":
@@ -1035,6 +1183,13 @@ def _bench(a: argparse.Namespace) -> int:
     if not a.credential_env.isidentifier() or (a.telemetry_credential_env and
                                                not a.telemetry_credential_env.isidentifier()):
         return _error("credential options must name environment variables", 2, machine)
+    if a.suite == "standard-v1":
+        return _bench_standard(a, machine)
+    if a.out is None:
+        return _error("--out is required for the serving suites", 2, machine)
+    a.concurrency = 4 if a.concurrency is None else a.concurrency
+    a.repeat = 1 if a.repeat is None else a.repeat
+    a.request_timeout = 120 if a.request_timeout is None else a.request_timeout
     maximum = 64 if a.suite == "parallel-overload-v1" else 16
     if not 1 <= a.concurrency <= maximum or not 1 <= a.repeat <= 5 or not 1 <= a.request_timeout <= 600:
         return _error(f"concurrency must be 1..{maximum}, repeat 1..5 and request timeout 1..600 seconds", 2,
@@ -1077,6 +1232,100 @@ def _bench(a: argparse.Namespace) -> int:
         print(bench.format_summary(compact))
         print(f"Evidence: {Path(a.out).resolve() / 'results.json'}")
     return 0 if report["successful"] else 6
+
+
+def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
+    """`strata bench run` for docs/BENCHMARK_PROTOCOL.md: against a running server (--url, or a profile that is already serving),
+    or by starting the profile's engine for the run and stopping it afterwards."""
+    from strata_cli import bench_facts, bench_standard
+    fixed = [name for name, value in (("--concurrency", a.concurrency), ("--repeat", a.repeat),
+                                      ("--request-timeout", a.request_timeout), ("--condition", a.condition),
+                                      ("--require-managed-match", a.require_managed_match or None),
+                                      ("--telemetry-credential-env", a.telemetry_credential_env))
+             if value is not None]
+    if fixed:
+        return _error(f"{', '.join(fixed)} do not apply to the standard suite: the protocol fixes the workload "
+                      "(use --suite serving-smoke for a serving benchmark)", 2, machine)
+    if not a.credential_env.isidentifier():
+        return _error("credential options must name environment variables", 2, machine)
+    if not 1 <= a.load_timeout <= 86400:
+        return _error("--load-timeout must be 1..86400 seconds", 2, machine)
+    plan = None
+    saved = None
+    key = os.environ.get(a.credential_env)
+    if a.profile:
+        _, saved, _, cfg = _source(a.profile)
+        plan, _ = _launch_plan(a.profile)
+        plan = {**plan, "config": cfg}
+        host = plan["effective"]["host"]
+        host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        url = f"http://{authority}:{plan['effective']['port']}"
+        if not key and cfg.get("api_key") and str(cfg["api_key"]).strip().lower() != "none":
+            from serve.server import api_key_of, key_list
+            keys = key_list(api_key_of(cfg["api_key"]))
+            key = keys[0] if keys else None
+    else:
+        url = a.url
+    from strata_cli.client import server_url
+    target = bench_standard.Target(server_url(url), key)
+    redact = bench_facts.redactor(key or "")
+    command = redact("strata " + " ".join(str(part) for part in (a.raw_argv or ["bench", "run", "--suite", "standard-v1"])))
+    declared = {"track": a.track, "track_notes": a.track_notes or "no notes given by the operator",
+                "model_revision": a.model_revision, "source_revision": a.source_revision,
+                "tokenizer_revision": a.tokenizer_revision, "quantization": a.quantization,
+                "custom_pack": a.custom_pack, "background": a.background or [],
+                "build_options": [x.strip() for x in a.build_options.split(",") if x.strip()] if a.build_options else None}
+    out = Path(a.out) if a.out else None
+    out_root = None if out else (Path.cwd() / "bench" / "results" if (Path.cwd() / "bench" / "results").is_dir()
+                                 else Path.cwd() / "bench-results")
+    from strata_control.benchmarking import benchmark_lease
+    import shutil
+    import tempfile
+    lease = benchmark_lease(saved["id"], out) if saved else contextlib.nullcontext()
+    proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
+    stop_problem = None
+    try:
+        with lease, contextlib.redirect_stdout(sys.stderr):
+            def log(message: str) -> None:
+                print(message, file=sys.stderr, flush=True)
+            if a.profile and target.get("/health", timeout=5) is None:
+                if a.no_start:
+                    raise ProfileError("no server is answering at the profile's address and --no-start was given", 5)
+                scratch = Path(tempfile.mkdtemp(prefix="strata-bench-"))
+                engine_log = scratch / "engine.log"
+                run_log = Path(str(plan["config"]["log"])).expanduser() if isinstance(plan["config"].get("log"), str) else None
+                log_start = run_log.stat().st_size if run_log is not None and run_log.is_file() else 0
+                proc = bench_standard.start_engine(a.profile, target, engine_log, log, a.load_timeout)
+            elif a.profile:
+                log("using the server that is already running at this profile's address; it will not be stopped")
+            doc, out_dir = bench_standard.run(target, out, out_root=out_root, optional_concurrency=a.optional_concurrency,
+                                              declared=declared, plan=plan, engine_log=engine_log, command=command, log=log,
+                                              engine_run_log=(run_log, log_start) if proc is not None else None,
+                                              started_engine=proc is not None, hash_model=not a.skip_model_hash)
+    finally:
+        stop_problem = bench_standard.stop_engine(proc)
+        if not isinstance(stop_problem, str):
+            stop_problem = None
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+    ok = doc["run"]["status"] == "complete"
+    if stop_problem:   # #3438: a stop that failed is not a normal finish: the engine may still hold the port and the GPU
+        ok = False
+        print(f"\nERROR: the engine this run started could not be stopped: {stop_problem}. It may still hold the server port "
+              "and the GPU: stop it by hand before the next run. This run is marked FAILED.", file=sys.stderr, flush=True)
+        try:
+            (out_dir / "ENGINE-NOT-STOPPED.txt").write_text(stop_problem + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    path = out_dir / "results.json"
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": ok, "path": str(path.resolve()), "status": "failed" if stop_problem else doc["run"]["status"], "engine_stop_error": stop_problem,
+                          "quality": doc["quality"], "summaries": doc["summaries"]}, ensure_ascii=False, allow_nan=False))
+    else:
+        print(bench_standard.format_plain(doc))
+        print(f"\nReport: {out_dir.resolve() / 'README.md'}\nResult: {path.resolve()}")
+    return 0 if ok else 6
 
 
 def _runtime(a: argparse.Namespace) -> int:
@@ -1843,10 +2092,15 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
     if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
         return None
     as_json = bool(getattr(a, "json", False) or getattr(a, "output", None) in ("json", "jsonl"))
+    in_use = private_files.is_sharing_violation(error)
     if getattr(a, "_access_retried", False):
-        return _error(f"{private_files.ACCESS_MESSAGE} (details: {error})", 5, as_json)
+        message = private_files.IN_USE_MESSAGE if in_use else private_files.ACCESS_MESSAGE
+        return _error(f"{message} (details: {error})", 5, as_json)
     a._access_retried = True
-    private_files.repair_known_roots()
+    if in_use:
+        time.sleep(1.5)                                  # a scanner or a sync tool lets go of the file in a moment; repairing would not help
+    else:
+        private_files.repair_known_roots()
     return _run(a)
 
 
@@ -1878,7 +2132,7 @@ def _run(a: argparse.Namespace) -> int:
             return _components_backends(a)
         if a.command == "components" and a.components_command == "engine":
             return _components_engine(a)
-        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback")):
+        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file")):
             from strata_cli import update_cmd
             return update_cmd.run(a)
         if a.command in ("doctor", "components"):
@@ -1887,6 +2141,9 @@ def _run(a: argparse.Namespace) -> int:
             return _models(a)
         if a.command == "engine":
             return _calibration(a)
+        if a.command == "drafting":
+            from strata_cli import drafting_cmd as _drafting_cmd
+            return _drafting_cmd.run(a)
         if a.command == "bench":
             return _bench(a)
         if a.command == "timeskip":
@@ -1921,8 +2178,8 @@ def _run(a: argparse.Namespace) -> int:
         if retried is not None:
             return retried
         if a.command == "serve" and a.output == "jsonl":
-            return _serve_error(a, f"local file operation failed ({type(e).__name__})", 6)
-        return _error(f"local file operation failed ({type(e).__name__})", 6,
+            return _serve_error(a, _file_words(e), 6)
+        return _error(_file_words(e), 6,
                       bool(getattr(a, "output", None) in ("json", "jsonl")))
     except ClientError as e:
         if a.command == "serve" and a.output == "jsonl":
@@ -1965,6 +2222,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
     ap = parser()
     a, extras = ap.parse_known_args(argv)
+    a.raw_argv = list(sys.argv[1:] if argv is None else argv)
     if extras:
         if getattr(a, "command", None) in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd
