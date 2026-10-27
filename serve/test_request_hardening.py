@@ -115,6 +115,36 @@ class Hardening(unittest.TestCase):
                 self.assertEqual(code, 400, (path, body, out))
                 self.assertIn(field, json.dumps(out))
 
+    # #4037: a boolean or a fractional token limit is a 400, not an int() conversion into another budget.
+    # Whole numbers, the documented 0 / -1 sentinels, a numeric string and a whole-valued float answer as before.
+    def test_a_boolean_or_fractional_token_limit_is_a_400(self):
+        from serve.server import check_token_limit
+        chat = {"messages": [{"role": "user", "content": "hi"}]}
+        for path, body, field in (
+                ("/v1/chat/completions", {**chat, "max_tokens": True}, "max_tokens"),
+                ("/v1/chat/completions", {**chat, "max_tokens": 2.5}, "max_tokens"),
+                ("/v1/chat/completions", {**chat, "max_tokens": False}, "max_tokens"),
+                ("/v1/chat/completions", {**chat, "max_completion_tokens": True}, "max_completion_tokens"),
+                ("/v1/chat/completions", {**chat, "max_completion_tokens": 2.5}, "max_completion_tokens"),
+                ("/v1/messages", {**chat, "max_tokens": True}, "max_tokens"),
+                ("/v1/messages", {**chat, "max_tokens": 2.5}, "max_tokens"),
+                ("/v1/messages", {**chat, "max_tokens": False}, "max_tokens")):
+            with self.subTest(path=path, field=field):
+                with mock.patch("builtins.print"):
+                    code, out = self.post(path, body)
+                self.assertEqual(code, 400, (path, body, out))
+                self.assertIn(field, json.dumps(out))
+        for body in ({"max_tokens": 8}, {"max_tokens": 8.0}, {"max_tokens": "8"}, {"max_tokens": 0},
+                     {"max_tokens": -1}, {"max_completion_tokens": 8, "max_tokens": 4}):
+            with self.subTest(body=body):
+                with mock.patch("builtins.print"):
+                    code, out = self.post("/v1/chat/completions", {**chat, **body})
+                self.assertEqual(code, 200, (body, out))
+        self.assertEqual(check_token_limit({"max_completion_tokens": 0, "max_tokens": 12},
+                                           "max_completion_tokens", "max_tokens"), 12)
+        self.assertEqual(check_token_limit({"max_tokens": -1}, "max_tokens"), -1)
+        self.assertEqual(check_token_limit({}, "max_tokens"), 0)
+
     def test_numeric_strings_are_read_and_used(self):
         from serve.server import check_request_sampling
         req = {"temperature": "0.7", "top_p": " 1 ", "top_k": "40", "seed": "7", "top_k_x": "keep", "min_p": "0"}
