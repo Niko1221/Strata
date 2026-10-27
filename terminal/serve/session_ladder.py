@@ -66,7 +66,8 @@ class TrackedSession:
     joined event (cleared upstream at the session's next switch-away, so should_save is evaluated
     while it still reflects park).  byte_count is this session's half of the (tokens, byte_count)
     join key that join_event matches ConvEvent against - recorded by the intake layer from DONE
-    figures / joined events; it trails the spec's eight fields so every field order stays positional."""
+    figures / joined events; it and the save-duration fields trail the spec's eight fields so every
+    field order stays positional."""
     session_id: str
     tokens: int
     parked: bool
@@ -88,6 +89,10 @@ class TrackedSession:
     # 2045 -> 6869 -> 12471 tokens turn after turn).
     last_save: float = 0.0            # epoch seconds of the ladder's last save of this session's file
     # (the TTL anchor: it survives the restart through the sidecar, where in-memory last_active does not).
+    last_save_ms: float | None = None # unload-works Task 2: the engine-measured duration of this
+    # session's last landed save (the save result's "ms"; None when never saved or unmeasured)
+    saved_at_bytes: int = 0           # its byte_count at that save moment: the growth reference the
+    # expected_save_seconds estimate scales last_save_ms against
 
 
 @dataclass
@@ -447,10 +452,10 @@ class SessionLadder:
                 del self.parent_of[next(iter(self.parent_of))]   # the same ring bound on the child marks:
             # a mark churned out behind the cap only degrades that session to main-retirement treatment.
             self.last_active = session_id
-        saved_ok = save_plan is not None and self._engine_save(service, save_plan)   # engine I/O: no lock
-        if saved_ok:
+        res = self._engine_save(service, save_plan) if save_plan is not None else None   # engine I/O: no lock
+        if res is not None:
             with self._lock:                         # ledger window: the save landed, record it
-                self._commit_save(save_plan)
+                self._commit_save(save_plan, res)
         if restore_path is not None:
             landed = self._engine_restore(service, session_id, restore_path)          # engine I/O: no lock
             if landed:
@@ -475,30 +480,50 @@ class SessionLadder:
         path = os.path.join(self.cfg.slot_save_path, f"llm-session-{_safe_sid(s.session_id)}.bin")
         return (s.session_id, path, self.last_prompts.get(s.session_id) or s.saved_prefix)
 
-    def _engine_save(self, service, plan) -> bool:
+    def _engine_save(self, service, plan) -> dict | None:
         """ENGINE I/O half of a ladder save (runs OUTSIDE the ladder lock - F4; the FIFO already serializes
-        engine-facing actors): engine.session_file("save", path) for the planned file.  Returns True when
-        the save landed; a SessionRefused is swallowed with the ladder's log line and the ledger records
-        nothing (no phantom file state); an EngineDied propagates (the caller's engine is gone - the request
-        path / unload handles it as it always has)."""
+        engine-facing actors): engine.session_file("save", path) for the planned file.  Returns the engine's
+        result dict (production: {"tokens", "bytes", "ms"}) - handed on to _commit_save for the save-duration
+        bookkeeping - when the save landed; None exactly when refused: a SessionRefused is swallowed with the
+        ladder's log line and the ledger records nothing (no phantom file state); an EngineDied propagates
+        (the caller's engine is gone - the request path / unload handles it as it always has)."""
         try:
-            service.engine.session_file("save", plan[1])
-            return True
+            return service.engine.session_file("save", plan[1])
         except _refused_class() as e:
             print(f"[strata] session ladder: the save of {plan[0]} was refused ({e.kind}); "
                   "this conversation continues as a cold prefill", flush=True)
-            return False
+            return None
 
-    def _commit_save(self, plan) -> None:
+    def _commit_save(self, plan, result: dict | None = None) -> None:
         """LEDGER half of a ladder save (called holding the LADDER LOCK): the landed file becomes the
         session's checkpoint - saved_prefix anchored to the prefix the plan captured, file_path follows it,
         dirty flips clean - and the file joins the LRU ledger via the plain _note_file_saved (retention
-        included).  Split out of the old _save_session by F4 so the engine call sits between lock windows."""
+        included).  The engine result (_engine_save's dict; None from a caller with no result at hand)
+        carries the save-duration bookkeeping: last_save_ms the engine's measured "ms" when reported (a
+        result without the key stays tolerated - the duration is simply unknown), saved_at_bytes this
+        session's tracked byte_count at the save moment - the pair expected_save_seconds scales a future
+        save's estimate from.  Split out of the old _save_session by F4 so the engine call sits between
+        lock windows."""
         sid, path, prefix = plan
         s = self.tracked.get(sid)
         if s is not None:
             s.saved_prefix = prefix or s.saved_prefix
+            s.last_save_ms = (result or {}).get("ms")
+            s.saved_at_bytes = s.byte_count
         self._note_file_saved(sid, path)
+
+    def expected_save_seconds(self, s: TrackedSession) -> float:
+        """Estimated wall seconds a save of this session would take (unload-works Task 2; Task 3's pre-save
+        quiet gate is derived from it).  With a measured save on record, that measured duration scales by
+        how much the conversation has grown since (a 30 s save of a 1 GB conversation predicts 60 s at
+        2 GB); without one, the engine's ~100 MB/s write rate over the tracked byte_count is the first
+        estimate.  Clamped to [5, 600] s: the floor keeps the estimate meaningful for any conversation,
+        the ceiling bounds it for the biggest ones."""
+        if s.last_save_ms is not None and s.saved_at_bytes:
+            est = s.last_save_ms / 1000 * max(1.0, s.byte_count / max(1, s.saved_at_bytes))
+        else:
+            est = s.byte_count / 1e8
+        return min(600.0, max(5.0, est))
 
     def _engine_restore(self, service, session_id: str, path: str) -> bool:
         """ENGINE I/O of a ladder restore (runs OUTSIDE the ladder lock - F4, same reasoning as
@@ -538,9 +563,10 @@ class SessionLadder:
             if s is None or not s.dirty:
                 return
             plan = self._plan_save(service, s)
-        if plan is not None and self._engine_save(service, plan):
+        res = self._engine_save(service, plan) if plan is not None else None
+        if res is not None:
             with self._lock:
-                self._commit_save(plan)
+                self._commit_save(plan, res)
 
     def on_unload(self, service) -> None:
         """Task 8's unload hook, called while the FIFO is held, immediately before engine.unload() drops
@@ -559,9 +585,10 @@ class SessionLadder:
                                  if s.dirty and (s.save_eligible or self.last_active == s.session_id))
                      if p is not None]
         for plan in plans:
-            if self._engine_save(service, plan):
+            res = self._engine_save(service, plan)
+            if res is not None:
                 with self._lock:
-                    self._commit_save(plan)
+                    self._commit_save(plan, res)
 
     def _on_start(self, service) -> None:
         """Task 8's engine-start hook, called from ensure_loaded (the FIFO held, the engine just reached
