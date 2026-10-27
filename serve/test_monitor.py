@@ -197,6 +197,15 @@ class Monitor(unittest.TestCase):
         self.assertNotIn("innerHTML", script)
         self.assertEqual(self.request("/web/../server.py")[0], 404)
 
+    def test_control_waits_politely_and_keeps_its_label(self):
+        # #1997: the Unload button posts /unload?wait=1 (waits server-side for a busy turn to end), and
+        # controlLabel holds "Unloading…" while the control request is in flight, so the 2-second poll
+        # cannot overwrite it from live status.
+        code, script = self.request("/web/monitor.js")
+        self.assertEqual(code, 200)
+        self.assertIn('"/unload?wait=1"', script)
+        self.assertIn("controlLabel", script)
+
 
 class ConversationCacheCard(unittest.TestCase):
     """#596: /metrics' "conversation_cache": the parked conversations from the engine's log lines, the budget and
