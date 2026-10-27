@@ -763,8 +763,9 @@ def conversation_cache_mib(engine) -> int | None:
 
 def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
-    enables the ladder with its values - idle_save_s, retention_max_files, retention_max_child_files and
-    child_ttl_s, absent keys keeping LadderConfig's pinned defaults - and the slot save directory the
+    enables the ladder with its values - idle_save_s, retention_max_files, retention_max_child_files, child_ttl_s,
+    and pre_save_idle_s (unload-works Task 3: a number or null; an absent key or an explicit null keeps the
+    adaptive quiet gate), absent keys keeping LadderConfig's pinned defaults - and the slot save directory the
     service resolved.  Absent, false, or any non-dict leaves it
     disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value today's disabled ladder carries;
     nothing consults it while disabled).  An enabled ladder's park_budget_mib is the engine's own cache budget:
@@ -785,12 +786,24 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
         except (TypeError, ValueError):
             raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
 
+    def _num_or_none(key):
+        # The nullable variant of _num (unload-works Task 3): an absent key or an explicit `null` keeps None
+        # (the adaptive quiet gate); anything else converts like _num, same refusal naming key and value.
+        raw = block.get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
     return LadderConfig(enabled=True, slot_save_path=slot_save_path,
                         park_budget_mib=conversation_cache_mib(engine),
                         idle_save_s=_num("idle_save_s", 8.0, float),
                         retention_max_files=_num("retention_max_files", 16, int),
                         retention_max_child_files=_num("retention_max_child_files", 8, int),
-                        child_ttl_s=_num("child_ttl_s", 21600.0, float))
+                        child_ttl_s=_num("child_ttl_s", 21600.0, float),
+                        pre_save_idle_s=_num_or_none("pre_save_idle_s"))
 
 
 def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
