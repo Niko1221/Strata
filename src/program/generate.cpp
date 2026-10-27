@@ -14428,6 +14428,11 @@ int main(int argc, char** argv) {
                     // STRATA_SLOT_CKPT_MOVE: the slot this request continues in drops its checkpoints at the
                     // admission, so they move (the one continued from moves on into the slot then: moved_in)
                     const bool move_cks = slot_ckpt_move_env() && admit_slot == slot_source;
+                    // a give-back of all the slot holds: STRATA_SLOT_CKPT_MOVE moved this conversation's checkpoints
+                    // into the slot at its admission, so the slot's are its only ones - they move back whichever slot
+                    // the request continues in (a copy would leave a second one in this slot until it is overwritten)
+                    const bool move_rest = move_cks || (slot_ck == nullptr && slot_ckpt_move_env());
+                    size_t moved = 0;
                     const int64_t ck_len = slot_ck != nullptr ? (int64_t) slot_ck->ids.size() : -1;
                     std::vector<ConvCheckpoint>& sc = bs[(size_t) slot_source].checks;
                     // a shorter checkpoint comes along only when it is a prefix of the tokens copied back (text only):
@@ -14453,9 +14458,15 @@ int main(int argc, char** argv) {
                         for (auto it = sc.begin(); it != sc.end();) {
                             if ((int64_t) it->ids.size() > slot_tokens || &*it == first || !prefix_of_copied(*it)) {
                                 ++it;
-                            } else if (move_cks) {
+                            } else if (move_rest) {
                                 checks.push_back(std::move(*it));
                                 it = sc.erase(it);
+                                ++moved;
+                            } else if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
+                                ConvCheckpoint k = ckpt_pool.take();
+                                k = *it;
+                                checks.push_back(std::move(k));
+                                ++it;
                             } else {
                                 checks.push_back(*it);
                                 ++it;
@@ -14465,6 +14476,8 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata batch: slot %d: its shorter checkpoints were not all copied (out of "
                                              "memory); the rest are skipped\n", slot_source);
                     }
+                    // the placement hint: the slot no longer holds them (into its own slot, the admission says it)
+                    if (moved > 0 && admit_slot != slot_source) say_checks(slot_source);
                     if (slot_ck != nullptr) {
                         for (ConvCheckpoint& c : checks)   // the main session's chain has it now
                             if ((int64_t) c.ids.size() == ck_len) {

@@ -469,11 +469,12 @@ from. A copy would buy no second chance: the main session keeps only checkpoints
 drops them at the next request of another conversation - and a request of another conversation is what takes the slot.
 While the main session still holds their tokens (the conversation's next query comes first) it restores one from the
 slot as from its own chain. A slot that gives back all it holds (the request continues its whole conversation)
-gives back these checkpoints with it, moved, so the admission that follows keeps them again: they are the only ones
-(without this the main session lost them there, and a next turn sent back without its thinking read its prompt
-again: 19,342 tokens in 8.5 s against 154 in 0.66 s). Without the switch they are copied, into dropped checkpoints'
-storage with `STRATA_CKPT_POOL=1`; a slot that gives back all it holds then copies them back only when it keeps more
-than one (N above 1 or `STRATA_BRANCH_CHECKPOINT`), or moves them when the request continues in that slot.
+gives back these checkpoints with it (#2526), and with the switch they move whichever slot the request continues in,
+so the admission that follows keeps them again: they are the only ones. Copied (main's rule when the request goes to
+another slot), they stayed in the old slot as a second running state each until it was overwritten, and the copy took
+the time: a 19,869-token conversation given back from slot 4 to a request placed in slot 0 took 99.8 ms with one
+113.5 MiB checkpoint copied, 25.6 ms moved. After such a move the engine sends BCHECKS for the old slot. Without the
+switch they are copied, into dropped checkpoints' storage with `STRATA_CKPT_POOL=1`.
 
 ### Engine: a checkpoint where the prompt branches (`STRATA_BRANCH_CHECKPOINT=<margin>`)
 
