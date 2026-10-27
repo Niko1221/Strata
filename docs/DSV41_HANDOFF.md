@@ -592,13 +592,25 @@ Debug switches the hunt left behind, both off by default: `DS4_STEP_SERIAL=1` ru
 `DS4_STEPCHECK=1` prints every pass's shape (`tr step T <n> pos ... seq ...`) and checks that rows 0 and 2 of a pass
 with the same prompt stay bit-identical after every layer (it syncs a device a layer, so use it on short runs).
 
-**Still open at 19:25: a pass of 16 rows drifts with a prompt a slot - 8 rows do not.**  With the race fixed: 2 slots
-are exact (96 tokens, 59.9 tok/s against the bursts' 43.0), 8 slots are exact (32 tokens, 50.7 against 31.8), the
-alternating-prompt probes are clean at 4 slots (3 of 3) and 16 (1 of 1) - and 16 slots with a *different prompt each*
-still drift, 12 of the 16 slots, from token 1 on for slot 5 and 2-8 for most.  So the boundary is between 8 and 16
-rows, not the 7/8 one this note first guessed; 16 is `kWin`, the width every per-pass array (`Rows::n`, `AttnRows`,
-`StepRows`' row table, `kStepRows` in the serve loop) is cut to, and it is also 8 flushes of the 4-segment descriptor a
-pass.  Next: 12 slots and 16 with `--slot-context 32768` (same run shape), then a pass whose rows are 12 and 15 - which
-separates "kWin's arrays" from "more than 8 rows" - and `DS4_STEPCHECK`'s shape print on a 16-row pass, which shows
-whether the pass really carries 16 rows at the same position.
+**Still open at 19:45: a pass of 9 rows and more drifts, 8 rows do not - and it is not the hand-off.**  Facts, all with the
+race fix in: 2 slots exact (96 tokens, 59.9 tok/s against the bursts' 43.0), 8 slots exact in the threads' path (24
+tokens of alternating prompts against a 4-slot burst reference, and 32 tokens of eight different prompts), 16 slots
+drifting from token 6 for every row.  Nine rows is enough: 9, 12 and 15 slots all drift, at the *same* token (6 for
+prompt A, 13 for B, which only says A's margin is thinner), and so does a 9-slot run whose nine prompts are
+*identical* - the error is the same for every row, so it is not one row's data reaching another's state.  It is not
+the staged hand-off either: `DS4_STEP_SERIAL=1` (one thread, replicate, no staging) drifts at 9 rows exactly as the
+threads' path does - and it drifts at *8* rows, where the threads' path is clean, i.e. the two paths fail at different
+row counts with the same signature, so the trigger is not "N rows in a pass" but something a pass's rows feed.
+
+What the shape print shows (`DS4_STEPCHECK=1`): every pass is clean - `tr step T 9 pos 64 64 ... seq 0 1 ... 8`,
+9 rows, one position, its own sequence - and rows 0 and 2 of an alternating run stay bit-identical after *every* layer
+(the check never fires), so the per-row state of two rows with the same prompt stays in step while both drift from the
+burst path.  That rules out a per-row region or ring being misaddressed and points at something a pass shares and
+sizes by T: the routing plan and its grouped-expert pass, the mailbox a plan is published through
+(`route_publish`/the service thread), or `hc_mix_split`'s per-token blocks.
+
+The next probe is the one that localizes it: `DS4_DUMP_H` (already wired in `forward_serial`) on a serial 8-row and a
+serial 9-row run whose rows are all the *same* prompt, then the first layer whose row-0 residual stream differs - the
+dump has no header, so the caller must track each window's T (a 64-token prompt is read in four windows of 16, then
+the step's passes follow).
 

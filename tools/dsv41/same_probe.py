@@ -79,6 +79,7 @@ def main() -> int:
     ap.add_argument("--alt", action="store_true", help="two prompts: the even slots one, the odd slots another")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="", help="write every slot's tokens to this JSON")
+    ap.add_argument("--ref", default="", help="a JSON of an earlier --alt run: every slot must match its prompt's slot")
     a = ap.parse_args()
 
     argv = [a.exe, "--pack", a.pack, "--serve", "--batch", str(a.slots), "--max-context", str(a.max_context),
@@ -142,6 +143,17 @@ def main() -> int:
             print("  slot %d differs from %s at %d: %s vs %s" % (k, what, d, toks[k][max(0, d - 2):d + 3],
                                                                   ref_k[max(0, d - 2):d + 3]), flush=True)
     total = sum(len(t) for t in toks)
+    if a.ref:
+        ref = json.load(open(a.ref))
+        bad = []
+        for k in range(slots):
+            r = ref["slots"][str(0 if (not a.alt or k % 2 == 0) else 1)]["tokens"]
+            if toks[k] != r:
+                bad.append((k, next((i for i, (x, y) in enumerate(zip(toks[k], r)) if x != y), 0)))
+        print("against %s: %s%s" % (a.ref, "the same tokens" if not bad else "differ",
+                                    "" if not bad else " - " + ", ".join("slot %d at %d" % b for b in bad[:8])),
+              flush=True)
+        same = same and not bad
     if a.out:
         with open(a.out, "w") as f:
             json.dump({"slots": {str(k): {"tokens": toks[k]} for k in range(slots)}, "wall": wall}, f)
