@@ -223,12 +223,29 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  const DS_EXPERTS_MIN=[0,1,50];
  function dsEngineVersion(config){const m=/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String(config?.exe??''))||/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String((config?.lib_dirs??[])[0]??''));return m?m[1].split('.').map(Number):null;}
  function dsExpertsSupported(config){const v=dsEngineVersion(config);if(!v)return false;for(let i=0;i<DS_EXPERTS_MIN.length;i++){const a=v[i]??0,b=DS_EXPERTS_MIN[i];if(a!==b)return a>b;}return true;}
- /* Control's ceiling for one start wait: 600 s until Control 0.1.50, 1800 s from there (the 0.1.50 runtime takes a longer wait for a
-    big model, #3949). Control rejects a wait above its own ceiling before it starts anything, so asking an older Control for 1800 s
-    would stop every load: the app asks for what the Control it has accepts, and keeps today's 600 s when it cannot tell. */
- const CONTROL_LONG_START_MIN=[0,1,50],START_WAIT_CEILING=600,START_WAIT_CEILING_LONG=1800;
- function controlAllowsLongStart(){const v=String(control?.version??'').split('.').map(x=>Number.parseInt(x,10)||0);for(let i=0;i<CONTROL_LONG_START_MIN.length;i++){const a=v[i]??0,b=CONTROL_LONG_START_MIN[i];if(a!==b)return a>b;}return true;}
- function startWaitCeiling(){return controlAllowsLongStart()?START_WAIT_CEILING_LONG:START_WAIT_CEILING;}
+ /* Control's ceiling for one start wait, read from the Control this app actually found rather than guessed from its version: the owner
+    runtime takes MAX_START_WAIT (#3949), but `strata runtime start --wait` - the command the app starts a model with - validates the
+    wait itself, and that validator was left at 600 s by the same change (the app says `start wait must be finite seconds in 0..600`).
+    A wait above what that file accepts is refused before anything loads, so the app asks for the ceiling of the Control it has and
+    keeps today's 600 s whenever it cannot read one. Reading the installed Control to learn what it supports is what the field list
+    and the /v1/responses capability already do; here it reads Control's own validator instead of the server. */
+ const START_WAIT_CEILING=600;
+ let ceilingCache={dir:'',time:0,value:START_WAIT_CEILING};
+ function startWaitCeiling(){
+  const dir=control?.control?.dir??'';if(!dir)return START_WAIT_CEILING;
+  let time=0;const file=join(dir,'strata_control','management.py');
+  try{time=statSync(file).mtimeMs;}catch{return START_WAIT_CEILING;}
+  if(ceilingCache.dir===dir&&ceilingCache.time===time)return ceilingCache.value;
+  let value=START_WAIT_CEILING;
+  try{
+   const line=(readFileSync(file,'utf8').split(/\r?\n/).find(l=>l.includes('"start wait"'))??'');
+   if(/runtime\.MAX_START_WAIT/.test(line)){    // a Control whose CLI takes the runtime's own ceiling, whatever it is
+    const declared=Number(readFileSync(join(dir,'strata_control','runtime.py'),'utf8').match(/^MAX_START_WAIT\s*=\s*(\d+)/m)?.[1]);
+    if(Number.isFinite(declared)&&declared>value)value=declared;
+   }
+  }catch{value=START_WAIT_CEILING;}
+  ceilingCache={dir,time,value};return value;
+ }
  /* How long a start waits for this model, in the same shape as `strata launch`'s figure (#3949 #3459 #4191): ten minutes, about eight
     more seconds per GB above 40 GB, never more than this Control accepts. A model nobody can size keeps the 300 s it always had.
     The run config's engine_ready_s is the floor, not the ceiling: the server reads that number and ends the engine when it runs out,

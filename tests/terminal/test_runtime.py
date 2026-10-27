@@ -1318,6 +1318,23 @@ class StartWaitLimit(unittest.TestCase):
             with self.assertRaisesRegex(pr.ProfileError, "reached"):
                 rt.start("x", wait=1800)
 
+    def test_the_cli_start_wait_takes_the_same_ceiling_as_the_runtime(self):                  # #3459 #4191
+        # The desktop app starts models through `strata runtime start --wait`, which management validates on its way to
+        # runtime.start. When only the runtime's ceiling was raised, every long start was refused here with
+        # "start wait must be finite seconds in 0..600" before the engine was even reached.
+        from strata_control import management as mg, profiles as pr, runtime as rt
+        for wait in (601, rt.MAX_START_WAIT):
+            with self.subTest(wait=wait), mock.patch.object(rt, "_name", side_effect=pr.ProfileError("reached")):
+                with self.assertRaisesRegex(pr.ProfileError, "reached"):
+                    mg.runtime_action("start", "x", wait=wait)
+        passthrough = mock.patch.object(rt, "_name", side_effect=lambda name: name)
+        with passthrough:
+            with self.assertRaisesRegex(pr.ProfileError, f"start wait must be finite seconds in 0..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("start", "x", wait=rt.MAX_START_WAIT + 1)
+        with passthrough:
+            with self.assertRaisesRegex(pr.ProfileError, f"startup wait must be finite seconds in 1..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("restart", "x", startup_wait=rt.MAX_START_WAIT + 1)
+
 
 if __name__ == "__main__":
     unittest.main()

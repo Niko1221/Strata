@@ -88,10 +88,20 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [] } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  /* The Control this app found, as it is on disk: the app reads the start-wait ceiling out of these two files instead of
+     trusting the version, because the released Control validates the wait twice and the two numbers can disagree.
+     'old': no runtime ceiling at all, CLI takes 600. 'split': the runtime takes 1800 but the CLI still stops at 600
+     (what every Control up to 0.1.52 ships). 'runtime': the CLI follows the runtime's own ceiling. */
+  const controlSource = join(root, 'control', 'strata_control');
+  mkdirSync(controlSource, { recursive: true });
+  writeFileSync(join(controlSource, 'runtime.py'), cliStartWait === 'old' ? '' : 'MAX_START_WAIT = 1800\n');
+  writeFileSync(join(controlSource, 'management.py'), cliStartWait === 'runtime'
+    ? '        wait = _seconds(wait, 0, runtime.MAX_START_WAIT, "start wait")\n'
+    : '        wait = _seconds(wait, 0, 600, "start wait")\n');
   const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
   process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
   const configs = ids.map(id => {
@@ -610,8 +620,8 @@ test("onboarding 'use your own GGUF' (#3507, #3424): the models folder the perso
 /* The start wait follows the model's size, as `strata launch` does since #3949, and never asks an older Control for more than it takes.
    Reported on the app side by #3459 and #4191: a big model on a slow disk was stopped at 300 s while the engine went on reading. */
 test('packaged: a big model is waited for by its size, inside the ceiling of the Control this app has (#3459 #4191)', async () => {
-  const run = async (controlVersion, downloadGb) => {
-    const f = packagedFixture({ ids: ['big'], controlVersion, extraSizes: [{ id: 'big', model: 'BIG', download_gb: downloadGb, ram_needed_gb: 60, about: 'x', on_this_pc: 'fits', installed: false, images: false, experimental: false }] });
+  const run = async (cliStartWait, downloadGb) => {
+    const f = packagedFixture({ ids: ['big'], cliStartWait, extraSizes: [{ id: 'big', model: 'BIG', download_gb: downloadGb, ram_needed_gb: 60, about: 'x', on_this_pc: 'fits', installed: false, images: false, experimental: false }] });
     try {
       await f.native.refresh(true);
       const job = await finish(f.native, f.native.operation('load', { model: 'big' }).id);
@@ -622,19 +632,20 @@ test('packaged: a big model is waited for by its size, inside the ceiling of the
       return { wait: start[2], ready: saved.engine_ready_s };
     } finally { f.cleanup(); }
   };
-  assert.equal((await run('0.1.45', 180)).wait, 600, 'an older Control takes 600 s at most, as today');
-  const long = await run('0.1.50', 180);
-  assert.equal(long.wait, 1720, '600 s + 8 s per GB above 40 GB, as in strata launch');
+  assert.equal((await run('old', 180)).wait, 600, 'a Control whose CLI takes 600 s at most is asked for 600 s, as today');
+  assert.equal((await run('split', 180)).wait, 600, 'a Control whose runtime takes 1800 s but whose CLI still stops at 600 is asked for 600 s: the CLI would refuse the start outright (#3949)');
+  const long = await run('runtime', 180);
+  assert.equal(long.wait, 1720, '600 s + 8 s per GB above 40 GB, as in strata launch, once the CLI really takes it');
   assert.equal(long.ready, 1780, 'the server readies after the start gave up, never before it');
-  const small = await run('0.1.50', 20);
+  const small = await run('runtime', 20);
   assert.equal(small.wait, 300, 'a model under 40 GB keeps the 300 s it always had');
   assert.equal(small.ready, undefined, 'nothing is added to a small model’s run config');
-  const huge = await run('0.1.50', 400);
+  const huge = await run('runtime', 400);
   assert.equal(huge.wait, 1800, 'and never more than this Control accepts');
 });
 
 test('packaged: a run config that names a longer engine wait is honoured, and never shortened by the app', async () => {
-  const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], controlVersion: '0.1.50' });
+  const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], cliStartWait: 'runtime' });
   try {
     writeFileSync(join(f.install, 'strata-deepseek-v4.1-flash-ist-das-2.00bpw.json'), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack')], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
     await f.native.refresh(true);
