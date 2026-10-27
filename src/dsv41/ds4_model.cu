@@ -6011,14 +6011,14 @@ struct Model::Impl {
                      all / 1e9, nr, (now_ms() - t0) / 1000.0);
         return true;
     }
-    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (64) by one reader for all files (DS4_STREAM_RANGES:
+    // the pieces read front to back in unbuffered reads of DS4_STREAM_MB (128) by one reader for all files (DS4_STREAM_RANGES:
     // a reader a range of a file), each filling one of its two arenas while its mover hands out the other's pieces
     bool stream_pieces(std::vector<StreamPiece>& ps, std::string& err) {
         std::sort(ps.begin(), ps.end(), [](const StreamPiece& a, const StreamPiece& b) {
             return a.file != b.file ? a.file < b.file : a.off < b.off;
         });
         const uint64_t A = os::kDirectAlign;
-        const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 64.0f)) << 20;
+        const uint64_t cs = (uint64_t) std::max(1, (int) env_f("DS4_STREAM_MB", 128.0f)) << 20;
         const int forced = (int) env_f("DS4_STREAM_WORKERS", 0.0f);   // (N: N readers sharing every chunk, for tests)
         const int most = (int) env_f("DS4_STREAM_RANGES", 0.0f);   // N: the files split, at most N readers a file (1: one a file)
         constexpr uint64_t kGap = 16ull << 20;   // a gap up to this is read through, so a tensor's pieces stay one stream
