@@ -2124,6 +2124,11 @@ struct Model::Impl {
             // STRATA_DS4_AUTO asked for it, else the pack's whole maximum (M5's feedback: measure, write, apply)
             if (slot_tokens <= 0) {
                 slot_tokens = o.max_context;
+                if (o.slot_context > 0 && o.slot_context < slot_tokens) {   // (--slot-context: a sequence's own cap)
+                    slot_tokens = o.slot_context;
+                    std::fprintf(stderr, "ds4: %lld tokens a conversation (--slot-context; the pack's window is %lld)\n",
+                                 (long long) slot_tokens, (long long) o.max_context);
+                }
                 if (std::getenv("STRATA_DS4_AUTO") != nullptr) {
                     int64_t planned = 0;
                     std::ifstream f(o.pack + "/batch-plan.txt");
@@ -2914,6 +2919,7 @@ struct Model::Impl {
     int64_t kv_base(const Src& s, int seq) const { return (int64_t) seq * s.cap; }
     void use_seq(int seq) { vseq = std::max(0, std::min(seq, nseq - 1)); }
     int seq_count() const { return nseq; }
+    int64_t seq_pos(int seq) const { return seqs[(size_t) std::max(0, std::min(seq, nseq - 1))].pos; }
     size_t ckv_at(const Src& s, int64_t row) const { return ckv_at(s, row, vseq); }
     size_t ckv_at(const Src& s, int64_t row, int seq) const { return (size_t) (kv_base(s, seq) + row) * ckv_rb(); }
     size_t ik_at(const Src& s, int64_t row) const { return ik_at(s, row, vseq); }
@@ -7346,6 +7352,9 @@ struct Model::Impl {
         Chunk& c = *chunks[(size_t) l.dev];
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
+        // (DS4_STEPTRACE: where a step's layer is, a print a section - the only stack a box without ptrace has)
+        const bool tr = step != nullptr && std::getenv("DS4_STEPTRACE") != nullptr;
+        if (tr) std::fprintf(stderr, "tr dev %d il %d enter T %d\n", l.dev, l.il, T);
         prof_mark(d, 0);
         const int nm = L0.nm;
         const int D = g.dim, H = g.hc, HD = g.hd, NHL = l.ahn, HQ = NHL * HD, OG = l.ogn, FF = l.ffn;
@@ -7427,16 +7436,17 @@ struct Model::Impl {
         }
         const uint8_t* ckv = nullptr;
         const long long ss = (long long) o.max_context + 64;
+        if (tr) std::fprintf(stderr, "tr dev %d il %d window done\n", l.dev, l.il);
         if (l.ratio > 0) {
             Src& sr = srcs[(size_t) l.src];
             const int R = l.ratio;
             if (step != nullptr) {
                 // M2's step: one token a sequence - its own compressors' group, its own completed group (or none), its
                 // own rows of the tables.  The cross-group hand-off is not wired for a step yet.
-                if (sr.remote) {
-                    err = "the batched step has no cross-group hand-off yet (run one tensor-parallel group)";
-                    return false;
-                }
+                if (tr)
+                    std::fprintf(stderr, "tr dev %d il %d step block R %d kv_src %d ix_src %d remote %d poses %d,%d\n", l.dev, l.il,
+                                 R, (int) l.kv_src, (int) l.ix_src, (int) sr.remote, (int) step->pos[0],
+                                 T > 1 ? (int) step->pos[1] : -1);
                 if (l.kv_src) {
                     if (R == 1) {
                         Finish fc;
@@ -7475,7 +7485,50 @@ struct Model::Impl {
                             finish(c.ikr, 1, g.ix_hd, g.ix_hd, fi, s);
                         }
                     }
+                    // the cross-group hand-off (M2's step): a step's rows are each at its own position and in its own
+                    // sequence, so the rows this layer completed go to the source's staging slot one row at a time -
+                    // the readers hold the same descriptor and place them the same way.  The slot is reused by the
+                    // step after the next one, once every reader has acknowledged (the chunk path's rule, one step a
+                    // chunk).
+                    if (sr.remote && mi == 0) {
+                        const int slot = wp.k % 2;
+                        if (wp.win > 2)
+                            for (int r : sr.readers)
+                                wait_flags(sr.x_ack + ((size_t) slot * devs.size() + (size_t) r) * 32, 1, 32, wp.win - 2, s);
+                        int nrow = 0;
+                        Xfer x;
+                        for (int t = 0; t < T; ++t) {
+                            const int p = (int) step->pos[t];
+                            if ((p + 1) % R != 0) continue;
+                            const int64_t row = p / R;
+                            if (x.n == 4) {
+                                xfer_put(x, nullptr, 0, nullptr, s);
+                                x = Xfer{};
+                            }
+                            if (sr.ckv[(size_t) l.dev] != nullptr) {
+                                x.src[x.n] = sr.ckv[(size_t) l.dev] + ckv_at(sr, row, step->seq[t]);
+                                x.dst[x.n] = sr.stage(slot) + (size_t) nrow * ckv_rb();
+                                x.bytes[x.n++] = ckv_rb();
+                            }
+                            if (l.owns_k && l.ix_src && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
+                                Src& ks = srcs[(size_t) l.ik_src];
+                                if (x.n == 4) {
+                                    xfer_put(x, nullptr, 0, nullptr, s);
+                                    x = Xfer{};
+                                }
+                                x.src[x.n] = ks.ik[(size_t) l.dev] + ik_at(ks, row, step->seq[t]);
+                                x.dst[x.n] = sr.stage(slot) + x_cap() * ckv_rb() + (size_t) nrow * ik_rb();
+                                x.bytes[x.n++] = ik_rb();
+                            }
+                            ++nrow;
+                        }
+                        if (x.n > 0) xfer_put(x, nullptr, 0, nullptr, s);
+                        set_flag(sr.flag(slot), wp.win, s);   // (0 rows too: the readers wait on this)
+                        if (tr) std::fprintf(stderr, "tr dev %d il %d staged %d row(s) for %zu reader(s)\n", l.dev, l.il, nrow,
+                                             sr.readers.size());
+                    }
                 }
+                if (tr) std::fprintf(stderr, "tr dev %d il %d compress launched\n", l.dev, l.il);
                 if (l.ix_src && !kv_only) {
                     Src& ks = srcs[(size_t) l.ik_src];
                     if (!gemm_f16w(c, l.i_wproj, g.ix_heads, D, c.x16, D, T,
@@ -7484,6 +7537,7 @@ struct Model::Impl {
                     // one GEMM for the step's T rows: gemm() reconstructs the whole weight block on every call, so a
                     // call a row made the prompt read ~380x slower than the contiguous path at DS4_CHUNK=16
                     if (!gemm(d, c, l.i_wq_b, c.qr16, g.q_lora, T, c.iq, g.ix_heads * g.ix_hd, 0.0f, err)) return false;
+                    if (tr) std::fprintf(stderr, "tr dev %d il %d iwq done\n", l.dev, l.il);
                     for (int t = 0; t < T; ++t) {
                         const int64_t p = step->pos[t];
                         const int nlast = (int) ((p + 1) / R);
@@ -7528,6 +7582,7 @@ struct Model::Impl {
                         }
                         rows_add_i(tk, 1, (int) topk_stride(), kbase, s);   // (absolute rows: one table)
                     }
+                    if (tr) std::fprintf(stderr, "tr dev %d il %d idx done\n", l.dev, l.il);
                 }
                 ckv = sr.ckv[(size_t) l.dev];
             } else {
@@ -7658,6 +7713,7 @@ struct Model::Impl {
             }
         }
         if (kv_only) return true;
+        if (tr) std::fprintf(stderr, "tr dev %d il %d kv done\n", l.dev, l.il);
         prof_mark(d, 7);
         // the attention in slabs: q, the sparse attention, wo_a, wo_b (this member's share) into acc
         if (NHL == 0) CK(cudaMemsetAsync(c.acc, 0, (size_t) T * D * sizeof(*c.acc), s));   // (no heads)
@@ -7718,6 +7774,7 @@ struct Model::Impl {
         if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, s);
         hc_post_inplace(c.acc, c.h, c.a_post, c.a_comb, D, H, T, s);
         prof_mark(d, 1);
+        if (tr) std::fprintf(stderr, "tr dev %d il %d attn done\n", l.dev, l.il);
         // the MoE
         if (!hc_mix_chunk(d, c, c.h, l.hcf_fn, T, c.mix, err)) return false;
         hc_split(c.mix, l.hcf_scale, l.hcf_base, H, g.sinkhorn, g.hc_eps, T, c.f_pre, c.f_post, c.f_comb, s);
@@ -7753,6 +7810,7 @@ struct Model::Impl {
                 if (!flow_pump(c, err)) return false;
                 std::this_thread::yield();
             }
+        if (tr) std::fprintf(stderr, "tr dev %d il %d pre-sync\n", l.dev, l.il);
         CK(cudaStreamSynchronize(s));
         std::vector<int> b(c.bounds_pin, c.bounds_pin + n_vs + 1);
         if (dump_r != nullptr && mi == 0) {
@@ -7865,6 +7923,7 @@ struct Model::Impl {
         hc_post_inplace(c.acc, c.h, c.f_post, c.f_comb, D, H, T, s);
         CK(cudaMemcpyAsync(c.pre, c.f_pre, (size_t) T * 8 * 4, cudaMemcpyDeviceToDevice, s));
         prof_mark(d, 3);
+        if (tr) std::fprintf(stderr, "tr dev %d il %d moe done\n", l.dev, l.il);
         return true;
     }
 
@@ -8108,9 +8167,12 @@ struct Model::Impl {
                 }
                 if (li == 0) {   // the chunk's input: its embedding rows
                     if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
-                    for (int t = 0; t < T; ++t)
-                        std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, state().toks[(size_t) (p0 + t)]),
-                                    (size_t) D * 2);
+                    if (run.rows != nullptr)   // (a step: each row its own sequence's token, embedded by forward_rows)
+                        std::memcpy(c.emb_host[slot], h_emb, (size_t) T * D * 2);
+                    else
+                        for (int t = 0; t < T; ++t)
+                            std::memcpy(c.emb_host[slot] + (size_t) t * D,
+                                        emb_row(p0 + t, state().toks[(size_t) (p0 + t)]), (size_t) D * 2);
                     CK(cudaMemcpyAsync(c.emb, c.emb_host[slot], (size_t) T * D * 2, cudaMemcpyHostToDevice, s));
                     CK(cudaEventRecord(c.emb_ev[slot], s));
                     embed(c.emb, T, c.h, D, H, s);
@@ -8283,9 +8345,12 @@ struct Model::Impl {
                     started = true;
                     if (il == 0) {
                         if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
-                        for (int t = 0; t < T; ++t)
-                            std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, state().toks[(size_t) (p0 + t)]),
-                                        (size_t) D * 2);
+                        if (run.rows != nullptr)   // (a step: each row its own sequence's token, embedded by forward_rows)
+                            std::memcpy(c.emb_host[slot], h_emb, (size_t) T * D * 2);
+                        else
+                            for (int t = 0; t < T; ++t)
+                                std::memcpy(c.emb_host[slot] + (size_t) t * D,
+                                            emb_row(p0 + t, state().toks[(size_t) (p0 + t)]), (size_t) D * 2);
                         CK(cudaMemcpyAsync(c.emb, c.emb_host[slot], (size_t) T * D * 2, cudaMemcpyHostToDevice, s));
                         CK(cudaEventRecord(c.emb_ev[slot], s));
                         embed(c.emb, T, c.h, D, H, s);
@@ -8301,6 +8366,39 @@ struct Model::Impl {
                     got[(size_t) sidx] = 1;
                     Src& sr = srcs[(size_t) sidx];
                     if (L[(size_t) sr.layer].grp == L0.grp) continue;
+                    if (run.rows != nullptr) {
+                        // a step: the owner staged the rows it completed this step, one a row (each row its own
+                        // position and sequence) - the same descriptor here says which, in the same order
+                        const int R = std::max(1, sr.ratio);
+                        Xfer x;
+                        int trow = 0;
+                        bool first = true;
+                        for (int t = 0; t < T; ++t) {
+                            const int p = (int) run.rows->pos[t];
+                            if ((p + 1) % R != 0) continue;
+                            const int64_t row = p / R;
+                            if (x.n + 2 > 4) {
+                                xfer_get(x, sr.flag(slot), wp.win, s);
+                                x = Xfer{};
+                                first = false;
+                            }
+                            if (sr.ckv[(size_t) di] != nullptr) {
+                                x.src[x.n] = sr.stage(slot) + (size_t) trow * ckv_rb();
+                                x.dst[x.n] = sr.ckv[(size_t) di] + ckv_at(sr, row, run.rows->seq[t]);
+                                x.bytes[x.n++] = ckv_rb();
+                            }
+                            if (sr.ik[(size_t) di] != nullptr) {
+                                x.src[x.n] = sr.stage(slot) + x_cap() * ckv_rb() + (size_t) trow * ik_rb();
+                                x.dst[x.n] = sr.ik[(size_t) di] + ik_at(sr, row, run.rows->seq[t]);
+                                x.bytes[x.n++] = ik_rb();
+                            }
+                            ++trow;
+                        }
+                        if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, s);
+                        else if (first) wait_flags(sr.flag(slot), 1, 32, wp.win, s);   // (nothing to place: still wait)
+                        set_flag(sr.x_ack + ((size_t) slot * devs.size() + di) * 32, wp.win, s);
+                        continue;
+                    }
                     const int64_t g_first = p0 / sr.ratio;
                     const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
                     Xfer x;
@@ -8771,7 +8869,7 @@ struct Model::Impl {
         }
         for (int t = 0; t < T; ++t) {
             const State& st = seqs[(size_t) seq[t]];
-            if (st.pos + 1 > o.max_context) {
+            if (st.pos + 1 > (slot_tokens > 0 ? slot_tokens : o.max_context)) {
                 err = "the context is full";
                 return false;
             }
@@ -8801,7 +8899,7 @@ struct Model::Impl {
         if (n < 1) return true;
         flow_used.store(true);
         std::lock_guard<std::mutex> warm_lk(warm_mu);   // (the warm-up, if it is running, finishes first)
-        if (state().pos + n > o.max_context) {
+        if (step == nullptr && state().pos + n > o.max_context) {   // (a step's rows carry their own sequences' positions)
             err = "the context is full";
             return false;
         }
@@ -8908,6 +9006,15 @@ struct Model::Impl {
                 std::lock_guard<std::mutex> lk(halt_mu);
                 halt_k = halt_seen + 1;
                 halt.store(true, std::memory_order_release);
+            }
+            // a device that has already failed ends the run here: another device may be waiting for a hand-off the
+            // failed one will never send, and the wait would never end (a silent hang instead of the error)
+            if (!all) {
+                for (const std::string& e : errs)
+                    if (!e.empty() && e != kHalted) {
+                        err = e;
+                        return false;
+                    }
             }
             if (progress && lm) {   // (layer-major: the share of the layers every chunk went through)
                 const int nd = lm_layers.load(std::memory_order_acquire);
@@ -10094,6 +10201,7 @@ bool Model::verify(int y, const std::vector<int>& d, float t, float tp, int tk, 
 }
 void Model::use_seq(int seq) { p_->use_seq(seq); }
 int Model::seq_count() const { return p_->seq_count(); }
+int64_t Model::seq_pos(int seq) const { return p_->seq_pos(seq); }
 int64_t Model::pos() const { return p_->state().pos; }
 int64_t Model::max_context() const { return p_->slot_tokens > 0 ? p_->slot_tokens : p_->o.max_context; }
 bool Model::forward_rows(const int* pos, const int* seq, const int* tk, int T, std::string& err) {

@@ -98,6 +98,7 @@ void usage() {
                  "           [--vram-experts F] [--cpu-threads N] [--expert-profile FILE|none] [--ssd-cache GB] [--ssd-policy lru|lfu|lfulru] [--no-expert-cache] [--verbose]\n"
                  "           [--tp N] [--threads on|off] [--prefill-chunk N] [--dspark on|off|none|auto] [--dspark-block N] [--dspark-conf F] [--experts N|auto]\n"
                  "           [--vision on|off] [--mmap-experts on|off|auto] [--batch N] [--slot-burst K] [--read-slice N]\n"
+                 "           [--slot-context N]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
@@ -759,6 +760,12 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     // its compressors' partial group and its state are per sequence (M2) - instead of being parked in host memory between
     // its bursts.  A solo GEN gets the sequence after the slots')
     const bool live = std::getenv("STRATA_DS4_BATCH_LIVE") != nullptr;
+    // (STRATA_DS4_STEP=1: M2's single-launch step - every active slot's next token through the layers in ONE pass (each
+    // row its own sequence), then a sample a row.  It needs the live slots: a row works on its own sequence's state)
+    const bool step_mode = std::getenv("STRATA_DS4_STEP") != nullptr && live;
+    constexpr int kStepRows = 16;   // (a step's rows: the model's window, kWin)
+    if (std::getenv("STRATA_DS4_STEP") != nullptr && !live)
+        std::fprintf(stderr, "ds4 serve: STRATA_DS4_STEP needs STRATA_DS4_BATCH_LIVE=1 (a step's rows are sequences)\n");
     const int solo_seq = live ? (int) bslots.size() : 0;
     const int slice_tokens = read_slice > 0 ? read_slice : 1024;   // (--read-slice: how much of a prompt one feed reads)
     const bool slot_trace = std::getenv("STRATA_DS4_SLOT_TRACE") != nullptr;   // (the switch's cost, for M5's tuning)
@@ -799,8 +806,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         std::printf("%s\n", out.c_str());
     };
-    // one token of a run: the sampled one goes out (T, or BT in a slot), then it is fed and the next one sampled
-    const auto run_advance = [&](Run& run) -> bool {
+    // one token of a run, the protocol half: the sampled one goes out (T, or BT in a slot), the admission's DONE/BADM
+    // with the first, and the end checks.  The token is the caller's to feed - a slot's own decode feeds it here
+    // (run_advance), M2's step feeds every active slot's in one pass (step_round).
+    const auto run_pos = [&](const Run& run) -> int64_t {   // (the run's own sequence: a step must not read another's)
+        return live && run.slot >= 0 ? m.seq_pos(run.slot) : m.pos();
+    };
+    const auto run_emit = [&](Run& run) -> bool {
         if (in.stop.load() || (run.produced > 0 && run.slot >= 0 && in.bstop.load() == run.slot)) {
             run.finish = "cancel";
             run.ended = true;
@@ -837,13 +849,18 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             run.ended = true;
             return false;
         }
-        if (run.produced >= run.limit || m.pos() >= m.max_context()) {
+        if (run.produced >= run.limit || run_pos(run) >= m.max_context()) {
             run.finish = "length";
             run.ended = true;
             return false;
         }
+        return true;
+    };
+    // one token of a run on its own (a solo GEN, a slot without the step): the protocol, then the feed and the next sample
+    const auto run_advance = [&](Run& run) -> bool {
+        if (!run_emit(run)) return false;
         if (run.got.empty()) {   // the next round: the drafts (if any) and the token after them
-            const int room = (int) std::min<long long>(run.limit - run.produced, m.max_context() - m.pos());
+            const int room = (int) std::min<long long>(run.limit - run.produced, m.max_context() - run_pos(run));
             int off = 0, acc = 0;
             // a round whose drafts were all below the confidence floor: the next one does without the drafter
             // (a request's spec / dspark_conf keys over the engine's: the speed calibration measures both ways)
@@ -926,6 +943,45 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         o.continued = false;
         if (cur == s) cur = -1;   // (the conversation stays in the model; the next admission sets it aside)
     };
+    // M2's single-launch step (STRATA_DS4_STEP): the active slots' next tokens out (their protocol: T/BT, the
+    // admission's DONE/BADM, the end checks), then all of them through the layers in ONE pass - forward_rows, a row a
+    // sequence - and a sample a row.  Returns the rows run, 0 when nothing is active, -1 when the pass failed (the
+    // slots end there).  A picture slot is left to its own burst: its state cannot share a pass.
+    const auto step_round = [&]() -> int {
+        int who[kStepRows], tk[kStepRows], sq[kStepRows];
+        int T = 0;
+        for (int i = 0; i < (int) bslots.size() && T < kStepRows; ++i) {
+            Run& run = bslots[(size_t) i];
+            if (!run.active || run.no_switch) continue;
+            if (!run_emit(run)) {   // (it ends here: its last token was printed, nothing to feed)
+                end_slot(i, run.finish);
+                continue;
+            }
+            who[T] = i;
+            sq[T] = i;
+            tk[T] = run.tok;   // (the token just printed: it goes into its own sequence now)
+            ++T;
+        }
+        if (T == 0) return 0;
+        int pos[kStepRows];
+        for (int t = 0; t < T; ++t) pos[t] = (int) m.seq_pos(sq[t]);
+        if (!m.forward_rows(pos, sq, tk, T, err)) {
+            std::fprintf(stderr, "ds4 step: %d row(s) stopped: %s\n", T, err.c_str());
+            for (int t = 0; t < T; ++t) {
+                Run& run = bslots[(size_t) who[t]];
+                run.finish = "cancel";
+                run.ended = true;
+                end_slot(who[t], "cancel");
+            }
+            return -1;
+        }
+        for (int t = 0; t < T; ++t) {
+            Run& run = bslots[(size_t) who[t]];
+            run.tok = m.sample(run.req.temperature, run.req.top_p, run.req.top_k, run.req.min_p, run.req.seed,
+                               run.counter++, t);
+        }
+        return T;
+    };
     // one burst of slot s: the model to its conversation, then up to a burst of tokens
     const auto run_slot = [&](int s) {
         Run& run = bslots[(size_t) s];
@@ -1001,11 +1057,16 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     };
     for (;;) {
         if (!in.try_next(line)) {
-            // (nothing waiting: give the slots their bursts, and only wait for a line when none is running)
-            const int s = next_active();
-            if (s >= 0) {
-                run_slot(s);
-                continue;
+            // (nothing waiting: give the slots their bursts - or, with STRATA_DS4_STEP, one pass over all of them - and
+            // only wait for a line when none is running)
+            if (step_mode) {
+                if (step_round() != 0) continue;   // (a pass ran; a failed one ended the slots)
+            } else {
+                const int s = next_active();
+                if (s >= 0) {
+                    run_slot(s);
+                    continue;
+                }
             }
             if (!in.next(line)) break;
         }
@@ -1278,6 +1339,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                     // while and the read goes on where it stopped (nothing is saved or loaded)
                     const double until = now_ms() + std::min(1000.0, slice_ms * 0.5);
                     while (now_ms() < until) {
+                        if (step_mode) {
+                            if (step_round() == 0) break;
+                            continue;
+                        }
                         const int s = next_active();
                         if (s < 0) break;
                         run_slot(s);
@@ -1294,6 +1359,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                     m.reset();
                     const double until = t_parked + std::min(1000.0, slice_ms * 0.5);
                     while (now_ms() < until) {
+                        if (step_mode) {
+                            if (step_round() == 0) break;
+                            continue;
+                        }
                         const int s = next_active();
                         if (s < 0) break;
                         run_slot(s);
@@ -1688,6 +1757,7 @@ int main(int argc, char** argv) {
         else if (a == "--gpus") {
             for (int g : parse_ids(val("--gpus"))) o.gpus.push_back(g);
         } else if (a == "--max-context") o.max_context = std::atoll(val("--max-context").c_str());
+        else if (a == "--slot-context") o.slot_context = std::atoll(val("--slot-context").c_str());
         else if (a == "--reserve-mib") o.reserve_mib = std::atoll(val("--reserve-mib").c_str());
         else if (a == "--vram-experts") o.vram_experts = std::atof(val("--vram-experts").c_str());
         else if (a == "--cpu-threads") o.cpu_threads = std::atoi(val("--cpu-threads").c_str());
@@ -1772,6 +1842,10 @@ int main(int argc, char** argv) {
     }
     if (o.profile.empty()) o.profile = o.pack + "/expert-profile.bin";   // "none": no profile
     if (o.profile == "none") o.profile.clear();
+    if (o.slot_context <= 0) {   // (or STRATA_DS4_SLOT_CONTEXT=N: M5's measured plan, without a new command line)
+        const char* e = std::getenv("STRATA_DS4_SLOT_CONTEXT");
+        if (e != nullptr) o.slot_context = std::atoll(e);
+    }
     o.vision_only = !enc_rgb.empty();
     if (admit_order) {                                 // the M1 admission order, without a model
         Lines in;

@@ -25,6 +25,10 @@ namespace strata::ds4 {
 struct Options {
     std::string pack;                 // <model>/maya-ds4
     int64_t max_context = 32768;
+    // the tokens one conversation (a batch slot) may hold - the compressed KV tables are sized a sequence by this, so
+    // with several sequences it is what keeps the table from taking the experts' VRAM (M5: 32K a slot at 16 slots).
+    // 0: max_context (the pack's whole window, one conversation)
+    int64_t slot_context = 0;
     std::vector<int> gpus;            // empty: every visible GPU
     int64_t reserve_mib = 600;        // VRAM left free on each GPU
     double vram_experts = 1.0;        // the share of the expert budget to use (tests: less, so the CPU lane works)
@@ -153,6 +157,8 @@ public:
     /// tables (docs/DSV41_BATCHING.md, M2).  0 - the engine's one conversation - unless the serve loop keeps several.
     void use_seq(int seq);
     int seq_count() const;
+    /// The tokens a sequence's state holds so far (its next row's position); the sequence a step's row names.
+    int64_t seq_pos(int seq) const;
     int64_t max_context() const;
     int vocab() const;
     int dim() const;
