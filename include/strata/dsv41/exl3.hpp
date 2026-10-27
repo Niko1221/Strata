@@ -154,6 +154,10 @@ struct SetArgs {
     int max_rows = 0;   // the most rows one expert of the set has
     int n_embd = 4096, n_ff = 2048;
     float limit = 0.0f;
+    // gate / up: the caller's F16 copy of the activations (row_idx picks the rows).  The tiles round F32 to F16 for
+    // their shared-memory tile anyway, so the same values come out; this only saves the F32 read of the same rows by
+    // every column block of an expert (18-36 reads of 1.8-3.7 MB on a prompt) - MarLin's "small operand cheap".
+    const uint16_t* x16 = nullptr;
 };
 /// h[local row] = FP16 clamped swiglu of gate and up over x[row_idx[local row]] (F32 rows, ldx floats apart).
 void set_gate_up(const SetArgs& a, const float* x, int ldx, const int* row_idx, uint16_t* h16, int ldh, cudaStream_t s);

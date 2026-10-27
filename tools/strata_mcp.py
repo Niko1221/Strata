@@ -572,7 +572,7 @@ class Strata:
             # nine shards; the memory the weights need is VRAM + RAM together WITHOUT the n-gram table (it stays on the SSD)
             gb = sum(big["sha256"][n][0] for n in [*big["models"][model]["shards"], *big["models"][model].get("shared", [])]) / 1e9
             return {"about": big["models"][model]["about"], "download_gb": round(gb, 1), "ram_gb": big["models"][model]["ram_gb"],
-                    "arena_gb": round(float(big["models"][model]["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": False,
+                    "arena_gb": round(float(big["models"][model]["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": bool(big.get("vision", True)),
                     "engine": None, "families": (family,), "multi_file": True}
         d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
         if not d or model not in d["models"]:
@@ -670,7 +670,8 @@ class Strata:
         plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
-                "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
+                "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
+                else ("on" if cfg.get("arch") == "deepseek41" and str(val("--vision") or "on").lower() not in ("off", "no", "false", "0") else "off"),
                 "port": cfg.get("port", DEFAULT_PORT), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
@@ -703,6 +704,23 @@ class Strata:
                 seen_d.add(norm(d))
                 once_d.append(d)
         return once, once_d
+
+    @staticmethod
+    def with_shards(files: list) -> list:
+        """The files plus the other parts of every multi-part GGUF among them (name-00001-of-00004.gguf: the config names only the
+        first), so deleting a model takes all its parts and never leaves 100 GB behind (#3716)."""
+        out, seen = [], set()
+        for f in files:
+            names = [Path(f)]
+            m = SHARD_NAME.match(str(f))
+            if m:
+                names += [Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)]
+            for n in names:
+                key = norm(n)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(n)
+        return out
 
     @staticmethod
     def tree_bytes(path: Path) -> int:
@@ -791,11 +809,13 @@ class Strata:
         (the shared MTP draft, a shared PLE shard) is kept; so is anything outside Strata's own folders."""
         cfg = self.read_config(config)
         files, dirs = self.model_paths(cfg)
+        files = self.with_shards(files)
         used_files, used_dirs = set(), set()
         for other in self.configs():
             if norm(other) == norm(config):
                 continue
             f, d = self.model_paths(self.read_config(other))
+            f = self.with_shards(f)
             used_files |= {norm(x) for x in f}
             used_dirs |= {norm(x) for x in d}
         remove, keep = [], []
@@ -1268,6 +1288,9 @@ class Strata:
                               # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
                               # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
                               "mem_total": bool(d.get("mem_total")), "multi_file": bool(own and own.get("multi_file")),
+                              # DeepSeek only: the free disk the set needs, from the set itself (the download: model files, n-gram table, drafter and
+                              # metadata, plus the pack folder and room to work, strata_control/dsv41_fit.DISK_HEADROOM_GB): 2.00 and 2.25 differ
+                              "disk_gb": self.dsv41_disk_gb(d) if own and own.get("multi_file") else None,
                               # the first engine that reads this size's files (setup.py "engine"); the app says "needs a newer engine"
                               # with the update step when the installed one is older. None: any engine that setup accepts.
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
@@ -1282,6 +1305,12 @@ class Strata:
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
         return out
+
+    @staticmethod
+    def dsv41_disk_gb(d: dict) -> float:
+        """The free disk a DeepSeek set needs: its whole download plus the pack and room to work (the card text says "about")."""
+        from strata_control import dsv41_fit
+        return round(float(d["download_gb"]) + dsv41_fit.DISK_HEADROOM_GB, 1)
 
     def dsv41_plan(self, hw, disk_free=None, only=None, model=None) -> dict:
         """strata_control/dsv41_fit.plan for this computer; `only`: the card numbers a launch names (else every card that counts)."""
@@ -1334,6 +1363,10 @@ class Strata:
         v = pl["verdict"]
         if v == "no_card":
             return "does not fit: it needs one or more graphics cards"
+        if pl.get("uma"):                       # Ryzen AI Max (Strix Halo, Windows): the graphics memory is the RAM, counted once
+            return (f"runs on this PC's shared memory: about {pl['vram_experts_gb']:.0f} GB of the {pl['experts_gb']:.0f} GB of experts stay "
+                    f"in memory and the other {pl['streamed_gb']:.0f} GB are read from the SSD; measured 14-16 tokens a second on code and "
+                    "10-11 on chat")
         if pl.get("variant"):                   # an official IST-DAS set (strata_control/dsv41_fit.py): measured on 46-64 GB, never a refusal
             if v == "spills":
                 return (f"slow here: this computer has {pl['ram_gb']:.0f} GB of RAM and the set was measured with 46-64 GB, so most of its "
@@ -2189,6 +2222,10 @@ class Tools:
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None and md.get("multi_file"):
             context = getattr(s.setup_module(), "DSV41_CONTEXT", 8192)      # the context the engine was checked at
+        if md.get("multi_file"):                          # DeepSeek-V4.1-Flash reads up to 1,048,576 positions (Project Maya #442): a size past that cannot run
+            from strata_control import dsv41_context
+            if dsv41_context.problem(int(context)):
+                raise ToolError(dsv41_context.problem(int(context)))
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)

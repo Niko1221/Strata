@@ -39,11 +39,27 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 | IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
 
+**On a Ryzen AI Max "Strix Halo" (Windows)** the graphics chip and the CPU share one pool of memory, so the engine counts it once: the
+128 GB box (a 64 GB BIOS carve-out plus the 64 GB Windows sees) keeps about 109 GB of the 2.00 set's experts in that pool (the dense
+weights and 12 GB for Windows and the desktop aside) and reads the other 23 GB from the SSD. Measured there (2.00 bpw, default Faster
+mode, DSpark auto): answers 19-21 tokens/s on code (about 18 on agent) and 11 on chat; a 4,000-token prompt 87 tokens/s, 8,000
+tokens 125, 32,000 tokens 177 (setup writes `--prefill-chunk 8192` on this PC: 11-15% faster than the engine's 1,024-token default,
+decode unchanged). The verify window runs synchronously here (setup writes `DS4_ASYNC_T=4` in the config's env; the engine's
+mailbox path is sized for cards that hold most of the experts and costs this box 31% on code - `STRATA_DSV41_ASYNC_T=8` restores
+the default). The tested driver is AMD Adrenalin 26.10.1 (driver 32.0.32015.7029); the 2025-03 driver failed at 32K context, so
+26.10.1 is the minimum to use. The 32K and 64K contexts work on it; an 8-hour 32K soak passed on this box.
+
 121 + 111 + 8 = 239 GB for 1.75; 138 + 111 + 8 = 257 GB for 2.00; 155 + 111 + 8 = 274 GB for 2.25.
 
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
 tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
 tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
+
+**RTX 40 series (sm_89).** The engine packages carry machine code for sm_86, sm_89 and sm_120 since 0.2.7 (before, an RTX 40 card ran the sm_86 code through
+CUDA's same-generation rule). We have no RTX 40 card: the sm_89 build was compiled here but not run. A user's own build for sm_89 ran the 2.00 set on an
+RTX 4090 48 GB with 128 GB of RAM (#3935, their numbers): decode 40.2 tokens/s (median of 5 answers of 64 tokens, `--ssd-cache 108 --dspark on --dspark-conf 0.65`),
+prompts 141 tokens/s at 1.2K and 615 at 4.6K. They saw 16 to 22 tokens/s with `--dspark auto`, which decided "off" on their computer. This is one report on one
+computer; other cards and RAM sizes can differ, and `--dspark auto` stays the default.
 
 Setup downloads with resume and SHA-256, packs the model with the plain recipe (`pack_gguf.py --model SET --shards ... --engram
 engram-IQ4_NL.gguf --engram-meta <UD shard 1> --dspark-gguf dspark-...-Q8_0.gguf`; do not add `--skip-tensors` or `--dense-override`:
@@ -68,6 +84,13 @@ Setup needs `strata-dsv41` next to the engine (or `STRATA_DSV41_EXE`) and says s
 `cmake -DSTRATA_BUILD_DSV41=ON`. The default context is 8192 tokens, the size it was checked at; `--context` asks for more.
 Loading takes a few minutes (the config sets `"engine_ready_s": 3600`).
 
+**Context up to 1M.** The model reads 1,048,576 positions natively, so `--context` takes 8K to 1M (`--context 512k`, `--context 1m`; the Terminal's context step
+lists 8K, 32K, 64K, 128K, 256K, 512K and 1M, and the app lists them up to the limit its pack states in `ds4.txt`, `max_position_embeddings`). A size past what the
+pack reads is refused before anything is downloaded. Nothing past 256K has been tested by us: the owner's decision is to offer 512K and 1M and let users try them
+(Project Maya v1.1.28 did the same, #442 by @needmorevram, MIT). The cost is real. The context's cache lives in graphics memory, so every position takes memory from
+the expert cache and fewer experts stay on the card; and a very long prompt is read slowly, because the indexer's work grows with the square of its length. Start
+with 256K or less, and expect the first reply of a 512K or 1M prompt to take many minutes.
+
 ## Through the API
 
 The server speaks to the engine as it does for the other models, so `/v1/chat/completions`, `/v1/messages`, streaming, stop and
@@ -86,7 +109,12 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
   (`STRATA_DS4_SLOT_GB`) and are removed after a week. The system prompt and tools shared by an agent
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
 
-Not in this version: several requests at once (`--parallel` is ignored with a warning) and pictures (`--vision` is ignored with a warning).
+Pictures are on by default: the engine reads them with its own vision tower (319 MiB of graphics memory, loaded with the model; no separate
+picture reader). The server decodes each picture, brings it to a size the tower takes (both sides a multiple of 42, at most 1024 image
+tokens) and hands it to the engine; it needs Pillow for that (`python -m pip install pillow`; setup installs it). `--vision no` in `strata launch`
+(or `--vision off` for the engine) turns them off; a request with a picture then gets a 400 that says so.
+
+Not in this version: several requests at once (`--parallel` is ignored with a warning).
 
 ## Speed: Faster or Full quality
 
@@ -108,7 +136,8 @@ says so. The RAM store (`--ssd-cache`) sizes itself when the model starts, so th
 DeepSeek's engine, `strata-dsv41`, is a separate download from the Strata engine: when you choose DeepSeek, setup (or `strata launch`) fetches the
 package for your computer from the signed update feed (resumable, signature and every file checked) and installs it in `engine-dsv41/` beside
 `engine/`. The Qwen engine's files are never changed. If the feed has no package for your graphics card, setup says so in plain words and stops before
-anything big is downloaded.
+anything big is downloaded. The Windows AMD package (`...-windows-x86_64-hip-rdna3`) carries the ROCm 10.2 runtime and the
+rocBLAS / hipBLASLt kernels for gfx1151 in `rocm/bin`, which Strata puts on the engine's library path.
 
 ### Getting the engine by hand
 
@@ -125,6 +154,28 @@ or put the file in the `engine-dsv41/` folder (setup tells you its exact place w
 Strata checks the package before it uses it: it must be the DeepSeek engine (not the Strata engine) for your system, its manifest must be signed by a key
 Strata trusts, and every file must match the hash in the manifest. A damaged or foreign file is refused with a plain line and nothing is installed.
 The unpacked folder works as well as the archive. The Strata (Qwen) engine is not touched either way.
+
+### Building the engine for your card
+
+The packages hold machine code for these NVIDIA cards (CUDA 13, Windows and Linux): sm_86 (RTX 30), sm_89 (RTX 40) and sm_120 (RTX 50), plus PTX for
+sm_120. If your card is none of these, or you want your own build, compile `strata-dsv41` and put it where Strata looks for it. You need the CUDA toolkit
+(the packages are built with 13.0), a C++ compiler, CMake, Ninja and the llama.cpp checkout Strata pins (`third_party/llama.cpp`).
+
+```
+cmake -S . -B build-dsv41 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON       "-DCMAKE_CUDA_ARCHITECTURES=89-real" -DSTRATA_GGML_DIR=third_party/llama.cpp
+cmake --build build-dsv41 --target strata-dsv41 -j 8
+```
+
+Use your card's number in `CMAKE_CUDA_ARCHITECTURES`: 86 for RTX 30, 89 for RTX 40, 120 for RTX 50, or `native` for the cards in this computer. Without the
+option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_dsv41_windows.bat BUILD_DIR` does the same (`DSV41_ARCH` names the cards);
+on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:
+
+```
+python setup.py --family deepseek41 --model IST-DAS-2.00bpw
+```
+
+`strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.
+Please tell us how it runs on your card (the speed, and the card and RAM): we only list a card as tested after someone has run it.
 
 ## Compressed experts (trellis), for testing
 

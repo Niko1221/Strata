@@ -290,3 +290,31 @@ test('macOS: the engine bundle inside a signed .app stays (deleting it breaks th
     t.cleanup();
   }
 });
+
+test('a card taken out of the PC does not decide the make; two present makes accept a build for either (#3892)', async () => {
+  const { gpuBackendsHere, windowsDisplayVendors } = await import('../server/bundled-engine.mjs');
+  const nl = String.fromCharCode(10);
+  const registry = 'MatchingDeviceId    REG_SZ    PCI/VEN_10DE&DEV_2882' + nl + 'MatchingDeviceId    REG_SZ    PCI/VEN_1002&DEV_7550';
+  // the NVIDIA card was swapped for a Radeon: Windows still lists its driver entry, but only the AMD card is present
+  assert.deepEqual([...windowsDisplayVendors({ platform: 'win32', run: () => registry, present: () => new Set(['1002']) })], ['1002']);
+  assert.equal(gpuBackendsHere({}, { vendors: new Set(['1002']) })[0], 'hip');
+  // both cards present: both makes count, NVIDIA first
+  assert.deepEqual([...windowsDisplayVendors({ platform: 'win32', run: () => registry, present: () => new Set(['1002', '10de']) })].sort(), ['1002', '10de']);
+  assert.deepEqual(gpuBackendsHere({}, { vendors: new Set(['10de', '1002']) }), ['cuda', 'hip']);
+  // present cannot be read: the registry answer stands
+  assert.equal(windowsDisplayVendors({ platform: 'win32', run: () => registry, present: () => new Set() }).size, 2);
+  // the second source is only asked when two makes are listed
+  assert.equal(windowsDisplayVendors({ platform: 'win32', run: () => 'MatchingDeviceId    REG_SZ    PCI/VEN_1002&DEV_7550', present: () => { throw new Error('must not run'); } }).size, 1);
+  assert.deepEqual(gpuBackendsHere({ STRATA_ENGINE_BACKEND: 'hip' }, { vendors: new Set(['10de', '1002']) }), ['hip']);
+
+  const t = setup();
+  try {
+    const name = makePackage(t.bundle, '0.2.0', { platform: 'windows-x86_64', backend: 'hip', variant: 'rx9070' });
+    const manifest = JSON.parse(readFileSync(join(t.bundle, name, 'engine-component.json'), 'utf8'));
+    manifest.archs = ['gfx1201'];
+    writeFileSync(join(t.bundle, name, 'engine-component.json'), JSON.stringify(manifest));
+    // an AMD build on a PC with an NVIDIA desktop card and an AMD model card is unpacked, not refused
+    const result = await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: ['cuda', 'hip'] });
+    assert.equal(result.action, 'installed');
+  } finally { t.cleanup(); }
+});

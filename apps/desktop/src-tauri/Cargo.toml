@@ -1,6 +1,6 @@
 [package]
 name = "strata-desktop"
-version = "0.2.6"
+version = "0.2.7"
 description = "Strata Desktop — local AI, tuned to one model."
 edition = "2021"
 rust-version = "1.77"
@@ -15,8 +15,10 @@ webkit2gtk = "2.0"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
+# Desktop notifications for an approval that waits (#3477); the tray icon above is Tauri's own.
+tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
