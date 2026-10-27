@@ -673,3 +673,25 @@ slot cap as what makes 16 slots fit, the step's pass as the grouped MoE with its
 collected (8 slots at 1M), and flow+step proven on the window path at 1M - with the exactness boundary documented
 (bit-identical at 2 rows anywhere and 8 rows at 32K; shape-dependent rounding beyond that).
 
+
+## Deployed as this machine's production, and M6 accepted on it (21:50)
+
+**The build is production now.**  `build/strata-dsv41.step26` (md5 `9d0892c98f9f`) -> `build/strata-dsv41` and
+`build/strata-dsv41.prod` (the old stock is kept as `build/strata-dsv41.prod.stock`; the config and the launcher each have
+a `.prod.bak`).  The production config gained **`--batch 4 --slot-context 262144`** (four slots, 256K a conversation;
+23 of 4224 experts go to the host lane, 0.2 GB, so nothing is streamed) and the launcher gained
+`STRATA_DS4_BATCH_LIVE=1`, `STRATA_DS4_STEP=1` and `server.py --api-monitor`.  After the restart: `health 200`, the key
+is enforced again (`/v1/status` 401 without it), one short answer in 0.63 s ("The capital of France is Paris."), and two
+requests at once answer in 2.9 s each through two slots ("11, 13, 17" and "12, 14, 16").  The machine's public port
+53080 maps to the container's 8080 (8080 is not reachable from the outside, 53080 is).
+
+**M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
+`/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
+hold one, the M6 fix - and the page drew exactly that: the `4 slot(s) - 4 asked` header, four lit slot cells, the
+in-flight area chart with `peak 8`, and the four facts (`In flight 8`, `Slots busy 4/4`, `Waiting 4`, `Peak 8`).
+
+The page to look at is **`/api-monitor`** (the API monitor: the M6 Parallel panel, the request list, the model state);
+the `#monitor` tab of the app at `/` is the engine monitor (speed, GPU, VRAM, context fill) and has no slot panel - both
+were screenshotted (work/m6_parallel.png, work/m6_monitor.png).  The key goes in the page's "API key" field once
+(localStorage); the panel's `--api-monitor` request list needs it, the slot cells do not.
+
