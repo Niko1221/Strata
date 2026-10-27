@@ -1175,5 +1175,26 @@ class ArchiveCommitTests(unittest.TestCase):
         self.assertIn("COMMIT", str(raised.exception))
 
 
+class CompareRefusesAStandardReport(unittest.TestCase):
+    """#4325: `strata bench compare` reads the serving-suite schema. A standard report used to answer "unsupported
+    benchmark report" without saying what the folder was; now it says which command reads it."""
+
+    def test_two_standard_results_say_they_cannot_be_compared_yet(self):
+        with mock.patch.object(bs, "load_if_standard", return_value={"format": bs.FORMAT}), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["bench", "compare", "/a", "/b"])
+        self.assertEqual(code, 5)
+        self.assertIn("#4325", err.getvalue())
+        self.assertIn("strata bench report", err.getvalue())
+
+    def test_one_of_each_kind_says_so(self):
+        answers = iter([{"format": bs.FORMAT}, None])
+        with mock.patch.object(bs, "load_if_standard", side_effect=lambda path: next(answers)), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["bench", "compare", "/a", "/b"])
+        self.assertEqual(code, 5)
+        self.assertIn("another kind of report is not supported", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
