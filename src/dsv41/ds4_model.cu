@@ -9402,6 +9402,9 @@ struct Model::Impl {
             wplan.par = false;
             wplan.async = false;
         }
+        // (DS4_STEP_SYNCROUTE=1: the routing planned on the device instead of through the service thread's mailbox - a
+        // debug switch that isolates the mailbox from a pass's own arithmetic)
+        if (std::getenv("DS4_STEP_SYNCROUTE") != nullptr) wplan.async = false;
         prof_window = prof_on && T == 1;
         n_logits = T;   // (every row's logits: the serve loop samples one a row)
         const double tl = now_ms();
@@ -9521,9 +9524,10 @@ struct Model::Impl {
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
         const int D = g.dim, H = g.hc;
-        // (DS4_STEPCHECK=1: rows 0 and 2 of a step with the same prompt must stay bit-identical - the first layer and
-        // device where they are not is printed; a debug switch, it syncs a device a layer)
-        static const bool step_check = std::getenv("DS4_STEPCHECK") != nullptr;
+        // (DS4_STEPCHECK: a debug switch that syncs a device a layer.  >= 1: every pass's shape, printed by forward_step;
+        // >= 2: rows 0 and 2 of a pass with the same prompt must stay bit-identical - the first layer and device where
+        // they are not is printed; >= 3: a hash of row 0's h after every layer, which compares two runs layer by layer)
+        static const int step_check = std::getenv("DS4_STEPCHECK") != nullptr ? std::atoi(std::getenv("DS4_STEPCHECK")) : 0;
         bool started = false;
         std::vector<char> got(srcs.size(), 0);
         for (int il = 0; il < g.nl; ++il) {
@@ -9598,7 +9602,7 @@ struct Model::Impl {
             }
             if (mi == 0 && !tap(d, il, T, err)) return false;
             if (!layer(L0, mi, p0, T, wp, err, step)) return false;
-            if (step_check && step != nullptr && T > 2) {
+            if (step_check >= 2 && step != nullptr && T > 2) {
                 std::vector<float> a((size_t) H * D), b((size_t) H * D);
                 CK(cudaMemcpyAsync(a.data(), d.h, a.size() * 4, cudaMemcpyDeviceToHost, s));
                 CK(cudaMemcpyAsync(b.data(), d.h + (size_t) 2 * H * D, b.size() * 4, cudaMemcpyDeviceToHost, s));
@@ -9607,6 +9611,18 @@ struct Model::Impl {
                 for (size_t i = 0; i < a.size(); ++i) mx = std::max(mx, (double) std::fabs(a[i] - b[i]));
                 if (mx > 0.0)
                     std::fprintf(stderr, "tr stepcheck dev %d il %d after layer: h0 vs h2 max %.6g\n", di, il, mx);
+            }
+            if (step_check >= 3 && step != nullptr) {   // (a hash of row 0's h: two runs, compared layer by layer)
+                std::vector<float> a((size_t) H * D);
+                CK(cudaMemcpyAsync(a.data(), d.h, a.size() * 4, cudaMemcpyDeviceToHost, s));
+                CK(cudaStreamSynchronize(s));
+                unsigned long long hs = 1469598103934665603ull;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    unsigned u = 0;
+                    std::memcpy(&u, &a[i], 4);
+                    hs = (hs ^ u) * 1099511628211ull;
+                }
+                std::fprintf(stderr, "tr hhash dev %d il %d %016llx\n", di, il, hs);
             }
             if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, il, p0, T);
             const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;

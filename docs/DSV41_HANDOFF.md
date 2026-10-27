@@ -592,25 +592,28 @@ Debug switches the hunt left behind, both off by default: `DS4_STEP_SERIAL=1` ru
 `DS4_STEPCHECK=1` prints every pass's shape (`tr step T <n> pos ... seq ...`) and checks that rows 0 and 2 of a pass
 with the same prompt stay bit-identical after every layer (it syncs a device a layer, so use it on short runs).
 
-**Still open at 19:45: a pass of 9 rows and more drifts, 8 rows do not - and it is not the hand-off.**  Facts, all with the
-race fix in: 2 slots exact (96 tokens, 59.9 tok/s against the bursts' 43.0), 8 slots exact in the threads' path (24
-tokens of alternating prompts against a 4-slot burst reference, and 32 tokens of eight different prompts), 16 slots
-drifting from token 6 for every row.  Nine rows is enough: 9, 12 and 15 slots all drift, at the *same* token (6 for
-prompt A, 13 for B, which only says A's margin is thinner), and so does a 9-slot run whose nine prompts are
-*identical* - the error is the same for every row, so it is not one row's data reaching another's state.  It is not
-the staged hand-off either: `DS4_STEP_SERIAL=1` (one thread, replicate, no staging) drifts at 9 rows exactly as the
-threads' path does - and it drifts at *8* rows, where the threads' path is clean, i.e. the two paths fail at different
-row counts with the same signature, so the trigger is not "N rows in a pass" but something a pass's rows feed.
+**Still open at 20:00: it is the pass's row count, not the sequences - 8 rows are exact, 9 are not.**  Rounding out the
+picture with the race fix in: 2 slots exact (96 tokens, 59.9 tok/s against the bursts' 43.0); 8 slots exact (24 tokens
+of alternating prompts against a 4-slot burst reference, and 32 tokens of eight different prompts); 9, 12, 15 and 16
+slots all drift, at the same *token* (6 for prompt A, 13 for B - A's margin is thinner, the error is older), and a
+9-slot run whose nine prompts are *identical* drifts the same way, so the error is the same for every row.  Ruled out
+one by one:
 
-What the shape print shows (`DS4_STEPCHECK=1`): every pass is clean - `tr step T 9 pos 64 64 ... seq 0 1 ... 8`,
-9 rows, one position, its own sequence - and rows 0 and 2 of an alternating run stay bit-identical after *every* layer
-(the check never fires), so the per-row state of two rows with the same prompt stays in step while both drift from the
-burst path.  That rules out a per-row region or ring being misaddressed and points at something a pass shares and
-sizes by T: the routing plan and its grouped-expert pass, the mailbox a plan is published through
-(`route_publish`/the service thread), or `hc_mix_split`'s per-token blocks.
+* **the staged cross-group hand-off**: `DS4_STEP_SERIAL=1` (one thread, `replicate`, no staging) drifts at 9 rows
+  exactly as the threads' path does - it drifts at *8* rows, where the threads' path is clean, so the two paths fail at
+  different row counts with the same signature and the trigger is not "N rows in a pass";
+* **the routing mailbox**: `DS4_STEP_SYNCROUTE=1` (the route planned on the device, `wplan.async = false`, no service
+  thread) drifts identically;
+* **the sequence count**: 8 rows with `STRATA_DS4_NSEQ=10` forced (the 9-slot run's `nseq`) matches the reference
+  exactly, so it is `T`, the rows a pass carries, and not how many sequences the tables hold;
+* **a per-row region or ring misaddressed**: rows 0 and 2 of an alternating run stay bit-identical after *every* layer
+  (`DS4_STEPCHECK=2`), and the shape lines show clean passes (`tr step T 9 pos 64 64 ... seq 0 1 ... 8`).
 
-The next probe is the one that localizes it: `DS4_DUMP_H` (already wired in `forward_serial`) on a serial 8-row and a
-serial 9-row run whose rows are all the *same* prompt, then the first layer whose row-0 residual stream differs - the
-dump has no header, so the caller must track each window's T (a 64-token prompt is read in four windows of 16, then
-the step's passes follow).
+Every per-pass buffer the step touches is `kWin` (16) wide, so a plain overflow is out; what is left is a kernel whose
+*behaviour* changes with T: the grouped expert pass (`moe_win_*`, whose entries are `T * 8` - 48 at 8 rows, 54 at 9),
+`hc_mix_split`, `head_share`'s slabs, or the answer path.  The instrumentation for the next step is the per-layer hash
+of row 0 that `DS4_STEPCHECK>=2` now prints (`tr hhash dev <d> il <l> <hash>`) - the two runs' logs compare layer by
+layer with `work/cmp_hash.py` - but the first attempt printed the shape lines and *no* hashes with `DS4_STEPCHECK=3`,
+i.e. the switch's value did not reach the engine the way it should have; the thing to add next is the *value* in the
+shape line (`tr step T .. check ..`), which closes that loop in one run.
 
