@@ -31,6 +31,8 @@ python3 packaging/collect_libs.py --binary b1103/strata --search $SDK/lib --sear
   --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out $STAGE \
   --data $SDK/lib/rocblas/library=rocblas/library --data $SDK/lib/hipblaslt/library=hipblaslt/library --data-arch gfx1103 > $R/collect.log 2>&1
 st "collected rc=$?"
+python3 packaging/stage_tuning.py --stage $STAGE --archs gfx1103 --rocm $SDK >> $R/stage_tuning.log 2>&1   # hipblaslt_version in BUILD.json + the matching tuning table
+st "tuning tables rc=$?: $(tail -n 1 $R/stage_tuning.log)"
 mkdir -p $R/components/engine
 python3 packaging/package_engine.py --src $STAGE --backend hip --version 0.1.45 --out $R/components/engine \
   --arch gfx1103 --build-id 322e3fdfb+rocm7.14.1-gfx110X --tree > $R/package.log 2>&1

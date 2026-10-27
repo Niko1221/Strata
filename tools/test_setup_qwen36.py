@@ -101,18 +101,18 @@ class InstallOwnPath(unittest.TestCase):
                     (eng / setup.HVEXE).write_text("x")
             return self.root / "llama", eng, {"version": "0.1.44"}, ["/libs"], gpu, vision
 
-        def write_cfg(path, cfg, source=None):
+        def write_cfg(path, cfg, source=None, explicit=None):
             self.cfg = cfg
             self.calls.append(("config", path.name))
 
         patches = [mock.patch.object(setup, "download", lambda url, dst, what=None: self.calls.append(("get", url, dst))),
-                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.calls.append(("sha", s.name))),
+                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.calls.append(("sha", s.name))),
                    mock.patch.object(setup, "free_gb", lambda p: 500.0),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
                    mock.patch.object(setup, "engine_step", engine_step),
                    mock.patch.object(setup, "engine_families", lambda e: self.families),
                    mock.patch.object(setup, "run", lambda cmd, **k: self.calls.append(("run", cmd))),
-                   mock.patch.object(setup, "data_folder", lambda d: (self.root / "data", [])),
+                   mock.patch.object(setup, "data_folder", lambda d, *a, **k: (self.root / "data", [])),
                    mock.patch.object(setup, "write_setup_config", write_cfg),
                    mock.patch.object(setup, "write_run_script", lambda tag, p, port, o=True: self.root / f"run-{tag}.sh"),
                    mock.patch.object(setup, "recommend_pool_workers", lambda a: a),

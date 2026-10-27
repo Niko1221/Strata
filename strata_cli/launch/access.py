@@ -309,6 +309,50 @@ def new_key() -> str:
     return "sk-strata-" + secrets.token_urlsafe(24)
 
 
+def _config_key(path) -> str | None:
+    try:
+        key = str(json.loads(Path(path).read_text(encoding="utf-8-sig")).get("api_key") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        return None
+    return key if key and key.lower() != "none" else None
+
+
+def kept_key(name: str | None = None) -> str | None:
+    """The API key an earlier launch already made, so a restart does not invalidate the apps set up with it (E05/G01): the key in this launch's
+    own config (profile `launch-<name>`), the saved preset's, else the one in the newest launch config. None when there is none; `--new-key`
+    and the key button are the only ways to rotate it."""
+    try:
+        from strata_control import profiles
+        from strata_cli.launch import settings as S, store
+        if name:
+            try:
+                prof, _rev = profiles.load("launch-" + S.slug(name))
+                key = _config_key(prof.get("source_config"))
+                if key:
+                    return key
+            except Exception:                                  # noqa: BLE001 - no such profile yet
+                pass
+            preset = store.load(name, missing_ok=True)
+            if preset and preset.api_key:
+                return preset.api_key
+        newest, found = -1.0, None
+        for row in profiles.list_profiles():
+            if not row["id"].startswith("launch-"):
+                continue
+            key = _config_key(row["source_config"])
+            if not key:
+                continue
+            try:
+                stamp = Path(row["source_config"]).stat().st_mtime
+            except OSError:
+                continue
+            if stamp > newest:
+                newest, found = stamp, key
+        return found
+    except Exception:                                          # noqa: BLE001 - never block a launch over the lookup
+        return None
+
+
 def mask_key(key: str | None) -> str:
     if not key:
         return "off"
@@ -376,7 +420,7 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
         stop_tunnel(name)
         return None, ("The Cloudflare tunnel did not come up in time. Check your internet connection and try again; "
                       "the server itself is running and still works on this computer.")
-    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server, so keep the API key on." + (" " + note if note else "")
+    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server; an API key keeps others out." + (" " + note if note else "")
 
 
 def tunnel_info(name: str) -> dict | None:

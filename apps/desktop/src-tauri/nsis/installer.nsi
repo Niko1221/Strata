@@ -168,7 +168,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
-; Strata's look and words: the app's light surface and ink, short copy, no directory page, straight on to the progress.
+; Strata's look and words: the app's light surface and ink, short copy. The install folder page is shown on a first or manual install (#3186 #3190: C: can be short on space) and
+; skipped in an update (passive), which goes on into the folder the earlier install wrote to the registry.
 !define MUI_BGCOLOR "F9FAFB"
 !define MUI_TEXTCOLOR "171B1E"
 !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
@@ -421,8 +422,19 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
+; 5. Choose install directory page. The app is installed for this user only (no administrator), so the folder must be one the
+; user can write to: another drive (D:\Strata) or a folder in the profile, not Program Files. An update (passive: the app's own
+; updater) and a silent install skip it and keep the earlier folder (RestorePreviousInstallLocation).
+!ifdef MUI_PAGE_HEADER_TEXT
+  !undef MUI_PAGE_HEADER_TEXT
+!endif
+!ifdef MUI_PAGE_HEADER_SUBTEXT
+  !undef MUI_PAGE_HEADER_SUBTEXT
+!endif
+!define MUI_PAGE_HEADER_TEXT "Choose where to install Strata"
+!define MUI_PAGE_HEADER_SUBTEXT "Pick another drive if C: is short on space."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Strata is installed into this folder, for your user only (no administrator needed). Models and chats are stored separately, in the data folder you choose inside Strata."
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -435,7 +447,15 @@ Var AppStartMenuFolder
 !endif
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
-; 7. Installation page
+; 7. Installation page (a page macro uses up the header texts, so they are set again here)
+!ifdef MUI_PAGE_HEADER_TEXT
+  !undef MUI_PAGE_HEADER_TEXT
+!endif
+!ifdef MUI_PAGE_HEADER_SUBTEXT
+  !undef MUI_PAGE_HEADER_SUBTEXT
+!endif
+!define MUI_PAGE_HEADER_TEXT "Installing Strata"
+!define MUI_PAGE_HEADER_SUBTEXT "Copying the app. You can keep working meanwhile."
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
@@ -681,6 +701,35 @@ SectionEnd
 !macroend
 ; STRATA-MIGRATE-END
 
+; STRATA-STOP-BEGIN
+; Stop what Strata itself started from the install folder (the app, its host, the node runtime, the engine) before files are removed:
+; a running copy keeps its files open, so the folder stayed behind after use. Only processes whose image path is inside INSTDIR are
+; stopped; this uninstaller's own process and any program elsewhere are left alone.
+!macro StrataStopOwnProcesses INSTALLDIR
+  System::Call 'kernel32::SetEnvironmentVariableW(w "STRATA_INSTDIR", w "${INSTALLDIR}")'
+  System::Call 'kernel32::GetCurrentProcessId()i.r9'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "STRATA_SELFPID", w "$9")'
+  ; the installer is a 32-bit program, so plain powershell.exe is the 32-bit one, which cannot read the image path of a 64-bit process: use the 64-bit one
+  StrCpy $8 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists $8 +2 0
+    StrCpy $8 "powershell.exe"
+  nsExec::Exec '"$8" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:STRATA_INSTDIR).TrimEnd([char]92) + [char]92; $$ids = @(); $$ids += Get-Process -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and [IO.Path]::GetFullPath($$_.Path).StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $$_.Id }; try { $$ids += Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $$_.ExecutablePath -and [IO.Path]::GetFullPath($$_.ExecutablePath).StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $$_.ProcessId } } catch {}; $$ids | Sort-Object -Unique | Where-Object { $$_ -ne [int]$$env:STRATA_SELFPID } | ForEach-Object { Stop-Process -Id $$_ -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 1500"'
+  Pop $9
+!macroend
+; STRATA-STOP-END
+
+; STRATA-CLEAN-BEGIN
+; The app writes into its own folders while it runs (Python bytecode caches under control\, for one), and the file-by-file delete below does not know them,
+; so those folders stayed behind with a few dozen files. These four folders hold only what the installer put there and what the app made there;
+; user data is never in them (it lives in the data folder), and the install folder itself is still removed with a plain RMDir.
+!macro StrataRemoveAppFolders INSTALLDIR
+  RMDir /r "${INSTALLDIR}\control"
+  RMDir /r "${INSTALLDIR}\host"
+  RMDir /r "${INSTALLDIR}\node"
+  RMDir /r "${INSTALLDIR}\harness"
+!macroend
+; STRATA-CLEAN-END
+
 Section Install
   SetOutPath $INSTDIR
 
@@ -827,6 +876,7 @@ Section Uninstall
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
+  !insertmacro StrataStopOwnProcesses "$INSTDIR"
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Delete the app directory and its content from disk
@@ -858,6 +908,8 @@ Section Uninstall
     ${EndIf}
   {{/each}}
 
+
+  !insertmacro StrataRemoveAppFolders "$INSTDIR"
 
   ; Delete uninstaller
   Delete "$INSTDIR\uninstall.exe"

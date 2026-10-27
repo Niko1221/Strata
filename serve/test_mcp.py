@@ -326,7 +326,10 @@ class ToolLoop(unittest.TestCase):
         self.assertNotIn("fake__echo", self.engine.prompt_text(0))
         cs = self.chunks(text)
         self.assertFalse([c for c in cs if "strata_mcp" in c])
-        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "tool_calls")   # returned to the client as always
+        # #3075: a request that declared no tools gets no tool call back; the call is the text it was written as
+        self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertFalse([tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []])
+        self.assertIn("<function=fake__echo>", "".join(c["choices"][0]["delta"].get("content") or "" for c in cs))
         self.assertEqual(len(self.engine.prompts), 1)
         self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
         for req in ({"strata_mcp": "yes"}, {"strata_mcp": 1}):         # only a real true opts in

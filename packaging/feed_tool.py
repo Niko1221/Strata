@@ -156,13 +156,13 @@ def _tree(folder: Path, *, links: bool = False) -> list[tuple[str, Path]]:
     return found
 
 
-def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str = "engine/") -> dict:
+def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str = "engine/", prefix: str = "strata-engine") -> dict:
     """Archive a (signed) engine package folder and return its feed entry. The archive holds the folder's files at its root."""
     folder = Path(folder)
     component = ec.read_manifest(folder)
     files = _tree(folder)
     installed = sum(p.stat().st_size for _, p in files)
-    name = f"strata-engine-{folder.name}.{fmt}"
+    name = f"{prefix}-{folder.name}.{fmt}"        # prefix strata-dsv41 for the separate DeepSeek engine packages
     archive = Path(out) / name
     _write_archive(files, archive, fmt, component.entrypoint)
     entry = {"version": component.version, "platform": component.platform, "backend": component.backend,
@@ -190,7 +190,7 @@ def pack_control(folder: Path, out: Path, *, version: str, platform: str, fmt: s
 
 def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", engine_dir: Path | None = None,
                control_dir: Path | None = None, app_json: Path | None = None, expires_days: int | None = None,
-               now: dt.datetime | None = None) -> dict:
+               now: dt.datetime | None = None, dsv41_dir: Path | None = None) -> dict:
     now = now or dt.datetime.now(dt.timezone.utc)
     install_manifest = ""
     document: dict = {"schema_version": feedmod.SCHEMA_VERSION, "feed": "strata-updates", "channel": channel,
@@ -199,6 +199,9 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     if engine_dir:
         document["engine"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
                                            for p in sorted(Path(engine_dir).glob("*.entry.json"))]}
+    if dsv41_dir:
+        document["dsv41"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
+                                          for p in sorted(Path(dsv41_dir).glob("*.entry.json"))]}
     if control_dir:
         entries = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(control_dir).glob("*.entry.json"))]
         versions = {e["version"] for e in entries}
@@ -307,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--out", type=Path, required=True)
     pe.add_argument("--format", choices=feedmod.FORMATS, default="tar.gz")
     pe.add_argument("--url-prefix", default="engine/", help='where the archive sits relative to the feed ("" for flat GitHub release assets)')
+    pe.add_argument("--prefix", default="strata-engine", help="archive name prefix (strata-dsv41 for the DeepSeek engine packages)")
     pc = sub.add_parser("pack-control")
     pc.add_argument("folder", type=Path)
     pc.add_argument("--out", type=Path, required=True)
@@ -320,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--sequence", type=int, required=True)
     bf.add_argument("--channel", default="stable")
     bf.add_argument("--engine", type=Path)
+    bf.add_argument("--dsv41", type=Path, help="folder of the DeepSeek engine packages' .entry.json files (feed member dsv41)")
     bf.add_argument("--control", type=Path)
     bf.add_argument("--app-json", type=Path)
     bf.add_argument("--expires-days", type=int)
@@ -344,16 +349,16 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "sign-package":
         print("manifest sha256", sign_package(a.folder, _load_key(a.key)))
     elif a.cmd == "pack-engine":
-        entry = pack_engine(a.folder, a.out, a.format, url_prefix=a.url_prefix)
+        entry = pack_engine(a.folder, a.out, a.format, url_prefix=a.url_prefix, prefix=a.prefix)
         print(json.dumps({k: entry[k] for k in ("version", "backend", "variant", "size", "sha256", "manifest_sha256")}, indent=1))
     elif a.cmd == "pack-control":
         entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "platform", "size", "sha256")}, indent=1))
     elif a.cmd == "build-feed":
         doc = build_feed(a.out, key=_load_key(a.key), sequence=a.sequence, channel=a.channel, engine_dir=a.engine,
-                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days)
+                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41)
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
-              f"control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
+              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
     elif a.cmd == "set-app-platform":
         url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
         entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,

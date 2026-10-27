@@ -523,3 +523,15 @@ async function demoCompletion({ message, modelLabel, onFrame, signal, engine, ca
   onFrame({ type: 'done', tokensIn: promptTokens, tokensOut: emitted, tps, durationMs, demo: true, usageSource: 'demo' });
   return { tokensIn: promptTokens, tokensOut: emitted, durationMs, tps, usageSource: 'demo' };
 }
+
+/**
+ * The start-up line "inference · ...". The worker that serves a model is only running once a model is loaded, so on a restart nothing answers
+ * at the worker's address even though the engine is installed and usable; the line says that instead of "No Strata engine".
+ * `engine` is Control's answer (null when there is no Control, as in a source checkout).
+ */
+export function inferenceLine({ backend, engine = null, settled = true }) {
+  if (!settled) return 'unpacking the bundled engine… (about a minute the first time)';
+  if (backend?.kind !== 'unavailable' || !engine) return backend?.name ?? 'No Strata engine';
+  if (engine.usable) return `Strata engine${engine.engine?.version ? ' ' + engine.engine.version : ''} is installed; no model is loaded yet`;
+  return engine.notice ? `No Strata engine for this PC. ${engine.notice}` : backend.name;
+}

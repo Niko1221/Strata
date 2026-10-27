@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
         else if (a == "--version") {
 #ifdef STRATA_VISION_HIP
             std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
+#elif defined(STRATA_VISION_METAL)
+            std::printf("strata-vision metal\n");
+#elif defined(STRATA_VISION_SYCL)
+            std::printf("strata-vision sycl (Intel GPU)\n");
 #else
             std::printf("strata-vision\n");
 #endif
@@ -137,9 +141,14 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
-#ifdef STRATA_VISION_HIP
+#if defined(STRATA_VISION_HIP) || defined(STRATA_VISION_SYCL)
+#ifdef STRATA_VISION_SYCL
+#define STRATA_VISION_BUILT_FOR "Intel GPUs"
+#else
+#define STRATA_VISION_BUILT_FOR STRATA_VISION_HIP_ARCHS
+#endif
     if (gpu) {
-        // The AMD GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
+        // The AMD / Intel GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
         // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
         // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
         bool have_gpu = false;
@@ -148,15 +157,34 @@ int main(int argc, char** argv) {
             have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
         }
         if (!have_gpu) {
-            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_HIP_ARCHS);
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_BUILT_FOR);
             std::fflush(stdout);
             return 3;
         }
+#ifdef STRATA_VISION_HIP
         const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
         if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
             !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
             std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)\n", g_gfx.front().c_str(),
                         STRATA_VISION_HIP_ARCHS);
+            std::fflush(stdout);
+            return 3;
+        }
+#endif
+    }
+#endif
+#ifdef STRATA_VISION_METAL
+    if (gpu) {
+        // The Mac: the same program reads on the GPU (--gpu, ggml's Metal backend) or on the CPU.  With --gpu and no Metal device (a
+        // virtual machine without a GPU, say), mtmd would quietly use the CPU, which reads a picture in ~50 s: say so instead, and
+        // the server starts the program again without --gpu (serve/server.py, Vision._start) with one log line.
+        bool have_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        }
+        if (!have_gpu) {
+            std::printf("ERR this Mac has no Metal GPU for the picture reader\n");
             std::fflush(stdout);
             return 3;
         }
@@ -244,6 +272,11 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count());
+        // I7 (#3690): a picture that became 93,700 image tokens under --max-tokens 1024. The limit is not applied by this build of mtmd for
+        // this model, and the log line above is the evidence to ask for.
+        if (max_tokens > 0 && warm_tokens > max_tokens + max_tokens / 8)
+            std::fprintf(stderr, "strata-vision: WARNING the warm-up picture became %d image tokens, over the limit of %d (--max-tokens): "
+                                 "the limit is not applied for this model; pictures over it are refused\n", warm_tokens, max_tokens);
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
     }
@@ -280,6 +313,10 @@ int main(int argc, char** argv) {
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
             const int nx = (int) last.x + 1, ny = (int) last.y + 1;
             if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
+            // never silently produce many times the budget (I7, #3690): over the limit (a rounding margin of an eighth) the picture is refused
+            if (err.empty() && max_tokens > 0 && n > max_tokens + max_tokens / 8)
+                err = "the picture became " + std::to_string(n) + " image tokens, over the limit of " + std::to_string(max_tokens) +
+                      " (vision.max_tokens); send a smaller picture or raise the limit";
             const float* embd = mtmd_get_output_embd(ctx);
             FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;
             if (err.empty() && !f) err = "cannot write " + out;

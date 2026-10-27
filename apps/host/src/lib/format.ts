@@ -128,3 +128,6 @@ export function formatModelName(model: {
 export function userError(message: string): string {
     return message.replace(/^\s*Fixture:\s*/i, '').replace(/^./, c => c.toUpperCase());
 }
+
+/** Decimal megabytes (1 MB = 1,000,000 bytes, at least 1): the same figure as the Terminal and the release page. The only size helper in MB; no binary units. */
+export const megabytes = (bytes: number) => Math.max(1, Math.round(bytes / 1_000_000));

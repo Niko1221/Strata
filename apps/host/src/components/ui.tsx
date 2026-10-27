@@ -128,6 +128,7 @@ export function Seg<T extends string>({ value, options, onChange, ariaLabel, pan
     options: {
         value: T;
         label: string;
+        icon?: IconName;
         title?: string;
         disabled?: boolean;
     }[];
@@ -150,7 +151,7 @@ export function Seg<T extends string>({ value, options, onChange, ariaLabel, pan
                 onChange(options[next].value);
                 (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
             }} title={tr(o.title)} onClick={() => onChange(o.value)}>
-          {tr(o.label)}
+          {tr(o.icon ? <Icon name={o.icon}/> : null)}{tr(o.label)}
         </button>)))}
     </div>);
 }
@@ -383,7 +384,7 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
     </>);
 }
 /** One modal surface for confirmations and narrow-screen inspectors. */
-export function Dialog({ open, title, onClose, children, actions, headerActions, compact = false, sheet = false, wide = false, hideTitle = false, className }: {
+export function Dialog({ open, title, onClose, children, actions, headerActions, compact = false, sheet = false, wide = false, hideTitle = false, className, noClose = false }: {
     open: boolean;
     title: ReactNode;
     onClose: () => void;
@@ -395,6 +396,8 @@ export function Dialog({ open, title, onClose, children, actions, headerActions,
     wide?: boolean;
     hideTitle?: boolean;
     className?: string;
+    /** No close button: the person must use the dialog's own buttons (a move that is running). */
+    noClose?: boolean;
 }) {
     const ref = useRef<HTMLElement>(null);
     const id = useId();
@@ -417,7 +420,7 @@ export function Dialog({ open, title, onClose, children, actions, headerActions,
     return createPortal(<div className="dialog-layer">
     <div className="dialog-scrim" onClick={onClose} aria-hidden="true"/>
     <section ref={ref} className={cx(`${sheet ? 'dialog-surface dialog-surface--sheet' : 'dialog-surface'}${wide ? ' dialog-surface--wide' : ''}${compact ? ' dialog-surface--compact' : ''}`, className)} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
-      <header className="dialog-head"><h2 className={hideTitle ? 'sr-only' : 'h3'} id={id}>{tr(title)}</h2><div className="dialog-head__actions">{tr(headerActions)}<IconBtn name="x" title={typeof title === 'string' ? tr("Close {0}", [title]) : tr("Close")} onClick={onClose}/></div></header>
+      <header className="dialog-head"><h2 className={hideTitle ? 'sr-only' : 'h3'} id={id}>{tr(title)}</h2><div className="dialog-head__actions">{tr(headerActions)}{noClose ? null : <IconBtn name="x" title={typeof title === 'string' ? tr("Close {0}", [title]) : tr("Close")} onClick={onClose}/>}</div></header>
       <div className="dialog-body">{tr(children)}</div>
       {tr(actions ? <footer className="dialog-actions">{tr(actions)}</footer> : null)}
     </section>
@@ -515,18 +518,20 @@ export function MetricGrid({ children, min = 200 }: {
     </div>);
 }
 /** Shared, announced error with a cause and a concrete recovery action. */
-export function ErrorNotice({ message, next, action, onRetry, detail }: {
+export function ErrorNotice({ message, next, action, onRetry, detail, secondary }: {
     message: string;
     next?: string;
     action?: string;
     onRetry?: () => void;
     detail?: string;
+    /** A second way out, beside the first (a context error offers two). */
+    secondary?: { label: string; onClick: () => void };
 }) {
     // A known failure is shown as a sentence and a next step; the original text stays under Details for experts.
     const plain = plainFailure(message);
     const known = plain.kind !== 'plain';
     const nextStep = known ? (plain.next ? tr(plain.next) : next) : next;
     const raw = detail ?? (known ? plain.detail : undefined);
-    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(known ? plain.message : userError(message))}</strong>{tr(nextStep ? <p>{tr(nextStep)}</p> : null)}{tr(raw ? <details className="error-detail"><summary className="small">{tr("Details")}</summary><pre className="small muted">{raw}</pre></details> : null)}</div>{tr(onRetry ? <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn> : null)}</div>;
+    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(known ? plain.message : userError(message))}</strong>{tr(nextStep ? <p>{tr(nextStep)}</p> : null)}{tr(raw ? <details className="error-detail"><summary className="small">{tr("Details")}</summary><pre className="small muted">{raw}</pre></details> : null)}</div>{tr(onRetry ? (secondary ? <div className="row"><Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn><Btn size="sm" variant="ghost" onClick={secondary.onClick}>{tr(secondary.label)}</Btn></div> : <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn>) : null)}</div>;
 }
 export function PreviewBadge() { const demo = useStore(s => s.library?.mode === 'simulated'); return demo ? <span className="preview-badge">{tr("Preview build")}</span> : null; }

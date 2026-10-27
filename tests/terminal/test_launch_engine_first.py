@@ -24,6 +24,14 @@ UNUSABLE = {"usable": False, "engine": None, "notice": "No engine for this PC wa
                                                        "The app never downloads an engine while it starts or serves."}
 
 
+def qwen_catalog():
+    """A catalog stand-in for a Qwen model: since 0.2.4 the runner asks it whether the family is DeepSeek (which has its own engine and skips this step);
+    a bare Mock answers yes to everything."""
+    cat = mock.Mock()
+    cat.strata.multi_family.return_value = False
+    return cat
+
+
 class FakeProc:
     def __init__(self, events: list[dict], code: int = 0):
         self.stdout = iter(json.dumps(e) + "\n" for e in events)
@@ -42,7 +50,7 @@ def update_events(status: str, note: str = "", code: int = 0) -> list[dict]:
 
 
 def runner(spawned: list) -> Runner:
-    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=mock.Mock(), emit=lambda e: None)
+    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=qwen_catalog(), emit=lambda e: None)
     r.check_cancel = lambda: None
     return r
 
@@ -58,7 +66,7 @@ class EngineBeforeModel(unittest.TestCase):
         """ensure_engine() like run_ensure, returning (spawns, error or None, the runner with .events)."""
         spawns: list = []
         seen: list = []
-        r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=mock.Mock(), emit=seen.append,
+        r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=qwen_catalog(), emit=seen.append,
                    confirm=confirm, assume_yes=assume_yes)
         r.events = seen
         r.check_cancel = lambda: None
@@ -95,6 +103,21 @@ class EngineBeforeModel(unittest.TestCase):
         self.assertIn("The model will download, but it may not run until you install the right engine (next step:", warning)
         self.assertIn(NO_ENGINE_STEP, warning)
         self.assertNotIn("The app never downloads", warning)          # not the generic line
+
+    def test_no_graphics_card_is_said_plainly_with_no_feed_address(self):
+        report = dict(UNUSABLE, backend=None)
+        spawns, err, r = self.run_ensure_runner([report, report], update_events("none-for-this-pc"))
+        self.assertIsNone(err)
+        self.assertTrue(r.engine_problem.startswith("no graphics card that Strata can use was found"))
+        text = r.events[-1].text
+        self.assertIn("Strata needs an NVIDIA or AMD graphics card", text)
+        self.assertNotIn("--feed", text)
+        self.assertNotIn("<address>", text)
+        self.assertNotIn("--feed", no_engine_final(r.engine_problem))
+
+    def test_the_other_no_engine_texts_do_not_ask_for_a_feed_address_either(self):
+        self.assertNotIn("<address>", NO_ENGINE_STEP)
+        self.assertNotIn("--feed", no_engine_warning("The feed has no engine package for this PC."))
 
     def test_wrong_family_names_the_plain_reason_in_the_warning(self):
         spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", WRONG_FAMILY))
@@ -186,7 +209,7 @@ class EngineBeforeModel(unittest.TestCase):
     def test_a_failed_update_still_reports_the_old_message(self):
         spawns, err = self.run_ensure([UNUSABLE], [{"event": "error", "error": {"message": "cannot reach the feed"}}], code=6)
         self.assertEqual(err.code, 6)
-        self.assertIn("cannot reach the feed", err.text)
+        self.assertIn("Cannot reach the feed", err.text)      # (the reason is capitalised where it joins the sentence)
 
 
 class SetupControlStep(unittest.TestCase):
