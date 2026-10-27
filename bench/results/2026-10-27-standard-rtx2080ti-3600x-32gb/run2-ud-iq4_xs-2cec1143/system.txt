@@ -1,0 +1,115 @@
+﻿label: C1
+notes: UD-IQ4_XS on 32GB, setup defaults
+collected: 2026-10-27 08:05:27 +02:00
+
+--- board / BIOS / CPU
+
+
+Manufacturer : ASUSTeK COMPUTER INC.
+Product      : TUF GAMING B550M-PLUS (WI-FI)
+
+
+
+
+
+
+SMBIOSBIOSVersion : 0245
+ReleaseDate       : 5/13/2020 03:00:00
+
+
+
+
+
+
+Name                      : AMD Ryzen 5 3600X 6-Core Processor             
+NumberOfCores             : 6
+NumberOfLogicalProcessors : 12
+
+
+
+
+--- memory sticks
+
+DeviceLocator Manufacturer PartNumber             Capacity Speed ConfiguredClockSpeed
+------------- ------------ ----------             -------- ----- --------------------
+DIMM_A1       Kingston     KHX3200C16D4/8GX     8589934592  3200                 3200
+DIMM_A2       Kingston     KHX3200C16D4/8GX     8589934592  3200                 3200
+DIMM_B1       Kingston     KHX3200C16D4/8GX     8589934592  3200                 3200
+DIMM_B2       Kingston     KHX3200C16D4/8GX     8589934592  3200                 3200
+
+
+
+--- RAM and commit (GB)
+physical total: 31.91  free now: 11.34
+commit limit (RAM + page file): 63.91  free now: 29.48
+page file managed by Windows: False
+
+Name            InitialSize MaximumSize
+----            ----------- -----------
+c:\pagefile.sys       32768       49152
+
+
+
+
+Name            AllocatedBaseSize CurrentUsage PeakUsage
+----            ----------------- ------------ ---------
+C:\pagefile.sys             32768           13        13
+
+
+
+--- disks
+
+DeviceId FriendlyName       MediaType BusType HealthStatus
+-------- ------------       --------- ------- ------------
+0        ST1000DM003-1SB10C HDD       SATA    Healthy     
+1        Netac NVMe SSD 1TB SSD       NVMe    Healthy     
+
+
+
+
+DriveLetter          Size SizeRemaining
+-----------          ---- -------------
+          D  999052181504  511280648192
+          C 1022018928640  183991296000
+
+
+
+--- GPU
+name, driver_version, memory.total [MiB], memory.used [MiB], pcie.link.gen.max, pcie.link.width.max, temperature.gpu
+NVIDIA GeForce RTX 2080 Ti, 621.01, 11264 MiB, 10843 MiB, 3, 16, 52.30
+
+--- Strata processes
+
+Name      Id Path                                                                                  
+----      -- ----                                                                                  
+python 16732 C:\Users\<user>\AppData\Local\Strata\components\control\0.1.51\python\python.exe
+python 16736 C:\Users\<user>\AppData\Local\Strata\terminal\current\python\python.exe         
+
+
+
+--- strata status
+STRATA  Overview    [LIVE]
+[1 Overview]  2 Serving  3 Requests  4 Engine  5 Hardware  6 Logs
+--------------------------------------------------------------------------------
+Model qwen3.8-flash-next-unsloth-ud-iq4_xs  READY
+In flight 0   Slots occupied --/1   Engine waiting --   Pre-admit 0
+Answer speed  -- [engine, -- window]
+Prompt reading -- [reported mean]
+First engine token 29.094 s [last completed, since queue entry]
+Completed     23 [server lifetime]
+
+Hardware
+GPU 0   RTX 2080 Ti          10.8/11.0 GiB        1%    51 C     11 W
+
+Recent requests (finished; identities unavailable in legacy telemetry)
+#1   stop          in 339      out 65       52.4 s
+#2   stop          in 352      out 95       59.9 s
+#3   stop          in 335      out 88       62.4 s
+#4   stop          in 325      out 69       56.5 s
+#5   stop          in 16,390   out 251      196.1 s
+#6   stop          in 16,382   out 77       134.2 s
+#7   stop          in 4,089    out 83       63.1 s
+
+Sample age 0.0 s   Source server-v1
+1-6 views  / filter  Space freeze  r refresh  t theme  ? help  q quit
+
