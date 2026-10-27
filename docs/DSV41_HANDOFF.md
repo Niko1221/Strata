@@ -626,3 +626,8 @@ run repeats), but it rounds differently from a one-token decode, and greedy deco
 is not a per-row defect and not a data race; if the project needs bit-identical tokens above 8 rows as well, the next
 step is the attention-half hash above, not another guess.
 
+**The release gate is green on this tree (20:48).**  `serve.test_server`: **Ran 348 tests in 552.6 s, OK**;
+`batch_probe.py` two slots: **all checks passed**; production restored, `health 200`, supervisor 222731.  The gate ran
+with `build/strata-dsv41.batch` = this tree's build (`build/strata-dsv41.step26`).  So the step, the slot cap and the
+window path's per-row code ship without a regression in anything the suite covers.
+
