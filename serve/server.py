@@ -5982,6 +5982,7 @@ def structured_chunks(chunks, validator):
     """Buffer structured streams so a client never receives unvalidated content."""
     buffered = []
     heartbeat = time.monotonic()
+    event_beat = time.monotonic()
     try:
         for chunk in chunks:
             progress = chunk is not None and "prompt_progress" in chunk
@@ -5989,7 +5990,13 @@ def structured_chunks(chunks, validator):
                 buffered.append(chunk)      # a progress chunk carries no content: there is nothing in it to validate
             if chunk is None or progress or time.monotonic() - heartbeat >= 1:
                 heartbeat = time.monotonic()
-                yield chunk if progress else None
+                if chunk is None and buffered and time.monotonic() - event_beat >= PREFILL_BEAT_S:
+                    # a ping while a long prompt is read: the validation holds content back, but a client that counts
+                    # events (not SSE comments) still needs one now and then - an empty delta carries nothing to validate
+                    event_beat = time.monotonic()
+                    yield {**buffered[0], "choices": [{"index": 0, "delta": {}, "finish_reason": None}]}
+                else:
+                    yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
@@ -7444,11 +7451,20 @@ def make_handler(svc: Service):
                 return self._json(200, anthropic_collect(events))
             self._sse()
             try:
+                last = time.monotonic()
                 for item in events:
                     if item is None:
-                        self.wfile.write(b": keep-alive\n\n")
+                        if time.monotonic() - last >= PREFILL_BEAT_S:
+                            # Anthropic's own ping event, not just the comment: a client's idle timer counts the
+                            # events it parses, and a long prompt read is otherwise minutes of silence (#1619's hole,
+                            # in this dialect)
+                            last = time.monotonic()
+                            self.wfile.write(b'event: ping\ndata: {"type": "ping"}\n\n')
+                        else:
+                            self.wfile.write(b": keep-alive\n\n")
                     else:
                         name, e = item
+                        last = time.monotonic()
                         self.wfile.write(f"event: {name}\n".encode() + b"data: " +
                                          json.dumps(e, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()

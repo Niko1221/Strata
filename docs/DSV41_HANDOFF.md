@@ -729,6 +729,19 @@ for minutes while the other's prompt read crosses 32K; the first attempt was inv
 The interleaving found earlier (two long prompts, ~500 tok/s, ~450 s) still stands as the *other* reason those requests
 died; the heartbeat and one stream together remove both.
 
+**The other two dialects, same hole, measured after the fix (23:24).**  `/v1/messages` sent only comments while a prompt
+was read; it now sends Anthropic's own `event: ping` every `PREFILL_BEAT_S`, and `structured_chunks` (a request with a
+`response_format`) now lets an empty delta through instead of only the comment it had buffered.  A 45K-token read on
+each:
+
+| dialect | first byte | comments | real events | largest gap |
+|---|---:|---:|---:|---:|
+| `/v1/messages` | 0.1 s | 422 | 5 pings + 18 data | 10.0 s |
+| `/v1/chat/completions` + json_schema | 10.2 s (a queue wait) | 6 | 4 data | - |
+
+(The structured request's 10 s first byte is the single-turn queue, not the read; it came right after the Anthropic
+request.)  Both changes are in commit `0e16735`'s follow-up.
+
 **M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
 `/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
 hold one, the M6 fix - and the page drew exactly that: the `4 slot(s) - 4 asked` header, four lit slot cells, the
