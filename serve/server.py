@@ -4759,6 +4759,37 @@ class Service:
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
+        no_gen_kw = {**kwargs, "add_generation_prompt": False}
+        cur_prefix_no_gen = self.render_prompt(marked, marked_tools, no_gen_kw)
+        if changed:
+            cur_prefix_no_gen, _ = unmark_think_literals(cur_prefix_no_gen, self.literals)
+        last_ids = getattr(self, "_last_conv_ids", None)
+        last_n_msgs = getattr(self, "_last_conv_n_msgs", 0)
+        last_prefix_before = getattr(self, "_last_conv_prefix_before_asst", None)
+        if (store and last_ids and last_n_msgs > 0 and len(messages) > last_n_msgs
+                and messages[last_n_msgs].get("role") == "assistant"):
+            prev_before = self.render_prompt(marked[:last_n_msgs], marked_tools, no_gen_kw)
+            if changed:
+                prev_before, _ = unmark_think_literals(prev_before, self.literals)
+            if prev_before == last_prefix_before:
+                prefix_thru_asst = self.render_prompt(marked[:last_n_msgs + 1], marked_tools, no_gen_kw)
+                if changed:
+                    prefix_thru_asst, _ = unmark_think_literals(prefix_thru_asst, self.literals)
+                if prompt.startswith(prefix_thru_asst):
+                    cut = len(prefix_thru_asst)
+                    suffix_str = prompt[cut:]
+                    if plain:
+                        sub_plain = tuple((max(0, s - cut), e - cut) for s, e in plain if e > cut)
+                        suffix_ids = self.tok.encode(suffix_str, parse_special=True, plain=sub_plain)
+                    else:
+                        suffix_ids = self.tok.encode(suffix_str, parse_special=True)
+                    out_ids = list(last_ids) + list(suffix_ids)
+                    self._pending_conv_n_msgs = len(messages)
+                    self._pending_conv_prefix_before_asst = cur_prefix_no_gen
+                    return out_ids
+        if store:
+            self._pending_conv_n_msgs = len(messages)
+            self._pending_conv_prefix_before_asst = cur_prefix_no_gen
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
@@ -5556,6 +5587,13 @@ class Service:
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                                 print(f"[strata] raw ids: {list(raw_ids)}", flush=True)
+                            if (finish == "stop" and not cancel.is_set() and raw_ids
+                                    and raw_ids[-1] in self.stop_ids
+                                    and getattr(self, "_pending_conv_n_msgs", 0) > 0):
+                                nl_ids = self.tok.encode("\n", parse_special=False)
+                                self._last_conv_ids = list(ids) + list(raw_ids) + list(nl_ids)
+                                self._last_conv_n_msgs = self._pending_conv_n_msgs
+                                self._last_conv_prefix_before_asst = self._pending_conv_prefix_before_asst
                         st["busy"] = False
                         st.pop("tail", None)                     # #212: the answer's end is not kept once it is done
                         st.pop("tool", None)
