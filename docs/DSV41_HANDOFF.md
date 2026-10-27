@@ -540,3 +540,28 @@ pass - a slot's own rate collapses as the slots multiply (54.5, ~14, 3.2) while 
 sixteen slots on this box.  That is the whole argument for the window-path step: at ~16 ms a step instead of 200 the
 same sixteen slots aggregate several times this, and the shape does not change - one pass's expert read over sixteen
 rows is the ceiling.
+
+## Where the work stands (2026-10-27, 17:45) - a fresh session starts here
+
+**Green and committed.**  `7ff3616` (the step on the chunk path: serve-loop step, `seq_pos`, the row hand-off,
+`--slot-context`, the fail-fast), `608280c` + `ab225e3` (the measurements and the drift's explanation), `bf3fe4e` (the
+window path takes a step's rows: the plumbing), `48d3ff2` (the window path's `layer()` takes them: rope, windows,
+compressors, index keys).  The release gate is green on this tree: **348 tests OK**, the batch probe's **all checks
+passed**, production restored (`health 200`).  Nothing is pushed.
+
+**What works, measured** (32K a slot, 1M max-context, greedy, DSpark off, 96 tokens a slot): the step at 1/2/4/8/16
+slots is 5.1/5.0/5.0/5.0/4.0 tok/s a slot and 5.1/9.6/18.4/34.1/**50.1** tok/s in all - against the bursts'
+54.5/~56/43.4; the first tokens all arrive at one instant (16 slots: 6.75 s against the bursts' 0.41 s spread).  At 1M
+without the cap the step is not runnable: 2170 of 4224 experts go to the CPU lane (the tables are 15.4 GB a GPU) and a
+step reads ~27 GB of experts.  A step costs ~200 ms of fixed cost on the chunk path (the per-layer device sync and the
+bounds over the bus) + ~6 ms a row; the window path's token is ~16 ms.  That is why the step's next home is the window
+path, and the numbers it should reach are one pass's expert read over sixteen rows.
+
+**What is left of the window step** (all four sites are in `layer()`/`forward`, and each has a working reference in
+`layer_chunk`'s per-row branch): the indexer's per-row `index_score`/`topk`/`rows_add_i`; the compressed rows' write
+and their writer-side per-row staging (`replicate` and the `sr.x_stage` put); the head's rows (`head_rows_dev` already
+takes T; `n_logits = T` is what a step needs); and `forward_step` itself (per-sequence tokens and `pos += 1`, `h_emb`'s
+rows, `plan_window(0, T, wplan, &rows)`, `forward_par(..., &rows)`), with `Model::forward_rows` taking that arm
+(`DS4_STEP_CHUNK=1` keeping today's chunk path for A/B).  Then: the same seeds through `batch_step_bench.py --ref` (the
+window step should agree with the single-sequence path's tokens - it runs the same kernels), and the 16-slot
+measurement; after that M3's margin (1.15-1.28x, only visible when the experts stream) and the flow's step rows.
