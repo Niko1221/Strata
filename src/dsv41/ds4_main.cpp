@@ -1333,7 +1333,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             // back afterwards (the same bytes Model::slot_save takes) - a 4k-token read no longer holds the model for its
             // whole length.  The decodes get about half the slice's time; a big state (the copies would cost more than
             // they give) and a read with pictures stay on the old path, and so does one with nothing decoding.
-            if (ok && done < total && batch_slots > 0 && pics.empty() && held.empty() && m.pos() <= 32768) {
+            // In live mode the slots' sequences are their own: nothing is saved or loaded, so the 32768-token limit -
+            // which only guards the cost of the save/restore path - does not apply, and a long read no longer stops the
+            // other slots' decoding for its whole length.
+            if (ok && done < total && batch_slots > 0 && pics.empty() && held.empty() && (live || m.pos() <= 32768)) {
                 if (live) {
                     // the slots' sequences are their own: the read's state is not in their way, so they decode for a
                     // while and the read goes on where it stopped (nothing is saved or loaded)

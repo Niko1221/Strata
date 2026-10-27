@@ -696,6 +696,39 @@ measured prefill on it: 4.5K tokens in 6.9 s (646 tok/s), 22K in 17.9 s (**1,240
 inside the client's timeout.  If a 2-slot demo is wanted again, set `STRATA_DS4_ADMIT_SHORT_FIRST=0` in the launcher as
 well so a long read is not interrupted (at the cost of the host experts and a queued second request).
 
+
+## The 300 s stream idle timeout: what it actually was, measured (23:05)
+
+A review of this branch proposed four causes; two were measured on the box and one measured out.  The one that mattered:
+
+**A long prompt read is silent to a client that counts data events.**  A 45K-token read on the single stream:
+
+| build | first byte | SSE comments | `data:` chunks | largest gap between data chunks |
+|---|---:|---:|---:|---:|
+| before | 0.1 s | **434** | 7 | **34.0 s** (= the whole read) |
+| with the fix | 0.1 s | 0 | 12 | **10.0 s** |
+
+The server sent a keep-alive *comment* (`: keep-alive`) on every PP line, but only 7 real `data:` events - one per
+finished step.  A client that resets its idle timer on the events it parses (pi-ai's does: "stream idle timeout after
+300000ms") therefore saw 34 s of silence for 45K tokens, and a 190-223K prompt is 150-450 s of it.  The fix
+(`serve/server.py`, `openai_chunks`'s `ping` branch): when the client did not ask for prompt progress, still emit an
+**empty delta chunk** at most every `PREFILL_BEAT_S = 5` s while the prompt is read (every OpenAI client ignores an
+empty delta).  Measured after: 12 data chunks across the read, largest gap 10 s.
+
+**Measured out: the slot-wait keep-alives.**  With both slots decoding 1200-token answers, a short request waited 36-40 s
+for a seat and received **4 keep-alives on both builds** - the old code's `_take_control` already beats every 10 s while a
+request waits for the control lines, so a request waiting for a *slot* was not silent.  (The `yield None` added to the
+slot-wait loop is harmless and stays, but it is not what was killing the requests.)
+
+**In the tree, not measured: the 32K decode gate.**  `ds4_main.cpp` only let a prompt read stop for the other slots'
+decoding while `m.pos() <= 32768`, a limit that exists for the save/restore path; in live mode the slots have their own
+sequences, so the gate is now `(live || m.pos() <= 32768)`.  The measurement that would show it needs one slot decoding
+for minutes while the other's prompt read crosses 32K; the first attempt was invalidated by the slot cache (the 68K
+"fresh" prompt was answered in 0.9 s from a kept conversation, so nothing was read), and it was not re-run.
+
+The interleaving found earlier (two long prompts, ~500 tok/s, ~450 s) still stands as the *other* reason those requests
+died; the heartbeat and one stream together remove both.
+
 **M6 (the Parallel view) accepted on it.**  With eight clients in flight (two traffic runs overlapping) and four slots,
 `/v1/status` read `slots=[0 busy,1 busy,2 busy,3 busy] busy=4 waiting=4` - `waiting` = in flight minus the slots that
 hold one, the M6 fix - and the page drew exactly that: the `4 slot(s) - 4 asked` header, four lit slot cells, the

@@ -1874,9 +1874,10 @@ class StrataEngine:
                     if slot is None:
                         # a free slot (they free themselves at BDONE, which needs no control lines): the one that holds
                         # the start of this prompt (its conversation's last turn), else the one used longest ago.
-                        # With none free the control lines are given back while waiting: a slot can be held by a read
+                        # with none free the control lines are given back while waiting: a slot can be held by a read
                         # that gave way (BYIELD) and needs them to go on, so waiting with them is a deadlock - long,
                         # long, short at 0.25 s steps under parallel: 2 (ENGINE_REVIEW finding 1, reproduced in 0.1.41).
+                        slot_beat = time.monotonic()
                         while True:
                             deadline = getattr(cancel, "_strata_queue_deadline", None)
                             if deadline is not None and time.monotonic() >= deadline:
@@ -1911,6 +1912,12 @@ class StrataEngine:
                                 if self.pick_slot(prompt) is None:
                                     wait_remaining = deadline - time.monotonic() if deadline is not None else 1.0
                                     self.slot_cv.wait(timeout=min(1.0, max(0, wait_remaining)))
+                            # #1619 for a slot wait: a request that waits here holds no control lines and the engine has
+                            # nothing to say to it, so without this its stream is silent until a slot frees - minutes when
+                            # the slots are decoding long answers, and a client's idle timeout ends the request.
+                            if time.monotonic() - slot_beat >= QUEUE_BEAT_S:
+                                slot_beat = time.monotonic()
+                                yield None
                             if cancel.is_set():
                                 return
                             if not holding:
@@ -5833,6 +5840,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 # chunk sends exactly one PP, that one: a client would see a bar that appears already full.  Such a line is dropped, and
 # the answer's first token ends the progress for the client anyway.
 PP_DONE_TAIL = 64
+PREFILL_BEAT_S = 5.0   # a real (empty) chunk this often while a prompt is read, for clients that ignore SSE comments
 
 
 def prompt_progress(svc: Service):
@@ -5871,12 +5879,20 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
+    beat = time.monotonic()
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
-            yield None if pp is None else {**chunk({}), "prompt_progress": pp}
+            if pp is not None:
+                yield {**chunk({}), "prompt_progress": pp}
+            elif time.monotonic() - beat >= PREFILL_BEAT_S:
+                # A client that resets its idle timer on data events - not on SSE comments - sees silence for as long
+                # as a long prompt takes to read (a 45K-token read is 34 s here, a 190K one minutes); an empty delta
+                # is a real event it can count, and every OpenAI client ignores it.
+                beat = time.monotonic()
+                yield chunk({})
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
