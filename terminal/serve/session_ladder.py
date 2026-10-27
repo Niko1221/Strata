@@ -812,15 +812,25 @@ class SessionLadder:
         return any(self.parent_of.get(sid) for sid in self._file_owners(path))
 
     def _retirement_victim(self) -> str:
-        """Which file an over-cap save retires (child-first, the subagent retention order).  Plain LRU
-        puts the OLDEST file first - under a subagent fleet that is a finished child's multi-GB checkpoint
-        competing with the main's: a child re-prefills a subagent conversation, a main re-prefills its whole
-        context (the expensive restore the ladder exists to avoid), so the victim is the LEAST-RECENT file
-        that is not a main file: an orphan (nothing lives behind it), then a child file.  Only when every
-        file belongs to a main does retirement fall back to the plain least-recent.  The hard cap is
-        unchanged either way: exactly one file goes per over-cap save."""
+        """Which file an over-cap save retires (child-first, then aux-first, then plain LRU).  Plain
+        least-recent is wrong twice over.  Under a subagent fleet it puts a finished child's multi-GB
+        checkpoint in the way of the main's: a child re-prefills a subagent conversation, a main its
+        whole multi-GB context (the expensive restore the ladder exists to avoid).  Under the
+        always-park-current rule an aux-sized CURRENT session earns a checkpoint too, so a 100-token
+        park could evict an older mid - the expensive file, the one whose restore was worth seconds
+        (final review B).  So the victim is the LEAST-RECENT entry that is an orphan (nothing lives
+        behind it to protect) or a child file; failing that, the LEAST-RECENT file whose tracked
+        sessions are all aux-sized (not save_eligible: their re-prefill is cheap).  Only when neither
+        exists does retirement fall back to the plain least-recent.  The hard cap is unchanged either
+        way: exactly one file goes per over-cap save (this is called holding the LADDER LOCK, from
+        _note_file_saved)."""
         for path in self.saved_files:                        # least-recent first
-            if not self._file_owners(path) or self._is_child_path(path):
+            owners = self._file_owners(path)
+            if not owners or self._is_child_path(path):
+                return path
+        for path in self.saved_files:                        # then the aux-sized files
+            owners = self._file_owners(path)
+            if owners and all(not self.tracked[sid].save_eligible for sid in owners):
                 return path
         return self.saved_files[0]
 
@@ -843,7 +853,7 @@ class SessionLadder:
         the same path moves it to the recent end - saves overwrite in place), the session's file_path follows
         it, and the two retention caps run: first the CHILD cap (cfg.retention_max_child_files, oldest child
         first - a fleet never occupies the whole ledger), then the global cfg.retention_max_files cap with
-        _retirement_victim's child-first order.  Each retirement removes the file from disk (one canonical
+        _retirement_victim's child-first, aux-first order.  Each retirement removes the file from disk (one canonical
         file per session; the caps are what bound the big ones) together with that session's tracked state.
         The save also stamps last_save - the TTL anchor the sidecar carries across a restart."""
         if path in self.saved_files:
