@@ -50,6 +50,39 @@ decided per architecture when the engine is built.
 | Dense 2-4 column GEMVs and the head | the interleaved `native_mmvq_il` with a Volta rows table. Opt-in, see below. |
 | Hyper-connection read, up projection | the latency-hidden up kernel. Opt-in, see below. |
 
+## DeepSeek-V4.1-Flash on Volta
+
+The published `strata-dsv41` packages hold CUDA 13 machine code for sm_86, sm_89 and sm_120; a second Linux package, variant `cuda12`,
+holds sm_70 (V100 / Titan V), sm_75, sm_80, sm_86 and sm_89. When the feed carries it, setup and `strata launch` download it on a V100 and
+start it with no build step (the card's `sm_70` is matched against the package's archs). If the release you have does not carry it yet, build
+it with a CUDA 12.x toolkit and the Volta flag (tested with CUDA 12.8 and `gcc-14`):
+
+```sh
+cmake -S . -B build-dsv41-v100 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON \
+      -DSTRATA_EXPERIMENTAL_SM60=ON "-DCMAKE_CUDA_ARCHITECTURES=70-real" \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
+      -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14 \
+      -DSTRATA_GGML_DIR=third_party/llama.cpp
+cmake --build build-dsv41-v100 --target strata-dsv41 -j 24
+```
+
+Then put the binary where Strata looks for it, either as `<install>/engine/strata-dsv41` (next to `strata`) or through
+`STRATA_DSV41_EXE=/path/to/strata-dsv41`; setup and `strata launch` use it instead of downloading a package. The pack (with the
+DSpark drafter and, in 0.2.7, the engine's own vision tower) is built by setup as for any other card.
+
+Measured on 4 x V100-SXM2 (32+32+16+16 GB, sm_70, 248 GB RAM), IQ2_XXS 2.00bpw, 1M context, DSpark on, before the 0.2.7 release
+packaging (0.2.7 source, CUDA 12.8, `sm_70`):
+
+| Prompt | Prefill | Decode |
+| --- | --- | --- |
+| 8K | 392 tok/s | 24.9 tok/s |
+| 32K | 858 tok/s | 27.1 tok/s |
+| 128K | 1,072 tok/s | 23.9 tok/s |
+
+A picture question (red/green test image) was answered correctly with 0.2.7's DeepSeek vision path, about 200 image tokens and
+3.7-8.5 s per picture once warm. This is one machine and one set: treat the numbers as a starting point, not a guarantee.
+
 ## Opt-in switches
 
 None of these is on by default. Each was measured by its contributor on a V100, not by the maintainers.

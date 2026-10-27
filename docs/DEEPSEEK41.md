@@ -158,8 +158,10 @@ The unpacked folder works as well as the archive. The Strata (Qwen) engine is no
 ### Building the engine for your card
 
 The packages hold machine code for these NVIDIA cards (CUDA 13, Windows and Linux): sm_86 (RTX 30), sm_89 (RTX 40) and sm_120 (RTX 50), plus PTX for
-sm_120. If your card is none of these, or you want your own build, compile `strata-dsv41` and put it where Strata looks for it. You need the CUDA toolkit
-(the packages are built with 13.0), a C++ compiler, CMake, Ninja and the llama.cpp checkout Strata pins (`third_party/llama.cpp`).
+sm_120. A Linux package built for CUDA 12, variant `cuda12`, holds sm_70 (V100 / Titan V), sm_75, sm_80, sm_86 and sm_89; it is the package
+setup downloads on a V100 when the feed carries it (a card below sm_86 cannot run the CUDA 13 packages). If your card is none of these, or you
+want your own build, compile `strata-dsv41` and put it where Strata looks for it. You need the CUDA toolkit (13.0 for the release packages,
+12.x for the cuda12 package), a C++ compiler, CMake, Ninja and the llama.cpp checkout Strata pins (`third_party/llama.cpp`).
 
 ```
 cmake -S . -B build-dsv41 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON       "-DCMAKE_CUDA_ARCHITECTURES=89-real" -DSTRATA_GGML_DIR=third_party/llama.cpp
@@ -167,7 +169,12 @@ cmake --build build-dsv41 --target strata-dsv41 -j 8
 ```
 
 Use your card's number in `CMAKE_CUDA_ARCHITECTURES`: 86 for RTX 30, 89 for RTX 40, 120 for RTX 50, or `native` for the cards in this computer. Without the
-option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_dsv41_windows.bat BUILD_DIR` does the same (`DSV41_ARCH` names the cards);
+option a DeepSeek build is made for 86, 89 and 120.
+
+For a V100 (Volta, sm_70), the `cuda12` package is the one to fetch: `strata launch` and setup select it automatically (`feed.select_engine`
+matches its `sm_70` against the card). If the release you have does not carry it, build one with a CUDA 12.x toolkit and
+`-DSTRATA_EXPERIMENTAL_SM60=ON "-DCMAKE_CUDA_ARCHITECTURES=70-real"` (CUDA 13 has no Volta code); `docs/NVIDIA_V100.md` has the full command, a
+measured run on four V100 and how to point Strata at the binary. On Linux, `packaging/build_dsv41_cuda.sh VARIANT=cuda12` takes the same choice. On Windows, `packaginguild_dsv41_windows.bat BUILD_DIR` does the same (`DSV41_ARCH` names the cards);
 on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:
 
 ```
