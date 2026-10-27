@@ -48,6 +48,43 @@ class QueueKeepAlive(unittest.TestCase):
         self.assertIn(b'"finish_reason": "stop"', rest)     # the answer ran once the turn was free
         self.assertEqual(self.svc.status["queued"], 0)
 
+    def _queued_stream(self, path, body):
+        self.svc.fifo.acquire()                           # another request holds the turn
+        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        self.addCleanup(c.close)
+        c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+        return c.getresponse()
+
+    def test_a_queued_chat_stream_gets_empty_deltas_a_client_can_count(self):
+        # a client that resets its idle timer on data events, not on SSE comments: every PREFILL_BEAT_S of waiting (or
+        # reading) is an empty delta, a real event that every OpenAI client ignores
+        with mock.patch.object(server, "PREFILL_BEAT_S", 0.0):
+            r = self._queued_stream("/v1/chat/completions",
+                                    {"stream": True, "messages": [{"role": "user", "content": "hi"}]})
+            beat = b'"delta": {}, "finish_reason": null'
+            seen, t0 = b"", time.monotonic()
+            while seen.count(beat) < 2 and time.monotonic() - t0 < 5:
+                seen += r.fp.readline()
+            self.assertGreaterEqual(seen.count(beat), 2, seen)
+            self.assertNotIn(b'"content": "ok"', seen)    # (still queued: the beats came before any answer)
+            self.svc.fifo.release()
+            rest = r.read()
+        self.assertIn(b'"finish_reason": "stop"', rest)
+        self.assertIn(b"[DONE]", rest)
+
+    def test_a_queued_messages_stream_gets_anthropic_pings(self):
+        with mock.patch.object(server, "PREFILL_BEAT_S", 0.0):
+            r = self._queued_stream("/v1/messages", {"stream": True, "max_tokens": 8,
+                                                     "messages": [{"role": "user", "content": "hi"}]})
+            ping = b'event: ping\ndata: {"type": "ping"}'
+            seen, t0 = b"", time.monotonic()
+            while seen.count(ping) < 2 and time.monotonic() - t0 < 5:
+                seen += r.fp.readline()
+            self.assertGreaterEqual(seen.count(ping), 2, seen)
+            self.svc.fifo.release()
+            rest = r.read()
+        self.assertIn(b"event: message_stop", rest)
+
     def test_a_request_cancelled_while_queued_never_takes_the_turn(self):
         self.svc.fifo.acquire()
         self.addCleanup(self.svc.fifo.release)
