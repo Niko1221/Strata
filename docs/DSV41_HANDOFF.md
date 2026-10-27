@@ -432,3 +432,88 @@ has not landed.  With `DS4_FLOW=0` the same prompt runs (1991 ms against 1993 ms
 layer cache can keep a step's rows.  gdb cannot attach on this box - the container blocks ptrace ("ptrace:
 Inappropriate ioctl for device"), even with gdb installed and through sudo - so the flow has to be bisected with
 prints.  (At 96 tokens the flow is also slower than the batch path: 760 ms against 665 ms of prompt read.)
+
+## The step runs, and the chunk path is the wrong host for it (2026-10-27, 16:00-17:30)
+
+**What the tree has now.**  `STRATA_DS4_STEP=1` (with `STRATA_DS4_BATCH_LIVE`, whose per-sequence state the batched path
+already keeps) gives the serve loop M2's step: every active slot's pending token out (its protocol - `BT`, the
+admission's `DONE`/`BADM`, the end checks), then ONE `forward_rows` pass over all of them (a row a sequence), then a
+`sample` a row - no drafter, a row a token.  Around it:
+
+* `Model::seq_pos(seq)`: the position a slot's own sequence has reached (a step must not read another sequence's).
+* `forward_rows`' embeddings come from `h_emb` (each row its own sequence's token at its own position), not from
+  `state().toks`, which is the *current* sequence's prompt - another slot's.
+* `--slot-context N` / `STRATA_DS4_SLOT_CONTEXT`: the tokens one conversation may hold; the compressed tables are sized a
+  sequence by it (`INFO batch_table_mb_per_seq`: **965 MB at 1M, 30 MB at 32K**), so it is what keeps the experts in
+  VRAM: at 16 slots and 1M the tables cost 15.4 GB a GPU - **2170 of 4224 experts on the CPU lane (21.5 GB)**, against
+  **0** at 32K.
+* the cross-group hand-off for a step's rows (below).
+* a device that fails now ends the run: before, a worker that returned an error left the others waiting for a hand-off
+  that would never come, and the engine hung silently.  **The "step stops at layer 2" of 06:00 and 14:40 was exactly
+  this**: layer 2's step branch refused (`sr.remote` - every multi-GPU run on this box is "each GPU its own layers") and
+  devices 1-3 waited for its rows for ever.  The trace shows it: `tr dev 0 il 2 step block R 2 kv_src 1 ix_src 1 remote
+  1`, then nothing, then `ds4 step: 2 row(s) stopped: the batched step has no cross-group hand-off yet`.
+* `DS4_STEPTRACE=1`: a mark a section of a step's layer - the only stack a container without ptrace has.
+* `tools/dsv41/batch_step_bench.py`: N slots at one context, the first token's latency, the aggregate, the tokens
+  against another run's.
+
+**The cross-group hand-off for a step's rows.**  A step's rows are each at its own position and in its own sequence, so
+the chunk path's contiguous staging (rows `g_first .. g_end`) does not fit.  The owner (member 0 of the `kv_src` layer)
+stages the rows this step completed one at a time (`xfer_put`, four segments a kernel - CKV then its index keys), sets
+the source's flag once with the step's window number, and every reader places each row in *its* table at
+`ckv_at(sr, row, seq[t])` (one `xfer_get` a four segments, the flag waited first) - the same descriptor on both sides
+says which rows, in which order.  The slot is reused a step later, once the readers acknowledged it (`x_ack`, `win - 2`:
+the chunk path's rule, a step a chunk).
+
+**Measured (four L20s, 1M max-context, greedy, DSpark off, 64-token prompts, 96 tokens a slot).**
+
+| run | slots | slot cap | first token | per slot | aggregate | tokens |
+|---|---:|---:|---|---:|---:|---|
+| bursts | 16 | 1M | within 0.42 s (first 7.11 s) | 3.2-3.4 tok/s | 41.2 tok/s | - |
+| bursts | 16 | 32K | within 0.41 s (first 6.75 s) | 3.4-3.6 tok/s | 43.4 tok/s | - |
+| step | 2 | 32K | 0.88 s, both at once | 5.0 tok/s | 9.6 tok/s | differ at token 3 (at 1M: 2.2 tok/s a slot) |
+| step | 8 | 32K | 3.40 s, all at once | 5.0 tok/s | 34.1 tok/s | - |
+| step | 16 | 32K | **6.75 s, all at once** | 4.0 tok/s | **50.1 tok/s** | slot 15 differs at token 1 |
+| step | 16 | 1M | - | - | not run: 2170 host experts, minutes a step | - |
+
+Two things this says:
+
+* **The step does raise the aggregate** - 50.1 against 43.4 tok/s at 16 slots, and all sixteen first tokens at one
+  instant instead of half a second apart - **but only once the experts fit VRAM** (32K a slot).  At 1M the tables take
+  the experts' room and a step reads ~27 GB of experts (16 rows x 6 x 40 layers; the union is smaller, the order the
+  same): the step is not a batched-1M mode, it is a mode for a slot cap.
+* **It is not correct yet.**  The 2-slot run's tokens are the burst path's for the first step and differ from the third
+  token on; at 16 slots slot 15 differs at token 1.  The rows a step writes reach the readers' tables (the hand-off
+  runs, the reads are placed), but something in the per-row write or the staging does not reproduce the burst path's
+  state exactly.  Candidates, in order of suspicion: the index keys' staging (the writer stages them only when its own
+  layer has `ix_src`; a reader with `sr.ik[di]` copies regardless), the ack's parity across a prompt read's even and odd
+  chunks (`win - 2`), and the serve loop's read interleaving, which steps the admitted slots *while* another slot's
+  prompt is read (slot 15 is the last admitted - the only one that differs at token 1).
+
+**Why the chunk host cannot make the step fast.**  A step costs ~200 ms of fixed cost whatever its rows are (2 slots:
+199 ms, 8: 199 ms, 16: 249 ms - ~6 ms a row on top), against the window path's ~16 ms a token.  It is `layer_chunk`'s
+design: a device sync after the routing (the host lane needs the expert bounds), the bounds over the bus, ~40 kernels a
+layer - ~8-11 ms a layer at two rows where `layer()` (the window shape a decode token takes) is ~0.3 ms.  It amortizes
+with rows, which is why sixteen slots is where it wins, but the fixed 200 ms is paid on every token of every slot.
+**The step has to live in the window path** (`forward`/`layer`, the row table `ds4_batch_attn.hpp` was written for): the
+same single pass, no host syncs, and the path whose experts the *flow* streams - which is where the aggregate can move.
+That is M2's remaining piece and the next milestone.
+
+**M3 is the step's own routing.**  `route` runs once for the step's T rows, one `moe_sort`, one scatter a VRAM slot and
+one read a streamed expert - a step already reads an expert once for every slot that picked it, so the "grouped MoE" is
+not a second kernel: it is what a step's pass does.  The measured routing overlap (25.5-32.7 %) bounds what it buys at
+1.15-1.28x, which is the margin the window-path step would collect on top.
+
+**The flow still deadlocks on a step's rows** (`flow_layer`'s staging event: the pump stops on an item whose layer-cache
+hand-off has not landed); `run_dev_chunks`' `FlowGuard` keeps a step on the batch streaming.  The window step will need
+the flow to learn a step's rows, or a slot cap whose experts all fit VRAM.
+
+**Next, in order.**
+
+1. The window-path step: per-row positions and sequences in `forward`/`layer` (`finish`'s `pos_rows`, `AttnRows` gen 0,
+   the per-sequence rings, compressors and tables are in), the flow's rows for it, then the same measurements - the
+   fixed cost a step should pay is the window's ~16 ms, so sixteen slots' aggregate is one pass's expert read over ~16
+   rows.
+2. The correctness of the step's rows: the same tokens as the bursts, bit for bit, at 2 and 16 slots (the harness is
+   `batch_step_bench.py --ref`).
+3. Then M3's margin (1.15-1.28x) and the flow.
