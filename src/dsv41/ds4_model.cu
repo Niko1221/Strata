@@ -1088,8 +1088,8 @@ struct Model::Impl {
     bool cc_fill = false;             // (DS4_CACHE_CARD_FILL=0: a freed slot stays empty)
     int cc_inflight = 0;              // refills queued or being copied
     // the swaps' pace and bar: a scan every DS4_CARD_EVERY tokens, a CPU-lane expert in past heat x DS4_CARD_MARGIN + DS4_CARD_BONUS
-    const int cc_every = std::max(1, (int) env_f("DS4_CARD_EVERY", 16.0f));
-    const float cc_margin = env_f("DS4_CARD_MARGIN", 2.0f), cc_bonus = env_f("DS4_CARD_BONUS", 4.0f);
+    const int cc_every = std::max(1, (int) env_f("DS4_CARD_EVERY", 1.0f));
+    const float cc_margin = env_f("DS4_CARD_MARGIN", 1.25f), cc_bonus = env_f("DS4_CARD_BONUS", 1.0f);
     int64_t cc_tokens = 0;
     size_t cc_scan = 0;               // the layer the next scan starts at
     static constexpr int kMaxCardMoves = 8;   // CUDA1's swaps in flight at most (the freed slots' refills not counted)
