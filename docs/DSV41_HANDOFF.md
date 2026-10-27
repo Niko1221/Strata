@@ -631,3 +631,31 @@ step is the attention-half hash above, not another guess.
 with `build/strata-dsv41.batch` = this tree's build (`build/strata-dsv41.step26`).  So the step, the slot cap and the
 window path's per-row code ship without a regression in anything the suite covers.
 
+
+## 1M with no slot cap: the flow streams a step, and the grouped routing pays where the experts go to the host (21:00)
+
+`--slot-context 1048576`, 64-token prompts, 32 tokens a slot, the window path's step (`build/strata-dsv41.step26`):
+
+| 1M, no cap | bursts | step | a slot: bursts -> step | host experts |
+|---|---:|---:|---|---:|
+| 2 slots | 31.3 | **39.4** (+26 %) | 15.7 -> 19.7 | 125 (3 %) |
+| 8 slots | 31.0 | **49.1** (+58 %) | 7.1 -> 18.6 (2.6x) | 984 (23 %) |
+| 16 slots | - | not runnable | - | 2170 (51 %, a pass reads ~27 GB) |
+
+* **flow+step at 1M works**: the 2-slot step with the flow on gives 39.4 tok/s and *the reference's tokens, bit for bit*;
+with `DS4_FLOW=0` 39.5 and the same tokens - so on the window path the flow streams a step's experts at no cost, which
+is the thing the chunk path's flow could never do (it deadlocked on a step's rows).
+* **the grouped routing pays exactly where it was predicted to**: at 2 slots only 3 % of the experts are on the host and
+the step's gain is amortization (one pass for two rows, +26 %); at 8 slots 23 % of them are, and the gain is **+58 %**
+(2.6x a slot).  Its bound stays the measured routing overlap (25.5-32.7 % of the expert reads a pass can share) plus the
+per-pass fixed cost the pass amortizes; at 2 slots the overlap is invisible, at 16 slots/1M the reads dominate but a
+pass is minutes, so 8 slots/1M is where the mode is at its best on this box.
+* **exactness at 1M**: exact at 2 slots (with and without the flow), *not* at 8 - with a fifth of the experts on the
+host lane the combine's order differs from a one-token decode's, the same last-bit story as above the 8-row shape, not
+a new defect.
+
+**So the objective's four items stand as:** the step in the serve loop with the 2/4/8/16 measurements (32K a slot), the
+slot cap as what makes 16 slots fit, the step's pass as the grouped MoE with its margin measured where it can be
+collected (8 slots at 1M), and flow+step proven on the window path at 1M - with the exactness boundary documented
+(bit-identical at 2 rows anywhere and 8 rows at 32K; shape-dependent rounding beyond that).
+
