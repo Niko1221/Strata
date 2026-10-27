@@ -425,15 +425,23 @@ class SessionLadder:
         """Task 8's idle hook, called while the service FIFO is held (the unload path's hold), with the
         same idle measurement the lazy-unload decision uses (time since last_request_at/started_at).
         idle_seconds >= cfg.idle_save_s is the human-latency head start: before the engine's park is
-        possibly dropped by an idle unload, the last-active session is saved when it is save-eligible
-        and still dirty - unsaved since its last turn (a clean checkpoint already on disk is not
-        rewritten).  Nothing else is saved here: the switch path and on_unload own the other sessions.
-        F4's windows: decide under the ladder lock, engine save outside it, commit the ledger back under it."""
+        possibly dropped by an idle unload, the last-active session is parked - the 2026-10-26 spec's
+        rule (always park the current session): its dirty marker is the ONLY gate, its save-eligibility
+        size never blocks the save (a clean checkpoint already on disk is still not rewritten).  Nothing
+        else is saved here: the switch path and on_unload own the other sessions."""
         if not self.cfg.enabled or idle_seconds < self.cfg.idle_save_s:
             return
+        self._idle_save_current(service)
+
+    def _idle_save_current(self, service) -> None:
+        """The current (last-active) session's park: decision + engine save + ledger commit, in F4's
+        windows (decide under the ladder lock, session_file outside it, commit the ledger back under it).
+        The last-active session is always save-worthy - dirty is the only gate (2026-10-26 spec: always
+        park the current session, aux-sized conversations included).  on_idle's body now, and the
+        pre-stage timer's route (unload-works Task 3)."""
         with self._lock:
             s = self.tracked.get(self.last_active) if self.last_active is not None else None
-            if s is None or not s.save_eligible or not s.dirty:
+            if s is None or not s.dirty:
                 return
             plan = self._plan_save(service, s)
         if plan is not None and self._engine_save(service, plan):
@@ -442,17 +450,20 @@ class SessionLadder:
 
     def on_unload(self, service) -> None:
         """Task 8's unload hook, called while the FIFO is held, immediately before engine.unload() drops
-        the engine - and with it every parked conversation.  Saves ALL tracked save-eligible sessions
-        (should_save's switch signals are moot: the whole cache is going away), each already-saved-and-
-        unchanged one (dirty False) skipped; an aux-sized session (not eligible) never churns.  A refused
-        save is swallowed and the loop continues: the unload proceeds either way.  F4's windows: all save
-        plans are decided in one lock window, each engine save runs outside the lock, each landed save
-        re-takes the lock for its ledger commit."""
+        the engine - and with it every parked conversation.  Saves every dirty save-eligible session
+        (should_save's switch signals are moot: the whole cache is going away) PLUS the last-active one
+        regardless of size - the 2026-10-26 spec's rule (always park the current session: an aux-sized
+        session at the head of the engine earns its checkpoint too).  Each already-saved-and-unchanged
+        one (dirty False) is skipped, and a NON-current aux keeps the eligibility gate: it never churns.
+        A refused save is swallowed and the loop continues: the unload proceeds either way.  F4's windows:
+        all save plans are decided in one lock window, each engine save runs outside the lock, each landed
+        save re-takes the lock for its ledger commit."""
         if not self.cfg.enabled:
             return
         with self._lock:
             plans = [p for p in (self._plan_save(service, s) for s in list(self.tracked.values())
-                                 if s.save_eligible and s.dirty) if p is not None]
+                                 if s.dirty and (s.save_eligible or self.last_active == s.session_id))
+                     if p is not None]
         for plan in plans:
             if self._engine_save(service, plan):
                 with self._lock:

@@ -77,19 +77,46 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.actions("save")), 2)
 
     def test_unload_saves_all_eligible(self):
+        # Spec 2026-10-26 ("always park the current session"), INTENTIONAL rule flip: the last-active
+        # session is save-worthy on unload regardless of its save-eligibility size - dirty is its only
+        # gate.  So the aux, completed and still last-active, is saved too.
         self.seen("ses-a")
         self.seen("ses-b")
-        self.ladder.on_turn_done("aux", 100, 0, 0)      # aux-sized: not save-eligible, never churns
-        self.ladder.on_arrival(self.service, "ses-a", P1)
-        self.ladder.on_arrival(self.service, "ses-b", P2)     # the switch already saved ses-a clean
-        self.assertEqual(self.actions("save"), ["save"])
-        self.ladder.on_unload(self.service)             # the engine is about to go: save the rest
-        self.assertEqual(self.actions("save"), ["save", "save"])
-        self.assertEqual(self.calls[-1], ("save", self.path("ses-b")))
-        self.assertTrue(Path(self.path("ses-a")).exists())     # ses-a's clean checkpoint is skipped, not
-        self.assertEqual(len(self.actions("save")), 2)         # rewritten - and nothing saved for aux
-        self.ladder.on_unload(self.service)             # all clean now: no churn
-        self.assertEqual(len(self.actions("save")), 2)
+        self.ladder.on_arrival(self.service, "aux", P1)        # the engine is on aux: last-active
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: dirty, not save-eligible, current
+        self.ladder.on_unload(self.service)                    # the engine is about to go: save all three -
+        self.assertEqual(self.calls,
+                         [("save", self.path("ses-a")),       # the two eligible mids (tracked order)...
+                          ("save", self.path("ses-b")),
+                          ("save", self.path("aux"))])         # ...and the current aux: size no gate
+        self.assertTrue(Path(self.path("ses-a")).exists())     # all three checkpoints are on disk
+        self.assertTrue(Path(self.path("aux")).exists())
+        self.ladder.on_unload(self.service)                    # all clean now: no churn
+        self.assertEqual(len(self.actions("save")), 3)
+
+    def test_unload_never_saves_a_non_current_aux(self):
+        # The flipped rule's other half: the exemption belongs to the CURRENT session alone.  An aux
+        # that is not last-active keeps the old eligible+dirty gate - and its size keeps it out of
+        # every unload save (a non-current aux must never churn one).
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux completed while the current session
+        self.seen("ses-a")                                     # a mid, tracked and dirty, not yet active
+        self.ladder.on_arrival(self.service, "ses-a", P1)      # the switch makes ses-a last-active; the
+        self.assertEqual(self.calls, [])                       # switch never saved the non-eligible aux
+        self.ladder.on_unload(self.service)                    # unload: ses-a (eligible+dirty) saved...
+        self.assertEqual(self.calls, [("save", self.path("ses-a"))])   # ...and no save for the aux
+        self.assertIsNone(self.ladder.tracked["aux"].file_path)
+
+    def test_idle_saves_a_small_current_session(self):
+        # The on_idle route carries the same rule: a dirty last-active aux-sized session is save-worthy
+        # at the idle window - its size is no gate.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: not save-eligible, dirty, current
+        self.ladder.on_idle(self.service, 8.0)                 # the window: the current session is parked
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertFalse(self.ladder.tracked["aux"].dirty)     # saved clean...
+        self.ladder.on_idle(self.service, 8.0)                 # ...and the next idle window does not churn it
+        self.assertEqual(len(self.actions("save")), 1)
 
     def test_idle_save_then_switch_away_does_not_re_save(self):
         # F3 (final review): the switch-away save honors the dirty marker - an idle-save already wrote this
