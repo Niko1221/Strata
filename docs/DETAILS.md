@@ -766,9 +766,11 @@ after a change.
   transport is not supported). `"disabled": true` leaves an entry out.
 - Servers start with Strata. The server window says what each offers or why it did not start. The Monitor tab lists them, and
   the Sampling drawer has **Use tools from MCP servers** (on by default). A server that stops later is started again at its next call.
-- In the chat each call shows as a small block. The model reads the result and goes on, up to `max_rounds` calls in a row. A tool
-  that fails or takes longer than `timeout_s` gives the model an `error: ...` result. Results longer than `max_result_chars` are
-  cut with a note. Stop stops a running tool too.
+- In the chat each call shows as a small block. The model reads the result and goes on, up to `max_rounds` rounds of
+  tool calls per answer; a round can contain several calls. At the limit, one final model reply uses the results already
+  found, with no tools available. The limit does not discard the results or stop the answer before that final reply.
+  A tool that fails or takes longer than `timeout_s` gives the model an `error: ...` result. Results longer than
+  `max_result_chars` are cut with a note. Stop stops a running tool too.
 - Only the chat page uses them. API clients see the API exactly as before and keep their own tools. A request to
   `/v1/chat/completions` opts in with `"strata_mcp": true`.
 
