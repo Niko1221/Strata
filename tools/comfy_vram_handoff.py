@@ -10,7 +10,7 @@ Strata's controls (serve/server.py, docs/DETAILS.md "Sharing the GPU"):
   POST /unload   POST /load   POST /v1/vram {"reserve_mib": N}   (the last needs "vram_elastic": true)
   POST /v1/vram {"reserve_mib": N, "gpu": 1}  - on a layer split, one card's cache only (0 = the main card)
 
-Strata's restore call is `{"reserve_mib": null}` (the reserve it started with); ComfyUI's is POST /free,
+Strata's restore call is `{"reserve_mib": null}` (each card's own start reserve); ComfyUI's is POST /free,
 which drops the weights and lets the next prompt load them again.  So one image run is: give the GPU to
 Comfy, queue, wait, hand the GPU back.
 

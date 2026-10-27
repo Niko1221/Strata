@@ -124,7 +124,9 @@ cache is allocated in 512 MiB segments, so `POST /v1/vram {"reserve_mib": 16640,
 experts, the prompt chunk 8192 -> 512) and left 15200 MiB free, where the image model's measured peak at 1024x1024
 with DynamicVRAM is 15240 MiB.  `{"reserve_mib": null, "gpu": 1}` takes it back - the line `VRAM - 1`, the dash
 standing for the start's reserve, because a number in that slot IS the reserve: `VRAM 1` is a 1 MiB reserve on every
-card of the run, not device 1.  Without `"gpu"` every card of the run moves together. The layers of a card whose
+card of the run, not device 1.  On a split the dash means each card's OWN start reserve: `{"reserve_mib": null,
+"gpu": 1}` brings GPU 1 back to `--vram-reserve-later-mib`, not to `--vram-reserve-mib`.  Without `"gpu"` every card
+of the run moves together, each back to its own start reserve.  The layers of a card whose
 cache shrank compute their experts on the CPU, so that card's decode slows and the others run as before; a cache
 never goes below 128 slots plus the smallest prompt chunk's buffers, and the chunk drops to the largest one every
 card can still lend. The split itself never moves: the card keeps its dense weights, its session and its KV, and

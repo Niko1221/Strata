@@ -14117,14 +14117,19 @@ int main(int argc, char** argv) {
         // what each cache gave up, per target: (residency index, slot) the shrinks took, so a grow puts them back
         std::vector<std::vector<std::pair<int32_t, int32_t>>> vram_evicted(1 + stages.size());
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
-            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib), on every card of the run.
+            // `VRAM` alone: the reserve the engine started each card with, on every card of the run.
             // `VRAM - [device]`: that reserve named so a device can follow it.  The dash is the only way to say
             // "the start's reserve, on this one card": a number in the first slot IS the reserve, so the server's
             // `reserve_mib: null` with a `gpu` used to send `VRAM 1` and set a 1 MiB reserve on EVERY card.
-            const long long start_reserve = (long long) o.vram_reserve_mib;
+            // On a layer split each card's own start reserve is meant: --vram-reserve-mib for the main card,
+            // --vram-reserve-later-mib for the later ones (the same rule as the sizing at start).
+            auto start_reserve = [&](const VramTarget& t) -> long long {
+                return t.idx != 0 && o.vram_reserve_later_mib >= 0 ? (long long) o.vram_reserve_later_mib
+                                                                   : (long long) o.vram_reserve_mib;
+            };
             const char* p = cmd.c_str() + 4;
             while (*p == ' ') ++p;
-            long long reserve = start_reserve;
+            long long reserve = -1;   // -1: the bare form or the dash: each card's own start reserve
             int want_dev = -1;   // -1: every GPU of this run
             if (*p != '\0') {
                 if (*p == '-' && (p[1] == '\0' || p[1] == ' ')) ++p;
@@ -14193,6 +14198,7 @@ int main(int argc, char** argv) {
             const auto t0 = Clock::now();
             std::vector<std::string> notes(targets.size());         // per cache: the floor, a grow that failed
             std::vector<int64_t> before_slots(targets.size(), 0);      // per cache, for the report
+            std::vector<long long> reserve_of(targets.size());   // per cache: what this command asked for
             for (size_t k = 0; k < targets.size(); ++k) {
                 const VramTarget& t = targets[k];
                 strata::core::ExpertCache& xc = *t.cache;
@@ -14200,7 +14206,8 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on(t.dev == 0 ? -1 : t.dev);
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
-                const int64_t want_free = (int64_t) reserve << 20, mapped = xc.mapped_bytes();
+                reserve_of[k] = reserve >= 0 ? reserve : start_reserve(t);
+                const int64_t want_free = (int64_t) reserve_of[k] << 20, mapped = xc.mapped_bytes();
                 before_slots[k] = xc.slots();
                 // what stays at least: the prompt path's smallest loan (256 tokens) and the slots it must leave
                 const int64_t floor_slots = std::min<int64_t>(xc.full_slots(),
@@ -14272,13 +14279,13 @@ int main(int argc, char** argv) {
                 cudaMemGetInfo(&free_b, &total_b);
                 std::fprintf(stderr, "strata serve: VRAM %lld MiB kept free on CUDA%d: the expert cache %lld -> %lld of %lld slots "
                                      "(%.2f of %.2f GiB), %lld MiB free now, prompt chunk %lld, in %.0f ms%s\n",
-                             reserve, t.dev, (long long) before_slots[k], (long long) t.cache->slots(),
+                             reserve_of[k], t.dev, (long long) before_slots[k], (long long) t.cache->slots(),
                              (long long) t.cache->full_slots(), (double) t.cache->mapped_bytes() / 1073741824.0,
                              (double) t.cache->full_bytes() / 1073741824.0, (long long) (free_b >> 20),
                              (long long) o.prefill_chunk,
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), notes[k].c_str());
                 std::printf("VRAM reserve_mib=%lld gpu=%d expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
-                            "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve, t.dev,
+                            "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve_of[k], t.dev,
                             (long long) t.cache->slots(), (long long) t.cache->full_slots(),
                             (long long) (t.cache->mapped_bytes() >> 20), (long long) (t.cache->full_bytes() >> 20),
                             (long long) (free_b >> 20), (long long) o.prefill_chunk);
