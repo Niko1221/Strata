@@ -517,3 +517,26 @@ the flow to learn a step's rows, or a slot cap whose experts all fit VRAM.
 2. The correctness of the step's rows: the same tokens as the bursts, bit for bit, at 2 and 16 slots (the harness is
    `batch_step_bench.py --ref`).
 3. Then M3's margin (1.15-1.28x) and the flow.
+
+**Addendum (17:20-17:35): the tokens' drift is the chunk path's arithmetic, not the hand-off; and the one- and
+four-slot numbers.**  One slot (one sequence, T=1 steps, 32K a slot) diverges from the bursts at the third token exactly
+as two slots do, so the step's rows are not the cause: the chunk path's kernels (a cublas GEMM over T rows) and the
+decode path's (an `mv` per token, its own summation order) do not produce the same last bits, and a greedy stream drifts
+as soon as they differ.  The in-process A/B says the same from the other side - the per-row chunk path is bit-identical
+to the *contiguous chunk* path, which is a prompt path, not the decode path.  So a step can only be a drop-in for the
+decode path if it runs the decode path's kernels: one more reason the window path is its host.  The hand-off is not
+implicated.
+
+| slots | bursts, a slot | bursts, all | step, a slot | step, all |
+|---:|---:|---:|---:|---:|
+| 1 | 54.5 tok/s | 54.5 | 5.1 | 5.1 (48 tokens in 9.5 s) |
+| 2 | - | - | 5.0 | 9.6 |
+| 4 | 13.7-14.2 | ~56 | 5.0 | 18.4 |
+| 8 | - | - | 5.0 | 34.1 |
+| 16 | 3.2-3.4 | 43.4 | 4.0 | 50.1 |
+
+The step's cost is a step (a fixed ~200 ms + ~6 ms a row: 199 ms at 2 and 8 slots, 249 at 16), the bursts' is a token a
+pass - a slot's own rate collapses as the slots multiply (54.5, ~14, 3.2) while the step's stays 5.0 - and they cross at
+sixteen slots on this box.  That is the whole argument for the window-path step: at ~16 ms a step instead of 200 the
+same sixteen slots aggregate several times this, and the shape does not change - one pass's expert read over sixteen
+rows is the ceiling.
