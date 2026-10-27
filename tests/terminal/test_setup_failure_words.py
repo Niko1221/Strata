@@ -18,6 +18,20 @@ TRACEBACK = [
 
 
 class SetupFailureWords(unittest.TestCase):
+    def test_an_option_setup_refuses_is_said_with_its_reason(self):                    # #3785
+        lines = ["Preparing unsloth UD-Q6_K_XL from your model files...",
+                 "setup.py: error: argument --kv: invalid choice: 'bf16' (choose from int8, q4_0, k8v4, fp16)"]
+        error = setup_failure(lines, "", "", "/tmp/a.setup.log", True)
+        self.assertIn("The model could not be installed. Argument --kv: invalid choice: 'bf16'", error.text)
+        self.assertIn("/tmp/a.setup.log", error.next)
+        self.assertEqual(setup_failure(["nothing useful"], "", "", None, True).text, "The model could not be installed.")
+
+    def test_setup_accepts_the_kv_format_the_docker_docs_offer(self):
+        import subprocess, sys
+        root = Path(__file__).resolve().parents[2]
+        done = subprocess.run([sys.executable, str(root / "setup.py"), "--kv", "bogus"], capture_output=True, text=True, cwd=str(root), timeout=120)
+        self.assertIn("fp16", done.stderr.splitlines()[-1])                  # the choices line of the argparse error
+
     def test_the_last_line_of_a_traceback_is_found(self):
         self.assertEqual(python_failure(TRACEBACK), "ModuleNotFoundError: No module named 'calibrate'")
         self.assertIsNone(python_failure(["[X] Not enough disk space", "       Free some space"]))

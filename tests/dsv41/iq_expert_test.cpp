@@ -513,6 +513,57 @@ int main(int argc, char** argv) {
                 }
             // (the prompt sets' tiles take F16 operands for the i-quants: the tile's own rounding, not the token path's)
             report("set down", type, w2, 3e-3);
+
+            // ---- the matrix-core tiles (HIP gfx11 / gfx12) forced on, against the scalar tiles forced on the same inputs: each within the
+            // tolerances above of the CPU reference, the two within the same tolerance of each other, and the forced-on run must really
+            // have launched them (STRATA_DS4_HIPK is not needed)
+            if (iq::hipk_force(1)) {
+                const long long n0 = iq::hipk_launches();
+                iq::SetArgs qm = q;
+                uint16_t* mh; CK(hipMalloc(&mh, (size_t) NR * FF * 2)); float* my; CK(hipMalloc(&my, (size_t) NR * E * 4));
+                qm.h = mh; qm.ldx = E; qm.ldo = FF; qm.xh = nullptr; qm.y = nullptr;
+                if (!iq::set_gate_up(qm, 0)) { std::printf("matrix-core set_gate_up refused\n"); return 1; }
+                qm.xh = mh; qm.ldx = FF; qm.y = my; qm.ldo = E;
+                if (!iq::set_down(qm, 0)) { std::printf("matrix-core set_down refused\n"); return 1; }
+                CK(hipDeviceSynchronize());
+                const long long taken = iq::hipk_launches() - n0;
+                iq::hipk_force(0);
+                const long long n1 = iq::hipk_launches();
+                uint16_t* sh; CK(hipMalloc(&sh, (size_t) NR * FF * 2)); float* sy; CK(hipMalloc(&sy, (size_t) NR * E * 4));
+                iq::SetArgs qs = q;
+                qs.h = sh; qs.ldx = E; qs.ldo = FF; qs.xh = nullptr; qs.y = nullptr;
+                if (!iq::set_gate_up(qs, 0)) { std::printf("scalar set_gate_up refused\n"); return 1; }
+                qs.xh = sh; qs.ldx = FF; qs.y = sy; qs.ldo = E;
+                if (!iq::set_down(qs, 0)) { std::printf("scalar set_down refused\n"); return 1; }
+                CK(hipDeviceSynchronize());
+                const long long scal = iq::hipk_launches() - n1;
+                iq::hipk_force(-1);
+                const auto hm = down_(mh, (size_t) NR * FF), hs = down_(sh, (size_t) NR * FF);
+                const auto ym = down_(my, (size_t) NR * E), ys = down_(sy, (size_t) NR * E);
+                double wg = 0, wd = 0, wx = 0, wy = 0;
+                for (int e = 0; e < 3; ++e)
+                    for (int lr = bounds[e]; lr < bounds[e + 1]; ++lr) {
+                        std::vector<float> hf(FF);
+                        for (int c = 0; c < FF; ++c) hf[c] = h2f(hm[(size_t) lr * FF + c]);
+                        for (int r = 0; r < FF; ++r) {
+                            double sc;
+                            const double ref = refh(e, r, &x[(size_t) idx[lr] * E], sc);
+                            wg = std::max(wg, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - ref) / sc);
+                            wx = std::max(wx, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - (double) h2f(hs[(size_t) lr * FF + r])) / sc);
+                        }
+                        for (int r = 0; r < E; ++r) {
+                            double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], hf.data(), FF, &sa);
+                            wd = std::max(wd, std::fabs(ym[(size_t) lr * E + r] - ref) / (sa + 1e-30));
+                            wy = std::max(wy, std::fabs((double) ym[(size_t) lr * E + r] - (double) ys[(size_t) lr * E + r]) / (sa + 1e-30));
+                        }
+                    }
+                std::printf("%-7s matrix-core tiles taken %lld (scalar run: %lld)\n", iq::name(type), taken, scal);
+                if (taken < 2 || scal != 0) { std::printf("%-7s FAIL: the matrix-core tiles did not run as forced\n", iq::name(type)); ++fails; }
+                report("wmma gate_up vs CPU", type, wg, type == 19 ? 1.5e-2 : 1e-2);
+                report("wmma down vs CPU", type, wd, 3e-3);
+                report("wmma vs scalar h", type, wx, type == 19 ? 1.5e-2 : 1e-2);
+                report("wmma vs scalar y", type, wy, 3e-3);
+            }
         }
 
         // ---- the CPU lane on the same experts and inputs (ggml-cpu's rows, or Strata's AVX2 ones with DS4_GG_IQ256=1)

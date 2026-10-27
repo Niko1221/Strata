@@ -175,6 +175,16 @@ class Selection(unittest.TestCase):
         self.assertTrue(any("580.65" in r for r in old[1]))
         self.assertIsNone(self.pick(both, nvidia_driver="500.00")[0])
 
+    def test_an_update_keeps_the_cuda_build_that_runs_here(self):                       # #3835
+        both = [entry(variant="cuda12", driver="575.51", archs=("sm_60", "sm_61", "sm_86", "compute_89")), entry(variant="cuda13")]
+        two_cards = {"cuda_archs": ["sm_61", "sm_86"], "nvidia_driver": "615.71"}
+        self.assertEqual(self.pick(both, **two_cards)[0].variant, "cuda13")             # nothing installed: as before
+        kept, reasons = self.pick(both, installed_variant="cuda12", **two_cards)
+        self.assertEqual(kept.variant, "cuda12")
+        self.assertTrue(any("is kept" in r for r in reasons))
+        only13 = [entry(variant="cuda13")]
+        self.assertEqual(self.pick(only13, installed_variant="cuda12")[0].variant, "cuda13")   # the feed has no 12: the best fit
+
     def test_the_newest_version_wins_and_the_card_must_be_covered(self):
         newer = [entry("0.1.45"), entry("0.1.46")]
         self.assertEqual(self.pick(newer)[0].version, "0.1.46")

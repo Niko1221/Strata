@@ -9,7 +9,7 @@
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       at the pinned commit (setup.py LLAMA_CPP_COMMIT); mtmd and ggml come from it
 #   HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>   (TheRock: _rocm_sdk_devel, _rocm_sdk_core, _rocm_sdk_libraries_*)
-#   OUT=<work folder>  PKGVER=0.1.48  COMMIT=<source commit for the build id>  JOBS=16
+#   OUT=<work folder>  PKGVER=0.1.50  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   DSV41=1|0                        also build strata-dsv41 (the DeepSeek-V4.1 engine, tools/dsv41/build_hip_linux.sh's flags) and ship it beside
 #                                    strata: default 1 for the rx9070 variant (gfx1200 gfx1201; built and run on an R9700), 0 for the others
@@ -26,7 +26,7 @@ HP=${HP:?HP=<ROCm devel root>}
 CORE=${CORE:-$HP}
 LIBW=${LIBW:-$HP}
 OUT=${OUT:-$PWD/work-$V}
-PKGVER=${PKGVER:-0.1.46}
+PKGVER=${PKGVER:-0.1.50}
 COMMIT=${COMMIT:-unknown}
 JOBS=${JOBS:-16}
 case "$V" in
@@ -43,6 +43,11 @@ ARCHLIST=${ARCHS//;/ }
 DATAARCH=${ARCHS//;/,}
 mkdir -p "$OUT"; S=$OUT/build.status
 st() { echo "$* $(date +%T)" >> "$S"; }
+# a step that failed stops the build with its non-zero exit (a lost exit code let stale binaries through before): chk $? "what"
+chk() { local rc=$1; shift; st "$* rc=$rc"; [ "$rc" = 0 ] || { st "ABORT $* failed (rc=$rc)"; exit 1; }; }
+# a tree without .git (a tarball) has no commit for the build id: the packer writes it to BUILD_ID (CMakeLists.txt reads it), first 9 characters
+ID9=${COMMIT:0:9}
+if [ "$COMMIT" != unknown ] && [ ! -e "$SRC/.git" ] && [ ! -f "$SRC/BUILD_ID" ]; then printf '%s\n' "$ID9" > "$SRC/BUILD_ID"; fi
 : > "$S"
 export HIP_PLATFORM=amd HIP_COMPILER=clang HIP_RUNTIME=rocclr ROCM_PATH=$HP HIP_PATH=$HP
 # TheRock 7.14.x dists (the Strix Halo / gfx1151 package) keep libnuma, libz, libdrm ... in lib/rocm_sysdeps; older wheels have no such folder
@@ -55,15 +60,17 @@ if [ -z "${VISION_ONLY:-}" ]; then
   cmake -G Ninja -S . -B "$OUT/b" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_PREFILL_MMQ=ON "-DCMAKE_HIP_ARCHITECTURES=$ARCHS" "${HIPDEFS[@]}" -DSTRATA_GGML_DIR="$LLAMA" -DSTRATA_PORTABLE=ON \
     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" > "$OUT/cfg.log" 2>&1
-  st "engine configured rc=$?"
+  chk $? "engine configured"
   nice -n 10 cmake --build "$OUT/b" --target strata -j "$JOBS" > "$OUT/build.log" 2>&1
-  st "engine built rc=$?"
+  chk $? "engine built"
   [ -x "$OUT/b/strata" ] || { st "ABORT no strata"; exit 1; }
   if [ "$DSV41" = 1 ]; then      # own build tree: the engine's flags stay as they were; STRATA_NATIVE_EXPERTS=ON is what the DeepSeek path was built with
+    rm -f "$OUT/bd/CMakeCache.txt" "$OUT/bd/strata-dsv41"      # (the build id is baked in at configure time: always configure again)
     cmake -G Ninja -S . -B "$OUT/bd" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF       -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON "-DCMAKE_HIP_ARCHITECTURES=$ARCHS" "${HIPDEFS[@]}" -DSTRATA_GGML_DIR="$LLAMA" -DSTRATA_PORTABLE=ON       "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" > "$OUT/cfg-dsv41.log" 2>&1
-    st "dsv41 configured rc=$?"
+    chk $? "dsv41 configured"
     nice -n 10 cmake --build "$OUT/bd" --target strata-dsv41 -j "$JOBS" > "$OUT/build-dsv41.log" 2>&1
-    st "dsv41 built rc=$?"
+    chk $? "dsv41 built"
+    if [ "$COMMIT" != unknown ]; then grep -aq "$ID9" "$OUT/bd/strata-dsv41" || { st "ABORT strata-dsv41 does not carry the build id $ID9"; exit 1; }; st "dsv41 build id $ID9 present"; fi
     [ -x "$OUT/bd/strata-dsv41" ] || { st "ABORT no strata-dsv41 (DSV41=0 leaves it out)"; tail -20 "$OUT/build-dsv41.log" >> "$S"; exit 1; }
   fi
 fi
@@ -71,14 +78,14 @@ fi
 cmake -G Ninja -S tools/vision -B "$OUT/bv" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$LLAMA" -DSTRATA_VISION_CUDA=OFF \
   -DSTRATA_PORTABLE=ON > "$OUT/cfg-vision.log" 2>&1
 nice -n 10 cmake --build "$OUT/bv" --target strata-vision -j "$JOBS" > "$OUT/build-vision.log" 2>&1
-st "cpu reader built rc=$?"
+chk $? "cpu reader built"
 [ -x "$OUT/bv/bin/strata-vision" ] || { st "ABORT no strata-vision"; exit 1; }
 # the GPU reader: ggml-hip for the same archs; the CPU kernels in it are portable too
 cmake -G Ninja -S tools/vision -B "$OUT/bh" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$LLAMA" -DSTRATA_VISION_HIP=ON \
   "-DSTRATA_VISION_HIP_ARCHS=$ARCHS" -DSTRATA_PORTABLE=ON "${HIPDEFS[@]}" ${VISION_HIP_DEFS:-} > "$OUT/cfg-vision-hip.log" 2>&1
-st "gpu reader configured rc=$?"
+chk $? "gpu reader configured"
 nice -n 10 cmake --build "$OUT/bh" --target strata-vision -j "$JOBS" > "$OUT/build-vision-hip.log" 2>&1
-st "gpu reader built rc=$?"
+chk $? "gpu reader built"
 [ -x "$OUT/bh/bin/strata-vision-hip" ] || { st "ABORT no strata-vision-hip"; tail -20 "$OUT/build-vision-hip.log" >> "$S"; exit 1; }
 [ -n "${VISION_ONLY:-}" ] && { st "VISION-DONE"; exit 0; }
 STAGE=$OUT/stage; rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -93,7 +100,7 @@ for b in "${BINS[@]}"; do
   python3 packaging/collect_libs.py --binary "$b" --search "$LIBW/lib" --search "$HP/lib" --search "$CORE/lib" --search "$CORE/lib/llvm/lib" ${SYSDEPS:+--search "$HP/lib/rocm_sysdeps/lib"} \
     --also 'libamd_comgr.so*' --also 'libhiprtc*.so*' --out "$STAGE" \
     "${DATA[@]}" >> "$OUT/collect.log" 2>&1
-  st "collected for $(basename "$b") rc=$?"
+  chk $? "collected for $(basename "$b")"
   DATA=()                                              # the kernel data once
 done
 cp "$OUT/b/strata" "$OUT/bv/bin/strata-vision" "$OUT/bh/bin/strata-vision-hip" "$STAGE/"
@@ -104,13 +111,13 @@ for f in "$STAGE/strata" "$STAGE/strata-vision" "$STAGE/strata-vision-hip" $([ "
 done
 # the hipBLASLt version of this ROCm into BUILD.json, and the tuning tables of tools/hip that match it (architecture and version) into tuning/
 python3 packaging/stage_tuning.py --stage "$STAGE" --archs "$ARCHLIST" --rocm "$HP" >> "$OUT/stage_tuning.log" 2>&1
-st "tuning tables rc=$?: $(tail -n 1 "$OUT/stage_tuning.log")"
+trc=$?; st "tuning tables rc=$trc: $(tail -n 1 "$OUT/stage_tuning.log")"; [ "$trc" = 0 ] || { st "ABORT tuning tables"; exit 1; }
 [ -n "${NO_PACKAGE:-}" ] && { st "STAGE-DONE"; exit 0; }
 rm -rf "$OUT/components"; mkdir -p "$OUT/components/engine"
 ARCHARGS=""; for a in $ARCHLIST; do ARCHARGS="$ARCHARGS --arch $a"; done
 REQ=""; [ "$DSV41" = 1 ] && REQ="--require-dsv41"
 python3 packaging/package_engine.py --src "$STAGE" --backend hip --version "$PKGVER" --out "$OUT/components/engine" $ARCHARGS \
   --variant "$V" --build-id "$COMMIT+rocm" --tree $REQ --notes "AMD $V build: engine, CPU picture reader, GPU picture reader$([ "$DSV41" = 1 ] && echo ", DeepSeek-V4.1 engine")${NOTE_EXTRA:-}" > "$OUT/package.log" 2>&1
-st "packaged rc=$?"
+chk $? "packaged"
 cat "$OUT/package.log" >> "$S"
 st "BUILD-DONE"

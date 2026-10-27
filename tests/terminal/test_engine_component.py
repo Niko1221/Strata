@@ -258,6 +258,16 @@ class WindowsAmd(unittest.TestCase):
                            {"vendor": "1002", "device": 0x744C, "name": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0}]
     IGPU_ONLY = [{"vendor": "1002", "device": 0x15BF, "name": "AMD Radeon 780M Graphics", "vram_gb": 0.5}]
 
+    def test_a_removed_nvidia_card_left_in_the_registry_does_not_win(self):      # #3892
+        old = {"vendor": "10de", "device": 0x2684, "name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0}
+        new = self.TESTER_A[0]
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(new)]):
+            self.assertEqual(ec._windows_vendor_backend(), "hip")
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(old), dict(new)]):
+            self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # both really there: NVIDIA first, as before
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[]):
+            self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # Windows could not say: nothing is dropped
+
     def test_nvidia_wins_and_an_integrated_radeon_is_not_a_card(self):
         self.assertEqual(ec._windows_vendor_backend(self.OWNER_PC), "cuda")
         self.assertEqual(ec.windows_amd_cards(self.OWNER_PC), [])

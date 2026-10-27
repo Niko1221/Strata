@@ -109,7 +109,11 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
             fetchx(s + 1, R);
             load_stage(nxt, s + 1);
         }
+#if defined(DS4_HIPK_G11)
+        hv16 bf[NM][NTW];   // (gfx11: all 16 k of the step in a lane: its own 8 and the other half-wave's)
+#else
         hv8 bf[NM][NTW];
+#endif
         auto step = [&](auto tt) {
             constexpr int t = decltype(tt)::value;
             constexpr int sub = t >> 1, ks = t & 1;
@@ -122,17 +126,41 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
                     step_dec<T, t>(cur[m][j], s, hi, tab, c0_, c1_, sc);
                     const hv2 h = {(_Float16) sc, (_Float16) sc};
                     const uint2 u0 = codes4(c0_, h), u1 = codes4(c1_, h);
+#if defined(DS4_HIPK_G11)
+                    const uint32_t own[4] = {u0.x, u0.y, u1.x, u1.y};
+                    uint32_t both[8];
+#pragma unroll
+                    for (int w = 0; w < 4; ++w) {
+                        const uint32_t other = __shfl_xor_sync(0xffffffffu, own[w], 16);
+                        both[w] = hi ? other : own[w];
+                        both[4 + w] = hi ? own[w] : other;
+                    }
+                    bf[m][j] = __builtin_bit_cast(hv16, both);
+#else
                     bf[m][j] = __builtin_bit_cast(hv8, make_uint4(u0.x, u0.y, u1.x, u1.y));
+#endif
                 }
+#if defined(DS4_HIPK_G11)
+            const int kcol = sub * 32 + ks * 16;
+#else
             const int kcol = sub * 32 + ks * 16 + hi * 8;
+#endif
 #pragma unroll
             for (int i = 0; i < MT; ++i) {
                 if (i * 16 < nr) {   // (a tile past the rows: skipped, uniform)
+#if defined(DS4_HIPK_G11)
+                    const hv16 af = *(const hv16*) &xs[b][i * 16 + l16][kcol];
+#pragma unroll
+                    for (int m = 0; m < NM; ++m)
+#pragma unroll
+                        for (int j = 0; j < NTW; ++j) acc[m][i][j] = wmma16g11(af, bf[m][j], acc[m][i][j]);
+#else
                     const hv8 af = *(const hv8*) &xs[b][i * 16 + l16][kcol];
 #pragma unroll
                     for (int m = 0; m < NM; ++m)
 #pragma unroll
                         for (int j = 0; j < NTW; ++j) acc[m][i][j] = wmma16(af, bf[m][j], acc[m][i][j]);
+#endif
                 }
             }
         };
@@ -153,7 +181,11 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
     for (int i = 0; i < MT; ++i)
 #pragma unroll
         for (int q = 0; q < 8; ++q) {
+#if defined(DS4_HIPK_G11)
+            const int row = i * 16 + 2 * q + hi;
+#else
             const int row = i * 16 + 8 * hi + q;
+#endif
             if (row >= nr) continue;
             const size_t lr = (size_t) (r0 + row);
 #pragma unroll
@@ -173,5 +205,6 @@ inline bool runr(const SetArgs& a, cudaStream_t s) {
     const dim3 grid((unsigned) ((a.max_rows + BM - 1) / BM), (unsigned) (N / BN), (unsigned) a.n_exp);
     static const int dbg = std::getenv("HIPK_DBG") ? std::atoi(std::getenv("HIPK_DBG")) : 0;
     set_kernel_r<T, GU, BM, NW, NTW><<<grid, NW * 32, 0, s>>>(a, dbg);
+    launches().fetch_add(1, std::memory_order_relaxed);
     return cudaPeekAtLastError() == cudaSuccess;
 }

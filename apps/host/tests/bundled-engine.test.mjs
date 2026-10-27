@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installBundledEngine, compareVersions, wrongMakeNotice } from '../server/bundled-engine.mjs';
+import { installBundledEngine, removeVerifiedBundle, cleanupAfterInstall, compareVersions, wrongMakeNotice } from '../server/bundled-engine.mjs';
 
 // the make of card is read from this computer unless a test names it; the existing tests are written for an NVIDIA PC
 process.env.STRATA_ENGINE_BACKEND = 'cuda';
@@ -184,4 +184,109 @@ test('Windows: the display adapters decide the make, and a leftover nvidia-smi d
   assert.deepEqual([...windowsDisplayVendors({ platform: 'win32', run: () => out })].sort(), ['1002', '8086']);
   assert.equal(windowsDisplayVendors({ platform: 'linux', run: () => { throw new Error('must not run'); } }).size, 0);
   assert.equal(windowsDisplayVendors({ platform: 'win32', run: () => { throw new Error('no registry'); } }).size, 0);
+});
+
+test('after an update, the engine bundle of the old install folder is removed only when the same engine is complete in the store', async () => {
+  const t = setup();
+  try {
+    const name = makePackage(t.bundle, '0.1.48');
+    writeFileSync(join(t.bundle, '.gitignore'), 'ignore-all');
+    const lines = [];
+    // 1. nothing in the store yet: kept, and one line says why
+    let r = await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components, log: l => lines.push(l) });
+    assert.equal(r.removed, false);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /kept in the install folder.*not \(or not completely\) in the engine store/);
+    assert.ok(existsSync(join(t.bundle, name)));
+    // 2. the engine is copied (the app's own first start does this)
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components })).action, 'installed');
+    // 3. a store file with the right size and the wrong content: kept (the hash is checked, not only the size)
+    const target = join(t.engine, name, 'strata.exe');
+    const good = readFileSync(target);
+    writeFileSync(target, Buffer.alloc(good.length, 'x'));
+    lines.length = 0;
+    r = await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components, log: l => lines.push(l) });
+    assert.equal(r.removed, false);
+    assert.equal(lines.length, 1, 'exactly one line');
+    assert.ok(existsSync(join(t.bundle, name)));
+    // 4. a store file with the wrong size: kept
+    writeFileSync(target, Buffer.concat([good, Buffer.from('extra')]));
+    assert.equal((await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components })).removed, false);
+    // 5. the store copy is whole: the bundle goes, its .gitignore stays, and the store is untouched
+    writeFileSync(target, good);
+    lines.length = 0;
+    r = await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components, log: l => lines.push(l) });
+    assert.equal(r.removed, true);
+    assert.equal(existsSync(join(t.bundle, name)), false);
+    assert.ok(existsSync(join(t.bundle, '.gitignore')));
+    assert.equal(readFileSync(target, 'utf8'), 'engine-0.1.48');
+    assert.match(lines.at(-1), /was removed; the same engine is complete in the engine store/);
+    // 6. nothing left to do
+    assert.equal((await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components })).removed, false);
+    // 7. a different version in the store does not count
+    const other = makePackage(t.bundle, '0.1.49');
+    assert.equal((await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components })).removed, false);
+    assert.ok(existsSync(join(t.bundle, other)));
+  } finally { t.cleanup(); }
+});
+
+test('the bundle cleanup lines reach the output of the host (the desktop log copies it), for "removed" and for "kept"', async () => {
+  const t = setup();
+  const seen = [], real = console.log;
+  try {
+    const name = makePackage(t.bundle, '0.1.48');
+    console.log = line => { seen.push(String(line)); };
+    // kept: the engine is not in the store yet
+    await cleanupAfterInstall(Promise.resolve({ action: 'kept' }), { bundleDir: t.bundle, components: t.components });
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /^engine bundle: kept in the install folder/);
+    // removed: the engine is in the store and whole
+    const installed = await installBundledEngine({ bundleDir: t.bundle, components: t.components });
+    assert.equal(installed.action, 'installed');
+    seen.length = 0;
+    await cleanupAfterInstall(Promise.resolve({ action: 'kept' }), { bundleDir: t.bundle, components: t.components });
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /^engine bundle: the copy that came with the installer \(.*\) was removed/);
+    assert.equal(existsSync(join(t.bundle, name)), false);
+    // nothing to say when the engine step did nothing (no bundle) or was refused
+    seen.length = 0;
+    await cleanupAfterInstall(Promise.resolve({ action: 'none' }), { bundleDir: t.bundle, components: t.components });
+    await cleanupAfterInstall(Promise.resolve({ action: 'wrong-make' }), { bundleDir: t.bundle, components: t.components });
+    await cleanupAfterInstall(Promise.reject(new Error('boom')), { bundleDir: t.bundle, components: t.components });
+    assert.deepEqual(seen, []);
+  } finally { console.log = real; t.cleanup(); }
+});
+
+test('macOS: the engine bundle inside a signed .app stays (deleting it breaks the signature); outside an .app, or on another system, it is removed as before', async () => {
+  const t = setup();
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const as = value => Object.defineProperty(process, 'platform', { value, configurable: true });
+  try {
+    const app = join(t.base, 'Strata.app', 'Contents', 'Resources', 'engine-bundle');
+    mkdirSync(app, { recursive: true });
+    const inApp = makePackage(app, '0.1.48');
+    const outside = makePackage(t.bundle, '0.1.48');
+    // the engine is in the store (the app's own first start copies it), so the bundle would be removable
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components })).action, 'installed');
+    const lines = [];
+    // 1. macOS, bundle inside Strata.app: kept, with one line that says why
+    as('darwin');
+    let r = await removeVerifiedBundle({ bundleDir: app, components: t.components, log: l => lines.push(l) });
+    assert.equal(r.removed, false);
+    assert.ok(existsSync(join(app, inApp, 'strata.exe')), 'the signed app keeps its engine files');
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /kept in the install folder.*macOS app bundles must remain unchanged after signing/);
+    // 2. macOS, bundle outside an .app: removed as before
+    r = await removeVerifiedBundle({ bundleDir: t.bundle, components: t.components, log: () => {} });
+    assert.equal(r.removed, true);
+    assert.equal(existsSync(join(t.bundle, outside)), false);
+    // 3. another system, bundle inside a folder called .app: removed as before (the guard is for macOS only)
+    as('linux');
+    r = await removeVerifiedBundle({ bundleDir: app, components: t.components, log: () => {} });
+    assert.equal(r.removed, true);
+    assert.equal(existsSync(join(app, inApp)), false);
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+    t.cleanup();
+  }
 });

@@ -811,6 +811,9 @@ class MixedGraphics(unittest.TestCase):
         self.assertTrue(by["nvidia"]["usable"])
         self.assertFalse(by["amd"]["usable"])
         self.assertIn("NVIDIA card", by["amd"]["problem"])
+        # the RTX and the Ryzen iGPU both say index 0 (each make counts from 0), so the report gives each a stable id of its own
+        self.assertEqual((by["nvidia"]["index"], by["amd"]["index"]), (0, 0))
+        self.assertEqual(sorted(g["id"] for g in hw["gpus"]), ["amd:0", "nvidia:0"])
         rec = s.recommend({**hw, "ram_gb": 92.0})
         self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
         # with no NVIDIA card the integrated GPU stays what it was
