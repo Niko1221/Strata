@@ -811,11 +811,12 @@ struct Options {
     /// with one long conversation evicts the long one (oldest first).  0 = park every conversation.
     int64_t conversation_cache_min_tokens = 0;
     /// --serve: park switched-away conversations in session files on disk instead of RAM (MiB; 0 = off).
-    /// Replaces --conversation-cache-mib; Maya-style: N slots of LRU rotation, files reused across
+    /// Replaces --conversation-cache-mib: N slots of LRU rotation, files reused across
     /// restarts for the same model (identity-bound; --conversation-cache-days prunes them).
     int64_t conversation_cache_disk_mib = 0;
     std::string conversation_cache_dir;   // default <pack>/conversation_cache
-    int64_t conversation_cache_days = 7;  // a file unused this long is removed at start; 0 = do not persist
+    int64_t conversation_cache_days = 0;  // keep across restarts: 0 = the next start empties the
+                                          // folder; N keeps files and removes ones unused N days
     /// --serve: park only after the conversation has advanced this many tokens past the copy it would supersede.
     /// A conversation that moved a few hundred tokens writes a full snapshot again, and the turn after that drops it
     /// (drop_superseded) after writing the same bytes once more, so on a long single conversation every turn pays a
@@ -976,8 +977,9 @@ void usage() {
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default: sized from the free RAM, up to 8192; 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
                  "  --conversation-cache-disk-mib N  --serve: park switched-away conversations in session files on disk\n"
-                 "                       instead of RAM (N MiB total, 4 slots LRU; 0 off; --conversation-cache-dir,\n"
-                 "                       --conversation-cache-days)\n"
+                 "                       instead of RAM (N MiB total, 4 slots LRU; 0 off; --conversation-cache-dir;\n"
+                 "                       --conversation-cache-days N keeps the files across restarts, default 0 = the\n"
+                 "                       next start prunes them)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) for the RAM cache and the RESTORE protocol; in disk mode a park and a restore keep min(this, 512) MiB free (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -10485,9 +10487,38 @@ int main(int argc, char** argv) {
         }
         // A failed scan switched disk mode off: the cache was built with the disk-sized budget and disk
         // accounting, so rebuild it under the RAM budget it now parks with (copy-assign; the cache is empty here).
-        if (!conv_disk) conversations = strata::core::ConversationCache(
-            o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
-            (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        if (!conv_disk) {
+            // Parked files outlive the engine only when the keep was asked for, and a run that never
+            // asked for the disk cache at all has no keep - everything in the folder belongs to the
+            // cache (the scan deletes its leftovers the same way when disk mode is on).  When disk mode
+            // WAS asked for but the scan failed, the files stay: a transient folder error must not
+            // destroy a keep the user paid for, and the next start's scan tries again.
+            if (o.conversation_cache_disk_mib <= 0) {
+                std::error_code ec;
+                if (std::filesystem::is_directory(conv_cache_dir, ec)) {
+                    size_t pruned = 0, stuck = 0;
+                    std::filesystem::directory_iterator pit(conv_cache_dir, ec), pend;
+                    for (; pit != pend; pit.increment(ec)) {
+                        if (ec) break;   // folder unreadable mid-scan: stop and say so below
+                        if (std::filesystem::is_regular_file(pit->path(), ec)) {
+                            std::filesystem::remove(pit->path(), ec);
+                            if (ec) ++stuck; else ++pruned;   // a locked or read-only file stays
+                        }
+                    }
+                    if (pruned)
+                        std::fprintf(stderr, "strata serve: conversation cache: pruned %zu parked conversation "
+                                             "file(s) from %s (the disk cache is off)\n",
+                                     pruned, conv_cache_dir.string().c_str());
+                    if (stuck || ec)
+                        std::fprintf(stderr, "strata serve: conversation cache: pruning %s incomplete: "
+                                             "%zu file(s) stayed%s%s\n", conv_cache_dir.string().c_str(),
+                                     stuck, ec ? ", folder scan stopped: " : "", ec ? ec.message().c_str() : "");
+                }
+            }
+            conversations = strata::core::ConversationCache(
+                o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
+                (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        }
         if (conv_disk)
             std::fprintf(stderr, "strata serve: conversation cache: disk mode parks whenever it can write to disk: a park and a "
                                  "restore each keep %lld MiB free (the transient the transfer needs: a few hundred MiB of "
@@ -17727,9 +17758,11 @@ int main(int argc, char** argv) {
             }
         }
         // the live conversation goes to disk on this clean exit only (QUIT or stdin EOF; every fatal path
-        // returned from inside the loop), so the next start's scan finds it.  A nan-poisoned session has
+        // returned from inside the loop), so the next start's scan finds it.  Only when the keep was asked
+        // for (--conversation-cache-days N > 0): with the default 0 the next start prunes the folder, so
+        // parking now would write gigabytes to delete them.  A nan-poisoned session has
         // live_ok false, so it is never parked.
-        if (conv_disk && live_ok && !live.empty()) park_current(0);
+        if (conv_disk && o.conversation_cache_days > 0 && live_ok && !live.empty()) park_current(0);
         save_profile("exit");   // #477: QUIT, or the server closed stdin
 #if defined(STRATA_GPU_METAL)
         // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS

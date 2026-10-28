@@ -703,7 +703,8 @@ Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. T
 are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
 allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
-stage. Parked snapshots are not kept across restarts; with the disk cache below a parked snapshot is one of the session files, so it persists too. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
+stage. Parked snapshots are not kept across restarts; with the disk cache below a parked snapshot is one of the session files, so it persists too when the keep is on
+(`--conversation-cache-days N` above 0; the live conversation is then parked on a clean exit). `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
 
@@ -728,11 +729,14 @@ final integrity check, so a file that turns out corrupt mid-stream costs this re
 the prompt is read again from scratch (the parked copies of other conversations are not lost). The files carry the
 same model and configuration identity as the session files below. At startup
 the folder is scanned: matching files are indexed oldest-first, so a returning client resumes from its file; files
-from another model or configuration, or unused for `--conversation-cache-days` (default 7), are removed, and `0`
-empties the folder at start (the scan runs only when the disk cache is on). Survivors over the budget are
+from another model or configuration are removed, and `--conversation-cache-days N` decides what outlives the
+engine: the default `0` keeps nothing - the next start empties the folder, a run without the disk cache on prunes
+it too (the engine logs `pruned N parked conversation file(s)`), and nothing is parked at exit; with N above 0
+the files survive restarts and ones unused for N days go at start. Survivors over the budget are
 evicted oldest-first and their files go with them, so the
 log line `folder ...: N conversation(s) kept from earlier runs` counts what survived. A pinned shared prefix (`pin=N`,
-above) is runtime-only: a restored conversation comes back un-pinned, and the next request pins it again. On QUIT the
+above) is runtime-only: a restored conversation comes back un-pinned, and the next request pins it again. On QUIT,
+with the keep on, the
 live conversation is parked before the engine exits, so the current chat is there next start; the server gives the
 engine 20 s after
 QUIT before terminating it, so a park that needs longer is simply lost - the file is written under a temporary name
