@@ -1023,6 +1023,77 @@ uint64_t session_hash64(const void* data, size_t n, uint64_t seed) {
     return h.digest();
 }
 
+SessionHasherState SessionHasher::state() const {
+    SessionHasherState s{};  // value-init: the padding past npending is zeroed too, so two
+                             // states for equal inputs compare byte-exactly whole
+    std::memcpy(s.lanes, lane_, sizeof lane_);
+    std::memcpy(s.pending, pending_, npending_);
+    std::memset(s.pending + npending_, 0, sizeof s.pending - npending_);
+    s.npending = (uint8_t) npending_;
+    s.total = total_;
+    return s;
+}
+void SessionHasher::restore(const SessionHasherState& s) {
+    std::memcpy(lane_, s.lanes, sizeof lane_);
+    std::memcpy(pending_, s.pending, sizeof pending_);
+    npending_ = s.npending;  // callers guarantee 0..31 (trailer_parse enforces it on disk reads)
+    total_ = s.total;
+}
+
+// v3 trailer record helpers (layout in the header comment).
+constexpr uint32_t kTrailerMagic = 0x54525453u;  // little-endian bytes 'S','T','R','T'
+
+bool trailer_parse(const uint8_t* b, SessionTrailer& out) {
+    SessionTrailer t;
+    uint32_t magic;
+    std::memcpy(&magic, b, 4);
+    if (magic != kTrailerMagic) return false;
+    if (b[4] != 3) return false;
+    t.version = 3;
+    t.npending = b[5];
+    if (t.npending > 31) return false;
+    std::memcpy(&t.reserved, b + 6, 2);
+    if (t.reserved != 0) return false;
+    uint64_t v[5];
+    for (int i = 0; i < 5; ++i) std::memcpy(&v[i], b + 8 + 8 * i, 8);
+    t.gen = v[0];
+    t.committed_bytes = v[1];
+    t.saved_tokens = v[2];
+    t.digest = v[3];
+    t.chain = v[4];
+    std::memcpy(t.lanes, b + 48, 32);
+    std::memcpy(t.pending, b + 80, 32);
+    std::memcpy(&t.hashed_bytes, b + 112, 8);
+    uint64_t self;
+    std::memcpy(&self, b + 120, 8);
+    if (self != session_hash64(b, 120, 0)) return false;
+    t.self_hash = self;
+    out = t;
+    return true;
+}
+
+void trailer_bytes(const SessionTrailer& t, uint8_t (&b)[128]) {
+    std::memset(b, 0, 128);
+    std::memcpy(b, &kTrailerMagic, 4);
+    b[4] = t.version;
+    b[5] = t.npending;
+    std::memcpy(b + 6, &t.reserved, 2);
+    const uint64_t v[5] = {t.gen, t.committed_bytes, t.saved_tokens, t.digest, t.chain};
+    for (int i = 0; i < 5; ++i) std::memcpy(b + 8 + 8 * i, &v[i], 8);
+    std::memcpy(b + 48, t.lanes, 32);
+    std::memcpy(b + 80, t.pending, 32);
+    std::memcpy(b + 112, &t.hashed_bytes, 8);
+    const uint64_t self = session_hash64(b, 120, 0);
+    std::memcpy(b + 120, &self, 8);
+}
+
+uint64_t trailer_genesis_chain(const SessionFileIdentity& id) {
+    uint8_t buf[16];
+    std::memcpy(buf, &id.model, 8);
+    std::memcpy(buf + 8, &id.config, 8);
+    return session_hash64(buf, 16, 0);
+}
+
 void SessionIdentityBuilder::field(const std::string& tag, uint8_t type, const void* data, uint64_t n) {
     const uint64_t tn = tag.size();
     hash_.update(&tn, 8);
