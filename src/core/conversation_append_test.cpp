@@ -1250,6 +1250,174 @@ void chain_stage_test(uint8_t seed) {
           "stage chain: the three-generation staged file reads as gen 3");
 }
 
+// A planted trailer-only "generation" (drill F2a geometry): the record is framing-valid (committed ==
+// its own position) and chain-valid (its chain IS the real trailer's self_hash) but NO generation
+// group stands between the two records - it is a phantom checkpoint.  The validator must not trust it
+// (a trusted pairing needs at least one byte of group between the records); the reader and the plan
+// must refuse the file's newest "generation" and land on - or refuse below - the real one.
+void chain_plant_test(uint8_t seed) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+
+    SavedConversation c1 = chain_c1(seed, 1024, idx, page, hd);
+    const fs::path p = uniq("app-plant");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "plant fixture: gen 1 written");
+    std::vector<SessionCheckpoint> cps;
+    check(session_file_checkpoints(p.string(), id, cps, error) && cps.size() == 1 && cps.front().trailer.gen == 1,
+          "plant fixture: one clean generation validates");
+
+    auto f = slurp_bin(p);
+    SessionTrailer fake;  // trailer-only gen 2: framing- and chain-valid, no group under it
+    fake.gen = 2;
+    fake.committed_bytes = f.size();  // exactly its own planted position (EOF)
+    fake.saved_tokens = 1100;
+    fake.digest = 0xDEADBEEFCAFEBABEull;  // the validator does not hash payloads; the digest authority will refuse
+    fake.chain = cps.front().trailer.self_hash;  // a genuinely valid chain link
+    fake.lanes[0] = 1;
+    fake.npending = 0;
+    fake.hashed_bytes = 1;
+    uint8_t tb[128];
+    trailer_bytes(fake, tb);
+    f.insert(f.end(), tb, tb + 128);
+    {
+        std::ofstream w(p, std::ios::binary | std::ios::trunc);
+        w.write(reinterpret_cast<const char*>(f.data()), (std::streamsize)f.size());
+    }
+
+    std::vector<SessionCheckpoint> cps2;
+    check(session_file_checkpoints(p.string(), id, cps2, error) && cps2.size() == 1 &&
+              cps2.front().trailer.gen == 1 && cps2.front().trailer_offset + 128 != f.size(),
+          "the phantom generation is not validator-trusted: no group stands between the records");
+
+    SavedConversation parsed;
+    size_t bytes2 = 0;
+    check(session_file_read(p.string(), id, parsed, bytes2, error) && same_conv(parsed, c1),
+          "the planted chain-valid phantom demotes: the read lands on gen 1");
+
+    SessionAppendPlan plan;
+    check(!session_file_append_plan(p.string(), id, plan, error),
+          "append refuses rather than appending past a planted phantom");
+}
+
+// Hostile candidate trailers (review finding M4's pins).  Part 1: field corruption WITH the self_hash
+// recomputed - the record stays parse- and chain-valid (the validator's job is candidates only), so the
+// demotion must come from the reader's authority checks: resume-state equality, hashed_bytes framing
+// and the saved_tokens cross-check.  The read must land on the older verified generation, never trust a
+// half state.  Part 2: damage to a MIDDLE record of a three-generation chain: parse-breaking damage is
+// tolerated (the newest generation survives - the design's intermediate tolerance); recompute-repaired
+// damage breaks the chain arithmetic and the cascade demotes to the newest generation whose chain holds.
+void hostile_trailer_tests(uint8_t seed) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    // --- part 1: two-generation chain, gen-2 trailer fields hostile (self_hash recomputed) ----------
+    SavedConversation c1 = chain_c1(seed, 1024, idx, page, hd);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    SavedConversation c2 = chain_next(c1, b1, 1100, 1100, 1100 / idx + 1, uint8_t(seed + 11), idxb);
+    const fs::path p = uniq("hostile");
+    size_t bytes = 0;
+    uint64_t off2 = 0;
+    auto build2 = [&](void) {  // deterministic chain: identical bytes and trailer offsets every time
+        check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+              "hostile fixture: gen 1 written");
+        SessionAppendPlan plan1;
+        size_t delta = 0;
+        check(session_file_append_plan(p.string(), id, plan1, error) &&
+                  session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan1, delta, error, opt),
+              "hostile fixture: gen 2 appended");
+        std::vector<SessionCheckpoint> cps;
+        check(session_file_checkpoints(p.string(), id, cps, error) && cps.front().trailer.gen == 2,
+              "hostile fixture: the two-generation file validates");
+        off2 = cps.front().trailer_offset;
+    };
+    build2();
+
+    auto corrupt_candidate = [&](size_t rel, size_t n, uint8_t pattern, const char* label) {
+        auto f = slurp_bin(p);
+        std::memset(f.data() + off2 + rel, pattern, n);  // deterministic overwrite of the field
+        uint64_t self = session_hash64(f.data() + off2, 120, 0);  // re-pin: the record parses again
+        std::memcpy(f.data() + off2 + 120, &self, 8);
+        {
+            std::ofstream w(p, std::ios::binary | std::ios::trunc);
+            w.write(reinterpret_cast<const char*>(f.data()), (std::streamsize)f.size());
+        }
+        SavedConversation parsed;
+        size_t bytes2 = 0;
+        // the validator still supplies the re-pinned record as a CANDIDATE (by design - digest territory);
+        // the reader's authority checks (digest, resume equality, saved_tokens) must refuse it and land
+        // on the older verified generation.
+        check(session_file_read(p.string(), id, parsed, bytes2, error) && same_conv(parsed, c1), label);
+        build2();  // rebuild the exact same chain for the next variant
+    };
+    corrupt_candidate(80 + 17, 1, 0xFF, "a hostile resume pending byte (re-pinned) demotes the candidate: resume equality");
+    corrupt_candidate(48 + 16, 8, 0xA5, "hostile resume lanes (re-pinned) demote: resume equality");
+    corrupt_candidate(112, 8, 0x5A, "hostile hashed_bytes (re-pinned) demotes: framing / resume total");
+    corrupt_candidate(24, 8, 0x3C, "hostile saved_tokens (re-pinned) demotes: saved_tokens vs the live list");
+
+    // --- part 2: three-generation chain, damage in the MIDDLE record -------------------------------
+    const fs::path q = uniq("hostile-mid");
+    check(session_file_write(q.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "mid-damage fixture: gen 1 written");
+    SessionAppendPlan mplan1;
+    size_t mdelta = 0;
+    check(session_file_append_plan(q.string(), id, mplan1, error) &&
+              session_file_append(q.string(), chain_meta(c2), chain_sources(c2, idx), id, mplan1, mdelta, error, opt),
+          "mid-damage fixture: gen 2 appended");
+    const Bounds b2 = gen_bounds(c2, idxb);
+    SavedConversation c3 = chain_next(c2, b2, 1200, 1200, 1200 / idx + 1, uint8_t(seed + 23), idxb);
+    SessionAppendPlan mplan2;
+    check(session_file_append_plan(q.string(), id, mplan2, error) && mplan2.checkpoint.trailer.gen == 2 &&
+              session_file_append(q.string(), chain_meta(c3), chain_sources(c3, idx), id, mplan2, mdelta, error, opt),
+          "mid-damage fixture: gen 3 appended");
+    std::vector<SessionCheckpoint> mcps;
+    check(session_file_checkpoints(q.string(), id, mcps, error) && mcps.size() == 3 && mcps.front().trailer.gen == 3,
+          "mid-damage fixture: three generations validate");
+    uint64_t off_gen2 = 0;
+    for (const auto& cc : mcps)
+        if (cc.trailer.gen == 2) off_gen2 = cc.trailer_offset;
+    check(off_gen2 != 0, "mid-damage fixture: the middle record is located");
+
+    {  // A: damage that BREAKS the middle record's parse (no re-pin) -> tolerated -> gen 3 survives
+        auto f = slurp_bin(q);
+        f[off_gen2 + 33] ^= 0xFF;  // inside its digest field: the self-hash no longer matches -> parse fails
+        {
+            std::ofstream w(q, std::ios::binary | std::ios::trunc);
+            w.write(reinterpret_cast<const char*>(f.data()), (std::streamsize)f.size());
+        }
+        SavedConversation parsed;
+        size_t bytes2 = 0;
+        check(session_file_read(q.string(), id, parsed, bytes2, error) && same_conv(parsed, c3),
+              "parse-breaking middle damage is tolerated: the newest generation survives (digest authority)");
+        SessionAppendPlan plan3;
+        check(session_file_append_plan(q.string(), id, plan3, error) && plan3.checkpoint.trailer.gen == 3,
+              "the append plan still plans on the newest generation through the damaged middle record");
+    }
+    {  // B: damage REPAIRED at the record level (self re-pinned): the chain arithmetic breaks instead.
+        // (A different byte than A's: re-flipping A's byte would restore the record unchanged.)
+        auto f = slurp_bin(q);
+        f[off_gen2 + 34] ^= 0xFF;  // now two digest bytes differ and the self-hash is freshly pinned
+        uint64_t self = session_hash64(f.data() + off_gen2, 120, 0);
+        std::memcpy(f.data() + off_gen2 + 120, &self, 8);
+        {
+            std::ofstream w(q, std::ios::binary | std::ios::trunc);
+            w.write(reinterpret_cast<const char*>(f.data()), (std::streamsize)f.size());
+        }
+        SavedConversation parsed;
+        size_t bytes2 = 0;
+        check(session_file_read(q.string(), id, parsed, bytes2, error) && same_conv(parsed, c1),
+              "chain-breaking repaired middle damage cascades: gen 3's chain and gen 2's digest both refuse");
+    }
+}
+
 // Gate refusals: a state or file the append path must decline (the caller full-rewrites instead).
 void append_refusal_tests() {
     const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
@@ -1677,6 +1845,8 @@ void save_gate_tests() {
 void append_writer_tests() {
     append_chain_test(7);
     chain_stage_test(9);
+    chain_plant_test(11);
+    hostile_trailer_tests(13);
     append_refusal_tests();
     append_seam_tests();
     append_torn_test();

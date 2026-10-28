@@ -1271,6 +1271,7 @@ void SessionHasher::restore(const SessionHasherState& s) {
 
 // v3 trailer record helpers (layout in the header comment).
 constexpr uint32_t kTrailerMagic = 0x54525453u;  // little-endian bytes 'S','T','R','T'
+constexpr size_t kRecordV3 = 128;  // the v3 checkpoint RECORD size (the kTrailer above is v2's 16 B end marker)
 
 bool trailer_parse(const uint8_t* b, SessionTrailer& out) {
     SessionTrailer t;
@@ -1427,6 +1428,9 @@ bool session_file_checkpoints(const std::string& path, const SessionFileIdentity
         if (c.t.gen == 1 && c.t.chain == genesis) { c.trusted = any = true; continue; }
         for (const auto& p : cands) {
             if (p.off >= c.off || !p.trusted || p.t.gen != c.t.gen - 1) continue;
+            if (c.off < p.off + kRecordV3 + 1) continue;  // a trusted pairing needs a generation GROUP between
+            // the records: two trailer records back-to-back (a planted phantom - drill F2a geometry) is not
+            // a chain of generations, whatever the chain hash says
             if (p.t.self_hash == c.t.chain) { c.trusted = any = true; break; }
         }
         if (!c.trusted && c.off == hv.reserved0 && hv.reserved1 >= kHeader + 128 && hv.reserved1 - 128 == c.off) {
