@@ -7,10 +7,14 @@ from __future__ import annotations
 import random
 import sys
 import unittest
+import threading
+import time
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.server import StrataEngine  # noqa: E402
+from serve import slot_policy  # noqa: E402
 
 
 def engine(batch, groups, pipelined=True):
@@ -60,10 +64,25 @@ class Pipelined(unittest.TestCase):
                 e.slot_busy[b] = True
 
     def test_held_tokens_are_ignored(self):
-        # the engine keeps no pipelined slot as a cache: a held prefix must not pull a request into a hole-making slot
+        # Affinity is opt-in: the default still prioritizes pipeline placement over held prefixes.
         e = engine(6, 3)
         e.slot_held[5] = [1, 2]
         self.assertEqual(e.pick_slot([1, 2, 3]), 0)
+
+
+class CacheAffinity(unittest.TestCase):
+    def engine(self):
+        e = engine(6, 3)
+        e.slot_cache_affinity = True
+        e.slot_used = [time.time()] * 6
+        return e
+
+    def test_environment_survives_lazy_restart_setup(self):
+        e = StrataEngine("missing", [], env={"STRATA_SLOT_CACHE_AFFINITY": "1"}, lazy=True)
+        self.assertTrue(e.slot_cache_affinity)
+        restarted = StrataEngine(*e.spawn[:5], lazy=True, cpus=e.spawn[6])
+        self.assertTrue(restarted.slot_cache_affinity)
+        self.assertFalse(StrataEngine("missing", [], env={}, lazy=True).slot_cache_affinity)
 
 
 class OneGroup(unittest.TestCase):
@@ -103,6 +122,150 @@ class OneSlotGroups(unittest.TestCase):
         e.slot_held[3] = hist + [T, 7, 8] + [50]
         self.assertEqual(e.pick_slot(hist + [T, 5, 6] + list(range(3000, 3050))), 0)
 
+
+class RetentionPolicy(unittest.TestCase):
+    NOW = 1000.0
+
+    def e(self):
+        e = engine(6, 3)
+        e.slot_cache_affinity = True
+        e.slot_used = [self.NOW] * 6
+        return e
+
+    def place(self, e, prompt, **kw):
+        return slot_policy.place(prompt, e.slot_busy, e.slot_held, e.slot_used,
+                                 e.slot_order, e.slot_gs, self.NOW, **kw)
+
+    def test_padding_invalidity_survives_completion_of_higher_row(self):
+        e = self.e()
+        e.slot_cv = threading.Condition()
+        e.slot_cache_valid = [False] * 6
+        e._slot_native_active = [False] * 6
+        e._slot_steps = [0] * 6
+        e._slot_valid_until = [{} for _ in range(6)]
+        e._observe_cache_line('BADM 2 1')
+        e._observe_cache_line('BADM 3 1')
+        e._observe_cache_line('BT 2 99')
+        e._observe_cache_line('BDONE 2 2 stop 1')
+        e._observe_cache_line('BT 3 88')  # same window: row 2 was not padding
+        self.assertTrue(e.slot_cache_valid[2])
+        e._observe_cache_line('BT 3 87')  # next window: row 2 was padding
+        self.assertFalse(e.slot_cache_valid[2])
+        e._observe_cache_line('BDONE 3 3 stop 1')
+        self.assertFalse(e.slot_cache_valid[2])
+        self.assertTrue(e.slot_cache_valid[3])
+        # A later real request can restore the lower row's validity.
+        e._observe_cache_line('BADM 2 1')
+        e._observe_cache_line('BDONE 2 2 stop 1')
+        self.assertTrue(e.slot_cache_valid[2])
+
+    def test_new_higher_row_invalidates_lower_cache_on_its_first_window(self):
+        e = self.e()
+        e.slot_cv = threading.Condition()
+        e.slot_cache_valid = [False] * 6
+        e._slot_native_active = [False] * 6
+        e._slot_steps = [0] * 6
+        e._slot_valid_until = [{} for _ in range(6)]
+        e._observe_cache_line('BADM 2 1')
+        e._observe_cache_line('BDONE 2 2 stop 1')
+        self.assertTrue(e.slot_cache_valid[2])
+        e._observe_cache_line('BADM 3 1')  # row 3 was absent from row 2's final window
+        e._observe_cache_line('BT 3 88')
+        e._observe_cache_line('BDONE 3 2 stop 1')
+        self.assertFalse(e.slot_cache_valid[2])
+
+
+class ParkMainSession(unittest.TestCase):
+    """Engine park=: before a side request replaces the main (solo) session, its conversation is copied into a slot."""
+    NOW = 100000.0
+
+    def e(self):
+        e = engine(6, 3)
+        e.slot_cache_affinity = True
+        e.slot_padding_safe = True
+        e.info = {"slot_park": 1}
+        e.slot_used = [self.NOW] * 6
+        e.slot_cv = threading.Condition()
+        e.slot_cache_valid = [True] * 6
+        e.slot_cache_peer = [None] * 6
+        e._park_claims, e.slot_claims = set(), set()
+        e.main_held = [7] * 50000
+        e.main_peer = "192.0.2.9"
+        return e
+
+    def dest(self, e, exclude=()):
+        return slot_policy.park_destination(e.main_held, e.slot_busy, e.slot_held, e.slot_used, e.slot_order,
+                                            e.slot_gs, self.NOW, e.slot_cache_valid, True, exclude)
+
+    def test_another_conversation_is_told_by_the_main_history_up_to_its_last_turn(self):
+        # main: system (turn 1 at 0), user turn at 20000, reply turn at 29000; a prompt that shares all of it up to
+        # the reply's turn is the same conversation, one that diverges earlier is another (here: only the 20K system
+        # prompt and tools in common, which is more than half of the 30K held)
+        T = 248045
+        e = self.e()
+        e.info = {"slot_park": "1", "turn_token": str(T)}
+        main = [T] + [5] * 19999 + [T] + [6] * 8999 + [T] + [8] * 999
+        e.main_held = list(main)
+        same = main[:29000] + [T] + [9] * 50 + [T] + [1] * 10      # its reply without the thinking, and a next turn
+        self.assertEqual(e._claim_park(same), "")
+        self.assertEqual(e._claim_park(main[:29001]), "")           # the reply regenerated
+        other = main[:20000] + [T] + [3] * 500                      # another chat of the same client
+        with self.assertRaises(NotImplementedError):                # another conversation: the policy is asked
+            e._claim_park(other)
+        e.info = {"slot_park": "1"}                                 # an engine that does not say: any difference counts
+        with self.assertRaises(NotImplementedError):
+            e._claim_park(same)
+
+    def test_off_without_engine_capability_or_padding_safety(self):
+        e = self.e()
+        e.info = {}
+        self.assertEqual(e._claim_park([1] * 60), "")
+        e.info = {"slot_park": 1}
+        e.slot_padding_safe = False
+        self.assertEqual(e._claim_park([1] * 60), "")
+
+
+class NativePaddingSafety(unittest.TestCase):
+
+    def test_safe_native_steps_do_not_invalidate_finished_lower_slot(self):
+        e = engine(6, 3)
+        e.slot_padding_safe = True
+        e.slot_cv = threading.Condition()
+        e.slot_cache_valid = [False] * 6
+        e._slot_native_active = [False] * 6
+        e._slot_steps = [0] * 6
+        e._slot_valid_until = [{} for _ in range(6)]
+        e._observe_cache_line('BADM 2 1')
+        e._observe_cache_line('BADM 3 1')
+        e._observe_cache_line('BDONE 2 2 stop 1')
+        for _ in range(3):
+            e._observe_cache_line('BT 3 88')
+        e._observe_cache_line('BDONE 3 4 stop 1')
+        self.assertTrue(e.slot_cache_valid[2])
+        self.assertTrue(e.slot_cache_valid[3])
+
+
+
+class CacheObservability(unittest.TestCase):
+
+    def test_busy_view_keeps_actual_reuse_separate_from_hint_and_peer(self):
+        e = engine(2, 1)
+        e.slot_cache_affinity = True
+        e.slot_live = [{"state": "decoding", "prompt_tokens": 1000, "generated": 3,
+                        "started": time.time(), "first_token": None, "peer_ip": "2001:db8::7",
+                        "cache_reused_tokens": 0, "cache_match_hint": 900}, None]
+        row = e.slots_view()[0]
+        self.assertEqual((row["cache_reused_tokens"], row["cache_match_hint"]), (0, 900))
+        self.assertEqual(row["peer_ip"], "2001:db8::7")
+
+    def test_event_ring_is_bounded_and_returns_snapshot(self):
+        e = engine(2, 1)
+        for n in range(120):
+            e.cache_event("allocation", slot=n % 2)
+        events = e.cache_events_view()
+        self.assertEqual(len(events), 96)
+        events.clear()
+        self.assertEqual(len(e.cache_events_view()), 96)
 
 if __name__ == "__main__":
     unittest.main()
