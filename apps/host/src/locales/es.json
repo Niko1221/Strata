@@ -3594,5 +3594,6 @@
   "s9165": "Sin ejecutar: escrito como texto",
   "s9166": "El asistente escribió esta llamada a la herramienta como texto, así que no se ejecutó.",
   "s9167": "No se ejecutó nada. El asistente lo escribió como texto en vez de llamar a la herramienta.",
-  "s9168": "Escribí una llamada a la herramienta como texto en vez de llamarla, así que no se ejecutó. Si el trabajo se quedó ahí, di «continúa» y la enviaré como una llamada real."
+  "s9168": "Escribí una llamada a la herramienta como texto en vez de llamarla, así que no se ejecutó. Si el trabajo se quedó ahí, di «continúa» y la enviaré como una llamada real.",
+  "s9169": "≈{0} tokens"
 }

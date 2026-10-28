@@ -3594,5 +3594,6 @@
   "s9165": "Nicht ausgeführt – als Text geschrieben",
   "s9166": "Der Assistent hat diesen Werkzeugaufruf als Text geschrieben, deshalb wurde er nicht ausgeführt.",
   "s9167": "Es wurde nichts ausgeführt. Der Assistent hat den Aufruf als Text geschrieben, statt das Werkzeug aufzurufen.",
-  "s9168": "Ich habe einen Werkzeugaufruf als Text geschrieben, statt das Werkzeug aufzurufen; er wurde deshalb nicht ausgeführt. Wenn die Arbeit dort stehen blieb, sag „weiter“, dann sende ich ihn als echten Aufruf."
+  "s9168": "Ich habe einen Werkzeugaufruf als Text geschrieben, statt das Werkzeug aufzurufen; er wurde deshalb nicht ausgeführt. Wenn die Arbeit dort stehen blieb, sag „weiter“, dann sende ich ihn als echten Aufruf.",
+  "s9169": "ca. {0} Token"
 }

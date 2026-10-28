@@ -1,23 +1,44 @@
 import { useEffect, useRef, useState } from 'react';
-import { tr } from '../lib/i18n';
+import { localeTag, tr } from '../lib/i18n';
 import type { ChatMessage } from '../lib/types';
-import { atBottom, lastReasoningLine, thoughtDuration } from '../lib/reasoning';
+import { approximateTokens, atBottom, reasoningTime, thoughtDuration } from '../lib/reasoning';
 import { Icon } from './ui';
 
 /**
- * The model's reasoning as one quiet line above its answer. Closed by default: while it reasons the line shows what it is thinking about,
- * afterwards "Thought for 38s". Opened, it is a short muted box that follows the newest line unless the person scrolls up.
+ * The model's reasoning as one quiet line above its answer. Closed by default.
+ *
+ * While it thinks the line says how long and about how many tokens, so a five-minute thought never looks stuck; when the
+ * answer starts it freezes as "Thought for 5m 26s · ≈3,120 tokens". Only the time the model itself spent thinking is
+ * counted: a segment ends when the answer or a tool call begins (lib/reasoning.ts). Opened, it is a muted box that follows
+ * the newest line unless the person scrolls up.
  */
 export function ReasoningBlock({ message }: { message: ChatMessage }) {
   const text = message.reasoning ?? '';
   const body = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [stick, setStick] = useState(true);
-  const thinking = !!message.streaming && message.reasoningMs === undefined && !message.content;
-  useEffect(() => { if (open && stick && body.current) body.current.scrollTop = body.current.scrollHeight; }, [text, open, stick]);
-  useEffect(() => { if (open) { setStick(true); requestAnimationFrame(() => { if (body.current) body.current.scrollTop = body.current.scrollHeight; }); } }, [open]);
-  const took = thoughtDuration(message.reasoningMs);
-  const label = thinking ? lastReasoningLine(text) || tr('Thinking…') : took ? tr('Thought for {0}', [took]) : tr('Reasoning');
+  const [now, setNow] = useState(() => Date.now());
+  const thinking = !!message.streaming && message.reasoningOpen === true;
+  // One tick a second while it thinks: the number moves, and nothing else in the chat re-renders.
+  useEffect(() => {
+    if (!thinking)
+      return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [thinking]);
+  useEffect(() => { if (open && stick && body.current)
+    body.current.scrollTop = body.current.scrollHeight; }, [text, open, stick]);
+  useEffect(() => { if (open) {
+    setStick(true);
+    requestAnimationFrame(() => { if (body.current)
+        body.current.scrollTop = body.current.scrollHeight; });
+} }, [open]);
+  const took = thoughtDuration(reasoningTime(message, now));
+  const approx = approximateTokens(text);
+  const tokenText = approx > 0 ? tr('≈{0} tokens', [approx.toLocaleString(localeTag())]) : '';
+  const head = thinking ? `${tr('Thinking…')} ${took ?? '0s'}` : took ? tr('Thought for {0}', [took]) : tr('Reasoning');
+  const label = tokenText ? `${head} · ${tokenText}` : head;
   return <details className="rz" open={open} data-live={thinking || undefined} onToggle={e => setOpen(e.currentTarget.open)}>
     <summary><Icon name="thinking" size={14}/><span className="rz__label">{label}</span><Icon name="chevron" size={12} className="rz__chev"/></summary>
     <div className="rz__body" ref={body} tabIndex={0} aria-label={tr('Model reasoning')} onScroll={e => setStick(atBottom(e.currentTarget))}>{text}</div>

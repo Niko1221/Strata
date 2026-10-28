@@ -3594,5 +3594,6 @@
   "s9165": "Not run — written as text",
   "s9166": "The assistant wrote this tool call as text, so it did not run.",
   "s9167": "Nothing ran. The assistant wrote this as text instead of calling the tool.",
-  "s9168": "I wrote one tool call as text instead of calling the tool, so it did not run. If the work stopped there, say \"continue\" and I will send it as a real call."
+  "s9168": "I wrote one tool call as text instead of calling the tool, so it did not run. If the work stopped there, say \"continue\" and I will send it as a real call.",
+  "s9169": "≈{0} tokens"
 }

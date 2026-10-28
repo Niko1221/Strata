@@ -56,6 +56,23 @@ test('item 2: the reasoning row shows what it is thinking about, then how long i
   assert.equal(reasoning.atBottom({ scrollHeight: 500, scrollTop: 100, clientHeight: 160 }), false, 'scrolled up: stop following');
 });
 
+test('the reasoning row counts only the thinking: a tool run between two thoughts is not added to it', () => {
+  // A segment that is still running counts up; a message that is no longer streaming uses the closed total only.
+  assert.equal(reasoning.reasoningTime({ reasoningMs: 1000, reasoningOpen: true, reasoningStartedAt: 2000, streaming: true }, 7000), 6000);
+  assert.equal(reasoning.reasoningTime({ reasoningMs: 1000, reasoningOpen: true, reasoningStartedAt: 2000, streaming: false }, 7000), 1000);
+  // Closing a segment adds its own time, not the time since the message began.
+  const closed = reasoning.closeReasoningSegment({ reasoningMs: 2000, reasoningOpen: true, reasoningStartedAt: 1000 }, 6000);
+  assert.equal(closed.reasoningMs, 7000); assert.equal(closed.reasoningOpen, false); assert.equal(closed.reasoningStartedAt, undefined);
+  // A second segment adds to the first instead of replacing it.
+  const again = reasoning.closeReasoningSegment({ reasoningMs: closed.reasoningMs, reasoningOpen: true, reasoningStartedAt: 9000 }, 9500);
+  assert.equal(again.reasoningMs, 7500);
+  assert.deepEqual(reasoning.closeReasoningSegment({ reasoningMs: 500, reasoningOpen: false }, 9000), { reasoningMs: 500, reasoningOpen: false }, 'nothing running, nothing to add');
+  // About how many tokens: a CJK character is one, other text about four characters per token.
+  assert.equal(reasoning.approximateTokens('hello world'), 3);
+  assert.equal(reasoning.approximateTokens('你好'), 2);
+  assert.equal(reasoning.approximateTokens(''), 0);
+});
+
 test('item 5: the goal object from a frame, an event or a route; anything else is "no goal"', () => {
   assert.equal(goal.readGoal(null), null); assert.equal(goal.readGoal({ objective: '', phase: 'active' }), null); assert.equal(goal.readGoal({ objective: 'x', phase: 'weird' }), null);
   const g = goal.readGoal({ objective: 'Build the page', phase: 'blocked', round: 2, maxRounds: 5, blocked: 'It needs a folder.' });
