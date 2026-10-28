@@ -1094,6 +1094,41 @@ uint64_t trailer_genesis_chain(const SessionFileIdentity& id) {
     return session_hash64(buf, 16, 0);
 }
 
+constexpr uint32_t kVersion3 = 3;
+
+void header_bytes_v3(uint8_t (&h)[64], const SessionFileIdentity& id, const SessionHeaderV3& body) {
+    std::memset(h, 0, 64);
+    std::memcpy(h, kMagic, 8);
+    const uint32_t version = kVersion3, size = (uint32_t) kHeader;
+    std::memcpy(h + 8, &version, 4);
+    std::memcpy(h + 12, &size, 4);
+    std::memcpy(h + 16, &id.model, 8);
+    std::memcpy(h + 24, &id.config, 8);
+    const uint64_t root = session_hash64(h, 32, 0);  // covers the immutable region only
+    std::memcpy(h + 32, &root, 8);
+    std::memcpy(h + 40, &body.payload, 8);
+    std::memcpy(h + 48, &body.reserved0, 8);
+    std::memcpy(h + 56, &body.reserved1, 8);
+}
+
+bool header_parse_v3(const uint8_t* h, const SessionFileIdentity& expect, SessionHeaderV3& body, std::string& error) {
+    if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a session file"; return false; }
+    uint32_t version, size;
+    std::memcpy(&version, h + 8, 4);
+    std::memcpy(&size, h + 12, 4);
+    if (version != kVersion3 || size != (uint32_t) kHeader) { error = "session file: not a v3 header"; return false; }
+    uint64_t model, config, root;
+    std::memcpy(&model, h + 16, 8);
+    std::memcpy(&config, h + 24, 8);
+    std::memcpy(&root, h + 32, 8);
+    if (root != session_hash64(h, 32, 0)) { error = "session file: header checksum mismatch"; return false; }
+    if (model != expect.model || config != expect.config) { error = "session file: another model or configuration"; return false; }
+    std::memcpy(&body.payload, h + 40, 8);
+    std::memcpy(&body.reserved0, h + 48, 8);
+    std::memcpy(&body.reserved1, h + 56, 8);
+    return true;
+}
+
 void SessionIdentityBuilder::field(const std::string& tag, uint8_t type, const void* data, uint64_t n) {
     const uint64_t tn = tag.size();
     hash_.update(&tn, 8);
