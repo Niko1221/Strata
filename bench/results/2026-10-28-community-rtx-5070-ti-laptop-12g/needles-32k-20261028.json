@@ -2,8 +2,8 @@
  {
   "length": "32k",
   "depth": 10,
-  "prompt_tokens": 31640,
-  "seconds": 32.5,
+  "prompt_tokens": 32096,
+  "seconds": 23.8,
   "found": true,
   "word": "meadow-copper-504",
   "answer": "meadow-copper-504"
@@ -11,8 +11,8 @@
  {
   "length": "32k",
   "depth": 50,
-  "prompt_tokens": 31640,
-  "seconds": 32.2,
+  "prompt_tokens": 32096,
+  "seconds": 23.8,
   "found": true,
   "word": "falcon-quartz-940",
   "answer": "falcon-quartz-940"
@@ -20,8 +20,8 @@
  {
   "length": "32k",
   "depth": 90,
-  "prompt_tokens": 31641,
-  "seconds": 30.8,
+  "prompt_tokens": 32097,
+  "seconds": 23.7,
   "found": true,
   "word": "willow-cobalt-696",
   "answer": "willow-cobalt-696"
