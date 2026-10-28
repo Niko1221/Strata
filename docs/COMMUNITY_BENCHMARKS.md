@@ -20,6 +20,13 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-28: RTX 5080 16 GB + RTX 5060 Ti 16 GB, Ryzen 7 9800X3D, 96 GB RAM](../bench/results/2026-10-28-community-rtx-5080-5060ti/README.md):
+  Strata 0.2.7 / engine 0.1.52, four **draft-standard** `strata bench run` results (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S) at the
+  262,144-token context, all with 12/12 sanity checks, plus 15 legacy quick-suite models and Q5/Q6 capacity probes.
+  Q2_0 on both cards: decode 127.8 tok/s, 4K prompt 1,628.1 tok/s, 16K prompt 2,506.4 tok/s. The same Q2_0 on one 5080:
+  decode 141.5 tok/s, 4K 2,823.0 tok/s, 16K 3,631.4 tok/s, so the second card adds capacity, not speed. Both larger files
+  ran; Q5 decoded 34.6 tok/s and Q6 24.8 tok/s, with Q6 streaming experts from the SSD. Qwen3.6 uses a 60K needle fallback
+  because a 64K request exceeds its 65,536-token window.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

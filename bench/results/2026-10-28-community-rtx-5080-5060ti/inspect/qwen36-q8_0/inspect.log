@@ -1,0 +1,19 @@
+$ <strata>\.venv\Scripts\python.exe <strata>\setup.py --inspect <data>\models\qwen36-Q8_0\Qwen3.6-35B-A3B-Q8_0.gguf
+[2026-10-28 14:36:00]
+
+
+=== Qwen3.6-35B-A3B-Q8_0 ===
+total 37.79 GB, 35.51 B weights, 8.51 bits/weight overall
+group                            weights       GB  bits/w  types (share of bytes)
+routed experts                    33.02B    35.08    8.50  Q8_0 100%
+attention (incl. GDN qkv/gate)     1.05B     1.12    8.50  Q8_0 100%
+output head                        0.51B     0.54    8.50  Q8_0 100%
+token embedding                    0.51B     0.54    8.50  Q8_0 100%
+linear attn/SSM                    0.26B     0.28    8.59  Q8_0 99%, F32 1%
+shared experts                     0.13B     0.14    8.52  Q8_0 100%, F32 0%, BF16 0%
+router                             0.02B     0.08   31.61  F32 99%, BF16 1%
+MTP / nextn                        0.01B     0.01    8.50  Q8_0 100%
+norms                              0.00B     0.00   32.00  F32 100%
+-> routed experts are 8.50 bits/weight (Q8 class)
+
+Strata: Qwen3.6-35B-A3B (architecture 'qwen35moe'): Strata runs it on its own engine path in the NVIDIA (CUDA) and AMD (HIP) builds, not yet on Intel Arc (SYCL); setup installs it with --family qwen36

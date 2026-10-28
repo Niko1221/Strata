@@ -1,0 +1,1 @@
+This is a sanitized copy of the `strata bench run` folder for one model. The runner labels the install a `source` build because the harness is a git checkout; the engine binary is the official prebuilt 0.1.52 Windows CUDA 13 component. See `results.json` -> `software` and `config.json` for the effective settings.

@@ -1,0 +1,100 @@
+strata generate: expert arena read unbuffered (0 of 16 probe reads from the file cache; 3.8 GiB available, 51.1 GiB of files)
+strata: pinned-memory headroom: 640 MiB handed back after the expert arena
+strata generate: expert arena: locked 40290 MiB via working-set minimum + VirtualLock; cudaHostRegister limited to 8 GiB by the engine (multi-GPU under WDDM, or remote experts); 8 slices pinned (7 GiB); large pages refused for 50295996416 B (GetLargePageMinimum=2097152, VirtualAlloc error 1450); using 4 KB pages
+strata generate: 7 pool workers on logical processors 2,4,6,8,10,12,14, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 10.59 GiB free, 2048 MiB reserved (+0 MiB for the draft head) -> 3464 slots
+strata generate: expert cache 4774 slots, 8.59 GiB of VRAM; policy is
+strata generate: pre-filled 4774 of 4774 slots from the profile in 0.5 s (17024 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 9.09 GiB free of 15.89, room for experts 7.53 GiB
+strata generate: layer split: CUDA1 runs layers 25-47, expert cache 3735 slots (7.53 GiB), 3735 of its 11776 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-24
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.52)
+strata serve: the prompt path borrows 2036 CUDA0 cache slots (3.66 GiB)
+strata serve:   CUDA1 prompt path borrows 1821 of its 3735 slots (3.66 GiB)
+strata serve: layer split: layers 0-24 (CUDA0), 25-47 (CUDA1), one hand-off per window
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: decode expert cache hit rate: 69.7% (8055 hits / 11564 lookups)
+strata serve: KV streaming: 96.84% of 2850 block reads hit VRAM, 0.4 MiB read from RAM
+strata prefill: layer-major prefill is on for this layer split (each layer's experts are read once per super-chunk of up to 32768 tokens, not once per chunk; STRATA_PREFILL_LAYER_MAJOR=0 or STRATA_DEFAULTS=026 turns it off)
+strata serve: decode expert cache hit rate: 90.8% (404 hits / 445 lookups)
+strata serve: KV streaming: 85.62% of 2712 block reads hit VRAM, 1.6 MiB read from RAM
+strata serve: decode expert cache hit rate: 93.1% (419 hits / 450 lookups)
+strata serve: KV streaming: 85.66% of 9498 block reads hit VRAM, 5.5 MiB read from RAM
+strata serve: decode expert cache hit rate: 85.0% (4152 hits / 4886 lookups)
+strata serve: KV streaming: 94.09% of 26292 block reads hit VRAM, 6.3 MiB read from RAM
+strata serve: decode expert cache hit rate: 88.9% (45146 hits / 50775 lookups)
+strata serve: KV streaming: 98.85% of 19806 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 89.0% (53237 hits / 59801 lookups)
+strata serve: KV streaming: 98.93% of 20148 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 89.5% (51468 hits / 57523 lookups)
+strata serve: KV streaming: 98.91% of 20382 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 84.0% (40413 hits / 48130 lookups)
+strata serve: KV streaming: 98.80% of 19056 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 91.6% (52428 hits / 57222 lookups)
+strata serve: KV streaming: 98.86% of 19014 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 92.3% (56816 hits / 61589 lookups)
+strata serve: KV streaming: 98.99% of 22086 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 83.2% (41842 hits / 50262 lookups)
+strata serve: KV streaming: 98.85% of 19806 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 91.4% (55996 hits / 61275 lookups)
+strata serve: KV streaming: 98.97% of 20988 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 91.1% (50242 hits / 55177 lookups)
+strata serve: KV streaming: 98.86% of 19488 block reads hit VRAM, 0.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 81.8% (10150 hits / 12403 lookups)
+strata serve: KV streaming: 94.52% of 104754 block reads hit VRAM, 23.1 MiB read from RAM
+strata serve: decode expert cache hit rate: 94.2% (13395 hits / 14216 lookups)
+strata serve: KV streaming: 95.04% of 114000 block reads hit VRAM, 22.8 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.1% (16352 hits / 16834 lookups)
+strata serve: KV streaming: 95.56% of 129390 block reads hit VRAM, 23.1 MiB read from RAM
+strata serve: decode expert cache hit rate: 98.8% (17239 hits / 17457 lookups)
+strata serve: KV streaming: 90.76% of 132468 block reads hit VRAM, 49.3 MiB read from RAM
+strata serve: decode expert cache hit rate: 99.4% (17911 hits / 18025 lookups)
+strata serve: KV streaming: 90.97% of 135546 block reads hit VRAM, 49.3 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.9% (12844 hits / 13113 lookups)
+strata serve: KV streaming: 87.93% of 104748 block reads hit VRAM, 50.9 MiB read from RAM
+strata serve: decode expert cache hit rate: 85.9% (11668 hits / 13579 lookups)
+strata serve: KV streaming: 97.15% of 33432 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: decode expert cache hit rate: 91.6% (30990 hits / 33823 lookups)
+strata serve: KV streaming: 98.21% of 279900 block reads hit VRAM, 20.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 93.3% (38614 hits / 41386 lookups)
+strata serve: KV streaming: 98.73% of 575670 block reads hit VRAM, 29.5 MiB read from RAM
+strata serve: decode expert cache hit rate: 94.4% (34934 hits / 37020 lookups)
+strata serve: KV streaming: 98.62% of 840648 block reads hit VRAM, 46.7 MiB read from RAM
+strata serve: decode expert cache hit rate: 96.9% (32107 hits / 33150 lookups)
+strata serve: KV streaming: 98.65% of 1077882 block reads hit VRAM, 58.8 MiB read from RAM
+strata serve: decode expert cache hit rate: 92.5% (34540 hits / 37325 lookups)
+strata serve: KV streaming: 98.63% of 1349004 block reads hit VRAM, 74.4 MiB read from RAM
+strata serve: decode expert cache hit rate: 89.8% (9414 hits / 10480 lookups)
+strata serve: KV streaming: 96.50% of 26736 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.8% (34889 hits / 35687 lookups)
+strata serve: KV streaming: 98.20% of 279390 block reads hit VRAM, 20.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 95.5% (36817 hits / 38547 lookups)
+strata serve: KV streaming: 98.68% of 553602 block reads hit VRAM, 29.4 MiB read from RAM
+strata serve: decode expert cache hit rate: 94.3% (32694 hits / 34660 lookups)
+strata serve: KV streaming: 98.54% of 803172 block reads hit VRAM, 47.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.5% (33750 hits / 34618 lookups)
+strata serve: KV streaming: 98.59% of 1049658 block reads hit VRAM, 59.4 MiB read from RAM
+strata serve: decode expert cache hit rate: 95.1% (33771 hits / 35519 lookups)
+strata serve: KV streaming: 98.58% of 1305402 block reads hit VRAM, 74.6 MiB read from RAM
+strata serve: decode expert cache hit rate: 90.4% (7808 hits / 8639 lookups)
+strata serve: KV streaming: 95.94% of 23046 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.5% (34321 hits / 35198 lookups)
+strata serve: KV streaming: 98.16% of 272610 block reads hit VRAM, 20.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 95.5% (34144 hits / 35736 lookups)
+strata serve: KV streaming: 98.62% of 528330 block reads hit VRAM, 29.4 MiB read from RAM
+strata serve: decode expert cache hit rate: 94.5% (30986 hits / 32794 lookups)
+strata serve: KV streaming: 98.47% of 765582 block reads hit VRAM, 47.1 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.6% (27461 hits / 28139 lookups)
+strata serve: KV streaming: 98.48% of 968928 block reads hit VRAM, 59.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 94.9% (29776 hits / 31380 lookups)
+strata serve: KV streaming: 98.47% of 1196940 block reads hit VRAM, 73.7 MiB read from RAM
+strata prefill: layer-major off for this prompt: layers 25..48: no VRAM for a super-chunk (903 MiB free)
+strata serve: decode expert cache hit rate: 88.0% (14111 hits / 16039 lookups)
+strata serve: KV streaming: 88.30% of 129408 block reads hit VRAM, 61.0 MiB read from RAM
+strata serve: decode expert cache hit rate: 97.5% (17243 hits / 17679 lookups)
+strata serve: KV streaming: 88.61% of 135570 block reads hit VRAM, 62.2 MiB read from RAM
+strata serve: decode expert cache hit rate: 98.6% (14855 hits / 15063 lookups)
+strata serve: KV streaming: 87.61% of 117072 block reads hit VRAM, 58.4 MiB read from RAM

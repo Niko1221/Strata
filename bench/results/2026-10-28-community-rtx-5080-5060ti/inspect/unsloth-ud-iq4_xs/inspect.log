@@ -1,0 +1,9 @@
+$ <strata>\.venv\Scripts\python.exe <strata>\setup.py --inspect <data>\models\unsloth-UD-IQ4_XS\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf
+[2026-10-28 07:44:00]
+
+
+=== Qwen3.8-Flash-Next-UD-IQ4_XS ===
+total 0.00 GB, 0.00 B weights, 0.00 bits/weight overall
+group                            weights       GB  bits/w  types (share of bytes)
+
+Strata: its routed experts use only quantizations Strata runs (), but this file is not one setup installs: not tested (and setup still refuses the GGUF names it lists as unsupported, such as UD-Q2_K_XL: this is a header reading, not a promise that it runs); every tensor uses a quantization some file Strata runs has for it

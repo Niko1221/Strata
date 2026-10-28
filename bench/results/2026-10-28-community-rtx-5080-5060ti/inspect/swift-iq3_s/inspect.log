@@ -1,0 +1,20 @@
+$ <strata>\.venv\Scripts\python.exe <strata>\setup.py --inspect <data>\models\swift-IQ3_S\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+[2026-10-28 07:03:17]
+
+
+=== Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S ===
+total 44.89 GB, 90.53 B weights, 3.97 bits/weight overall
+group                            weights       GB  bits/w  types (share of bytes)
+n-gram/per-layer embeddings       51.23B    28.87    4.51  IQ4_NL 100%, BF16 0%, F16 0%
+routed experts                    36.91B    14.06    3.05  IQ2_S 42%, IQ4_NL 34%, IQ3_XXS 16%, Q2_0 8%
+output head                        0.64B     0.52    6.56  Q6_K 100%
+attention (incl. GDN qkv/gate)     0.66B     0.46    5.60  Q6_K 52%, Q4_K 17%, IQ4_XS 15%, Q5_K 14%, BF16 2%
+hyper-connections                  0.19B     0.38   16.00  BF16 100%
+token embedding                    0.64B     0.34    4.25  IQ4_XS 100%
+linear attn/SSM                    0.18B     0.14    6.40  Q6_K 82%, Q4_K 13%, BF16 4%, F32 1%
+router                             0.02B     0.08   32.00  F32 100%
+shared experts                     0.07B     0.04    4.81  IQ4_NL 32%, Q4_K 23%, Q6_K 22%, IQ4_XS 20%, Q5_K 3%, F32 0%
+norms                              0.00B     0.00   32.00  F32 100%
+-> routed experts are 3.05 bits/weight (Q3 class)
+
+Strata: its routed experts use only quantizations Strata runs (IQ2_S, IQ3_XXS, IQ4_NL, Q2_0), but this file is not one setup installs: not tested (and setup still refuses the GGUF names it lists as unsupported, such as UD-Q2_K_XL: this is a header reading, not a promise that it runs); every tensor uses a quantization some file Strata runs has for it

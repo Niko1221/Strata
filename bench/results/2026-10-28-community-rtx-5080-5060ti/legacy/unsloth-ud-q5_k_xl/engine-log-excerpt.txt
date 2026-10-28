@@ -1,0 +1,7 @@
+[strata] cards in stage order: GPU 1, then GPU 0 (as nvidia-smi numbers them); the engine's log calls them CUDA0, CUDA1 - the first runs the first layers and the picture reader, the last runs the head and the draft layer
+[strata] layer split across GPUs [1, 0] (auto)
+[strata] loading the most-used experts into RAM (up to 72 GiB; the rest are read from the model files as needed) and locking part of them for the GPU.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (2085 experts, 7.87 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)

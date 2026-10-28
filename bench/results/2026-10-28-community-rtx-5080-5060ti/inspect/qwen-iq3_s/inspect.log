@@ -1,0 +1,20 @@
+$ <strata>\.venv\Scripts\python.exe <strata>\setup.py --inspect <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+[2026-10-28 04:35:10]
+
+
+=== Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S ===
+total 54.81 GB, 125.74 B weights, 3.49 bits/weight overall
+group                            weights       GB  bits/w  types (share of bytes)
+routed experts                   120.80B    50.29    3.33  IQ4_NL 37%, IQ3_XXS 22%, IQ2_S 21%, IQ3_S 14%, Q2_0 4%, IQ4_XS 2%
+attention (incl. GDN qkv/gate)     2.13B     1.57    5.89  Q6_K 60%, Q5_K 19%, IQ4_XS 9%, Q4_K 9%, BF16 3%
+hyper-connections                  0.64B     1.28   16.00  BF16 100%
+output head                        0.64B     0.52    6.56  Q6_K 100%
+linear attn/SSM                    0.58B     0.47    6.49  Q6_K 80%, Q5_K 9%, Q4_K 6%, BF16 4%, F32 1%
+token embedding                    0.64B     0.34    4.25  IQ4_XS 100%
+shared experts                     0.24B     0.15    4.94  IQ4_NL 30%, Q6_K 24%, Q4_K 19%, IQ4_XS 17%, Q5_K 9%, Q8_0 1%, BF16 0%
+router                             0.06B     0.13   16.00  BF16 100%
+n-gram/per-layer embeddings        0.03B     0.07   16.00  BF16 100%, F16 0%
+norms                              0.00B     0.00   32.00  F32 100%
+-> routed experts are 3.33 bits/weight (Q3 class)
+
+Strata: the routed experts are stored exactly as in qwen/IQ3_S / swift/IQ3_S, but the file is not one setup knows (a fine-tune with the same recipe?): it may run as that size; not tested

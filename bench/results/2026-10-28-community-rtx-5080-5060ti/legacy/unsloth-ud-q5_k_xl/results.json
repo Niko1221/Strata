@@ -1,0 +1,545 @@
+{
+ "schema": 1,
+ "tool": "tools/strata_bench.py",
+ "date": "2026-10-29",
+ "params": {
+  "runs": 1,
+  "think": false,
+  "clients": 0,
+  "long": false,
+  "started_server": true,
+  "command": "python tools/strata_bench.py --runs 1"
+ },
+ "elapsed_s": 100.73701333999634,
+ "machine": {
+  "gpu": [
+   "NVIDIA GeForce RTX 5060 Ti",
+   "NVIDIA GeForce RTX 5080"
+  ],
+  "gpu_vram_mib": 32614,
+  "gpu_driver": "621.01",
+  "gpu_detail": [
+   {
+    "power_limit_w": "150.00",
+    "power_draw_w": "25.86",
+    "pcie": "gen5 x8",
+    "pstate": "P3",
+    "temp_c": "47.12"
+   },
+   {
+    "power_limit_w": "250.00",
+    "power_draw_w": "71.28",
+    "pcie": "gen5 x8",
+    "pstate": "P1",
+    "temp_c": "41.78"
+   }
+  ],
+  "cuda": "13.5",
+  "engine_build": {
+   "version": "0.1.52",
+   "source": "f-027-rel",
+   "cuda": "13.0",
+   "archs": [
+    75,
+    86,
+    89,
+    120
+   ],
+   "ptx": true,
+   "portable": true
+  },
+  "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+  "cpu_cores": 8,
+  "storage": "HP SSD FX900 Pro 4TB SSD/NVMe; HP SSD FX900 Pro 4TB SSD/NVMe",
+  "cpu_threads": 16,
+  "ram_gib": 95.7,
+  "os": "Windows 11 (10.0.26200)",
+  "python": "3.11.9",
+  "strata_version": "0.1.52",
+  "strata_commit": "5e8a4cca",
+  "engine_version": "0.1.52",
+  "model": "qwen3.8-flash-next-unsloth-ud-q5_k_xl",
+  "quant": "UD-Q5_K_XL",
+  "context": 262144,
+  "parallel_slots": 1,
+  "config": {
+   "exe": "strata.exe",
+   "args": [
+    "--pack",
+    "unsloth-ud-q5_k_xl",
+    "--native",
+    "Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf",
+    "--expert-profile",
+    "expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto:4096",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "72",
+    "--vision",
+    "--vram-reserve-mib",
+    "1024",
+    "--vram-reserve-later-mib",
+    "768"
+   ],
+   "model_name": "qwen3.8-flash-next-unsloth-ud-q5_k_xl",
+   "lib_dirs": [
+    "<strata>\\.venv\\Lib\\site-packages\\nvidia\\cu13\\bin\\x86_64"
+   ],
+   "port": 8080,
+   "gpu": [
+    1,
+    0
+   ],
+   "gpus_asked": true,
+   "layer_split": "auto",
+   "vision": {
+    "exe": "<strata>\\engine\\strata-vision.exe",
+    "mmproj": "<strata>-data\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<strata>-data\\models\\unsloth-UD-Q5_K_XL\\Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf",
+    "gpu": false,
+    "max_tokens": 300,
+    "threads": 8
+   },
+   "args_written": [
+    "--pack",
+    "<strata>-data\\packs\\unsloth-ud-q5_k_xl",
+    "--native",
+    "<strata>-data\\models\\unsloth-UD-Q5_K_XL\\Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf",
+    "--expert-profile",
+    "<strata>\\data\\expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<strata>-data\\mtp\\rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "72",
+    "--vision"
+   ],
+   "env": {
+    "STRATA_MMQ_KQ": "1",
+    "STRATA_HC_Q8": "1"
+   }
+  },
+  "launch": "strata.exe --pack unsloth-ud-q5_k_xl --native Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto:4096 --spec 4 --spec-min-p 0.5 --mtp rt --max-context 262144 --kv int8 --resident-budget-gib 72 --vision --vram-reserve-mib 1024 --vram-reserve-later-mib 768",
+  "engine_info": {
+   "model": "qwen3.8-flash-next-unsloth-ud-q5_k_xl",
+   "max_context": 262144,
+   "images": true,
+   "version": "0.1.52",
+   "logit_bias": 1,
+   "context": 262144,
+   "kv": "int8",
+   "kv_resident": 0,
+   "expert_slots": 3089,
+   "expert_cache_mib": 11884,
+   "expert_slots_primary": 2085,
+   "expert_cache_primary_mib": 8061,
+   "spec": 6,
+   "mtp_max": 4,
+   "lookup": 3,
+   "vram_free_mib": 724,
+   "cvec": 0,
+   "arena_mib": 73727,
+   "pool_workers": 7,
+   "pcie_frac": "0.55",
+   "spec_min_p": "0.50",
+   "conversation_cache_mib": 2048,
+   "conversation_cache_slots": 4,
+   "conversation_cache_min_free_mib": 2560,
+   "conversation_cache_min_tokens": 0,
+   "tail_role_token": -1,
+   "vram_elastic": 0,
+   "prefill_cap": 6912,
+   "prefill_stages": 2,
+   "stream_all_min": 1024,
+   "prefill_pipe": 0,
+   "engine": "0.1.52",
+   "drafting": "mtp",
+   "drafting_note": ""
+  },
+  "vram_after": {
+   "elastic": false
+  }
+ },
+ "results": {
+  "chat": {
+   "requests": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.947,
+     "total_s": 3.753,
+     "prompt_tokens": 51,
+     "reused_tokens": 0,
+     "read_tokens": 51,
+     "generated_tokens": 100,
+     "prompt_tps": 55.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 35.4,
+     "decode_tps_source": "engine",
+     "prompt_ms": 921.6,
+     "decode_ms": 2828.1,
+     "drafts_offered": 90,
+     "drafts_accepted": 70,
+     "run": 0,
+     "prompt": 0
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.025,
+     "total_s": 3.882,
+     "prompt_tokens": 43,
+     "reused_tokens": 0,
+     "read_tokens": 43,
+     "generated_tokens": 100,
+     "prompt_tps": 43.4,
+     "prompt_tps_source": "engine",
+     "decode_tps": 34.6,
+     "decode_tps_source": "engine",
+     "prompt_ms": 991.7,
+     "decode_ms": 2886.3,
+     "drafts_offered": 95,
+     "drafts_accepted": 56,
+     "run": 0,
+     "prompt": 1
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.149,
+     "total_s": 4.262,
+     "prompt_tokens": 46,
+     "reused_tokens": 0,
+     "read_tokens": 46,
+     "generated_tokens": 100,
+     "prompt_tps": 41.4,
+     "prompt_tps_source": "engine",
+     "decode_tps": 31.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1111.7,
+     "decode_ms": 3146.4,
+     "drafts_offered": 96,
+     "drafts_accepted": 55,
+     "run": 0,
+     "prompt": 2
+    }
+   ],
+   "decode_tps": {
+    "median": 34.6,
+    "min": 31.8,
+    "max": 35.4,
+    "n": 3
+   },
+   "ttft_s": {
+    "median": 1.025,
+    "min": 0.947,
+    "max": 1.149,
+    "n": 3
+   },
+   "generated_tokens": {
+    "median": 100,
+    "min": 100,
+    "max": 100,
+    "n": 3
+   },
+   "prompt_tokens": {
+    "median": 46,
+    "min": 43,
+    "max": 51,
+    "n": 3
+   }
+  },
+  "prompts": {
+   "4K": {
+    "target_tokens": 4096,
+    "requests": [
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 7.566,
+      "total_s": 8.467,
+      "prompt_tokens": 4019,
+      "reused_tokens": 0,
+      "read_tokens": 4019,
+      "generated_tokens": 24,
+      "prompt_tps": 535.8,
+      "prompt_tps_source": "engine",
+      "decode_tps": 25.5,
+      "decode_tps_source": "engine",
+      "prompt_ms": 7501.4,
+      "decode_ms": 939.9,
+      "drafts_offered": 23,
+      "drafts_accepted": 14,
+      "run": 0
+     }
+    ],
+    "prompt_tps": {
+     "median": 535.8,
+     "min": 535.8,
+     "max": 535.8,
+     "n": 1
+    },
+    "ttft_s": {
+     "median": 7.566,
+     "min": 7.566,
+     "max": 7.566,
+     "n": 1
+    },
+    "prompt_tokens": {
+     "median": 4019,
+     "min": 4019,
+     "max": 4019,
+     "n": 1
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 1
+    }
+   },
+   "16K": {
+    "target_tokens": 16384,
+    "requests": [
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 19.774,
+      "total_s": 20.588,
+      "prompt_tokens": 16058,
+      "reused_tokens": 0,
+      "read_tokens": 16058,
+      "generated_tokens": 24,
+      "prompt_tps": 814.3,
+      "prompt_tps_source": "engine",
+      "decode_tps": 28.4,
+      "decode_tps_source": "engine",
+      "prompt_ms": 19719.0,
+      "decode_ms": 846.2,
+      "drafts_offered": 21,
+      "drafts_accepted": 12,
+      "run": 0
+     }
+    ],
+    "prompt_tps": {
+     "median": 814.3,
+     "min": 814.3,
+     "max": 814.3,
+     "n": 1
+    },
+    "ttft_s": {
+     "median": 19.774,
+     "min": 19.774,
+     "max": 19.774,
+     "n": 1
+    },
+    "prompt_tokens": {
+     "median": 16058,
+     "min": 16058,
+     "max": 16058,
+     "n": 1
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 1
+    }
+   }
+  },
+  "agent": {
+   "sessions": [
+    [
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 5.115,
+      "total_s": 5.811,
+      "prompt_tokens": 609,
+      "reused_tokens": 0,
+      "read_tokens": 609,
+      "generated_tokens": 18,
+      "prompt_tps": 120.2,
+      "prompt_tps_source": "engine",
+      "decode_tps": 24.7,
+      "decode_tps_source": "engine",
+      "prompt_ms": 5067.7,
+      "decode_ms": 728.4,
+      "drafts_offered": 21,
+      "drafts_accepted": 9,
+      "run": 0,
+      "turn": 0
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 6.702,
+      "total_s": 8.566,
+      "prompt_tokens": 3304,
+      "reused_tokens": 626,
+      "read_tokens": 2678,
+      "generated_tokens": 64,
+      "prompt_tps": 402.8,
+      "prompt_tps_source": "engine",
+      "decode_tps": 33.8,
+      "decode_tps_source": "engine",
+      "prompt_ms": 6649.2,
+      "decode_ms": 1894.9,
+      "drafts_offered": 61,
+      "drafts_accepted": 40,
+      "run": 0,
+      "turn": 1
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 6.043,
+      "total_s": 7.965,
+      "prompt_tokens": 4837,
+      "reused_tokens": 3368,
+      "read_tokens": 1469,
+      "generated_tokens": 64,
+      "prompt_tps": 244.7,
+      "prompt_tps_source": "engine",
+      "decode_tps": 32.8,
+      "decode_tps_source": "engine",
+      "prompt_ms": 6002.9,
+      "decode_ms": 1954.1,
+      "drafts_offered": 60,
+      "drafts_accepted": 38,
+      "run": 0,
+      "turn": 2
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 7.045,
+      "total_s": 7.93,
+      "prompt_tokens": 8081,
+      "reused_tokens": 4901,
+      "read_tokens": 3180,
+      "generated_tokens": 37,
+      "prompt_tps": 454.4,
+      "prompt_tps_source": "engine",
+      "decode_tps": 40.1,
+      "decode_tps_source": "engine",
+      "prompt_ms": 6997.6,
+      "decode_ms": 922.2,
+      "drafts_offered": 35,
+      "drafts_accepted": 24,
+      "run": 0,
+      "turn": 3
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 6.325,
+      "total_s": 7.14,
+      "prompt_tokens": 10081,
+      "reused_tokens": 8117,
+      "read_tokens": 1964,
+      "generated_tokens": 25,
+      "prompt_tps": 313.3,
+      "prompt_tps_source": "engine",
+      "decode_tps": 29.5,
+      "decode_tps_source": "engine",
+      "prompt_ms": 6268.0,
+      "decode_ms": 846.4,
+      "drafts_offered": 31,
+      "drafts_accepted": 13,
+      "run": 0,
+      "turn": 4
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 6.752,
+      "total_s": 7.397,
+      "prompt_tokens": 12768,
+      "reused_tokens": 10105,
+      "read_tokens": 2663,
+      "generated_tokens": 18,
+      "prompt_tps": 397.9,
+      "prompt_tps_source": "engine",
+      "decode_tps": 26.5,
+      "decode_tps_source": "engine",
+      "prompt_ms": 6692.0,
+      "decode_ms": 678.1,
+      "drafts_offered": 22,
+      "drafts_accepted": 9,
+      "run": 0,
+      "turn": 5
+     }
+    ]
+   ],
+   "hit_pct": {
+    "median": 69.404,
+    "min": 69.404,
+    "max": 69.404,
+    "n": 1
+   },
+   "reread_tokens": {
+    "median": 3,
+    "min": 3,
+    "max": 3,
+    "n": 1
+   },
+   "new_tokens": {
+    "median": 11951,
+    "min": 11951,
+    "max": 11951,
+    "n": 1
+   },
+   "turn_ttft_s": {
+    "median": 6.702,
+    "min": 6.043,
+    "max": 7.045,
+    "n": 5
+   },
+   "last_turn_prompt_tokens": {
+    "median": 12768,
+    "min": 12768,
+    "max": 12768,
+    "n": 1
+   },
+   "turn_decode_tps": {
+    "median": 32.8,
+    "min": 26.5,
+    "max": 40.1,
+    "n": 5
+   },
+   "first_turn_ttft_s": {
+    "median": 5.115,
+    "min": 5.115,
+    "max": 5.115,
+    "n": 1
+   }
+  },
+  "clients": {},
+  "skipped": {},
+  "failures": []
+ }
+}
