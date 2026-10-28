@@ -921,10 +921,17 @@ fn run_embedded() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The window's size, place and maximized state are kept as they are left, so the next start reopens the same way.
+            if let tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) = event {
+                if window.label() == "main" {
+                    save_window_state(window, false);
+                }
+            }
             // "Minimise to tray" (Settings, off by default): closing the main window hides it and keeps Strata running in the tray; Quit in the
             // tray menu ends it (#3477). If no tray could be made the window closes as before.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
+                    save_window_state(window, true);
                     let prefs = shell::read_prefs();
                     if prefs.tray {
                         api.prevent_close();
@@ -948,6 +955,100 @@ fn run_embedded() {
         });
 }
 
+/// How the window was left: the app reopens maximized on the first run, and the same size, place and maximized
+/// state afterwards. A desktop app that starts at a fixed 1440x920 in the corner of a 2560-wide screen reads as
+/// broken, and the person has to maximize it on every start.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct WindowState {
+    maximized: bool,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        WindowState { maximized: true, width: 1440, height: 920, x: i32::MIN, y: i32::MIN }
+    }
+}
+
+fn window_state_path() -> PathBuf {
+    crate::desktoplog::data_dir().join("window.json")
+}
+
+/// The last state, or the default (maximized) when there is none or it is not sane: a window restored outside the
+/// screen would be worse than one that starts maximized.
+fn read_window_state() -> WindowState {
+    std::fs::read_to_string(window_state_path()).map(|text| parse_window_state(&text)).unwrap_or_default()
+}
+
+fn parse_window_state(text: &str) -> WindowState {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) else {
+        return WindowState::default();
+    };
+    let number = |key: &str| value.get(key).and_then(serde_json::Value::as_i64);
+    let maximized = value.get("maximized").and_then(serde_json::Value::as_bool).unwrap_or(true);
+    let width = number("width").unwrap_or(0);
+    let height = number("height").unwrap_or(0);
+    let x = number("x").unwrap_or(i32::MIN as i64);
+    let y = number("y").unwrap_or(i32::MIN as i64);
+    let sane = (800..=20000).contains(&width) && (500..=20000).contains(&height) && x.abs() < 20000 && y.abs() < 20000;
+    WindowState {
+        maximized,
+        width: if sane { width as u32 } else { 1440 },
+        height: if sane { height as u32 } else { 920 },
+        x: if sane { x as i32 } else { i32::MIN },
+        y: if sane { y as i32 } else { i32::MIN },
+    }
+}
+
+fn write_window_state(state: &WindowState) {
+    let path = window_state_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(text) = serde_json::to_vec_pretty(state) else { return };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        // Rename replaces the old file on Windows and Unix alike: a half-written file is never read.
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// The last write, so dragging an edge does not write a file on every pixel of movement.
+static WINDOW_STATE_WRITTEN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Record the window as it is now. `force` is for closing, where the last moment must be kept.
+fn save_window_state(window: &tauri::Window, force: bool) {
+    if !force {
+        let mut last = WINDOW_STATE_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = *last {
+            if at.elapsed() < Duration::from_millis(700) {
+                return;
+            }
+        }
+        *last = Some(Instant::now());
+    }
+    let mut state = read_window_state();
+    let maximized = window.is_maximized().unwrap_or(false);
+    state.maximized = maximized;
+    // While maximized the reported size is the screen's, not the one to return to when it is restored.
+    if !maximized {
+        if let Ok(size) = window.inner_size() {
+            if size.width >= 800 && size.height >= 500 {
+                state.width = size.width;
+                state.height = size.height;
+            }
+        }
+        if let Ok(position) = window.outer_position() {
+            state.x = position.x;
+            state.y = position.y;
+        }
+    }
+    write_window_state(&state);
+}
+
 /// The one window, on the host's own origin so the page and its API share an origin exactly as the browser build does.
 #[cfg_attr(windows, allow(unused_variables))]
 fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -956,11 +1057,17 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     // Created hidden: the page shows it (the core window plugin's show command, allowed for the loopback origin in
     // tauri.conf.json) once its first screen is ready, so a start never flashes an empty page, the boot skeleton, or a
     // screen that is then replaced.
+    let restored = read_window_state();
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("Strata")
-        .inner_size(1440.0, 920.0)
+        .inner_size(restored.width as f64, restored.height as f64)
         .min_inner_size(900.0, 600.0)
         .visible(false);
+    let builder = if restored.x != i32::MIN && restored.y != i32::MIN {
+        builder.position(restored.x as f64, restored.y as f64)
+    } else {
+        builder
+    };
     // Dropping pictures on the chat (QA report 1, item 4). Windows: the shell's own file-drop handler is off, because with it on the system hands
     // the dropped file to the shell and the page never sees it; with it off the page gets ordinary drag and drop events (apps/host DropZone), as
     // in a browser. Linux and macOS: the page gets the drag events but WebKit gives it no files, so the handler stays on and the shell passes the
@@ -977,6 +1084,11 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     );
     #[cfg_attr(windows, allow(unused_variables))]
     let window = builder.build()?;
+    // Maximize before the page shows the window, so the first frame is already full-screen (the first run, and any run
+    // the person left maximized).
+    if restored.maximized {
+        let _ = window.maximize();
+    }
     // A page that fails before it can ask must not leave the app running with no window: show it anyway after a deadline.
     show_window_if_still_hidden(app.handle().clone());
     #[cfg(not(windows))]
@@ -1247,6 +1359,23 @@ mod tests {
         let script = drop_script(files);
         assert!(script.starts_with("window.dispatchEvent(new CustomEvent('strata:native-drop', { detail: [{"));
         assert!(script.contains("x.png") && script.ends_with("}));"));
+    }
+
+    #[test]
+    fn the_window_reopens_where_it_was_left_and_maximized_on_the_first_run() {
+        let first = parse_window_state("");
+        assert!(first.maximized, "a first start opens maximized");
+        assert_eq!((first.width, first.height), (1440, 920));
+
+        let left = parse_window_state(r#"{"maximized":false,"width":1200,"height":800,"x":120,"y":80}"#);
+        assert!(!left.maximized, "a window left un-maximized stays un-maximized");
+        assert_eq!((left.width, left.height, left.x, left.y), (1200, 800, 120, 80));
+
+        let unusable = parse_window_state(r#"{"maximized":false,"width":10,"height":10,"x":999999,"y":-999999}"#);
+        assert_eq!((unusable.width, unusable.height), (1440, 920), "an unusable size falls back to the default");
+        assert_eq!(unusable.x, i32::MIN, "a place off the screen is not restored");
+
+        assert!(parse_window_state("not json").maximized, "a damaged file is the default, not a broken start");
     }
 
     #[test]
