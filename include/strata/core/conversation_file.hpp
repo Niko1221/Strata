@@ -336,7 +336,8 @@ bool session_file_append(const std::string& path, const SavedConversation& meta,
 // about to be written: same per-layer format/heads/head_dim/page_size/idx_dim/idx_block as the file's,
 // `cells`/`pooled_rows` free to grow.  `kv_first_dirty` = the session's immutability watermark
 // (SessionState::kv_first_dirty; INT64_MAX = nothing has rewritten a pool row since): eligible iff its
-// whole-page prefix reaches the checkpoint's saved_tokens - the same comparison SessionState::kv_append_ok
+// whole-page prefix reaches the checkpoint's whole-page committed prefix (saved_tokens rounded down - the
+// format re-emits the shared partial page every generation) - the same comparison SessionState::kv_append_ok
 // makes, kept here so this decision needs no session-state header.  Metal stance (spike S2 R6): Metal's
 // window_checkpoint_* paths bypass QsaState pool writes entirely, so a Metal build disables the append
 // path in the engine; a session nothing ever bumped stays eligible exactly because nothing rewrote its

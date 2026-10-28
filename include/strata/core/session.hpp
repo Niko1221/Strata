@@ -105,12 +105,14 @@ struct SessionState {
     /// Low-water bump: `pos` is a token index; positions below it may now differ from the last save.
     /// A negative position is not an index and changes nothing.
     void mark_kv_dirty(int64_t pos) { if (pos >= 0 && pos < kv_first_dirty) kv_first_dirty = pos; }
-    /// Append eligibility against a file that committed `saved_tokens`: the whole-page prefix of the
-    /// watermark must reach it (the shared partial page is never treated as committed - a write inside it
-    /// sits at that page's whole start, which is below the boundary).  No page geometry: raw comparison.
+    /// Append eligibility against a file that committed `saved_tokens`: the watermark must not drop below
+    /// the file's trusted region - its whole-page committed prefix.  The format ends committed segments at
+    /// `whole_cells(saved_tokens)` and re-emits the final shared partial page and spare row every
+    /// generation, so a write that begins inside that partial page simply re-enters the delta; only a write
+    /// that begins below the committed prefix refuses.  No page geometry: raw comparison.
     bool kv_append_ok(int64_t page, int64_t saved_tokens) const {
         return kv_first_dirty == std::numeric_limits<int64_t>::max() ||
-               session_whole_cells(kv_first_dirty, page) >= saved_tokens;
+               session_whole_cells(kv_first_dirty, page) >= session_whole_cells(saved_tokens, page);
     }
 };
 

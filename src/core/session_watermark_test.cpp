@@ -42,9 +42,9 @@ int main() {
         check(!s.kv_append_ok(64, 1024), "a write below the saved boundary refuses the append");
     }
 
-    // Rounding (S2/A3 partial-page caveat): the watermark counts from its whole-page start - the shared
-    // partial page is never treated as committed, so a write inside it refuses even when it is only a
-    // little below the boundary.
+    // Rounding: the watermark counts from its whole-page start.  At an aligned boundary the committed
+    // prefix ends on the page line, so a rewrite inside the last full page - a little below the boundary -
+    // sits below the prefix and refuses.
     {
         SessionState s;
         s.mark_kv_dirty(1000);  // inside the page [960, 1024): whole cells 960 < 1024
@@ -82,15 +82,29 @@ int main() {
         check(s.kv_append_ok(0, 1024), "without page geometry the raw index compares");
     }
 
-    // The M8 mount case (the drill's mount rule): mounting N tokens rewrites the spare pooled row at
-    // floor(N/idx_block)*idx_block - strictly below the saved boundary even for a SAME-tokens mount, so
-    // a save landing between the mount and the next block completion must not append.
+    // The M8 mount case: mounting N tokens rewrites the spare pooled row at floor(N/idx_block)*idx_block -
+    // strictly below the saved token count even for a SAME-tokens mount.  The file's trusted region is its
+    // whole-page prefix (the format re-emits the partial page every generation), so the mount rewrite lands
+    // on re-emitted rows and the save stays append-eligible; only rewrites below the committed prefix refuse.
     {
         const int64_t n = 65, idx_block = 4;
         SessionState s;
         s.mark_kv_dirty((n / idx_block) * idx_block);
         check(s.kv_first_dirty == 64, "the spare-row bump marks its row boundary");
-        check(!s.kv_append_ok(64, n), "a same-tokens mount refuses the append (spare row rewritten)");
+        check(s.kv_append_ok(64, n), "a same-tokens mount rewrites only re-emitted rows, so it stays eligible");
+    }
+
+    // Unaligned saved boundary (measured on live momo, where every save was refusing its own next append):
+    // the file trusts whole_cells(saved_tokens), and writes at or above it - inside the re-emitted partial
+    // page - stay eligible.
+    {
+        SessionState s;
+        s.mark_kv_dirty(1000);  // a resume rewriting from exactly the saved token count
+        check(s.kv_append_ok(64, 1000), "an unaligned save earns its own next append");
+        s.mark_kv_dirty(960);  // the whole-page start of the shared partial page (re-emitted per generation)
+        check(s.kv_append_ok(64, 1000), "a mount rewriting the unaligned partial page stays eligible");
+        s.mark_kv_dirty(959);  // one row below the committed whole-page prefix
+        check(!s.kv_append_ok(64, 1000), "a write below an unaligned file's committed prefix refuses");
     }
 
     // The whole-cells helper the engine gate shares (trailer saved_tokens -> committed prefix).
