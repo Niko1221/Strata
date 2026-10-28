@@ -1050,7 +1050,7 @@ async function api(req, res, path, method, url) {
   // --- events -------------------------------------------------------------
   if (path === '/api/events') return hub.add(res);
   if(path.startsWith('/api/native')){try{
-  if(path==='/api/native'&&method==='GET')return json(res,200,await native.refresh(url.searchParams.get('refresh')==='1'));
+  if(path==='/api/native'&&method==='GET'){const s=await native.refresh(url.searchParams.get('refresh')==='1');for(const m of (s.installed?.models??[])){if(!m.kv&&native.kvFor)m.kv=native.kvFor(m.model);if(s.engine?.usable!==false){m.missing=(m.missing??[]).filter(x=>x!=='the engine program');m.missingFiles=(m.missingFiles??[]).filter(x=>x!=='component:strata-engine');}}return json(res,200,s);}
   if(path==='/api/native'&&method==='PATCH')return json(res,200,await native.configure(await readBody(req)));
   if(path==='/api/native/directory'&&method==='POST')return json(res,200,native.setDownloadDirectory((await readBody(req)).directory));
   /* Settings > Storage > Models folder: pick (or type) a folder, say what it means, then start the choice. Copying is Control's (strata models move). */

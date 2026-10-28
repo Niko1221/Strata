@@ -20,7 +20,11 @@ export function Popover({ anchor, title, detail, onClose, children, above = fals
         place();
         ref.current?.focus({ preventScroll: true });
         const outside = (e: PointerEvent) => {
-            if (!ref.current?.contains(e.target as Node) && !anchor?.contains(e.target as Node))
+            const target = e.target as Element | null;
+            // A dialog opened from here (a helper's conversation) lives in a portal outside this element. A click in it is
+            // not a click outside: closing this popover would unmount the dialog and the message being typed in it.
+            if (target?.closest?.('[role="dialog"]')) return;
+            if (!ref.current?.contains(target as Node) && !anchor?.contains(target as Node))
                 onClose();
         };
         const resize = new ResizeObserver(place);

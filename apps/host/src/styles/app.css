@@ -7320,7 +7320,7 @@ textarea {
 .native-choice__head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .native-choice__label { font-size: var(--st-fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--st-ink-muted); }
 .native-choice__tools { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
-.native-choice__row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; margin-top: 14px; align-items: start; }
+.native-choice__row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
 .native-choice__col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .native-choice__col .native-resource-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .native-choice__col .native-resource-choice button { min-height: 42px; padding: 6px 10px; }
@@ -7398,8 +7398,10 @@ textarea {
 /* Context dropdown and the two Computer use buttons share one line, the buttons level with the dropdown (tester report 2026-10-17: they sat
    16px lower, from the 16px top margin of the onboarding version of this control, and touched the separator under the row). They wrap
    below the dropdown only when the card is too narrow for both. */
-.native-choice__row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 20px; margin-bottom: 4px; }
+.native-choice__row { display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin-bottom: 4px; }
 .native-choice__row > .native-choice__col:first-child { flex: 0 1 240px; min-width: 200px; }
+/* The row is a single column now: a 240px basis would become a 240px tall gap under the context field. */
+.native-choice__row > .native-choice__col:first-child { flex: 0 0 auto; min-width: 0; }
 .native-choice__row > .native-choice__col:last-child { flex: 0 1 auto; }
 .native-choice__col .native-resource-choice { margin-top: 0; height: 44px; box-sizing: border-box; align-items: center; align-self: flex-start; }
 .native-choice__col .native-resource-choice button { height: 36px; }
@@ -7532,7 +7534,8 @@ textarea {
 .app[data-focus='true'] .composer__inner { max-width: 864px; }
 
 
-.native-context-custom { margin-top: 6px; width: 100%; }
+.native-context-custom { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; width: 100%; }
+.native-choice__row { align-items: start; }
 
 
 /* One column for every part of a reply: prose, code and tables share the reading measure; wide code and tables scroll inside it (U3). */

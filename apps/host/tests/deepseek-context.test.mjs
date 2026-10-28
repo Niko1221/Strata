@@ -80,7 +80,7 @@ test('through the host: an installed DeepSeek model reports its pack\'s limit, a
 test('the Models screen honours the choice (it no longer forces 8K), offers the DeepSeek list, and shows the note on the existing note markup', () => {
   const screen = read('../src/components/NativeModels.tsx');
   assert.doesNotMatch(screen, /multi_file \? 8192 : context/, 'the chosen context is what is installed and loaded');
-  assert.match(screen, /contextChoices\(selectedSize\?\.multi_file \? deepseekContexts\(installed\?\.contextMax\) : native\?\.catalog\?\.contexts \?\? \[8192, 32768, 65536, 131072, 262144\], context\)/);
+  assert.match(screen, /contextChoices\(selectedSize\?\.multi_file \? deepseekContexts\(installed\?\.contextMax\) : native\?\.catalog\?\.contexts \?\? \[8192, 32768, 65536, 131072, 262144\], context, contextCeiling\)/);
   assert.match(screen, /selectedSize\?\.multi_file && deepseekContextNote\(context\) \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(deepseekContextNote\(context\)\)\}<\/p> : null/);
   assert.match(screen, /if \(selectedSize\.multi_file\)\s+setContext\(8192\)/, 'the default for a DeepSeek version that is not installed stays 8K');
   assert.match(screen, /if \(installed\.context\)\s+setContext\(installed\.context\)/, 'an installed DeepSeek model shows and loads the context it was prepared with, whatever was kept from another model');

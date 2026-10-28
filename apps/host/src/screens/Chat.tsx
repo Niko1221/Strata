@@ -38,7 +38,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, settleComposerSend, stopStreaming, useStore, } from '../lib/store';
 import { api } from '../lib/client';
 import { copyText } from '../lib/clipboard';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
@@ -177,6 +177,9 @@ export function ChatScreen() {
         const wanted = location.param ?? activeId;
         return sessions.find((s) => s.id === wanted) ?? sessions[0] ?? null;
     }, [sessions, activeId, location.param]);
+    /** The chat whose box is on screen: a send can finish after the reader has opened another one. */
+    const sessionIdRef = useRef<string | null>(null);
+    sessionIdRef.current = session?.id ?? null;
     /* A conversation you are watching is read by definition — including while a
        reply streams into it. Without this, switching away from a session that
        answered you would mark it unread. */
@@ -434,6 +437,57 @@ export function ChatScreen() {
         saveQuotes([]);
         announce(tr('Quotes cleared.'));
     }, [announce, quotes.length, saveQuotes]);
+    /**
+     * Clears the box and the quote bar of the chat the message left. Both are stored per chat, so a chat
+     * opened while the send was in flight keeps its own words and quotes.
+     */
+    function clearSentComposer(sessionId: string | null, key: string, sentDraft: string, sentQuotes: ChatQuote[]) {
+        try {
+            if (sessionStorage.getItem(key) === sentDraft)
+                sessionStorage.setItem(key, '');
+        }
+        catch { /* private mode: the box in memory still clears */ }
+        const sentIds = new Set(sentQuotes.map(q => q.id));
+        const left = readQuotes(sessionId).filter(q => !sentIds.has(q.id));
+        writeQuotes(sessionId, left);
+        if (sessionIdRef.current !== sessionId)
+            return;
+        // Words typed while the send was being accepted are newer than the sent text: keep them.
+        setDraft(current => current === sentDraft ? '' : current);
+        setQuotes(left);
+        if (sentQuotes.length)
+            announce(tr('Quotes cleared.'));
+    }
+    /**
+     * Puts back what a refused send was carrying. The box is cleared only after acceptance, so this is
+     * normally a no-op; it matters if a clear raced a refusal. It writes only the chat the text came from
+     * and never sends anything again.
+     */
+    function restoreComposer(sessionId: string | null, key: string, sentDraft: string, sentQuotes: ChatQuote[]) {
+        let stored: string | null = null;
+        try {
+            stored = sessionStorage.getItem(key);
+        }
+        catch {
+            return; // The box in memory was never cleared when storage is unavailable.
+        }
+        const current = readQuotes(sessionId);
+        // Only our clear leaves this chat with an empty saved draft. Anything newer is the person's, not ours to overwrite.
+        if (stored !== '' || current.length)
+            return;
+        try {
+            sessionStorage.setItem(key, sentDraft);
+        }
+        catch { }
+        if (sentQuotes.length) {
+            const restored = sentQuotes.slice(0, MAX_QUOTES);
+            writeQuotes(sessionId, restored);
+            if (sessionIdRef.current === sessionId)
+                setQuotes(restored);
+        }
+        if (sessionIdRef.current === sessionId)
+            setDraft(current => current === '' ? sentDraft : current);
+    }
     /** Selecting a passage of an answer offers one button; a selection inside the composer is not a passage. */
     useEffect(() => {
         const onSelection = (event: Event) => {
@@ -591,17 +645,21 @@ export function ChatScreen() {
         const hadQuotes = quotes.length > 0;
         if (!text && !queuedPhotos.length)
             return;
+        // Clearing happens only after the store accepts the message; until then the box and the bar stay as they are.
+        const fromSession = session?.id ?? null;
+        const fromDraftKey = draftKey;
+        const savedDraft = draft;
+        const savedQuotes = quotes.slice();
         if (streaming) {
             // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
             if (!text || !session)
                 return;
-            updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (ok)
-                clearQuotes();
-            else {
-                updateDraft(words);
-                pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.'));
-            } }, e => { updateDraft(words); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void queueMessage(session.id, text).then(ok => {
+                if (ok)
+                    clearSentComposer(fromSession, fromDraftKey, savedDraft, savedQuotes);
+                else
+                    pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.'));
+            }, e => pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message));
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -614,9 +672,11 @@ export function ChatScreen() {
             const why = noModelNotice(chatNative ?? null, { libraryLoaded: !!loaded });
             if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
         }
-        updateDraft('');
-        clearQuotes();
-        void sendMessage(text, hadQuotes ? { markdown: true } : undefined);
+        const send = sendMessage(text, hadQuotes ? { markdown: true } : undefined);
+        void settleComposerSend(send, {
+            clear: () => clearSentComposer(fromSession, fromDraftKey, savedDraft, savedQuotes),
+            restore: () => restoreComposer(fromSession, fromDraftKey, savedDraft, savedQuotes),
+        });
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {

@@ -7,9 +7,9 @@ const plain = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
 /** The one plain line under the meters: the conversation cache, and whether it fits, is short, or is read from the SSD. */
 export function fitNote(fit: Fit | null): string {
   if (!fit?.known) return '';
-  const parts = [`${tr('Conversation cache')}: ${gb(fit.cacheGb)}`];
-  if (fit.verdict === 'short') parts.push(tr('{0} GB over budget', [plain(fit.shortGb)]));
-  if (fit.note.text) parts.push(tr(fit.note.text, fit.note.values));
+  const parts = [`${tr('Conversation cache')}: ${gb(fit.cacheGb ?? 0)}`];
+  if (fit.verdict === 'short') parts.push(tr('{0} GB over budget', [plain(fit.shortGb ?? 0)]));
+  if (fit.note?.text) parts.push(tr(fit.note?.text, fit.note.values));
   return parts.join(' · ');
 }
 
@@ -35,6 +35,6 @@ export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = 
     {tr(fit?.known && ramGb ? <Meter label="RAM" total={freeRam} use={fit.ramUseGb}/> : null)}
     {tr(inUse ? <p className="xs muted">{tr("Models that stay loaded use about {0} GB of RAM and {1} GB of this card’s memory.", [inUse.ramGb, inUse.vramGb])}</p> : null)}
     {tr(diskGb ? <p className="pc-note">{tr("Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.", [Math.round(diskGb)])}</p> : null)}
-    {tr(fit?.known ? <p className="pc-note">{fitNote(fit)}</p> : null)}
+    {tr(fit?.known && (diskGb ? fit.spillGb >= 1 : true) ? <p className="pc-note">{tr(fit.verdict === 'short' ? '{0} GB over budget' : fit.spillGb >= 1 ? 'About {0} GB will be read from the SSD, so answers can be a little slower.' : 'Fits fully in memory.', [Math.round(fit.verdict === 'short' ? fit.shortGb ?? 0 : fit.spillGb)])}</p> : null)}
   </section>;
 }

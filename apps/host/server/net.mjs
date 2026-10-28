@@ -57,6 +57,23 @@ export function isLoopbackHost(hostname) {
   return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
+/** A private address on this computer's own network: never sent to a proxy, even one typed in Settings. */
+export function isPrivateHost(hostname) {
+  const host = String(hostname ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return false;
+  if (host === 'host.docker.internal' || host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const a = Number(v4[1]), b = Number(v4[2]);
+    if (a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+  }
+  return /^f[cd][0-9a-f]{2}:/.test(host) || /^fe80:/.test(host);
+}
+
 /* ------------------------------------------------------------------ proxy --- */
 
 /**
@@ -269,6 +286,9 @@ export function detectProxy(target, { env = process.env, platform = process.plat
   const policy = networkPolicy();
   if (policy.mode === 'direct') return { mode: 'direct', source: 'settings', proxy: null, pac: null, note: 'Settings is set to a direct connection.' };
   if (policy.mode === 'custom') {
+    // A model or service on this network is this computer's own business: it never goes through the proxy, so a key or a
+    // prompt meant for a machine in the next room is not read by the proxy (even one typed in Settings).
+    if (isPrivateHost(url.hostname)) return { mode: 'direct', source: 'this-network', proxy: null, pac: null, note: 'This address is on your own network, so no proxy is used for it.' };
     return { mode: 'proxy', source: 'settings', proxy: parseProxy(policy.url), pac: null, note: 'Using the proxy saved in Settings.' };
   }
 

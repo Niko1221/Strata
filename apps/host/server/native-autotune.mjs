@@ -4,7 +4,8 @@
  * status file the tuner rewrites at every step, and turns the answer into the sentence the app shows. It measures nothing itself.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { atomicWriteFileSync } from './atomic-file.mjs';
 import { join } from 'node:path';
 
 const MODES = new Set(['quick', 'thorough']);
@@ -136,6 +137,6 @@ export function writeTuneConfig(directory, model, cfg) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${model}.json`);
   const { api_key, port, ...rest } = cfg;            // the key and port belong to a running instance, not to the choices
-  writeFileSync(path, JSON.stringify(rest, null, 2), { mode: 0o600 });
+  atomicWriteFileSync(path, JSON.stringify(rest, null, 2), { mode: 0o600 });
   return path;
 }

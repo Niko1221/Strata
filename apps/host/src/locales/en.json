@@ -3589,5 +3589,6 @@
   "s9160": "Using the proxy Windows is set to use.",
   "s9161": "Windows is set to choose a proxy with a script. Strata cannot run that script, so it uses a direct connection. Choose the proxy address in Settings, Tools, Network to use it.",
   "s9162": "No proxy is set on this computer.",
-  "s9163": "Strata could not stop this helper. It may still be running."
+  "s9163": "Strata could not stop this helper. It may still be running.",
+  "s9164": "Download the engine"
 }
