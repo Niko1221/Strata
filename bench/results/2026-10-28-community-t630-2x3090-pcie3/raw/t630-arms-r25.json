@@ -1,0 +1,38 @@
+[
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "prod"
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "cpushare4k",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "auto",
+   "STRATA_PREFILL_CPU_SHARE_MAX": "4096"
+  }
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "prod2"
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "cpushare4k-b",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "auto",
+   "STRATA_PREFILL_CPU_SHARE_MAX": "4096"
+  }
+ }
+]

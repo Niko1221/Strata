@@ -1,0 +1,55 @@
+[
+ {
+  "name": "prod",
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  }
+ },
+ {
+  "name": "spec6",
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "remove": [
+   "--spec"
+  ],
+  "add": [
+   "--spec",
+   "6"
+  ]
+ },
+ {
+  "name": "spec8",
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "remove": [
+   "--spec"
+  ],
+  "add": [
+   "--spec",
+   "8"
+  ]
+ },
+ {
+  "name": "sfx2",
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "add": [
+   "--suffix-draft",
+   "2"
+  ]
+ },
+ {
+  "name": "prod2",
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  }
+ }
+]

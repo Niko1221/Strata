@@ -1,17 +1,30 @@
 # Community benchmark: 2x RTX 3090 on PCIe 3.0, dual Xeon E5-2620 v3 (Dell PowerEdge T630)
 
-<!-- DRAFT, not submitted. Before opening the PR:
-  - run the standard benchmark on the production profile and add its results.json:
-      strata bench run --profile t630 --track default --track-notes "0.2.7, tuned profile below"
-    (takes production down for about 10 minutes)
-  - remove this comment. -->
-
 Measured 2026-10-24 to 2026-10-28 by Cory Jett. Tested: original Flash-Next IQ3_S on two RTX 3090s in a dual-socket
 Haswell-EP tower (PCIe 3.0 x16, one card per socket, AVX2 only), layer split, tuned over 26 one-change-at-a-time
-rounds for a coding-agent workload. Main limitations: our own scripts rather than the standard protocol (fresh short
-prompts, a 32K prompt, agent-shaped turns and incremental prompt reads, see Method); sampling at the server's
-temperature 0.6, not greedy; no quality suite beyond a five-prompt greedy output comparison. A PCIe 3.0 data point
-for the layer split, and one finding on the CPU share default under a split.
+rounds for a coding-agent workload, plus one run of the draft standard protocol (custom track) on the final
+configuration. Main limitations: apart from the standard run, our own scripts (fresh short prompts, a 32K prompt,
+agent-shaped turns and incremental prompt reads, see Method) at the server's temperature 0.6, not greedy; no quality
+suite beyond the standard run's sanity checks and a five-prompt greedy output comparison. A PCIe 3.0 data point for
+the layer split, and one finding on the CPU share default under a split.
+
+## Standard benchmark (draft protocol)
+
+`strata bench run --profile <production profile> --no-start --track custom` against the already-running production
+server (it had answered other requests before; nothing else was sent during the run), 2026-10-28 13:43 UTC. Folder:
+[`../2026-10-28-standard-rtx-3090-plus-rtx-3090-5250594b/`](../2026-10-28-standard-rtx-3090-plus-rtx-3090-5250594b/README.md).
+Status complete, 21 of 21 required requests, sanity checks 12 of 12 (instruction 4/4, retrieval 4/4, tool calls 4/4).
+Medians of 3 (min-max), thinking on:
+
+| Case | Prompt tok/s | Decode tok/s | TTFT s |
+|---|---|---|---|
+| short (~80 tokens) | n/a | 128.8 (126.7-130.4) | 0.53 (0.52-0.55) |
+| prompt-4k | 1,126.7 (1,099.9-1,126.9) | 114.2 (110.4-118.5) | 3.66 (3.66-3.74) |
+| prompt-16k | 1,610.4 (1,538.5-1,611.8) | 115.4 (109.2-135.9) | 10.24 (10.20-10.68) |
+
+An earlier run the same morning with `--url` instead of `--profile` (same server, also clean) gave 112.9 / 116.0 /
+119.3 tok/s decode and 1,169 / 1,547 tok/s prompt; it was discarded because without a run config the runner recorded
+one of the two identical cards and none of the engine options.
 
 ## Hardware and software
 
@@ -113,3 +126,18 @@ GPUs averaged ~220 W each under load and peaked at 71-73 C; ~410-430 W at the wa
   projections at 2-4 tokens in isolation, bit-identical, but nothing end to end). The worker pool on one socket
   (`STRATA_NUMA_POOL=0`) was 2-6% slower. A second slot costs a single client ~25%.
 - **`--prefill 32768` reads a 32K prompt 25% slower** than 16384 (1,591 vs ~2,120 tok/s); not looked into.
+
+## Files
+
+Home paths, LAN addresses and host names replaced with placeholders; API keys were redacted when the configs were
+written.
+
+- `raw/r21/`: spec depth and suffix drafts, with agent turns (the agent-turns numbers above).
+- `raw/r24/`, `raw/r26/`: incremental-read curves for the CPU share and the prefill help share (r26 includes the
+  local-build arms `own-ctl`, `split3k`, `split4k`, `help3k-only`).
+- `raw/r25/`: production against the CPU share at max 4096 (the production speed numbers above).
+- Each round: `sweep.jsonl` (one line per arm, every run parsed), `sweep.log`, `speed-<arm>-<n>.txt` (each run's raw
+  output), `config-<arm>.json` (redacted), `engine-<arm>.log`; `raw/t630-arms-r*.json` are the arm definitions.
+- `scripts/`: `t630-sweep.py` (one arm per fresh start), `speed-checks.py`, `agent-turns.py`, `agent-and-speed.py`,
+  `prefill-curve.py`, `prefill-table.py`. They read from a private repository (the agent-turns context and the 32K
+  prompt are its source files), so they document the method rather than run as is.

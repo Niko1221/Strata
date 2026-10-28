@@ -75,7 +75,7 @@ and their limits. Report what you actually measured and label estimates separate
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 - [2026-10-28: 2x RTX 3090 24 GB on PCIe 3.0 x16 (one per socket), 2x Xeon E5-2620 v3 without AVX-512, 256 GB RAM (Dell T630)](../bench/results/2026-10-28-community-t630-2x3090-pcie3/README.md):
   Strata 0.2.7 (engine 0.1.52) official Linux release, original Flash-Next IQ3_S, layer split 25 with `--trim-stage-weights`, MTP `--spec 4`, 131,072-token context, tuned for a coding agent over 26 rounds;
-  decode 142-151 / 122-124 tok/s (thinking off / on), 32K read 2,119-2,173 tok/s, decode after it 106-109 tok/s; agent-shaped turns and incremental prompt reads.
+  decode 142-151 / 122-124 tok/s (thinking off / on), 32K read 2,119-2,173 tok/s, decode after it 106-109 tok/s; agent-shaped turns and incremental prompt reads; one draft-protocol standard run (custom track): prompt 1,127 / 1,610 tok/s at 4K / 16K, decode 114-129 tok/s, sanity 12/12.
   Finds `STRATA_PREFILL_CPU_SHARE=auto` (off by default under a split) cuts 0.5-3K-token incremental reads by 8-13% on PCIe 3.0; lists the switches that made no difference.
 
 ## Run the standard benchmark

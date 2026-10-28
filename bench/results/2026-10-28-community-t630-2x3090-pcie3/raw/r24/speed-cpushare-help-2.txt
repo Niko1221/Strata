@@ -1,0 +1,8 @@
+  prefill 300: median read+1 1.424s runs 1.624,1.224
+  prefill 600: median read+1 1.223s runs 1.255,1.191
+  prefill 1000: median read+1 1.557s runs 1.629,1.485
+  prefill 1500: median read+1 2.086s runs 2.214,1.958
+  prefill 2000: median read+1 2.748s runs 2.725,2.771
+  prefill 2500: median read+1 3.092s runs 3.211,2.972
+  prefill 3000: median read+1 3.607s runs 3.360,3.853
+  prefill 4000: median read+1 4.144s runs 4.396,3.892

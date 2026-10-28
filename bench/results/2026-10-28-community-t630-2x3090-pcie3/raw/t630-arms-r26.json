@@ -1,0 +1,72 @@
+[
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "prod"
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": "",
+   "exe": "~/.local/share/strata/components/engine/t630-help-pcie3/strata"
+  },
+  "name": "own-ctl",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "auto",
+   "STRATA_PREFILL_CPU_SHARE_MAX": "4096"
+  }
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": "",
+   "exe": "~/.local/share/strata/components/engine/t630-help-pcie3/strata"
+  },
+  "name": "split3k",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "auto",
+   "STRATA_PREFILL_CPU_SHARE_MAX": "1536",
+   "STRATA_PREFILL_HELP": "1",
+   "STRATA_PREFILL_HELP_RULE": "pcie3",
+   "STRATA_PREFILL_HELP_MAX": "3072"
+  }
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": "",
+   "exe": "~/.local/share/strata/components/engine/t630-help-pcie3/strata"
+  },
+  "name": "split4k",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "auto",
+   "STRATA_PREFILL_CPU_SHARE_MAX": "1536",
+   "STRATA_PREFILL_HELP": "1",
+   "STRATA_PREFILL_HELP_RULE": "pcie3",
+   "STRATA_PREFILL_HELP_MAX": "4096"
+  }
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": "",
+   "exe": "~/.local/share/strata/components/engine/t630-help-pcie3/strata"
+  },
+  "name": "help3k-only",
+  "env": {
+   "STRATA_PREFILL_CPU_SHARE": "0",
+   "STRATA_PREFILL_HELP": "1",
+   "STRATA_PREFILL_HELP_RULE": "pcie3",
+   "STRATA_PREFILL_HELP_MAX": "3072"
+  }
+ },
+ {
+  "prefix": "numactl --interleave=all",
+  "config": {
+   "expert_profile_save": ""
+  },
+  "name": "prod2"
+ }
+]

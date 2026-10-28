@@ -1,0 +1,21 @@
+== agent turns: context 245972 chars (~61493 tokens), 4 turns
+  agent edit-file: 3007 tokens, decode 150.6 tok/s, ttft 26.76s
+  agent edit-lock: 45 tokens, decode 53.7 tok/s, ttft 4.39s
+  agent new-test: 1493 tokens, decode 111.4 tok/s, ttft 3.49s
+  agent read-300: 64 tokens, decode 66.6 tok/s, ttft 3.84s
+  agent read-1k: 48 tokens, decode 64.3 tok/s, ttft 2.42s
+  agent read-2.5k: 46 tokens, decode 80.9 tok/s, ttft 3.05s
+  agent plan: 2048 tokens, decode 82.8 tok/s, ttft 30.15s
+== template: second system message
+  ok: 'Bye.'
+== /v1/messages: tools + thinking budget
+  stop_reason=tool_use blocks=['thinking', 'tool_use'] usage={'input_tokens': 1, 'output_tokens': 52, 'cache_creation_input_tokens': 308, 'cache_read_input_tokens': 0}
+  tool_use: {"path": "server/engine/combat.js"}; thinking chars: 90; 2.7s
+  budget 1024: thinking ~510 tokens (chars/4), answer 1896 chars, output_tokens=2091, stop=end_turn
+== speed
+  thinking off: 129.0, 142.4, 152.3 tok/s (short prompt)
+  thinking on: 118.1, 118.5, 124.6 tok/s (short prompt)
+  long prompt 32659 tokens: prompt read 2166 tok/s (TTFT 15.1s), generation 113.2 tok/s
+  same prompt again (prefix cache): TTFT 1.10s, generation 104.0 tok/s
+== MTP acceptance (from /metrics)
+saved 5
