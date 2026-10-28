@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1505,6 +1506,64 @@ void append_torn_test() {
     check(session_file_read(p.string(), id, parsed, rb, error) && same_conv(parsed, c3), "and reads as gen 3");
 }
 
+// ---- the save gate: the engine's append-vs-full decision (pure function) --------------------
+
+void save_gate_tests() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+
+    SavedConversation c1 = chain_c1(3, 1024, idx, page, hd);
+    const fs::path p = uniq("gate");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "gate fixture: gen 1 written");
+    SessionAppendPlan plan;
+    check(session_file_append_plan(p.string(), id, plan, error), "gate fixture: the file plans");
+    const auto live = chain_sources(c1, idx);
+    const int64_t saved = (int64_t) plan.checkpoint.trailer.saved_tokens;
+    const int64_t clean = std::numeric_limits<int64_t>::max();
+    std::string why;
+
+    check(session_save_gate(&plan, live, clean, page, why) == SessionSaveChoice::append,
+          "a clean session appends to its own file");
+    check(why.empty(), "an accepted append carries no refusal reason");
+    check(session_save_gate(&plan, live, saved, page, why) == SessionSaveChoice::append,
+          "a write starting exactly at the saved boundary still appends");
+    check(session_save_gate(&plan, live, saved + 1, page, why) == SessionSaveChoice::append,
+          "a write inside the fresh residue page (whole cells at the boundary) still appends");
+    check(session_save_gate(&plan, live, saved - 1, page, why) == SessionSaveChoice::full_rewrite && !why.empty(),
+          "dirty below the saved boundary full-rewrites");
+    check(session_save_gate(nullptr, live, clean, page, why) == SessionSaveChoice::full_rewrite && !why.empty(),
+          "no plan (v2 file, torn tail, foreign file) full-rewrites");
+
+    auto refusals = [&](std::vector<SessionKvSource> s, const char* label) {
+        check(session_save_gate(&plan, s, clean, page, why) == SessionSaveChoice::full_rewrite && !why.empty(), label);
+    };
+    { auto s = live; s[0].heads += 1; refusals(s, "changed heads full-rewrite"); }
+    { auto s = live; s[0].format += 1; refusals(s, "changed format full-rewrite"); }
+    { auto s = live; s[0].page_size += 1; refusals(s, "changed page size full-rewrite"); }
+    { auto s = live; s[0].idx_dim += 1; refusals(s, "changed idx_dim full-rewrite"); }
+    { auto s = live; s[0].idx_block += 1; refusals(s, "changed idx_block full-rewrite"); }
+    { auto s = live; s[0].head_dim += 64; refusals(s, "changed head_dim full-rewrite"); }
+    { auto s = live; s[0].cells -= 1; refusals(s, "shrunk cells full-rewrite (append never shrinks a carve)"); }
+    { auto s = live; s[0].pooled_rows -= 1; refusals(s, "shrunk pooled rows full-rewrite"); }
+    { auto s = live; s.pop_back(); refusals(s, "a different layer count full-rewrites"); }
+    {   // growth is fine: cells and pooled rows may extend the carve
+        auto s = live;
+        s[0].cells += 256;
+        s[0].pooled_rows += 2;
+        check(session_save_gate(&plan, s, clean, page, why) == SessionSaveChoice::append,
+              "grown cells and pooled rows still append");
+    }
+    // the file itself is never consulted by the gate beyond the plan - a plan from this file plus matching
+    // live geometry is the whole decision (the writer re-derives and re-verifies independently)
+    check(session_save_gate(&plan, live, 0, page, why) == SessionSaveChoice::full_rewrite,
+          "a session dirty from token 0 full-rewrites");
+}
+
 void append_writer_tests() {
     append_chain_test(7);
     append_refusal_tests();
@@ -1523,6 +1582,7 @@ int main() {
     v3_write_tests();
     reader_tests();
     append_writer_tests();
+    save_gate_tests();
     fs::remove_all(append_dir);
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;

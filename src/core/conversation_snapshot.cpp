@@ -527,6 +527,9 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     SessionKvSource s;
     s.format = l.format; s.cells = l.cells; s.heads = g.n_head_kv; s.head_dim = g.head_dim;
     s.page_size = l.page_size; s.pooled_rows = l.pooled_rows; s.idx_dim = g.idx_key_dim;
+    // v3 append (spec Ruling B): only the engine knows the indexer's block size, and the pooled boundary rule
+    // needs it recorded.  An indexed layer carries the real shape; a non-indexed one has no pooled part.
+    s.idx_block = index && l.pooled_rows > 0 ? strata::kernels::qsa_real_shapes().idx_block : 0;
     s.sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const auto src = pools(st);
     const auto sizes = s.sizes;

@@ -324,6 +324,21 @@ bool session_file_append(const std::string& path, const SavedConversation& meta,
                          const SessionFileIdentity& id, const SessionAppendPlan& plan, size_t& bytes, std::string& error,
                          const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
 
+// The engine's append-vs-full-rewrite decision, as a pure function (unit-testable apart from any device).
+// `plan` non-null = session_file_append_plan succeeded on this file (a null plan already covers v2 files,
+// torn tails, damaged chains and foreign files - every case the plan refused).  `live` = the K/V sources
+// about to be written: same per-layer format/heads/head_dim/page_size/idx_dim/idx_block as the file's,
+// `cells`/`pooled_rows` free to grow.  `kv_first_dirty` = the session's immutability watermark
+// (SessionState::kv_first_dirty; INT64_MAX = nothing has rewritten a pool row since): eligible iff its
+// whole-page prefix reaches the checkpoint's saved_tokens - the same comparison SessionState::kv_append_ok
+// makes, kept here so this decision needs no session-state header.  Metal stance (spike S2 R6): Metal's
+// window_checkpoint_* paths bypass QsaState pool writes entirely, so a Metal build disables the append
+// path in the engine; a session nothing ever bumped stays eligible exactly because nothing rewrote its
+// pool rows - the watermark stays INT64_MAX on its own.
+enum class SessionSaveChoice : uint8_t { full_rewrite, append };
+SessionSaveChoice session_save_gate(const SessionAppendPlan* plan, const std::vector<SessionKvSource>& live,
+                                    int64_t kv_first_dirty, int64_t page, std::string& why);
+
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);

@@ -830,6 +830,10 @@ struct Options {
     /// --serve SAVE: disk space a session file must leave free where it is written (MiB; 0 = no check)
     int64_t session_min_free_mib = 4096;
     bool session_save_reclaim = false;
+    /// --session-save-append: save session files in the v3 append-log format and APPEND a generation onto an
+    /// existing file when its checkpoint chain validates and the session's immutability watermark proves the
+    /// region the file already committed is untouched (else a full v3 rewrite; opt-in)
+    bool session_save_append = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
@@ -990,6 +994,9 @@ void usage() {
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE or RESTORE needs RAM (opt-in)\n"
+                 "  --session-save-append  --serve (opt-in): session files in the append-log format; a SAVE adds one\n"
+                 "                       generation to the existing file when its checkpoint chain and the session's\n"
+                 "                       write watermark allow it, instead of rewriting the whole file\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -3245,6 +3252,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
+        else if (a == "--session-save-append") o.session_save_append = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
@@ -9020,9 +9028,11 @@ int main(int argc, char** argv) {
         {
             const int64_t c0 = (int64_t) ((xcache.slot_offset(kvg.lo) + G - 1) / G);
             const int64_t c1 = (int64_t) (xcache.slot_offset(kvg.top) / G);
-            for (int64_t c = c0; c < c1; ++c)
+            int64_t churn_lo = -1;   // watermark M7 (kept defensive, R1 unproven): cells from the lowest
+            for (int64_t c = c0; c < c1; ++c)   // remapped chunk on may differ from what the last save committed
                 if (r.mapped(c))
-                    if (const strata::core::VmmChunk h = r.unmap(c)) kvg.spare.push_back(h);
+                    if (const strata::core::VmmChunk h = r.unmap(c)) { kvg.spare.push_back(h); if (churn_lo < 0) churn_lo = c; }
+            if (churn_lo >= 0) ss.mark_kv_dirty(churn_lo * (int64_t) G);
         }
         if (gave > 0 &&
             cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -9067,6 +9077,9 @@ int main(int argc, char** argv) {
         const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
         if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
         strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
+        // Watermark M6: this trim unmapped real chunks (the early return above proves it): cells from the
+        // trim target on are gone from the pools, so a save in between must not treat them as committed.
+        ss.mark_kv_dirty(target);
         kvg.cells = strata::core::qsa_kv_elastic_cells();
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
@@ -12841,6 +12854,10 @@ int main(int argc, char** argv) {
                     return false;
                 mtp.set_prompt_len(upto);
             }
+            // Watermark M5: the slot's K/V replaced the main session's pools (and the stages' where the
+            // copy ran) - from token 0, on the direct path as well as the checkpointed one.
+            ss.mark_kv_dirty(0);
+            for (auto& st : stages) st->ss.mark_kv_dirty(0);
             return true;
         };
         auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
@@ -13807,6 +13824,7 @@ int main(int argc, char** argv) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
                     double capture_ms = 0;
+                    bool appended = false;
                     try {
                         // RAM PREFLIGHT for the save (not a reservation), BEFORE anything is copied: the deepest
                         // checkpoint is chosen by reference, and the copies it will take (the list below and the one
@@ -13889,10 +13907,44 @@ int main(int argc, char** argv) {
                         wo.progress = moving;
                         wo.phase = blocking;
                         strata::core::SessionStatus st;
-                        if (!strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
+                        const int64_t save_page = strata::kernels::qsa_real_shapes().page_size;
+                        // --session-save-append: try one generation onto the existing file.  The gate (pure,
+                        // core-side) demands a validated checkpoint chain for this identity, live K/V geometry
+                        // that matches the file's (only growing), and the session's immutability watermark clear
+                        // of the committed boundary - every pool rewrite since the last save bumped it (M1-M9).
+                        // Metal (spike S2 R6): the window paths bypass the QsaState pools the watermark watches,
+                        // so the append path is off there entirely.
+                        bool append_wanted = o.session_save_append;
+#if defined(STRATA_GPU_METAL)
+                        append_wanted = false;
+#endif
+                        if (append_wanted) {
+                            wo.use_v3 = true;   // the full-rewrite fallback writes the append-log format too
+                            strata::core::SessionAppendPlan plan;
+                            std::string perr;
+                            const bool have_plan = strata::core::session_file_append_plan(path, id, plan, perr);
+                            std::string gwhy;
+                            if (strata::core::session_save_gate(have_plan ? &plan : nullptr, sources,
+                                                                ss.kv_first_dirty, save_page, gwhy) ==
+                                    strata::core::SessionSaveChoice::append) {
+                                if (strata::core::session_file_append(path, meta, sources, id, plan, bytes, err,
+                                                                      wo, &st))
+                                    appended = true;   // the saved-line suffix reports it (and `bytes` is the delta)
+                                // an append that failed left whatever landed as a torn tail: the reader cascades
+                                // to the last intact generation, and the full rewrite below re-lays the file whole.
+                            } else
+                                std::fprintf(stderr, "strata serve: save gate: full rewrite - %s\n", gwhy.c_str());
+                        }
+                        if (!appended &&
+                            !strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
                             refuse(err, st.error, st.published);
                             continue;
                         }
+                        // every successful save commits [0, whole(live)) into the file afresh: the watermark may
+                        // rise to that boundary (a later pool rewrite below it bumps it down again)
+                        ss.kv_first_dirty = std::max(ss.kv_first_dirty,
+                                                     strata::core::session_whole_cells((int64_t) live.size(),
+                                                                                       save_page));
                         if (st.dir_flush_unsupported)
                             std::fprintf(stderr, "strata serve: session saved to %s; this filesystem cannot flush a "
                                                  "folder, so the new name is not flushed\n", path.c_str());
@@ -13901,9 +13953,11 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     std::fprintf(stderr, "strata serve: session saved %zu tokens, %zu of %zu checkpoints, %zu bytes to %s "
-                                 "in %.1f ms (state %.1f ms)\n", live.size(), kept, checks.size(), bytes,
-                                 path.c_str(), ms(), capture_ms);
-                    std::printf("SAVED %zu %zu %.1f\n", live.size(), bytes, ms());
+                                 "in %.1f ms (state %.1f ms)%s\n", live.size(), kept, checks.size(), bytes,
+                                 path.c_str(), ms(), capture_ms, appended ? " (appended)" : "");
+                    // the fifth field is appended-only: an append reports the DELTA as `bytes`, and server.py
+                    // reads the field only when present (a 4-field line stays today's exact exchange)
+                    std::printf("SAVED %zu %zu %.1f%s\n", live.size(), bytes, ms(), appended ? " 1" : "");
                 } else {
                     strata::core::SavedConversation image;
                     size_t bytes = 0;
@@ -13993,6 +14047,8 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
+                    // Watermark M3: the file's bytes are now in the pools of every carve - from token 0
+                    for (strata::core::SessionState* sp : sessions) sp->mark_kv_dirty(0);
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear();
@@ -14706,6 +14762,7 @@ int main(int argc, char** argv) {
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
+                ss.mark_kv_dirty(0);   // Watermark M4 (borrow): the donor's prefix is now in this session's pools
                 std::fprintf(stderr, "strata serve: conversation cache: borrowed %lld tokens from a parked "
                              "conversation, which stays parked, in %.1f ms; parked=%zu bytes=%zu borrowed=%zu\n",
                              (long long) resume, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -14732,6 +14789,9 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
+                // Watermark M4 (park restore): the parked conversation's K/V is now in these sessions' pools
+                ss.mark_kv_dirty(0);
+                for (auto& st : stages) st->ss.mark_kv_dirty(0);
                 if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();
@@ -14808,6 +14868,9 @@ int main(int argc, char** argv) {
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                     cudaStreamSynchronize(st->stream);
                 }
+                // Watermark M2: a zeroed session's pools no longer hold what the last save committed, at any position
+                ss.mark_kv_dirty(0);
+                for (auto& st : stages) st->ss.mark_kv_dirty(0);
                 checks.clear();
             } else if (!from_live) {
                 ConvCheckpoint* c = nullptr;
@@ -14832,6 +14895,8 @@ int main(int argc, char** argv) {
                         strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                         cudaStreamSynchronize(st->stream);
                     }
+                    ss.mark_kv_dirty(0);   // Watermark M2 (the STRATA_CKPT_REREAD zeroing, same rule)
+                    for (auto& st : stages) st->ss.mark_kv_dirty(0);
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
@@ -14895,6 +14960,10 @@ int main(int argc, char** argv) {
                 mtp.set_cell_floor(resume > 0 && reread_to <= 0 ? kva_floors.floor_for(ids.data(), resume) : 0);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
             conversations.limit_reuse(read_from);
+            // Watermark M1: this request rewrites every cell from read_from on (the rule above the resume),
+            // so pool rows from there on may differ from what the last save committed.
+            ss.mark_kv_dirty(read_from);
+            for (auto& st : stages) st->ss.mark_kv_dirty(read_from);
             pp_total = n;
             pp_from = read_from;
             pp_reached = read_from;

@@ -2586,7 +2586,8 @@ class StrataEngine:
 
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
-        -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
+        -> {"tokens", "bytes", "ms"} (SAVE adds `"appended": True/False` only when the engine appended a generation
+        onto the existing file - then `bytes` is the appended delta).  SessionRefused (kind, published) when the engine refused or failed the file and
         is still in step (`SERR <kind> <0|1> <reason>`).  Any line this exchange does not allow - an unknown or
         malformed one, a bare ERR, an answer with negative counts or a non-finite time - means the two sides lost
         step: the engine is ended (EngineDied) and the next request starts it again.  EngineDied also when it ended
@@ -2670,14 +2671,17 @@ class StrataEngine:
                 raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
             if head == want:
                 try:
-                    if len(f) != 4:
+                    if len(f) not in (4, 5) or (len(f) == 5 and want != "SAVED"):
                         raise ValueError
                     tokens, size, ms = count(f[1]), count(f[2]), float(f[3])
                     if not math.isfinite(ms) or ms < 0:
                         raise ValueError
                 except ValueError:
                     raise out_of_step(line) from None
-                return {"tokens": tokens, "bytes": size, "ms": ms}
+                out = {"tokens": tokens, "bytes": size, "ms": ms}
+                if len(f) == 5:                    # --session-save-append: a 5th field reports the append, and
+                    out["appended"] = f[4] == "1"  # `bytes` is then the appended DELTA, not the whole file
+                return out
             if head == "INFO" or head == "WARN":          # engine log lines may interleave; they are not answers
                 heard = time.monotonic()
                 continue
