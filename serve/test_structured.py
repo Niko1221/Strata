@@ -209,6 +209,50 @@ class Structured(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parents[1]))
         self.assertEqual(r.returncode, 0)
 
+    # ------------------------------------------------------------------ T2b: lark response_format through HTTP
+    def masked_chat(self, script, response_format):
+        """chat() on an engine that takes token masks (a real engine's INFO token_mask key): the Constraint
+        path of serve/constrain.py is really taken when the format survives prepare_format."""
+        self.engine = self.svc.engine = MockEngine(self.tok, script, max_context=16384)
+        self.engine.supports_mask = True
+        req = {"messages": [{"role": "system", "content": "Write a film plan."},
+                            {"role": "user", "content": "Photobooth. 15 seconds."}],
+               "response_format": response_format, "reasoning_effort": "none"}
+        return self.request("/v1/chat/completions", req)
+
+    def test_lark_format_reaches_the_constraint_and_is_not_json_validated(self):
+        # a well-formed lark rf passes prepare_format (no 400), reaches the Constraint (T1's passthrough)
+        # and the turn is not JSON-validated afterwards: prose stays a 200 where json_object would be a 502.
+        # Without llguidance installed the same request free-decodes to 200 (mask_available() is False),
+        # so the 200 holds in both environments; the constraint assertion only runs with llguidance.
+        from serve import constrain
+        rf = {"type": "lark", "grammar": 'start: "yes" | "no"'}
+        code, reply = self.masked_chat("yes", rf)
+        self.assertEqual(code, 200)
+        self.assertEqual(reply["choices"][0]["message"]["content"], "yes")
+        if constrain.available():
+            self.assertIsNotNone(self.engine.last_sampling_constraint)
+        # a plain-text answer under a JSON format would be a 502: under lark it is a 200 (no after-the-turn gate)
+        code, _ = self.chat("Prose, not JSON.", response_format=rf)
+        self.assertEqual(code, 200)
+
+    def test_lark_that_cannot_build_degrades_to_free_decoding(self):
+        # a lark grammar llguidance cannot compile drops the mask (the existing "constrained decoding off"
+        # fallback in _with_constraint): the turn free-decodes to a 200, never a 502 or 400.
+        code, reply = self.masked_chat("Sure thing.", {"type": "lark", "grammar": "start: [[["})
+        self.assertEqual(code, 200)
+        self.assertEqual(reply["choices"][0]["message"]["content"], "Sure thing.")
+        self.assertIsNone(self.engine.last_sampling_constraint)
+
+    def test_malformed_lark_is_400_before_loading(self):
+        with mock.patch.object(self.svc, "load") as load:
+            for fmt in ({"type": "lark"}, {"type": "lark", "grammar": ""}, {"type": "lark", "grammar": 7}):
+                with self.subTest(fmt=fmt):
+                    code, reply = self.chat(response_format=fmt)
+                    self.assertEqual(code, 400)
+                    self.assertIn("grammar", reply["error"]["message"])
+            load.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

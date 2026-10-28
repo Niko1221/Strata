@@ -29,6 +29,10 @@ import json
 import re
 import threading
 
+# the custom_calls grammar (T2a) assembles its special tokens from the frontend constants, never from
+# text literals; frontend imports nothing from serve, so this top-level import cannot cycle.
+from serve.frontend import CALL_END, FUNC_END, FUNC_START, PARAM_END, PARAM_START
+
 try:
     import llguidance as _llg
     import llguidance.numpy  # noqa: F401  (part of the package; imported so a broken install fails here)
@@ -140,8 +144,12 @@ class Vocab:
 
 # ------------------------------------------------------------------------------------------------ the grammar
 def format_of(sampling: dict):
-    """The request's JSON format from its sampling dict (the request itself): chat's response_format, or the
-    Responses API's text.format.  None: plain text (nothing to constrain)."""
+    """The request's JSON (or lark) format from its sampling dict (the request itself): chat's
+    response_format, or the Responses API's text.format.  None: plain text (nothing to constrain).
+    A lark response_format ({type: "lark", grammar: "<lark text>"}) passes through unchanged: llguidance
+    reads lark natively, so the grammar string is the whole constraint (a GBNF client converts first with
+    grammar_from("gbnf", ...) and sends the result).  A lark without a non-empty string grammar is not a
+    format - the same treatment as an unknown type (None)."""
     rf = sampling.get("response_format")
     if rf is None and isinstance(sampling.get("text"), dict):
         fmt = sampling["text"].get("format")
@@ -149,7 +157,11 @@ def format_of(sampling: dict):
             rf = {"type": "json_schema", "json_schema": {k: fmt[k] for k in ("name", "schema", "strict") if k in fmt}}
         elif isinstance(fmt, dict) and fmt.get("type") == "json_object":
             rf = {"type": "json_object"}
-    if not isinstance(rf, dict) or rf.get("type") not in ("json_object", "json_schema"):
+    if not isinstance(rf, dict):
+        return None
+    if rf.get("type") == "lark":
+        return rf if isinstance(rf.get("grammar"), str) and rf["grammar"] else None
+    if rf.get("type") not in ("json_object", "json_schema"):
         return None
     return rf
 
@@ -172,6 +184,52 @@ def safe_tool_names(tools) -> list[str]:
         if isinstance(name, str) and _NAME_SAFE.fullmatch(name) and name not in out:
             out.append(name)
     return out
+
+
+# custom tool grammars: the measured shape of notes/probes/t2_probe7.py (extracted, not retyped).
+# The name choice excludes prefix pairs longest-first; each call is the name literal, the open tag,
+# the input parameter and one value lexeme that ends at the parameter close tag, then the function
+# and call close tags.  No look-ahead, no WS branch inside the calls branch (W5 panic).
+
+
+# T3 (spec item 3): the body binds only when the tokenizer holds the call opener as ONE
+# token (checked per vocabulary, notes/T3-impl.md); the envelope tokens ride vocab.literal
+# so both pack shapes match.
+
+def _def_esc(d):
+    return d.replace("\\", "\\\\").replace("/", "\\/").replace("\n", "\\n")
+
+
+def _value_lex(d):
+    return "/" + _def_esc(d) + "\\n" + PARAM_END.replace("/", "\\/") + "/"
+
+
+def _custom_calls_grammar(entries, vocab, body_bound=True):
+    names = [e["name"] for e in entries]
+    kept = []
+    for n in sorted(set(names), key=lambda n: (-len(n), n)):
+        if not any(k != n and k.startswith(n) for k in kept):
+            kept.append(n)
+    rules, choice = [], []
+    for i, e in enumerate(entries):
+        if e["name"] not in kept:
+            continue
+        if body_bound:          # T3 (spec item 3 + the T3d lesson): the envelope tokens ride
+                                # vocab.literal, so the grammar matches a pack that holds them as
+                                # ONE type-4 token and one that writes them as text - the measured
+                                # marker-byte refusal at the close was the plain-text closer literal
+            rules.append(f't{i}: "{e["name"]}" ">" "\\n" '
+                         f'{vocab.literal(PARAM_START)} "input" ">" "\\n" '
+                         f'{_value_lex(e["definition"])} "\\n" {vocab.literal(FUNC_END)} "\\n" '
+                         f'{vocab.literal(CALL_END)}')
+        else:                   # the T3d fallback: a vocabulary without the opener as ONE token gets
+                                # the name enumeration only - the body stays the free REST (spec item 3)
+            rules.append(f't{i}: "{e["name"]}" ">"')
+        choice.append(f"t{i}")
+    lines = ["start: WS? answer", "WS: /[ \\t\\r\\n]+/", "answer: calls | PROSE",
+             "PROSE: /[^<][\\s\\S]*/", "REST: /[\\s\\S]*/",
+             f'calls: {vocab.literal(TOOL_CALL)} "\\n" {vocab.literal(FUNC_START)} ( ' + " | ".join(choice) + " ) REST"] + rules
+    return "\n".join(lines) + "\n", kept
 
 
 def grammar(rf: dict | None, with_tools: bool, vocab: Vocab, tool_names=None) -> str:
@@ -199,6 +257,34 @@ def grammar(rf: dict | None, with_tools: bool, vocab: Vocab, tool_names=None) ->
             lines += [f"calls: {vocab.literal(TOOL_CALL)} REST",
                       "REST: /[\\s\\S]*/"]
         return _llg.LLMatcher.grammar_from_lark("\n".join(lines) + "\n")
+    if rf["type"] == "lark":
+        # the user's own lark grammar (format_of's passthrough): llguidance reads lark natively, so the
+        # text goes to the matcher as it stands - no JSON branch, no calls branch (the grammar itself
+        # decides what the turn may be).  A grammar llguidance cannot compile leaves Constraint() with
+        # m.is_error() -> the caller's _with_constraint catches it and drops the mask (free decoding,
+        # never a 502), the same fallback as an uncompilable schema.
+        g = rf.get("grammar")
+        if not isinstance(g, str) or not g:
+            raise ValueError("lark without a grammar string")
+        return _llg.LLMatcher.grammar_from_lark(g)
+    if rf["type"] == "custom_calls":
+        # T2a: custom tool grammars (the spec item 2).  The route passes the entries it built from the
+        # request's custom tools ({name, definition}, definition a grammar text the value lexeme embeds);
+        # the answer is the probe7 calls shape or PROSE.  The caller pairs this grammar with
+        # Constraint(custom_calls=True): the mask stays live through the whole call (no tag or separator
+        # release) and the closing call-end token frees the turn.  An empty or all-unsafe entry list
+        # raises: the caller's existing handler drops the mask (free decoding, never a 502).
+        entries = rf.get("entries")
+        kept = [e for e in (entries or [])
+                if isinstance(e, dict) and isinstance(e.get("name"), str)
+                and _NAME_SAFE.fullmatch(e["name"]) and isinstance(e.get("definition"), str)]
+        if not kept:
+            raise ValueError("custom_calls without a usable entry")
+        # T3 (spec item 3, the T3d lesson): the body binds only when the tokenizer holds the
+        # call opener as ONE type-4 token; else the name enumeration stays and the body stays
+        # the free REST
+        body = vocab.single(TOOL_CALL) is not None
+        return _llg.LLMatcher.grammar_from_lark(_custom_calls_grammar(kept, vocab, body)[0])
     if rf["type"] == "json_object":
         schema = {"type": "object"}
     else:
@@ -283,7 +369,14 @@ def masks_for_window(m, drafts, cut_ids):
 # ------------------------------------------------------------------------------------------------ one turn
 class Constraint:
     """One generation pass of one request: the matcher, and whether the answer (the constrained part) has started."""
-    def __init__(self, vocab: Vocab, grammar_text: str, armed: bool, name_enum: bool = False):
+    def __init__(self, vocab: Vocab, grammar_text: str, armed: bool, name_enum: bool = False,
+                 custom_calls: bool = False):
+        # T2a (custom_calls): the mask stays live through the whole call; the closing call-end token
+        # frees the turn.  call_end is None when the tokenizer has no single token for it (then the
+        # release rides on the consume-refusal path only, the probe7 finding).
+        self.custom_calls = bool(custom_calls)
+        self.call_end = vocab.single(CALL_END)
+
         self.vocab, self.armed = vocab, armed
         self.m = _llg.LLMatcher(vocab.lltok, grammar_text, log_level=0)
         if self.m.is_error():
@@ -337,6 +430,27 @@ class Constraint:
     def feed(self, t: int) -> None:
         """A token the engine emitted (in order)."""
         if self.failed is not None:
+            return
+        if self.custom_calls:
+            # T2a (probe7 measured): no tag / separator release - the mask stays live through the whole
+            # call; the closing CALL_END frees the turn, a refused consume lands on the existing
+            # downgrade (failed set, reply -> MF, the validation after the turn decides).
+            if not self.armed:
+                self.tail = (self.tail + self.vocab.bytes_of(t))[-64:]
+                if self.tail.endswith(THINK_END):
+                    self.armed = True
+                return
+            if not self.m.consume_token(t):
+                self.failed = "outside grammar"
+                note_once("constrained decoding: gave the mask up in a custom_calls turn (token outside "
+                          "the grammar); the turn is validated after")
+                return
+            if t == self.tool_call:
+                self.await_name = True
+            elif self.await_name and self.call_end is not None and t == self.call_end:
+                self.await_name = False
+                self.armed = False
+                self.failed = "tool call"
             return
         if not self.armed:
             self.tail = (self.tail + self.vocab.bytes_of(t))[-64:]

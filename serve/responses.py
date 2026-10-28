@@ -32,6 +32,12 @@ from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
                 "code_interpreter", "image_generation", "local_shell", "mcp", "tool_search")
+# T2c (spec item 2): the request key the custom tool grammar entries ride on (see request_tools).  The
+# route hands it to constrain.grammar() as {"type": "custom_calls", "entries": <this list>} and builds
+# Constraint(..., custom_calls=True) - it does NOT go through format_of (there the type is unknown and
+# the request would fall to the bare-call branch).  An underscore key: never echoed in a response, and
+# the engine's sampling merge ignores it the way it ignores the constraint's own key.
+CUSTOM_CALLS_KEY = "_strata_custom_calls"
 
 
 class ResponsesError(ValueError):
@@ -234,8 +240,13 @@ def _order_tool_results(messages):
 
 
 def request_tools(req: dict):
-    """-> (template tools or None, {template name: (namespace, name, kind)}, names of hosted tools left out)."""
+    """-> (template tools or None, {template name: (namespace, name, kind)}, names of hosted tools left out).
+
+    A custom tool with a grammar also records its entry ({name, definition}) under CUSTOM_CALLS_KEY on
+    `req` (T2c): the same request dict the route later passes as the sampling dict, so the constraint
+    route finds the entries there and binds them through constrain.grammar()'s custom_calls branch."""
     tools, names, skipped = [], {}, []
+    entries = []                                     # custom_calls entries: {name, definition} (T2c)
     given = req.get("tools") or []
     if not isinstance(given, list):
         raise ResponsesError("tools must be an array", "tools")
@@ -260,7 +271,14 @@ def request_tools(req: dict):
         else:                                        # custom: free-form text, maybe in a grammar the model reads
             fmt = tool.get("format") or {}
             if isinstance(fmt, dict) and fmt.get("type") == "grammar" and fmt.get("definition"):
-                description += f"\n\nThe input must follow this {fmt.get('syntax', '')} grammar:\n{fmt['definition']}"
+                definition = fmt["definition"]
+                description += f"\n\nThe input must follow this {fmt.get('syntax', '')} grammar:\n{definition}"
+                # T2c (spec item 2): the same definition also binds the call body - the entry goes to the
+                # request's custom_calls list (the names this server cannot parse are dropped later by
+                # grammar()'s _NAME_SAFE filter; the prefix-pair exclusion lives there too).  A definition
+                # that is not a string stays the prompt directive only.
+                if isinstance(definition, str):
+                    entries.append({"name": flat, "definition": definition})
             params = {"type": "object", "properties": {"input": {"type": "string", "description": "the raw input"}},
                       "required": ["input"]}
         tools.append({"name": flat, "description": description, "parameters": params})
@@ -283,6 +301,9 @@ def request_tools(req: dict):
             skipped.append(kind)                     # the model cannot run OpenAI's hosted tools: left out
         else:
             raise ResponsesError("a tool needs a type", param + ".type")
+    if entries:                                      # T2c: the grammar entries ride on the request itself
+        req[CUSTOM_CALLS_KEY] = entries              # (the same dict the route passes as the sampling dict);
+        # no custom grammar: no key at all - the request shape stays exactly as it was
     choice = req.get("tool_choice")
     if choice == "none":
         return None, names, skipped

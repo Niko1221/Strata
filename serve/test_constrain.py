@@ -20,6 +20,8 @@ import urllib.request
 from pathlib import Path
 
 from serve import constrain as C
+from serve import frontend as FE
+from serve import responses as R
 from serve.frontend import ChatTemplate
 from serve.server import IM_END, ByteTokenizer, MockEngine, Service, StrataEngine, serve
 
@@ -232,6 +234,48 @@ class Masks(unittest.TestCase):
         self.assertEqual(C.format_of({"text": {"format": TEXT_FMT}})["json_schema"]["schema"], SCHEMA)
         self.assertEqual(json.loads(self.replay('ok {"a": [1]}', rf={"type": "json_object"})[1]), {"a": [1]})
 
+    # --- T1 (spec item 1): a lark response_format goes through grammar() to the matcher unchanged ---
+    def test_lark_grammar_builds_and_masks(self):
+        rf = {"type": "lark", "grammar": 'start: "yes" | "no"'}
+        self.assertEqual(C.format_of({"response_format": rf}), rf)      # accepted unchanged (the same dict)
+        vt = C.Vocab(TagTokenizer(), self.stop)                         # the T3d fixture vocabulary
+        g = C.grammar(rf, False, vt)                                    # the lark text straight through
+        c = C.Constraint(vt, g, armed=True)
+        self.assertIsNone(c.failed)
+        reply = c.reply()
+        self.assertTrue(reply.startswith("MK "), reply[:24])            # masked from the first token
+        bits = base64.b64decode(reply[3:])
+        self.assertEqual({vt.bytes_of(t) for t in range(vt.n) if C.Constraint.allowed(bits, t)},
+                         {b"y", b"n"})                                  # only the grammar's first letters
+        self.feed_text(c, "yes", vt)                                    # the word consumes to the end
+        self.assertIsNone(c.failed)
+        c2, text = self.replay("sure: yes", rf=rf)                      # prose outside the grammar is dropped
+        self.assertEqual(text, "yes")
+        self.assertIsNone(c2.failed)
+        with self.assertRaises(ValueError):                             # grammar()'s own guard
+            C.grammar({"type": "lark"}, False, vt)                      # lark without a grammar string
+
+
+# ------------------------------------------------------------------------ the lark response_format (spec item 1)
+class LarkFormat(unittest.TestCase):
+    """format_of's lark acceptance: a well-formed {type: "lark", grammar: "..."} passes through unchanged;
+    a malformed lark is treated exactly like an unknown type (None).  Pure dict logic - runs without
+    llguidance."""
+
+    def test_lark_is_accepted_as_is(self):
+        rf = {"type": "lark", "grammar": 'start: "a"'}
+        self.assertEqual(C.format_of({"response_format": rf}), rf)
+
+    def test_bad_lark_matches_the_unknown_type(self):
+        for rf in ({"type": "lark"},                                  # no grammar at all
+                   {"type": "lark", "grammar": ""},                   # empty string
+                   {"type": "lark", "grammar": 5},                    # not a string
+                   {"type": "lark", "grammar": None},
+                   {"type": "lark", "grammar": ["start: \"a\""]},     # list, not string
+                   {"type": "no-such-format"}):                       # the existing unknown type
+            with self.subTest(rf=rf):
+                self.assertIsNone(C.format_of({"response_format": rf}))
+
 
 # ------------------------------------------------------------------------------------------------ over HTTP
 class Http(unittest.TestCase):
@@ -356,6 +400,20 @@ class MockUnderMask(Http):
         self.assertGreater(len(engine.mask_log), 1)              # many windows, not one lucky lookahead
         self.assertFalse(any(rep.startswith("MKN") for rep in engine.mask_log), engine.mask_log[:4])
         self.assertTrue(all(rep.startswith("MK ") for rep in engine.mask_log if rep.startswith(("MK ", "MKN"))))
+
+    # --- T1 (spec item 1): a lark grammar llguidance cannot compile degrades to free decoding ---
+    def test_12_a_broken_lark_grammar_degrades_to_free_decoding(self):
+        """The _with_constraint fallback rides a broken lark the way T3b's ChatToolsWithJsonSchema run 3
+        rides a broken name-enum: the sampling carries no constraint and the script comes out verbatim
+        (free decoding - the 200 path, never a 502).  Exercised at the Service level (the test_10 way):
+        the HTTP route end-to-end needs serve/structured.py prepare_format to accept the lark type,
+        whose allowlist 400s every non-JSON type today - outside this card's edit scope (see the task
+        comment)."""
+        sampling = self.svc._with_constraint(
+            {"response_format": {"type": "lark", "grammar": "start: [[["}}, None, False)
+        self.assertNotIn(C.KEY, sampling)                              # the constraint was given up
+        emitted = list(self.engine.generate(self.tok.encode("hi"), 200, sampling, threading.Event()))
+        self.assertEqual(self.tok.decode(emitted), 'Sure! {"n": "7"} done' + IM_END)  # free, verbatim
 
 
 class MTPWindowMock(MockEngine):
@@ -636,6 +694,257 @@ class ChatBareToolMask(Http):
         self.assertEqual(code, 200, r)
         blocks = [b for b in (r.get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"]
         self.assertEqual([b["name"] for b in blocks], ["exec_command"])
+
+
+# --------------------------------------------------------- custom tool grammars (spec item 2, cards T2a / T2c)
+class _CallEndTagTokenizer(TagTokenizer):
+    """The production pack's shape this design assumes: the call closer is ONE type-4 special token,
+    like the call opener (T3d).  The plain fixture omits it - probe7 measured the single lookup as
+    None - so the release path needs its own fixture (notes/T2d-impl.md)."""
+    SPECIALS = TagTokenizer.SPECIALS + [FE.CALL_END]
+
+
+@need
+class CustomToolGrammars(unittest.TestCase):
+    """T2d: the custom_calls route the parents wired - responses.request_tools records the grammar
+    entries under CUSTOM_CALLS_KEY (T2c) and constrain.grammar()'s custom_calls branch builds the
+    probe7 call grammar (T2a).  The server.py route that consumes the key is NOT wired yet (it sits
+    outside every card's edit scope), so `_route` below composes the two sides the way the T4 route
+    will, and the degradation test pins the never-a-502 contract the route must keep.
+
+    Payload safety (the gateway cuts text at the tag-closer character): no tag string is written as
+    a literal here - every tag is assembled from serve.frontend's own constants plus chr(62)."""
+
+    GT = chr(62)                                       # the tag closer, built, never typed
+
+    def setUp(self):
+        self.tok = TagTokenizer()                      # <tool_call> is ONE special token (T3d)
+        self.stop = set(self.tok.encode(IM_END, parse_special=True))   # the real server's stop set
+        self.vocab = C.Vocab(self.tok, self.stop)
+
+    def _entries(self, name, definition):
+        return [{"name": name, "definition": definition}]
+
+    def _constraint(self, entries):
+        g = C.grammar({"type": "custom_calls", "entries": entries}, False, self.vocab)
+        return C.Constraint(self.vocab, g, armed=True, custom_calls=True)
+
+    def _call(self, name, value):
+        """The full call text, assembled: CALL_START nl FUNC_START name GT nl PARAM_START input GT nl
+        value nl PARAM_END nl FUNC_END nl CALL_END (the probe7 shape)."""
+        gt, nl = self.GT, "\n"
+        return (FE.CALL_START + nl + FE.FUNC_START + name + gt + nl
+                + FE.PARAM_START + "input" + gt + nl + value + nl + FE.PARAM_END + nl
+                + FE.FUNC_END + nl + FE.CALL_END)
+
+    def _feed(self, c, text):
+        for t in self.tok.encode(text, parse_special=True):
+            c.feed(t)
+
+    def _consumes(self, gtext, text):
+        """The probe7 raw() check: feed the whole text into a fresh matcher; return (ok, report)."""
+        g = C._llg.LLMatcher.grammar_from_lark(gtext)
+        m = C._llg.LLMatcher(self.vocab.lltok, g, log_level=0)
+        self.assertFalse(m.is_error(), m.get_error())
+        for i, t in enumerate(self.tok.encode(text, parse_special=True)):
+            if not m.consume_token(t):
+                return False, f"stopped at token #{i} {self.tok.decode([t])!r}"
+        return True, "full consume"
+
+    def _route(self, req):
+        """How the T4 route consumes the T2c key (the probe7 / T2a contract): the entries go to
+        grammar() directly - NOT through format_of, which returns None for this type - and the
+        Constraint is built with custom_calls=True.  A build failure returns None: the request keeps
+        its no-constraint shape and decodes free (the server._with_constraint except-shape), never a
+        502."""
+        entries = req.get(R.CUSTOM_CALLS_KEY)
+        if not entries:
+            return None
+        try:
+            g = C.grammar({"type": "custom_calls", "entries": entries}, False, self.vocab)
+            return C.Constraint(self.vocab, g, armed=True, custom_calls=True)
+        except Exception:
+            return None
+
+    # --- 1: the grammar builds from a minimal one-tool entry list and masks from the first token ---
+    def test_custom_calls_grammar_builds_and_masks(self):
+        c = self._constraint(self._entries("patch", "[a-z]+=[0-9]+"))
+        self.assertIsNone(c.failed)                                # armed and live from the start
+        reply = c.reply()
+        self.assertTrue(reply.startswith("MK "), reply[:24])       # masked from the first token
+        bits = base64.b64decode(reply[3:])
+        allowed = {v for v in range(self.vocab.n) if C.Constraint.allowed(bits, v)}
+        self.assertIn(c.tool_call, allowed)                        # the call opens through the tag token
+        lt = [t for t in range(self.vocab.n) if self.vocab.bytes_of(t) == b"<"]
+        self.assertTrue(lt and lt[0] not in allowed)               # PROSE cannot start with the tag opener
+        y = [t for t in range(self.vocab.n) if self.vocab.bytes_of(t) == b"y"]
+        self.assertTrue(y and y[0] in allowed)                     # a prose first byte is free
+
+    # --- 2: the closed call frees the turn on this fixture (measured 2026-10-28, notes/T2d-impl.md):
+    # the fixture tokenizer holds no single token for the call closer, so the turn frees through the
+    # calls rule's trailing REST - the mask stays live but every valid-UTF-8 token is allowed (the
+    # invalid single bytes stay masked forever, the T3a REST finding), never refusing the call ---
+    def test_closed_call_ends_free_and_reply_is_all_permission(self):
+        c = self._constraint(self._entries("patch", "[a-z]+=[0-9]+"))
+        self.assertIsNone(c.call_end)                  # the fixture has no single call-closer token
+        self._feed(c, self._call("patch", "x=1"))
+        self.assertIsNone(c.failed)                    # the call consumed cleanly to the end
+        bits = c.mask()
+        self.assertIsNotNone(bits)                     # the mask stays live through REST
+        allowed = {v for v in range(self.vocab.n) if C.Constraint.allowed(bits, v)}
+        self.assertTrue(all(v not in allowed for v in range(0x80, 0xC0)))   # invalid single bytes stay masked
+        y = [t for t in range(self.vocab.n) if self.vocab.bytes_of(t) == b"y"]
+        self.assertTrue(y and y[0] in allowed)         # every valid token stays free
+        self.assertTrue(c.reply().startswith("MK "), c.reply()[:8])
+
+    # --- 2b: a pack whose tokenizer holds the call closer as ONE type-4 token - T3 moved the
+    # envelope tokens to vocab.literal, so the grammar consumes the closing special token through
+    # the `<[id]>` reference and the release branch fires (the T2a-era marker-byte refusal of the
+    # plain-text closer literal is fixed; notes/T3-impl.md) ---
+    def test_a_single_call_end_pack_releases_at_the_close(self):
+        tok = _CallEndTagTokenizer()
+        vocab = C.Vocab(tok, set(tok.encode(IM_END, parse_special=True)))
+        g = C.grammar({"type": "custom_calls", "entries": self._entries("patch", "[a-z]+=[0-9]+")}, False, vocab)
+        c = C.Constraint(vocab, g, armed=True, custom_calls=True)
+        self.assertIsNotNone(c.call_end)               # the release token exists on this vocabulary
+        for t in tok.encode(self._call("patch", "x=1"), parse_special=True):
+            c.feed(t)                                   # the VARIANT tokenizer: the closer is ONE token
+        self.assertEqual(c.failed, "tool call")        # released exactly at the closing token (T2a)
+        self.assertIsNone(c.mask())                    # free from there on
+        self.assertTrue(c.reply().startswith("MF"), c.reply()[:16])
+
+    def test_prose_turn_never_releases_early(self):
+        c = self._constraint(self._entries("patch", "[a-z]+=[0-9]+"))
+        self._feed(c, "just prose, nothing more.")
+        self.assertIsNone(c.failed)                    # a prose turn keeps the mask live to the end
+        self.assertIsNotNone(c.mask())
+
+    # --- 3: prefix pair - the shorter name is excluded, the longer one passes ---
+    def test_prefix_pair_keeps_the_longer_name(self):
+        entries = [{"name": "exec_command", "definition": "ls"}, {"name": "exec", "definition": "ps"}]
+        gtext, kept = C._custom_calls_grammar(entries, self.vocab)
+        self.assertEqual(kept, ["exec_command"])       # the shorter prefix name is dropped
+        ok_long, rep = self._consumes(gtext, self._call("exec_command", "ls"))
+        self.assertTrue(ok_long, rep)                  # the longer name consumes to the end
+        ok_short, _ = self._consumes(gtext, self._call("exec", "ps"))
+        self.assertFalse(ok_short)                     # the shorter name is not in the grammar
+
+
+
+    # --- 4: the value lexeme consumes exactly what the custom grammar declares: one lexeme ending at
+    # the parameter closer; a definition that allows newlines takes a multi-line value in one lexeme,
+    # and one that forbids them stops (probe7's measured case) ---
+    def test_the_value_lexeme_consumes_what_the_definition_declares(self):
+        gtext, _ = C._custom_calls_grammar(self._entries("patch", "[a-z]+=[0-9]+"), self.vocab)
+        ok, rep = self._consumes(gtext, self._call("patch", "x=1"))
+        self.assertTrue(ok, rep)                       # a one-line value consumes to the end
+        ok2, _ = self._consumes(gtext, self._call("patch", "x=1\ny=2"))
+        self.assertFalse(ok2)                          # the definition forbids the newline: probe7's stop
+        nl = chr(10)
+        wide, _ = C._custom_calls_grammar(self._entries("patch", "[a-z0-9" + nl + "=]+"), self.vocab)
+        ok3, rep3 = self._consumes(wide, self._call("patch", "a" + nl + "b" + nl + "c"))
+        self.assertTrue(ok3, rep3)                     # a newline-allowing definition: multi-line in one lexeme
+
+    # --- 5: an entry without a usable (string) definition is dropped; with no usable entry left the
+    # grammar raises and the route composition returns None - the request keeps its old shape ---
+    def test_an_entry_without_a_string_definition_is_dropped(self):
+        with self.assertRaises(ValueError):
+            C.grammar({"type": "custom_calls", "entries": [{"name": "patch"}]}, False, self.vocab)
+        with self.assertRaises(ValueError):
+            C.grammar({"type": "custom_calls", "entries": [{"name": "patch", "definition": 7}]}, False, self.vocab)
+        self.assertIsNone(self._route({R.CUSTOM_CALLS_KEY: [{"name": "patch"}]}))
+
+    # --- 6: a definition llguidance cannot compile degrades to free decoding - the route composition
+    # catches the build error and hands back None (never a 502; the request decodes free) ---
+    def test_a_broken_definition_degrades_to_free_decoding(self):
+        self.assertIsNone(self._route({R.CUSTOM_CALLS_KEY: [{"name": "patch", "definition": "start: [["}]}))
+
+
+
+# ---------------------------------------------------------------- T3: the conditional body binding
+@need
+class BodyBinding(unittest.TestCase):
+    """T3 (spec item 3): the call body binds only when the tokenizer holds the call opener as ONE
+    type-4 token (the T3d lesson - a tokenizer that cannot produce the opener as written cannot be
+    bound past it); otherwise the name enumeration stays and the body stays the free REST.  The
+    envelope tokens ride vocab.literal, so the bound grammar matches both pack shapes (the T2a-era
+    marker-byte refusal of the plain-text closer is gone).  Measured decisions: notes/T3-impl.md."""
+
+    GT = chr(62)                                       # the tag closer, built, never typed
+
+    def setUp(self):
+        self.tok = TagTokenizer()                      # the opener IS one special token (T3d)
+        self.stop = set(self.tok.encode(IM_END, parse_special=True))
+        self.vocab = C.Vocab(self.tok, self.stop)
+
+    def _g(self, defn, vocab=None, name="patch"):
+        v = vocab or self.vocab
+        return C.grammar({"type": "custom_calls", "entries": [{"name": name, "definition": defn}]}, False, v)
+
+    def _call(self, value):
+        gt, nl = self.GT, "\n"
+        return (FE.CALL_START + nl + FE.FUNC_START + "patch" + gt + nl
+                + FE.PARAM_START + "input" + gt + nl + value + nl + FE.PARAM_END + nl
+                + FE.FUNC_END + nl + FE.CALL_END)
+
+    def _consumes(self, vocab, gtext, text, tok=None):
+        tok = tok or self.tok
+        g = C._llg.LLMatcher.grammar_from_lark(gtext)
+        m = C._llg.LLMatcher(vocab.lltok, g, log_level=0)
+        self.assertFalse(m.is_error(), m.get_error())
+        for i, t in enumerate(tok.encode(text, parse_special=True)):
+            if not m.consume_token(t):
+                return False, "stopped at #" + str(i)
+        return True, "full consume"
+
+    # --- 1: an opener-single vocabulary binds the body: one-line AND multi-line values FULL CONSUME ---
+    def test_bound_body_consumes_the_values_the_definition_declares(self):
+        g = self._g("[a-z]+=[0-9]+")
+        self.assertIn("/[a-z]+=[0-9]+", g)             # the definition rides the value lexeme (bound)
+        ok, rep = self._consumes(self.vocab, g, self._call("x=1"))
+        self.assertTrue(ok, rep)                       # a one-line value consumes to the end
+        nl = chr(10)
+        wide = self._g("[a-z0-9" + nl + "=]+")
+        self.assertIn("/[a-z0-9\\n=]+", wide)          # the real newline became the regex escape
+        ok2, rep2 = self._consumes(self.vocab, wide, self._call("a" + nl + "b" + nl + "c"))
+        self.assertTrue(ok2, rep2)                     # a multi-line value consumes in one lexeme
+
+    # --- 2: a vocabulary without the opener as ONE token falls back: names only, the body is the
+    # free REST - even a definition-violating value consumes (the bound shape would refuse it) ---
+    def test_an_openerless_vocabulary_falls_back_to_the_free_body(self):
+        tok = ByteTokenizer()                          # no specials for the opener: TOOL_CALL not single
+        vocab = C.Vocab(tok, set(tok.encode(IM_END, parse_special=True)))
+        self.assertIsNone(vocab.single(FE.CALL_START))
+        g = self._g("[a-z]+=[0-9]+", vocab=vocab)
+        self.assertNotIn("/[a-z]+=[0-9]+", g)          # no value lexeme: the body is unbound
+        gt = self.GT
+        call = (FE.CALL_START + "\n" + FE.FUNC_START + "patch" + gt + "\n"
+                + FE.PARAM_START + "input" + gt + "\n" + "1=x" + "\n" + FE.PARAM_END + "\n"
+                + FE.FUNC_END + "\n" + FE.CALL_END)
+        ok, rep = self._consumes(vocab, g, call, tok=tok)
+        self.assertTrue(ok, rep)                       # the violating value consumes: the REST is free
+
+    # --- 3: a structured (non-string) definition drops the tool - R9 measured: only usable entries
+    # reach the grammar, the rest is left to the free path after the turn's validation ---
+    def test_a_structured_definition_drops_the_tool(self):
+        entries = [{"name": "patch", "definition": "[a-z]+=[0-9]+"},
+                   {"name": "obj_tool", "definition": {"type": "object", "properties": {}}}]
+        g = C.grammar({"type": "custom_calls", "entries": entries}, False, self.vocab)
+        self.assertIn('"patch"', g)                    # the usable entry is bound
+        self.assertNotIn("obj_tool", g)                # the structured-definition tool is dropped (R9)
+
+    # --- 4: the answer branch stays the probe P5 shape: prose may start with anything but the
+    # tag-opener byte, and the call opens through its own special token ---
+    def test_prose_starts_free_except_the_tag_opener_byte(self):
+        c = C.Constraint(self.vocab, self._g("[a-z]+=[0-9]+"), armed=True, custom_calls=True)
+        reply = c.reply()
+        self.assertTrue(reply.startswith("MK "), reply[:24])
+        bits = base64.b64decode(reply[3:])
+        allowed = {v for v in range(self.vocab.n) if C.Constraint.allowed(bits, v)}
+        lt = [t for t in range(self.vocab.n) if self.vocab.bytes_of(t) == b"<"]
+        self.assertTrue(lt and lt[0] not in allowed)   # the tag opener cannot start the turn
+        y = [t for t in range(self.vocab.n) if self.vocab.bytes_of(t) == b"y"]
+        self.assertTrue(y and y[0] in allowed)         # prose starts free
 
 
 if __name__ == "__main__":
