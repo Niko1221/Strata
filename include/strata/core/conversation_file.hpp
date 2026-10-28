@@ -146,7 +146,8 @@ struct SessionWriteOptions {
     // write starts.  Not a reservation: other writers can take the space afterwards.
     uint64_t min_free_bytes = 0;
     bool durable = true;            // flush the file before the rename and (POSIX) the folder after it
-    SessionProgress progress;
+    SessionProgress progress;      // called on the caller's thread; during a pipelined write a report follows real
+                                   // movement and may lag the bytes already handed off by at most the blocks in flight
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
     // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
