@@ -112,7 +112,10 @@ test('item 8 / T9: starting a program that prints nothing is reported as started
 });
 
 test('item 7/10: our prompt has no internal terms and is short', () => {
-  assert.ok(AGENT_PROMPT.length < 1600, `${AGENT_PROMPT.length} chars`);
+  // 1,600 was the budget before the rule that a tool call is a call and not text: a real session showed a model writing
+  // `<tool_call><function=compile>...` into its answer, where the command was rendered as raw XML and never ran. The
+  // prompt is 1,688 characters now (about 420 tokens). The check stays so a prompt that grows into a page fails here.
+  assert.ok(AGENT_PROMPT.length < 2600, `${AGENT_PROMPT.length} chars`);
   assert.doesNotMatch(AGENT_PROMPT, /DSH|DeepSeek|sandbox|isolated session|file policy|Harness/i);
   // O6 / #3576: the prompt points at the present tool for local files and never tells the model to claim a window opened
   assert.match(AGENT_PROMPT, /use the present tool/);

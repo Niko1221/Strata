@@ -487,6 +487,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (!noteReason && guard && !failure && !turn.stopping && !turn.goalRun) {
         noteReason = guard.silent({ ended: projector.ended, wrote: projector.emittedAny === true, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
       }
+      // A tool call the model wrote as text did not run: the card says so, and one sentence says what to do next.
+      if (!noteReason && !failure && !turn.stopping && projector.textCalls > 0) noteReason = 'text-call';
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
       // The answer speed of a turn on this computer is the engine's own (tokens it produced over its decode time, as the Monitor shows it).

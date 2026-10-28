@@ -192,6 +192,78 @@ export function resultText(message) {
   return clip(text || '(no output)', 4000);
 }
 
+/* A local model can put a tool call in the text channel instead of calling the tool (a session showed
+   `<tool_call><function=compile><parameter=command>…`, rendered as raw text, and the command never ran). The call is
+   taken out of the answer, shown as a card that says it did not run, and the person is told once. */
+const TEXT_CALL_OPEN = '<tool_call>';
+const TEXT_CALL_CLOSE = '</tool_call>';
+export const TEXT_CALL_VERB = 'Not run — written as text';
+export const TEXT_CALL_EFFECT = 'The assistant wrote this tool call as text, so it did not run.';
+export const TEXT_CALL_RESULT = 'Nothing ran. The assistant wrote this as text instead of calling the tool.';
+export const TEXT_CALL_NOTE = 'I wrote one tool call as text instead of calling the tool, so it did not run. If the work stopped there, say "continue" and I will send it as a real call.';
+
+/** The call a model wrote into the text channel, or null when the block is not a well-formed call (then it is left as text). */
+export function parseTextToolCall(block) {
+  const name = /<function\s*=\s*([^>\s/]+)\s*>/.exec(block)?.[1];
+  if (!name) return null;
+  const args = {};
+  const re = /<parameter\s*=\s*([^>\s/]+)\s*>([\s\S]*?)<\/parameter>/g;
+  for (let m; (m = re.exec(block));) args[m[1]] = m[2].replace(/^\n+|\n+$/g, '');
+  return { name, args, raw: block };
+}
+
+/** How many trailing characters could be the beginning of `tag` (held back so a tag split across chunks is still found). */
+function partialTag(text, tag) {
+  for (let n = Math.min(tag.length - 1, text.length); n > 0; n--) if (text.endsWith(tag.slice(0, n))) return n;
+  return 0;
+}
+
+/** Takes the tool calls out of an assistant text stream, chunk by chunk. Pure; one per model request. */
+export class TextCallFilter {
+  constructor() { this.held = ''; this.inside = false; }
+
+  /** One piece of text: the words to show and the calls that were written as text, in order. */
+  push(text) {
+    this.held += String(text ?? '');
+    return this.#drain(false);
+  }
+
+  /** The message is over: nothing stays held, and an envelope that never closed is shown as it was written. */
+  end() { return this.#drain(true); }
+
+  #drain(final) {
+    const out = { text: '', calls: [] };
+    for (;;) {
+      if (this.inside) {
+        const close = this.held.indexOf(TEXT_CALL_CLOSE);
+        if (close < 0) {
+          if (!final) return out;
+          out.text += this.held; this.held = ''; this.inside = false;
+          return out;
+        }
+        const block = this.held.slice(0, close + TEXT_CALL_CLOSE.length);
+        this.held = this.held.slice(close + TEXT_CALL_CLOSE.length);
+        this.inside = false;
+        const call = parseTextToolCall(block);
+        if (call) out.calls.push(call);
+        else out.text += block;   // not a call: keep what the model wrote (it may be quoting the format)
+        continue;
+      }
+      const at = this.held.indexOf(TEXT_CALL_OPEN);
+      if (at >= 0) {
+        out.text += this.held.slice(0, at);
+        this.held = this.held.slice(at);
+        this.inside = true;
+        continue;
+      }
+      const keep = final ? 0 : partialTag(this.held, TEXT_CALL_OPEN);
+      out.text += this.held.slice(0, this.held.length - keep);
+      this.held = this.held.slice(this.held.length - keep);
+      return out;
+    }
+  }
+}
+
 /**
  * Accumulates one turn's frames. Feed it follow items; it returns the frames to send.
  * It owns the per-turn state (tool cards, usage, text emitted) so the I/O layer stays thin.
@@ -216,7 +288,9 @@ export class TurnProjector {
     this.firstTokenAt = null;
     this.streams = new Map();        // attemptId -> { first, last, chunks, chars }: the time a model request actually spent producing
     this.lastStats = 0;
-    this.emittedText = new Map();    // attemptId -> chars sent live
+    this.emittedText = new Map();    // attemptId -> chars of answer text received live
+    this.textFilters = new Map();    // attemptId -> TextCallFilter: keeps a call written as text out of the answer
+    this.textCalls = 0;              // tool calls the model wrote as text in this turn (they did not run)
     this.ended = null;               // the turn/end reason, once seen
     this.denied = new Set();         // callIds a human or the policy rejected
     this.asked = new Map();          // approval id -> callId
@@ -242,6 +316,33 @@ export class TurnProjector {
     entry.card = { ...entry.card, ...patch };
     entry.card.verb = toolVerb(entry.card.name, entry.card.state);
     return { type: 'agent-tool', tool: entry.card };
+  }
+
+  /** The words to show, then a card for each call the model wrote as text instead of calling the tool. */
+  #answer({ text, calls }, out) {
+    if (text) {
+      this.#status({ phase: 'answering', code: 'answering', text: 'Writing the answer…' });
+      out.push({ type: 'delta', text });
+    }
+    for (const call of calls) {
+      this.textCalls += 1;
+      const base = presentTool({ callId: `text-call-${this.textCalls}`, name: call.name, args: call.args });
+      const command = typeof call.args.command === 'string' ? call.args.command : '';
+      out.push({
+        type: 'agent-tool',
+        tool: {
+          ...base,
+          ...(command ? { scope: 'shell', preview: clip(command, 600), target: clip(command, 300) } : {}),
+          state: 'error', verb: TEXT_CALL_VERB, effect: TEXT_CALL_EFFECT, result: TEXT_CALL_RESULT, durationMs: 0,
+        },
+      });
+    }
+  }
+
+  /** The answer text ended (a tool call, the end of the step): nothing stays held. */
+  #flushAnswer(out) {
+    for (const filter of this.textFilters.values()) this.#answer(filter.end(), out);
+    this.textFilters.clear();
   }
 
   /* The speed shown while a reply streams, and after it: everything the model generated (reasoning and tool calls included) over the time its
@@ -276,9 +377,10 @@ export class TurnProjector {
           this.firstTokenAt ??= Date.now();
           this.#produced(f.attemptId, c.text, out);
           this.emittedAny = true;
-          this.#status({ phase: 'answering', code: 'answering', text: 'Writing the answer…' });
           this.emittedText.set(f.attemptId, (this.emittedText.get(f.attemptId) ?? 0) + c.text.length);
-          out.push({ type: 'delta', text: c.text });
+          const filter = this.textFilters.get(f.attemptId) ?? new TextCallFilter();
+          this.textFilters.set(f.attemptId, filter);
+          this.#answer(filter.push(c.text), out);
         } else if (c.type === 'reasoning-delta' && c.text) {
           this.firstTokenAt ??= Date.now();
           this.#produced(f.attemptId, c.text, out);
@@ -321,14 +423,25 @@ export class TurnProjector {
     const d = e.data ?? {};
     switch (e.type) {
       case 'assistant/message': {
-        // Reconcile a text the live frames did not fully carry (a socket gap), never duplicating it.
+        // Reconcile a text the live frames did not fully carry (a socket gap), never duplicating it, and close the
+        // filter: a call the model wrote as text is complete here, so anything still held is decided now.
         const live = [...this.emittedText.values()].pop() ?? 0;
         const text = (d.message?.content ?? []).filter(p => p.type === 'text').map(p => p.text).join('');
-        if (text.length > live && live > 0) out.push({ type: 'delta', text: text.slice(live) });
+        const filter = [...this.textFilters.values()].pop();
+        const piece = { text: '', calls: [] };
+        if (text.length > live && live > 0 && filter) {
+          const more = filter.push(text.slice(live));
+          piece.text += more.text; piece.calls.push(...more.calls);
+        }
+        if (filter) { const rest = filter.end(); piece.text += rest.text; piece.calls.push(...rest.calls); }
+        else if (text.length > live && live > 0) piece.text += text.slice(live);
+        if (piece.text || piece.calls.length) this.#answer(piece, out);
         this.emittedText.clear();
+        this.textFilters.clear();
         break;
       }
       case 'tool/call': {
+        this.#flushAnswer(out);   // the answer that wrote this call is over
         if (NO_CARD.has(d.name)) break;
         const args = parseArguments(d.arguments);
         const card = { ...presentTool({ callId: d.callId, name: d.name, args }), state: 'running' };
@@ -402,6 +515,7 @@ export class TurnProjector {
         if (this.emittedAny) out.push({ type: 'delta', text: '\n\n' });
         break;
       case 'turn/end':
+        this.#flushAnswer(out);
         this.ended = d.reason ?? { kind: 'completed' };
         break;
       default:
@@ -421,6 +535,14 @@ export class TurnProjector {
 
   /** The terminal frames for a finished turn. */
   finish({ model, contextMax, engine = null } = {}) {
+    // A turn that ends without a turn/end (a lost frame) still shows the end of its answer, never half a held tag.
+    const tail = [];
+    this.#flushAnswer(tail);
+    const terminal = this.#terminal({ model, contextMax, engine });
+    return tail.concat(terminal);
+  }
+
+  #terminal({ model, contextMax, engine }) {
     const reason = this.ended ?? { kind: 'interrupted' };
     const durationMs = Date.now() - this.startedAt;
     const usage = this.usageSeen

@@ -137,6 +137,20 @@ test('an ordinary turn whose searches keep failing ends with the plain sentence 
   assert.ok(out.findIndex(f => f.key) < out.findIndex(f => f.type === 'done'), 'the sentence comes before the end of the turn');
 });
 
+test('a tool call the model wrote as text is a card that did not run, and the turn says so', { skip }, async (t) => {
+  const r = await rig(t);
+  const out = [];
+  await r.bridge.runTurn({ ...r.base('x1', f => out.push(f)), message: 'SCRIPT:textcall' });
+  const said = words(out);
+  assert.doesNotMatch(said, /<tool_call>|<function=/, 'the raw call never reaches the chat');
+  const card = out.find(f => f.type === 'agent-tool' && f.tool.verb === 'Not run — written as text');
+  assert.ok(card, 'the call is shown as a card');
+  assert.equal(card.tool.args.command, 'python -m py_compile a.py');
+  assert.match(card.tool.result, /Nothing ran/);
+  assert.equal(out.filter(f => f.type === 'delta' && f.key).at(-1)?.key, GUARD_NOTES['text-call'], 'the turn ends with what to do next');
+  assert.ok(out.find(f => f.type === 'done' && !f.cancelled), 'the turn ended normally');
+});
+
 test('a context at 100% with no answer is never silent: the plain message comes, and the older messages are summarised', { skip }, async (t) => {
   const r = await rig(t, { context: 32768 });
   const out = [];
