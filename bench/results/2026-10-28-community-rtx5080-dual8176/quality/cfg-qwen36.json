@@ -1,0 +1,53 @@
+{
+ "exe": "/data/bin/strata-q36",
+ "args": [
+  "--model",
+  "/data/Strata-data/models/Qwen3.6-35B-A3B/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--pool-workers",
+  "27",
+  "--gqa-attn",
+  "--hybrid-zero-copy",
+  "--expert-prefetch",
+  "2",
+  "--expert-profile",
+  "/data/Strata-data/models/Qwen3.6-35B-A3B/expert-profile-agent-qwen36-v2.prof",
+  "--decode-swaps",
+  "64",
+  "--snapshots",
+  "2",
+  "--mtp",
+  "2",
+  "--spec-min-p",
+  "0.5",
+  "--mtp-sampled",
+  "q"
+ ],
+ "tokenizer": "/data/Strata-data/models/Qwen3.6-35B-A3B/tokenizer",
+ "model_name": "qwen3.6-35b-a3b",
+ "arch": "qwen35moe",
+ "splice_turns": "parsed",
+ "sampling": {
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 0.0
+ },
+ "env": {
+  "STRATA_Q8_PACKED": "0"
+ },
+ "cwd": "/opt/strata/terminal",
+ "port": 9000,
+ "log": "/data/state/strata/launch/ai-srvr-qwen36.engine.log",
+ "host": "0.0.0.0",
+ "api_key": "qFmpaHBnULYPU8IpTJA",
+ "lib_dirs": [],
+ "gpu": 0,
+ "gpus_asked": true,
+ "open_browser": false,
+ "drafting": "dflash2"
+}
