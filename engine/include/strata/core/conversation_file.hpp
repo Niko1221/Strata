@@ -27,6 +27,15 @@ struct SessionFileIdentity {
     uint64_t model = 0, config = 0;
 };
 
+// The complete serializable state of a SessionHasher: 4 lanes, the pending tail (bytes past
+// npending are zero in a stored state), and the total of bytes hashed.
+struct SessionHasherState {
+    uint64_t lanes[4];
+    uint8_t pending[32];
+    uint8_t npending;  // 0..31
+    uint64_t total;
+};
+
 // Non-cryptographic 64-bit hash with xxHash64-style rounds (NOT the standard XXH64 stream): corruption and identity
 // checks, not adversarial input.  Streaming and one-shot agree.
 class SessionHasher {
@@ -34,6 +43,14 @@ public:
     explicit SessionHasher(uint64_t seed = 0);
     void update(const void* data, size_t n);
     uint64_t digest() const;
+    // The full streaming state, serializable for the v3 trailer's digest resume (a save
+    // continues hashing from the previous trailer's stored state without re-hashing the
+    // prefix).  `state()` zeroes `pending` past `npending`: two hashers that saw the same
+    // bytes compare byte-exactly over the whole 32 B pending area; `restore()` replaces all
+    // state (the seed carries in the lanes), so a restored hasher continues to the digest
+    // an uninterrupted hasher over the same bytes would give.
+    SessionHasherState state() const;
+    void restore(const SessionHasherState& s);
 private:
     void block(const uint8_t* p);
     uint64_t lane_[4];
@@ -42,6 +59,38 @@ private:
     uint64_t total_ = 0;
 };
 uint64_t session_hash64(const void* data, size_t n, uint64_t seed);
+
+// The session file v3 trailer record (fixed 128 B, closing one generation group; the layout
+// in docs/DETAILS.md and the plan): a group's `committed_bytes` is the file offset of its
+// trailer record, so the trailer occupies [committed_bytes, committed_bytes + 128) and the
+// next group starts at committed_bytes + 128.  `digest` hashes the payload zones of all
+// generations so far in physical append order (padding and trailer records skipped), seed 0;
+// `chain` is the previous trailer's `self_hash` (genesis: trailer_genesis_chain).  `self_hash`
+// covers every byte in use: session_hash64(record bytes [0, 120), seed 0).  The lanes/pending/
+// npending/hashed_bytes fields are the SessionHasherState that continues this generation's
+// digest into the next append.
+struct SessionTrailer {
+    uint8_t version = 3;
+    uint8_t npending = 0;     // 0..31
+    uint16_t reserved = 0;    // must be zero on disk
+    uint64_t gen = 0;         // 1-based generation number
+    uint64_t committed_bytes = 0;
+    uint64_t saved_tokens = 0;
+    uint64_t digest = 0;
+    uint64_t chain = 0;
+    uint64_t lanes[4] = {};
+    uint8_t pending[32] = {};
+    uint64_t hashed_bytes = 0;  // hasher total over the hashed zones (not the skipped ones)
+    uint64_t self_hash = 0;
+};
+static_assert(sizeof(SessionTrailer) == 128, "SessionTrailer mirrors the fixed 128 B record");
+
+// Parse one 128 B record: magic ∧ version 3 ∧ npending <= 31 ∧ reserved == 0 ∧ self_hash.
+bool trailer_parse(const uint8_t* bytes, SessionTrailer& out);
+// Write one record, filling the magic/reserved constants and recomputing self_hash.
+void trailer_bytes(const SessionTrailer& t, uint8_t (&bytes)[128]);
+// The chain start for generation 1: session_hash64 over the 16 bytes model-LE then config-LE.
+uint64_t trailer_genesis_chain(const SessionFileIdentity& id);
 
 // Typed, length-delimited fields for an identity hash: each field is (tag, type, length, bytes), so two different
 // field lists never give the same byte stream, and a double is hashed by its exact bits (no decimal rounding).
