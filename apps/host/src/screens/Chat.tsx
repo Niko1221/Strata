@@ -38,13 +38,132 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, settleComposerSend, stopStreaming, useStore, } from '../lib/store';
+import { api } from '../lib/client';
 import { copyText } from '../lib/clipboard';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
+
+/** A passage the person picked from an answer: it goes with the next message as a quote. */
+interface QuoteSource {
+    text: string;
+    /** A run of prose, a whole code block, or a whole table. */
+    kind: 'text' | 'code' | 'table';
+    /** A code block's language, when it has one. */
+    lang?: string;
+}
+interface ChatQuote extends QuoteSource {
+    id: string;
+    /** When it was picked (ms). */
+    at: number;
+}
+interface QuotePick extends QuoteSource {
+    /** Where the faded "Quote and ask" button sits. */
+    rect: DOMRect;
+}
+/** The most passages one message may carry: more than this turns the composer into a wall of quotes. */
+const MAX_QUOTES = 5;
+/** A single quote is clipped here; the model still gets the point without the whole answer. */
+const QUOTE_LIMIT = 2000;
+
+const quotesKey = (sessionId?: string | null) => `strata.chat-quotes.${sessionId ?? 'new'}`;
+
+/** Quotes are per conversation and survive a reload: the bar still has them tomorrow. */
+function readQuotes(sessionId?: string | null): ChatQuote[] {
+    try {
+        const raw = JSON.parse(localStorage.getItem(quotesKey(sessionId)) ?? '[]');
+        if (!Array.isArray(raw))
+            return [];
+        return raw
+            .filter((q): q is Record<string, unknown> => !!q && typeof q === 'object' && typeof (q as Record<string, unknown>).text === 'string')
+            .filter(q => String(q.text).trim())
+            .slice(0, MAX_QUOTES)
+            .map(q => ({
+            id: typeof q.id === 'string' ? q.id : `q-${Math.random().toString(36).slice(2)}`,
+            text: String(q.text),
+            kind: q.kind === 'code' || q.kind === 'table' ? q.kind : 'text',
+            ...(typeof q.lang === 'string' && q.lang ? { lang: q.lang } : {}),
+            at: typeof q.at === 'number' ? q.at : Date.now(),
+        }));
+    }
+    catch {
+        return [];
+    }
+}
+function writeQuotes(sessionId: string | null | undefined, quotes: ChatQuote[]) {
+    try {
+        if (quotes.length)
+            localStorage.setItem(quotesKey(sessionId), JSON.stringify(quotes));
+        else
+            localStorage.removeItem(quotesKey(sessionId));
+    }
+    catch {
+        /* private mode or a full disk: the bar still works for this visit */
+    }
+}
+/** A quote as it travels in the message: prose as a blockquote, code as a fence, a table as a Markdown table. */
+function quoteMarkdown(q: ChatQuote): string {
+    if (q.kind === 'code')
+        return '```' + (q.lang ?? '') + '\n' + q.text.replace(/\n+$/, '') + '\n```';
+    if (q.kind === 'table')
+        return q.text;
+    return q.text.split('\n').map(line => `> ${line}`).join('\n');
+}
+function quoteExcerpt(q: ChatQuote): string {
+    const text = q.text.replace(/\s+/g, ' ').trim();
+    return text.length > 160 ? `${text.slice(0, 159)}…` : text;
+}
+/** A table as Markdown, so quoting it keeps its columns instead of a soup of words. */
+function markdownTable(header: string[], rows: string[][]): string {
+    const cell = (value: string) => value.replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|');
+    const line = (cells: string[]) => `| ${cells.map(cell).join(' | ')} |`;
+    return [line(header), `| ${header.map(() => '---').join(' | ')} |`, ...rows.map(line)].join('\n');
+}
+/**
+ * What the person selected, if it is a passage of an answer. A selection inside a code block or a table
+ * quotes that whole block: half a code sample or three cells of a table are rarely what they meant.
+ */
+function selectionPick(sel: Selection | null): QuotePick | null {
+    if (!sel || sel.isCollapsed || !sel.rangeCount)
+        return null;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    const start = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+    if (!start?.closest('.st-msg--assistant .st-bubble'))
+        return null;
+    const rect = range.getBoundingClientRect();
+    if (!rect.width && !rect.height)
+        return null;
+    const block = start.closest<HTMLElement>('[data-quote-block]');
+    if (block?.dataset.quoteBlock === 'code') {
+        const text = (block.querySelector('pre')?.textContent ?? '').replace(/\s+$/, '');
+        const lang = block.dataset.lang ?? '';
+        return text.trim() ? { text, kind: 'code', ...(lang ? { lang } : {}), rect } : null;
+    }
+    if (block?.dataset.quoteBlock === 'table') {
+        const table = block.querySelector('table');
+        const rows = table ? [...table.rows].map(row => [...row.cells].map(cell => cell.innerText ?? cell.textContent ?? '')) : [];
+        const header = rows.shift();
+        if (header?.length)
+            return { text: markdownTable(header, rows), kind: 'table', rect };
+    }
+    const text = (sel.toString() ?? '').replace(/\s+$/, '');
+    return text.trim() ? { text, kind: 'text', rect } : null;
+}
+/** The shortcut's fallback: nothing selected means the last answer. */
+function lastAnswerPick(messages: ChatMessage[] | undefined): QuoteSource | null {
+    const last = [...(messages ?? [])].reverse().find(m => m.role === 'assistant' && m.content.trim() && !m.timeSkipId);
+    return last ? { text: last.content, kind: 'text' } : null;
+}
+function clampX(x: number): number {
+    return Math.max(90, Math.min(x, (typeof window === 'undefined' ? 1024 : window.innerWidth) - 90));
+}
+function clampY(y: number): number {
+    return Math.max(8, Math.min(y, (typeof window === 'undefined' ? 768 : window.innerHeight) - 44));
+}
 export function ChatScreen() {
     const location = useLocation();
     const sessions = useStore((s) => s.sessions);
@@ -58,6 +177,9 @@ export function ChatScreen() {
         const wanted = location.param ?? activeId;
         return sessions.find((s) => s.id === wanted) ?? sessions[0] ?? null;
     }, [sessions, activeId, location.param]);
+    /** The chat whose box is on screen: a send can finish after the reader has opened another one. */
+    const sessionIdRef = useRef<string | null>(null);
+    sessionIdRef.current = session?.id ?? null;
     /* A conversation you are watching is read by definition — including while a
        reply streams into it. Without this, switching away from a session that
        answered you would mark it unread. */
@@ -117,10 +239,10 @@ export function ChatScreen() {
     const [previews, setPreviews] = useState<PreviewArtifact[]>([]);
     const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
     const timeSkipRuns = (session?.timeSkips ?? []).filter(run => session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant') && (!run.job || (run.job.files?.length ?? 0) > 0));
-    const runTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? `Time-skip ${i + 1}` : 'Time-skip', icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
+    const runTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? tr('Time-skip {0}', [i + 1]) : tr('Time-skip'), icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
     const plan = usePlan(session?.id);
     const planTabId = session ? `plan:${session.id}` : '';
-    const planTab = plan && plan.state !== 'rejected' && !session?.closedPreviews?.includes(planTabId) ? [{ id: planTabId, title: 'Plan', icon: 'check' as const, controls: 'plan-content' }] : [];
+    const planTab = plan && plan.state !== 'rejected' && !session?.closedPreviews?.includes(planTabId) ? [{ id: planTabId, title: tr('Plan'), icon: 'check' as const, controls: 'plan-content' }] : [];
     const planShown = planTab.length > 0 && selectedPreview === planTabId;
     const planRunId = plan?.state === 'running' ? plan.id : '';
     useEffect(() => { if (planRunId && planTabId && !session?.closedPreviews?.includes(planTabId)) setSelectedPreview(planTabId); }, [planRunId]);
@@ -257,6 +379,153 @@ export function ChatScreen() {
         return () => ro.disconnect();
     }, [session?.id, session?.messages.length === 0]);
     const textarea = useRef<HTMLTextAreaElement>(null);
+    // -- quotes ----------------------------------------------------------------------------------------
+    const [quotes, setQuotes] = useState<ChatQuote[]>([]);
+    const [quotePick, setQuotePick] = useState<QuotePick | null>(null);
+    const [announcement, setAnnouncement] = useState('');
+    /** The shortcut reads the latest messages without re-binding on every streamed token. */
+    const messagesRef = useRef<ChatMessage[] | undefined>(session?.messages);
+    useEffect(() => { messagesRef.current = session?.messages; }, [session?.messages]);
+    /** Screen readers hear what changed in the quote bar; the words are also visible in its own label. */
+    const announce = useCallback((text: string) => {
+        setAnnouncement('');
+        window.setTimeout(() => setAnnouncement(text), 60);
+    }, []);
+    useEffect(() => {
+        setQuotes(readQuotes(session?.id));
+        setQuotePick(null);
+    }, [session?.id]);
+    const saveQuotes = useCallback((next: ChatQuote[]) => {
+        setQuotes(next);
+        writeQuotes(session?.id, next);
+    }, [session?.id]);
+    const addQuote = useCallback((source: QuoteSource) => {
+        const plain = source.text.replace(/\r/g, '');
+        // Prose loses the spaces a selection drags in; a code block keeps its indentation and only loses the blank edges.
+        const text = source.kind === 'text' ? plain.trim() : plain.replace(/^\n+/, '').replace(/\s+$/, '');
+        if (!text)
+            return;
+        if (quotes.some(q => q.text === text)) {
+            announce(tr('That passage is already quoted.'));
+            return;
+        }
+        if (quotes.length >= MAX_QUOTES) {
+            announce(tr('Up to {0} quotes can go with one message.', [MAX_QUOTES]));
+            return;
+        }
+        const clipped = text.length > QUOTE_LIMIT ? `${text.slice(0, QUOTE_LIMIT - 1)}…` : text;
+        const quote: ChatQuote = {
+            id: `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            text: clipped,
+            kind: source.kind,
+            ...(source.lang ? { lang: source.lang } : {}),
+            at: Date.now(),
+        };
+        saveQuotes([...quotes, quote]);
+        setQuotePick(null);
+        window.getSelection()?.removeAllRanges();
+        announce(tr('Quote added. It will go with your next message.'));
+        requestAnimationFrame(() => textarea.current?.focus());
+    }, [announce, quotes, saveQuotes]);
+    const removeQuote = useCallback((id: string) => {
+        saveQuotes(quotes.filter(q => q.id !== id));
+        announce(tr('Quotes changed.'));
+    }, [announce, quotes, saveQuotes]);
+    const clearQuotes = useCallback(() => {
+        if (!quotes.length)
+            return;
+        saveQuotes([]);
+        announce(tr('Quotes cleared.'));
+    }, [announce, quotes.length, saveQuotes]);
+    /**
+     * Clears the box and the quote bar of the chat the message left. Both are stored per chat, so a chat
+     * opened while the send was in flight keeps its own words and quotes.
+     */
+    function clearSentComposer(sessionId: string | null, key: string, sentDraft: string, sentQuotes: ChatQuote[]) {
+        try {
+            if (sessionStorage.getItem(key) === sentDraft)
+                sessionStorage.setItem(key, '');
+        }
+        catch { /* private mode: the box in memory still clears */ }
+        const sentIds = new Set(sentQuotes.map(q => q.id));
+        const left = readQuotes(sessionId).filter(q => !sentIds.has(q.id));
+        writeQuotes(sessionId, left);
+        if (sessionIdRef.current !== sessionId)
+            return;
+        // Words typed while the send was being accepted are newer than the sent text: keep them.
+        setDraft(current => current === sentDraft ? '' : current);
+        setQuotes(left);
+        if (sentQuotes.length)
+            announce(tr('Quotes cleared.'));
+    }
+    /**
+     * Puts back what a refused send was carrying. The box is cleared only after acceptance, so this is
+     * normally a no-op; it matters if a clear raced a refusal. It writes only the chat the text came from
+     * and never sends anything again.
+     */
+    function restoreComposer(sessionId: string | null, key: string, sentDraft: string, sentQuotes: ChatQuote[]) {
+        let stored: string | null = null;
+        try {
+            stored = sessionStorage.getItem(key);
+        }
+        catch {
+            return; // The box in memory was never cleared when storage is unavailable.
+        }
+        const current = readQuotes(sessionId);
+        // Only our clear leaves this chat with an empty saved draft. Anything newer is the person's, not ours to overwrite.
+        if (stored !== '' || current.length)
+            return;
+        try {
+            sessionStorage.setItem(key, sentDraft);
+        }
+        catch { }
+        if (sentQuotes.length) {
+            const restored = sentQuotes.slice(0, MAX_QUOTES);
+            writeQuotes(sessionId, restored);
+            if (sessionIdRef.current === sessionId)
+                setQuotes(restored);
+        }
+        if (sessionIdRef.current === sessionId)
+            setDraft(current => current === '' ? sentDraft : current);
+    }
+    /** Selecting a passage of an answer offers one button; a selection inside the composer is not a passage. */
+    useEffect(() => {
+        const onSelection = (event: Event) => {
+            const target = event.target as Element | null;
+            if (target?.closest?.('.composerwrap'))
+                return;
+            setQuotePick(selectionPick(window.getSelection()));
+        };
+        const onDown = (event: PointerEvent) => {
+            const target = event.target as Element | null;
+            if (!target?.closest?.('.quote-fab'))
+                setQuotePick(null);
+        };
+        document.addEventListener('mouseup', onSelection);
+        document.addEventListener('keyup', onSelection);
+        document.addEventListener('pointerdown', onDown);
+        return () => {
+            document.removeEventListener('mouseup', onSelection);
+            document.removeEventListener('keyup', onSelection);
+            document.removeEventListener('pointerdown', onDown);
+        };
+    }, []);
+    /** Ctrl/Cmd+Alt+Q quotes the selection (or the last answer) without reaching for the mouse. */
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || !event.altKey || event.key.toLowerCase() !== 'q')
+                return;
+            event.preventDefault();
+            const pick = selectionPick(window.getSelection()) ?? lastAnswerPick(messagesRef.current);
+            if (!pick) {
+                announce(tr('Select part of an answer to quote it.'));
+                return;
+            }
+            addQuote(pick);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [addQuote, announce]);
     const remote = useStore(s => s.remoteModel), providers = useStore(s => s.providers);
     const apiModel = providers?.connections.find(c => c.id === remote?.connectionId)?.models.find(m => m.id === remote?.modelId);
     const loaded = apiModel ?? library?.variants.find((v) => v.id === library.loaded) ?? null;
@@ -370,15 +639,27 @@ export function ChatScreen() {
             textarea.current?.focus({ preventScroll: true });
     }, [setupVisible, readyForChat, session?.id, messageCount]);
     function submit() {
-        const text = draft.trim();
+        const quoted = quotes.map(quoteMarkdown).join('\n\n');
+        const words = draft.trim();
+        const text = quoted ? `${quoted}\n\n${words}` : words;
+        const hadQuotes = quotes.length > 0;
         if (!text && !queuedPhotos.length)
             return;
+        // Clearing happens only after the store accepts the message; until then the box and the bar stay as they are.
+        const fromSession = session?.id ?? null;
+        const fromDraftKey = draftKey;
+        const savedDraft = draft;
+        const savedQuotes = quotes.slice();
         if (streaming) {
             // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
             if (!text || !session)
                 return;
-            updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (!ok) { updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void queueMessage(session.id, text).then(ok => {
+                if (ok)
+                    clearSentComposer(fromSession, fromDraftKey, savedDraft, savedQuotes);
+                else
+                    pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.'));
+            }, e => pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message));
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -391,12 +672,17 @@ export function ChatScreen() {
             const why = noModelNotice(chatNative ?? null, { libraryLoaded: !!loaded });
             if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
         }
-        updateDraft('');
-        void sendMessage(text);
+        const send = sendMessage(text, hadQuotes ? { markdown: true } : undefined);
+        void settleComposerSend(send, {
+            clear: () => clearSentComposer(fromSession, fromDraftKey, savedDraft, savedQuotes),
+            restore: () => restoreComposer(fromSession, fromDraftKey, savedDraft, savedQuotes),
+        });
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
         return (<>
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+        {quotePick ? <button type="button" className="quote-fab" style={{ left: clampX(quotePick.rect.left + quotePick.rect.width / 2), top: clampY(quotePick.rect.bottom + 8) }} onMouseDown={e => e.preventDefault()} onClick={() => addQuote(quotePick)}>{tr('Quote and ask')}</button> : null}
         <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
         <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
          <DropZone className="chatcol">
@@ -407,7 +693,7 @@ export function ChatScreen() {
               <UsageDashboard loaded={!!loaded}/>
             </div>
           </div>
-          <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
+          <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea} quotes={quotes} onRemoveQuote={removeQuote} onClearQuotes={clearQuotes}/>
          </DropZone>
         <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
          {tr(resizeHandle)}
@@ -415,6 +701,8 @@ export function ChatScreen() {
       </>);
     }
     return (<>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+      {quotePick ? <button type="button" className="quote-fab" style={{ left: clampX(quotePick.rect.left + quotePick.rect.width / 2), top: clampY(quotePick.rect.bottom + 8) }} onMouseDown={e => e.preventDefault()} onClick={() => addQuote(quotePick)}>{tr('Quote and ask')}</button> : null}
       <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
@@ -424,6 +712,8 @@ export function ChatScreen() {
         <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller} onScroll={(e) => {
             const el = e.currentTarget;
+            // A quote button belongs to the words it was drawn under; a scroll moves them away.
+            setQuotePick(null);
             if (session)
                 scrollPositions.current.set(session.id, el.scrollTop);
             // How far you are from the newest message, which decides whether
@@ -445,13 +735,13 @@ export function ChatScreen() {
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink} onQuote={addQuote}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
           <div className="jumplatest-row">{tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
                 <Icon name="chevron" size={18}/></button>) : null)}</div>
-          <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
+          <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea} quotes={quotes} onRemoveQuote={removeQuote} onClearQuotes={clearQuotes}/>
         </DropZone>
         {tr(!setupVisible && selectedRun && session ? <TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/> : null)}
         {tr(!setupVisible && planShown ? <PlanPanel chatId={session?.id}/> : null)}
@@ -503,7 +793,54 @@ function SlashMenu({ query, commands, cursor, onPick, onHover, }: {
         </button>)))}
     </div>);
 }
-function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session, onPreview, textareaRef, }: {
+/**
+ * One line above the box while helpers work, with the way to stop them. Nothing is rendered when no
+ * helper is running, so it takes no room in an ordinary chat.
+ */
+function RunBar({ session }: { session: Session | null }) {
+    const running = (session?.agents ?? []).filter(a => a.status === 'working' || a.status === 'queued').length;
+    const [stopping, setStopping] = useState(false);
+    if (!session || !running)
+        return null;
+    const chatId = session.id;
+    async function stopAll() {
+        setStopping(true);
+        try {
+            const answer = await api.post<{ stopped: number; pending?: string[] }>('/api/chat/subagent/stop', { sessionId: chatId, all: true });
+            if (answer.pending?.length)
+                pushToast('info', tr('Some helpers are still stopping'), tr('They stop at the end of the step they are on.'));
+        }
+        catch (e) {
+            pushToast('error', tr('The helpers were not stopped'), plainFailureText(e instanceof Error ? e.message : String(e)).message);
+        }
+        finally {
+            setStopping(false);
+        }
+    }
+    return <div className="runbar" role="status" aria-live="polite">
+      <span className="runbar__dot" aria-hidden="true"/>
+      <span className="runbar__text">{tr('Background: {0} subagents working', [running])}</span>
+      <button type="button" className="runbar__stop" disabled={stopping} onClick={() => void stopAll()}>{tr(stopping ? 'Stopping…' : 'Stop all')}</button>
+    </div>;
+}
+/** The passages that will travel with the next message, with the way to drop one or all of them. */
+function QuoteBar({ quotes, onRemove, onClear }: {
+    quotes: ChatQuote[];
+    onRemove: (id: string) => void;
+    onClear: () => void;
+}) {
+    if (!quotes.length)
+        return null;
+    return <div className="quote-tray" role="group" aria-label={tr('Quoted text')}>
+      <div className="quote-tray__head"><span className="quote-tray__title">{tr('Quoted text')}<span className="quote-tray__count">{quotes.length}</span></span><button type="button" className="quote-tray__clear" onClick={onClear}>{tr('Clear quotes')}</button></div>
+      {quotes.map(q => <div className="quote-chip" key={q.id} data-kind={q.kind}>
+          <span className="quote-chip__kind">{tr(q.kind === 'code' ? 'Code' : q.kind === 'table' ? 'Table' : 'Text')}</span>
+          <span className="quote-chip__text" title={q.text}>{quoteExcerpt(q)}</span>
+          <button type="button" className="quote-chip__x" aria-label={tr('Remove quote')} title={tr('Remove quote')} onClick={() => onRemove(q.id)}>×</button>
+        </div>)}
+    </div>;
+}
+function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session, onPreview, textareaRef, quotes, onRemoveQuote, onClearQuotes, }: {
     draft: string;
     setDraft: (v: string) => void;
     loaded: boolean;
@@ -513,6 +850,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     session: Session | null;
     onPreview: (a: PreviewArtifact) => void;
     textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+    quotes: ChatQuote[];
+    onRemoveQuote: (id: string) => void;
+    onClearQuotes: () => void;
 }) {
     const clearDraft = useCallback(() => setDraft(''), [setDraft]);
     const photos = useChatPhotos(session?.id), native = useNative();
@@ -547,7 +887,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
+          <RunBar session={session}/>
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
+          <QuoteBar quotes={quotes} onRemove={onRemoveQuote} onClear={onClearQuotes}/>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
@@ -611,7 +953,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
+function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, onQuote, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
@@ -621,6 +963,8 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     timeSkipDone: boolean;
     timeSkipReal?: boolean;
     timeSkipRun?: TimeSkipRun;
+    /** A whole code block or table the person asked to quote. */
+    onQuote: (q: QuoteSource) => void;
 }) {
     const streaming = useStore(s => s.streaming);
     const activeSession = useStore(s => s.activeSession);
@@ -658,8 +1002,8 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
-        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onQuote={onQuote} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: tr('HTML preview'), content })}/>) : null)}
+        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onQuote={onQuote} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: tr('HTML preview'), content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />

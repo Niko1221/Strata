@@ -124,6 +124,31 @@ test('two helpers run at the same time as two rows, the run ends when both have 
   assert.equal(r.worker.requests.filter(q => q.directive === 'slow').length, 2);
 });
 
+test('a helper conversation is kept for its chat after the run, and cannot be read from another chat', { skip }, async (t) => {
+  const r = await rig(t);
+  const { frames } = await r.run('keep-talk', 'SCRIPT:spawn 1 echo hi there');
+  const id = [...rows(frames).keys()][0];
+  const view = r.bridge.childView('keep-talk', id);
+  assert.ok(view, 'the helper is still readable after its run');
+  assert.equal(view.agent.status, 'completed');
+  assert.equal(view.available, true);
+  assert.ok(view.transcript.some(entry => entry.role === 'user' && /hi there/.test(entry.text)), 'the task is in the conversation');
+  assert.ok(view.transcript.some(entry => entry.role === 'assistant' && /hi there/.test(entry.text)), 'the helper answer is in the conversation');
+  assert.equal(r.bridge.childView('another-chat', id), null, 'another chat cannot read it');
+  // The person can send this helper another message without starting a new chat turn.
+  const sent = await r.bridge.promptChild({ chatId: 'keep-talk', childId: id, text: 'SCRIPT:echo second' });
+  assert.ok(sent.messageId, 'the Harness accepted the message');
+  for (let i = 0; i < 100; i += 1) {
+    const now = r.bridge.childView('keep-talk', id);
+    if (now.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text))) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const after = r.bridge.childView('keep-talk', id);
+  assert.ok(after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text)), 'the helper answered the new message');
+  assert.equal(after.agent.status, 'completed');
+  assert.equal(after.transcript.filter(entry => entry.role === 'user' && /SCRIPT:echo second/.test(entry.text)).length, 1, 'the sent message is not duplicated by its Harness echo');
+});
+
 test('helpers are limited to the Harness cap (4, or the slot count if larger); the fifth is refused with a message the model reads', { skip }, async (t) => {
   const r = await rig(t, { slots: 2 });
   const { frames } = await r.run('few', 'SCRIPT:spawn 5 slow 30');
@@ -176,6 +201,51 @@ test('Stop on the chat stops its helpers, ends the run quickly and starts no fur
   assert.equal(done.type, 'done'); assert.equal(done.cancelled, true);
   assert.equal(r.bridge.isRunning('stopper'), false);
   assert.ok(!/Noted/.test(text(frames)), 'the parent was not woken to comment on stopped helpers');
+});
+
+test('a helper stopped on request reads "interrupted" and can be asked to go on', { skip }, async (t) => {
+  const r = await rig(t);
+  let stopping = null;
+  const { frames } = await r.run('resume-helper', 'SCRIPT:spawn 1 slow 3000', { onFrame: f => {
+    if (stopping || f.type !== 'agent' || f.agent.status !== 'working') return;
+    stopping = r.bridge.stopChildren({ chatId: 'resume-helper', childId: f.agent.id }).then(answer => ({ id: f.agent.id, answer }));
+  } });
+  assert.ok(stopping, 'the helper reached working');
+  const { id, answer } = await stopping;
+  assert.equal(answer.stopped, 1);
+  const stopped = r.bridge.childView('resume-helper', id);
+  assert.equal(stopped.agent.status, 'interrupted');
+  await r.bridge.promptChild({ chatId: 'resume-helper', childId: id, text: 'SCRIPT:echo again' });
+  for (let i = 0; i < 100; i += 1) {
+    const now = r.bridge.childView('resume-helper', id);
+    if (now.transcript.some(entry => entry.role === 'assistant' && /again/.test(entry.text))) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const resumed = r.bridge.childView('resume-helper', id);
+  assert.ok(resumed.transcript.some(entry => entry.role === 'assistant' && /again/.test(entry.text)), 'the stopped helper went on');
+  assert.equal(resumed.agent.status, 'completed');
+  assert.equal(frames.at(-1).type, 'done');
+});
+
+test('a run that ends while a helper is still working seals its row instead of leaving it running', { skip }, async (t) => {
+  const r = await rig(t);
+  let finished = false;
+  const { frames } = await r.run('seal-early', 'SCRIPT:spawn 1 slow 5000', { onFrame: f => {
+    if (finished || f.type !== 'agent' || f.agent.status !== 'working') return;
+    finished = true;
+    const turn = r.bridge._debug().chats.get('seal-early')?.turn;
+    assert.ok(turn, 'the run is still open while the helper works');
+    turn.finish(null);
+  } });
+  assert.equal(finished, true, 'the helper reached working');
+  const history = [...rows(frames).values()].at(-1);
+  assert.equal(history.at(-1).status, 'interrupted');
+  assert.ok(history.at(-1).description, 'the row keeps a description of where it stopped');
+  assert.equal(r.bridge.isRunning('seal-early'), false);
+  const snapshot = r.bridge.agentSnapshot('seal-early');
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.agents.at(-1).status, 'interrupted');
+  assert.equal(snapshot.agents.at(-1).live, false);
 });
 
 test('/goal: sets a goal, runs its rounds in the chat, says how it ended, refuses a second unfinished goal, and Stop pauses it', { skip }, async (t) => {
