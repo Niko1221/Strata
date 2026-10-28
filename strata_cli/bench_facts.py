@@ -292,7 +292,14 @@ def storage_of(path: Path | None) -> list[dict] | None:
         return [{"kind": str(r.get("MediaType") or "unknown").lower(), "model": str(r.get("FriendlyName") or "unknown"),
                  "bus": str(r.get("BusType") or "unknown").lower()} for r in rows if isinstance(r, dict)] or None
     if sys.platform.startswith("linux"):
-        source = run_cmd(["findmnt", "-n", "-o", "SOURCE", "--target", str(path)]).strip()
+        found = run_cmd(["findmnt", "-n", "-o", "SOURCE,FSTYPE", "--target", str(path)]).split(None, 1)
+        source, fstype = (found + ["", ""])[:2]
+        source, fstype = source.strip(), fstype.strip().lower()
+        if fstype in ("tmpfs", "ramfs", "devtmpfs", "hugetlbfs"):
+            return [{"kind": "ram", "model": fstype, "bus": "memory"}]          # a copy of the model in RAM (/dev/shm)
+        if fstype.startswith(("nfs", "cifs", "smb", "9p", "ceph", "glusterfs", "fuse.sshfs")):
+            return [{"kind": "network", "model": fstype, "bus": "network"}]    # the host stays out; the kind is what matters
+        source = source.split("[", 1)[0]                                        # btrfs: /dev/nvme0n1p2[/@home] (#4493)
         if not source.startswith("/dev/"):
             return None
         try:
