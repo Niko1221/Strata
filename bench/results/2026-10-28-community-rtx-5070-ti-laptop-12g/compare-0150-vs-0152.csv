@@ -1,0 +1,16 @@
+metric,tier,engine_0.1.50_2026-10-28,engine_0.1.52_2026-10-28,delta
+request_decode_median_tok_s_whole,short,97.2,128.2,32%
+fresh_prefill_median_tok_s,short,421.1,449.2,6.7%
+client_wall_per_request_s,short,3.7,2.97,-19.7%
+client_per_request_e2e_tok_s,short,69.2,86.2,24.6%
+expert_cache_hit_pct,short,77.1,94.9,
+request_decode_median_tok_s_whole,4k,107.7,139.0,29%
+fresh_prefill_median_tok_s,4k,1227.6,1264.1,3.0%
+client_wall_per_request_s,4k,5.81,5.16,-11.2%
+client_per_request_e2e_tok_s,4k,44.1,49.6,12.5%
+expert_cache_hit_pct,4k,78.0,95.5,
+request_decode_median_tok_s_whole,32k,97.1,128.7,33%
+fresh_prefill_median_tok_s,32k,1346.1,1381.0,2.6%
+client_wall_per_request_s,32k,27.07,25.95,-4.1%
+client_per_request_e2e_tok_s,32k,9.5,9.9,4.2%
+expert_cache_hit_pct,32k,78.5,97.6,
