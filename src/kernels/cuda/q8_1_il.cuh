@@ -41,6 +41,52 @@ template <int NC, bool PM> struct Q81Il {
             }
         }
     }
+    // P1 (native_mmvq_il_pf_kernel): the same loads from a pointer the caller strength-reduces - qat(qbase(b, p) + k * QB)
+    // is u(b + k, p), dat(dbase(b) + k * DB) is scales(b + k)
+    static constexpr int QB = PM ? CP : 8 * CP, DB = CP;
+    __device__ __forceinline__ int qp(int dp) const { return PM ? dp * nb * CP : dp * CP; }   // ints from p to p + dp
+    __device__ __forceinline__ const int* qbase(int b, int p) const { return q + std::size_t(PM ? p * nb + b : b * 8 + p) * CP; }
+    __device__ __forceinline__ const float* dbase(int b) const { return d + std::size_t(b) * CP; }
+    __device__ __forceinline__ void qat(const int* s, int (&o)[NC]) const {   // __ldg: s comes from an asm (madw), so the
+        if constexpr (CP == 2) {                                                // front end no longer knows it is global
+            const int2 a = __ldg(reinterpret_cast<const int2*>(s));
+            o[0] = a.x;
+            o[1] = a.y;
+        } else {
+            const int4 a = __ldg(reinterpret_cast<const int4*>(s));
+            o[0] = a.x;
+            if constexpr (NC > 1) o[1] = a.y;
+            if constexpr (NC > 2) o[2] = a.z;
+            if constexpr (NC > 3) o[3] = a.w;
+            if constexpr (NC > 4) {
+                const int4 e = __ldg(reinterpret_cast<const int4*>(s + 4));
+                o[4] = e.x;
+                if constexpr (NC > 5) o[5] = e.y;
+                if constexpr (NC > 6) o[6] = e.z;
+                if constexpr (NC > 7) o[7] = e.w;
+            }
+        }
+    }
+    __device__ __forceinline__ void dat(const float* s, float (&o)[NC]) const {
+        if constexpr (CP == 2) {
+            const float2 a = __ldg(reinterpret_cast<const float2*>(s));
+            o[0] = a.x;
+            o[1] = a.y;
+        } else {
+            const float4 a = __ldg(reinterpret_cast<const float4*>(s));
+            o[0] = a.x;
+            if constexpr (NC > 1) o[1] = a.y;
+            if constexpr (NC > 2) o[2] = a.z;
+            if constexpr (NC > 3) o[3] = a.w;
+            if constexpr (NC > 4) {
+                const float4 e = __ldg(reinterpret_cast<const float4*>(s + 4));
+                o[4] = e.x;
+                if constexpr (NC > 5) o[5] = e.y;
+                if constexpr (NC > 6) o[6] = e.z;
+                if constexpr (NC > 7) o[7] = e.w;
+            }
+        }
+    }
     __device__ __forceinline__ void scales(int b, float (&o)[NC]) const {
         const float* s = d + std::size_t(b) * CP;
         if constexpr (CP == 2) {
@@ -73,6 +119,12 @@ struct Q81One {
     __device__ __forceinline__ void scales(int b, float (&o)[1]) const {
         o[0] = __low2float(*reinterpret_cast<const half2*>(x + std::size_t(b) * 36));
     }
+    static constexpr int QB = 9, DB = 9;   // a 36-byte block in ints / floats
+    __device__ __forceinline__ int qp(int dp) const { return dp; }
+    __device__ __forceinline__ const int* qbase(int b, int p) const { return reinterpret_cast<const int*>(x + std::size_t(b) * 36 + 4) + p; }
+    __device__ __forceinline__ const float* dbase(int b) const { return reinterpret_cast<const float*>(x + std::size_t(b) * 36); }
+    __device__ __forceinline__ void qat(const int* s, int (&o)[1]) const { o[0] = __ldg(s); }
+    __device__ __forceinline__ void dat(const float* s, float (&o)[1]) const { o[0] = __low2float(__ldg(reinterpret_cast<const half2*>(s))); }
 };
 
 // The activations a kernel for NC columns reads: one column's q8_1 blocks, 2+ columns' interleaved copy (nb blocks a

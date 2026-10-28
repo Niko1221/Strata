@@ -6,6 +6,10 @@
 // does it for GLM: no FILE_FLAG_RANDOM_ACCESS - the page cache must keep what it read.)
 #pragma once
 
+#if defined(__APPLE__)
+#include "ds4_os_apple.h"   // the Linux calls the body uses, on macOS
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -89,7 +93,13 @@ inline fd_t open_direct(const std::string& path) {
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
     const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    return fd < 0 ? kBadFd : (fd_t) fd;
+    if (fd < 0) return kBadFd;
+#if defined(__APPLE__)
+    // (O_DIRECT is 0 here: without F_NOCACHE these reads went through the unified buffer cache at 3.4 GB/s; the disk does 10-18 GB/s
+    // unbuffered, and the experts' pages no longer push the CPU lane's hot ones out of the cache)
+    if (std::getenv("DS4_MAC_BUFFERED_READS") == nullptr) fcntl(fd, F_NOCACHE, 1);
+#endif
+    return (fd_t) fd;
 #endif
 }
 /// [off, off + n) through an unbuffered descriptor into dst, a kDirectAlign-aligned buffer of at least
@@ -395,6 +405,45 @@ inline bool in_ram(const void* p, size_t n) {
     return resident_sampled(p, n, 8);
 #else
     return resident(p, n);
+#endif
+}
+
+/// Bytes free in the kernel's explicit huge-page pool (HugePages_Free x Hugepagesize); 0 elsewhere or when unreadable.
+/// (MemAvailable does not count a reserved pool, so a budget that must see it - the copy arena on DS4_COPY_HUGETLB -
+/// adds this.)
+inline uint64_t huge_free_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    std::FILE* f = std::fopen("/proc/meminfo", "r");
+    if (f == nullptr) return 0;
+    char line[256];
+    uint64_t pages = 0, size_kb = 0;
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long v = 0;
+        if (std::sscanf(line, "HugePages_Free: %llu", &v) == 1) pages = v;
+        else if (std::sscanf(line, "Hugepagesize: %llu kB", &v) == 1) size_kb = v;
+    }
+    std::fclose(f);
+    return pages * size_kb * 1024ull;
+#endif
+}
+
+/// Anonymous memory on explicit 2 MB huge pages (MAP_HUGETLB, from the kernel's pool - reserve it first, e.g.
+/// `sysctl vm.nr_hugepages=N`): rounded up to a whole number of huge pages, `*got` its size.  nullptr: the pool is empty
+/// or the kernel cannot.  (Unlike THP, a pin of this memory keeps 2 MB pages: a DMA from it does not need 4 KB
+/// translations, which is what DS4_COPY_PIN's registered arena wanted.)
+inline void* huge_alloc(size_t bytes, size_t* got = nullptr) {
+#if defined(_WIN32) || defined(__APPLE__)   // (macOS has no MAP_HUGETLB)
+    (void) bytes, (void) got;
+    return nullptr;
+#else
+    const size_t hp = (size_t) 2 << 20;
+    const size_t hb = (bytes + hp - 1) / hp * hp;
+    void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    if (got != nullptr) *got = hb;
+    return m;
 #endif
 }
 

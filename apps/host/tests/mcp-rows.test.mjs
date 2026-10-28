@@ -53,7 +53,7 @@ test('the notices name the servers, one sentence per reason, in the catalog word
   assert.notEqual(notices[0].code, notices[1].code);
   assert.deepEqual(mcpSkippedNotices([]), []);
   // every sentence is in the catalog of every language (src/locales/tools-<lang>.json)
-  for (const lang of ['en', 'de', 'es', 'pt', 'ru', 'ja', 'ko', 'zh']) {
+  for (const lang of ['en', 'de', 'es', 'pt', 'ru', 'ja', 'ko', 'fr', 'zh']) {
     const catalog = JSON.parse(await readFile(new URL(`../src/locales/tools-${lang}.json`, import.meta.url), 'utf8'));
     const english = JSON.parse(await readFile(new URL('../src/locales/tools-en.json', import.meta.url), 'utf8'));
     for (const text of ['These tool servers were left out because their names are not allowed: {0}. A name can have up to 32 letters, numbers, hyphens or underscores.',

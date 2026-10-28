@@ -68,6 +68,10 @@ void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, 
                   float* comb, cudaStream_t s);
 void hc_split(const float* mixes, const float* scale, const float* base, int hc, int iters, float hc_eps, int T,
               float* pre, float* post, float* comb, cudaStream_t s);
+/// the same two in one dispatch (the Metal kernel ds4_hc_mix_split); the CUDA path calls hc_mix then hc_split.
+void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes,
+                  const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre,
+                  float* post, float* comb, cudaStream_t s);
 /// x[t][e] = sum_s mix[t][s] h[t][s][e], then x = rmsnorm(x) * w (w null: no norm).
 void hc_pre_norm(const float* h, const float* mix, const float* w, int dim, int hc, int T, float eps, float* x,
                  cudaStream_t s);
@@ -261,6 +265,8 @@ void hc_mean(const float* h, int T, int hc, int dim, float* out, long long out_s
 void iota_rows(int* out, int T, int n, int stride, cudaStream_t s);
 /// The DSpark markov head: logits[v] += E[*tok] . H[v] for v < V (E BF16 [V][R], H F16 [V][R]).
 void markov_add(float* logits, const uint16_t* E, const uint16_t* H, const int* tok, int V, int R, cudaStream_t s);
+/// The same bias with the head quantised to Q8_0 blocks of 32 (34 B a block: F16 d and 32 int8, R a multiple of 32).
+void markov_add_q8(float* logits, const uint16_t* E, const uint8_t* Hq, const int* tok, int V, int R, cudaStream_t s);
 /// The markov bias over a head group: a member's rows [v0, v0 + vn) of it added to its share of a logits row (erow:
 /// the previous token's E row, BF16, on the device) - markov_add's sums; the share's argmax (the greedy sampler's rule)
 /// into a host-mapped slot {value, index, seq}; every member's slot of the step -> the global argmax into *tok and its

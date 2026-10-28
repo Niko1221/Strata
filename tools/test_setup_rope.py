@@ -35,6 +35,21 @@ class DerivedFactor(unittest.TestCase):
 
 
 class ResolveRope(unittest.TestCase):
+    def test_invalid_explicit_factors_are_rejected(self):
+        for ctx in (131072, 262144, 1048576):
+            for method in (None, "none", "linear", "yarn"):
+                for scale in (float("nan"), float("inf"), float("-inf"), -1.0, 0.0, 0.5):
+                    with self.subTest(ctx=ctx, method=method, scale=scale):
+                        with self.assertRaisesRegex(ValueError, r"--rope-scale.*finite.*>= 1"):
+                            setup.resolve_rope(ctx, method, scale)
+
+    def test_valid_explicit_factors_remain_verbatim(self):
+        for ctx in (131072, 262144, 1048576):
+            for method in ("linear", "yarn"):
+                for scale in (1.0, 1.5, 4.0):
+                    with self.subTest(ctx=ctx, method=method, scale=scale):
+                        self.assertEqual(setup.resolve_rope(ctx, method, scale), (method, scale))
+
     # ---- the automatic flow the docs promise (an omitted flag, --yes or the interactive default)
     def test_omitted_384k_gets_yarn_and_1_5(self):
         self.assertEqual(setup.resolve_rope(393216, None, None), ("yarn", 1.5))

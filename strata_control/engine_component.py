@@ -436,11 +436,20 @@ def runtime_version() -> str | None:
 
 # ----------------------------------------------------------------------------------------------- the GPU
 
+def split_backend(value) -> tuple[str, str]:
+    """(backend, variant) for a name the person typed: "hip-rdna2" is the hip family and its rdna2 package (the way the feed labels an AMD
+    package, #4013), "hip" is the family alone, any other name is returned as it is with no variant."""
+    name = str(value or "").strip().lower()
+    if name not in BACKEND_MATRIX and name.startswith("hip-") and len(name) > 4:
+        return "hip", name[4:]
+    return name, ""
+
+
 def detect_backend(environ=None) -> tuple[str | None, str]:
     """(backend, how) for this machine: the engine family its GPU needs. Bounded, read-only probes of tools that are
     already installed; ``STRATA_ENGINE_BACKEND`` overrides (the tests and the support desk use it)."""
     environ = os.environ if environ is None else environ
-    forced = environ.get(ENV_BACKEND, "").strip().lower()
+    forced = split_backend(environ.get(ENV_BACKEND, ""))[0]      # "hip-rdna2" starts the hip family (the package choice reads the variant)
     if forced:
         if forced not in BACKEND_MATRIX:
             raise ComponentProblem(f"{ENV_BACKEND}={forced!r} is not one of {', '.join(sorted(BACKEND_MATRIX))}")
@@ -808,6 +817,14 @@ def arch_covers(archs, present: list[str]) -> bool:
     return False
 
 
+def arch_native(archs, present: list[str]) -> bool:
+    """Whether a build with `archs` holds machine code made for one of the `present` cards itself (``sm_89`` on an ``sm_89`` card),
+    not only code that runs there through the same-major rule of `arch_covers` (``sm_86`` on an RTX 40) or as PTX. Only a tie-breaker
+    between packages that fit equally: a package with the card's own image is taken first (#3935)."""
+    cards = {item[3:] for item in present if item.startswith("sm_") and item[3:].isdigit()}
+    return any(arch.startswith("sm_") and arch[3:] in cards for arch in archs)
+
+
 # ----------------------------------------------------------------------------------------------- resolve
 
 def scan(root: Path | None = None) -> tuple[list[EngineComponent], list[dict]]:
@@ -974,7 +991,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
                 return item
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
     return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0")),
-                                         hip_preference(item.hip_archs)))
+                                         hip_preference(item.hip_archs), arch_native(item.cuda_archs, archs_here)))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the

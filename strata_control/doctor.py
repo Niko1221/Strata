@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -99,15 +100,16 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
             if len(row) != 5 or len(cards) >= 64:
                 raise ValueError("invalid field count")
             index_raw, name, uuid, memory_raw, driver = [part.strip() for part in row]
+            unified = memory_raw == "[N/A]" and platform.machine().lower() in ("aarch64", "arm64")   # a DGX Spark's GB10: no separate graphics memory
             if not (re.fullmatch(r"[0-9]{1,4}", index_raw)
-                    and re.fullmatch(r"[0-9]{1,9}", memory_raw)
-                    and 0 <= int(index_raw) <= 1023 and int(memory_raw) > 0
+                    and (unified or re.fullmatch(r"[0-9]{1,9}", memory_raw))
+                    and 0 <= int(index_raw) <= 1023 and (unified or int(memory_raw) > 0)
                     and 1 <= len(name) <= 128 and 1 <= len(uuid) <= 128
                     and 1 <= len(driver) <= 64
                     and all(part.isprintable() for part in (name, uuid, driver))):
                 raise ValueError("invalid card fields")
             cards.append({"index": int(index_raw), "name": name, "uuid": uuid,
-                          "memory_mib": int(memory_raw), "driver_version": driver})
+                          "memory_mib": None if unified else int(memory_raw), "driver_version": driver})
     except (csv.Error, ValueError):
         return None, "nvidia-smi returned an unrecognized card list"
     if not cards or len({card["index"] for card in cards}) != len(cards):

@@ -5,14 +5,14 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { build } from 'esbuild';
 
-const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
 const read = async name => JSON.parse(await readFile(`src/locales/${name}.json`, 'utf8'));
 const built = await build({ stdin: { contents: "export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
 const { tr, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 
 test('every tr("...") literal and every command hint has a key in the English catalog, so no language is stuck in English (#3479)', async () => {
   const known = new Set();
-  for (const name of ['en', 'tune-en', 'tools-en', 'fix-en']) for (const v of Object.values(await read(name))) known.add(String(v));
+  for (const name of ['en', 'tune-en', 'tools-en', 'fix-en', 'gh-en']) for (const v of Object.values(await read(name))) known.add(String(v));
   const missing = [];
   const scan = async dir => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -38,7 +38,7 @@ test('every tr("...") literal and every command hint has a key in the English ca
   assert.deepEqual(missing, []);
 });
 
-test('the fix catalogs have the same keys and placeholders in all eight languages', async () => {
+test('the fix catalogs have the same keys and placeholders in all nine languages', async () => {
   const en = await read('fix-en');
   for (const language of languages) {
     const catalog = await read(`fix-${language}`);

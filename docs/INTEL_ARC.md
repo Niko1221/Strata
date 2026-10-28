@@ -47,6 +47,9 @@ engine package. Otherwise [build the image yourself](DOCKER.md#build-it-yourself
   `sudo apt install docker.io git`, then `sudo usermod -aG docker,render $USER` and log in again.
 - VRAM: the port keeps the experts on the card (`--stream-experts`). A 32 GB card holds the Coder IQ1_M or IQ2_XS. Smaller
   cards mirror part of the experts in RAM and are slower.
+  Under the wrapper's `STRATA_VERIFY_NO_HOST=1` there is no SSD expert tier on `xe`: every expert must
+  be in VRAM or in the pinned RAM mirror (`STRATA_MIRROR_MIB`), and the engine refuses to start when
+  the two do not cover the model. Size the RAM accordingly, or lower `--max-context`.
 
 ## Build with Docker (what `setup --backend sycl` uses)
 

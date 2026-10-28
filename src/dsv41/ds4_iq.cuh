@@ -86,12 +86,19 @@ struct SetArgs {
     const float* xf = nullptr;
     const int* idx = nullptr;
     const uint16_t* xh = nullptr;
+    // gate / up from the caller's F16 copy of the activations (the same rounding the tiles make themselves: the same
+    // bits), so the F32 rows are not read 18+ times a prompt (MarLin's "keep the small operand in its cheap format")
+    const uint16_t* xf16 = nullptr;
     int ldx = 0;
     uint16_t* h = nullptr;
     float* y = nullptr;
     int ldo = 0;
     int tg = 0, td = 0;
     int skip_le = 0;   // (the tiles) the experts of at most this many rows are left out: the light kernels took them
+#if defined(STRATA_METAL)   // (only on Metal: the CUDA and HIP kernels take this struct by value, so its size is part of their ABI)
+    const int* hbounds = nullptr;   // the bounds on the host: [n_exp + 1], absolute rows
+    int total_rows = 0;             // the set's rows in all
+#endif
 };
 bool set_gate_up(const SetArgs& a, cudaStream_t s);
 bool set_down(const SetArgs& a, cudaStream_t s);
