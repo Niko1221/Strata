@@ -1506,6 +1506,39 @@ void append_refusal_tests() {
         check(!session_file_append_plan((append_dir / "no-such-session.bin").string(), id, pm, error),
               "an append plan on a missing file is refused");
     }
+    // The runtime's read limits are the gate's plan limits too (review finding M3): the plan walk enforces
+    // them on every declared count and allocates nothing past them - a file this runtime could never
+    // restore earns no append plan, and a file it CAN restore plans normally under a real limits set.
+    {
+        SessionAppendPlan pl;
+        check(session_file_append_plan(p.string(), id, pl, error), "limits fixture: the file plans with open limits");
+        SessionReadLimits tight_tokens;
+        tight_tokens.max_tokens = 100;  // the file's live record declares 1024 ids
+        check(!session_file_append_plan(p.string(), id, pl, error, tight_tokens), "a tight token bound refuses the plan");
+        SessionReadLimits tight_kv;  // far under the file's part sizes
+        tight_kv.max_kv_bytes = {{1u << 12, 1u << 12, 1u << 12, 1u << 12, 1u << 12}};
+        check(!session_file_append_plan(p.string(), id, pl, error, tight_kv), "a tight K/V byte bound refuses the plan");
+        SessionReadLimits tight_state;  // under the file's running-state arrays
+        tight_state.max_state_bytes = {16, 16, 16, 16, 16};
+        check(!session_file_append_plan(p.string(), id, pl, error, tight_state),
+              "a tight state-array bound refuses the plan");
+        SessionReadLimits tight_geom;  // a foreign model geometry: no plan, so the gate full-rewrites
+        tight_geom.geometry = std::array<int64_t, 18>{};
+        check(!session_file_append_plan(p.string(), id, pl, error, tight_geom), "a foreign geometry refuses the plan");
+        SessionReadLimits real;  // the bounds a runtime like this file's would carry: everything fits
+        real.geometry = c1.geometry;
+        real.layer_range = {c1.layer_lo, c1.layer_hi};
+        real.max_tokens = 100000;
+        real.max_checkpoints = 64;
+        real.max_state_bytes = {1u << 20, 1u << 20, 1u << 20, 1u << 20, 1u << 20};
+        real.max_kv_bytes = {{1u << 30, 1u << 30, 1u << 30, 1u << 30, 1u << 30},
+                             {1u << 30, 1u << 30, 1u << 30, 1u << 30, 1u << 30},
+                             {1u << 30, 1u << 30, 1u << 30, 1u << 30, 1u << 30}};
+        real.stages = std::vector<SessionStageGeom>{};  // a single-device runtime, like the fixture
+        check(session_file_append_plan(p.string(), id, pl, error, real) && pl.checkpoint.trailer.gen == 1 &&
+                  !pl.prev_bounds.empty(),
+              "a real limits set that fits the file still plans the append");
+    }
 }
 
 // The commit-discipline seams, in file order.  Each: what the seam must prove, per the S3 drill's
@@ -1842,6 +1875,54 @@ void save_gate_tests() {
           "a session dirty from token 0 full-rewrites");
 }
 
+// Large-delta append (review finding M5): the group is at least two pipeline blocks (kBlock = 16 MiB),
+// so the FileSink writer pipeline genuinely engages on the append path.  The starved-writer seam
+// ("writer_thread") forces the synchronous draining fallback - both appends must produce byte-identical
+// files and identical deltas (plan §Review focus: "pipeline preserved on append").
+void append_pipeline_test(uint8_t seed) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    SavedConversation c1 = chain_c1(seed, 1024, idx, page, hd);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    const SavedConversation c2 = chain_next(c1, b1, 15000, 1100, 1100 / idx + 1, uint8_t(seed + 7), idxb);
+
+    const fs::path a = uniq("pipe-clean"), b = uniq("pipe-fallback");
+    size_t bytes = 0;
+    check(session_file_write(a.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt) &&
+              session_file_write(b.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "pipeline fixture: two identical gen-1 files");
+    check(slurp_bin(a) == slurp_bin(b), "pipeline fixture: the gen-1 files match");
+
+    SessionAppendPlan plan;
+    check(session_file_append_plan(a.string(), id, plan, error), "pipeline fixture: the file plans");
+    size_t delta_clean = 0;
+    check(session_file_append(a.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta_clean, error, opt),
+          "the pipelined large append works");
+    check(delta_clean >= 2 * (16u << 20), "the fixture carries at least two pipeline blocks (kBlock)");
+
+    SessionWriteOptions o = opt;
+    o.fault = [](const char* s) { return std::strcmp(s, "writer_thread") == 0 ? 1 : 0; };
+    SessionAppendPlan plan_b;
+    check(session_file_append_plan(b.string(), id, plan_b, error), "pipeline fixture: the second file plans");
+    size_t delta_fallback = 0;
+    check(session_file_append(b.string(), chain_meta(c2), chain_sources(c2, idx), id, plan_b, delta_fallback, error, o),
+          "the starved-writer large append works");
+    check(delta_fallback == delta_clean, "the fallback append reports the same delta");
+    check(slurp_bin(b) == slurp_bin(a), "the fallback append is byte-identical to the pipelined append");
+
+    SavedConversation parsed;
+    size_t rb = 0;
+    check(session_file_read(a.string(), id, parsed, rb, error) && same_conv(parsed, c2),
+          "the pipelined append reads as gen 2");
+    check(session_file_read(b.string(), id, parsed, rb, error) && same_conv(parsed, c2),
+          "the fallback append reads as gen 2");
+}
+
 void append_writer_tests() {
     append_chain_test(7);
     chain_stage_test(9);
@@ -1849,6 +1930,7 @@ void append_writer_tests() {
     hostile_trailer_tests(13);
     append_refusal_tests();
     append_seam_tests();
+    append_pipeline_test(17);
     append_torn_test();
 }
 
