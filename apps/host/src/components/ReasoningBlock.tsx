@@ -35,8 +35,10 @@ export function ReasoningBlock({ message }: { message: ChatMessage }) {
         body.current.scrollTop = body.current.scrollHeight; });
 } }, [open]);
   const took = thoughtDuration(reasoningTime(message, now));
-  const approx = approximateTokens(text);
-  const tokenText = approx > 0 ? tr('≈{0} tokens', [approx.toLocaleString(localeTag())]) : '';
+  // The engine's own count once the turn ended; before that (and without it) an estimate, marked with ≈.
+  const exact = typeof message.reasoningTokens === 'number' && message.reasoningTokens > 0 ? message.reasoningTokens : null;
+  const count = exact ?? approximateTokens(text);
+  const tokenText = count > 0 ? (exact === null ? tr('≈{0} tokens', [count.toLocaleString(localeTag())]) : tr('{0} tokens', [count.toLocaleString(localeTag())])) : '';
   const head = thinking ? `${tr('Thinking…')} ${took ?? '0s'}` : took ? tr('Thought for {0}', [took]) : tr('Reasoning');
   const label = tokenText ? `${head} · ${tokenText}` : head;
   return <details className="rz" open={open} data-live={thinking || undefined} onToggle={e => setOpen(e.currentTarget.open)}>

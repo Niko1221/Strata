@@ -122,6 +122,25 @@ test('a text the live frames missed is completed from the committed message, onc
   assert.deepEqual(p.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'Hello there' }] } })), []);
 });
 
+test('the engine reasoning count is summed over the turn and reaches the terminal frame', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  p.consume(chunk({ type: 'reasoning-delta', index: 0, text: 'thinking' }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 100, outputTokens: 5, reasoningTokens: 3 } }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 120, outputTokens: 7, reasoningTokens: 4 } }));
+  p.consume(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }));
+  const [done] = p.finish({ model: 'M', contextMax: 1000 });
+  assert.equal(done.reasoningTokens, 7);
+});
+
+test('without an engine reasoning count the terminal frame carries none, so the page can estimate', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  p.consume(chunk({ type: 'reasoning-delta', index: 0, text: 'thinking' }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 100, outputTokens: 5 } }));
+  p.consume(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }));
+  const [done] = p.finish({ model: 'M', contextMax: 1000 });
+  assert.equal('reasoningTokens' in done, false);
+});
+
 test('tool scopes and previews', () => {
   assert.equal(toolScope('write'), 'write'); assert.equal(toolScope('grep'), 'read'); assert.equal(toolScope('web_fetch'), 'connected');
   assert.equal(presentTool({ callId: 'x', name: 'write', args: { file_path: 'a.txt' } }).preview, 'a.txt');

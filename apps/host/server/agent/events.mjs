@@ -211,6 +211,7 @@ export class TurnProjector {
     this.tools = new Map();          // callId -> { card, calledAt }
     this.tokensIn = 0;
     this.tokensOut = 0;
+    this.reasoningTokens = 0;        // the engine's count of the reply's thinking tokens (summed over the turn's requests)
     this.contextTokens = null;       // the LAST model request's prompt + reply: what the context holds now (the sums above count every request again)
     this.usageSeen = false;
     this.firstTokenAt = null;
@@ -310,6 +311,9 @@ export class TurnProjector {
           const prompt = (Number(c.usage.inputTokens) || 0) + (Number(c.usage.cacheReadTokens) || 0) + (Number(c.usage.cacheWriteTokens) || 0);
           this.tokensIn += prompt;
           this.tokensOut += Number(c.usage.outputTokens) || 0;
+          // The engine says how much of this reply was thinking (OpenAI's completion_tokens_details.reasoning_tokens);
+          // the Harness passes it as reasoningTokens. Summed over the turn's requests, as the reasoning text is.
+          this.reasoningTokens += Number(c.usage.reasoningTokens ?? c.usage.reasoning) || 0;
           this.contextTokens = prompt + (Number(c.usage.outputTokens) || 0);
           out.push({ type: 'context', contextTokens: this.contextTokens, contextMax: this.window || undefined });
         }
@@ -436,7 +440,7 @@ export class TurnProjector {
     else if (generated > 0 && decoded.seconds >= 0.3) tps = Number((generated / decoded.seconds).toFixed(1));
     else if (generated > 0 && this.tools.size === 0 && this.firstTokenAt && Date.now() - this.firstTokenAt >= 50) tps = Number((generated / ((Date.now() - this.firstTokenAt) / 1000)).toFixed(1));
     const promptTps = engine?.promptTps > 0 ? engine.promptTps : null;
-    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax, tps, ...(promptTps ? { promptTps } : {}), contextTokens: this.contextTokens };
+    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax, tps, ...(promptTps ? { promptTps } : {}), contextTokens: this.contextTokens, ...(this.reasoningTokens > 0 ? { reasoningTokens: this.reasoningTokens } : {}) };
     switch (reason.kind) {
       case 'completed':
         return [{ type: 'done', ...base, ...usage, finishReason: 'stop' }];

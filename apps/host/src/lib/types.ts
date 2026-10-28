@@ -348,6 +348,8 @@ export interface ChatMessage {
   /** When the first reasoning arrived, and how long the model reasoned before it began the answer (for "Thought for 38s"). */
   reasoningStartedAt?: number;
   reasoningMs?: number;
+  /** The engine's own count of the reply's thinking tokens (the app estimates only when this is absent). */
+  reasoningTokens?: number;
   contextMax?: number;
   usageSource?: 'reported' | 'demo' | 'unavailable' | 'estimated';
   skillsUsed?: string[];
