@@ -20,6 +20,16 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-29: 2x RTX 2080 Ti 22 GB (sm_75), dual-socket Xeon E5-2696 v4 (AVX2 only, 88 threads), 94 GiB RAM](../bench/results/2026-10-29-community-2x-rtx-2080-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs/README.md):
+  Strata v0.2.7 source build (engine 0.1.52), Unsloth UD-IQ4_XS at 131K with `--vision`, 180 W per card, three runs each
+  (`tools/strata_bench.py --long`). Same-day single-card vs layer-split pair: agent decode 40.8 -> 60.4 tok/s (+48%),
+  chat 36.9 -> 49.7, a 32K fresh prompt 768 -> 1,269 tok/s (+65%); the single-card run is
+  [the report beside it](../bench/results/2026-10-29-community-rtx-2080-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs/README.md).
+  With `--trim-stage-weights` (explicit `--layer-split 23`) the split's second card holds 6,260 -> 7,186 expert slots (+15%)
+  and an 11.6K read goes 962 -> 991 tok/s. Backs up the slow-CPU note in `docs/MULTI_GPU.md`.
+- [2026-10-29: 2x RTX 2080 Ti 22 GB, GSQ-RCO IQ3_XXS, same host](../bench/results/2026-10-29-community-2x-rtx-2080-ti-qwen3-8-flash-next-gsq-rco-iq3-xxs/README.md):
+  the layer split with 2-3 bit experts (70.6 GiB instead of UD-IQ4_XS's 88 GiB): 19,070 expert slots in VRAM against 12,572,
+  agent decode 69.7 tok/s (+15% over IQ4_XS) and 4K/16K/32K prompts at 821/1,191/1,391 tok/s.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
