@@ -85,7 +85,9 @@ test('only a helper request that needs the person becomes a card, and its id nam
   cp.consume(ev('tool/call', { callId: 'k2', name: 'write', arguments: '{"file_path":"C:/a.txt","content":"x"}' }));
   const asked = cp.consume(ev('approval/asked', { id: 'a1', callId: 'k2', reason: 'Create or replace the file C:/a.txt' })).frames[0].tool;
   assert.equal(asked.id, 'child-1:k2'); assert.equal(asked.state, 'proposed'); assert.match(asked.effect, /^Writer asks: Create or replace the file/);
+  assert.equal(cp.agent().waiting, 1, 'the row counts the tool waiting for a person');
   assert.equal(cp.consume(ev('approval/decided', { id: 'a1', outcome: 'rejected' })).frames[0].tool.result, 'Denied. Nothing ran.');
+  assert.equal(cp.agent().waiting ?? 0, 0, 'an answered tool no longer waits');
   const done = cp.consume(ev('tool/result', { message: { toolCallId: 'k2', isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "write"' } ] } })).frames[0].tool;
   assert.equal(done.state, 'denied'); assert.equal(done.result, 'Denied. Nothing ran.');
   assert.equal(activityOf('pwsh'), 'Running a command');
@@ -163,12 +165,15 @@ test('a helper conversation is kept for its chat after the run, and cannot be re
   // The person can send this helper another message without starting a new chat turn.
   const sent = await r.bridge.promptChild({ chatId: 'keep-talk', childId: id, text: 'SCRIPT:echo second' });
   assert.ok(sent.messageId, 'the Harness accepted the message');
-  for (let i = 0; i < 100; i += 1) {
-    const now = r.bridge.childView('keep-talk', id);
-    if (now.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text))) break;
+  // Wait for the answer AND the terminal row: the first words arrive while the turn is still finishing,
+  // and a loaded machine made the old loop read "working" here.
+  let after = r.bridge.childView('keep-talk', id);
+  for (let i = 0; i < 200; i += 1) {
+    after = r.bridge.childView('keep-talk', id);
+    const answered = after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text));
+    if (answered && after.agent.status === 'completed') break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  const after = r.bridge.childView('keep-talk', id);
   assert.ok(after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text)), 'the helper answered the new message');
   assert.equal(after.agent.status, 'completed');
   assert.equal(after.transcript.filter(entry => entry.role === 'user' && /SCRIPT:echo second/.test(entry.text)).length, 1, 'the sent message is not duplicated by its Harness echo');

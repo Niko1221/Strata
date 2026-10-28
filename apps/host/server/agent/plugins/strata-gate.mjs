@@ -542,7 +542,18 @@ export function apply(ctx, config = {}) {
       if (wantAsk && override !== 'ask') agent.session.append('approval/policy', { policy: 'ask' });
       else if (!wantAsk && override === 'ask') agent.session.append('approval/policy', { policy: 'never' });
     }
-    if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
+    if (preset === PLAN_PRESET) {
+      const decision = planDecision(exec);
+      if (!decision) return next();
+      // The parent chat's Plan sandbox is read-only, so its built-in file and shell tools are stopped
+      // there and the Harness's "never" policy records a plain Denied (the person sees "Not allowed in
+      // this mode"). A helper's own sandbox starts from the Harness default and can be writable, so for
+      // a child the gate must refuse these itself. Connected tools and run_code are outside the sandbox
+      // either way, and a parent is still refused those here.
+      const sandboxed = exec.name === 'write' || exec.name === 'edit' || SHELL_TOOLS.has(exec.name);
+      if (sandboxed && agent.session.header?.origin !== 'subagent') return next();
+      return decision;
+    }
     if (preset !== MANUAL_PRESET) return next();
     const gate = manualDecision(exec, { provider: web.provider });
     if (!gate) return next();

@@ -129,5 +129,8 @@
   "fx128": "Manual: este subagente pregunta antes de cambiar algo. Permite o deniega sus solicitudes aquí.",
   "fx129": "Plan: solo lectura. Este subagente no puede cambiar archivos ni ejecutar comandos que cambien algo.",
   "fx130": "Bypass: se omiten las comprobaciones de permisos. Este subagente puede cambiar archivos y ejecutar comandos sin preguntar.",
-  "fx131": "Strata se reinició. Envía primero un mensaje en el chat y vuelve a intentarlo aquí."
+  "fx131": "Strata se reinició. Envía primero un mensaje en el chat y vuelve a intentarlo aquí.",
+  "fx132": "{0} ayudantes esperando aprobación · Ver resumen",
+  "fx133": "{0} ayudantes esperando aprobación — mostrar resumen",
+  "fx134": "Un ayudante está esperando tu aprobación"
 }

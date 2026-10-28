@@ -417,6 +417,8 @@ export interface SessionAgent {
   mode?: 'manual' | 'plan' | 'bypass';
   /** What the host wants the person to know about this helper (a stop that did not take, a row repaired at start). */
   warning?: string;
+  /** Helper tools waiting for the person's approval; the toolbar shows one dot for all of them. */
+  waiting?: number;
   durationMs: number;
   tokens: number;
   /** Time the latest duration measurement was received. */

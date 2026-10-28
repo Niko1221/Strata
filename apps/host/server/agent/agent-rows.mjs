@@ -60,12 +60,14 @@ function normalize(raw, previous, now) {
     ? null
     : (typeof raw.warning === 'string' && raw.warning.trim() ? clip(raw.warning, 300) : previous?.warning ?? null);
   const mode = MODES.has(raw.mode) ? raw.mode : previous?.mode ?? null;
+  const waiting = LIVE.has(status) ? count(raw.waiting, previous?.waiting ?? 0) : 0;
   return {
     id,
     name: clip(raw.name, 120) || previous?.name || 'Helper',
     description,
     ...(descriptionKey ? { descriptionKey } : {}),
     ...(mode ? { mode } : {}),
+    ...(waiting ? { waiting } : {}),
     status,
     durationMs,
     tokens: count(raw.tokens, previous?.tokens ?? 0),

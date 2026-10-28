@@ -793,9 +793,13 @@ export class ChildProjector {
     if (this.status === 'completed') description = this.closing ? clip(summaryLine(this.closing), 140) : 'Finished.';
     if (this.status === 'failed') description = this.failure ?? 'Stopped because something went wrong.';
     if (this.status === 'cancelled') description = 'Stopped.';
+    // The 子智能体 button shows one dot for every helper tool waiting on the person, including a helper
+    // prompted directly (that card never reaches the parent chat's own message list).
+    const waiting = [...this.tools.values()].filter(entry => entry.card?.state === 'proposed').length;
     return {
       id: this.id, childSessionId: this.id, name: this.name, description, status: this.status,
       ...(this.mode ? { mode: this.mode } : {}),
+      ...(waiting ? { waiting } : {}),
       durationMs: Math.max(0, (done ? this.endedAt : at) - this.startedAt), tokens: this.tokens, updatedAt: at,
     };
   }
