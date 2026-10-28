@@ -800,6 +800,12 @@ void put_kv_header(Out& o, int format, int64_t cells, int64_t heads, int64_t hea
                    int64_t pooled_rows, int64_t idx_dim) {
     for (int64_t v : {int64_t(format), cells, heads, head_dim, page_size, pooled_rows, idx_dim}) o.i64(v);
 }
+// v3 adds the engine's pooled-row block size (idx_block; 0 when the writer does not know it,
+// which also makes that layer's pooled prefix append-refused later)
+void put_kv_header_v3(Out& o, int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page_size,
+                      int64_t pooled_rows, int64_t idx_dim, int64_t idx_block) {
+    for (int64_t v : {int64_t(format), cells, heads, head_dim, page_size, pooled_rows, idx_dim, idx_block}) o.i64(v);
+}
 
 void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
     o.vec(c.ids);
@@ -860,7 +866,14 @@ void put_live_segments(Out& o, const ConversationCheckpoint& c) {
     o.raw(c.imgs.data(), c.imgs.size() * sizeof(ConversationImageKey));
     for (const auto& p : c.stage_parts) put_live_segments(o, p);
 }
-void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
+// The group's K/V part framing records the append window [from, to) per part: the segment zone
+// then carries exactly the bytes [from, to) of that part, and `to` is the part's total size in
+// this generation.  A full write (generation 1) uses from = 0.  An append starts at the rounded
+// committed boundary, so its fresh copy of the residue region (the final partial page and the
+// pooled spare row) SHADOWS the older group's stale bytes: the reader truncates the accumulated
+// bytes to `from` before appending, never concatenating the residue twice.
+void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr,
+                  const std::vector<std::array<uint64_t, 5>>* froms = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
     o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
     o.u64(s.stage_table.size());
@@ -872,20 +885,32 @@ void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionK
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);  // whole record: counts AND data (identity can switch)
     if (sources) {
-        for (const auto& k : *sources) {
-            put_kv_header(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim);
-            for (size_t part = 0; part < 5; ++part) o.u64(k.sizes[part]);
+        for (size_t j = 0; j < sources->size(); ++j) {
+            const auto& k = (*sources)[j];
+            put_kv_header_v3(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim,
+                             k.idx_block);
+            for (size_t part = 0; part < 5; ++part) {
+                o.u64(froms ? (*froms)[j][part] : 0);
+                o.u64(k.sizes[part]);
+            }
         }
     } else {
         for (const auto& k : s.kv) {
-            put_kv_header(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim);
-            o.u64(k.k.size()); o.u64(k.v.size()); o.u64(k.k_scale.size()); o.u64(k.v_scale.size()); o.u64(k.pooled.size());
+            // a captured image does not carry the engine's idx_block: record 0 (append refuses that layer);
+            // a captured write is always full, so every window starts at 0
+            put_kv_header_v3(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim, 0);
+            const std::array<uint64_t, 5> sz = {(uint64_t) k.k.size(), (uint64_t) k.v.size(), (uint64_t) k.k_scale.size(),
+                                                (uint64_t) k.v_scale.size(), (uint64_t) k.pooled.size()};
+            for (size_t part = 0; part < 5; ++part) { o.u64(0); o.u64(sz[part]); }
         }
     }
     put_live_segments(o, s.live);
     if (sources) {
-        for (const auto& k : *sources)
-            for (size_t part = 0; part < 5; ++part) o.source_range(k, part, 0, k.sizes[part]);
+        for (size_t j = 0; j < sources->size(); ++j) {
+            const auto& k = (*sources)[j];
+            for (size_t part = 0; part < 5; ++part)
+                o.source_range(k, part, froms ? (size_t) (*froms)[j][part] : 0, k.sizes[part]);
+        }
         return;
     }
     for (const auto& k : s.kv) {
@@ -1626,6 +1651,340 @@ bool session_file_write(const std::string& path, const SavedConversation& image,
 }
 
 namespace {
+// ---- format v3 reading: restore is the authoritative verifier ------------------------------
+//
+// The validator (session_file_checkpoints) locates chain-and-structure-valid trailer candidates;
+// the reader then walks the generation chain forward, re-deriving every group's boundary from the
+// group's OWN framing (all region lengths are recorded), re-hashing every generation's zone bytes
+// in physical order, and at the newest candidate compares the digest, the stored resume state, the
+// generation number, the structural offset and saved_tokens against what it actually read. A
+// candidate that fails verification demotes to the next older one and the walk restarts at its
+// limit (the cascade).  Intermediate generations' trailer records are cross-checked but never
+// disqualifying on their own: the candidate's digest covers every zone byte below its own record,
+// so a damaged middle record costs nothing here (the save-side gate is the strict one, where a
+// declined append is just a full rewrite).  The walk is sequential: one pass over the chain, and
+// the FileSource ticker reports as bytes really move.
+struct V3Walk {
+    In& in;
+    SavedConversation& s;
+    uint64_t covered;   // this candidate's file coverage: trailer offset + 128
+    uint64_t genesis;
+
+    // Append-only streams accumulate across generations; every re-emitted (mutable) field takes
+    // the newest group's copy.
+    struct Acc {
+        std::vector<int32_t> ids;
+        std::vector<ConversationImageKey> imgs;
+        uint64_t want_ids = 0, want_imgs = 0;   // record counts declared by the current group
+    };
+    Acc live;
+    std::vector<Acc> parts;   // one per stage-table entry (a part never has parts of its own)
+    std::vector<std::array<ConversationBuffer, 5>> kv;   // per-layer K/V parts, grown by recorded suffixes
+    struct Geom {
+        int64_t format = 0, cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0,
+                idx_block = 0;
+    };
+    std::vector<Geom> geom;
+    std::vector<bool> seen;
+    size_t layers = 0;
+    bool have_prev_saved = false;  // the previous generation's trailer parsed intact (its saved_tokens usable)
+    uint64_t prev_saved = 0;
+
+    // The engine's append rule (spike S1, spec Anchor), recomputed from the previous trailer's
+    // saved_tokens and the previous generation's geometry: the committed byte boundary of one
+    // part - whole_cells with the draft layer's -1, whole pooled rows when idx_block is known.
+    // UINT64_MAX = not recomputable (idx_block unknown, or non-uniform bytes-per-cell): the
+    // recorded window governs and the digest stays the authority.
+    uint64_t committed_boundary(size_t j, size_t p, uint64_t have) const {
+        const Geom& prev = geom[j];
+        const bool draft = j + 1 == layers && prev.pooled_rows == 0 && prev.idx_dim == 0;
+        const uint64_t t = draft && prev_saved > 0 ? prev_saved - 1 : prev_saved;
+        if (p < 4) {
+            if (prev.cells == 0) return 0;
+            if (have % (uint64_t) prev.cells) return UINT64_MAX;  // not cell-proportional: cannot recompute
+            const uint64_t w = prev.page_size > 0 ? (t / (uint64_t) prev.page_size) * (uint64_t) prev.page_size : t;
+            return (have / (uint64_t) prev.cells) * w;
+        }
+        if (prev.pooled_rows > 0 && prev.idx_block > 0) {
+            if (have % (uint64_t) prev.pooled_rows) return UINT64_MAX;
+            const uint64_t rows = t / (uint64_t) prev.idx_block;  // whole completed pooled rows below the boundary
+            return (have / (uint64_t) prev.pooled_rows) * rows;
+        }
+        return UINT64_MAX;  // pooled prefix of a layer without a known idx_block: not append-trusted (Ruling B)
+    }
+
+    bool preamble() {
+        for (auto& g : s.geometry)
+            if (!in.i64(g)) return false;
+        if (in.limits.geometry && *in.limits.geometry != s.geometry)
+            return in.fail("saved with another model geometry than this runtime's");
+        uint64_t cvec = 0;
+        if (!in.i64(s.layer_lo) || !in.i64(s.layer_hi) || !in.u64(cvec)) return false;
+        if (in.limits.layer_range &&
+            (in.limits.layer_range->first != s.layer_lo || in.limits.layer_range->second != s.layer_hi))
+            return in.fail("saved with another layer range than this runtime's");
+        if (cvec > 1) return in.fail("invalid cvec flag");
+        s.cvec = cvec == 1;
+        uint64_t stages = 0;
+        if (!in.count(stages, 40, in.limits.max_stages)) return false;
+        s.stage_table.resize((size_t) stages);
+        for (auto& g : s.stage_table) {
+            uint64_t draft = 0;
+            if (!in.i64(g.layer_lo) || !in.i64(g.layer_hi) || !in.i64(g.qsa_alloc) || !in.i64(g.gdn_alloc) ||
+                !in.u64(draft))
+                return false;
+            if (draft > 1) return in.fail("invalid stage draft flag");
+            g.draft = draft == 1;
+        }
+        if (in.limits.stages && *in.limits.stages != s.stage_table)
+            return in.fail("saved with a different layer split than this runtime's");
+        if (!in.count(layers, 104, in.limits.max_kv_layers)) return false;  // one generation-layer is >= 8 + 5 u64
+        kv.assign(layers, {});
+        geom.assign(layers, {});
+        seen.assign(layers, false);
+        parts.resize(s.stage_table.size());
+        return true;
+    }
+
+    // The live record's mutable half (mirrors put_live_v3): declared counts - the append-only
+    // streams may only grow - and the freshly re-emitted running-state arrays; the ids/imgs DATA
+    // is read in the segment phase.
+    bool live_mutable(ConversationCheckpoint& c, Acc& a, uint64_t expected_parts,
+                      const std::array<uint64_t, 5>& state_max, bool is_part) {
+        if (!in.count(a.want_ids, 4, in.limits.max_tokens)) return false;
+        if (!in.count(a.want_imgs, 16, in.limits.max_tokens)) return false;
+        if (a.want_ids < a.ids.size() || a.want_imgs < a.imgs.size())
+            return in.fail("a generation that shrank the live token list (an append chain only grows it)");
+        if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
+            !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
+            return false;
+        uint64_t nparts = 0;
+        if (!in.u64(nparts) || nparts != expected_parts)
+            return in.fail("a live checkpoint whose stage parts count does not match the stage table");
+        for (uint64_t k = 0; k < nparts; ++k) {
+            static constexpr std::array<uint64_t, 5> kOpen{UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
+                                                           UINT64_MAX};
+            const auto& kmax = k < in.limits.max_stage_state_bytes.size()
+                                   ? in.limits.max_stage_state_bytes[(size_t) k]
+                                   : kOpen;
+            ConversationCheckpoint part;
+            if (!live_mutable(part, parts[(size_t) k], 0, kmax, true)) return false;  // parts hold no parts
+            c.stage_parts.push_back(std::move(part));
+        }
+        return true;
+    }
+
+    bool live_segments(Acc& a) {  // the records appended since the previous generation
+        const size_t have = a.ids.size();
+        a.ids.resize((size_t) a.want_ids);
+        if (!in.raw(a.ids.data() + have, (size_t)(a.want_ids - have) * sizeof(int32_t))) return false;
+        const size_t have_i = a.imgs.size();
+        a.imgs.resize((size_t) a.want_imgs);
+        if (!in.raw(a.imgs.data() + have_i, (size_t)(a.want_imgs - have_i) * sizeof(ConversationImageKey)))
+            return false;
+        return true;
+    }
+
+    bool group_body() {  // mutable block then segment block, in the canonical group order
+        if (!live_mutable(s.live, live, (uint64_t) s.stage_table.size(), in.limits.max_state_bytes, false))
+            return false;
+        uint64_t n = 0;
+        if (!in.count(n, 72, in.limits.max_checkpoints)) return false;  // a checkpoint is >= 72 bytes
+        s.checkpoints.clear();
+        s.checkpoints.resize((size_t) n);
+        for (auto& c : s.checkpoints)
+            if (!get_checkpoint(in, c, s.stage_table.size(), in.limits.max_state_bytes)) return false;
+        std::vector<std::array<uint64_t, 5>> wfrom(layers), wto(layers);
+        for (size_t j = 0; j < layers; ++j) {
+            Geom g;
+            int64_t format = 0;
+            if (!in.i64(format) || !in.i64(g.cells) || !in.i64(g.heads) || !in.i64(g.head_dim) ||
+                !in.i64(g.page_size) || !in.i64(g.pooled_rows) || !in.i64(g.idx_dim) || !in.i64(g.idx_block))
+                return false;
+            if (format < INT32_MIN || format > INT32_MAX) return in.fail("invalid K/V format");
+            if (g.cells < 0 || g.heads < 0 || g.head_dim < 0 || g.page_size < 0 || g.pooled_rows < 0 ||
+                g.idx_dim < 0 || g.idx_block < 0)
+                return in.fail("negative K/V geometry");
+            g.format = format;
+            if (seen[j]) {  // a chain append may only grow the carve; anything else needs a full rewrite
+                if (g.format != geom[j].format || g.heads != geom[j].heads || g.head_dim != geom[j].head_dim ||
+                    g.page_size != geom[j].page_size || g.idx_dim != geom[j].idx_dim ||
+                    g.idx_block != geom[j].idx_block)
+                    return in.fail("a generation whose K/V geometry differs from the chain's");
+                if (g.cells < geom[j].cells || g.pooled_rows < geom[j].pooled_rows)
+                    return in.fail("a generation that shrank the K/V carve (an append chain only grows it)");
+            }
+            for (size_t p = 0; p < 5; ++p) {
+                const uint64_t have = (uint64_t) kv[j][p].size();
+                if (!in.u64(wfrom[j][p]) || !in.u64(wto[j][p])) return false;
+                if (wto[j][p] < wfrom[j][p]) return in.fail("an invalid K/V append window (to < from)");
+                if (wto[j][p] < have) return in.fail("a generation that shrank a K/V part (an append chain only grows it)");
+                if (wfrom[j][p] > have)
+                    return in.fail("a generation appends past the bytes its predecessor committed");
+                if (!seen[j]) {  // generation 1 is a full write
+                    if (wfrom[j][p] != 0) return in.fail("the first generation does not append from 0");
+                } else if (have_prev_saved) {  // Ruling C: the recorded window must start exactly at the committed boundary
+                    const uint64_t b = committed_boundary(j, p, have);
+                    if (b != UINT64_MAX && b != wfrom[j][p])
+                        return in.fail("a generation does not append at its committed boundary");
+                }
+                if (j < in.limits.max_kv_bytes.size() && wto[j][p] > in.limits.max_kv_bytes[j][p])
+                    return in.fail("a K/V part exceeds this engine's limit");
+            }
+            geom[j] = g;
+            seen[j] = true;
+        }
+        if (!live_segments(live)) return false;
+        for (auto& pa : parts)
+            if (!live_segments(pa)) return false;
+        for (size_t j = 0; j < layers; ++j)
+            for (size_t p = 0; p < 5; ++p) {
+                const uint64_t from = wfrom[j][p], to = wto[j][p];
+                if (from < kv[j][p].size()) kv[j][p].resize_for_overwrite((size_t) from);  // shadow the stale copy
+                const size_t cur = kv[j][p].size();  // == from now
+                if (to == from) continue;
+                kv[j][p].resize_for_overwrite(cur + (size_t) (to - from));  // grows without touching the old bytes
+                if (!kv[j][p].visit(cur, (size_t) (to - from),
+                                    [&](uint8_t* ptr, size_t c, size_t) { return in.raw(ptr, c); }))
+                    return false;  // in.raw recorded the reason
+            }
+        return true;
+    }
+
+    // The group's zero pad (part of the hashed zone, pinned to zero) and its trailer record
+    // (read but never hashed).  For the candidate: full verification - the reader's own digest,
+    // resume state, generation, structural offset and saved_tokens must all agree.  For an
+    // intermediate generation: cross-check when the record is intact, tolerate it when damaged.
+    bool close_group(uint64_t gen, uint64_t frame, bool is_candidate, SessionTrailer& out, uint64_t& prev_self,
+                     bool& prev_ok) {
+        const uint64_t pad = (512 - (frame + 128) % 512) % 512;
+        if (pad) {
+            static const uint8_t kZero[512] = {};
+            uint8_t pb[512];
+            if (pad > in.left || !in.raw(pb, pad)) return in.left < pad ? in.fail("the group pad is truncated") : false;
+            if (std::memcmp(pb, kZero, pad) != 0) return in.fail("the group pad is not zero");
+        }
+        if (in.left < 128) return in.fail("the chain ends before a complete checkpoint record");
+        const uint64_t trailer_pos = covered - in.left;  // the framing walk put the record exactly here
+        uint8_t tb[128];
+        if (!in.f->read(tb, 128)) {
+            in.kind = in.f->kind();
+            return in.fail("read error: " + in.f->error());
+        }
+        in.left -= 128;  // trailer records are not part of the hashed zones
+        SessionTrailer t;
+        const bool parsed = trailer_parse(tb, t);
+        if (!is_candidate) {
+            if (parsed && t.committed_bytes == trailer_pos && t.gen == gen) {
+                prev_self = t.self_hash;
+                prev_ok = true;
+                out = t;  // its saved_tokens bound the next group's append boundaries
+            } else {
+                prev_ok = false;  // damaged or misplaced: the candidate's digest is the authority below
+            }
+            return true;
+        }
+        if (!parsed) return in.fail("the checkpoint record is corrupt");
+        if (in.left != 0 || t.committed_bytes != trailer_pos)
+            return in.fail("the checkpoint record does not sit at the end of the generation chain");
+        if (t.gen != gen) return in.fail("generation numbering does not match the chain");
+        if (t.saved_tokens != (uint64_t) live.ids.size())
+            return in.fail("saved_tokens does not match the live token list");
+        if (in.hash.digest() != t.digest) return in.fail("payload checksum mismatch");
+        const SessionHasherState hs = in.hash.state();  // byte-exact resume-state honesty (drill weakness 6)
+        if (hs.npending != t.npending || hs.total != t.hashed_bytes || std::memcmp(hs.lanes, t.lanes, 32) != 0 ||
+            std::memcmp(hs.pending, t.pending, 32) != 0)
+            return in.fail("the stored resume state does not match this file");
+        if (prev_ok) {
+            if (t.chain != prev_self) return in.fail("the checkpoint chain is broken");
+        } else if (gen == 1 && t.chain != genesis) {
+            return in.fail("the first generation does not chain to the identity");
+        }
+        out = t;
+        return true;
+    }
+};
+
+bool read_v3(const std::string& path, const SessionFileIdentity& id, SavedConversation& image, size_t& bytes,
+             std::string& error, const SessionReadLimits& limits, SessionStatus& st) {
+    std::vector<SessionCheckpoint> cands;
+    if (!session_file_checkpoints(path, id, cands, error)) {
+        st.error = SessionError::invalid;
+        return false;
+    }
+    std::string last;
+    for (const auto& cand : cands) {  // newest first; a failing candidate demotes to the next older one
+        const uint64_t covered = cand.trailer_offset + 128;
+        error.clear();
+        RawFile rf;  // fresh sequential descriptor per attempt (the validator and prior attempts used their own)
+        uint64_t sz = 0;
+        if (!rf.open_session(path, sz)) {
+            st.error = rf.refused() ? SessionError::invalid : rf.kind();
+            error = "session file: " + path + ": " + rf.error();
+            return false;
+        }
+        FileSource f(rf);
+        if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
+        if (limits.progress) f.progress.emplace(limits.progress);
+        f.expected = covered;
+        uint8_t h[kHeader];
+        if (!f.read(h, kHeader)) { st.error = f.kind(); error = "session file: header read error: " + f.error(); return false; }
+        SessionHeaderV3 hv;
+        if (!header_parse_v3(h, id, hv, error)) { st.error = SessionError::invalid; return false; }
+        if (limits.admit) {
+            std::string why;
+            if (!limits.admit(session_read_peak_bytes(covered), why)) {
+                st.error = SessionError::memory;
+                error = "session file: " + why;
+                return false;
+            }
+        }
+        SavedConversation parsed;
+        In in{&f, SessionHasher(0), covered - kHeader, error, limits};
+        V3Walk w{in, parsed, covered, trailer_genesis_chain(id)};
+        SessionTrailer tr;
+        uint64_t prev_self = 0;
+        bool prev_ok = false, ok = false;
+        for (uint64_t g = 1; g <= cand.trailer.gen; ++g) {
+            const uint64_t left0 = in.left;  // the whole group: preamble (gen 1 only), mutable block, segments
+            if (g == 1 && !w.preamble()) break;
+            if (!w.group_body()) break;
+            if (!w.close_group(g, left0 - in.left, g == cand.trailer.gen, tr, prev_self, prev_ok)) break;
+            w.have_prev_saved = prev_ok;
+            w.prev_saved = tr.saved_tokens;
+            if (g == cand.trailer.gen) ok = true;
+        }
+        if (!ok) {
+            last = error.empty() ? "the checkpoint chain is unreadable" : error;
+            if (in.kind != SessionError::invalid) st.error = in.kind;
+            continue;
+        }
+        parsed.live.ids = std::move(w.live.ids);
+        parsed.live.imgs = std::move(w.live.imgs);
+        for (size_t k = 0; k < parsed.live.stage_parts.size() && k < w.parts.size(); ++k) {
+            parsed.live.stage_parts[k].ids = std::move(w.parts[k].ids);
+            parsed.live.stage_parts[k].imgs = std::move(w.parts[k].imgs);
+        }
+        parsed.kv.resize(w.layers);
+        for (size_t j = 0; j < w.layers; ++j) {
+            ConversationKv& k = parsed.kv[j];
+            k.format = (int) w.geom[j].format;
+            k.cells = w.geom[j].cells; k.heads = w.geom[j].heads; k.head_dim = w.geom[j].head_dim;
+            k.page_size = w.geom[j].page_size; k.pooled_rows = w.geom[j].pooled_rows; k.idx_dim = w.geom[j].idx_dim;
+            k.k = std::move(w.kv[j][0]); k.v = std::move(w.kv[j][1]); k.k_scale = std::move(w.kv[j][2]);
+            k.v_scale = std::move(w.kv[j][3]); k.pooled = std::move(w.kv[j][4]);
+        }
+        image = std::move(parsed);
+        bytes = (size_t) covered;  // the trusted chain's coverage (garbage past it is never read)
+        st.error = SessionError::none;
+        return true;
+    }
+    error = "session file: " + path + ": no generation verified against its checkpoint digest" +
+            (last.empty() ? std::string() : " (" + last + ")");
+    if (st.error == SessionError::none) st.error = SessionError::invalid;
+    return false;
+}
+
 bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus& st) {
     error.clear();
@@ -1658,6 +2017,13 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
+    if (version == kVersion3) {
+        uint64_t root32 = 0;
+        std::memcpy(&root32, h + 32, 8);
+        if (root32 == session_hash64(h, 32, 0))  // a genuine v3 header never reaches the v2 parse
+            return read_v3(path, id, image, bytes, error, limits, st);
+        // version 3 in a v2-shaped header: falls through to the "unsupported version" refusal below
+    }
     if (hh != session_hash64(h, 56, 0)) { error = "session file: header checksum mismatch"; return false; }
     if (version != kVersion) { error = "session file: unsupported version " + std::to_string(version); return false; }
     if (hsize != kHeader || r0 || r1) { error = "session file: invalid header fields"; return false; }
