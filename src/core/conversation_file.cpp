@@ -2555,6 +2555,32 @@ bool session_file_append(const std::string& path, const SavedConversation& meta,
     return ok;
 }
 
+SessionSaveChoice session_save_gate(const SessionAppendPlan* plan, const std::vector<SessionKvSource>& live,
+                                    int64_t kv_first_dirty, int64_t page, std::string& why) {
+    why.clear();
+    const auto full = [&](std::string r) { why = std::move(r); return SessionSaveChoice::full_rewrite; };
+    if (!plan) return full("no verified checkpoint chain for this file (v2 file, torn tail, or foreign identity)");
+    if (live.size() != plan->prev_geom.size())
+        return full("the K/V layer count differs from the file's");
+    for (size_t j = 0; j < live.size(); ++j) {
+        const auto& s = live[j];
+        const auto& g = plan->prev_geom[j];
+        if (s.format != g.format || s.heads != g.heads || s.head_dim != g.head_dim || s.page_size != g.page_size ||
+            s.idx_dim != g.idx_dim || s.idx_block != g.idx_block)
+            return full("layer " + std::to_string(j + 1) + " K/V geometry differs from the file's (only a full "
+                        "write records that)");
+        if (s.cells < g.cells || s.pooled_rows < g.pooled_rows)
+            return full("layer " + std::to_string(j + 1) + " carve shrank below the file's (an append only grows it)");
+    }
+    // the immutability watermark (SessionState::kv_append_ok's comparison, kept header-free here): the
+    // whole-page prefix of the lowest rewritten position must reach the boundary the file committed.
+    const int64_t saved = (int64_t) plan->checkpoint.trailer.saved_tokens;
+    const int64_t whole = page > 0 ? (kv_first_dirty / page) * page : kv_first_dirty;
+    if (kv_first_dirty != std::numeric_limits<int64_t>::max() && whole < saved)
+        return full("pool rows at or below the file's saved boundary may differ from what it committed");
+    return SessionSaveChoice::append;
+}
+
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus* status) {
     SessionStatus st;
