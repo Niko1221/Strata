@@ -361,6 +361,15 @@ class SetupArgs(unittest.TestCase):
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
 
+    def test_setup_args_canonicalize_known_model_but_preserve_unknown_and_legacy_names(self):
+        with Home():
+            cat = catalog(HW_12)
+            for family, name, expected in (("qwen", "iq3_xxs", "IQ3_XXS"), ("gyro", "gyro-s", "Gyro-S"),
+                                           ("qwen", "legacy-custom-pack", "legacy-custom-pack")):
+                runner = Runner(S.LaunchSettings(family=family, model=name, context=32768, vision="off"), catalog=cat)
+                args = runner.setup_args()
+                self.assertEqual(args[args.index("--model") + 1], expected)
+
     def test_an_arc_b_series_card_is_allowed_with_pictures_on_the_cpu_reader_and_one_plain_line(self):
         """Owner decision 2026-10-22: Arc B-series (Battlemage) runs like any Arc. An Arc Pro B70 (32 GB) gets pictures on, with the CPU reader (the GPU
         reader has not run on a 24 GB+ Arc), and a warn-level note that it is new and how to report a problem. An A-series card gets no such note."""

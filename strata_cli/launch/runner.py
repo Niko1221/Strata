@@ -880,6 +880,10 @@ class Runner:
     def setup_args(self) -> list[str]:
         cat, s = self.catalog, self.s
         fam, model = s.family, s.model
+        try:
+            fam, model = cat.resolve(str(model), str(fam))
+        except ValueError:                                  # setup.py reports unknown or legacy model names
+            pass
         args = ["--yes", "--no-start", "--family", str(fam), "--model", str(model)]
         ctx = s.context
         if ctx:
