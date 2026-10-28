@@ -863,7 +863,8 @@ bool gdn_keyhead_ok() {
     }
     return known[dev] == 1;
 }
-// STRATA_GDN_CHUNKED=1 (opt-in): the recurrence in chunks of GCH tokens (the WY form of the gated delta rule, as
+// STRATA_GDN_CHUNKED (on by default on CUDA; =0 keeps the token-by-token kernels below): the recurrence in chunks of
+// GCH tokens (the WY form of the gated delta rule, as
 // flash-linear-attention computes it), all in FP32.  Per value head, with g_t = exp(gate_t), gamma_t the gate's sum
 // from the chunk's start to t (inclusive) and S0 the state before the chunk:
 //   A[t][i] = beta_t exp(gamma_t - gamma_i) k_t.k_i (i < t),   T = (I + A)^-1 (unit lower triangular),
@@ -875,7 +876,7 @@ bool gdn_keyhead_ok() {
 // super-block at once (a block per chunk and key head: its three value heads share k and q); gdn_chunk_scan_kernel then
 // walks the super-block's chunks per (value head, 16 columns): the state slice in registers, the products as small
 // register-tiled matmuls from shared memory.  Every exponent is <= 0 (gates are negative), so nothing overflows.
-// STRATA_GDN_CHUNKED=1 takes prompt chunks of this many tokens and more: on an RTX 5090 the two launches cost more
+// The chunked recurrence takes prompt chunks of this many tokens and more: on an RTX 5090 the two launches cost more
 // than they save below ~100 tokens (gdn_rec_parity --bench: 32 tokens 0.58x gdn_rec_kh_kernel, 96 1.03x, 128 1.20x,
 // 512 1.67x, 2048+ 1.81x)
 constexpr int64_t kGdnChunkedMin = 128;
@@ -1174,7 +1175,9 @@ float* gdn_chunk_scratch() {
 // of a super-block's chunks: up to GSB / GCH x 48 heads x (2 x 32 x 32 + 32) floats, 25.6 MB) from gdn_chunk_scratch.
 // y: the [T][HV][S] output.  An error return means nothing was launched (the caller takes another kernel): the scratch
 // could not be had, or the card has fewer than 128 SMs (a second wave of the scan would double it) or too little
-// shared memory for it (Turing).
+// shared memory for it (Turing).  Those two tests are what keeps the cards the measured slower ones - an RTX 3060 with
+// 28 SMs, an RTX 5070 with 48 (0.73x and 0.87x of gdn_rec_kh_kernel at 2K-32K tokens, gdn_rec_parity --bench) - on the
+// kernels below now that this one is the default.
 cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
                             cudaStream_t s) {
     if (T <= 0) return cudaSuccess;
@@ -2673,8 +2676,9 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
 #if defined(__HIPCC__)
     if (variant == 0 || variant == 1) {
-        // STRATA_GDN_CHUNKED=1 (opt-in): the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits;
-        // a shorter chunk or another part takes the kernels below)
+        // STRATA_GDN_CHUNKED=1: the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits; a shorter
+        // chunk or another part takes the kernels below).  This part stays opt-in: it is a different kernel from the
+        // CUDA one above with its own measurements (docs/AMD_HIP.md), and only CUDA's default changed
         static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
         if (chunked && !serial && gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
             check("gdn_recurrence (chunked, WMMA)");

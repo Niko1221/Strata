@@ -1124,6 +1124,209 @@ on, at most 32). An explicit `--pool-workers N` is spread alternately across the
 
 The engine starts one worker per physical core and keeps the first core for the main thread (the one that waits for the GPU).
 The start-up log says where everything sits:
+Measured (interleaved pairs of whole engine runs, new default against `STRATA_PCIE_FRAC_DEFAULT=old`, medians, route tail skip on):
+
+| card | the pool takes | share (old -> new) | decode, new / old | pairs faster |
+|---|---|---|---|---|
+| RTX 3060 12 GB, IQ3_XXS | 32-37 us per expert | 0.55 -> 0.20 | **1.300** | 5/5 |
+| Tesla P100 16 GB, IQ3_XXS | 84-97 us | 0.29 -> 0.20-0.25 | 1.011 | 4/5 |
+| RTX A4000 16 GB, Q2_0 | 97-115 us | 0.30 -> 0.30 (unchanged) | 0.999 (same setting) | - |
+
+Explicit-share runs are byte-identical to 0.1.41 (`mg_norepeat` 10 of 10, `exact_pp` 4096 and 20000). With the new default the answers differ a little
+from the old default, as any change of the share does (CPU and GPU round differently): teacher-forced KL against the old default 0.0015 on the 3060
+(run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
+
+`STRATA_PCIE_BALANCE=1` (opt-in, CUDA, one GPU, no `--batch`, no `--pcie-frac`; #1548 by sergiywith / stuchapin909): instead of one share for every layer, each verify layer
+reads over PCIe the number of its missed experts that balances the two sides. The spin kernels stamp the GPU's clock (the plan's arrival, the PCIe part's start, the wait for the CPU rows),
+the host times its pool, and least squares with forgetting fit the pool's `a + c*n_cpu + d*n_pcie` and the GPU's `g0 + g*n_pcie`; the engine prints the fit (`pcie model`) at the end of `generate`.
+Every 64th layer with a miss moves one expert to the other side so both fits stay measured. Unset, nothing changes (the logits equal the build before). Measured by us (5 interleaved pairs, box default flags, IQ3_XXS): RTX A4000 arena decode 48.45 -> 51.15 tok/s (+5.6%, 5/5 pairs), RTX 3060 resident 59.12 -> 58.15 (-1.6%), Tesla P100 37.95 -> 37.48 (-1.3%): opt-in, worth trying on A4000-class cards.
+
+## The prompt chunk follows the host's memory (Linux, file tier; on by default, `STRATA_PREFILL_HOST_PLAN=0` turns it off)
+
+When the experts that do not fit in VRAM are read from the model files through the page cache, the size of the prompt chunk decides how many times a long
+prompt walks over those files, and how big the working set is each time (the chunk's activation buffers and the lent slots take RAM and VRAM from the
+cache). Before engine 0.1.45.3 the chunk was always today's pick (8192 on most cards). The planner prices the host from what it can measure at start: the RAM copy and its
+lent slots, the page cache that is left, the drive class (read from the GGUF path) and the PCIe link, and picks the chunk (and the ring) with the fewest
+predicted bytes read per prompt. It prints one `chunk 8192 -> 3840, ring 96 -> 96: ...` line when it changes the pick, and `chunk 8192 kept: ...` when it does not.
+A prompt that fits today's chunk keeps one chunk; a longer one is read in equal chunks of at most the plan's size (no stub at the end). No weight or expert
+changes; only the rounding of the batched prompt path moves (first-window logits KL 0.002-0.012 against the fixed chunk, same top-1; the text matched in 30 of 30
+requests; a run at a fixed chunk is bit-identical to itself).
+
+Where it applies: a Linux file tier whose page cache is smaller than the file set at today's chunk. It does nothing, and says `kept`, when the GPU holds every
+expert, when the file set fits the cache (the owner-class RTX 5070 box: 14.8 GiB set against 41.2 GiB of cache, 2024 vs 2035 tok/s at 20K), when the set can
+never fit (a 16 GiB cgroup, 23.1 GiB set: 99.9 vs 98.9 tok/s at 20K, the fewest passes win), and on a fast NVMe where the bigger chunk wins even though it thrashes (P2003, 8192 kept).
+Windows reads the file tier unbuffered (no page cache), so it keeps today's pick. The plan is made for a prompt of `--max-context` tokens (at most 32768, at least 4096). `STRATA_SSD_GBPS` overrides the drive speed, `STRATA_PREFILL_PLAN_TOKS`
+the prompt speed (tokens/s) it assumes; `--prefill N` and `STRATA_PREFILL_RING` always win.
+
+Measured (RTX 3060 12 GB, IQ2_XS, 20 GiB of experts in RAM, cgroup 34 GB, SATA speed emulated at 450 MB/s, page cache dropped and a fresh engine per run, 5 interleaved
+pairs, plan off against the planner's `8192 -> 3840`, medians):
+
+| prompt (tokens) | plan off, tok/s | planner, tok/s | ratio | pairs faster | drive read, GB (off -> planner) | decode after, tok/s |
+|---|---|---|---|---|---|---|
+| 4,101 | 138.1 | 138.2 | 1.001 (one chunk either way) | 3/5 (tie) | 12.8 -> 12.7 | 27.0 -> 28.2 |
+| 20,400 | 334.0 | 822.3 | **2.46x** | 5/5 | 26.1 -> 2.7 | 25.4 -> 42.6 |
+| 28,887 | 418.8 | 910.4 | **2.17x** | 5/5 | 29.5 -> 0.6 | 28.6 -> 45.7 |
+
+The same box with its real NVMe and a 32 GB cap picks 8192 again (bigger chunk 480 vs 327 tok/s at 3328, even though it thrashes), and the 16 GiB cap is unchanged. Identity gate (fixed flags,
+`--expert-cache 1500`): the plan line says `kept`. The host model is `include/strata/program/prefill_plan.hpp` with `tests/program/prefill_plan_test.cpp`.
+
+## The prompt's DeltaNet recurrence runs in chunks on NVIDIA cards with 128 SMs or more
+
+The model reads a prompt through its 36 DeltaNet (GDN) layers, each carrying a state from the chunk's first token to its
+last. That walk used to go token by token (`gdn_rec_kh_kernel` on sm_80 and newer, `gdn_rec_cols_pipe_kernel`
+elsewhere). It now takes the same delta rule in chunks of 32 tokens: the WY form flash-linear-attention uses, in FP32,
+one launch to build each chunk's `T` and `P` and one to walk the chunks (`gdn_chunk_prep_kernel` and
+`gdn_chunk_scan_kernel`; sergiywith's #1372, in the engine since 0.1.41 as the opt-in `STRATA_GDN_CHUNKED=1`).
+
+Only a card where the scan's 128 blocks sit on the GPU at once takes it. The scan runs one block per key head and per 16
+value columns and wants 93.7 KB of shared memory a block, so the path asks for compute capability 8.0 or newer, for 128
+SMs or more, and for a prompt chunk of 128 tokens or more. Every decode step, every shorter chunk, every smaller or
+older card, and a card that cannot spare the scratch (25.6 MB, taken once per device on first use) keeps the kernels
+above, byte for byte as before. **`STRATA_GDN_CHUNKED=0` turns the chunked path off wherever it would run**, and `=2`
+still forces it below 128 SMs so you can measure it on your own card.
+
+The two ways do the same sums in another order, so what they write is not the same bits. `gdn_rec_parity` keeps the
+output and the carried state within 1e-4 of `gdn_rec_kh_kernel`, and keeps both near a double-precision calculation up
+to 8192 tokens; the check now runs on every sm_80 or newer card, with the SM-count test skipped on a smaller one. On a
+DGX Spark (GB10, sm_121, 48 SMs, CUDA 13.0) on 2026-10-28 the largest difference over the whole run was 1.1e-6 of the
+largest value, at T from 1 to 32768, and the token-by-token kernels were still bit-identical to each other. For 0.1.41's
+opt-in runs the first token after a prompt measured 0.002-0.009 nats of KL against the token-by-token recurrence on
+average, with the same top token out of every prompt tried.
+
+Why the 128-SM test stays: forced onto a smaller card, this recurrence is slower than what that card does now - 0.73x of
+`gdn_rec_kh_kernel` on an RTX 3060 (28 SMs) and 0.87x on an RTX 5070 (48 SMs) at 2K-32K tokens (measured for 0.1.41),
+and 0.81x to 0.82x at 2048, 8192 and 32768 tokens on a DGX Spark's GB10 (48 SMs, sm_121, CUDA 13.0, medians of 20
+alternating runs of `gdn_rec_parity --bench` with `STRATA_GDN_CHUNKED=2`, 2026-10-28). Where the scan does fit in one
+wave it is the faster way: one layer's recurrence took 1.67x less time at 512 tokens and 1.81x at 2048 and more on an
+RTX 5090 (170 SMs), which is the 0.1.41 measurement the default now rests on.
+
+A whole prompt gains less than one layer's recurrence does, because the recurrence is one part of a prompt. The prompt
+path's own phase timer says how small that part is: on a DGX Spark (GB10, sm_121, 48 SMs, CUDA 13.0, engine 0.1.48.1,
+the NVFP4 pack, `STRATA_PREFILL_TIMING=1`, one chunk of 6154 tokens, 2026-10-28) the recurrence took 221 ms of the
+chunk's 4623 ms GPU timeline - 4.8%. A recurrence 1.81x faster moves such a prompt by about 2%. One chunk of one prompt
+on one box, and that timer charges the GPU's waiting to the phase that was waiting, so read it as the size of the part,
+not as its confirmation.
+
+On the RTX 5090 (Swift 1.5 IQ4_XS, 0.1.41) the switch alone - one change against the run beside it - took a 32K-token
+prompt from 4818.3 ms to 4711.7 ms (6801 to 6955 tok/s, 1.023x) and a 128K-token prompt from 19947.0 ms to 19578.5 ms
+(6571 to 6695 tok/s, 1.019x). That screen has one request in each cell, so it shows the size of the effect, not its
+confirmation; the two agree on its size, which is the reason the change is worth having and not a reason to expect more
+than a few percent. A confirmation on a card with 128 SMs or more is asked for in
+[TEST_REQUESTS.md](TEST_REQUESTS.md).
+
+## More opt-in switches measured for 0.1.41 (all off unless you set them)
+
+None of these changes the default answers; each was measured against the default with interleaved off/on pairs of whole
+engine runs (a fresh engine per side, warmed, 200-token greedy answers on three fixed prompts, medians; "pairs faster" counts
+the pairs in which the switched arm won). They are here so you can try them on your own card.
+
+- **`STRATA_GDN_CHUNKED=1` on HIP: the DeltaNet recurrence of the prompt, opt-in on AMD**. On CUDA this switch is the
+  default on a card with 128 SMs or more and has its own section above
+  ([The prompt's DeltaNet recurrence runs in chunks](#the-prompts-deltanet-recurrence-runs-in-chunks-on-nvidia-cards-with-128-sms-or-more));
+  the HIP path below is separate and stays opt-in.
+  On HIP, gfx1100-gfx1102, gfx1150 and gfx1151 use 16-token WMMA chunks with FP16 operands and a fused output norm; other cards and short
+  chunks keep the existing path. It changes rounding too (first-token KL against the default 0.006-0.007 on average, the same top
+  token in 12 of 12 prompts); on a Radeon 8060S (gfx1151) the layer's recurrence is 1.6x faster and a 4K-128K prompt after a warm-up prompt 1.4-2.1%; see
+  [the HIP conditions and numerical checks](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11).
+- **`STRATA_FS_SLOTS=N`: the Foresight swap space** (q8atnight, #1348): N VRAM slots per layer, refilled on a copy stream
+  with the experts that just missed and with the ones the next layer's router predicts (`STRATA_FS_AHEAD=0` for the
+  misses only), so that an expert the cache lacks can be computed on the GPU instead of by the CPU. The model's own router
+  decides everything; the slots only hold copies of the same bytes (`STRATA_FS_VERIFY=1` reads every landed slot back and
+  compares it: 0 bad in 2,300+ reads on an RTX 5070). The slots are taken from the VRAM the expert cache would have
+  (raise `--vram-reserve-mib` by about N x 80 MiB), and in every box measured the smaller cache cost more than the slots
+  returned: decode 4 slots, median tok/s B/A (pairs faster): RTX 3060 0.95 (0/6) with misses only, 0.91 (0/6) with the
+  look-ahead; Tesla P100 0.97 (2/6) and 1.00 (4/6); 16 slots on the P100 0.96 (0/6); RTX 5070 0.98 (1/6). The reporter
+  measured the same on 2x RTX 3090 (the misses per layer are below one there, so the CPU round trip stays). Left off.
+- **`STRATA_STAGE_PIN`: pinned stage buffers** (Zhong Uncle, #1237; **opt-in, `STRATA_STAGE_PIN=1`**. It was on by default in
+  development, but the 0.1.41 release gate found IQ3_S decode corrupted after a 4096-token prompt with it on, likely a stage
+  buffer recycled before its asynchronous copy finished; it stays off until that is fixed). Where the experts are served from the GGUF in
+  place (`--mmap-experts`, or too little RAM for the arena) the buffers the cache fill copies from are page-locked, so the
+  copy no longer goes through the driver's bounce buffer (about 0.4-0.6 GiB of pinned RAM, one buffer falls back to
+  pageable when the driver refuses). Decode, median tok/s on, off, 6 pairs of whole runs: Tesla P100 with the RAM capped at
+  24 GB (cgroup) 13.9 -> 15.0 (+8%, 6/6 pairs faster); RTX 5070 `--mmap-experts` +1.2% (5/6); RTX 3060 `--mmap-experts`
+  -0.1% (5/6). Boxes that hold all experts in RAM never use the stage buffers.
+- **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
+  (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
+  Where the tier does not wait for its copies (`STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG` above 1) the device's residency table now follows each eviction before the next window (a small patch kernel before every verifier launch; #1517 by sergiywith): before, the pool could compute an evicted expert on the CPU from a stale activation (`STRATA_ADAPT_CHECKRES=1` counts such layers; `STRATA_ADAPT_EVICT_SYNC=0` turns the fix off). The default (the tier waits) is untouched.
+- **`STRATA_ADAPT_OVERLAP` (`=1` turns it on, on every backend; the startup log names the state and, when it cannot run, why): the adaptive tier's copies land while the next
+  window runs, with the same tokens.** The window takes the swaps at the same moment as with #463's wait (so the same experts run
+  on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
+  until that layer's copies have landed, instead of the whole window waiting for the round (about 10 ms every fourth window on
+  an A4000, PCIe 3.0 x16). One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`,
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`. A layer split (two or more GPUs) never runs it, in any version: the startup log says
+  `off: not on a layer split` (0.1.43 printed that line only when the variable was set, and ran without the overlap on a split just the
+  same, so 0.1.43.1's opt-in default changes nothing there; measured on 2x A4000, #2281). On by default on CUDA on Linux since 0.1.43, opt-in on Windows and HIP;
+  opt-in on every backend since #2010, after an RTX 5090 Laptop lost 21% decode with it. What it is worth per box: an RTX A4000 (6
+  interleaved pairs each, decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%),
+  IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%), IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time) and a Tesla P100
+  (+4.4%) gain, but an RTX 5070 on Windows loses 2.6% on Q2_0 (IQ3_XXS no faster) and an RTX 5090 Laptop (WSL2, Core Ultra 9
+  275HX, native IQ3_XXS pack, `--expert-cache-per-layer`) loses 21%: 84.6 vs 106.6 tok/s medians of 5 generations of 256
+  tokens from one build, the slowest of the fast run above the fastest of the slow one (#2010).
+- **`STRATA_ADAPT_CALLBACK_WARMUP` (Linux, on by default since 0.1.43.1; =0 turns it off): start the GPU host-callback thread before the CPU
+  pool pins the host thread.** A callback thread created later can inherit the host's one-CPU affinity and compete
+  with the verifier spinning for its signal (#1975). The warm-up runs and synchronizes one no-op host callback before
+  constructing the pool; swap selection, per-layer callbacks and residency updates stay unchanged. On an RTX 5090 /
+  Ryzen 9 9950X, a paired 4K three-prompt test averaged 142.82 -> 207.75 tok/s. Other GPUs and drivers remain untested;
+  see the [reproducer, settings and limitations](../bench/results/2026-10-11-rtx-5090-callback-affinity/README.md).
+- **`STRATA_ADAPT_SIGNAL=host`: the overlap's per-layer "landed" signal as a host function** (the 0.1.43 way). From 0.1.43.1 the default is a
+  4-byte stream-ordered copy into pinned memory, which needs no driver callback thread: on a 20-core desktop (RTX 3060) the host
+  functions still cost ~7 ms per window with the thread started early, because the pool's workers occupy every other CPU.
+  **On Windows the host function stays the default** (0.1.44, #2188): under WDDM the copy and its signal waited in the
+  driver's command buffer while the window spun on the pinned int, and the first request stopped with "the adaptive
+  tier's copies for layer 45 never landed" (RTX 4070 SUPER, driver 617.42). `STRATA_ADAPT_SIGNAL=copy` asks for the copy
+  there; the engine now flushes the copy stream after queueing the swaps, which is meant to fix it but has not been run
+  on Windows yet.
+- **`--prefill-head-alias` (`--serve`, one GPU): the output head's VRAM holds the prompt buffers while a prompt is read**,
+  and the head is read back in before the first generated token. It was not measured with the paired method above. On
+  an 8 GB RTX PRO 2000 Laptop (Windows, IQ3_XXS, 590 MiB reserve) it let the prompt path use 2,048-token chunks
+  instead of 512: prefill 292.5 -> 667.1 tok/s on a 29,854-token prompt (medians of 12 and 6 fresh-engine trials).
+  Reads of up to 512 fresh tokens cost about 0.6-0.75 s more per request, and the card had 0 MiB free while decoding.
+  Details, limits and the measurement: [PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md).
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`; otherwise the log says why it is off. RTX A4000, 6 interleaved pairs each,
+  decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%), IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%),
+  IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time.
+- **`STRATA_MMQ_DIRECT=1`: the prompt's MMQ reads resident experts in their cache slots** (CUDA, native packs; needs an
+  engine built with `-DSTRATA_MMQ_TAB=ON`, which is off by default). The prompt path multiplies its experts in groups of
+  16 with llama.cpp's MMQ, which wants a group's weights in one buffer at a fixed stride, so every expert a chunk routes
+  to is copied there first (2.3-3.1 MB each, per chunk and layer), resident ones too. With this on, a Strata-side copy of
+  MMQ's outer scheduler (`src/prefill/moe_mmq_tab.cuh`) takes one pointer per expert instead, and a resident expert is
+  read where it is; streamed, peer-GPU and other experts are still copied. The launch (tile size, stream-k split,
+  fixup) is the one MMQ makes for the copied group and the tile code is llama.cpp's own, so the answers are the same
+  bits (`prefill_mmq_tab_test`: 874 products bitwise equal to the copied path, all nine types - Q2_0, IQ2_XXS, IQ2_XS,
+  IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS, Q8_0 - and every tile size; the optional Q5_0 and K-quant experts get no
+  pointer table and keep the copy). Each sized cache slot keeps 256 bytes after its expert, because MMQ reads up to
+  136 bytes past a 640-wide down matrix; they are zeroed before each group. That is about 2.3 MiB over 9,300 slots (one
+  slot fewer out of 6,998 on one RTX 3090). `STRATA_MMQ_DIRECT=2` keeps that layout but copies as before (an A/B
+  reference); 0 or unset is the default path, byte for byte. `STRATA_MMQ_DIRECT_LOG=1` adds each stage's count of experts
+  read in place to the log after every prompt. Under HIP, on a build without `STRATA_MMQ_TAB`, or when CMake turned
+  that option off (it does so, with a message, when the llama.cpp tree's `mmq.cuh` differs from the one the copy
+  mirrors), the variable is ignored.
+  **Why the build option is off:** the engine loads every kernel at start (`CUDA_MODULE_LOADING=EAGER`), and the nine
+  pointer-table instances (+15 MB of binary) take 36-38 MiB of VRAM on every GPU (sm_86), with the variable unset too -
+  expert slots every model would lose, as with `STRATA_MMQ_KQUANTS`. They also cost ~70% of the upstream MMQ instances'
+  compile time per CUDA arch (175 s of CPU at sm_86). Without the option the device code is byte for byte that of a
+  build without the feature.
+  Measured on 4x RTX 3090, UD-IQ4_XS, split `12,24,36` with `--trim-stage-weights` and `--batch 16` (every expert
+  resident), the engine driven directly, its "read in" time, medians of 8: a 170-token prompt 331 -> 251 ms (-24%) and
+  369 -> 290 ms (-21%) in two series, a 1,217-token prompt 773 -> 634 ms (-18%) and 838 -> 675 ms (-19%). A hack that
+  skipped the copies altogether ran 225 and 577 ms, but it is no bound for an exact implementation: it changes the
+  routing (12,003 expert-layer entries fell to 777 on one prompt) and so does less work. On one RTX 3090 with most
+  experts streamed from RAM the copies of streamed experts stay, and the prompt time did not move (within 1.5%).
+  Exactness, with `STRATA_PREFILL_CPU_SHARE=0` and no adaptive swaps: the first decode window's logits after the prompt
+  (`STRATA_DUMP_FIRST_LOGITS`, fp32) and 32 greedy tokens were byte-identical between 2 and 1 (and 0) for prompts of
+  180-2,619 tokens - on the 4-GPU split with `--prefill 2048` (chunks of 1,024 tokens and more: the streamed walk),
+  the same with 9 GB less expert cache per GPU (20-31% of the expert reads streamed, so groups mix in-place, copied and
+  mid-group flushed experts), and on one GPU with `--expert-cache-per-layer`; the 150 greedy tokens of each of
+  `tools/batch_test.py --n 16` prompts (solo and batch) were identical too, and to those of a build without the
+  option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
+  profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
+
+## Which logical processors the CPU workers use, and `--pool-cores` (experimental, off by default)
+
+The CPU expert workers read the experts that are not in graphics memory, and their speed is set by how many physical cores
+read memory at the same time. So the engine starts one worker per physical core, never two workers on the two hardware
+threads (SMT siblings) of one core, and keeps the first core for the main thread (the one that waits for the graphics
+card). The start-up log says where everything sits:
 
 ```
 strata generate: CPU workers on logical processors 2,4,...,30 (15 workers, one per physical core; host on 0)

@@ -5,11 +5,12 @@
 // gdn_rec_cols_pipe_kernel elsewhere and with STRATA_GDN_KEYHEAD=0.  Both are copied below verbatim, with the output
 // norm (gdn_out_norm_kernel) and the norm as it was before, which also stored the normalized value in FP32 although
 // nothing reads it.  The two recurrences do the same arithmetic in the same order per value head and column, so the
-// output, the state after it and the FP16 output must be the same bits.  STRATA_GDN_CHUNKED=1's recurrence in chunks
-// (copied below too) sums in another order: it must stay within 1e-4 of gdn_rec_kh_kernel (largest |difference| over
-// largest |value|, the output and the state), also at T = 8192 and 32768; up to 8192 both are also measured against
-// the recurrence in FP64.  STRATA_GDN_TC=1's tensor-core scan (gdn_tc.cuh, included below) is held to the same 1e-4,
-// also on stress inputs (the state 100x smaller, 50x larger or zero, v 50x larger, slow gates, coherent keys).
+// output, the state after it and the FP16 output must be the same bits.  The chunked recurrence (copied below too;
+// kernels.cu takes it by default on the cards it fits, STRATA_GDN_CHUNKED=0 keeps the kernels above) sums in another
+// order: it must stay within 1e-4 of gdn_rec_kh_kernel (largest |difference| over largest |value|, the output and the
+// state), also at T = 8192 and 32768; up to 8192 both are also measured against the recurrence in FP64.  The numbers are
+// checked on every sm_80+ card: on one with fewer than the 128 SMs kernels.cu asks for, the check runs with the SM-count
+// test skipped (the same maths, only the scan in more waves).
 //
 // Synthetic inputs of the model's shape (q/k L2-normalized per key head as gdn_l2_kernel leaves them), no model.
 //   gdn_rec_parity            the bit checks (T from 1 to 4099, a non-zero state as after an earlier chunk)
@@ -250,8 +251,8 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
     }
 }
 
-// src/prefill/kernels.cu's chunked recurrence (STRATA_GDN_CHUNKED=1), copied as it is there
-// STRATA_GDN_CHUNKED=1 (opt-in): the recurrence in chunks of GCH tokens (the WY form of the gated delta rule, as
+// src/prefill/kernels.cu's chunked recurrence (STRATA_GDN_CHUNKED: on there unless =0), copied as it is there
+// The recurrence in chunks of GCH tokens (the WY form of the gated delta rule, as
 // flash-linear-attention computes it), all in FP32.  Per value head, with g_t = exp(gate_t), gamma_t the gate's sum
 // from the chunk's start to t (inclusive) and S0 the state before the chunk:
 //   A[t][i] = beta_t exp(gamma_t - gamma_i) k_t.k_i (i < t),   T = (I + A)^-1 (unit lower triangular),
@@ -554,9 +555,11 @@ float* gdn_chunk_scratch() {
 // of a super-block's chunks: up to GSB / GCH x 48 heads x (2 x 32 x 32 + 32) floats, 25.6 MB) from gdn_chunk_scratch.
 // y: the [T][HV][S] output.  An error return means nothing was launched (the caller takes another kernel): the scratch
 // could not be had, or the card has fewer than 128 SMs (a second wave of the scan would double it) or too little
-// shared memory for it (Turing).
+// shared memory for it (Turing).  force_sms skips the SM-count test only: the maths is the same, so check_chunked can
+// still compare it against gdn_rec_kh_kernel on a card with fewer SMs (a slower scan there, which is why kernels.cu
+// asks for 128; the timings are not measured that way).
 cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
-                            cudaStream_t s) {
+                            cudaStream_t s, bool force_sms = false) {
     if (T <= 0) return cudaSuccess;
     {   // sm_80+ (cp.async), the scan's 128 blocks one an SM in one wave, and its 93.7 KB of shared memory (else:
         // another kernel)
@@ -568,9 +571,10 @@ cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, con
             cudaGetLastError();
             return cudaErrorNotSupported;
         }
-        // as in kernels.cu: STRATA_GDN_CHUNKED=2 skips the SM-count test (to measure a card under 128 SMs)
+        // as in kernels.cu: STRATA_GDN_CHUNKED=2 skips the SM-count test (to measure a card under 128 SMs); the test
+        // binary reads the variable the same way, and force_sms below is the same skip for the bit check
         static const bool any_sms = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) >= 2; }();
-        if (major < 8 || (!any_sms && sms < HK * (S / GDV)) || (size_t) smem < kChunkScanSmem)
+        if (major < 8 || (!any_sms && !force_sms && sms < HK * (S / GDV)) || (size_t) smem < kChunkScanSmem)
             return cudaErrorNotSupported;
     }
     float* scratch = gdn_chunk_scratch();
@@ -927,9 +931,16 @@ int check_variant(const Inputs& in, const char* label, RecLaunch launch, const c
     ck(cudaMemcpy(s0, in.state0, st * 4, cudaMemcpyDeviceToDevice), "state copy");
     ck(cudaMemcpy(s1, in.state0, st * 4, cudaMemcpyDeviceToDevice), "state copy");
     gdn_rec_kh_kernel<<<HK * NCB, dim3(CB, RG)>>>(s0, in.h, in.gate, in.beta, o0, in.T);
-    const cudaError_t e = launch(s1, in.h, in.gate, in.beta, o1, in.T, 0);
+    cudaError_t e = gdn_rec_chunked(s1, in.h, in.gate, in.beta, o1, in.T, 0);
+    bool forced = false;
     if (e == cudaErrorNotSupported) {
-        std::printf("     T=%-6lld %s: not on this card (%s)\n", (long long) T, label, needs);
+        // a card under the 128 SMs kernels.cu asks for: it takes the kernels above there, but the maths to check is the
+        // same, so run the scan in more waves rather than skip the numbers (nothing was launched by the call above)
+        e = gdn_rec_chunked(s1, in.h, in.gate, in.beta, o1, in.T, 0, true);
+        forced = true;
+    }
+    if (e == cudaErrorNotSupported) {
+        std::printf("     T=%-6lld chunked: not on this card (needs sm_80+ and a 93.7 KB block)\n", (long long) T);
         cudaFree(s0); cudaFree(s1); cudaFree(o0); cudaFree(o1);
         return 0;
     }
@@ -937,8 +948,13 @@ int check_variant(const Inputs& in, const char* label, RecLaunch launch, const c
     ck(cudaDeviceSynchronize(), label);
     const double eo = max_rel(o0, o1, oc_n), es = max_rel(s0, s1, st);
     const bool bad = !(eo < 1e-4) || !(es < 1e-4);
-    std::printf("%s T=%-6lld %s: output %.2e, state %.2e (max |diff| / max |value|)\n", bad ? "FAIL" : "    ",
-                (long long) T, label, eo, es);
+    static const bool env_forced = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) >= 2; }();
+    std::printf("%s T=%-6lld chunked (%s): output %.2e, state %.2e (max |diff| / max |value|)\n",
+                bad ? "FAIL" : "    ", (long long) T,
+                (forced || env_forced)
+                    ? "kernels.cu's default on cards with 128 SMs and more; the SM-count test is skipped here"
+                    : "kernels.cu's default on this card",
+                eo, es);
     if (T <= 8192) {   // both against FP64 (its output: 8 bytes a value, so not at 32K)
         double* sd = dalloc<double>(st);
         double* od = dalloc<double>(oc_n);
@@ -1307,8 +1323,10 @@ void bench(int64_t T, bool tc_only = false) {
                 1000.0f * r1 / (float) T, r0 / r1);
     if (can_chunk) {
         const float kh = median(t_kc[0]), kc = median(t_kc[1]);
-        std::printf("    recurrence, chunked (STRATA_GDN_CHUNKED=1)     %8.2f ms  (%.3f us per token)  %.2fx gdn_rec_kh_kernel\n",
+        std::printf("    recurrence, chunked (the default here)         %8.2f ms  (%.3f us per token)  %.2fx gdn_rec_kh_kernel\n",
                     kc, 1000.0f * kc / (float) T, kh / kc);
+    } else {
+        std::printf("    recurrence, chunked: not here (kernels.cu takes it from 128 SMs; STRATA_GDN_CHUNKED=2 forces it)\n");
     }
     if (can_tc) {
         const float kh = median(t_tc[0]), tc = median(t_tc[1]);
@@ -1356,7 +1374,7 @@ void chunked_sweep() {
             const float kh = median(t[0]), kc = median(t[1]);
             std::printf("    T = %-5lld %8.1f us -> %8.1f us  %.2fx\n", (long long) T, 1000.0f * kh, 1000.0f * kc, kh / kc);
         } else {
-            std::printf("    chunked: not on this card\n");
+            std::printf("    chunked: not on this card (STRATA_GDN_CHUNKED=2 forces it for a measurement)\n");
         }
         cudaEventDestroy(e0); cudaEventDestroy(e1);
         cudaFree(state); cudaFree(oc);
