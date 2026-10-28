@@ -2008,6 +2008,7 @@ async function deliverMessage(text: string, options: SendOptions, settle: (outco
             ttftMs: typeof frame.ttftMs === 'number' ? frame.ttftMs : undefined,
             inputTokens: typeof frame.tokensIn === 'number' ? frame.tokensIn : undefined,
             contextUsed: typeof frame.contextTokens === 'number' ? frame.contextTokens : undefined,
+            reasoningTokens: typeof frame.reasoningTokens === 'number' ? frame.reasoningTokens : m.reasoningTokens,
             usageSource: frame.usageSource === 'reported' || frame.usageSource === 'demo' ? frame.usageSource : 'unavailable',
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
             promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,

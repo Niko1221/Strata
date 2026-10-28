@@ -102,11 +102,12 @@ test('live frames become deltas, usage is summed across steps, the turn ends wit
   const p = new TurnProjector({ startedAt: 0 });
   assert.deepEqual(p.consume(chunk({ type: 'text-delta', index: 0, text: 'Hi' })), [{ type: 'delta', text: 'Hi' }]);
   assert.deepEqual(p.consume(chunk({ type: 'reasoning-delta', index: 0, text: 'hmm' })), [{ type: 'reasoning', text: 'hmm' }]);
-  p.consume(chunk({ type: 'usage', usage: { inputTokens: 100, outputTokens: 5 } }));
-  p.consume(chunk({ type: 'usage', usage: { inputTokens: 120, outputTokens: 7 } }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 100, outputTokens: 5, reasoningTokens: 3 } }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 120, outputTokens: 7, reasoningTokens: 4 } }));
   p.consume(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }));
   const [done] = p.finish({ model: 'M', contextMax: 1000 });
   assert.equal(done.type, 'done'); assert.equal(done.tokensIn, 220); assert.equal(done.tokensOut, 12); assert.equal(done.usageSource, 'reported');
+  assert.equal(done.reasoningTokens, 7, 'the engine reasoning count is summed over the turn\'s requests');
 });
 
 test('every turn-end reason maps to a frame the chat knows', () => {
@@ -126,6 +127,15 @@ test('a text the live frames missed is completed from the committed message, onc
   const out = p.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'Hello there' }] } }));
   assert.deepEqual(out, [{ type: 'delta', text: 'lo there' }]);
   assert.deepEqual(p.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'Hello there' }] } })), []);
+});
+
+test('without an engine reasoning count the turn ends without one, so the page can estimate', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  p.consume(chunk({ type: 'reasoning-delta', index: 0, text: 'thinking about it' }));
+  p.consume(chunk({ type: 'usage', usage: { inputTokens: 100, outputTokens: 5 } }));
+  p.consume(ev('turn/end', { turn: 1, reason: { kind: 'completed' } }));
+  const [done] = p.finish({ model: 'M', contextMax: 1000 });
+  assert.equal('reasoningTokens' in done, false);
 });
 
 test('a tool call the model wrote as text becomes a card that says it did not run', () => {
