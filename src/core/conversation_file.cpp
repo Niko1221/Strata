@@ -688,7 +688,7 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
-    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64((s.cvec ? 1 : 0) | (s.lora ? 0 : 2));   // bit 1: the LoRA adapter off (0 in older files)
     put_checkpoint(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);
@@ -772,8 +772,9 @@ bool get_payload(In& in, SavedConversation& s) {
     if (in.limits.layer_range &&
         (in.limits.layer_range->first != s.layer_lo || in.limits.layer_range->second != s.layer_hi))
         return in.fail("saved with another layer range than this runtime's");
-    if (cvec > 1) return in.fail("invalid cvec flag");
-    s.cvec = cvec == 1;
+    if (cvec > 3) return in.fail("invalid cvec flag");
+    s.cvec = (cvec & 1) != 0;
+    s.lora = (cvec & 2) == 0;
     if (!get_checkpoint(in, s.live)) return false;
     uint64_t n = 0;
     // a checkpoint is at least 8 counts + used = 72 bytes; a K/V layer at least 7 + 5 = 96
@@ -894,6 +895,7 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     b.f64("rope.beta_fast", c.rope.beta_fast);
     b.f64("rope.beta_slow", c.rope.beta_slow);
     b.u64("cvec", c.cvec);
+    if (c.lora != 0) b.u64("lora", c.lora);   // absent without an adapter: older files keep their fingerprint
     b.u64("switches", c.switches.size());
     for (const auto& [name, value] : c.switches) b.i64("switch." + name, value);
     return b.digest();

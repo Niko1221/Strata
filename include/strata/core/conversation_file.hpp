@@ -78,6 +78,8 @@ struct SessionConfig {
     // the control vectors as loaded: a digest of the tables the engine uploaded (every file's content x its exact
     // scale, summed), the mode, the layer range and the direction; 0 when none is loaded
     uint64_t cvec = 0;
+    // the LoRA adapter as loaded (--lora): a digest of its tables and scales; 0 when none is loaded
+    uint64_t lora = 0;
     // the arithmetic switches that change the computed state (name, value), in a fixed order
     std::vector<std::pair<std::string, int64_t>> switches;
 };
