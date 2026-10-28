@@ -86,3 +86,5 @@ node_modules/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
+# ref-backup bundles taken before a fork refresh (git bundle files, tens of MB)
+/_backup/
