@@ -1,0 +1,57 @@
+Using the Strata server already running at http://127.0.0.1:8080.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 45.9 tok/s, first token 0.572 s, 100 tokens
+  run 1 q2: decode 46.2 tok/s, first token 0.604 s, 100 tokens
+  run 1 q3: decode 45.6 tok/s, first token 0.676 s, 100 tokens
+  run 2 q1: decode 45.9 tok/s, first token 0.724 s, 100 tokens
+  run 2 q2: decode 47.6 tok/s, first token 0.56 s, 100 tokens
+  run 2 q3: decode 45.7 tok/s, first token 0.701 s, 100 tokens
+  run 3 q1: decode 46.2 tok/s, first token 0.726 s, 100 tokens
+  run 3 q2: decode 46.8 tok/s, first token 0.605 s, 100 tokens
+  run 3 q3: decode 46.0 tok/s, first token 0.709 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 411.4 tok/s (0 reused), first token 9.8 s
+  run 2: 4019 tokens, prompt 411.2 tok/s (0 reused), first token 9.802 s
+  run 3: 4019 tokens, prompt 410.9 tok/s (0 reused), first token 9.807 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 368.1 tok/s (0 reused), first token 43.661 s
+  run 2: 16058 tokens, prompt 367.9 tok/s (0 reused), first token 43.682 s
+  run 3: 16058 tokens, prompt 367.5 tok/s (0 reused), first token 43.727 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 2.392 s
+  run 1 turn 1: prompt 2274, reused 632, read 1642, first token 5.024 s
+  run 1 turn 2: prompt 3980, reused 2337, read 1643, first token 5.104 s
+  run 1 turn 3: prompt 5686, reused 4043, read 1643, first token 5.205 s
+  run 1 turn 4: prompt 7392, reused 5749, read 1643, first token 5.195 s
+  run 1 turn 5: prompt 9094, reused 7452, read 1642, first token 5.225 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 2.516 s
+  run 2 turn 1: prompt 2274, reused 632, read 1642, first token 5.024 s
+  run 2 turn 2: prompt 3980, reused 2337, read 1643, first token 5.126 s
+  run 2 turn 3: prompt 5686, reused 4043, read 1643, first token 5.187 s
+  run 2 turn 4: prompt 7390, reused 5748, read 1642, first token 5.198 s
+  run 2 turn 5: prompt 9087, reused 7445, read 1642, first token 5.24 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 2.51 s
+  run 3 turn 1: prompt 2274, reused 632, read 1642, first token 5.016 s
+  run 3 turn 2: prompt 3980, reused 2337, read 1643, first token 5.117 s
+  run 3 turn 3: prompt 5686, reused 4043, read 1643, first token 5.192 s
+  run 3 turn 4: prompt 7387, reused 5745, read 1642, first token 5.188 s
+  run 3 turn 5: prompt 9085, reused 7443, read 1642, first token 5.24 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     46.00   (45.60 - 47.60, n=9)
+  chat first token (s)                   0.68   (0.56 - 0.73, n=9)
+  4K prompt tok/s                      411.20   (410.90 - 411.40, n=3)
+  4K first token (s)                     9.80   (9.80 - 9.81, n=3)
+  16K prompt tok/s                     367.90   (367.50 - 368.10, n=3)
+  16K first token (s)                   43.68   (43.66 - 43.73, n=3)
+  agent cache hit %                     71.10   (71.10 - 71.11, n=3)
+  agent re-read tokens/session           5.00   (5.00 - 5.00, n=3)
+  agent turn first token (s)             5.19   (5.02 - 5.24, n=15)
+  agent decode tok/s                    58.50   (41.80 - 96.40, n=15)
+
+Report: <home>/Strata/iq3s-trial/community-iq3s-20261028/reports/2026-10-28-community-rtx-3070-qwen3-8-flash-next-iq3-s/README.md
+Share it: open a pull request that adds the folder <home>/Strata/iq3s-trial/community-iq3s-20261028/reports/2026-10-28-community-rtx-3070-qwen3-8-flash-next-iq3-s (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).

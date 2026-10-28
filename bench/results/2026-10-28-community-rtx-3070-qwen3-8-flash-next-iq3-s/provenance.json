@@ -1,0 +1,11 @@
+{
+  "guide_revision": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+  "runner_commit": "a42cc3d7df70d1940de82cd0882f03e1f5dfc741",
+  "runner_sha256": "f6267a67dd27a938af8f756b1bbbf49b232d9168f986889d09b85b5df4859f7d",
+  "gpu_details": "name, pci.bus_id, pcie.link.gen.current, pcie.link.gen.max, pcie.link.width.current, pcie.link.width.max, power.limit [W]\nNVIDIA GeForce RTX 3070, <pci-device>, 3, 3, 16, 16, 220.00 W\n",
+  "strata_cli_version": "0.2.7",
+  "engine_version": "0.1.52",
+  "version_source": "installed CLI --version and runtime COMMIT file, checked independently of legacy runner",
+  "resource_coverage": "partial final interval only; first sampler failed to start",
+  "background": "existing OS services and auxiliary whole-host resource sampler"
+}
