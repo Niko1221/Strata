@@ -1290,6 +1290,23 @@ restore, still required the pooled indexer, so every conversation at least as lo
 4,508 tokens in 79.7 ms holding 418 MB and 6,524 in 61.6 ms holding 566 MB, restores of 4,499 and 6,515 tokens in
 16.4 and 14.0 ms, prefill 15.1 s cold and 6.6 s on the two reused turns, no evictions.
 
+From `c84cb517` every serve path asks the drafter whether it owns a K/V ring (`mtp.kv_state().max_cells > 0`)
+before describing its part in a park, a borrow, a restore or a session file. Under `--mtp` on a Mac the decode
+window runs the draft rounds itself and the session-side drafter holds no cells, so those callsites described a
+draft part that does not exist: every park logged `discard invalid snapshot` and the next turn read the whole
+transcript again, a saved file could not be read back (the read reserved a draft part the file never carried),
+and `STRATA_SNAPSHOT_VERIFY` compared the last session part against the all-zero drafter and stopped the engine.
+With the gate the image carries no draft part and the cache round-trips. Measured 2026-10-28 solo on an M1 Max
+(64 GB, UD-Q4_K_XL, `--mtp` with `--spec 2`, 6 slots): a 100,882-token conversation saves to a file in 1112.9 ms
+(1.67 GB), restores at boot in 492.7 ms, and parks of the same size take 323.2 and 141.0 ms; the first
+follow-up reuses 100,724 of 100,772 tokens in 7.4 s against 382.7 s read cold, with the recall needle correct
+after save, park and restart and the restored K/V matching within 2.0e-05 relative L2. What a restored
+conversation loses is only speculation: the window's draft cache starts empty, so the first decodes after a
+restore ran 18-20 tok/s and the next request was back at 20.1; steady greedy probes keep 22.9-23.1 tok/s
+with `--spec 2` (2026-10-27).
+A refused K/V byte estimate now names the failing pool and the reason on stderr (`strata: K/V byte estimate
+failed: ...`) - that dump is what traced the 500 on a disk save here to the zero ring.
+
 The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
@@ -1489,6 +1506,8 @@ failed after its new file had replaced the old one says so with `error.published
 (the same queue), shows in `/status` and counts as activity for the idle unload. A later request whose messages
 continue the restored conversation reuses the restored state or its checkpoint; a short tail may be read again (35
 tokens in the measurement below). Only the deepest checkpoint is saved, so an edit further back reads more again.
+A continuation must also extend the restored session exactly: a prompt that branches before its last token
+reads from the start, because a checkpoint's recurrent state exists only at its own boundary.
 Clients still send their messages (and images): the file holds engine state and token/image identity, not a chat
 export. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
 `SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>`, `SERR <kind> <published 0|1> <reason>` (failed,
@@ -1500,14 +1519,16 @@ engine's watchdog and by the server, then it counts as stuck. The next line clea
 every line: a malformed or unknown one, counts that are negative or go back, an allowance outside 1..3600 or a time
 that is not a finite number end the engine as out of step.
 
-One file holds the running state, the deepest checkpoint, every QSA layer's K/V up to the conversation's length and
-the draft layer's K/V. Format v1, little-endian, fixed-width integers, IEEE-754 floats (a big-endian build does not
-compile): a 64-byte header (magic `STRSESS\x01`, version u32, header size u32, model fingerprint u64, config
-fingerprint u64, payload length u64, two reserved u64 that must be 0, a hash of the first 56 bytes), the payload
-(geometry, layer range, cvec flag, the live state, the checkpoints, the K/V layers; every array preceded by its u64
-count), the payload hash and the end marker `STRSEND\x01`. The hash is a 64-bit function with xxHash64-style rounds,
-not the standard XXH64 stream; it detects accidental corruption and does not authenticate a file: restore only files
-this engine wrote. An unknown version is refused; a new format gets a new version number.
+One file holds the running state, the deepest checkpoint, every QSA layer's K/V up to the conversation's length
+and, when the drafter owns a K/V ring, the draft layer's K/V (under `--mtp` on a Mac the decode window keeps
+that ring and the file carries no draft part). Format v1, little-endian, fixed-width integers, IEEE-754 floats (a
+big-endian build does not compile): a 64-byte header (magic `STRSESS\x01`, version u32, header size u32, model
+fingerprint u64, config fingerprint u64, payload length u64, two reserved u64 that must be 0, a hash of the first
+56 bytes), the payload (geometry, layer range, cvec flag, the live state, the checkpoints, the K/V layers; every
+array preceded by its u64 count), the payload hash and the end marker `STRSEND\x01`. The hash is a 64-bit
+function with xxHash64-style rounds, not the standard XXH64 stream; it detects accidental corruption and does
+not authenticate a file: restore only files this engine wrote. An unknown version is refused; a new format gets
+a new version number.
 
 A file is bound to the model inputs and to the settings that change what the saved bytes mean. The model fingerprint
 samples (size, first and last MiB) every file the engine loads, by its role: the GGUF shards (also
@@ -1542,7 +1563,9 @@ state; the server reports `500` and starts it again. A restore does not park the
 `--layer-split`, `--peer-device`, `--batch` (the config's `"parallel"`, #465; the server answers `501`) or
 `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
 moves with `O_DIRECT` in 16 MiB blocks when the filesystem takes it (buffered I/O otherwise, or with
-`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA only. An earlier
+`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA and, since the
+capture port in this fork's Metal build, on Apple Silicon, where the file holds the decode window's own
+checkpoint payload (measured above). An earlier
 revision's CPU file-I/O test passed as a 32-bit Windows executable under Wine; the current code has not been built
 for Windows, and the Windows engine, HIP and AMD cards have not been run.
 
