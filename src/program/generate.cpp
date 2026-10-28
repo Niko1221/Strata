@@ -13922,7 +13922,16 @@ int main(int argc, char** argv) {
                             wo.use_v3 = true;   // the full-rewrite fallback writes the append-log format too
                             strata::core::SessionAppendPlan plan;
                             std::string perr;
-                            const bool have_plan = strata::core::session_file_append_plan(path, id, plan, perr);
+                            // The gate walks the file with the very bounds this session could ever restore it
+                            // with (review finding M3): the framing plan obeys the runtime's limits - a file this
+                            // runtime could not restore never earns an append plan, and the walk allocates
+                            // nothing past them.
+                            strata::core::SessionReadLimits plan_limits;
+                            const bool limits_ok = strata::core::conversation_session_read_limits_split(
+                                plan_limits, carves, g, draft_of, mtp.kv_state(), (uint64_t) o.max_context,
+                                (uint64_t) std::max(o.prompt_cache, 1), perr);
+                            const bool have_plan =
+                                limits_ok && strata::core::session_file_append_plan(path, id, plan, perr, plan_limits);
                             std::string gwhy;
                             if (strata::core::session_save_gate(have_plan ? &plan : nullptr, sources,
                                                                 ss.kv_first_dirty, save_page, gwhy) ==

@@ -289,6 +289,8 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
 // any file with bytes past its newest trailer (the EOF rule: a torn tail is rewritten in full
 // before appending again).  False = append declined for any reason (the caller's full-rewrite
 // verdict); the file is never touched.
+struct SessionReadLimits;  // declared with the read path below; the append plan takes the runtime's bounds too
+
 struct SessionAppendPlan {
     SessionCheckpoint checkpoint;                      // the newest candidate the framing walk verified
     SessionHasher hasher;                              // resumed from the checkpoint trailer's state
@@ -306,17 +308,21 @@ struct SessionAppendPlan {
     std::vector<std::array<uint64_t, 5>> prev_bounds;  // per layer, per part: bytes already committed (the window's `from`)
 };
 bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& plan,
-                              std::string& error);
+                              std::string& error, const SessionReadLimits& limits);
 
 // Appends one generation group to an existing v3 session file - no temp file, no rename, ever.
-// The gate re-checks `plan` against a freshly computed plan first (a plan made before something
-// else changed this file is refused; `append_verify` seam, refusal leaves the file byte-identical),
-// anchors the header fast pair at the new group's start (`append_anchor`, degrading, never fatal),
-// streams the group (mutable block fresh, ids/imgs and K/V parts suffix-only from the plan's
-// boundaries: `append_write` seam), pads it, and writes the 128 B trailer continuing the digest
-// chain (`trailer_write`, then the commit fsync `trailer_flush`).  Only after that commit is
-// durable does the header advance to the new generation (`header_update` seam - non-fatal: a
-// stale fast pair self-heals at the next save's anchor).  `bytes` reports the appended delta.
+// The gate re-anchors `plan` against the file (review finding M2: the validator scan runs
+// unconditionally - trust, max-gen, stale-header self-heal - and the 128 B record AT the plan's
+// offset must parse, be the newest validated checkpoint, and self-verify its resume state; the
+// trailer's self_hash pins every byte of the checkpoint the plan was derived from, so a stale or
+// foreign plan is refused before any write - `append_verify` seam, refusal leaves the file
+// byte-identical), anchors the header fast pair at the new group's start (`append_anchor`,
+// degrading, never fatal), streams the group (mutable block fresh, ids/imgs and K/V parts
+// suffix-only from the plan's boundaries: `append_write` seam), pads it, and writes the 128 B
+// trailer continuing the digest chain (`trailer_write`, then the commit fsync `trailer_flush`).
+// Only after that commit is durable does the header advance to the new generation (`header_update`
+// seam - non-fatal: a stale fast pair self-heals at the next save's anchor).  `bytes` reports the
+// appended delta.
 // A failure at any fatal seam leaves the file torn or whole; the previous checkpoint always
 // stands (the reader cascades to it, the next `session_file_append_plan` declines until a full
 // rewrite heals it).
@@ -391,6 +397,12 @@ struct SessionReadLimits {
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
     SessionProgress progress;
 };
+// The 4-argument form: default (open) limits - the behavior before the gate learned the runtime's bounds.
+// The engine always passes the session's own SessionReadLimits so the plan walk obeys them.
+inline bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id,
+                                     SessionAppendPlan& plan, std::string& error) {
+    return session_file_append_plan(path, id, plan, error, SessionReadLimits{});
+}
 // The largest file these limits admit (UINT64_MAX when one of them is open); session_file_read applies it.
 uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
 // What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read

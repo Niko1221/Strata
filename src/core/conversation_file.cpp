@@ -1101,18 +1101,28 @@ struct In {
 };
 
 bool get_checkpoint(In& in, ConversationCheckpoint& c, uint64_t expected_parts,
-                    const std::array<uint64_t, 5>& state_max) {
+                    const std::array<uint64_t, 5>& state_max, bool framing = false) {
     static constexpr std::array<uint64_t, 5> kOpen{UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-    if (!in.vec(c.ids, in.limits.max_tokens)) return false;
-    uint64_t n = 0;
-    if (!in.count(n, 16, in.limits.max_tokens)) return false;
-    c.imgs.resize((size_t) n);
-    for (auto& k : c.imgs) if (!in.i64(k.start) || !in.u64(k.hash)) return false;
-    // byte arrays: element and byte counts are the same; main checkpoints use the runtime's arrays,
-    // stage parts their own stage's (max_stage_state_bytes, by part index)
-    if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
-        !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
-        return false;
+    if (framing) {  // the framing walk needs only the record's SIZE: every field counted, its bytes skipped
+        uint64_t n = 0;  // (review finding M3: counts are capped by the runtime's limits before anything allocates)
+        if (!in.count(n, 4, in.limits.max_tokens) || !in.skip((size_t) n * 4)) return false;  // ids
+        if (!in.count(n, 16, in.limits.max_tokens) || !in.skip((size_t) n * 16)) return false;  // images
+        for (size_t a = 0; a < 5; ++a)
+            if (!in.count(n, 1, state_max[a]) || !in.skip((size_t) n)) return false;
+        uint64_t used = 0;
+        if (!in.u64(used)) return false;
+    } else {
+        if (!in.vec(c.ids, in.limits.max_tokens)) return false;
+        uint64_t n = 0;
+        if (!in.count(n, 16, in.limits.max_tokens)) return false;
+        c.imgs.resize((size_t) n);
+        for (auto& k : c.imgs) if (!in.i64(k.start) || !in.u64(k.hash)) return false;
+        // byte arrays: element and byte counts are the same; main checkpoints use the runtime's arrays,
+        // stage parts their own stage's (max_stage_state_bytes, by part index)
+        if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
+            !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
+            return false;
+    }
     uint64_t parts = 0;
     if (!in.u64(parts)) return false;                            // v2: the stage-parts tail
     if (parts != expected_parts)
@@ -1123,8 +1133,8 @@ bool get_checkpoint(In& in, ConversationCheckpoint& c, uint64_t expected_parts,
                                ? in.limits.max_stage_state_bytes[(size_t) k]
                                : kOpen;
         ConversationCheckpoint part;
-        if (!get_checkpoint(in, part, 0, smax)) return false;    // one level deep, by format
-        c.stage_parts.push_back(std::move(part));
+        if (!get_checkpoint(in, part, 0, smax, framing)) return false;  // one level deep, by format
+        if (!framing) c.stage_parts.push_back(std::move(part));
     }
     return true;
 }
@@ -1912,8 +1922,14 @@ struct V3Walk {
         if (!in.count(a.want_imgs, 16, in.limits.max_tokens)) return false;
         if (a.want_ids < a.ids.size() || a.want_imgs < a.imgs.size())
             return in.fail("a generation that shrank the live token list (an append chain only grows it)");
-        if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
-            !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
+        if (framing_only) {  // the framing walk needs the arrays' SIZES only (review finding M3): count, skip
+            uint64_t an = 0;
+            for (size_t arr = 0; arr < 5; ++arr)
+                if (!in.count(an, 1, state_max[arr]) || !in.skip((size_t) an)) return false;
+            uint64_t used = 0;
+            if (!in.u64(used)) return false;
+        } else if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
+                   !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
             return false;
         uint64_t nparts = 0;
         if (!in.u64(nparts) || nparts != expected_parts)
@@ -1962,10 +1978,17 @@ struct V3Walk {
             return false;
         uint64_t n = 0;
         if (!in.count(n, 72, in.limits.max_checkpoints)) return false;  // a checkpoint is >= 72 bytes
-        s.checkpoints.clear();
-        s.checkpoints.resize((size_t) n);
-        for (auto& c : s.checkpoints)
-            if (!get_checkpoint(in, c, s.stage_table.size(), in.limits.max_state_bytes)) return false;
+        if (!framing_only) {  // the framing walk frames every record and discards it - no vector of records
+                              // materializes on the gate (review finding M3's allocation path)
+            s.checkpoints.clear();
+            s.checkpoints.resize((size_t) n);
+        }
+        for (uint64_t ci = 0; ci < n; ++ci) {
+            ConversationCheckpoint scratch;
+            if (!get_checkpoint(in, framing_only ? scratch : s.checkpoints[(size_t) ci], s.stage_table.size(),
+                                in.limits.max_state_bytes, framing_only))
+                return false;
+        }
         std::vector<std::array<uint64_t, 5>> wfrom(layers), wto(layers);
         for (size_t j = 0; j < layers; ++j) {
             Geom g;
@@ -2254,13 +2277,15 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
 // declines appends until a full rewrite re-lays the file.
 
 bool append_plan_impl(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& out,
-                      std::string& error) {
+                      std::string& error, const SessionReadLimits& limits) {
     std::vector<SessionCheckpoint> cands;
     if (!session_file_checkpoints(path, id, cands, error)) {
         if (error.empty()) error = "session file: " + path + ": append refused (no validated checkpoint)";
         return false;
     }
-    SessionReadLimits limits;  // the gate reads only bounded framing; the runtime's own limits apply at restore
+    // The gate walk reads bounded framing only - but it obeys the RUNTIME's own limits (review finding
+    // M3): counts are capped before any allocation, and the framing mode skips array bytes it never
+    // needs.  A hostile file cannot make the gate allocate past what this engine could ever restore.
     std::string last;
     for (const auto& cand : cands) {  // newest first; a failing candidate demotes exactly like the reader's
         error.clear();
@@ -2366,15 +2391,50 @@ bool append_impl(const std::string& path, const SavedConversation& meta, const s
     if (!meta.kv.empty()) { error = "session file: append takes the K/V as sources only"; return false; }
     if (!meta.stage_images.empty()) { error = "session file: append cannot write a staged multi-image session"; return false; }
 
-    // the gate: never trust a stale plan - re-verify the file fresh, then cross-check the state to write
-    SessionAppendPlan fresh;
-    if (!append_plan_impl(path, id, fresh, error)) return false;
-    if (fresh.checkpoint.trailer_offset != plan.checkpoint.trailer_offset ||
-        fresh.checkpoint.file_size != plan.checkpoint.file_size ||
-        fresh.checkpoint.trailer.self_hash != plan.checkpoint.trailer.self_hash) {
-        error = "session file: the append plan no longer matches " + path + " (it changed since the plan was made)";
+    // The gate: never trust a stale plan.  The validator scan runs unconditionally (its job: candidate
+    // trust, max-gen resolution and stale-header self-heal); the re-verification of the ANCHORED
+    // checkpoint is the cheap one (review finding M2): the 128 B record at the plan's own offset must
+    // parse, be validator-trusted, and be the newest trusted checkpoint.  The record's self_hash pins
+    // every byte of it, so a matching parsed trailer IS the exact checkpoint the plan was derived
+    // from - the plan's framing (geometry, windows, counts) stands for these bytes.  The file-size and
+    // group_start cross-checks below (against the open fd) enforce the EOF rule: an append never starts
+    // below committed bytes and never past a torn tail.  The full append_plan_impl (with its framing
+    // walk) remains what session_file_append_plan produces and what session_save_gate consumes.
+    std::vector<SessionCheckpoint> cands;
+    if (!session_file_checkpoints(path, id, cands, error)) {
+        if (error.empty()) error = "session file: " + path + ": append refused (no validated checkpoint)";
         return false;
     }
+    const SessionCheckpoint* anchored = nullptr;
+    for (const auto& cc : cands)
+        if (cc.trailer_offset == plan.checkpoint.trailer_offset &&
+            cc.trailer.self_hash == plan.checkpoint.trailer.self_hash && cc.file_size == plan.checkpoint.file_size) {
+            anchored = &cc;
+            break;
+        }
+    if (!anchored || anchored->trailer_offset != cands.front().trailer_offset ||
+        anchored->trailer.gen != cands.front().trailer.gen) {
+        error = "session file: the append plan no longer matches " + path +
+                " (it changed since the plan was made: the newest validated checkpoint differs)";
+        return false;
+    }
+    // resume-state self-verification, re-derived from the anchored record (never taken from the plan):
+    // the stored state must reproduce the stored digest, no file bytes needed
+    SessionHasherState hs{};
+    for (int i = 0; i < 4; ++i) hs.lanes[i] = anchored->trailer.lanes[i];
+    std::memcpy(hs.pending, anchored->trailer.pending, 32);
+    hs.npending = anchored->trailer.npending;
+    hs.total = anchored->trailer.hashed_bytes;
+    {
+        SessionHasher hh(0);
+        hh.restore(hs);
+        if (hh.digest() != anchored->trailer.digest) {
+            error = "session file: " + path +
+                    ": append refused: the stored resume state does not reproduce this checkpoint's digest";
+            return false;
+        }
+    }
+    const SessionAppendPlan& fresh = plan;  // re-verified against the file by the anchored trailer above
     if (meta.geometry != fresh.geometry) { error = "session file: append with a different model geometry than this file's"; return false; }
     if (meta.layer_lo != fresh.layer_lo || meta.layer_hi != fresh.layer_hi) { error = "session file: append with a different layer range than this file's"; return false; }
     if (meta.stage_table != fresh.stage_table) { error = "session file: append with a different stage table (only a full write records that)"; return false; }
@@ -2472,7 +2532,8 @@ bool append_impl(const std::string& path, const SavedConversation& meta, const s
     f.flush_fault = injected(fault, "trailer_flush");         // the post-trailer commit fsync
     f.writer_thread_fault = injected(fault, "writer_thread"); // starvation fallback (an optimization loss)
 
-    SessionHasher hash = fresh.hasher;   // byte-exact continuation of the validated trailer state
+    SessionHasher hash(0);
+    hash.restore(hs);  // byte-exact continuation of the VALIDATED trailer state (re-derived, never plan-supplied)
     Out out;
     out.f = &f;
     out.hash = &hash;
@@ -2544,9 +2605,9 @@ bool append_impl(const std::string& path, const SavedConversation& meta, const s
 } // namespace
 
 bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& plan,
-                              std::string& error) {
+                              std::string& error, const SessionReadLimits& limits) {
     try {
-        return append_plan_impl(path, id, plan, error);
+        return append_plan_impl(path, id, plan, error, limits);
     } catch (const std::bad_alloc&) {
         error = "session file: out of memory while checking " + path + " for an append";
         return false;
