@@ -139,15 +139,32 @@
       <div class="monitor-row">
         <div class="st-card ctx-card">
           <span class="card-title">Context fill</span>
-          <div class="ctx-gauge">
-            <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
-              <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
-                      stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
-              <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
-                      stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+          <div class="kv-wrap">
+            <svg class="kv-ring" viewBox="0 0 120 120" aria-hidden="true">
+              <!-- the frame hugging the band's outer edge: the same --kv-cached tone as the Cached arc -->
+              <circle class="kv-frame" cx="60" cy="60" r="58.3" fill="none" stroke-width="1.6"/>
+              <circle class="kv-frame" cx="60" cy="60" r="34.7" fill="none" stroke-width="1.6"/>
+              <!-- the free arc is painted first, under the live arcs: its antialiased edge can never composite
+                   over a colored arc at the junctions -->
+              <circle class="kv-seg kv-seg--free" id="kv-seg-free" cx="60" cy="60" r="46.5" fill="none" stroke-width="22"
+                      stroke-dasharray="0 292.2" transform="rotate(-90 60 60)"/>
+              <circle class="kv-seg kv-seg--reuse" id="kv-seg-reuse" cx="60" cy="60" r="46.5" fill="none" stroke-width="22"
+                      stroke-dasharray="0 292.2" transform="rotate(-90 60 60)"/>
+              <circle class="kv-seg kv-seg--prefill" id="kv-seg-prefill" cx="60" cy="60" r="46.5" fill="none" stroke-width="22"
+                      stroke-dasharray="0 292.2" transform="rotate(-90 60 60)"/>
+              <circle class="kv-seg kv-seg--decode" id="kv-seg-decode" cx="60" cy="60" r="46.5" fill="none" stroke-width="22"
+                      stroke-dasharray="0 292.2" transform="rotate(-90 60 60)"/>
             </svg>
-            <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+            <div class="kv-center"><span class="kv-pct" id="kv-pct">0%</span><span class="muted" id="kv-sub">&ndash;</span></div>
           </div>
+          <!-- invisible aligned table: the label and percent columns have empty headers on purpose, the dim "tok" caption sits above the last column; the percent column stands before the token column (99.8% then 91k) — rows share the fixed columns -->
+          <div class="kv-leg-head"><span class="kv-key-space"></span><span></span><span class="kv-col"></span><span class="muted kv-col">tok</span></div>
+          <ul class="kv-legend">
+            <li><span class="kv-key kv-key--reuse"></span><span>Cached (prefix)</span><span class="muted kv-col" id="kv-leg-reuse-pct"></span><span class="muted kv-col" id="kv-leg-reuse">&ndash;</span></li>
+            <li><span class="kv-key kv-key--prefill"></span><span>Reading (prefill)</span><span class="kv-col"></span><span class="muted kv-col" id="kv-leg-prefill">&ndash;</span></li>
+            <li><span class="kv-key kv-key--decode"></span><span>Generating (decode)</span><span class="muted kv-col" id="kv-leg-decode">&ndash;</span></li>
+            <li><span class="kv-key kv-key--free"></span><span>Free</span><span class="kv-col"></span><span class="muted kv-col" id="kv-leg-free">&ndash;</span></li>
+          </ul>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
