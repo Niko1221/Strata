@@ -13939,8 +13939,12 @@ int main(int argc, char** argv) {
                                 if (strata::core::session_file_append(path, meta, sources, id, plan, bytes, err,
                                                                       wo, &st))
                                     appended = true;   // the saved-line suffix reports it (and `bytes` is the delta)
-                                // an append that failed left whatever landed as a torn tail: the reader cascades
-                                // to the last intact generation, and the full rewrite below re-lays the file whole.
+                                else
+                                    // an append that failed left whatever landed as a torn tail: the reader
+                                    // cascades to the last intact generation, and the full rewrite below re-lays
+                                    // the file whole.  The operator sees the same visibility the gate refusal gets.
+                                    std::fprintf(stderr, "strata serve: save append: full rewrite - %s\n",
+                                                 err.c_str());
                             } else
                                 std::fprintf(stderr, "strata serve: save gate: full rewrite - %s\n", gwhy.c_str());
                         }

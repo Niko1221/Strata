@@ -246,6 +246,16 @@ class Slots(unittest.TestCase):
         self.assertEqual(b["n_written"], 56834)
         self.assertFalse(self.engine.ended)
 
+    def test_an_appended_save_reports_the_delta_as_n_written(self):
+        """Task 9 (review minor m5): the engine's 5th SAVED field marks an append; `bytes` is then the
+        appended DELTA, and n_written reports WHAT THIS SAVE WROTE (the delta), not the whole file."""
+        self.engine.script = ["SAVED 150123 18874368 210.0 1\n"]
+        s, b = self.post("/slots/0?action=save", {"filename": "grown.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertEqual((b["n_saved"], b["n_written"]), (150123, 18874368))
+        self.assertAlmostEqual(b["timings"]["save_ms"], 210.0)
+        self.assertFalse(self.engine.ended)
+
     def test_a_blocking_step_gets_its_announced_allowance(self):
         """B: SWAIT gives one non-streaming step (a flush, the device transfer) its own bounded wait."""
         self.engine.silence_s = 0.3
