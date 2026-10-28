@@ -31,6 +31,10 @@ The runner's files show `--conversation-cache-min-tokens` as `<redacted>`: its s
 20000 (see the command below and `raw/r25/config-prod.json`); the runner's files are left as written. No other
 value is redacted.
 
+The server runs without a key (`"api_key": "none"`, LAN only). Passed through `--credential-env`, the runner took the
+word "none" as the key and replaced it wherever it occurred: the runner's README said "the first <key>mpty reasoning"
+for "nonempty". That one word is corrected by hand; nothing else in the runner's files contained it.
+
 The standard run used the production server's learned expert profile (`expert_profile_save`: the adaptive tier's
 ranking, saved every 10 minutes and loaded at the next start), which the runner records as `--expert-profile
 t630-expert-profile.bin`; its `custom_pack` field says none was declared. The sweep rounds below started from the
