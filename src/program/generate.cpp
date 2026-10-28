@@ -16426,7 +16426,6 @@ int main(int argc, char** argv) {
                 int T = 1;
                 policy.set_context(p);
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
-                
                 bool from_sfx = false;
                 int sfx_match = 0;
                 if (gated_proposal) {
