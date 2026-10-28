@@ -26,9 +26,9 @@ for f in sorted(glob.glob(f"{D}/raw/*-p*.json")):
 
 metrics = ["chat tok/s", "agent tok/s", "agent TTFT s", "4K prompt tok/s", "16K prompt tok/s"]
 print(f"{'arm':<18}{'n':>3}{'slots':>7}  " + "  ".join(f"{k:>22}" for k in metrics))
-for arm in sorted(pooled, key=lambda a: (a.split("-")[0], a.split("-")[1] != "base", a)):
-    model = arm.split("-")[0]
-    base = pooled.get(model + "-base") or pooled[min(a for a in pooled if a.split("-")[0] == model)]
+for arm in sorted(pooled, key=lambda a: (a.rsplit("-", 1)[0], not a.endswith("-base"), a)):
+    model = arm.rsplit("-", 1)[0]   # "iq2_xs-up-hc" -> "iq2_xs-up": each arm against the base of its own engine
+    base = pooled.get(model + "-base") or pooled[min(a for a in pooled if a.rsplit("-", 1)[0] == model)]
     cells = []
     for k in metrics:
         v = pooled[arm][k]

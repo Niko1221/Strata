@@ -10,7 +10,10 @@ single-card measurement on ROCm 7.2.4 from Arch packages.
 
 ## Result
 
-- **`STRATA_HC_PERSIST=1`: decode +4.0 % to +7.8 % (chat) and +3.2 % to +5.8 % (agent) on all three packs**, prompt
+- **Upstream `main` (`46c152a1`, engine 0.1.53), IQ2_XS: `STRATA_HC_PERSIST=1` raises decode +5.4 % (chat) and
+  +3.2 % (agent)**, prompt speed unchanged. Measured the same day against a fork build (see below); the fork's only
+  difference on this path, a rocBLAS table, changes prompts and not decode.
+- On the fork build, all three packs: **decode +4.0 % to +7.8 % (chat) and +3.2 % to +5.8 % (agent)**, prompt
   speed unchanged. Every pass of every pack is at or above its base pass.
 - `--vram-reserve-mib` 3072 -> 2048 / 1536 on IQ2_XS (5660 -> 6410 / 6784 expert slots): -1.3 % to +3.3 %, inside
   the pass-to-pass spread.
@@ -19,9 +22,34 @@ single-card measurement on ROCm 7.2.4 from Arch packages.
   this machine is bound by memory bandwidth (dual-channel DDR4-3600), not by cores.
 
 Medians over all requests of three passes (9 chat requests, 15 agent turns, 3 prompts of each size per pass).
-Arms ran interleaved (A, B, C, A, B, C, ...) with a fresh server for every arm. 39 runs, no failed request.
+Arms ran interleaved (A, B, C, A, B, C, ...) with a fresh server for every arm. 51 runs, no failed request.
 
-### STRATA_HC_PERSIST=1
+### Upstream main against the fork build (IQ2_XS, same session)
+
+Four arms, interleaved, 14:23-14:56: upstream `main` at `46c152a1` built in its own worktree with the same CMake
+options, and the fork build used for the rest of this report, each with and without `STRATA_HC_PERSIST=1`. Same
+setup config (reserve 3072), same model files, same server code path.
+
+| Engine | HC_PERSIST | Chat decode tok/s | Agent decode tok/s | 4K prompt tok/s | 16K prompt tok/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| upstream main, 0.1.53 | off | 61.5 | 67.9 | 958.8 | 1,167.9 |
+| upstream main, 0.1.53 | **on** | **64.8 (+5.4 %)** | **70.1 (+3.2 %)** | 959.5 (+0.1 %) | 1,170.0 (+0.2 %) |
+| fork, 0.1.52 + rocBLAS 5.2.0 table | off | 61.7 | 67.5 | 1,106.2 | 1,210.3 |
+| fork, 0.1.52 + rocBLAS 5.2.0 table | **on** | **65.9 (+6.8 %)** | **72.2 (+7.0 %)** | 1,106.8 (+0.1 %) | 1,211.6 (+0.1 %) |
+
+Per-pass medians, upstream main (chat / agent): off 63/61/62 and 67/69/67, on 65/66/64 and 71/69/70.
+
+- Decode is the same on both builds (61.5 / 61.7 chat, 67.9 / 67.5 agent with HC off): the fork's commits do not
+  touch the Qwen3.8 decode path.
+- The prompt difference is the rocBLAS table: upstream finds no table for this rocBLAS (`prefill gemm: cannot open
+  rocBLAS tuning file (.../gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt); rocBLAS's default kernels run`), the fork
+  loads it (`rocBLAS tuning enabled (112 rows, 78 with a solution, ...)`): 4K +15.4 %, 16K +3.6 %. That table is
+  proposed in #3924.
+- The HC_PERSIST gain is a little smaller on upstream main (agent +3.2 % against +7.0 %); both builds show it in
+  every pass for chat. The absolute numbers in the sections below are from the fork build: on upstream `main` with
+  Arch's ROCm 7.2.4, expect the same decode and lower 4K / 16K prompt speed until a matching table exists.
+
+### STRATA_HC_PERSIST=1 on three packs (fork build)
 
 | Pack | Chat decode tok/s | Agent decode tok/s | 4K prompt tok/s | 16K prompt tok/s |
 | --- | ---: | ---: | ---: | ---: |
@@ -78,9 +106,9 @@ absolute numbers differ from the tables above.
 | Storage | model files on a Samsung 990 PRO 2 TB (NVMe) |
 | OS | Arch-based (Omarchy), kernel 7.2.8, Hyprland desktop session running during the measurement |
 | ROCm | Arch packages: rocm-core 7.2.4-1, hip-runtime-amd 7.2.4-1, rocblas 7.2.4-3 |
-| Strata | engine 0.1.52, source build for gfx1030 (`-DCMAKE_HIP_ARCHITECTURES=gfx1030`) |
+| Strata | two source builds for gfx1030 with the same options (`-DCMAKE_HIP_ARCHITECTURES=gfx1030 -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON -DSTRATA_MMQ_TQ_OVERLAY=ON -DSTRATA_PREFILL_MMQ=ON -DSTRATA_Q6K_EXPERTS=ON`): upstream `main` `46c152a1` (engine 0.1.53) and a fork build (engine 0.1.52) |
 
-**Source.** A fork branch at `5a43a3d9`, which is upstream `main` at `5e8a4cca` (2026-10-27) plus 16 local commits.
+**Source of the fork build.** A fork branch at `5a43a3d9`, which is upstream `main` at `5e8a4cca` (2026-10-27) plus 16 local commits.
 For the Qwen3.8 path these add one data file: `tools/hip/gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt`, the rocBLAS
 solution table for this ROCm build (used through `STRATA_ROCBLAS_TUNING`; prompt GEMMs only; proposed in #3924).
 The other commits touch the Qwen3.6 engine path (`src/qwen35`), the local switch script, the web page and the image
@@ -112,14 +140,15 @@ setting of its base (see `run.sh`).
 
 | Path | Content |
 | --- | --- |
-| `raw/<arm>-p<pass>.json` | the `results.json` of every run (39 files): every request with its token counts, timings and drafts, plus the machine facts |
+| `raw/<arm>-p<pass>.json` | the `results.json` of every run (51 files): every request with its token counts, timings and drafts, plus the machine facts |
 | `configs/<arm>.json` | the sanitized config of every arm |
-| `engine-log-excerpts/` | the first 80 lines of the engine log of each base and HC arm (pass 1) |
-| `run.sh`, `run-pool-workers.sh` | the drivers (`STRATA_DIR=... ./run.sh`; the pool-worker run also needs `CONFIGS_DIR`) |
+| `engine-log-excerpts/` | the first 80 lines of the engine log of each base and HC arm (pass 1), upstream main included |
+| `run.sh`, `run-pool-workers.sh`, `run-upstream-ab.sh` | the drivers (`STRATA_DIR=... ./run.sh`; the pool-worker run also needs `CONFIGS_DIR`; the upstream A/B needs `FORK_DIR` and `MAIN_DIR`) |
 | `analyze.py` | pools every request of all passes per arm: `python3 analyze.py .` prints the tables above |
 
 ## Limits
 
+- Upstream `main` was measured on IQ2_XS only; Coder and Swift only on the fork build.
 - One machine, one session per arm and three passes. Run-to-run spread of the chat median is about +-2 tok/s, so the
   reserve and swaps results do not separate from noise; the HC_PERSIST result holds in every pass.
 - HC_PERSIST is not bitwise the default read ([AMD_HIP.md](../../../docs/AMD_HIP.md#rdna2-gfx1030)); this report
