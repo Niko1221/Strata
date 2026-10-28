@@ -28,6 +28,7 @@
  *   SCRIPT:call <tool> <json>       one call to any tool with the given JSON arguments
  *   SCRIPT:multi <json>             {"calls":[[tool,args],...],"say":"final text"}: all the calls in one reply, then the text once their results are in
  *   SCRIPT:searchloop               a model that never stops: every reply rewrites a numbered plan and calls web_search again with a new query
+ *   SCRIPT:textcall                 a reply that writes a tool call as text instead of calling the tool
  *   SCRIPT:bloat <prompt tokens>    a reply that is only thinking (no answer text), with usage reporting that many prompt tokens (a context at 100%)
  *
  * A request whose last message is a tool result is answered with a text that quotes the result.
@@ -156,6 +157,10 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       promptTokens = parseInt((directive[2] ?? '').trim(), 10) || 100;
       send({ role: 'assistant', content: '', reasoning_content: 'Thinking about it for a long time and never getting to the answer.' });
       return finish('stop', 20);
+    }
+    if (directive?.[1] === 'textcall') {
+      // A model that writes a tool call into its text instead of calling the tool (seen in a real session).
+      return say(['Let me compile that.\n\n<tool_call>\n<function=compile>\n<parameter=command>python -m py_compile a.py</parameter>\n<parameter=description>Compile it</parameter>\n</function>\n</tool_call>']);
     }
     if (directive?.[1] === 'goalstep') {
       // A goal round: read the goal, mark it complete, then say so.

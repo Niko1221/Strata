@@ -3590,5 +3590,9 @@
   "s9161": "Windows ist so eingestellt, dass es den Proxy per Skript wählt. Strata kann dieses Skript nicht ausführen und nutzt deshalb eine direkte Verbindung. Wähle unter Einstellungen → Tools → Netzwerk die Proxy-Adresse, um sie zu verwenden.",
   "s9162": "Auf diesem Computer ist kein Proxy eingerichtet.",
   "s9163": "Strata konnte diesen Unteragenten nicht stoppen. Er läuft möglicherweise noch.",
-  "s9164": "Engine herunterladen"
+  "s9164": "Engine herunterladen",
+  "s9165": "Nicht ausgeführt – als Text geschrieben",
+  "s9166": "Der Assistent hat diesen Werkzeugaufruf als Text geschrieben, deshalb wurde er nicht ausgeführt.",
+  "s9167": "Es wurde nichts ausgeführt. Der Assistent hat den Aufruf als Text geschrieben, statt das Werkzeug aufzurufen.",
+  "s9168": "Ich habe einen Werkzeugaufruf als Text geschrieben, statt das Werkzeug aufzurufen; er wurde deshalb nicht ausgeführt. Wenn die Arbeit dort stehen blieb, sag „weiter“, dann sende ich ihn als echten Aufruf."
 }

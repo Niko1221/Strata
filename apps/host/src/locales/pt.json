@@ -3590,5 +3590,9 @@
   "s9161": "O Windows está configurado para escolher um proxy com um script. O Strata não consegue executar esse script, então usa uma conexão direta. Escolha o endereço do proxy em Configurações → Ferramentas → Rede para usá-lo.",
   "s9162": "Nenhum proxy está definido neste computador.",
   "s9163": "O Strata não conseguiu parar este subagente. Ele pode ainda estar em execução.",
-  "s9164": "Baixar o motor"
+  "s9164": "Baixar o motor",
+  "s9165": "Não executado — escrito como texto",
+  "s9166": "O assistente escreveu esta chamada de ferramenta como texto, por isso ela não foi executada.",
+  "s9167": "Nada foi executado. O assistente escreveu como texto em vez de chamar a ferramenta.",
+  "s9168": "Escrevi uma chamada de ferramenta como texto em vez de chamar a ferramenta, por isso ela não foi executada. Se o trabalho parou ali, diga “continuar” e eu a enviarei como uma chamada real."
 }

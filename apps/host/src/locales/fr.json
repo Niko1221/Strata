@@ -3590,5 +3590,9 @@
   "s9161": "Windows choisit un proxy par script. Strata ne peut pas exécuter ce script, il utilise donc une connexion directe. Choisissez l’adresse du proxy dans Réglages, Outils, Réseau pour l’utiliser.",
   "s9162": "Aucun proxy n’est configuré sur cet ordinateur.",
   "s9163": "Strata n’a pas pu arrêter cet assistant. Il peut encore tourner.",
-  "s9164": "Télécharger le moteur"
+  "s9164": "Télécharger le moteur",
+  "s9165": "Non exécuté — écrit en texte",
+  "s9166": "L’assistant a écrit cet appel d’outil en texte, il n’a donc pas été exécuté.",
+  "s9167": "Rien n’a été exécuté. L’assistant l’a écrit en texte au lieu d’appeler l’outil.",
+  "s9168": "J’ai écrit un appel d’outil en texte au lieu d’appeler l’outil, il n’a donc pas été exécuté. Si le travail s’est arrêté là, dites « continue » et je l’enverrai comme un véritable appel."
 }

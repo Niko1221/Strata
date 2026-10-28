@@ -14,6 +14,8 @@
  * translates a `delta` frame that carries `key`). Each says what happened and gives one next step.
  */
 
+import { TEXT_CALL_NOTE } from './events.mjs';
+
 export const GUARD_LIMITS = Object.freeze({
   failedSearches: 3,
   searchesPlan: 10,
@@ -34,6 +36,7 @@ const NOTES = {
   rewrites: 'I kept rewriting the plan, so I stopped here with the latest version. Tell me what to change, or approve it.',
   context: 'I ran out of room in this chat, so I stopped. Strata is summarising the older messages to make space. Say “continue” to go on, or start a new chat.',
   empty: 'I stopped without writing an answer. Send your message again, or say “continue”.',
+  'text-call': TEXT_CALL_NOTE,
 };
 export const GUARD_NOTES = Object.freeze({ ...NOTES });
 

@@ -128,6 +128,42 @@ test('a text the live frames missed is completed from the committed message, onc
   assert.deepEqual(p.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'Hello there' }] } })), []);
 });
 
+test('a tool call the model wrote as text becomes a card that says it did not run', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  const frames = p.consume(chunk({ type: 'text-delta', index: 0, text: 'Now compile:\n<tool_call>\n<function=compile>\n<parameter=command>python -m py_compile a.py</parameter>\n<parameter=description>Compile it</parameter>\n</function>\n</tool_call>' }));
+  assert.equal(frames.filter(f => f.type === 'delta').map(f => f.text).join(''), 'Now compile:\n', 'the raw call never reaches the chat');
+  const card = frames.find(f => f.type === 'agent-tool').tool;
+  assert.equal(card.name, 'compile');
+  assert.deepEqual(card.args, { command: 'python -m py_compile a.py', description: 'Compile it' });
+  assert.equal(card.state, 'error');
+  assert.equal(card.scope, 'shell');
+  assert.equal(card.preview, 'python -m py_compile a.py');
+  assert.equal(card.verb, 'Not run — written as text');
+  assert.match(card.result, /Nothing ran/);
+  assert.equal(p.textCalls, 1);
+});
+
+test('a call split across chunks is still taken out whole, and a quoted block is left alone', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  const out = [];
+  for (const piece of ['Look <tool', '_call>\n<function=compile>\n<para', 'meter=command>ls</parameter>\n</function>\n</tool_call>', ' done']) out.push(...p.consume(chunk({ type: 'text-delta', index: 0, text: piece })));
+  assert.equal(out.filter(f => f.type === 'delta').map(f => f.text).join(''), 'Look  done');
+  assert.equal(out.find(f => f.type === 'agent-tool').tool.args.command, 'ls');
+
+  const q = new TurnProjector({ startedAt: 0 });
+  const quoted = q.consume(chunk({ type: 'text-delta', index: 0, text: 'The format is <tool_call>a note</tool_call>.' }));
+  assert.equal(quoted.filter(f => f.type === 'delta').map(f => f.text).join(''), 'The format is <tool_call>a note</tool_call>.');
+  assert.equal(quoted.filter(f => f.type === 'agent-tool').length, 0);
+  assert.equal(q.textCalls, 0);
+});
+
+test('a half-written tag is held until the message ends, then shown', () => {
+  const p = new TurnProjector({ startedAt: 0 });
+  assert.equal(p.consume(chunk({ type: 'text-delta', index: 0, text: 'x <tool' })).map(f => f.text).join(''), 'x ');
+  const end = p.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: 'x <tool' }] } }));
+  assert.equal(end.map(f => f.text).join(''), '<tool');
+});
+
 test('tool scopes and previews', () => {
   assert.equal(toolScope('write'), 'write'); assert.equal(toolScope('grep'), 'read'); assert.equal(toolScope('web_fetch'), 'connected');
   assert.equal(presentTool({ callId: 'x', name: 'write', args: { file_path: 'a.txt' } }).preview, 'a.txt');
