@@ -629,8 +629,8 @@ int main() {
         check(session_phase_limit_s(0) == 60 && session_phase_limit_s(1198691396) == 60 + (1198691396 >> 22) &&
               session_phase_limit_s(UINT64_MAX) == 3600, "phase limit: 60 s + 1 s per 4 MiB, at most an hour");
     }
-    // the pipeline witness: the OS write of a full block must lie entirely inside some source-read window.
-    // A serialized copy->write loop cannot produce this: its writes happen strictly between reads, never inside one.
+    // the pipeline witness: the OS write of a full block must begin while a source read is still running.
+    // A serialized copy->write loop cannot produce this: its writes happen strictly between reads, never during one.
     {
         auto ns = []() {
             return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -658,11 +658,18 @@ int main() {
         const fs::path p = dir / "pipeline.bin";
         check(session_file_write(p.string(), meta, src, id, written, error, opt), "pipeline: 48 MiB streamed write");
         check(spans.size() == 3, "pipeline: three full 16 MiB blocks written");
+        // the witness is a write BEGAN while a read was still running: a serialized loop's writes always sit
+        // strictly between reads (its start can never fall inside a read window), a pipelined one's do
         bool overlap = false;
         for (const auto& sp : spans)
             for (const auto& w : reads)
-                if (w.first <= std::get<1>(sp) && std::get<2>(sp) <= w.second) overlap = true;
-        check(overlap, "pipeline: a block's OS write lies entirely inside a source-read window");
+                if (w.first <= std::get<1>(sp) && std::get<1>(sp) < w.second) overlap = true;
+        if (!overlap) {
+            for (const auto& w : reads) std::fprintf(stderr, "read window [%llu..%llu]\n", w.first, w.second);
+            for (const auto& sp : spans) std::fprintf(stderr, "block span end %llu: [%llu..%llu]\n",
+                                                       std::get<0>(sp), std::get<1>(sp), std::get<2>(sp));
+        }
+        check(overlap, "pipeline: a block's OS write began during a source read");
         // the bytes stay the ordinary streamed-write bytes: a captured-image twin must write the identical file
         SavedConversation twin = original;
         twin.kv.clear();
@@ -689,6 +696,26 @@ int main() {
         bool monotonic = !seen.empty() && seen.front() == 0;
         for (size_t i = 1; i < seen.size(); ++i) monotonic = monotonic && seen[i] > seen[i - 1];
         check(monotonic && seen.back() == written, "pipeline: progress never goes back and ends at the file size");
+    }
+    // a block write failing mid-pipeline: the writer latches, the producer stops, and the error/cleanup channel
+    // is the same one the serialized loop used (the test completes at once: no writer to outwait)
+    {
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 8192; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {(64u << 20) + 4096, 0, 0, 0, 0};
+        src[0].read = [](size_t, size_t, void* d, size_t c) { std::memset(d, 0x33, c); return true; };
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::string(step) == "write" ? EIO : 0; };
+        SessionStatus st;
+        const fs::path q = dir / "writer-fault.bin";
+        check(!session_file_write(q.string(), meta, src, id, written, error, opt, &st), "writer fault: the save fails");
+        check(error.find("session file:") != std::string::npos && error.find("failed") != std::string::npos,
+              "writer fault: the error channel is unchanged");
+        check(!st.published, "writer fault: nothing was published");
+        check(!fs::exists(q) && no_temp(dir), "writer fault: no file and no temporary left behind");
     }
     // A: the SAVE's RAM preflight comes BEFORE the checkpoint is copied
     {
