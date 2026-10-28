@@ -5656,7 +5656,7 @@ class Service:
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
         with (self._turn(cancel) if images else contextlib.nullcontext()), \
-                (self.vision.batch() if images else contextlib.nullcontext()):
+                (self.vision.batch() if images and hasattr(self.vision, "batch") else contextlib.nullcontext()):
             if images:
                 if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
                     self._vision_up()
