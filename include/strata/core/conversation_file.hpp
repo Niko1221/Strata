@@ -92,6 +92,19 @@ void trailer_bytes(const SessionTrailer& t, uint8_t (&bytes)[128]);
 // The chain start for generation 1: session_hash64 over the 16 bytes model-LE then config-LE.
 uint64_t trailer_genesis_chain(const SessionFileIdentity& id);
 
+// Session file v3 header (64 B, version 3): bytes 0..31 are immutable - magic, version,
+// header size, model, config - and the root hash at [32,40) covers ONLY that region
+// (session_hash64 of bytes 0..32, seed 0).  `payload` (committed_bytes of the newest
+// generation), `reserved0` (newest-trailer offset) and `reserved1` (next-group start =
+// newest trailer offset + 128) are advisory: a torn in-place header update must not distrust
+// the file - the trusted trailer's committed_bytes is authoritative, the header slots are a
+// fast path.
+struct SessionHeaderV3 {
+    uint64_t payload = 0, reserved0 = 0, reserved1 = 0;
+};
+void header_bytes_v3(uint8_t (&h)[64], const SessionFileIdentity& id, const SessionHeaderV3& body);
+bool header_parse_v3(const uint8_t* h, const SessionFileIdentity& expect, SessionHeaderV3& body, std::string& error);
+
 // Typed, length-delimited fields for an identity hash: each field is (tag, type, length, bytes), so two different
 // field lists never give the same byte stream, and a double is hashed by its exact bits (no decimal rounding).
 class SessionIdentityBuilder {
