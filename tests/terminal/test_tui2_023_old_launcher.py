@@ -42,7 +42,7 @@ class OldLauncherIsToldTheTruth(unittest.TestCase):
         for env in ({"STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"}, {}):
             done = self.run_version(tree, **env)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertTrue(done.stdout.startswith("strata 0.2.6 (build "), done.stdout)
+            self.assertTrue(done.stdout.startswith("strata 0.2.7 (build "), done.stdout)
         elsewhere = self.staged_tree(parent="terminal")                       # not the updater's staging folder
         self.assertEqual(self.run_version(elsewhere, STRATA_NO_ACQUIRE="1").returncode, 0)
 

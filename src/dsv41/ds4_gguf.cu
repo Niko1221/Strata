@@ -1402,6 +1402,7 @@ iq::SetArgs iq_set(const x3::SetArgs& sa) {   // a set as ds4_iq's arguments (th
     q.n_embd = sa.n_embd;
     q.n_ff = sa.n_ff;
     q.limit = sa.limit;
+    q.xf16 = sa.x16;
     return q;
 }
 }  // namespace

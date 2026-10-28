@@ -1,5 +1,6 @@
 // src/core/arch_defaults.cpp - see include/strata/core/arch_defaults.hpp.
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/defaults_026.hpp"
 
 #include "strata/kernels/gfx_arch.hpp"
 
@@ -10,10 +11,26 @@
 namespace strata::core {
 
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch) {
+    return arch_default_env(gcn_arch, strata::qwen_defaults_026());
+}
+
+std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026) {
+#if defined(_WIN32)
+    return arch_default_env(gcn_arch, defaults026, true);
+#else
+    return arch_default_env(gcn_arch, defaults026, false);
+#endif
+}
+
+std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026, bool windows) {
     std::vector<std::pair<std::string, std::string>> t;
     if (strata::kernels::gfx_arch_is_gfx12(gcn_arch)) {
-        // gfx1200 / gfx1201 (RDNA4): only the PROMPT half of the gfx1151 table.  Reported exact (identical answers) on an R9700
-        // in #1478 and re-checked bitwise here (notes-142-amd.md); the decode half measured slower on that card, so it stays out.
+        // gfx1200 / gfx1201 (RDNA4): the PROMPT half of the gfx1151 table (reported exact on an R9700 in #1478, re-checked
+        // bitwise in notes-142-amd.md) plus four decode switches measured one at a time on an R9700 in 0.2.7 (p620, IQ3_S,
+        // engine 0.1.51, 8K prompt, rotated pairs): ATTN_LANECELL + ATTN_MERGE_V2 +1.9%, TSUM +1.9%, EXPDEC +0.6%, GDN_SPLIT
+        // 0.0%; the four together +3.5% (3/3 pairs) with the answer md5 identical to the default.  The rest of the gfx1151
+        // decode half stays out (PF_GEMM/PF_FUSED are bit-changing; Q8_PACKED, SH_STREAM and QFUSE were measured on other
+        // cards only, and the whole half measured slower here when it was tried as one block).
         // STRATA_HCD_EXACT is left out: it needs the gfx1151 hipBLASLt tuning table, finds none on gfx12, says so on every start
         // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
         // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
@@ -27,6 +44,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
             {"STRATA_GDN_NOY", "1"},
             {"STRATA_CVEC_FUSE", "1"},
         };
+        if (defaults026) return t;   // STRATA_DEFAULTS=026: v0.2.6's table, the prompt half only
+        // decode (bit-identical on the R9700 measurement above)
+        t.push_back({"STRATA_ATTN_LANECELL", "1"});
+        t.push_back({"STRATA_ATTN_MERGE_V2", "1"});
+        t.push_back({"STRATA_TSUM", "1"});
+        t.push_back({"STRATA_EXPDEC", "1"});
         return t;
     }
     if (!strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
@@ -56,6 +79,15 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         {"STRATA_PLE_BATCH", "1"},       // the verify window's PLE key / value projections at once (S25)
         {"STRATA_SH_STREAM", "1"},       // the shared expert on its own stream: decode +1.8% / +6.7% (UD-Q4_K_XL) (140-m)
     };
+    // 0.2.7: Windows gfx1151 leaves the shared-expert fork off (the HIP default).  Interleaved A/B on a Strix Halo Windows PC (Qwen
+    // IQ3_S, engine 0.1.51, 9 chat answers each, 4K prompt): decode 43.9 / 43.6 / 43.2 tok/s with it, 48.3 / 46.0 / 46.6 without
+    // (+6.9% median), prompts unchanged, the token ids identical either way (docs/STRIX_HALO_WINDOWS.md).  Linux gfx1151 keeps the
+    // fork on until it is measured there.  STRATA_SH_STREAM=1 turns it back on; STRATA_DEFAULTS=026 keeps v0.2.6's table.
+    if (windows && !defaults026) {
+        for (auto it = t.begin(); it != t.end(); ++it) {
+            if (it->first == "STRATA_SH_STREAM") { t.erase(it); break; }
+        }
+    }
     return t;
 }
 

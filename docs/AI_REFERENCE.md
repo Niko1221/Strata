@@ -10,8 +10,8 @@ holds the technical context behind the short [README](../README.md). Use [AI_SET
 - Strata runs supported language models locally, with a desktop app, a terminal app, and an inference engine.
 - The engine uses the GPU, system RAM and, for applicable models and memory modes, SSD storage.
   See [how it works](HOW_IT_WORKS.md) and [engine details](DETAILS.md).
-- There is one app installer per system (`Strata-0.2.6-windows-x64-setup.exe`, `Strata-0.2.6-linux-x86_64.AppImage`,
-  `Strata-0.2.6-macos-arm64.dmg`). The Windows and Linux installers carry no engine: the app downloads the engine for the
+- There is one app installer per system (`Strata-0.2.7-windows-x64-setup.exe`, `Strata-0.2.7-linux-x86_64.AppImage`,
+  `Strata-0.2.7-macos-arm64.dmg`). The Windows and Linux installers carry no engine: the app downloads the engine for the
   graphics card on first start, or installs a file the user already has. The Mac dmg keeps its Metal engine inside.
   The Terminal's `strata launch` downloads the appropriate engine and model.
   See [installation](INSTALL.md) and [Terminal launch](TERMINAL_LAUNCH.md).
@@ -29,7 +29,7 @@ not additional top-level families.
 
 | Family | Availability evidence | Catalog and limits |
 | --- | --- | --- |
-| DeepSeekV4.1-Flash-1017 | `deepseek41` in `MULTI_FILE_FAMILIES` in [setup.py](../setup.py); Terminal since 0.2.4, desktop app since 0.2.5 | [MODELS.md](MODELS.md#deepseek-v41-flash): IST-DAS 1.75 bpw (239 GB), 2.00 bpw (257 GB) and 2.25 bpw (274 GB), 8K context, a Speed choice (Faster or Full quality). NVIDIA RTX 30, 40 and 50 (Windows, Linux) and AMD Radeon AI PRO R9700 (Linux). Not on Mac, Intel Arc or Strix Halo yet. |
+| DeepSeekV4.1-Flash-1017 | `deepseek41` in `MULTI_FILE_FAMILIES` in [setup.py](../setup.py); Terminal since 0.2.4, desktop app since 0.2.5 | [MODELS.md](MODELS.md#deepseek-v41-flash): IST-DAS 1.75 bpw (239 GB), 2.00 bpw (257 GB) and 2.25 bpw (274 GB), 8K context, a Speed choice (Faster or Full quality). NVIDIA RTX 30, 40 and 50 (Windows, Linux), AMD Radeon AI PRO R9700 (Linux) and Ryzen AI Max / Strix Halo (Windows, gfx1151). Not on Mac, Intel Arc or Strix Halo on Linux yet. |
 | Qwen3.8-Flash-Next | Catalog entries in [setup.py](../setup.py), model guides and backend documentation | [MODELS.md](MODELS.md), [QUANTS.md](QUANTS.md), [GYRO.md](GYRO.md), [NVFP4.md](NVFP4.md), [ORCA.md](ORCA.md) |
 | Qwen3.6-35B-A3B | `qwen36` in `OWN_PATH_FAMILIES` in [setup.py](../setup.py) | [QWEN36.md](QWEN36.md): NVIDIA and AMD; not the Intel or Mac engine |
 

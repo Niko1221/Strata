@@ -20,6 +20,7 @@
 #include <vector>
 
 using strata::program::conv_cache::eviction_victim;
+using strata::program::conv_cache::restore_fits;
 using strata::program::conv_cache::spread_victim;
 
 namespace {
@@ -131,6 +132,24 @@ int main() {
         const std::vector<uint64_t> s4 = {1, 9, 3, 5};
         check(eviction_victim(s4.data(), s4.size(), 4, nullptr, all) == 2, "everything pinned: the oldest pin leaves, never the root");
         check(eviction_victim(s4.data(), s4.size(), 1, nullptr, all) == 0, "a one-slot budget keeps no pin: the oldest leaves");
+    }
+    {   // #2409: a restore is refused only for a card that must create its copy stream and has no room for it
+        constexpr uint64_t need = strata::program::conv_cache::kRestoreFirstUseMib << 20;
+        const uint64_t loaded[] = {300ull << 20, 104ull << 20};         // a loaded card: far under --vram-reserve-mib
+        const uint8_t ready[] = {1, 1};
+        check(restore_fits(loaded, ready, 2, need), "cards with their stream already: any amount free admits (the #2409 review's case)");
+        const uint8_t later_new[] = {1, 0};
+        check(restore_fits(loaded, later_new, 2, need), "a card that must create its stream, with 104 MiB free: admitted");
+        const uint64_t full[] = {300ull << 20, 20ull << 20};
+        check(!restore_fits(full, later_new, 2, need), "a card that must create its stream, with 20 MiB free: reread instead");
+        check(restore_fits(full, ready, 2, need), "the same full card with its stream: admitted");
+        const uint64_t edge[] = {need, need - 1};
+        const uint8_t none[] = {0, 0};
+        check(!restore_fits(edge, none, 2, need), "one byte under the need refuses");
+        check(restore_fits(edge, none, 1, need), "exactly the need admits");
+        check(restore_fits(nullptr, none, 2, need) && restore_fits(full, nullptr, 2, need) && restore_fits(full, none, 0, need) &&
+                  restore_fits(full, none, 2, 0),
+              "no sample, no cards, no need: do not refuse");
     }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;

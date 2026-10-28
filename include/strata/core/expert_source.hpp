@@ -671,7 +671,7 @@ int tail_skip_rank();
 void set_tail_skip_rank(int r);
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out);
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic = strata::kernels::cpu::NativeArithmetic::Default);
 
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about
@@ -819,7 +819,11 @@ public:
     /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
     /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
     bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    /// STRATA_RAM_ADAPT: the same move as replace_resident, but `in` is copied out of the finished stage buffer
+    /// a demand read left it in (no file read).  False, nothing changed, when `in` is not staged or still filling.
+    bool replace_resident_staged(int64_t layer, int64_t in, int64_t out);
     int64_t ram_adapts() const { return ram_adapts_; }
+    int64_t ram_staged() const { return ram_staged_; }   ///< of ram_adapts(): copied out of a stage buffer
     // ---- 149-prefetch (STRATA_RAM_ADAPT2): the same promotion, staged.  `ram_stage` queues the read of `in` on an I/O thread
     // (false: already queued, the queue is full, or no compact copy); `ram_install` - called by the decode thread at a window
     // boundary, when no window reads the RAM copy - puts every read that has landed into `out`'s place, unless the GPU tier
@@ -1106,7 +1110,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
-    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    int64_t ram_adapts_ = 0;                  ///< replace_resident(_staged): experts moved into the compact copy
+    int64_t ram_staged_ = 0;                  ///< replace_resident_staged: of those, copied out of a stage buffer
     std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     // 149-prefetch: the staged promotions (ram_stage / ram_install)
     struct RamJob { int64_t layer, in, out; std::vector<uint8_t> buf; int state; };   ///< state 0 queued, 1 reading, 2 landed, 3 failed

@@ -398,6 +398,45 @@ inline bool in_ram(const void* p, size_t n) {
 #endif
 }
 
+/// Bytes free in the kernel's explicit huge-page pool (HugePages_Free x Hugepagesize); 0 elsewhere or when unreadable.
+/// (MemAvailable does not count a reserved pool, so a budget that must see it - the copy arena on DS4_COPY_HUGETLB -
+/// adds this.)
+inline uint64_t huge_free_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    std::FILE* f = std::fopen("/proc/meminfo", "r");
+    if (f == nullptr) return 0;
+    char line[256];
+    uint64_t pages = 0, size_kb = 0;
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long v = 0;
+        if (std::sscanf(line, "HugePages_Free: %llu", &v) == 1) pages = v;
+        else if (std::sscanf(line, "Hugepagesize: %llu kB", &v) == 1) size_kb = v;
+    }
+    std::fclose(f);
+    return pages * size_kb * 1024ull;
+#endif
+}
+
+/// Anonymous memory on explicit 2 MB huge pages (MAP_HUGETLB, from the kernel's pool - reserve it first, e.g.
+/// `sysctl vm.nr_hugepages=N`): rounded up to a whole number of huge pages, `*got` its size.  nullptr: the pool is empty
+/// or the kernel cannot.  (Unlike THP, a pin of this memory keeps 2 MB pages: a DMA from it does not need 4 KB
+/// translations, which is what DS4_COPY_PIN's registered arena wanted.)
+inline void* huge_alloc(size_t bytes, size_t* got = nullptr) {
+#if defined(_WIN32)
+    (void) bytes, (void) got;
+    return nullptr;
+#else
+    const size_t hp = (size_t) 2 << 20;
+    const size_t hb = (bytes + hp - 1) / hp * hp;
+    void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    if (got != nullptr) *got = hb;
+    return m;
+#endif
+}
+
 /// Anonymous memory on NUMA node `node` of `nodes` (node < 0 or nodes < 2: wherever the first touch puts it), on huge
 /// pages where the OS gives them; nullptr if it cannot be had.
 inline void* anon_alloc(size_t bytes, int node, int nodes) {
