@@ -7,6 +7,7 @@ import { tr } from '../lib/i18n';
  */
 import { useEffect, useState } from 'react';
 import { api } from '../lib/client';
+import { classifyNetworkError, networkErrorSentence } from '../lib/net-errors';
 import { pushToast } from '../lib/store';
 import { Btn, Dialog, ErrorNotice, Field, Icon, Select } from './ui';
 
@@ -59,6 +60,21 @@ const KIND_CHOICES = [
 ];
 const KIND_NAMES: Record<CustomTool['kind'], string> = { instructions: 'Instructions', command: 'Command', server: 'Tool server' };
 
+/** Settings, Tools, Network: the host answers with the saved choice and what a request would do right now (server/net.mjs). */
+export type NetworkMode = 'system' | 'direct' | 'custom';
+export interface NetworkState {
+  policy: { mode: NetworkMode; url: string };
+  system: { source: 'environment' | 'windows' | 'none'; proxy: string | null; pac: string | null; note: string };
+  effective: { mode: 'proxy' | 'direct'; proxy: string | null; source: string; note: string; noteCode?: string; noteValues?: string[] };
+}
+/** What POST /api/network/test answers: did a small request get through, and if not, which code came back. */
+interface NetworkCheck { ok: boolean; status?: number; ms?: number; via?: string; proxy?: string | null; code?: string; message?: string }
+const NETWORK_CHOICES: { value: NetworkMode; label: string }[] = [
+  { value: 'system', label: 'Follow this computer' },
+  { value: 'direct', label: 'Direct connection' },
+  { value: 'custom', label: 'A proxy address' },
+];
+
 interface Draft {
   id?: string;
   name: string;
@@ -79,12 +95,57 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
   const [formError, setFormError] = useState('');
   const [remove, setRemove] = useState<CustomTool | null>(null);
   const [busy, setBusy] = useState(false);
+  const [net, setNet] = useState<NetworkState | null>(null);
+  const [netMode, setNetMode] = useState<NetworkMode>('system');
+  const [netAddress, setNetAddress] = useState('');
+  const [netCheck, setNetCheck] = useState<{ ok: boolean; message: string; values?: string[]; next?: string; detail?: string } | null>(null);
+  const [checking, setChecking] = useState(false);
 
   async function load() {
     try { setState(await api.get<ToolsState>('/api/agent/tools')); setError(''); }
     catch (e) { setError(e instanceof Error ? e.message : 'The tool list could not be loaded.'); }
   }
   useEffect(() => { if (!preview) void load(); }, []);
+
+  /** The network choice lives beside the tool settings but has its own route: it is not a tool, it is how every request leaves. */
+  async function loadNetwork() {
+    try {
+      const value = await api.get<NetworkState>('/api/network');
+      setNet(value); setNetMode(value.policy.mode); setNetAddress(value.policy.url);
+    } catch { setNet(null); }
+  }
+  useEffect(() => { if (!preview) void loadNetwork(); }, []);
+
+  async function saveNetwork(mode: NetworkMode, url = netAddress) {
+    if (preview) return;
+    setBusy(true);
+    try {
+      const value = await api.put<NetworkState>('/api/network', { mode, url: mode === 'custom' ? url.trim() : '' });
+      setNet(value); setNetMode(value.policy.mode); setNetAddress(value.policy.url); setNetCheck(null); setError('');
+    } catch (e) {
+      setError(e instanceof Error ? networkErrorSentence(e, { proxy: net?.policy.mode === 'custom' ? net.policy.url : net?.effective.proxy ?? null }) : 'The network setting could not be saved.');
+      setNetMode(net?.policy.mode ?? 'system');
+    } finally { setBusy(false); }
+  }
+
+  /** One small request through the door just chosen, so "it does not work" comes with a reason instead of a guess. */
+  async function checkNetwork() {
+    setChecking(true); setNetCheck(null);
+    try {
+      const result = await api.post<NetworkCheck>('/api/network/test');
+      if (result.ok) {
+        setNetCheck(result.proxy
+          ? { ok: true, message: 'Answered through the proxy at {0}.', values: [result.proxy] }
+          : { ok: true, message: 'Answered on a direct connection.' });
+      } else {
+        const problem = classifyNetworkError({ code: result.code, message: result.message }, { proxy: result.proxy ?? null });
+        setNetCheck({ ok: false, message: problem.message, values: problem.values, next: problem.next, detail: problem.detail });
+      }
+    } catch (e) {
+      const problem = classifyNetworkError(e);
+      setNetCheck({ ok: false, message: problem.message, values: problem.values, next: problem.next, detail: problem.detail });
+    } finally { setChecking(false); }
+  }
 
   async function save(change: Record<string, unknown>) {
     if (preview) return;
@@ -145,6 +206,45 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
           <button className="st-toggle" role="switch" aria-checked={state.webWithoutAsking} aria-label={tr('Let the assistant search the web without asking')} disabled={busy} onClick={() => void save({ webWithoutAsking: !state.webWithoutAsking })} />
         </Field>
       </div>
+    </section>
+
+    <section className="settings-section">
+      <h2 className="h4" style={{ marginBottom: 10 }}>{tr('Network')}</h2>
+      {net ? <div className="st-card st-card--flush">
+        <Field
+          label={tr('How Strata reaches the internet')}
+          hint={tr('Follow this computer uses the proxy Windows, your VPN app or an HTTPS_PROXY setting names. A direct connection ignores it. A proxy address sends everything Strata asks for through that one proxy. Strata never sends this computer’s own addresses through a proxy.')}
+        >
+          <Select
+            ariaLabel={tr('How Strata reaches the internet')}
+            value={netMode}
+            options={NETWORK_CHOICES}
+            onChange={value => { setNetMode(value); if (value !== 'custom' || netAddress.trim()) void saveNetwork(value); }}
+          />
+        </Field>
+        {netMode === 'custom' ? <Field wide label={tr('Proxy address')} hint={tr('For example http://127.0.0.1:7890. A user name and password go in the address, like http://user:password@127.0.0.1:7890.')}>
+          <div className="row">
+            <input className="st-input" style={{ width: 250 }} aria-label={tr('Proxy address')} spellCheck={false} autoComplete="off" placeholder="http://127.0.0.1:7890" value={netAddress} onChange={e => setNetAddress(e.target.value)} />
+            <Btn size="sm" disabled={busy || !netAddress.trim() || netAddress.trim() === net.policy.url} onClick={() => void saveNetwork('custom')}>{tr('Save address')}</Btn>
+          </div>
+        </Field> : null}
+        <Field label={tr('Right now')} hint={<>{tr(net.effective.noteCode ?? net.effective.note, net.effective.noteValues)}{net.effective.mode === 'proxy' && net.effective.proxy ? <> · <span className="muted">{net.effective.proxy}</span></> : null}</>}>
+          <Btn size="sm" disabled={checking || busy} onClick={() => void checkNetwork()}>{tr(checking ? 'Checking…' : 'Check connection')}</Btn>
+        </Field>
+        {netCheck ? <div style={{ padding: '0 16px 14px' }}>
+          {netCheck.ok
+            ? <p className="small" role="status">{tr(netCheck.message, netCheck.values)}</p>
+            : <div className="error-notice" role="alert">
+              <Icon name="error" size={18} />
+              <div>
+                <strong>{tr(netCheck.message, netCheck.values)}</strong>
+                {netCheck.next ? <p>{tr(netCheck.next)}</p> : null}
+                {netCheck.detail ? <details className="error-detail"><summary className="small">{tr('Details')}</summary><pre className="small muted">{netCheck.detail}</pre></details> : null}
+              </div>
+            </div>}
+        </div> : null}
+        {net.system.pac && net.policy.mode !== 'custom' ? <p className="small muted" style={{ padding: '0 16px 14px' }}>{tr('This computer chooses its proxy with a script (PAC). Strata cannot run that script, so it uses a direct connection; type the proxy address here to use it.')}</p> : null}
+      </div> : null}
     </section>
 
     <section className="settings-section">
