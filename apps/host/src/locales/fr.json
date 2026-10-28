@@ -3526,5 +3526,6 @@
   "s9034": "Chargement du modèle…",
   "s9035": "Ces fichiers du modèle sont manquants : {0}.",
   "s9036": "Appuyez à nouveau sur Télécharger et charger pour les récupérer. Les fichiers déjà présents sont conservés. Si les mêmes fichiers sont listés à nouveau, ouvrez Détails et partagez-les quand vous demandez de l’aide.",
-  "s9037": "Cette mise à jour a été interrompue au redémarrage de l’application. Une mise à jour plus récente s’est terminée, il n’y a donc rien à faire."
+  "s9037": "Cette mise à jour a été interrompue au redémarrage de l’application. Une mise à jour plus récente s’est terminée, il n’y a donc rien à faire.",
+  "s9169": "≈{0} jetons"
 }

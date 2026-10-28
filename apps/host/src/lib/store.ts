@@ -8,6 +8,7 @@ import { applyStatusFrame, clearStatus } from './live-status';
 import { approvalNeeded, workFinished } from './attention';
 import { applyGoalFrame } from './goal';
 import { tidyAnswer } from './answer-text';
+import { closeReasoningSegment } from './reasoning';
 import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
 import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
 import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
@@ -1837,7 +1838,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'plan-step') {
           /* the whole plan follows in a plan frame; the live status already says which step is running */
         } else if (type === 'reasoning') {
-          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+          // A new segment starts when the model thinks again after an answer or a tool call; its time is added when it ends.
+          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningOpen: true, reasoningStartedAt: m.reasoningOpen && m.reasoningStartedAt ? m.reasoningStartedAt : Date.now() }));
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
@@ -1845,6 +1847,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
+            m = closeReasoningSegment(m);
             const existing = m.tools?.find(t => t.id === tool.id);
             const next: ToolCall = { ...existing, ...tool, live: true };
             return { ...m, tools: existing ? m.tools!.map(t => t.id === tool.id ? next : t) : [...(m.tools ?? []), next] };
@@ -1852,7 +1855,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=tidyAnswer(m.content+String(frame.text??'')); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          patchAssistant((m) => { m = closeReasoningSegment(m); const content=tidyAnswer(m.content+String(frame.text??'')); const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
@@ -1869,7 +1872,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           if(event.id)patchAssistant(m=>{const existing=m.tools?.find(t=>t.id===event.id);const tool={id:event.id,name:event.name??existing?.name??'Connected tool',args:event.arguments??existing?.args??{},preview:'Authorized connected tool',effect:'Access configured in the MCP server',scope:'connected' as const,state:event.event==='result'?event.ok?'done' as const:'error' as const:'running' as const,result:event.text,durationMs:event.ms};return {...m,tools:[...(m.tools??[]).filter(t=>t.id!==tool.id),{...existing,...tool}]};});
         } else if (type === 'tool') {
           const tool = frame.tool as ChatMessage['tools'] extends (infer T)[] | undefined ? T : never;
-          patchAssistant((m) => ({ ...m, tools: [...(m.tools ?? []), { ...tool, state: 'proposed' }] }));
+          patchAssistant((m) => ({ ...closeReasoningSegment(m), tools: [...(m.tools ?? []), { ...tool, state: 'proposed' }] }));
         } else if (type === 'stats') {
           patchAssistant((m) => ({
             ...m,
@@ -1885,7 +1888,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
           const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
-          patchAssistant((m) => ({ ...m, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
+          patchAssistant((m) => ({ ...closeReasoningSegment(m), error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
           clearStatus(sessionId);
           workFinished(state.doneSound, Number(frame.durationMs ?? performance.now() - started));
@@ -1896,7 +1899,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             statsAvailable: typeof frame.tokensIn === 'number' && typeof frame.tokensOut === 'number' && sess.messages.filter(m=>m.role==='assistant'&&!m.streaming).every(m=>typeof m.inputTokens==='number'),
           }));
           patchAssistant((m) => ({
-            ...m,
+            ...closeReasoningSegment(m),
             streaming: false,
             durationMs: Number(frame.durationMs ?? performance.now() - started),
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : undefined,
@@ -1916,7 +1919,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   } catch (err) {
     if ((err as Error).name !== 'AbortError') {
       patchAssistant((m) => ({
-        ...m,
+        ...closeReasoningSegment(m),
         streaming: false,
         error: err instanceof Error ? err.message : 'Engine error',
       }));
