@@ -763,17 +763,23 @@ struct Out {
     template<class T> void vec(const std::vector<T>& v) { u64(v.size()); raw(v.data(), v.size() * sizeof(T)); }
     void buffer(const ConversationBuffer& b) {
         u64(b.size());
+        buffer_raw(b);
+    }
+    void buffer_raw(const ConversationBuffer& b) {  // v3 segment streams: the data only, the size lives in the group framing
         b.visit(0, b.size(), [&](const uint8_t* p, size_t c, size_t) { raw(p, c); return ok; });
     }
     // a K/V part pulled from its owner straight into the file block (sizing pass: counted, never read)
     void source(const SessionKvSource& s, size_t part) {
-        const size_t size = s.sizes[part];
-        u64(size);
-        if (!f) { count(size); return; }
-        for (size_t at = 0; at < size && ok;) {
+        u64(s.sizes[part]);
+        source_range(s, part, 0, s.sizes[part]);
+    }
+    // the bytes [from, to) of one part: v3 segments start at a rounded committed boundary
+    void source_range(const SessionKvSource& s, size_t part, size_t from, size_t to) {
+        if (!f) { count(to - from); return; }
+        for (size_t at = from; at < to && ok;) {
             size_t room = 0;
             uint8_t* d = f->span(room);
-            const size_t c = std::min(room, size - at);
+            const size_t c = std::min(room, to - at);
             if (!s.read || !s.read(part, at, d, c)) {
                 ok = false;
                 read_failed = true;
@@ -828,6 +834,62 @@ void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKv
     for (const auto& k : s.kv) {
         put_kv_header(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim);
         o.buffer(k.k); o.buffer(k.v); o.buffer(k.k_scale); o.buffer(k.v_scale); o.buffer(k.pooled);
+    }
+}
+
+// ---- format v3: one generation group (see the header comment and the plan)
+//
+// Canonical group order, fixed for every generation and pinned by a golden test:
+// preamble (generation 1 only: geometry, carve, cvec, stage table, K/V layer count - the
+// identity digests in the header already pin them); mutable block (live record: counts and
+// running-state arrays, with the live ids/imgs DATA as segment streams; full checkpoint
+// records, re-emitted because the saved checkpoint's identity can change between saves; per-
+// layer K/V headers and part sizes); segment block (live ids/imgs and per-stage-part mirrors,
+// then per-layer K/V streams, each in this fixed order); zero pad so group+trailer is a
+// multiple of 512 (the pad is part of the hashed zone); the 128 B trailer record.
+void put_live_v3(Out& o, const ConversationCheckpoint& c) {  // counts + running state; ids/imgs go as segments
+    o.u64(c.ids.size());
+    o.u64(c.imgs.size());
+    o.vec(c.gdn); o.vec(c.ple); o.vec(c.tails); o.vec(c.dead); o.vec(c.block_pos);
+    o.u64(c.used);
+    o.u64(c.stage_parts.size());
+    for (const auto& p : c.stage_parts) put_live_v3(o, p);  // parts of parts are refused before any disk access
+}
+void put_live_segments(Out& o, const ConversationCheckpoint& c) {
+    o.raw(c.ids.data(), c.ids.size() * sizeof(int32_t));
+    o.raw(c.imgs.data(), c.imgs.size() * sizeof(ConversationImageKey));
+    for (const auto& p : c.stage_parts) put_live_segments(o, p);
+}
+void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
+    for (int64_t g : s.geometry) o.i64(g);
+    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    o.u64(s.stage_table.size());
+    for (const auto& g : s.stage_table) {
+        o.i64(g.layer_lo); o.i64(g.layer_hi); o.i64(g.qsa_alloc); o.i64(g.gdn_alloc); o.u64(g.draft ? 1 : 0);
+    }
+    o.u64(sources ? sources->size() : s.kv.size());
+    put_live_v3(o, s.live);
+    o.u64(s.checkpoints.size());
+    for (const auto& c : s.checkpoints) put_checkpoint(o, c);  // whole record: counts AND data (identity can switch)
+    if (sources) {
+        for (const auto& k : *sources) {
+            put_kv_header(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim);
+            for (size_t part = 0; part < 5; ++part) o.u64(k.sizes[part]);
+        }
+    } else {
+        for (const auto& k : s.kv) {
+            put_kv_header(o, k.format, k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim);
+            o.u64(k.k.size()); o.u64(k.v.size()); o.u64(k.k_scale.size()); o.u64(k.v_scale.size()); o.u64(k.pooled.size());
+        }
+    }
+    put_live_segments(o, s.live);
+    if (sources) {
+        for (const auto& k : *sources)
+            for (size_t part = 0; part < 5; ++part) o.source_range(k, part, 0, k.sizes[part]);
+        return;
+    }
+    for (const auto& k : s.kv) {
+        o.buffer_raw(k.k); o.buffer_raw(k.v); o.buffer_raw(k.k_scale); o.buffer_raw(k.v_scale); o.buffer_raw(k.pooled);
     }
 }
 
@@ -1397,13 +1459,17 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     if (!stage_parts_consistent(image, bad)) { error = "session file: " + bad; return false; }
     if (sources && !image.kv.empty()) { error = "session file: K/V given both in the image and as sources"; return false; }
     Out sizing;
-    put_payload(sizing, image, sources);
-    if (sizing.overflow || sizing.n > UINT64_MAX - kHeader - kTrailer ||
-        sizing.n + kHeader + kTrailer > (uint64_t) std::numeric_limits<size_t>::max()) {
+    if (opt.use_v3) put_group_v3(sizing, image, sources);
+    else put_payload(sizing, image, sources);
+    const uint64_t group = sizing.n;
+    const uint64_t pad = opt.use_v3 ? (512 - (group + 128) % 512) % 512 : 0;
+    const uint64_t committed = kHeader + group + pad;          // v3: the trailer record's offset
+    const uint64_t payload = group, total = opt.use_v3 ? committed + 128 : kHeader + group + kTrailer;
+    if (sizing.overflow || group > UINT64_MAX - kHeader - 512 - 128 ||
+        total > (uint64_t) std::numeric_limits<size_t>::max()) {
         error = "session file: the state is too large for this build";
         return false;
     }
-    const uint64_t payload = sizing.n, total = kHeader + payload + kTrailer;
     st.error = SessionError::io;
     if (opt.min_free_bytes) {
         uint64_t avail = 0;
@@ -1436,15 +1502,37 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     f.flush_fault = injected(fault, "file_flush");
     f.writer_thread_fault = injected(fault, "writer_thread");
     uint8_t h[kHeader];
-    header_bytes(h, id, payload);
+    if (opt.use_v3) header_bytes_v3(h, id, {committed, committed, committed + 128});
+    else header_bytes(h, id, payload);
     bool ok = f.write(h, kHeader);
     SessionHasher hash(0);
     Out out;
     out.f = &f;
     out.hash = &hash;
-    if (ok) put_payload(out, image, sources);
-    ok = ok && out.ok && out.n == payload;
     if (ok) {
+        if (opt.use_v3) put_group_v3(out, image, sources);
+        else put_payload(out, image, sources);
+    }
+    ok = ok && out.ok && out.n == payload;
+    if (ok && opt.use_v3) {
+        static const uint8_t kZeros[512] = {};
+        out.raw(kZeros, pad);  // the pad is part of the hashed zone (the digest covers each contiguous group region)
+        SessionTrailer tr;
+        tr.gen = 1;
+        tr.committed_bytes = committed;
+        tr.saved_tokens = (uint64_t) image.live.ids.size();  // the tokens this save carries
+        tr.digest = hash.digest();
+        tr.chain = trailer_genesis_chain(id);
+        const SessionHasherState hs = hash.state();  // resume state: the next append continues this digest
+        for (int i = 0; i < 4; ++i) tr.lanes[i] = hs.lanes[i];
+        std::memcpy(tr.pending, hs.pending, 32);
+        tr.npending = hs.npending;
+        tr.hashed_bytes = hs.total;
+        uint8_t tb[128];
+        trailer_bytes(tr, tb);
+        ok = out.ok && f.write(tb, 128);  // the trailer itself is not in the payload zone
+    }
+    if (ok && !opt.use_v3) {
         const uint64_t ph = hash.digest();
         ok = f.write(&ph, 8) && f.write(kEnd, 8);
     }
