@@ -4979,6 +4979,8 @@ class Service:
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
+                # prompt tokens the prefix cache already held (RESUME): the Context ring's cached share
+                "reused": int(getattr(self.engine, "reused", 0) or 0) if s.get("busy") else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
@@ -5916,7 +5918,10 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                # the acceptance share of those drafts in percent (None: the engine offered none)
+                                "mtp_acc": round(last["drafts_accepted"] / last["drafts_offered"] * 100, 1)
+                                if last.get("drafts_offered") and last.get("drafts_accepted") is not None else None})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen

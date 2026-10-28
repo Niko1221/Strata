@@ -439,6 +439,18 @@ class ReplicaEngine:
             return c.prefill_tok_s_mean
         return next((e.prefill_tok_s_mean for e in self.engines if getattr(e, "prefill_tok_s_mean", None)), None)
 
+    @property
+    def reused(self):
+        c = getattr(self.tl, "cur", None)
+        if c is not None:
+            return c.reused
+        # the /status handler runs on its own thread and holds no tl.cur: read the count off the replica
+        # with a request in flight - a finished request's value is stale for the Context ring
+        for k, e in enumerate(self.engines):
+            if self.inflight[k] and getattr(e, "reused", 0):
+                return e.reused
+        return 0
+
     def alive(self) -> bool:
         return any(e.alive() for e in self.engines)
 
