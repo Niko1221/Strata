@@ -455,6 +455,10 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
 
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                              int64_t upto, bool index, std::string& error) {
+    // Watermark insurance M9: a restore rewrites this state's pools from token 0 - the owning session must
+    // not append under those bytes, and no caller may forget the bump.  A failed attempt marks too: that is
+    // the conservative direction the watermark exists for.
+    if (st.owner) st.owner->mark_kv_dirty(0);
     // STRATA_PARK_VRAM_MIB: from the image's VRAM slot when it holds every part (no host buffer is read: no join)
     const VramKvSlot* slot = vram_kv_find(image.dev_tag);
     if (slot == nullptr) conversation_park_join();
@@ -478,6 +482,7 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
 
 bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                                     int64_t captured, int64_t upto, bool index, std::string& error) {
+    if (st.owner) st.owner->mark_kv_dirty(0);  // watermark insurance M9 (see conversation_kv_restore)
     const VramKvSlot* slot = vram_kv_find(image.dev_tag);   // (STRATA_PARK_VRAM_MIB, as in conversation_kv_restore)
     if (slot == nullptr) conversation_park_join();
     if (upto < 0 || upto > captured) {

@@ -437,6 +437,9 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
             !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
         if (!c.ids.empty()) {
             const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+            // Watermark backstop M8: the mount rewrites the spare pooled row at floor(N/idx_block) - the
+            // session is dirty from that token on, so a save before the next block completion cannot append.
+            ss.mark_kv_dirty((int64_t) row * strata::kernels::qsa_real_shapes().idx_block);
             if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
         }
     }
@@ -468,6 +471,7 @@ bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, co
             !acopy(b.idx_block_pos, a.idx_block_pos, zf.block_pos)) return false;
         if (!ids.empty()) {   // restore writes the saved `dead` row into the pooled row the next token fills
             const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+            to.mark_kv_dirty((int64_t) row * strata::kernels::qsa_real_shapes().idx_block);  // M8, the copy form
             if (!acopy(b.idx_pooled + row * g.idx_key_dim, a.idx_dead, zf.dead)) return false;
         }
     }
