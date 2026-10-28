@@ -286,6 +286,34 @@ class ParallelServiceYield(tp.FakeEngineCase):
         self.assertEqual(t["cache_n"], 3, t)                          # the first read's reuse only
         self.assertGreater(t["predicted_ms"], 60.0, t)
 
+    def test_a_continued_leg_keeps_the_records_cache_source_and_hint(self):
+        """A request that read its prompt on the solo path and went on in a slot: its record keeps that first read's
+        cache source and placement hint, as it keeps its reuse (#1869).  The slot admission's hint counts the
+        request's own output (its prompt there is the prompt and the reply so far), so the record said more could
+        be resumed than its prompt had."""
+        from serve.slot_policy import Placement
+        self.start(2, slot_cache=True, reuse=True, affinity=True, more=("--source-trace",))
+        e, pick = self.engine, self.engine.pick_slot
+
+        def resume_all(prompt):                            # a plan that resumes the whole prompt it is given
+            b = pick(prompt)
+            e.slot_last_plan = Placement(slot=b, source_hint=b, reused_hint=len(prompt), reason="reuse")
+            return b
+        e.pick_slot = resume_all
+        res = {}
+        long = threading.Thread(target=lambda: res.setdefault("long", self.chat("LONGREPLY please", max_tokens=200)))
+        long.start()
+        time.sleep(0.25)                                   # a few solo tokens first
+        self.chat("short", max_tokens=200)
+        long.join(30)
+        kinds = [x.split()[0] for x in self.log.read_text().splitlines()]
+        self.assertEqual(kinds[:2], ["GEN", "BGEN"], kinds)           # solo, then continued in a slot
+        rows = sorted(self.svc.history, key=lambda h: h["output_tokens"])
+        short, longest = rows[0], rows[-1]
+        self.assertEqual(short["cache_match_hint"], short["prompt_tokens"], short)   # its one read, in a slot
+        self.assertIsNone(longest["cache_match_hint"], longest)       # its first read was on the solo path
+        self.assertEqual(longest["cache_source_slot"], 1, longest)    # that read's CACHE_SOURCE
+
     def test_a_leaked_busy_slot_does_not_hang_the_next_request(self):
         """#1603: a slot whose busy flag has no owner (no request holds it, no BDONE wait is running) kept every later
         request waiting for a slot nothing would free: running 0, queued 0, and the frozen-engine check never looked.
