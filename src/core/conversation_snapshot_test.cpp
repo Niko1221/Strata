@@ -331,6 +331,32 @@ void full_session(int fmt, int mode, int experts) {
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
+
+    // Immutability watermark backstops (spec M8/M9): every restore path above marked ss as it ran; this phase
+    // resets the watermark and pins each backstop firing on its own.  The fixture carves QsaState by hand, so
+    // the owner back-link session_init wires in production is wired here.
+    {
+        const int64_t n=(int64_t)a.checkpoints[0].ids.size();   // 3 tokens; fixture geometry: idx_block 4
+        main.state.owner=&ss;
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationKv img;
+        check(conversation_kv_save(img,main.state,g,n,true,err)&&
+              conversation_kv_restore(img,main.state,g,n,true,err),"whole K/V restore into the session's own state");
+        check(ss.kv_first_dirty==0,"M9: a K/V restore dirties the owning session from token 0");
+        check(!ss.kv_append_ok(1,n),"the restored session refuses to append under those bytes");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"M8: mount the 3-token checkpoint again");
+        check(ss.kv_first_dirty==0,"M8: the spare row floor(3/4) sits at token 0, below the saved boundary");
+        check(!ss.kv_append_ok(1,n),"a same-tokens mount refuses the append (the drill's mount case)");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationCheckpoint deep=a.live;   // 65 tokens: a mount AT the saved length
+        check(conversation_checkpoint_restore(deep,ss,g,err),"M8: mount the full-length live state");
+        check(ss.kv_first_dirty==64,"M8 clamps a full mount to its spare-row row floor(65/4)*4");
+        check(!ss.kv_append_ok(1,65) && ss.kv_append_ok(1,64),
+              "dirty from 64: appending below 65 refuses, a write starting at 64 is eligible");
+    }
 }
 }
 

@@ -206,6 +206,8 @@ bool layer_shared_early();
 /// `max_cells` is the sequence capacity the arena was sized for, and it fixes the rope table's length: a table
 /// shorter than the sequence would have `rope_neox_apply` read past it, which is a wrong rotation rather than a
 /// fault.
+struct SessionState;  ///< the composed session that owns QSA/GDN state (core/session.hpp); QsaState links back to it
+
 struct QsaState {
     uint16_t* k_pool = nullptr;      ///< [page][kv_head][page_size][head_dim] fp16 (null in INT8 mode)
     uint16_t* v_pool = nullptr;
@@ -271,6 +273,11 @@ struct QsaState {
     /// copy and give back the overlap the doorbell protocol exists for.
     int32_t* host_step = nullptr;    ///< (kStepCount + 1,) pinned; final element is attention status
     int32_t* host_pos = nullptr;     ///< (n_head,) pinned
+
+    /// The session this state was carved for (`session_init` sets it; a standalone state has none).  The core
+    /// restore backstops (M8/M9 of the incremental-save watermark) mark the OWNING session's `kv_first_dirty`
+    /// when a path rewrites pool bytes, so no caller can forget the bump.
+    SessionState* owner = nullptr;
 };
 
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every
