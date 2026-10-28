@@ -301,11 +301,14 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
   let proc=null,started=null,retried=null;
+  /* Control CLI caps start wait at 600s. Large MoE packs (e.g. Qwen IQ3_S) often need ~7–8 minutes to pin experts into RAM; the previous non-ownEngine path waited only 300s and marked the UI failed while the engine kept loading (web chat worked, desktop did not). */
+  let readyWaitSeconds=Math.min(600,Math.max(300,Number(config.engine_ready_s)||600));
   if(packaged){
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:ownEngine(config)?Math.min(600,Math.max(300,Number(config.engine_ready_s)||300)):300}));};
+   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:readyWaitSeconds}));};
+   const isStartupWaitExpired=e=>/startup_wait_expired/i.test(String(e?.message??'')+JSON.stringify(e?.output??e??''));
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;
@@ -315,6 +318,9 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     if(error&&sharedSentence&&!isAccess(error)){instance.status='error';instance.error=sharedSentence;emit();throw new Error(sharedSentence);}
     if(error){const said=humanStartError(error);
     if(isAccess(error)){instance.status='error';instance.error=said;emit();throw new Error(said);}   // access errors are not memory stops: no safer retry
+    /* Control timed out while the engine was still loading: do not stop it or flip the UI to failed yet — keep watching /health below. */
+    if(isStartupWaitExpired(error)){append(id,'Control wait expired; keeping the engine and watching /health until it is ready or the load deadline ends.');job.details=[...(Array.isArray(job.details)?job.details:[]),said,'Waiting on health after startup_wait_expired'];error=null;}
+    else {
     /* ONE automatic second try in all, never saved, never repeated (args.retrySafer false turns it off): with a safer memory setting when the
        failure looks like a memory stop, and without several-requests-at-once when that was the app's own default (not a number the user chose).
        Both changes ride on the same single try, with the plain sentence of the memory change when there is one. */
@@ -327,20 +333,22 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
     try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
-    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}
+    catch(second){if(isStartupWaitExpired(second)){append(id,'Second Control wait expired; keeping the engine and watching /health.');job.details=[...(Array.isArray(job.details)?job.details:[]),humanStartError(second),'Waiting on health after startup_wait_expired'];}
+     else{const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:sourceServerEnvironment()});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
   for(const stream of [proc.stdout,proc.stderr])stream.on('data',chunk=>{const lines=chunk.toString().split('\n').filter(Boolean);lines.forEach(line=>append(id,line.replaceAll(key,'[redacted]')));job.summary=lines.at(-1)??job.summary;emit();});
   proc.on('error',error=>{instance.status='error';instance.error=error.message;emit();});proc.on('exit',code=>{if(instances.has(id)&&instance.status!=='unloading'){instance.status='error';instance.error=`Engine stopped${code===null?'':` (exit ${code})`}. Open diagnostics or reload.`;emit();}});emit();
   }
-  const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
+  const readyWaitMs=readyWaitSeconds*1000;
+  const deadline=Date.now()+readyWaitMs;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
    try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}
-  if(instance.profile)await control.stop(instance.profile).catch(()=>{});else await stopProcess(proc);instance.status='error';instance.error='Loading took more than five minutes. Check the engine log and free memory.';throw new Error(instance.error);
+  if(instance.profile)await control.stop(instance.profile).catch(()=>{});else await stopProcess(proc);instance.status='error';instance.error=`Loading took more than ${Math.round(readyWaitMs/60000)} minutes. Check the engine log and free memory.`;throw new Error(instance.error);
  }
  async function freePort(requested){for(let port=Number(requested??18500);port<=Number(requested??18500)+20;port++){if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Choose a port from 1024 to 65535.');if([...instances.values()].some(i=>i.port===port)){if(requested)throw new Error('This private engine port is already in use.');continue;}const available=await new Promise(resolve=>{const probe=createServer();probe.once('error',()=>resolve(false));probe.listen(port,'127.0.0.1',()=>probe.close(()=>resolve(true)));});if(available)return port;if(requested)throw new Error('This private engine port is already in use.');}throw new Error('No free private engine port was found.');}
  let pollCount=0;
