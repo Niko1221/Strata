@@ -120,6 +120,31 @@ Incremental reads, seconds to read the new tokens and answer one token (median o
 
 GPUs averaged ~220 W each under load and peaked at 71-73 C; ~410-430 W at the wall.
 
+## Stock settings against the tuned profile, same hour
+
+Setup's own run config for this model (written by `setup.sh`: one card, `--prefill auto`, `--spec-min-p 0.5`,
+`--kv-resident 32768`, `--vram-reserve-mib 700`, the image encoder on the GPU, no conversation-cache, thinking-budget
+or sampling settings, no numactl), run from the same RAM copy as production, on one card and on both (`"gpu": [0, 1]`,
+`layer_split` auto), against the tuned profile in the same hour (`raw/r33-stock/`, 2 runs each):
+
+| | Stock, one card | Stock, two cards | Tuned profile |
+|---|---|---|---|
+| Short prompts, thinking off / on (tok/s) | 69 / 57 | 137 / 117 | 132 / 125 |
+| 32K read (tok/s) / TTFT | 1,712 / 19.1 s | 1,846 / 17.7 s | 2,757 / 11.9 s |
+| Generation after the 32K read | 55.5 | 97.8 | 106.6 |
+| Agent turns, decode: edit-file / new-test / plan | 64 / 46 / 56 | 125 / 98 / 94 | 139 / 110 / 103 |
+| Cold ~66K read, TTFT | 41.7 s | 34.7 s | 22.5 s |
+| First switch to thinking in a conversation (TTFT) | 42-43 s | 35 s | 2.5-4.3 s |
+| Incremental reads 300 / 1K / 2.5K tokens | 3.75 / 4.38 / 4.48 s | 3.75 / 5.12 / 5.08 s | 3.67 / 1.63 / 2.79 s |
+| Decode expert hits in VRAM | 92-94% | 98-99.6% | 98.5-100% |
+
+The second card is the decode lever (stock on two cards is within 10% of the tuned profile on decode); the profile is
+the prompt-reading and agent-turn lever (32K read +49%, cold 66K read -35%, the 1K incremental read 3x, the thinking
+switch 10x). The tuned profile at this point also has `effort_position: end`, `--prefill 8192`, `STRATA_SPLIT_RING=384`
+and `STRATA_SPLIT_MTP_BATCH=1` (rounds 27-31 of our log, after the report above was written); the standard run and
+the sections above are from the earlier profile. Stock as installed, reading from the box's disks with a cold page
+cache, did not reach READY inside the server's 900 s limit (locking the PLE table alone took 763 s).
+
 ## Findings
 
 - **The CPU share helps a PCIe 3.0 layer split.** Under the split ~78% of the experts are on the cards and every
