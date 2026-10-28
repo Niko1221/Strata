@@ -2,7 +2,7 @@ import test from 'node:test';
 import { ROOMY_HOST } from './helpers/hardware.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -24,9 +24,14 @@ async function startOfflineHost() {
   const log = join(home, 'net.log');
   const port = await freePort();
   let output = '';
+  // "No internet" has to mean no route at all: on a machine that runs a proxy, following the system would send these
+  // requests through it (node:http, past the stub below) and the test would then prove nothing about being offline.
+  mkdirSync(join(home, 'data'), { recursive: true });
+  writeFileSync(join(home, 'data', 'net.json'), `${JSON.stringify({ version: 1, mode: 'direct', url: '' }, null, 2)}\n`, 'utf8');
   const host = spawn(process.execPath, ['--import', preload, 'server/index.mjs'], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_PACKAGED: '1', STRATA_COMPONENTS_DIR: join(home, 'components'), STRATA_NET_LOG: log, STRATA_NO_ACQUIRE: '1', STRATA_REAL_ENGINE: '0', STRATA_TEST_HARDWARE: ROOMY_HOST },
+    env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'), STRATA_PORT: String(port), STRATA_SHARE_PORT: String(await freePort()), STRATA_TUNNEL_PORT: String(await freePort()), STRATA_PACKAGED: '1', STRATA_NET_LOG: log, STRATA_NO_ACQUIRE: '1', STRATA_REAL_ENGINE: '0', STRATA_TEST_HARDWARE: ROOMY_HOST, STRATA_COMPONENTS_DIR: join(home, 'components') },
+
   });
   host.stdout.on('data', d => { output += d; }); host.stderr.on('data', d => { output += d; });
   let up = false;

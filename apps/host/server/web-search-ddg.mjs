@@ -20,6 +20,7 @@
  * Nothing in this file touches the Harness, so it can be tested alone. `strata-search.mjs` is the plugin that registers it.
  */
 import { BING_URL, bingLooksBlocked, parseBingResults } from './web-search-bing.mjs';
+import { netFetch } from './net.mjs';
 
 export const DDG_PROVIDER_ID = 'strata-duckduckgo';
 
@@ -165,7 +166,7 @@ const queryKey = query => query.toLowerCase().replace(/\s+/g, ' ').trim();
 /**
  * @param {{fetch?: typeof fetch, now?: () => number, sleep?: (ms: number) => Promise<void>, random?: () => number}} [deps]
  */
-export function createDuckDuckGoSearch({ fetch: fetchImpl = globalThis.fetch, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), random = Math.random } = {}) {
+export function createDuckDuckGoSearch({ fetch: fetchImpl = netFetch, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), random = Math.random } = {}) {
   const cache = new Map();
 
   /** A source: its pacing, and what to do after it refuses. */

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -177,6 +178,23 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         path = self.root / "new.json"
         path.write_text("{}")
         self.assertEqual(path.read_text(), "{}")
+        # The same rule governs the processes this one starts. A host ends a Time-skip run with taskkill, which must be
+        # able to open the job's own child: FILE_ALL_ACCESS (FA) has no PROCESS_QUERY_LIMITED_INFORMATION, so a stop that
+        # killed the job left its revision command running and the run's folder could not be deleted.
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            handle = kernel32.OpenProcess(0x1000, False, child.pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+            self.assertTrue(handle, "a process started after adopting the defaults must stay queryable (taskkill needs it)")
+            kernel32.CloseHandle(handle)
+        finally:
+            child.kill()
+            child.wait(timeout=10)
 
     def test_default_dacl_allows_reopening_child_process_for_qos(self):
         import subprocess

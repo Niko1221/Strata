@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { require as requireAcquisition } from './acquisition.mjs';
 import { findConnector, skippedMessage } from './cloudflared-find.mjs';
+import { netFetch } from './net.mjs';
+import { ensureFreeSpace } from './disk-space.mjs';
 
 const run = promisify(execFile);
 const RELEASES = 'https://api.github.com/repos/cloudflare/cloudflared/releases/latest';
@@ -31,7 +33,7 @@ export function verifyConnector(bytes, digest) {
  * component folder). A connector found there is used as it is; one that is not there is never fetched while the app
  * runs (acquisition.mjs), it is a notice.
  */
-export function createConnectorInstaller({ directory, componentDirectory = null, platform = process.platform, arch = process.arch, fetchImpl = fetch, env = process.env, home, run: runVersion, usable, search }) {
+export function createConnectorInstaller({ directory, componentDirectory = null, platform = process.platform, arch = process.arch, fetchImpl = netFetch, env = process.env, home, run: runVersion, usable, search }) {
   const name = platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
   const binary = join(directory, name);
   let installing = null, last = { found: null, skipped: [] };
@@ -49,6 +51,7 @@ export function createConnectorInstaller({ directory, componentDirectory = null,
     const unusable = skippedMessage(last.skipped);
     if (unusable) throw new Error(unusable);
     requireAcquisition('The Cloudflare connector (cloudflared)', 'the optional connector component');
+    ensureFreeSpace(directory, { need: LIMIT, label: 'the Cloudflare connector' });
     const name = connectorAsset(platform, arch);
     await mkdir(directory, { recursive: true });
     const stage = await mkdtemp(join(directory, '.install-'));

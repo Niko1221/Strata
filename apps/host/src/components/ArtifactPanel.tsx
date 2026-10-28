@@ -137,8 +137,10 @@ export function ArtifactTabs({ items, selected, onSelect, onCloseTab, extraTabs 
             strip.scrollBy({ left: direction * Math.max(120, strip.clientWidth * .8), behavior: scrollBehavior() });
     }
     function close(id: string) { focusAfterClose.current = true; onCloseTab(id); }
+    // Only the app's own tab titles are translated; a file or page the person opened keeps its own name.
+    const tabLabel = (title: string) => /^(Plan|Time-skip(?: \d+)?|HTML preview)$/.test(title) ? tr(title) : title;
     return <div className="artifact-tab-strip">{tr(edges.overflow ? <button type="button" className="st-btn st-btn--icon artifact-scroll artifact-scroll--left" aria-label={tr("Scroll preview tabs left")} title={tr("Scroll preview tabs left")} disabled={!edges.left} onClick={() => scroll(-1)}><Icon name="chevron" size={16}/></button> : null)}<div ref={ref} className="artifact-tabs" role="tablist" aria-label={tr("Open previews")} onScroll={measure}>{tr(tabs.map((a, i) => <div className="artifact-tab" role="presentation" data-selected={a.id === selected || undefined} key={a.id}>
-    <button className="artifact-tab__select" role="tab" title={a.title} aria-selected={a.id === selected} aria-controls={a.controls} id={`artifact-tab-${i}`} tabIndex={a.id === selected ? 0 : -1} onClick={() => onSelect(a.id)} onKeyDown={e => {
+    <button className="artifact-tab__select" role="tab" title={tabLabel(a.title)} aria-selected={a.id === selected} aria-controls={a.controls} id={`artifact-tab-${i}`} tabIndex={a.id === selected ? 0 : -1} onClick={() => onSelect(a.id)} onKeyDown={e => {
                 if (e.key === 'Delete') {
                     e.preventDefault();
                     close(a.id);
@@ -150,7 +152,7 @@ export function ArtifactTabs({ items, selected, onSelect, onCloseTab, extraTabs 
                     onSelect(tabs[next].id);
                     ref.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
                 }
-            }}><Icon name={a.icon} size={15}/><span>{a.title}</span></button>
-    <button className="artifact-tab__close" aria-label={tr("Close {0}", [a.title])} title={tr("Close {0}", [a.title])} tabIndex={a.id === selected ? 0 : -1} onClick={() => close(a.id)}><Icon name="x" size={13}/></button>
+            }}><Icon name={a.icon} size={15}/><span>{tabLabel(a.title)}</span></button>
+    <button className="artifact-tab__close" aria-label={tr("Close {0}", [tabLabel(a.title)])} title={tr("Close {0}", [tabLabel(a.title)])} tabIndex={a.id === selected ? 0 : -1} onClick={() => close(a.id)}><Icon name="x" size={13}/></button>
   </div>))}</div>{tr(edges.overflow ? <button type="button" className="st-btn st-btn--icon artifact-scroll artifact-scroll--right" aria-label={tr("Scroll preview tabs right")} title={tr("Scroll preview tabs right")} disabled={!edges.right} onClick={() => scroll(1)}><Icon name="chevron" size={16}/></button> : null)}</div>;
 }

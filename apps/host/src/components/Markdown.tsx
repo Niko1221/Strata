@@ -62,12 +62,14 @@ async function copyCode(text: string) {
     const { pushToast } = await import('../lib/store');
     await copyText(text, 'Code', { toast: pushToast });
 }
-export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
+export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession, onQuote }: {
     text: string;
     onOpenLink?: (url: string) => void;
     onPreviewHtml?: (html: string) => void;
     /** The chat whose folder a picture path in the answer is read from (the host serves only files inside it). */
     imageSession?: string | null;
+    /** Quote a whole code block or table for the next message (the composer shows it above the box). */
+    onQuote?: (q: { text: string; kind: 'code' | 'table'; lang?: string }) => void;
 }) {
     const nodes: ReactNode[] = [];
     const lines = text.split('\n');
@@ -84,7 +86,7 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
             while (i < lines.length && !/^\s*```/.test(lines[i]))
                 body.push(lines[i++]);
             i++;
-            nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<IconBtn name="copy" title={tr("Copy code")} onClick={() => void copyCode(body.join('\n'))}/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
+            nodes.push(<div className="st-code" key={key} data-quote-block="code" data-lang={language || undefined}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(onQuote ? <Btn size="sm" onClick={() => onQuote({ text: body.join('\n'), kind: 'code', ...(language ? { lang: language } : {}) })}>{tr("Quote")}</Btn> : null)}{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<IconBtn name="copy" title={tr("Copy code")} onClick={() => void copyCode(body.join('\n'))}/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
             continue;
         }
         const block = displayBlock(lines, i);
@@ -120,7 +122,13 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
             i += 2;
             while (i < lines.length && lines[i].includes('|'))
                 rows.push(cells(lines[i++]));
-            nodes.push(<div className="md-table-wrap" key={key}><table className="md-table"><thead><tr>{tr(header.map((c, j) => <th key={j}>{tr(inline(c, onOpenLink, imageSession))}</th>))}</tr></thead><tbody>{tr(rows.map((r, j) => <tr key={j}>{tr(r.map((c, k) => <td key={k}>{tr(inline(c, onOpenLink, imageSession))}</td>))}</tr>))}</tbody></table></div>);
+            // The same table as Markdown, so a quote keeps its header and columns instead of a soup of words.
+            const tableText = (() => {
+                const esc = (value: string) => value.replace(/\|/g, '\\|');
+                const row = (values: string[]) => `| ${values.map(esc).join(' | ')} |`;
+                return [row(header), `| ${header.map(() => '---').join(' | ')} |`, ...rows.map(row)].join('\n');
+            })();
+            nodes.push(<div className="md-table-wrap" key={key} data-quote-block="table">{tr(onQuote && tableText ? <button type="button" className="md-table-quote" onClick={() => onQuote({ text: tableText, kind: 'table' })}>{tr("Quote")}</button> : null)}<table className="md-table"><thead><tr>{tr(header.map((c, j) => <th key={j}>{tr(inline(c, onOpenLink, imageSession))}</th>))}</tr></thead><tbody>{tr(rows.map((r, j) => <tr key={j}>{tr(r.map((c, k) => <td key={k}>{tr(inline(c, onOpenLink, imageSession))}</td>))}</tr>))}</tbody></table></div>);
             continue;
         }
         if (/^>\s?/.test(line)) {

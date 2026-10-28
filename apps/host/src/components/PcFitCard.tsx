@@ -2,6 +2,16 @@ import { tr } from '../lib/i18n';
 import type { Fit } from '../lib/native-fit';
 
 const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
+const plain = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+
+/** The one plain line under the meters: the conversation cache, and whether it fits, is short, or is read from the SSD. */
+export function fitNote(fit: Fit | null): string {
+  if (!fit?.known) return '';
+  const parts = [`${tr('Conversation cache')}: ${gb(fit.cacheGb)}`];
+  if (fit.verdict === 'short') parts.push(tr('{0} GB over budget', [plain(fit.shortGb)]));
+  if (fit.note.text) parts.push(tr(fit.note.text, fit.note.values));
+  return parts.join(' · ');
+}
 
 function Meter({ label, total, use }: { label: string; total: number; use: number }) {
   const pct = total > 0 ? Math.max(2, Math.min(100, (use / total) * 100)) : 0;
@@ -12,8 +22,9 @@ function Meter({ label, total, use }: { label: string; total: number; use: numbe
 }
 
 /**
- * "This computer": the graphics memory and RAM, and what the chosen version would take of each. One plain line says whether it fits
- * or how much would be read from the SSD (the n-gram table, which always sits on the SSD, is not counted).
+ * "This computer": the graphics memory and RAM, and what the chosen version would take of each. One plain line names the conversation
+ * cache and says whether it fits, is short on the card, or how much would be read from the SSD (the n-gram table, which always sits on
+ * the SSD, is not counted).
  */
 export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = null }: { gpuName?: string | null; ramGb: number | null; vramGb: number; fit: Fit | null; inUse?: { ramGb: number; vramGb: number } | null; diskGb?: number | null }) {
   const freeVram = Math.max(0, vramGb - (inUse?.vramGb ?? 0)), freeRam = ramGb ? Math.max(0, ramGb - (inUse?.ramGb ?? 0)) : 0;
@@ -24,6 +35,6 @@ export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = 
     {tr(fit?.known && ramGb ? <Meter label="RAM" total={freeRam} use={fit.ramUseGb}/> : null)}
     {tr(inUse ? <p className="xs muted">{tr("Models that stay loaded use about {0} GB of RAM and {1} GB of this card’s memory.", [inUse.ramGb, inUse.vramGb])}</p> : null)}
     {tr(diskGb ? <p className="pc-note">{tr("Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.", [Math.round(diskGb)])}</p> : null)}
-    {tr(fit?.known && (diskGb ? fit.spillGb >= 1 : true) ? <p className="pc-note">{tr(fit.spillGb >= 1 ? 'About {0} GB will be read from the SSD, so answers can be a little slower.' : 'Fits fully in memory.', [Math.round(fit.spillGb)])}</p> : null)}
+    {tr(fit?.known ? <p className="pc-note">{fitNote(fit)}</p> : null)}
   </section>;
 }

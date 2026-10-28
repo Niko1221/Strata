@@ -92,6 +92,10 @@ public:
     /// stages only the experts it routes to.  1024, or STRATA_PREFILL_STREAM_MIN, or the CPU share's limit once that
     /// is armed (3072 when STRATA_PREFILL_CPU_SHARE is set).
     static int64_t stream_all_min_tokens();
+    /// --prefill-stream-min N: the chunk size from which a chunk streams every expert instead of staging the ones it routes to.
+    /// 0 keeps the default (1024, the CPU share's limit, or STRATA_PREFILL_STREAM_MIN). A model whose context is long enough that
+    /// the prompt must borrow most of the cache sets it high, so big chunks stay staged and the loan stays small.
+    static void set_stream_min(int64_t tokens);
     /// --prefill-pipe (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
     /// stages, chunks of at most `cap` (the buffers' size) and a stage-chunk cost of b + a C with b/a = `ratio` tokens
     /// (0: unknown - STRATA_PREFILL_EQUAL's rule: the same chunk count as `cap` gives, evened out when its last chunk

@@ -11,8 +11,10 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { writeLogFile } from '../log-files.mjs';
 import { join, resolve } from 'node:path';
 import { externalEnvironment } from '../external-env.mjs';
+import { toolProxyEnvironment } from '../net.mjs';
 import { utf8Script } from '../powershell-utf8.mjs';
 
 const URL_PATTERN = /http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)/;
@@ -31,6 +33,13 @@ export function agentEnvironment(base = process.env, extra = {}) {
     if (v === undefined || !KEEP.test(k) || SECRET_NAME.test(k)) continue;
     out[k] = v;
   }
+  // A shell command is a separate process: curl, git and Python only follow this computer's proxy when the variables say so.
+  // They are copied first (the filter above drops them) and then completed from the proxy this computer or the person named.
+  for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']) {
+    const value = base?.[name];
+    if (typeof value === 'string' && value) out[name] = value;
+  }
+  Object.assign(out, toolProxyEnvironment(base));
   // DSH_PERMISSION_MODE is the composition default for a session no chat mode has touched (a child agent, a
   // seeded session): the strictest sandbox, which matches the Manual preset, never the Harness's wider default.
   return { ...out, DSH_TELEMETRY_DISABLED: '1', DSH_PERMISSION_MODE: 'read-only', NODE_USE_SYSTEM_CA: '1', ...extra };
@@ -87,7 +96,7 @@ export class HarnessProcess {
     const keep = chunk => { log.push(chunk.toString()); if (log.length > 200) log.shift(); };
     child.on('exit', (code, signal) => {
       this.exited = { code, signal };
-      if (this.logFile) { try { writeFileSync(this.logFile, redact(log.join(''), Object.values(this.extraEnv))); } catch { /* best effort */ } }
+      if (this.logFile) { try { writeLogFile(this.logFile, redact(log.join(''), Object.values(this.extraEnv))); } catch { /* best effort */ } }
       this.#onExit(this.exited);
     });
     child.stderr.on('data', keep);

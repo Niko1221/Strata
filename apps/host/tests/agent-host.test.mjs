@@ -188,6 +188,66 @@ test('A08 over HTTP: two chats stream at the same time without mixing', { skip }
   assert.notEqual(a.find(f => f.type === 'start').sessionId, b.find(f => f.type === 'start').sessionId);
 });
 
+test('A09 over HTTP: a helper conversation is readable from its own chat, and a prompt continues it', { skip }, async t => {
+  const s = await setup(t);
+  const frames = await s.send('chat-h-kid', 'SCRIPT:spawn 1 echo hi');
+  const row = frames.filter(f => f.type === 'agent').at(-1).agent;
+  assert.equal(row.status, 'completed');
+  const read = async chatId => {
+    const res = await fetch(`${s.host.base}/api/chat/subagents/${encodeURIComponent(row.id)}?sessionId=${encodeURIComponent(chatId)}`);
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  const view = await read('chat-h-kid');
+  assert.equal(view.status, 200);
+  assert.equal(view.body.agent.status, 'completed');
+  assert.equal(view.body.available, true);
+  assert.ok(view.body.transcript.some(entry => entry.role === 'assistant' && /hi/.test(entry.text)), JSON.stringify(view.body));
+  assert.equal((await read('another-chat')).status, 404, 'another chat cannot read it');
+  const sent = await s.host.post('/api/chat/subagent/prompt', { sessionId: 'chat-h-kid', childId: row.id, text: 'SCRIPT:echo second' });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.ok(sent.body.messageId, 'the Harness accepted the message');
+  let after = null;
+  for (let i = 0; i < 100; i += 1) {
+    after = (await read('chat-h-kid')).body;
+    if (after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text))) break;
+    await sleep(100);
+  }
+  assert.ok(after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text)), 'the helper answered the new message');
+});
+
+test('A10 over HTTP: after a host restart the helper row is still there, its kept conversation is not, and a prompt resumes the child', { skip }, async t => {
+  const first = await setup(t);
+  const frames = await first.send('chat-h-cold', 'SCRIPT:spawn 1 echo before-restart');
+  const row = frames.filter(f => f.type === 'agent').at(-1).agent;
+  const before = await (await fetch(`${first.host.base}/api/chat/subagents/${encodeURIComponent(row.id)}?sessionId=chat-h-cold`)).json();
+  assert.equal(before.available, true);
+  await first.host.stop();
+  const second = await setup(t, { reuse: { worker: first.worker, home: first.home, connectionId: first.connectionId } });
+  const read = async () => (await fetch(`${second.host.base}/api/chat/subagents/${encodeURIComponent(row.id)}?sessionId=chat-h-cold`)).json();
+  const cold = await read();
+  assert.equal(cold.agent.status, 'completed', 'the saved row survived the restart');
+  assert.equal(cold.available, false, 'the conversation lived in the old process only');
+  assert.deepEqual(cold.transcript, []);
+  const coldTry = await second.host.post('/api/chat/subagent/prompt', { sessionId: 'chat-h-cold', childId: row.id, text: 'SCRIPT:echo after-restart' });
+  assert.equal(coldTry.status, 502);
+  assert.equal(coldTry.body.code, 'child-parent-cold', 'a restarted host says what to do instead of failing silently');
+  // One ordinary message resumes the chat's own Agent; then the helper can be asked to go on.
+  const wake = await second.send('chat-h-cold', 'SCRIPT:echo awake');
+  assert.match(text(wake), /awake/);
+  const sent = await second.host.post('/api/chat/subagent/prompt', { sessionId: 'chat-h-cold', childId: row.id, text: 'SCRIPT:echo after-restart' });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  let after = null;
+  for (let i = 0; i < 100; i += 1) {
+    after = await read();
+    if (after.transcript.some(entry => entry.role === 'assistant' && /after-restart/.test(entry.text))) break;
+    await sleep(100);
+  }
+  assert.ok(after.transcript.some(entry => entry.role === 'assistant' && /after-restart/.test(entry.text)), JSON.stringify(after));
+  assert.equal(after.transcript.filter(entry => entry.role === 'user' && entry.text === 'SCRIPT:echo after-restart').length, 1, 'the message sent after the restart is shown once');
+  t.after(() => { cleanup(first.home); });
+  await first.worker.close().catch(() => {});
+});
+
 test('/goal over HTTP: shown, set with rounds that stream into the chat, and refused when one is unfinished', { skip }, async t => {
   const s = await setup(t);
   const status = frames => frames.filter(f => f.type === 'delta').map(f => f.text).join('');

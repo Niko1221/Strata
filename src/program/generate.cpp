@@ -694,6 +694,9 @@ struct Options {
     int vram_reserve_later_mib = -1;
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
+    /// `--prefill-stream-min N`: chunks of N tokens or more stream every expert instead of staging the routed ones. 0 keeps the
+    /// built-in threshold. A long-context model sets it high so a big chunk stays staged and the cache it borrows stays small.
+    int64_t prefill_stream_min = 0;
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  A chunk of
     /// stream_all_min tokens or more (1024 by default) streams every expert the GPU does not hold once, routed or not
     /// (a smaller one only the experts it routes to), so a bigger chunk streams fewer bytes per token (the "ubatch"
@@ -1037,6 +1040,8 @@ void usage() {
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
                  "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
+                 "  --prefill-stream-min N  chunks of N tokens or more stream every expert instead of staging the ones\n"
+                 "                       they route to; a long-context model sets it high so a big chunk borrows less\n"
                  "  --prefill-pipe R     opt-in, a layer split: prompt chunks sized so the stages read at once - R is\n"
                  "                       this PC's b/a in tokens (setup's --calibrate measures it); 1 only evens out\n"
                  "                       the buffers' chunk count (STRATA_PREFILL_EQUAL's rule); 0 off (default; or\n"
@@ -3111,7 +3116,8 @@ int main(int argc, char** argv) {
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
-        else if (a == "--prefill") {
+        else if (a == "--prefill-stream-min") o.prefill_stream_min = std::atoll(next("--prefill-stream-min"));
+else if (a == "--prefill") {
             const std::string v = next("--prefill");
             o.prefill_auto = v == "auto" || v.rfind("auto:", 0) == 0;
             // #282: auto:N (N = 16384 or 32768) or STRATA_PREFILL_AUTO_MAX lets auto take chunks above 8192
@@ -5156,6 +5162,7 @@ int main(int argc, char** argv) {
             : 0;
     if (split_ring_mib > 0) strata::prefill::Prefill::set_ring_override(96);
     if (o.prefill_pipe >= 0.0) strata::prefill::Prefill::set_pipe(o.prefill_pipe);
+    if (o.prefill_stream_min > 0) strata::prefill::Prefill::set_stream_min(o.prefill_stream_min);
     const int64_t split_pf_mib =
         (o.prefill_chunk > 0 && !pf_borrow) ? 160 + (o.prefill_chunk * 680) / 1024 + split_ring_mib : 0;
     // ---- WHAT A STAGE RESERVES, AND ON WHICH STAGE.  The flat 1 GiB this used to withhold from EVERY stage
@@ -8717,6 +8724,9 @@ int main(int argc, char** argv) {
         std::vector<strata::core::VmmChunk> spare;   // out of the cache, not (yet) in the K/V
         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
     } kvg;
+    // Filled in once the prompt path's participants are known (the serve block below): a K/V that outgrows the
+    // cache calls it to move the loan up (a smaller chunk) and take the slots it gives up, before new VRAM.
+    std::function<int64_t(int64_t)> kvg_fit_loan;
     auto kvg_start = [&](int64_t top) {
         kvg.on = strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
                  !host_res.empty() && srcp != nullptr && top > kvg.floor;
@@ -8804,6 +8814,18 @@ int main(int argc, char** argv) {
         if (gave > 0 && cudaDeviceSynchronize() != cudaSuccess) {
             std::fprintf(stderr, "strata: moving experts for the K/V failed: %s\n", cudaGetErrorString(cudaGetLastError()));
             return false;
+        }
+        // The cache is at its floor and the K/V still needs room: the prompt path's loan is temporary - it moves
+        // up (a smaller chunk), and the slots it gives up become K/V cells before new VRAM is asked for.
+        if (kvg_fit_loan != nullptr) {
+            const int64_t spare_n = (int64_t) kvg.spare.size(), free_n = freeable();
+            const int64_t remain = need - spare_n - free_n;
+            std::fprintf(stderr, "strata: K/V: %lld cells need %lld granules; the cache has %lld slots (loan from %lld, "
+                                 "floor %lld, now at %lld), %lld free below it, %lld spare; remain %lld\n",
+                         (long long) target, (long long) need, (long long) xcache.slots(), (long long) kvg.top,
+                         (long long) kvg.floor, (long long) kvg.lo, (long long) free_n, (long long) spare_n,
+                         (long long) remain);
+            if (remain > 0) gave += kvg_fit_loan(remain);
         }
         {
             const int64_t c0 = (int64_t) ((xcache.slot_offset(kvg.lo) + G - 1) / G);
@@ -9862,6 +9884,98 @@ int main(int argc, char** argv) {
             }
         }
         kvg_start(borrow != nullptr ? (int64_t) lend_first : xcache.slots());
+        // A K/V that outgrows the cache takes the prompt path's loan's tail (the path reads in a smaller chunk)
+        // before new VRAM: the loan is temporary, the K/V's ceiling is the whole cache.  The chunk kept is the
+        // largest one whose loan still fits beside the K/V's share, plus the new VRAM the card can take while
+        // 128 MiB stays free (below that the driver may page).
+        if (pf_parts.size() == 1 && pf_parts[0].first >= 0) {
+            kvg_fit_loan = [&](int64_t remain_g) -> int64_t {
+                PfPart& p = pf_parts[0];
+                strata::core::ExpertCache& xc = *p.cache;
+                const uint64_t G = strata::core::vmm_granularity();
+                if (G == 0 || xc.vmm_range() == nullptr) return 0;
+                if (!p.lent.empty()) return 0;                 // a refill still owns slots of the loan
+                size_t fb = 0, tb = 0;
+                if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    return 0;
+                }
+                constexpr int64_t kFreshMarginMib = 128;
+                const int64_t margin_g = (int64_t) (((uint64_t) kFreshMarginMib << 20) / G);
+                const int64_t fresh_g = std::max<int64_t>(0, (int64_t) (fb / G) - margin_g);
+                std::fprintf(stderr, "strata: K/V: the loan fit: remain %lld granules, loan from slot %lld (floor "
+                                     "%lld, now at %lld), %lld slots in the cache, %lld MiB free = %lld granules above "
+                                     "the %lld MiB margin\n",
+                             (long long) remain_g, (long long) kvg.top, (long long) kvg.floor, (long long) kvg.lo,
+                             (long long) xc.slots(), (long long) (fb >> 20), (long long) fresh_g,
+                             (long long) kFreshMarginMib);
+                // the chunk whose loan leaves `need_g` granules above the floor, largest first
+                auto pick = [&](int64_t need_g) -> int64_t {
+                    const int64_t top = kvg.top;
+                    for (int64_t c = std::min(o.prefill_chunk, (int64_t) p.sp->chunk()); c >= 256; c -= 256) {
+                        const int64_t k = part_slots(p, c);
+                        if (k <= 0) continue;
+                        const int32_t f = (int32_t) (xc.slots() - k);
+                        if (f <= (int32_t) kvg.floor || f <= (int32_t) top) continue;
+                        // granules wholly inside [top, f): what this chunk gives up
+                        const int64_t give_g = (int64_t) (xc.slot_offset(f) / G) -
+                                               (int64_t) ((xc.slot_offset(top) + G - 1) / G);
+                        if (give_g < need_g) continue;
+                        return c;
+                    }
+                    return (int64_t) 0;
+                };
+                // The loan pays for all of it while a 1024-token chunk or more still fits; only when it cannot
+                // does the free VRAM take the rest.
+                int64_t best = pick(remain_g);
+                int64_t cache_g = remain_g;
+                if (best < 1024) {
+                    cache_g = std::max<int64_t>(0, remain_g - fresh_g);
+                    best = cache_g > 0 ? pick(cache_g) : 0;
+                }
+                if (best <= 0) return 0;
+                const int32_t first = (int32_t) (xc.slots() - part_slots(p, best));
+                std::fprintf(stderr, "strata: K/V: the loan fit picks %lld tokens = %lld slots, %lld granules given "
+                                     "up; the loan then starts at slot %lld\n",
+                             (long long) best, (long long) (xc.slots() - first),
+                             (long long) ((int64_t) (xc.slot_offset(first) / G) -
+                                          (int64_t) ((xc.slot_offset((int32_t) kvg.top) + G - 1) / G)),
+                             (long long) first);
+                std::string le;
+                if (!p.sp->relayout(best, xc.device_slot(first), part_bytes(p, first), le)) {
+                    std::fprintf(stderr, "strata: K/V: the prompt path could not relayout at %lld tokens: %s\n",
+                                 (long long) best, le.c_str());
+                    return 0;
+                }
+                // The experts of the slots the loan gives up are gone (the CPU computes them).  No `lent` entry:
+                // the slots become K/V cells, and a refill would write an expert over them.  `top0` covers the
+                // ones the eviction above moved into the old loan region as well.
+                const int64_t top0 = kvg.top;
+                int64_t gone = 0;
+                for (int64_t l = p.lb; l < p.le; ++l)
+                    for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                        int32_t& r = host_res[(size_t) (l * g.n_expert + ex)];
+                        if (r >= top0) {
+                            r = strata::core::kNotResident;
+                            ++gone;
+                        }
+                    }
+                // no unmap here: `kvg.top` moved up, and the caller's unmap of [lo, top) takes the released slots
+                // with the K/V's own (after the expert moves were synchronized)
+                kvg.top = first;
+                p.first = first;
+                p.first_now = first;
+                o.prefill_chunk = best;
+                lend_first = first;
+                std::fprintf(stderr, "strata: K/V: the prompt path's loan moved to %lld tokens (%lld slots, "
+                                     "%.2f GiB); the K/V takes %lld slots (%lld from new VRAM), %lld experts leave "
+                                     "the cache\n",
+                             (long long) best, (long long) (xc.slots() - first),
+                             (double) part_bytes(p, first) / 1073741824.0, (long long) (first - top0),
+                             (long long) std::max<int64_t>(0, remain_g - cache_g), (long long) gone);
+                return first - top0;
+            };
+        }
         // the penalty-history buffer: one row per verify-window row (`penalty_rows`), each the last
         // `penalty_last_n` tokens that row's pick follows, -1 padded in front.  Allocated once at the cap for
         // the widest window; a request without penalties gets a null buffer and takes the byte-for-byte

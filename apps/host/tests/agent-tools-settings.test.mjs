@@ -220,12 +220,12 @@ test('search: Exa and Perplexity use the person\'s key, map their answers, and s
       if (String(url).includes('exa.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://e.example', title: 'E', highlights: ['hl'] }, { url: 'https://no-snippet.example', highlights: [] }] }));
       return new Response(JSON.stringify({ choices: [{ message: { content: 'Answer.' } }], search_results: [{ url: 'https://p.example', title: 'P', snippet: 's' }] }));
     };
-    assert.deepEqual((await createExaSearch({ key: 'the-key' }).search({ query: 'q' })).sources, [{ url: 'https://e.example', title: 'E', snippet: 'hl' }]);
-    const p = await createPerplexitySearch({ key: () => 'the-key' }).search({ query: 'q' });
+    assert.deepEqual((await createExaSearch({ key: 'the-key', fetch: globalThis.fetch }).search({ query: 'q' })).sources, [{ url: 'https://e.example', title: 'E', snippet: 'hl' }]);
+    const p = await createPerplexitySearch({ key: () => 'the-key', fetch: globalThis.fetch }).search({ query: 'q' });
     assert.equal(p.content, 'Answer.'); assert.equal(p.sources[0].url, 'https://p.example');
     assert.equal(createExaSearch({ key: () => '' }).available(), false);
     globalThis.fetch = async () => new Response('{}', { status: 401 });
-    await assert.rejects(createExaSearch({ key: 'the-key' }).search({ query: 'q' }), /did not accept the key/);
+    await assert.rejects(createExaSearch({ key: 'the-key', fetch: globalThis.fetch }).search({ query: 'q' }), /did not accept the key/);
   } finally { globalThis.fetch = real; }
 });
 

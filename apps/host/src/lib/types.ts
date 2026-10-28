@@ -406,9 +406,13 @@ export interface Workspace {
 
 export interface SessionAgent {
   id: string;
+  /** The helper's own Harness session id: what a stop request names. Same as `id`, kept explicit for the API. */
+  childSessionId?: string;
   name: string;
   description: string;
-  status: 'working' | 'completed' | 'failed' | 'queued' | 'cancelled';
+  status: 'working' | 'completed' | 'failed' | 'queued' | 'cancelled' | 'interrupted';
+  /** What the host wants the person to know about this helper (a stop that did not take, a row repaired at start). */
+  warning?: string;
   durationMs: number;
   tokens: number;
   /** Time the latest duration measurement was received. */

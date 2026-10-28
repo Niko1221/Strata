@@ -18,7 +18,7 @@
  * run id immediately and the client follows it with `/api/timeskip/status`.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { timeSkipDir } from './platform-paths.mjs';
 
@@ -150,6 +150,19 @@ function killTree(child) {
     if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     else child.kill('SIGTERM');
   } catch { /* already gone */ }
+}
+
+/**
+ * Whether a path is really absent. `existsSync` also answers false when access is denied, so a removal that failed on a
+ * process still holding the folder would read as a success; only ENOENT is a removal.
+ */
+function isGone(path) {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (error) {
+    return error.code === 'ENOENT';
+  }
 }
 
 /** How big a folder is, stopping early once it is clearly too big to copy for a trial. */
@@ -398,18 +411,31 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
     /**
      * Stop a run and clean up after it: the job and everything it started are ended (the whole process tree), and the run's folder, which
      * holds the copies of the person's files, is deleted. The person's own files were never touched by the run. Afterwards the run reads as
-     * cancelled. Returns false for an id that is not a run.
+     * cancelled. Returns false for an id that is not a run, and raises when the copies cannot be removed: a stop that leaves a copy behind is
+     * not reported as done.
      */
     async stop(id) {
       if (!/^[0-9a-f]{8,64}$/.test(String(id ?? ''))) return false;
       const folder = join(stateDir(env), id);
-      if (!live.has(id) && !existsSync(folder) && !stopped.has(id)) return false;
+      if (!live.has(id) && isGone(folder) && !stopped.has(id)) return false;
       stopped.add(id);
       const child = live.get(id);
       if (child) killTree(child);
       await Promise.race([endedOf.get(id) ?? Promise.resolve(), new Promise(r => setTimeout(r, 8000))]);
-      for (let i = 0; i < 6 && existsSync(folder); i++) {
-        try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { await new Promise(r => setTimeout(r, 400)); }
+      // The job's candidates are the folders its revision command runs in. Windows releases them when every process
+      // that held one has ended, which follows the kill by a moment. The folder is deleted and the deletion is
+      // verified: it is only reported as stopped once it is really gone, never on an access-denied probe.
+      const deadline = Date.now() + 8000;
+      let lastError = null;
+      while (!isGone(folder)) {
+        try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+        catch (error) { lastError = error; }
+        if (isGone(folder)) return true;
+        if (Date.now() >= deadline) {
+          throw new Error(`the Time-skip run's folder is still there and could not be removed: ${folder}` +
+            (lastError ? ` (${lastError.code})` : ''));
+        }
+        await new Promise(r => setTimeout(r, 100));
       }
       return true;
     },

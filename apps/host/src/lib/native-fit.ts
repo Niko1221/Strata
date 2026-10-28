@@ -5,9 +5,16 @@
  * where there is room: first in the graphics memory beyond about 5 GB (the dense weights, buffers and a 32K cache), then in RAM beyond
  * about 10 GB left for the system; whatever is left is read from the SSD. The same rules setup uses to choose its low-RAM mode
  * (setup.py: low_ram_gpu_gb, LOW_RAM_HEADROOM_GB), so the page and the engine agree.
+ *
+ * The session cache is part of the card's bill, not only of the weights: a 512K INT8 session was about 1 GB more than a 16 GB card
+ * could hold (#3723, #3832), so the fit now says "short" and by how much instead of claiming a fit from `spillGb === 0`.
  */
 export interface FitInput { ram_needed_gb?: number; experts_gb?: number | null; memory_gb?: number; mem_total?: boolean }
 export interface FitHardware { ram_gb?: number | null; vram_gb?: number | null }
+/** fits: everything asked for stays in memory; spill: part is read from the SSD; short: the card cannot hold the session; unknown: no hardware report. */
+export type FitVerdict = 'fits' | 'short' | 'spill' | 'unknown';
+/** The one plain sentence of the card: an English template (resolved through tr() by the page) and its numbers. */
+export interface FitNote { text: string; values: number[] }
 export interface Fit {
   /** RAM + VRAM the version needs (the n-gram table not counted). */
   memoryGb: number;
@@ -17,11 +24,23 @@ export interface Fit {
   /** About how much is read from the SSD while answering; 0 when it all fits in memory. */
   spillGb: number;
   known: boolean;
+  /** The conversation cache at the chosen context and KV format; 0.6 GB at the 32K default. */
+  cacheGb: number;
+  /** How much the card is short for the cache, the dense weights, the draft layer and the room the engine keeps free; 0 unless short. */
+  shortGb: number;
+  verdict: FitVerdict;
+  note: FitNote;
 }
 
 const DENSE_GB = 5, SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
 /** The draft layer (MTP) takes about 1 GB of graphics memory (786 MiB of files + the draft head's ~218 MiB); it comes out of the expert cache while MTP is on (setup.py MTP_VRAM_GB). */
 export const MTP_VRAM_GB = 1;
+/** What the engine holds beside the dense weights at a large context: 2048 MiB reserve + 184 MiB draft head + about 1.5 GiB prompt
+ *  buffers (vram_fit.py PROMPT_BASE_MIB + PROMPT_PER_TOKEN_MIB at the 2048-token chunk). Measured on the 16 GB card of #3723: a 512K
+ *  INT8 session left 1.92 GiB free and the engine needed about 1000 MiB more for the first expert slots. */
+const ENGINE_ROOM_GB = 3.7;
+/** The smallest expert cache the engine starts with: 332 slots, 737 MiB (#3723). */
+const MIN_EXPERTS_GB = 0.72;
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 export function memoryNeeded(v: FitInput): number {
@@ -42,16 +61,28 @@ export interface CacheChoice { context: number; kv?: string }
 export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = true, cache?: CacheChoice | null): Fit {
   const memoryGb = memoryNeeded(v);
   // DENSE_GB already holds a 32K cache in the default format; the person's context and format replace it (#3832).
-  const denseGb = cache && cache.context > 0 ? Math.max(DENSE_GB - cacheGb(BASE_CONTEXT), 0) + cacheGb(cache.context, cache.kv) : DENSE_GB;
+  const cacheSizeGb = cache && cache.context > 0 ? cacheGb(cache.context, cache.kv) : cacheGb(BASE_CONTEXT);
+  const denseGb = cache && cache.context > 0 ? Math.max(DENSE_GB - cacheGb(BASE_CONTEXT), 0) + cacheSizeGb : DENSE_GB;
   const ram = Number(hw?.ram_gb), vram = Number(hw?.vram_gb) || 0;
-  if (!Number.isFinite(ram) || ram <= 0) return { memoryGb, vramUseGb: 0, ramUseGb: 0, spillGb: 0, known: false };
+  const noteFits: FitNote = { text: 'Fits fully in memory.', values: [] };
+  const noteDisk = (n: number): FitNote => ({ text: 'About {0} GB will be read from the SSD, so answers can be a little slower.', values: [n] });
+  if (!Number.isFinite(ram) || ram <= 0) return { memoryGb, vramUseGb: 0, ramUseGb: 0, spillGb: 0, known: false, cacheGb: round1(cacheSizeGb), shortGb: 0, verdict: 'unknown', note: { text: '', values: [] } };
   const experts = Math.max(0, memoryNeeded(v) - DENSE_EXTRA_GB);
   const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (mtp && vram > 0 ? MTP_VRAM_GB : 0)));
   const ramRoom = Math.max(0, ram - SYSTEM_ROOM_GB);
-  const spillGb = Math.max(0, experts - onGpu - ramRoom);
-  const inRam = Math.max(0, experts - onGpu - spillGb);
+  const spill = Math.max(0, experts - onGpu - ramRoom);
+  const inRam = Math.max(0, experts - onGpu - spill);
+  const spillGb = round1(spill);
   const vramUseGb = vram > 0 ? Math.min(vram, denseGb + (mtp ? MTP_VRAM_GB : 0) + onGpu) : 0;
-  return { memoryGb, vramUseGb: round1(vramUseGb), ramUseGb: round1(inRam + DENSE_EXTRA_GB * (vram > 0 ? 0 : 1)), spillGb: round1(spillGb), known: true };
+  // A cache that is a large part of the card decides the session: the card must also hold the dense weights, the draft layer, the
+  // room the engine keeps free and at least the first expert slots. Below that the start stops with "no VRAM ... for the expert cache".
+  // A model that states its total (mem_total) already counts the draft layer and buffers, so the engine room is not added twice.
+  const shortGb = vram > 0 && cacheSizeGb >= vram * 0.25
+    ? round1(Math.max(0, denseGb + (mtp ? MTP_VRAM_GB : 0) + (v.mem_total ? 0 : ENGINE_ROOM_GB) + MIN_EXPERTS_GB - vram))
+    : 0;
+  const verdict: FitVerdict = shortGb > 0 ? 'short' : spillGb > 0 ? 'spill' : 'fits';
+  const driveGb = Math.max(shortGb, spillGb);
+  return { memoryGb, vramUseGb: round1(vramUseGb), ramUseGb: round1(inRam + DENSE_EXTRA_GB * (vram > 0 ? 0 : 1)), spillGb, known: true, cacheGb: round1(cacheSizeGb), shortGb, verdict, note: verdict === 'fits' ? noteFits : noteDisk(verdict === 'short' ? driveGb : spillGb) };
 }
 
 /** The family groups of the version list, in the order shown. `family` is the engine's family id. */

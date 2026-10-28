@@ -1,10 +1,11 @@
 import { migrateSetup } from './setup.mjs';
 /** Tiny persisted state for the host: one JSON file under STRATA_HOME. */
-import { accessSync, constants, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync, readdirSync, statSync, statfsSync, symlinkSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, existsSync, realpathSync, readdirSync, statSync, statfsSync, symlinkSync } from 'node:fs';
 import { alignModels, isDriveRoot, libraryFolderFromPick, makeFolder } from './model-folder.mjs';
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { defaultModelDirectory } from './model-directory-default.mjs';
+import { atomicWriteJsonSync, readJsonWithBackupSync } from './atomic-file.mjs';
 
 /**
  * Prefer ~/.strata, the way the packaged app stores its data. Sandboxes and
@@ -49,8 +50,8 @@ const DEFAULTS = {
 
 function read() {
   try {
-    if (!existsSync(STATE_FILE)) return structuredClone(DEFAULTS);
-    const parsed = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+    const parsed = readJsonWithBackupSync(STATE_FILE, null);
+    if (!parsed || typeof parsed !== 'object') return structuredClone(DEFAULTS);
     return { ...structuredClone(DEFAULTS), ...parsed, setup: migrateSetup(parsed.setup) };
   } catch {
     return structuredClone(DEFAULTS);
@@ -134,7 +135,7 @@ export function changeModelsDirectory(directory) {
   const installedByDirectory = { ...state.installedByDirectory, [MODELS_DIR]: state.installed ?? {} };
   const updated = { ...state, modelsDir: next, installedByDirectory, installed: installedByDirectory[next] ?? {}, current: null, loaded: null };
   // Commit the preference before exposing it; a persistence error leaves the old library active.
-  writeFileSync(STATE_FILE, JSON.stringify(updated, null, 2));
+  atomicWriteJsonSync(STATE_FILE, updated);
   state = updated; MODELS_DIR = next;
   return true;
 }
@@ -145,7 +146,7 @@ export function get() {
 
 export function save() {
   try {
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    atomicWriteJsonSync(STATE_FILE, state);
   } catch (err) {
     console.error('[strata] could not persist state:', err.message);
   }

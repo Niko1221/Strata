@@ -112,7 +112,10 @@ test('item 8 / T9: starting a program that prints nothing is reported as started
 });
 
 test('item 7/10: our prompt has no internal terms and is short', () => {
-  assert.ok(AGENT_PROMPT.length < 1600, `${AGENT_PROMPT.length} chars`);
+  // 1600 was the budget before the two standing rules (where a fact came from; how this computer reaches the net) were
+  // added at the person's request: 2,284 chars now, about 600 tokens, still a fifth of the Harness's own text. The check
+  // stays so a prompt that grows into a page fails here.
+  assert.ok(AGENT_PROMPT.length < 2600, `${AGENT_PROMPT.length} chars`);
   assert.doesNotMatch(AGENT_PROMPT, /DSH|DeepSeek|sandbox|isolated session|file policy|Harness/i);
   // O6 / #3576: the prompt points at the present tool for local files and never tells the model to claim a window opened
   assert.match(AGENT_PROMPT, /use the present tool/);

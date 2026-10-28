@@ -120,7 +120,11 @@ test('Stop ends the job and everything it started, deletes the copies, leaves th
     assert.equal(readFileSync(join(workspace, 'plan.md'), 'utf8'), 'first draft\n');
     assert.equal(existsSync(join(workspace, 'half-done.md')), false, 'nothing reached the person\'s folder');
     assert.equal(await ts.stop('b'.repeat(32)), false, 'an id that is not a run is not "stopped"');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    // Windows frees a killed process's folder a moment after it is gone: a removal that fails once is retried, and the
+    // error is raised if the folder is still held after three seconds.
+    for (let i = 0; i < 25; i++) { try { rmSync(dir, { recursive: true, force: true }); break; } catch (error) { if (i === 24) throw error; await sleep(120); } }
+  }
 });
 
 test('the revision step reads the host\'s stream: a long silent turn is fine, a failure is told in the host\'s words, a vanished host is "could not be reached"', { timeout: 60000 }, async () => {

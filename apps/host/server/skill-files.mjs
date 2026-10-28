@@ -6,8 +6,9 @@
  * list (bundled, written, added, edited, switched on or off) into one folder the Harness is told to scan (`materializeSkills`), every time
  * anything changes. The Harness watches that folder, so a skill saved in the app is there for the next message without a restart.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { atomicWriteFileSync } from './atomic-file.mjs';
 
 /** The kebab-case name the Harness requires, from what a person typed ("Directory opener" -> "directory-opener"). */
 export function skillSlug(name) {
@@ -42,7 +43,7 @@ export function writeCreatedSkill(root, { name, description, body }) {
   const dir = join(root, id);
   if (existsSync(dir)) throw new Error(`You already have a skill called "${id}". Choose another name, or edit the one you have.`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'SKILL.md'), skillFileText({ name: id, title: String(name).trim(), description, body }));
+  atomicWriteFileSync(join(dir, 'SKILL.md'), skillFileText({ name: id, title: String(name).trim(), description, body }));
   return id;
 }
 
@@ -67,7 +68,7 @@ export function materializeSkills(root, skills) {
     const file = join(dir, 'SKILL.md');
     // Only a changed skill is rewritten: the agent watches this folder and treats every write as a change to its list.
     let same = false; try { same = readFileSync(file, 'utf8') === text; } catch { /* not there yet */ }
-    if (!same) writeFileSync(file, text);
+    if (!same) atomicWriteFileSync(file, text);
   }
   for (const entry of readdirSync(root, { withFileTypes: true })) if (entry.isDirectory() && !keep.has(entry.name)) rmSync(join(root, entry.name), { recursive: true, force: true });
   return [...keep];

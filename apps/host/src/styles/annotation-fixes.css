@@ -771,3 +771,16 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .models-dialog .dialog-body { display:grid; gap:14px; }
 .models-path { font-family:var(--st-font-mono); font-size:12px; font-weight:400; background:var(--st-surface-2); padding:2px 6px; border-radius:6px; overflow-wrap:anywhere; }
 .models-dialog .storage-directory__path { margin:0; }
+/* A helper's own conversation: a bounded scroller and one line of input, inside the row's dialog. */
+.subagent-chat-dialog { width:min(760px, calc(100dvw - 32px)); }
+.subagent-chat { display:flex; flex-direction:column; gap:12px; min-height:0; height:100%; }
+.subagent-chat__scroll { flex:1; min-height:120px; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:4px; scrollbar-gutter:stable; }
+.subagent-chat__line { display:flex; flex-direction:column; gap:2px; max-width:88%; padding:8px 11px; border-radius:12px; background:var(--st-surface-2); font-size:var(--st-fs-sm); line-height:1.55; }
+.subagent-chat__line[data-role='user'] { align-self:flex-end; background:var(--st-accent-tint); }
+.subagent-chat__line[data-role='tool'] { align-self:flex-start; max-width:100%; padding:4px 8px; background:transparent; border:1px solid var(--st-line-soft); font-family:var(--st-font-mono); font-size:var(--st-fs-xs); color:var(--st-ink-muted); }
+.subagent-chat__who { font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--st-ink-muted); }
+.subagent-chat__text { white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; }
+.subagent-chat__compose { display:flex; align-items:flex-end; gap:8px; flex:none; }
+.subagent-chat__compose textarea.st-input { flex:1; min-width:0; min-height:44px; height:44px; padding:11px 14px; resize:vertical; font-family:inherit; font-size:var(--st-fs-sm); line-height:1.5; }
+.subagent-chat__continue { display:flex; flex:none; }
+@media (max-width: 600px) { .subagent-chat-dialog { width:calc(100dvw - 16px); } .subagent-chat__line { max-width:100%; } }

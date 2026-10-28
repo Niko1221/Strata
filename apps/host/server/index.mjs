@@ -19,6 +19,7 @@ import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge, plainTurnFailure } from './agent/agent-bridge.mjs';
 import { mcpSkippedNotices } from './agent/profile.mjs';
 import { createAgentTools } from './agent/tools-settings.mjs';
+import { createNetwork } from './net.mjs';
 import { withPlainStatus } from './agent/status.mjs';
 import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
 /**
@@ -82,6 +83,9 @@ import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem } from './ports.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
+import { createKeepAwake } from './keep-awake.mjs';
+import { rotateLogIfNeeded, rotateLogsIn } from './log-files.mjs';
+import { atomicWriteJsonSync, readJsonWithBackupSync } from './atomic-file.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -126,6 +130,8 @@ const control = createControl({ control: CONTROL });
 if (control && process.platform === 'win32' && !process.env.STRATA_NO_REPAIR_ACCESS) void control.repairAccess().catch(() => {});
 /* Which window shows the page (the app window or, when that cannot run, a browser tab) and what only the app window can do: app-ui.mjs. */
 const appUi = createAppUi({ shutdown: () => shutdown() });
+/* A turn, download, install or Time-skip job may run for hours. The wake lock is released as soon as no work remains; see keep-awake.mjs. */
+const keepAwake = createKeepAwake({ check: workInProgress, log: line => console.log(line) });
 /* The app's version has one source: the desktop shell passes it (STRATA_APP_VERSION, from apps/desktop/src-tauri/Cargo.toml). Outside the app it is read from the same file in a checkout, else 'dev'. */
 function appVersion() { return appVersionFrom({ env: process.env, here: HERE }); }
 const appUpdater = appUi.updater;
@@ -146,6 +152,9 @@ function shellState() {
 const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   ? installBundledEngine({ bundleDir: process.env.STRATA_ENGINE_BUNDLE_DIR || resolve(HERE, '..', '..', 'engine-bundle'), components: componentsDirectory(), log: line => console.log(line) })
   : Promise.resolve({ action: 'none' });
+/* Copying the bundled engine is an install too: do not let the PC sleep in the middle of it. */
+const bundledEngineAwake = keepAwake.hold('installing the bundled engine');
+void bundledEngine.then(bundledEngineAwake, bundledEngineAwake);
 const engineBundleDir = process.env.STRATA_ENGINE_BUNDLE_DIR || resolve(HERE, '..', '..', 'engine-bundle');
 /* An update from a per-GPU installer leaves its engine-bundle behind; it goes only when the same engine is complete in the store (sizes and hashes). */
 cleanupAfterInstall(bundledEngine, { bundleDir: engineBundleDir, components: componentsDirectory() });
@@ -169,6 +178,9 @@ const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwar
 const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
 const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
 agentTools.ensureFile();
+/* The proxy choice from Settings, Tools, Network. Creating it points net.mjs at this host's data folder, so every outbound request
+   (model APIs, web search, update checks, the connector) uses the same answer. */
+const network = createNetwork({ directory: store.DATA_DIR });
 const visionProbe = createVisionProbe();
 /** The model APIs as the chat picker sees them: each model says whether it reads pictures (what the person ticked, else what the server answered). Unanswered models are asked in the background. */
 function withPictureAnswers(list) {
@@ -284,6 +296,16 @@ if (models.REAL && control && backend.kind === 'unavailable' && bundledEngineSet
 else printInference(null);
 console.log(`models dir   ·  ${store.MODELS_DIR}`);
 console.log(`workspace    ·  ${WORKSPACE}`);
+/* Logs from an earlier run that are over the limit become one .1 before new lines are written. */
+const runtimeLogDir = join(dirname(componentsDirectory()), 'runtime');
+const desktopLogDir = join(dirname(componentsDirectory()), 'logs');
+try {
+  const rotated = rotateLogsIn(runtimeLogDir, { suffixes: ['.server.log', '.host.log'] });
+  if (rotated.length) console.log(`logs         ·  rotated ${rotated.join(', ')}`);
+} catch { /* a log folder that cannot be read must not stop the host */ }
+/* The desktop shell writes one log per start and keeps ten; a run that lasted days can still be large. An old, closed one is rotated here; the run in progress is never touched. */
+try { rotateLogsIn(desktopLogDir, { suffixes: ['.log'], olderThanMs: 60 * 60 * 1000 }); } catch { /* best effort */ }
+try { rotateLogIfNeeded(join(store.DATA_DIR, 'harness.log')); } catch { /* best effort */ }
 
 /* ------------------------------------------------------------------- data --- */
 
@@ -492,7 +514,7 @@ const WORKSPACES_FILE = join(store.DATA_DIR, 'workspaces.json');
 
 function loadWorkspaces() {
   try {
-    const parsed = JSON.parse(readFileSync(WORKSPACES_FILE, 'utf8'));
+    const parsed = readJsonWithBackupSync(WORKSPACES_FILE, null);
     if (Array.isArray(parsed) && parsed.length) {
       // An earlier version saved the app's own folder as the first workspace. The first entry keeps its id (chats point at it) and moves to the default folder.
       if (parsed[0]?.id === 'root' && typeof parsed[0].path === 'string' && insideApp(parsed[0].path)) parsed[0] = { ...parsed[0], aliases: [...new Set([...(parsed[0].aliases ?? []), parsed[0].path])], path: WORKSPACE, name: WORKSPACE_NAME };
@@ -517,7 +539,7 @@ const chatRoot = chatId => chatRootOf({ chosen: chatFolders.get(chatId), used: a
 function saveWorkspaces() {
   try {
     mkdirSync(store.DATA_DIR, { recursive: true });
-    writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaces, null, 2));
+    atomicWriteJsonSync(WORKSPACES_FILE, workspaces);
   } catch (err) {
     console.warn('workspaces · could not persist', err.message);
   }
@@ -622,6 +644,8 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   const entry = instance ? serving.open({ client: 'Strata chat', endpoint: '/agent', model: instance.apiModelId, instanceId: instance.id, gpuIds: instance.gpus.map(String), cancel: () => { void agent.stop(chatId); } }) : null;
   if (entry) serving.mark(entry.id, { state: 'generating' });
   const settle = (tokensOut, error) => { if (entry) serving.finish(entry.id, { tokensOut, durationMs: Date.now() - started, ...(error ? { error } : {}) }); };
+  const releaseAwake = keepAwake.hold('an assistant turn');
+  let detachedAwake = false;
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
     const attached = chatAttachments.take(chatId);
@@ -637,12 +661,14 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
       : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
-    if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
+    if (result?.detached) { detachedAwake = true; void result.ended.then(r => { releaseAwake(); settle(r?.tokensOut ?? null); }, () => { releaseAwake(); settle(null); }); }
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
   } catch (err) {
     const plain = plainTurnFailure(err);
     write({ type: 'error', message: plain.message, ...(plain.details ? { details: plain.details } : {}), code: plain.code });
     settle(null, plain.message);
+  } finally {
+    if (!detachedAwake) releaseAwake();
   }
 }
 
@@ -940,6 +966,36 @@ const tasks = createTaskService({
 });
 const taskTimer = setInterval(() => tasks.tick(), 15000);
 taskTimer.unref();
+
+/** What the wake lock watches: any turn, download, install or Time-skip job still running. */
+function workInProgress() {
+  try {
+    const requests = serving.state().requests;
+    if (requests.some(r => ['queued', 'generating'].includes(r.state))) return 'a model is answering';
+    if (agent.activeTurns() > 0) return 'the assistant is working';
+    if (tasks.list().some(task => task.status === 'running')) return 'a scheduled task is running';
+    if (imageModels.busy()) return 'an image model is downloading';
+    if (engineInstall.busy()) return 'the inference engine is installing';
+    if (native.busy()) return 'model files are being prepared';
+    const live = run => !['completed', 'cancelled', 'failed', 'interrupted'].includes(run.phase);
+    if (timeskip.list().some(live) || forkTs.list().some(live)) return 'Time-skip is working';
+  } catch {
+    /* a state that is not ready yet must not keep the wake lock on */
+  }
+  return null;
+}
+keepAwake.start();
+
+/* Between long runs, with no engine holding an open log, an oversized log is rotated so the next night starts clean. */
+const logTimer = setInterval(() => {
+  try {
+    if (models.library().loaded || native.hasLive() || native.busy() || (native.state().external?.length ?? 0) > 0) return;
+    rotateLogsIn(runtimeLogDir, { suffixes: ['.server.log', '.host.log'] });
+    rotateLogsIn(desktopLogDir, { suffixes: ['.log'], olderThanMs: 60 * 60 * 1000 });
+    rotateLogIfNeeded(join(store.DATA_DIR, 'harness.log'));
+  } catch { /* logs are housekeeping: never stop the host for them */ }
+}, 10 * 60 * 1000);
+logTimer.unref();
 
 // The share and tunnel listeners take a free port (the next ones above the host's own) instead of a fixed PORT+1 / PORT+2 that Docker, WSL or Hyper-V may hold or reserve.
 const sharePort = await findFreePort(Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), '0.0.0.0', { skip: [PORT] });
@@ -1461,7 +1517,12 @@ async function api(req, res, path, method, url) {
   const imageMatch = /^\/api\/image-models\/(q4|q5|q6|q8)\/(install|cancel)$/.exec(path);
   if (imageMatch && method === 'POST') {
     const [, id, action] = imageMatch;
-    return json(res, 200, action === 'install' ? imageModels.install(id) : await imageModels.cancel(id));
+    if (action === 'cancel') return json(res, 200, await imageModels.cancel(id));
+    const releaseAwake = keepAwake.hold('downloading an image model');
+    let started;
+    try { started = imageModels.install(id); } catch (error) { releaseAwake(); throw error; }
+    void imageModels.whenIdle().then(releaseAwake, releaseAwake);
+    return json(res, 200, started);
   }
   if(path==='/api/runtime' && method==='GET')return json(res,200,runtimeState());
   if(path==='/api/runtime/plan' && method==='POST')return json(res,200,runtimeModels.plan(await readBody(req)));
@@ -1571,20 +1632,26 @@ async function api(req, res, path, method, url) {
   }
   if (path === '/api/engine/binary' && method === 'GET') return json(res, 200, engineInstall.status());
   if (path === '/api/engine/binary' && method === 'POST') {
+    const releaseAwake = keepAwake.hold('installing the inference engine');
     try {
       const result = await engineInstall.install({ force: url.searchParams.get('force') === '1' });
       return json(res, 200, result);
     } catch (err) {
       return error(res, err.status ?? 500, err.message, { ...engineInstall.status(), error: err.message });
+    } finally {
+      releaseAwake();
     }
   }
+  if (path === '/api/keep-awake' && method === 'GET') return json(res, 200, keepAwake.state());
   if (path === '/api/engine/export' && method === 'GET') return json(res, 200, await engine.exportConfig());
 
   // --- serving ------------------------------------------------------------
   if (path === '/api/serving/tunnel' && method === 'GET') return json(res, 200, await cloudflare.inspect());
   if (path === '/api/serving/tunnel' && method === 'POST') {
+    const releaseAwake = keepAwake.hold('setting up the Cloudflare connector');
     try { const body = await readBody(req); if (body.action === 'stop') await cloudflare.stop(); else if (body.action === 'start') await cloudflare.start(body); else if (body.action === 'prepare') await cloudflare.prepare(); else throw new Error('Unknown tunnel action.'); return json(res, 200, serving.state()); }
     catch(e) { return error(res, 400, e.message); }
+    finally { releaseAwake(); }
   }
   if (path === '/api/monitor/snapshot' && method === 'POST') {
     try { const body = await readBody(req, 25 * 1024 * 1024); return json(res, 200, await saveSnapshot(body.data)); }
@@ -1923,6 +1990,12 @@ async function api(req, res, path, method, url) {
   if (path === '/api/agent/tools' && method === 'PUT') {
     try { return json(res, 200, agentTools.update(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
   }
+  /* Settings, Tools, Network: follow the system, a direct connection, or a proxy address; the answer every outbound request uses. */
+  if (path === '/api/network' && method === 'GET') return json(res, 200, network.view());
+  if (path === '/api/network' && method === 'PUT') {
+    try { return json(res, 200, network.save(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
+  }
+  if (path === '/api/network/test' && method === 'POST') return json(res, 200, await network.probe());
   if (path === '/api/agent/tools/custom' && method === 'POST') {
     try { return json(res, 200, agentTools.addCustom(await readBody(req))); } catch (e) { return error(res, 400, e.message); }
   }
@@ -1974,6 +2047,40 @@ async function api(req, res, path, method, url) {
     const trialId = trialByChat.get(b.sessionId);
     if (trialId) return json(res, 200, { stopped: await stopTrial(trialId), ended: 'time-skip' });
     try { return json(res, 200, await agent.stop(b.sessionId)); } catch (e) { return error(res, 502, e.message); }
+  }
+  /* Stop one helper agent of a running chat, or all of them. The helper's session stays, so it can go on later. */
+  if (path === '/api/chat/subagent/stop' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string') return error(res, 400, 'sessionId is required');
+    if (b.all !== true && typeof b.childId !== 'string') return error(res, 400, 'childId is required (or all: true)');
+    try { return json(res, 200, await agent.stopChildren({ chatId: b.sessionId, childId: b.all === true ? null : b.childId })); }
+    catch (e) { return error(res, 502, e.message); }
+  }
+  /* One helper's conversation and row. The chat id is required: a helper belongs to exactly one chat, and its
+     transcript must never be readable from another. Kept in this process, so it is empty after a host restart. */
+  const childRoute = /^\/api\/chat\/subagents\/([^/]+)$/.exec(path);
+  if (childRoute && method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId') ?? '';
+    if (!sessionId) return error(res, 400, 'sessionId is required');
+    let childId = '';
+    try { childId = decodeURIComponent(childRoute[1]); } catch { return error(res, 400, 'childId is not valid'); }
+    if (!childId) return error(res, 400, 'childId is required');
+    const view = agent.childView(sessionId, childId);
+    if (!view) return error(res, 404, 'That helper is not known in this chat.', { code: 'child-gone' });
+    return json(res, 200, view);
+  }
+  /* A message from the person to a helper. The Harness call is `subagents/prompt` with the exact fields of
+     SubagentPromptRequest (dsh-subagent, lib/types/control-types.d.ts: requestId, parentSessionId, childSessionId,
+     mode 'continuable', delivery 'queue'|'steer', content). `queue` is one later turn for this helper. */
+  if (path === '/api/chat/subagent/prompt' && method === 'POST') {
+    let b;
+    try { b = await readBody(req); } catch (e) { return error(res, 400, e.message); }
+    if (typeof b.sessionId !== 'string' || !b.sessionId.trim()) return error(res, 400, 'sessionId is required');
+    if (typeof b.childId !== 'string' || !b.childId.trim()) return error(res, 400, 'childId is required');
+    if (typeof b.text !== 'string' || !b.text.trim()) return error(res, 400, 'text is required');
+    if (b.text.length > 20_000) return error(res, 400, 'text is too long');
+    try { return json(res, 200, await agent.promptChild({ chatId: b.sessionId, childId: b.childId, text: b.text })); }
+    catch (e) { return error(res, e.code === 'child-gone' ? 404 : e.code === 'child-text' ? 400 : 502, e.message, e.code ? { code: e.code } : {}); }
   }
 
   // --- chat ---------------------------------------------------------------
@@ -2268,7 +2375,8 @@ server.listen(PORT, HOST, () => {
 let stopping=false;
 const shutdown = async () => {
   if(stopping)return;stopping=true;
-  clearInterval(taskTimer);tasks.close();
+  try { keepAwake.close(); } catch { /* the wake lock must never hold up a stop */ }
+  clearInterval(taskTimer);clearInterval(logTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
   await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
@@ -2276,6 +2384,8 @@ const shutdown = async () => {
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) { try { process.on(signal, shutdown); } catch { /* not on this platform */ } }
+// A clean process exit also drops the wake lock; a killed process ends its child through the closed stdin pipe (see keep-awake.mjs).
+try { process.on('exit', () => keepAwake.close()); } catch { /* best effort */ }
 // Started by the desktop shell: when the shell is gone (killed, crashed, logged off) stop what this app started and leave.
 // POSIX re-parents us (ppid changes); Windows keeps the old ppid, so the pid is probed (signal 0 never signals).
 if (process.env.STRATA_EXIT_WITH_PARENT === '1') {

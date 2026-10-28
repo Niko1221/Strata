@@ -4,12 +4,13 @@
  * Shapes follow the Harness's providers (packages/web/web-search-exa and web-search-perplexity at the pinned commit).
  */
 import { SearchUnavailable } from './web-search-ddg.mjs';
+import { netFetch } from './net.mjs';
 
 const abortError = e => e?.name === 'AbortError';
 
-async function call(service, url, options, signal) {
+async function call(service, url, options, signal, fetchImpl) {
   let res;
-  try { res = await fetch(url, { ...options, redirect: 'error', ...(signal ? { signal } : {}) }); }
+  try { res = await fetchImpl(url, { ...options, redirect: 'error', ...(signal ? { signal } : {}) }); }
   catch (error) {
     if (abortError(error)) throw new SearchUnavailable('The search was cancelled.', 'WEB_ABORTED', { cause: error });
     throw new SearchUnavailable(`The search could not reach ${service}. Check the internet connection and try again.`, 'WEB_PROVIDER_ERROR', { cause: error });
@@ -25,7 +26,7 @@ async function call(service, url, options, signal) {
   catch (error) { throw new SearchUnavailable(`${service} sent an answer that could not be read.`, 'WEB_PROVIDER_ERROR', { cause: error }); }
 }
 
-export function createExaSearch({ key }) {
+export function createExaSearch({ key, fetch: fetchImpl = netFetch }) {
   return {
     id: 'exa',
     available: () => typeof key === 'function' ? !!key() : !!key,
@@ -35,7 +36,7 @@ export function createExaSearch({ key }) {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({ query: request.query, type: 'auto', contents: { highlights: { highlightsPerUrl: 1 } }, ...(request.maxResults ? { numResults: request.maxResults } : {}) }),
-      }, signal);
+      }, signal, fetchImpl);
       const sources = (body.results ?? []).flatMap(r => {
         const snippet = (r.highlights ?? []).find(h => String(h).trim());
         return snippet === undefined ? [] : [{ url: r.url, ...(r.title ? { title: r.title } : {}), snippet, ...(r.publishedDate ? { publishedAt: r.publishedDate } : {}) }];
@@ -45,7 +46,7 @@ export function createExaSearch({ key }) {
   };
 }
 
-export function createPerplexitySearch({ key }) {
+export function createPerplexitySearch({ key, fetch: fetchImpl = netFetch }) {
   return {
     id: 'perplexity',
     available: () => typeof key === 'function' ? !!key() : !!key,
@@ -55,7 +56,7 @@ export function createPerplexitySearch({ key }) {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({ model: 'sonar', max_tokens: 1024, messages: [{ role: 'user', content: request.query }] }),
-      }, signal);
+      }, signal, fetchImpl);
       const content = body.choices?.[0]?.message?.content;
       const sources = body.search_results !== undefined
         ? body.search_results.map(r => ({ url: r.url, ...(r.title ? { title: r.title } : {}), ...(r.snippet ? { snippet: r.snippet } : {}), ...(r.date ? { publishedAt: r.date } : {}) }))

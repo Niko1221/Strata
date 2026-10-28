@@ -347,11 +347,12 @@ def private_mkdir(path: str | os.PathLike, *, parents: bool = False, exist_ok: b
 
 
 def adopt_user_defaults() -> bool:
-    """Make files this process creates belong to, and be open to, the user (Windows; no effect elsewhere).
+    """Make the objects this process creates belong to, and be open to, the user (Windows; no effect elsewhere).
 
     An elevated process otherwise creates files owned by BUILTIN\\Administrators with a default rule of SYSTEM and
-    Administrators only. Setting the token's default owner and default rule to the user's own SID fixes that for every file
-    the process (and what it starts) creates afterwards. Returns True when both were set; never raises.
+    Administrators only. Setting the token's default owner and default rule to the user's own SID fixes that for every object
+    the process (and what it starts) creates afterwards: files, and the processes a host must still be able to query and end.
+    Returns True when both were set; never raises.
     """
     if not WINDOWS:
         return False

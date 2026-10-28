@@ -219,7 +219,11 @@ constexpr int RING_MAX = 1024;          // the arrays; the ring itself is ring_s
 // (Prefill::arm_cpu_share) it is the share's own limit instead: the share applies to staged chunks only.
 constexpr int64_t kStreamAllMinDefault = 1024;   // the default above (and the CPU share's default limit)
 int64_t g_stream_min_share = 0;
+/// --prefill-stream-min: an explicit choice wins over the default and over the CPU share's limit, whatever order the serve
+/// setup runs in (the CPU share sets g_stream_min_share when it is armed).
+int64_t g_stream_min_forced = 0;
 inline int64_t stream_all_min() {
+    if (g_stream_min_forced > 0) return g_stream_min_forced;
     static const int64_t env = [] { const char* e = std::getenv("STRATA_PREFILL_STREAM_MIN"); return e ? (int64_t) std::atoll(e) : (int64_t) -1; }();
     if (env >= 0) return env;
     return g_stream_min_share > 0 ? g_stream_min_share : kStreamAllMinDefault;
@@ -2425,6 +2429,8 @@ void Prefill::set_ring_budget(int slots, int64_t small_max) {
 }
 double Prefill::pinned_share() { return g_pinned_share; }
 int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
+
+void Prefill::set_stream_min(int64_t tokens) { g_stream_min_forced = tokens > 0 ? tokens : 0; }
 
 // --prefill-pipe (opt-in; STRATA_PREFILL_PIPE): a layer split reads a prompt as a pipeline - stage s reads chunk c while
 // stage s+1 reads chunk c-1. A stage-chunk costs its layers x (b + a C): a fixed part per chunk (b: the pass over the

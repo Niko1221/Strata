@@ -883,9 +883,13 @@ fn run_embedded() {
         // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+                // Before the first screen the window is hidden on purpose; a second launch must not reveal a half-built
+                // page. The running app shows it as soon as its page is ready.
+                if window.is_visible().unwrap_or(true) {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_shell::init())
@@ -949,7 +953,14 @@ fn run_embedded() {
 fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    // Created hidden: the page shows it (the core window plugin's show command, allowed for the loopback origin in
+    // tauri.conf.json) once its first screen is ready, so a start never flashes an empty page, the boot skeleton, or a
+    // screen that is then replaced.
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+        .title("Strata")
+        .inner_size(1440.0, 920.0)
+        .min_inner_size(900.0, 600.0)
+        .visible(false);
     // Dropping pictures on the chat (QA report 1, item 4). Windows: the shell's own file-drop handler is off, because with it on the system hands
     // the dropped file to the shell and the page never sees it; with it off the page gets ordinary drag and drop events (apps/host DropZone), as
     // in a browser. Linux and macOS: the page gets the drag events but WebKit gives it no files, so the handler stays on and the shell passes the
@@ -966,6 +977,8 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     );
     #[cfg_attr(windows, allow(unused_variables))]
     let window = builder.build()?;
+    // A page that fails before it can ask must not leave the app running with no window: show it anyway after a deadline.
+    show_window_if_still_hidden(app.handle().clone());
     #[cfg(not(windows))]
     {
         let target = window.clone();
@@ -988,6 +1001,27 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     #[cfg(target_os = "linux")]
     hook_linux_drops(&window, port, shell_token);
     Ok(())
+}
+
+/// How long a hidden window waits for the page to report its first screen before it is shown anyway.
+const WINDOW_SHOW_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Show the one window if the page has not done so by the deadline, on the main thread, where window calls belong.
+///
+/// The page shows the window as soon as its first screen is ready. If it never asks (a script error before it could,
+/// a refused call), this keeps a mistake from ending in an app that runs with no window at all.
+fn show_window_if_still_hidden(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(WINDOW_SHOW_DEADLINE);
+        let on_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = on_main.get_webview_window("main") {
+                if !window.is_visible().unwrap_or(true) {
+                    let _ = window.show();
+                }
+            }
+        });
+    });
 }
 
 /// A file:// address from a drag, as a path (percent-escapes decoded); anything else (http, mailto, text) is not a dropped file.
@@ -1155,9 +1189,13 @@ fn run_window_process() -> ! {
         // First, as the plugin requires: a second window process ends here after telling the open window to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+                // Before the first screen the window is hidden on purpose; a second launch must not reveal a half-built
+                // page. The running app shows it as soon as its page is ready.
+                if window.is_visible().unwrap_or(true) {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_shell::init())

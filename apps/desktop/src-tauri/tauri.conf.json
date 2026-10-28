@@ -10,7 +10,25 @@
     "windows": [],
     "security": {
       "csp": null,
-      "dangerousDisableAssetCspModification": false
+      "dangerousDisableAssetCspModification": false,
+      "capabilities": [
+        {
+          "identifier": "app-window-show",
+          "description": "The app page shows its own window once the first screen is ready. The page is served from the loopback App Host, which Tauri treats as a remote origin, so the core window commands need this remote capability.",
+          "windows": [
+            "main"
+          ],
+          "remote": {
+            "urls": [
+              "http://127.0.0.1:*"
+            ]
+          },
+          "permissions": [
+            "core:window:allow-show",
+            "core:window:allow-set-focus"
+          ]
+        }
+      ]
     }
   },
   "bundle": {

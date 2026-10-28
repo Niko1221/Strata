@@ -7522,3 +7522,55 @@ textarea {
 
 /* A message the person typed keeps its line breaks (#3720). */
 .st-bubble__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Selected text stays visible on both themes (a reply is often copied). */
+::selection { background: rgba(31, 157, 107, 0.35); color: inherit; }
+
+
+/* One reply width for every answer, focus mode included (U3: replies changed width between modes). */
+.app[data-focus='true'] .chat__inner { max-width: 920px; }
+.app[data-focus='true'] .composer__inner { max-width: 864px; }
+
+
+.native-context-custom { margin-top: 6px; width: 100%; }
+
+
+/* One column for every part of a reply: prose, code and tables share the reading measure; wide code and tables scroll inside it (U3). */
+.st-msg--assistant .st-bubble { max-width: var(--st-measure); }
+.st-msg--assistant .st-bubble pre,
+.st-msg--assistant .st-bubble table { max-width: 100%; overflow-x: auto; }
+
+
+/* Quote a passage of a reply and ask about it (U10). */
+.quote-fab { position: fixed; transform: translateX(-50%); z-index: 80; background: var(--st-accent-surface); color: var(--st-accent-surface-ink); border: 1px solid var(--st-accent-surface-edge); border-radius: 8px; padding: 6px 12px; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.quote-fab:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
+.quote-tray { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+.quote-tray__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 18px; font-size: 11px; color: var(--st-ink-muted); }
+.quote-tray__title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.quote-tray__count { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--st-surface-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.quote-tray__clear { border: 0; background: transparent; color: var(--st-ink-muted); font: inherit; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.quote-tray__clear:hover { color: var(--st-ink); background: var(--st-surface-2); }
+.quote-chip { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-left: 3px solid var(--st-accent); background: var(--st-surface-2); border-radius: 6px; font-size: 12px; color: var(--st-ink-muted); }
+.quote-chip[data-kind='code'] { border-left-color: var(--st-info-text); }
+.quote-chip[data-kind='table'] { border-left-color: var(--st-warn-text); }
+.quote-chip__kind { flex: none; margin-top: 1px; padding: 1px 4px; border: 1px solid var(--st-line-soft); border-radius: 6px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.quote-chip__text { flex: 1; min-width: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.quote-chip__x { flex: none; border: 0; background: transparent; cursor: pointer; font-size: 16px; line-height: 1; color: var(--st-ink-muted); padding: 0 2px; border-radius: 6px; }
+.quote-chip__x:hover { color: var(--st-danger-text); }
+.quote-tray__clear:focus-visible, .quote-chip__x:focus-visible, .md-table-quote:focus-visible, .runbar__stop:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 2px; }
+
+/* Quote a whole table: the button appears on hover, so the table itself stays the only thing in view. */
+.md-table-wrap { position: relative; }
+.md-table-quote { position: absolute; top: 4px; right: 6px; z-index: 1; opacity: 0; padding: 2px 6px; border: 1px solid var(--st-line-soft); border-radius: 6px; background: var(--st-surface); color: var(--st-ink-muted); font-size: 11px; cursor: pointer; transition: opacity var(--st-t-micro); }
+.md-table-wrap:hover .md-table-quote, .md-table-quote:focus-visible { opacity: 1; }
+@media (hover: none) { .md-table-quote { opacity: .75; } }
+
+/* Helpers working in the background, right above the box (U10). Nothing renders when none run. */
+.runbar { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; padding: 5px 10px; border: 1px solid var(--st-line-soft); border-radius: 8px; background: var(--st-surface-2); font-size: 12px; color: var(--st-ink-muted); }
+.runbar__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--st-accent); }
+.runbar__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runbar__stop { flex: none; border: 0; background: transparent; color: var(--st-accent-text); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.runbar__stop:hover:not(:disabled) { background: var(--st-surface); }
+.runbar__stop:disabled { opacity: .6; cursor: default; }
+
+
