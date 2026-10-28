@@ -5,6 +5,7 @@ real StrataEngine and Service, so the server's side is tested without a GPU: req
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -19,6 +20,7 @@ from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
 from strata_cli import bench
 from strata_cli.client import Endpoint
+from serve import slot_policy
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -110,6 +112,8 @@ while True:
             stopped.add(b)
         continue
     if line.startswith(("GEN ", "BGEN ")):
+        if "--source-trace" in args:
+            print("CACHE_SOURCE 1 3", flush=True)
         f = line.split()
         slot = int(f[1]) if f[0] == "BGEN" else None
         max_new = int(f[2] if f[0] == "BGEN" else f[1])
@@ -321,7 +325,7 @@ class FakeEngineCase(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
     def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0,
-              more=(), stage_plan=False, batch_sample=False, stage_sample=False):
+              more=(), stage_plan=False, batch_sample=False, stage_sample=False, affinity=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -339,7 +343,8 @@ class FakeEngineCase(unittest.TestCase):
         extra += list(more)
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
-            self.engine = StrataEngine("strata", extra, log=str(Path(self.tmp.name) / "engine.log") if stage_plan else None)
+            self.engine = StrataEngine("strata", extra, log=str(Path(self.tmp.name) / "engine.log") if stage_plan else None,
+                                       env={**os.environ, "STRATA_SLOT_CACHE_AFFINITY": "1"} if affinity else None)
         tok = ByteTokenizer()
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
@@ -407,6 +412,68 @@ class FakeEngineCase(unittest.TestCase):
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in serve/test_parallel_yield.py (this file alone ran past 100 s)."""
+
+    def test_expiry_state_and_event_are_visible_in_same_metrics_response(self):
+        self.start(4, says_groups=2, affinity=True)
+        self.engine.slot_held[0] = [1] * 500
+        self.engine.slot_used[0] = time.time() - 1
+        self.engine.slot_cache_valid[0] = True
+        metrics = self.get("/metrics")["live"]
+        self.assertTrue(metrics["slots"][0]["cache_expired"])
+        self.assertTrue(any(event["kind"] == "expired" and event["slot"] == 0
+                            for event in metrics["cache_events"]))
+
+    def test_solo_native_source_is_forwarded_without_reserving_batch_slot(self):
+        self.start(2, more=["--source-trace"])
+        out = {}
+        worker = threading.Thread(target=lambda: out.update(reply=self.chat("LONGREPLY please")))
+        worker.start()
+        deadline = time.time() + 5
+        observed = None
+        while time.time() < deadline:
+            live = self.get("/metrics")["live"]
+            if live.get("solo_cache_source_slot") == 1:
+                observed = live
+                break
+            time.sleep(.01)
+        worker.join(10)
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed["solo_cache_reused_tokens"], 3)
+        self.assertTrue(observed["solo_request_key"])
+        self.assertTrue(all(s["state"] == "idle" for s in observed["slots"]))
+        self.assertIn("reply", out)
+        # once it is answered, /metrics shows no solo request: no key or cache source left from it
+        live = self.get("/metrics")["live"]
+        self.assertEqual([live[k] for k in ("solo_peer_ip", "solo_request_key", "solo_cache_source_slot",
+                                            "solo_cache_reused_tokens")], [None] * 4)
+
+    def test_solo_completion_records_actual_last_use_of_main_cache(self):
+        self.start(2, says_groups=2, affinity=True)
+        self.engine.main_used = time.time() - 3600
+        before = time.time()
+        self.chat('hello', max_tokens=8)
+        self.assertTrue(self.engine.main_held)
+        self.assertGreaterEqual(self.engine.main_used, before)
+        self.assertLessEqual(self.engine.main_used, time.time())
+
+    def test_http_peer_is_recorded_without_trusting_forwarded_ip(self):
+        self.start(2, says_groups=2, affinity=True)
+        body = {"messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 16, "reasoning_effort": "none", "peer_ip": "192.0.2.99"}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "X-Forwarded-For": "192.0.2.99"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            self.assertEqual(response.status, 200)
+            response.read()
+        history = self.get("/metrics")["requests"]
+        self.assertEqual(history[0]["peer_ip"], "127.0.0.1")
+        self.assertIsNone(self.get("/metrics")["live"]["peer_ip"])
+        out = self._two_at_once("another")
+        self.assertEqual(out["b"][0], "ok", out)
+        events = self.get("/metrics")["live"]["cache_events"]
+        allocations = [x for x in events if x["kind"] == "allocation"]
+        self.assertTrue(allocations)
+        self.assertTrue(all(x["peer_ip"] == "127.0.0.1" for x in allocations))
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
