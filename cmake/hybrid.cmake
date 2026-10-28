@@ -75,7 +75,12 @@ foreach(_f IN LISTS _src_files)
     # gdn_chunk.cu is the Volta recurrence. The CUDA prefill target compiles it.
     # Its file-scope __half is behind a non-HIP include, and the HIP call
     # sites are inside STRATA_EXPERIMENTAL_SM60, which this build leaves off.
-    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
+    # The moe_ws family (upstream #3752, landed with the 0.2.7 rebase) is the
+    # GP100 weight-stationary experts: pure PTX (prmt/mad.wide/f16x2 asm), a
+    # strata_mmq source only under STRATA_EXPERIMENTAL_SM60, gated at run time
+    # to cc-6.0-only machines. A HIP copy of it cannot compile (PTX constraints)
+    # and could never dispatch on an AMD device, so it stays out of the glob too.
+    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
       continue()
     endif()
     string(REGEX REPLACE "\\.cu$" ".hip" _rel_out "${_rel}")
