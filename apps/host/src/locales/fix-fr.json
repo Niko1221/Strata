@@ -128,5 +128,6 @@
   "fx127": "En attente de votre approbation",
   "fx128": "Manuel : ce sous-agent demande avant de modifier quoi que ce soit. Autorisez ou refusez ses demandes ici.",
   "fx129": "Plan : lecture seule. Ce sous-agent ne peut pas modifier de fichiers ni exécuter de commandes qui changent quelque chose.",
-  "fx130": "Bypass : les contrôles de permission sont ignorés. Ce sous-agent peut modifier des fichiers et exécuter des commandes sans demander."
+  "fx130": "Bypass : les contrôles de permission sont ignorés. Ce sous-agent peut modifier des fichiers et exécuter des commandes sans demander.",
+  "fx131": "Strata a redémarré. Envoyez d’abord un message dans la discussion, puis réessayez ici."
 }

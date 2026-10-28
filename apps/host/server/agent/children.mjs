@@ -25,6 +25,29 @@ const clip = (value, max) => {
 };
 
 /**
+ * A helper's closing words as the one plain line its row shows. The row is text, not Markdown: a
+ * `**bold**` label, a backticked path or a heading marker would otherwise appear as raw characters,
+ * and the first paragraph is the summary a row needs (a long essay must not become the row).
+ * @param {string} value
+ * @returns {string}
+ */
+const summaryLine = (value) => {
+  const first = String(value ?? '').split(/\n\s*\n/).map(part => part.trim()).find(Boolean) ?? '';
+  return first
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[-+*]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .replace(/^>\s?/, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+/**
  * One bounded transcript per helper. The interface shows these entries, and a tool call is one
  * readable row, never raw JSON. The same entries are saved beside the helper rows, so a restart
  * keeps the conversation instead of leaving only a summary.
@@ -261,6 +284,18 @@ export class ChildTranscript {
   user(value, at = this.now(), sourceId = null) {
     const text = String(value ?? '').trim();
     if (!text) return null;
+    // A reopened session replays its user messages. One already recorded under the same request id is
+    // the same line, even when it is no longer last (the answer arrived after it); without this a
+    // restart showed the direct message twice (the saved line plus the replay).
+    if (sourceId) {
+      const known = this.entries.find(entry => entry.role === 'user' && entry.sourceId === sourceId && entry.text === text);
+      if (known) {
+        known.echo = false;
+        if (Number.isFinite(at)) known.at = at;
+        this.#touch();
+        return known;
+      }
+    }
     // A message sent while the helper is still writing does not end the stream: the committed
     // answer for that stream can arrive after this line and must replace the growing entry above it.
     const last = this.entries[this.entries.length - 1];
@@ -755,7 +790,7 @@ export class ChildProjector {
     let description = this.task;
     if (this.status === 'queued') description = this.task ? `Waiting for its turn. ${this.task}` : 'Waiting for its turn.';
     if (this.status === 'working' && this.activity) description = this.activity;
-    if (this.status === 'completed') description = this.closing ? clip(this.closing, 140) : 'Finished.';
+    if (this.status === 'completed') description = this.closing ? clip(summaryLine(this.closing), 140) : 'Finished.';
     if (this.status === 'failed') description = this.failure ?? 'Stopped because something went wrong.';
     if (this.status === 'cancelled') description = 'Stopped.';
     return {

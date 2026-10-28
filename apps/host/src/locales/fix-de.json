@@ -128,5 +128,6 @@
   "fx127": "Wartet auf deine Freigabe",
   "fx128": "Manuell: Dieser Helfer fragt vor jeder Änderung. Erlaube oder verweigere seine Anfragen hier.",
   "fx129": "Plan: schreibgeschützt. Dieser Helfer kann keine Dateien ändern und keine ändernden Befehle ausführen.",
-  "fx130": "Bypass: Die Berechtigungsprüfung entfällt. Dieser Helfer kann Dateien ändern und Befehle ohne Nachfrage ausführen."
+  "fx130": "Bypass: Die Berechtigungsprüfung entfällt. Dieser Helfer kann Dateien ändern und Befehle ohne Nachfrage ausführen.",
+  "fx131": "Strata wurde neu gestartet. Senden Sie zuerst eine Nachricht im Chat und versuchen Sie es dann hier erneut."
 }

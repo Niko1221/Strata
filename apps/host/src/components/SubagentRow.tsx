@@ -321,7 +321,10 @@ export function SubagentRow({ agent: a, now = Date.now() }: {
             return true;
         } catch (e) {
             const info = errorInfo(e);
-            setLocal(previous => previous.map(entry => entry.id === clientId ? markSendFailed(entry, info.message) : entry));
+            // The host's cold-start reason is a plain instruction, not a code: keep the locale key so the
+            // line follows the page's language (the message renders through tr()).
+            const message = info.code === 'child-parent-cold' ? 'fx131' : info.message;
+            setLocal(previous => previous.map(entry => entry.id === clientId ? markSendFailed(entry, message) : entry));
             if (info.code === 'child-history-only' || info.code === 'child-gone') {
                 setHistoryOnly(true);
                 if (info.code === 'child-gone') setAvailable(false);

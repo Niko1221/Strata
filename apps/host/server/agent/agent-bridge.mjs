@@ -679,7 +679,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       // The helper keeps the parent's mode at the moment its delegation was requested.
       const mode = pendingCall?.mode ?? turn.mode;
       const cp = new ChildProjector({ id, name: d.label || 'Helper', task, mode, transcript });
-      const child = { id, cp, follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0, transcript };
+      // `queued` counts direct messages the Harness accepted for a later turn but has not started yet. The
+      // parent turn must not settle while one is pending: its 600 ms settle would close this follow stream,
+      // and the helper's queued turn would run unseen (row stuck on "completed", answer never shown).
+      const child = { id, cp, follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0, transcript, queued: 0, queuedAt: 0 };
       turn.children.set(id, child);
       emitRow(child, true);
       const fold = item => {
@@ -691,6 +694,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (item.type === 'event' && item.event.type === 'turn/end' && child.rowPending) emitRow(child, true);
         const { frames, row } = cp.consume(item);
         for (const f of frames) emit(f);
+        // The promise of a queued turn is kept: the turn boundary opens only once the Harness really starts it.
+        if (item.type === 'event' && item.event.type === 'turn/start' && child.queued > 0) {
+          child.queued -= 1;
+          armSettle();
+        }
         if (item.type === 'event' && item.event.type === 'turn/end') {
           child.done = true; child.endedAt = Date.now();
           if (turn.requestedStops?.has(child.id)) child.cp.markStopped();
@@ -880,6 +888,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       turn.settleTimer = after(turn.stopping ? 1200 : turn.children.size ? 600 : 0, async () => {
         if (turn.finished || turn.parentOpen || turn.advancing) return;
         const open = [...turn.children.values()];
+        // A direct message accepted for a later turn keeps this turn open until the helper starts that turn
+        // (or 30 s pass, so a lost message cannot hold the chat forever).
+        if (open.some(c => (c.queued ?? 0) > 0 && Date.now() - (c.queuedAt ?? 0) < 30_000)) {
+          turn.settleTimer = after(800, armSettle);
+          return;
+        }
         if (open.some(c => !c.done)) return;
         if (!turn.stopping) {
           if (open.some(c => !c.noticed && Date.now() - c.endedAt < 8000)) { armSettle(); return; }
@@ -1650,6 +1664,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         const cp = turnChild?.cp ?? watcher?.cp ?? null;
         cp?.markInternal(requestId);
       }
+      // Keep the parent turn's follow stream open until this message's turn starts: its own settle after the
+      // current turn would otherwise close the stream and the queued answer would never reach the row.
+      const tracked = followed && turnChild ? turnChild : null;
+      if (tracked) { tracked.queued += 1; tracked.queuedAt = Date.now(); }
       try {
         const receipt = await rt.gw.rpc('subagents/prompt', {
           request: {
@@ -1664,6 +1682,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (!followed) watchChild(chatId, childId, sentAt, internal ? requestId : null);
         return { messageId: receipt?.messageId ?? null, childId, requestId };
       } catch (e) {
+        if (tracked) { tracked.queued = Math.max(0, tracked.queued - 1); armSettle(); }
         if (echo) transcript.cancelUser(echo);
         if (e instanceof AgentUnavailable) throw e;
         if (e?.code === 'subagent/parent-unavailable') {

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 import { createAgentBridge, plainBlocker, goalEnding, plainGoalError } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
-import { ChildProjector, activityOf } from '../server/agent/children.mjs';
+import { ChildProjector, ChildTranscript, activityOf } from '../server/agent/children.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
 const skip = !HARNESS || !resolveHarness({ env: process.env }).ok ? 'STRATA_HARNESS_DIR is not set to a built Harness' : false;
@@ -41,6 +41,31 @@ test('a helper row follows its helper: queued, working, completed with its closi
   assert.equal(row.status, 'completed'); assert.equal(row.description, 'All 12 tests pass.');
   assert.ok(row.durationMs > 0);
   assert.ok(['id', 'name', 'description', 'status', 'durationMs', 'tokens', 'updatedAt'].every(k => k in row), 'exactly the fields the existing rows read');
+});
+
+test('a direct message replayed after a restart keeps one line', () => {
+  const transcript = new ChildTranscript();
+  transcript.beginUser('排队测试：只回复 QUEUED', 1000, 'req-1');
+  transcript.user('排队测试：只回复 QUEUED', 1000, 'req-1'); // the Harness echo
+  transcript.message('QUEUED', 1100);
+  transcript.user('排队测试：只回复 QUEUED', 1000, 'req-1'); // the session replay after a restart
+  const lines = transcript.entries.filter(entry => entry.role === 'user');
+  assert.equal(lines.length, 1, 'one direct message is one line');
+  assert.equal(lines[0].sourceId, 'req-1');
+});
+
+test('a finished helper row summarizes its answer as one plain line, not raw Markdown', () => {
+  const heading = new ChildProjector({ id: 'm1', name: 'A' });
+  heading.consume(ev('step/start', {}));
+  heading.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: '## 秋天的清晨\n\n秋天的清晨是从一层薄雾开始的。' }] } }));
+  heading.consume(ev('turn/end', { reason: { kind: 'completed' } }));
+  assert.equal(heading.agent().description, '秋天的清晨');
+
+  const marked = new ChildProjector({ id: 'm2', name: 'B' });
+  marked.consume(ev('step/start', {}));
+  marked.consume(ev('assistant/message', { message: { content: [{ type: 'text', text: '**写入完成**，文件 `C:\\a.txt` 已校验。\n\n第二段不该出现在行里。' }] } }));
+  marked.consume(ev('turn/end', { reason: { kind: 'completed' } }));
+  assert.equal(marked.agent().description, '写入完成，文件 C:\\a.txt 已校验。');
 });
 
 test('a helper that failed or was stopped says so in plain words', () => {
@@ -395,6 +420,26 @@ test('a Plan helper stays read-only for a direct message after the parent switch
   }
   assert.equal(existsSync(second), false, 'the parent switch did not widen the Plan helper');
   assert.equal(r.bridge.childView('keep-plan', childId).agent.mode, 'plan');
+});
+
+test('a direct message sent while the helper works is queued and runs after that turn', { skip }, async (t) => {
+  const r = await rig(t);
+  let childId = null;
+  const run = r.run('queued-talk', 'SCRIPT:spawn 1 slow 100', { mode: 'bypass', onFrame: f => {
+    if (!childId && f.type === 'agent' && f.agent.status === 'working') childId = f.agent.id;
+  } });
+  for (let i = 0; i < 200 && !childId; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(childId, 'the helper reached working');
+  const sent = await r.bridge.promptChild({ chatId: 'queued-talk', childId, text: 'SCRIPT:echo later' });
+  assert.ok(sent.messageId, 'the Harness accepted the queued message');
+  let seen = false;
+  for (let i = 0; i < 300; i += 1) {
+    const view = r.bridge.childView('queued-talk', childId);
+    if (view.transcript.some(entry => entry.role === 'assistant' && /later/.test(entry.text))) { seen = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  await run;
+  assert.equal(seen, true, 'the queued message ran after the first turn');
 });
 
 test('a Manual helper stopped before any tool does not make the next Plan helper ask', { skip }, async (t) => {

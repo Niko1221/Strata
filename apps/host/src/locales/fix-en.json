@@ -128,5 +128,6 @@
   "fx127": "Waiting for your approval",
   "fx128": "Manual: this helper asks before it changes anything. Approve or deny its requests here.",
   "fx129": "Plan: read-only. This helper cannot change files or run commands that change anything.",
-  "fx130": "Bypass: permission checks are skipped. This helper can change files and run commands without asking."
+  "fx130": "Bypass: permission checks are skipped. This helper can change files and run commands without asking.",
+  "fx131": "Strata was restarted. Send one message in the chat first, then try again here."
 }
