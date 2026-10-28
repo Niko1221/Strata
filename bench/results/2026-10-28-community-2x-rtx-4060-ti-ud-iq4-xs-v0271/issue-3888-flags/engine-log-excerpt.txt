@@ -1,0 +1,35 @@
+# Engine log lines from the start of the server that the benchmark started with the issue-3888 flags (2026-10-28 19:45).
+# Selected lines only (layer split, expert cache, KV, draft head, free VRAM); paths replaced.
+[strata] 2026-10-28 19:45:34 engine started: <strata>/engine/strata --serve --pack <home>/Strata-data/packs/unsloth-ud-iq4_xs --native <home>/qwen-flash-next/unsloth/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile <home>/strata-0144/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp <home>/Strata-data/mtp/rt --max-context 131072 --layer-split auto
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 13.3 GB/s host->device (best of 11.6 13.3 13.3 12.0) -> pcie_frac 0.37 (default 0.55)
+strata generate: layer split: CUDA1 PCIe probe 13.3 GB/s (best of 13.3 11.6 13.3 13.3) -> pcie_frac 0.37
+strata generate: layer split: CUDA1 holds its weights; 10.87 GiB free (its session follows the split search)
+strata generate: layer split auto: CUDA0 34 SMs at 2.54 GHz -> 0.84 ms per layer, 9.50 GiB free before its session carve
+strata generate: layer split auto: CUDA1 34 SMs at 2.54 GHz -> 0.84 ms per layer, 9.12 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 13.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 13.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=24 - predicted 47.9 ms per decode window; the caches hold 6763 of 24576 profiled pairs (~96.0% of the routed mass), best of 46 placements
+strata generate: layer split: CUDA1 holds its weights, session [24, 48) and the head; 8.69 GiB free
+strata generate: expert cache auto: 8.38 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 2373 slots
+strata generate: expert cache 3423 slots, 7.69 GiB of VRAM; policy is
+strata generate: layer split, CUDA1: 7.53 GiB free of 15.60, room for experts 6.75 GiB
+strata generate: layer split: CUDA1 runs layers 24-47, expert cache 2987 slots (6.75 GiB), 2987 of its 12288 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-23
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 6410 resident experts, decided on the device
+strata serve: layer split: layers 0-23 (CUDA0), 24-47 (CUDA1), one hand-off per window
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: conversation cache sized from the free RAM: 8192 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 406 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 277 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 1191 to the config's args (or lower --max-context)
+strata serve: CUDA1: the layer split planned to keep 796 MiB free here after loading; 277 MiB are free, so 519 MiB went to something the plan did not count
+# launcher: [strata] layer split across GPUs [0, 1] (auto)
+# launcher: [strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.
+# launcher:          Please wait and don't close this window; the server says when it is ready.
+# launcher: [strata] filling the GPU's expert cache (3423 experts, 7.69 GiB of VRAM) ...
+# launcher: [strata] almost ready ...
+# launcher: ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 131072 tokens, API key required)

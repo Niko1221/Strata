@@ -1,0 +1,28 @@
+# Engine log lines from the start of the production server that the benchmark used (started 2026-10-28 16:43, benchmark at 19:23).
+# Selected lines only (layer split, expert cache, KV, draft head, free VRAM); paths replaced.
+[strata] 2026-10-28 16:43:14 engine started: <strata>/engine/strata --serve --pack <home>/Strata-data/packs/unsloth-ud-iq4_xs --native <home>/qwen-flash-next/unsloth/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile <home>/strata-0144/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp <home>/Strata-data/mtp/rt-iten --max-context 262144 --kv int8 --remote-expert-opt --pcie-frac 0.00 --spec-min-p 0.50 --kv-resident 32768 --vision --vram-reserve-mib 700 --conversation-cache-mib 8192 --conversation-cache-slots 4 --layer-split auto
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: layer split: CUDA1 holds its weights; 10.87 GiB free (its session follows the split search)
+strata generate: layer split auto: CUDA0 34 SMs at 2.54 GHz -> 0.84 ms per layer, 9.66 GiB free before its session carve
+strata generate: layer split auto: CUDA1 34 SMs at 2.54 GHz -> 0.84 ms per layer, 9.11 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 13.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 13.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=23 - predicted 46.9 ms per decode window; the caches hold 7871 of 24576 profiled pairs (~96.6% of the routed mass), best of 46 placements
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 1.29 GiB of pinned RAM
+strata generate: layer split: CUDA1 holds its weights, session [23, 48) and the head; 9.80 GiB free
+strata generate: expert cache auto: 9.76 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 2798 slots
+strata generate: expert cache 4027 slots, 9.07 GiB of VRAM; policy is
+strata generate: layer split, CUDA1: 8.87 GiB free of 15.60, room for experts 8.09 GiB
+strata generate: layer split: CUDA1 runs layers 23-47, expert cache 3588 slots (8.09 GiB), 3588 of its 12800 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-22
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 7615 resident experts, decided on the device
+strata serve: layer split: layers 0-22 (CUDA0), 23-47 (CUDA1), one hand-off per window
+strata mtp: draft head over 54675 tokens (109.5 MiB)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 401 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 381 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 1087 to the config's args (or lower --max-context)
+strata serve: CUDA1: the layer split planned to keep 796 MiB free here after loading; 381 MiB are free, so 415 MiB went to something the plan did not count
+strata prefill: layer-major prefill is on for this layer split (each layer's experts are read once per super-chunk of up to 32768 tokens, not once per chunk; STRATA_PREFILL_LAYER_MAJOR=0 or STRATA_DEFAULTS=026 turns it off)
