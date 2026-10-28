@@ -60,7 +60,13 @@ test('routeFor picks the chat\'s own choice', () => {
 
 test('the agent environment keeps what a shell needs and drops ambient credentials', () => {
   const env = agentEnvironment({ PATH: '/bin', HOME: '/h', OPENAI_API_KEY: 'x', GITHUB_TOKEN: 'y', AWS_SECRET_ACCESS_KEY: 'z', SSH_AUTH_SOCK: 's', SystemRoot: 'C:\\Windows' }, { STRATA_API_KEY_X: 'k' });
-  assert.deepEqual(Object.keys(env).sort(), ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'NODE_USE_SYSTEM_CA', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
+  // The proxy variables are carried into the shell on purpose (curl, git and Python read them); the rest of the list is what this
+  // test is about, so they are checked apart from the credential filter.
+  const keys = Object.keys(env).filter(name => !/^(http|https|all|no)_proxy$/i.test(name)).sort();
+  assert.deepEqual(keys, ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'NODE_USE_SYSTEM_CA', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
+  for (const name of Object.keys(env).filter(name => /proxy$/i.test(name))) {
+    assert.doesNotMatch(String(env[name]), /OPENAI|GITHUB|AWS|SSH/, `${name} carries no ambient credential`);
+  }
 });
 
 test('redact removes secret values and launch tokens from log text', () => {

@@ -65,6 +65,10 @@ async function runHost({ env, calls }) {
   const home = await mkdtemp(join(tmpdir(), 'strata-no-acquire-host-'));
   const log = join(home, 'spy.log');
   await writeFile(log, '');
+  // The spy blocks `fetch`; a host that followed a proxy would leave through node:http instead and the spy would see a
+  // request to the origin. This test is about acquiring software, so the route is pinned to a direct connection.
+  await mkdir(join(home, 'data'), { recursive: true });
+  await writeFile(join(home, 'data', 'net.json'), `${JSON.stringify({ version: 1, mode: 'direct', url: '' }, null, 2)}\n`);
   const port = await freePort(), base = `http://127.0.0.1:${port}`;
   const host = spawn(process.execPath, ['--import', spy, 'server/index.mjs'], {
     cwd: root, stdio: 'ignore',
