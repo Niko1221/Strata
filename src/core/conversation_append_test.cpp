@@ -7,9 +7,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using namespace strata::core;
+namespace fs = std::filesystem;
 
 namespace {
 int checks = 0;
@@ -238,12 +242,245 @@ void header_v3_tests() {
         check(!header_parse_v3(v2, id, b2, e2), "v3 header parse refuses a v2 header");
     }
 }
+// --- Last-checkpoint validator ---------------------------------------------------
+
+namespace {
+fs::path append_dir;
+std::vector<uint8_t> current_bytes;  // staging for write_file
+
+// Build a synthetic v3 file: header + [group region + 128 B trailer] x N.  The digest
+// streams over the group regions in order (physical zone order); committed_bytes of group g
+// is the file offset of its trailer record.  Regions are deterministic non-zero bytes.
+struct SynthFile {
+    std::vector<uint8_t> bytes;
+    uint64_t committed[8] = {};  // per generation (1-based index)
+};
+
+SynthFile build_v3(const SessionFileIdentity& id, const std::vector<int>& region_sizes,
+                   const SessionHeaderV3* header_override = nullptr, uint8_t version = 3) {
+    SynthFile f;
+    SessionHasher h(0);
+    uint64_t chain = trailer_genesis_chain(id);
+    auto put = [&](const void* p, size_t n) { f.bytes.insert(f.bytes.end(), (const uint8_t*) p, (const uint8_t*) p + n); };
+    uint8_t head[64];
+    std::memset(head, 0, 64);
+    std::memcpy(head, "STRSESS\x01", 8);
+    uint32_t ver = version, sz = 64;
+    std::memcpy(head + 8, &ver, 4);
+    std::memcpy(head + 12, &sz, 4);
+    std::memcpy(head + 16, &id.model, 8);
+    std::memcpy(head + 24, &id.config, 8);
+    uint64_t root = session_hash64(head, 32, 0);
+    std::memcpy(head + 32, &root, 8);
+    put(head, 64);
+    for (size_t g = 0; g < region_sizes.size(); ++g) {
+        const int n = region_sizes[g];
+        std::vector<uint8_t> region((size_t) n);
+        for (int i = 0; i < n; ++i) region[(size_t) i] = uint8_t(0x41 + (g * 7 + i * 13) % 255);  // never zero: a torn record's data zone
+        put(region.data(), region.size());
+        h.update(region.data(), region.size());
+        const SessionHasherState st = h.state();
+        SessionTrailer t;
+        t.gen = uint64_t(g) + 1;
+        t.committed_bytes = f.bytes.size();  // the trailer's own offset
+        t.saved_tokens = 1000 + 500 * uint64_t(g + 1);
+        t.digest = h.digest();
+        t.chain = chain;
+        for (int i = 0; i < 4; ++i) t.lanes[i] = st.lanes[i];
+        std::memcpy(t.pending, st.pending, 32);
+        t.npending = st.npending;
+        t.hashed_bytes = st.total;
+        uint8_t tb[128];
+        trailer_bytes(t, tb);
+        f.committed[g] = t.committed_bytes;
+        uint64_t self;
+        std::memcpy(&self, tb + 120, 8);
+        chain = self;
+        put(tb, 128);
+    }
+    // header advisory slots (fresh header: newest trailer + next group start)
+    SessionHeaderV3 body;
+    if (header_override) {
+        body = *header_override;
+    } else if (!region_sizes.empty()) {
+        body.payload = f.committed[region_sizes.size() - 1];
+        body.reserved0 = f.committed[region_sizes.size() - 1];
+        body.reserved1 = f.committed[region_sizes.size() - 1] + 128;
+    }
+    std::memcpy(f.bytes.data() + 40, &body.payload, 8);
+    std::memcpy(f.bytes.data() + 48, &body.reserved0, 8);
+    std::memcpy(f.bytes.data() + 56, &body.reserved1, 8);
+    return f;
+}
+
+void write_file(const fs::path& p, const std::vector<uint8_t>& bytes) {
+    std::ofstream o(p, std::ios::binary | std::ios::trunc);
+    o.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+    o.flush();
+}
+
+fs::path uniq(const char* name) {
+    static int seq = 0;
+    return append_dir / (std::string(name) + "-" + std::to_string(seq++) + ".bin");
+}
+
+// Write the staged file and read the checkpoint list back.
+bool read_checks(const fs::path& p, const SessionFileIdentity& id, std::vector<SessionCheckpoint>& out,
+                 std::string& error) {
+    write_file(p, current_bytes);
+    return session_file_checkpoints(p.string(), id, out, error);
+}
+
+// A verifier-side recompute of the zone-order digest of generation g of a clean build.
+uint64_t synth_digest(const SessionFileIdentity& id, const std::vector<int>& region_sizes, int upto) {
+    SessionHasher h(0);
+    for (int g = 0; g < upto; ++g) {
+        std::vector<uint8_t> region((size_t) region_sizes[(size_t) g]);
+        for (size_t i = 0; i < region.size(); ++i) region[i] = uint8_t(0x41 + (g * 7 + int(i) * 13) % 255);
+        h.update(region.data(), region.size());
+    }
+    return h.digest();
+}
+}  // namespace
+
+void validator_tests() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    std::vector<SessionCheckpoint> out;
+
+    // Clean two-generation file: newest first, fresh header fast path.
+    SynthFile f = build_v3(id, {900, 700});
+    current_bytes = f.bytes;
+    fs::path p = uniq("clean");
+    bool clean_ok = read_checks(p, id, out, error);
+    if (!clean_ok) std::fprintf(stderr, "validator error: [%s]\n", error.c_str());
+    check(clean_ok, "validator accepts a clean v3 file");
+    check(out.front().trailer.gen == 2, "validator lands on the newest generation");
+    check(out.front().trailer_offset == f.committed[1], "checkpoint trailer_offset is the trailer record");
+    check(out.front().trailer.saved_tokens == 2000, "checkpoint carries saved_tokens");
+    check(out.front().trailer.digest == synth_digest(id, {900, 700}, 2), "checkpoint digest is the zone-order digest");
+    check(out.front().file_size == f.bytes.size(), "checkpoint carries the file size");
+
+    // Foreign identity is refused outright.
+    check(!read_checks(uniq("foreign"), SessionFileIdentity{id.model, id.config + 1}, out, error),
+          "validator refuses a foreign identity");
+
+    // Torn-tail proof: truncation at EVERY offset inside the newest group and its trailer
+    // lands on gen 1 while gen 1's own trailer stands, or refuses; never a half state.
+    for (uint64_t cut = f.committed[0]; cut < f.committed[1] + 128; ++cut) {  // cuts below the complete gen 2 trailer
+        current_bytes.assign(f.bytes.begin(), f.bytes.begin() + (size_t) cut);
+        bool ok = read_checks(uniq("torn"), id, out, error);
+        bool gen1_trailer_present = cut >= f.committed[0] + 128;
+        if (ok != gen1_trailer_present) {
+            std::fprintf(stderr, "FAIL: torn cut %llu: ok=%d expected=%d\n", (unsigned long long) cut, int(ok),
+                         int(gen1_trailer_present));
+            std::exit(1);
+        }
+        if (ok && out.front().trailer.gen != 1) {
+            std::fprintf(stderr, "FAIL: torn cut %llu trusted gen %llu\n", (unsigned long long) cut,
+                         (unsigned long long) out.front().trailer.gen);
+            std::exit(1);
+        }
+        ++checks;
+    }
+
+    // Corruption of one byte of the newest trailer: the scan lands on gen 1, not garbage.
+    for (int off = 0; off < 128; ++off) {
+        current_bytes = f.bytes;
+        current_bytes[(size_t) f.committed[1] + (size_t) off] ^= 0xFF;
+        check(read_checks(uniq("corrupt"), id, out, error) && out.front().trailer.gen == 1,
+              "corrupted newest trailer falls back to gen 1");
+    }
+
+    // Corruption of the OLDER trailer (gen 1): the NEWEST checkpoint stands - its own record
+    // is intact and the header pair corroborates it; the damaged older record costs nothing
+    // on the save side (restore arbitrates older bytes).
+    for (int off = 0; off < 128; ++off) {
+        current_bytes = f.bytes;
+        current_bytes[(size_t) f.committed[0] + (size_t) off] ^= 0xFF;
+        check(read_checks(uniq("middle"), id, out, error) && out.front().trailer.gen == 2,
+              "a damaged older trailer still yields the intact newest checkpoint");
+    }
+
+    // Inflated claim (drill F2): a trailer record at EOF whose committed_bytes exceeds its
+    // position passes magic+chain arithmetic but fails the structural rule - gen 1 stands.
+    {
+        current_bytes = f.bytes;
+        SessionTrailer t;  // re-sign a claim at a wrong position
+        uint8_t tb[128];
+        std::memcpy(tb, f.bytes.data() + f.committed[1], 128);
+        check(trailer_parse(tb, t), "clean newest trailer parses");
+        t.committed_bytes = f.bytes.size() + 4096;  // inflated claim, still chain-linked
+        t.gen = 3;
+        trailer_bytes(t, tb);
+        current_bytes.insert(current_bytes.end(), tb, tb + 128);  // planted after the real EOF
+        check(read_checks(uniq("f2"), id, out, error) && out.front().trailer.gen == 2,
+              "inflated committed_bytes claim is structurally rejected");
+    }
+
+    // Verbatim replay of the newest trailer after EOF: same record at the wrong position is
+    // rejected by the structural rule (committed_bytes must equal the record's own offset).
+    {
+        current_bytes = f.bytes;
+        current_bytes.insert(current_bytes.end(), f.bytes.begin() + (long) f.committed[1],
+                             f.bytes.begin() + (long) f.committed[1] + 128);
+        check(read_checks(uniq("replay"), id, out, error) && out.front().trailer.gen == 2 &&
+                  out.front().trailer_offset == f.committed[1],
+              "a replayed trailer record at a new position is not trusted");
+    }
+
+    // Stale header fast path (drill scenario I): committed trailer fsynced, header never
+    // updated - the newest VALID trailer still wins over the stale slot.
+    {
+        SynthFile stale = f;  // advisory slots are outside the root hash: patch freely
+        const uint64_t body[3] = {f.committed[0], f.committed[0], f.committed[0] + 128};
+        std::memcpy(stale.bytes.data() + 40, &body[0], 8);
+        std::memcpy(stale.bytes.data() + 48, &body[1], 8);
+        std::memcpy(stale.bytes.data() + 56, &body[2], 8);
+        current_bytes = stale.bytes;
+        check(read_checks(uniq("stale"), id, out, error) && out.front().trailer.gen == 2,
+              "a stale header slot still resolves to the newest valid trailer");
+    }
+
+    // Garbage header slots: scan-back recovers both generations anyway.
+    {
+        SessionHeaderV3 junk{0xDEADBEEFDEADBEEFull, 7, 13};
+        SynthFile g = build_v3(id, {900, 700}, &junk);
+        current_bytes = g.bytes;
+        check(read_checks(uniq("junkhdr"), id, out, error) && out.front().trailer.gen == 2,
+              "garbage advisory slots still recover the newest trailer by scan");
+    }
+
+    // No trailers at all (gen 0 file): a group-less v3 file validates zero checkpoints ->
+    // refused (full-rewrite self-heal verdict).
+    {
+        SynthFile bare = build_v3(id, {});
+        current_bytes = bare.bytes;
+        check(!read_checks(uniq("bare"), id, out, error), "a generation-less v3 file is refused");
+    }
+
+    // Not a session file / v2 header: refused.
+    {
+        SynthFile v2ish = build_v3(id, {900}, nullptr, 2);
+        current_bytes = v2ish.bytes;
+        check(!read_checks(uniq("v2"), id, out, error), "the v3 validator refuses a v2 header");
+    }
+    {
+        current_bytes.assign(1024, 0x5A);
+        check(!read_checks(uniq("garbage"), id, out, error), "random bytes are refused");
+    }
+}
 }  // namespace
 
 int main() {
+    append_dir = fs::temp_directory_path() / "strata_append_test";
+    fs::remove_all(append_dir);
+    fs::create_directories(append_dir);
     hasher_state_tests();
     trailer_tests();
     header_v3_tests();
+    validator_tests();
+    fs::remove_all(append_dir);
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;
 }

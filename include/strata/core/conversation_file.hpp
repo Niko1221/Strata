@@ -105,6 +105,29 @@ struct SessionHeaderV3 {
 void header_bytes_v3(uint8_t (&h)[64], const SessionFileIdentity& id, const SessionHeaderV3& body);
 bool header_parse_v3(const uint8_t* h, const SessionFileIdentity& expect, SessionHeaderV3& body, std::string& error);
 
+// A chain-validated generation of a v3 file: its parsed trailer, the offset of the trailer
+// record, and the file size it was found in.
+struct SessionCheckpoint {
+    SessionTrailer trailer;
+    uint64_t trailer_offset = 0;
+    uint64_t file_size = 0;
+};
+
+// The checkpoints of a v3 file, newest-first: header (identity-checked), then the header fast
+// path (reserved0) and the append anchor (reserved1 - 128), then a byte-wise scan-back
+// through the last torn window (a torn EOF puts the previous valid trailer off the 128 B grid
+// at almost every cut - an aligned-only scan loses it).  A candidate must parse, and its
+// committed_bytes must equal its own position (the structural rule: an inflated claim is
+// rejected even when its chain arithmetic passes).  Trust: gen 1 with chain == genesis; a
+// higher gen with a trusted gen-1 candidate before it whose self_hash matches its chain; or
+// the newest record corroborated by a fresh header pair (reserved0 == reserved1 - 128 == its
+// offset - both slots were written by the engine in its own commit).  A torn tail lands on
+// the previous complete checkpoint, never a half state.  False = no trusted checkpoint (the
+// caller's full-rewrite / self-heal verdict); the restore-side digest recompute stays the
+// authoritative verifier.
+bool session_file_checkpoints(const std::string& path, const SessionFileIdentity& id,
+                              std::vector<SessionCheckpoint>& newest_first, std::string& error);
+
 // Typed, length-delimited fields for an identity hash: each field is (tag, type, length, bytes), so two different
 // field lists never give the same byte stream, and a double is hashed by its exact bits (no decimal rounding).
 class SessionIdentityBuilder {
