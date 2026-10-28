@@ -214,6 +214,7 @@ public:
     }
     bool is_open() const { return h_ != INVALID_HANDLE_VALUE; }
     bool direct() const { return false; }
+    void force_buffered() {}
     bool write_all(const uint8_t* p, size_t n) {
         while (n) {
             DWORD w = 0;
@@ -389,6 +390,9 @@ public:
     }
     bool is_open() const { return fd_ >= 0; }
     bool direct() const { return direct_; }
+    // small random reads (the v3 checkpoint probes) do not benefit from O_DIRECT and must
+    // not be constrained by its alignment rules
+    void force_buffered() { if (direct_) leave_direct(); }
     bool write_all(const uint8_t* p, size_t n) {
         while (n) {
             const ssize_t w = ::write(fd_, p, n);
@@ -1126,6 +1130,84 @@ bool header_parse_v3(const uint8_t* h, const SessionFileIdentity& expect, Sessio
     std::memcpy(&body.payload, h + 40, 8);
     std::memcpy(&body.reserved0, h + 48, 8);
     std::memcpy(&body.reserved1, h + 56, 8);
+    return true;
+}
+
+bool session_file_checkpoints(const std::string& path, const SessionFileIdentity& id,
+                              std::vector<SessionCheckpoint>& newest_first, std::string& error) {
+    newest_first.clear();
+    RawFile f;
+    uint64_t size = 0;
+    if (!f.open_session(path, size)) { error = f.error(); return false; }
+    if (size < kHeader + 128) { error = "session file: v3 file has no room for a trailer"; return false; }
+    f.force_buffered();  // small random reads: the direct-IO mode the writer path uses would
+                         // only add alignment constraints the probes do not need
+    uint8_t h[kHeader];
+    if (!f.read_at(0, h, kHeader)) { error = f.error(); return false; }
+    SessionHeaderV3 hv;
+    if (!header_parse_v3(h, id, hv, error)) return false;
+    const uint64_t genesis = trailer_genesis_chain(id);
+
+    struct Cand {
+        SessionTrailer t;
+        uint64_t off;
+        bool trusted;
+    };
+    std::vector<Cand> cands;
+    auto add = [&](uint64_t off, const SessionTrailer& t) {
+        for (const auto& c : cands)
+            if (c.off == off) return;  // the same record found by fast path, anchor and scan
+        cands.push_back({t, off, false});
+    };
+    // A record is structurally sane when its committed_bytes equals its own offset.
+    auto sane = [&](const SessionTrailer& t, uint64_t off) { return t.committed_bytes == off; };
+    auto probe = [&](uint64_t off) {
+        if (off < kHeader || off > size - 128) return;
+        uint8_t b[128];
+        if (!f.read_at(off, b, 128)) return;
+        SessionTrailer t;
+        if (!trailer_parse(b, t) || !sane(t, off)) return;
+        add(off, t);
+    };
+    probe(hv.reserved0);                                             // the fast path
+    if (hv.reserved1 >= kHeader + 128) probe(hv.reserved1 - 128);   // the append anchor
+
+    // Byte-wise scan-back through the bounded torn window, in sequential chunks (each read
+    // runs 127 B past its block so a record spanning a chunk border is seen).
+    const uint64_t window = std::min<uint64_t>(size - kHeader, 256ull << 20);
+    const uint64_t low = size - 128 > window ? size - 128 - window : kHeader;
+    constexpr uint64_t kChunk = 8ull << 20;
+    std::vector<uint8_t> buf;
+    for (uint64_t start = low; start <= size - 128; start += kChunk) {
+        const uint64_t len = std::min(kChunk + 127, size - start);
+        buf.resize((size_t) len);
+        if (!f.read_at(start, buf.data(), (size_t) len)) break;
+        for (uint64_t i = 0; i + 128 <= len && start + i <= size - 128; ++i) {
+            uint32_t magic;
+            std::memcpy(&magic, buf.data() + i, 4);
+            if (magic != kTrailerMagic) continue;  // the 4-byte filter runs at every offset
+            SessionTrailer t;
+            if (!trailer_parse(buf.data() + i, t) || !sane(t, start + i)) continue;
+            add(start + i, t);
+        }
+    }
+
+    // Trust, oldest first (off == committed_bytes, so offset order is generation order).
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.off < b.off; });
+    bool any = false;
+    for (auto& c : cands) {
+        if (c.t.gen == 1 && c.t.chain == genesis) { c.trusted = any = true; continue; }
+        for (const auto& p : cands) {
+            if (p.off >= c.off || !p.trusted || p.t.gen != c.t.gen - 1) continue;
+            if (p.t.self_hash == c.t.chain) { c.trusted = any = true; break; }
+        }
+        if (!c.trusted && c.off == hv.reserved0 && hv.reserved1 >= kHeader + 128 && hv.reserved1 - 128 == c.off) {
+            c.trusted = any = true;  // a fresh header pair wrote both slots in the engine's own commit
+        }
+    }
+    if (!any) { error = "session file: no valid checkpoint"; return false; }
+    for (auto it = cands.rbegin(); it != cands.rend(); ++it)
+        if (it->trusted) newest_first.push_back({it->t, it->off, size});
     return true;
 }
 
