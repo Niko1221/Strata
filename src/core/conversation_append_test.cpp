@@ -163,11 +163,87 @@ void trailer_tests() {
           "genesis chain is deterministic");
     check(trailer_genesis_chain(a) != trailer_genesis_chain(b), "genesis chain depends on the identity");
 }
+// --- Header v3 ------------------------------------------------------------------
+
+void header_v3_tests() {
+    const SessionFileIdentity id{0xAABBCCDDEEFF0011ull, 0x0102030405060708ull};
+    uint8_t h[64];
+    header_bytes_v3(h, id, {4000000, 3999936, 4000128});  // payload, reserved0, reserved1
+    check(std::memcmp(h, "STRSESS\x01", 8) == 0, "v3 header carries the session magic");
+    uint32_t ver, size;
+    std::memcpy(&ver, h + 8, 4);
+    std::memcpy(&size, h + 12, 4);
+    check(ver == 3, "v3 header version 3");
+    check(size == 64, "v3 header size 64");
+    uint64_t root;
+    std::memcpy(&root, h + 32, 8);
+    check(root == session_hash64(h, 32, 0), "v3 root hash covers the immutable bytes 0..31 only");
+
+    SessionHeaderV3 body;
+    std::string error;
+    SessionHeaderV3 written{4000000, 3999936, 4000128};
+    check(header_parse_v3(h, id, body, error), "v3 header parses");
+    check(std::memcmp(&body, &written, sizeof body) == 0, "v3 advisory fields round-trip");
+    check(header_parse_v3(h, SessionFileIdentity{id.model, id.config}, body, error), "v3 header identity match");
+
+    // Advisory fields: tampering payload / reserved0 / reserved1 keeps the header TRUSTED
+    // (a torn in-place header update must not distrust the file - the trailer is authoritative).
+    for (int off = 40; off < 64; ++off) {
+        uint8_t bad[64];
+        std::memcpy(bad, h, 64);
+        bad[off] ^= 0xFF;
+        SessionHeaderV3 b2;
+        std::string e2;
+        if (!header_parse_v3(bad, id, b2, e2)) {
+            std::fprintf(stderr, "FAIL: v3 header refused a tamper of the advisory byte %d\n", off);
+            std::exit(1);
+        }
+        ++checks;
+    }
+
+    // Immutable region: a tamper of magic, version, header_size, model, config or the root
+    // hash itself breaks trust.
+    for (int off = 0; off < 32; ++off) {
+        uint8_t bad[64];
+        std::memcpy(bad, h, 64);
+        bad[off] ^= 0xFF;
+        SessionHeaderV3 b2;
+        std::string e2;
+        check(!header_parse_v3(bad, id, b2, e2), "v3 header refuses a tamper of the immutable region");
+    }
+    {
+        uint8_t bad[64];
+        std::memcpy(bad, h, 64);
+        bad[35] ^= 0xFF;  // root hash field
+        SessionHeaderV3 b2;
+        std::string e2;
+        check(!header_parse_v3(bad, id, b2, e2), "v3 header refuses a corrupted root hash");
+    }
+    {
+        SessionHeaderV3 b2;
+        std::string e2;
+        check(!header_parse_v3(h, SessionFileIdentity{id.model, id.config + 1}, b2, e2),
+              "v3 header refuses a foreign identity");
+    }
+    // A v2 header (version 2) is not a v3 header.
+    {
+        uint8_t v2[64];
+        std::memset(v2, 0, 64);
+        std::memcpy(v2, "STRSESS\x01", 8);
+        uint32_t ver2 = 2, sz2 = 64;
+        std::memcpy(v2 + 8, &ver2, 4);
+        std::memcpy(v2 + 12, &sz2, 4);
+        SessionHeaderV3 b2;
+        std::string e2;
+        check(!header_parse_v3(v2, id, b2, e2), "v3 header parse refuses a v2 header");
+    }
+}
 }  // namespace
 
 int main() {
     hasher_state_tests();
     trailer_tests();
+    header_v3_tests();
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;
 }
