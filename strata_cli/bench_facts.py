@@ -325,8 +325,16 @@ def hardware(why: Why, *, selected: list[int], served_gpu: str | None, model_dir
     if selected:
         cards = [c for c in cards if c["device_index"] in selected] or cards
     elif len(cards) > 1 and served_gpu:
-        named = [c for c in cards if c["name"] == served_gpu]
-        cards = named[:1] or cards[:1]
+        # the server names every card it serves on, joined by " + " ("RTX 3090 + RTX 3090" for two of the same):
+        # take one local card per name, so a split over identical cards is not reported as one card (#4473)
+        wanted = [n for n in served_gpu.split(" + ") if n and n != "?"]
+        pool, named = list(cards), []
+        for name in wanted:
+            hit = next((c for c in pool if c["name"] == name), None)
+            if hit is not None:
+                pool.remove(hit)
+                named.append(hit)
+        cards = named if named and len(named) == len(wanted) else (named[:1] or cards[:1])
     served = [n for n in (served_gpu or "").split(" + ") if n and n != "?"]
     # the amdgpu driver's product_name is empty on some cards (gfx1201 among them), so the server falls back to a bare
     # "AMD Radeon": that names the vendor, not the card, and the local probe's marketing name is the one to keep
