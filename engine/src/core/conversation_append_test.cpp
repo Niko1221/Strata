@@ -3,6 +3,8 @@
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
 #include "strata/core/conversation_file.hpp"
 
+#include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -244,7 +246,6 @@ void header_v3_tests() {
 }
 // --- Last-checkpoint validator ---------------------------------------------------
 
-namespace {
 fs::path append_dir;
 std::vector<uint8_t> current_bytes;  // staging for write_file
 
@@ -341,7 +342,6 @@ uint64_t synth_digest(const SessionFileIdentity& id, const std::vector<int>& reg
     }
     return h.digest();
 }
-}  // namespace
 
 void validator_tests() {
     const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
@@ -470,6 +470,185 @@ void validator_tests() {
         check(!read_checks(uniq("garbage"), id, out, error), "random bytes are refused");
     }
 }
+// --- Full v3 write (generation 1) -------------------------------------------------
+
+ConversationCheckpoint mk_ckpt(int ids_n, uint8_t seed) {
+    ConversationCheckpoint c;
+    for (int i = 0; i < ids_n; ++i) c.ids.push_back(int32_t(seed * 1000 + i));
+    c.imgs = {{1, 0xA1}, {5, 0xB2}};
+    c.gdn.assign(64, seed);
+    c.ple.assign(32, uint8_t(seed ^ 1));
+    c.tails.assign(16, uint8_t(seed ^ 2));
+    c.dead.assign(24, uint8_t(seed ^ 3));
+    c.block_pos.assign(8, uint8_t(seed ^ 4));
+    c.used = seed;
+    return c;
+}
+
+ConversationBuffer pattern_buf(size_t n, uint8_t seed) {
+    ConversationBuffer b;
+    b.resize(n);
+    b.visit(0, n, [&](uint8_t* p, size_t c, size_t at) {
+        for (size_t i = 0; i < c; ++i) p[i] = uint8_t(seed + (at + i) * 31);
+        return true;
+    });
+    return b;
+}
+
+ConversationKv mk_layer(int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page, int64_t pooled_rows,
+                        int64_t idx_dim, uint8_t seed) {
+    ConversationKv k;
+    k.format = format;
+    k.cells = cells; k.heads = heads; k.head_dim = head_dim; k.page_size = page;
+    k.pooled_rows = pooled_rows; k.idx_dim = idx_dim;
+    const size_t cell_bytes = size_t(heads) * size_t(head_dim);  // int8-style fixture geometry
+    const size_t scale_bytes = size_t(cells) * size_t(heads) * size_t(head_dim / 64) * 2;
+    k.k = pattern_buf(size_t(cells) * cell_bytes, seed);
+    k.v = pattern_buf(size_t(cells) * cell_bytes, uint8_t(seed + 7));
+    k.k_scale = pattern_buf(scale_bytes, uint8_t(seed + 13));
+    k.v_scale = pattern_buf(scale_bytes, uint8_t(seed + 19));
+    if (pooled_rows) k.pooled = pattern_buf(size_t(pooled_rows) * size_t(idx_dim) * 4, uint8_t(seed + 23));
+    return k;
+}
+
+SavedConversation make_conv(uint8_t seed, int64_t big_cells = 0) {
+    SavedConversation s;
+    for (size_t i = 0; i < s.geometry.size(); ++i) s.geometry[i] = int64_t(i) * 3 + 1;
+    s.layer_lo = 0; s.layer_hi = 48; s.cvec = seed & 1;
+    s.live = mk_ckpt(120, seed);
+    s.checkpoints = {mk_ckpt(90, uint8_t(seed + 40))};  // the deepest one
+    const int64_t cells = big_cells ? big_cells : 1000;
+    s.kv.push_back(mk_layer(1, cells, 2, 256, 64, 9, 128, seed));
+    s.kv.push_back(mk_layer(1, cells + 24, 2, 128, 64, 10, 128, uint8_t(seed + 3)));
+    s.kv.push_back(mk_layer(2, cells, 2, 256, 64, 0, 0, uint8_t(seed + 6)));  // draft: no pooled part
+    return s;
+}
+
+std::vector<SessionKvSource> make_sources(const SavedConversation& s) {
+    std::vector<SessionKvSource> sources;
+    for (const auto& k : s.kv) {
+        SessionKvSource src;
+        src.format = k.format; src.cells = k.cells; src.heads = k.heads; src.head_dim = k.head_dim;
+        src.page_size = k.page_size; src.pooled_rows = k.pooled_rows; src.idx_dim = k.idx_dim;
+        const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
+        for (size_t i = 0; i < 5; ++i) src.sizes[i] = parts[i]->size();
+        src.read = [parts](size_t part, size_t offset, void* dst, size_t n) { return parts[part]->read(dst, offset, n); };
+        sources.push_back(std::move(src));
+    }
+    return sources;
+}
+
+std::vector<uint8_t> slurp_bin(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void v3_write_tests() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+
+    // Three fixture sizes: the group+trailer block is always padded so the file is 64 mod 512.
+    std::vector<uint8_t> first_file;
+    for (uint8_t seed : {1, 2, 3}) {
+        const SavedConversation conv = make_conv(seed);
+        const fs::path p = uniq("full");
+        size_t bytes = 0;
+        check(session_file_write(p.string(), conv, id, bytes, error, opt), "full v3 write (captured image)");
+        const auto f = slurp_bin(p);
+        check(bytes == f.size(), "v3 write reports the file size");
+        check(f[8] == 3 && f[9] == 0, "v3 file carries version 3");
+        check(f.size() % 512 == 64, "v3 group+trailer is padded to 512");
+
+        std::vector<SessionCheckpoint> cps;
+        check(session_file_checkpoints(p.string(), id, cps, error), "full v3 file validates");
+        check(cps.front().trailer.gen == 1, "full write is generation 1");
+        check(cps.front().trailer.saved_tokens == uint64_t(conv.live.ids.size()), "trailer saved_tokens = live ids");
+        const uint64_t committed = cps.front().trailer_offset;
+        // group + pad + trailer is a multiple of 512, so the group region (with its pad)
+        // always ends exactly 128 B short of a 512 multiple:
+        check((committed - 64) % 512 == 384, "group+trailer blocks are padded to 512");
+        // digest = contiguous zone hash [64, committed), and the stored resume state continues it
+        SessionHasher h(0);
+        h.update(f.data() + 64, (size_t) committed - 64);
+        check(h.digest() == cps.front().trailer.digest, "trailer digest is the zone-order digest");
+        const SessionTrailer t = cps.front().trailer;
+        SessionHasherState st{};
+        for (int i = 0; i < 4; ++i) st.lanes[i] = t.lanes[i];
+        std::memcpy(st.pending, t.pending, 32);
+        st.npending = t.npending;
+        st.total = t.hashed_bytes;
+        SessionHasher r2(0);
+        r2.restore(st);
+        check(r2.digest() == t.digest, "stored resume state reproduces the digest");
+        check(r2.state().total == committed - 64, "hashed_bytes counts the whole contiguous zone (group + pad)");
+        check(cps.front().trailer.chain == trailer_genesis_chain(id), "generation 1 chains to genesis");
+
+        // header advisory slots
+        SessionHeaderV3 hv;
+        std::string e2;
+        check(header_parse_v3(f.data(), id, hv, e2), "v3 header parses from the file");
+        check(hv.payload == committed && hv.reserved0 == committed && hv.reserved1 == committed + 128,
+              "header slots point at the trailer and the next group start");
+
+        // streamed sources produce the exact same bytes as the captured image
+        SavedConversation meta = conv;
+        meta.kv.clear();
+        const auto sources = make_sources(conv);
+        const fs::path q = uniq("streamed");
+        check(session_file_write(q.string(), meta, sources, id, bytes, error, opt), "full v3 write (streamed sources)");
+        check(slurp_bin(q) == f, "v3 streamed write equals the captured-image write");
+
+        if (seed == 1) first_file = f;  // keep one fixture for the truncation checks
+    }
+
+    // Same fixture with the flag off: exact v2 output, which the v3 validator refuses.
+    {
+        const SavedConversation conv = make_conv(1);
+        const fs::path p = uniq("v2mode");
+        size_t bytes = 0;
+        check(session_file_write(p.string(), conv, id, bytes, error), "flag-off write stays v2");
+        const auto f = slurp_bin(p);
+        check(f[8] == 2, "flag-off file carries version 2");
+        std::vector<SessionCheckpoint> cps;
+        check(!session_file_checkpoints(p.string(), id, cps, error), "the v3 validator refuses the v2 file");
+    }
+
+    // Truncating the real v3 file anywhere below its complete trailer refuses it (gen 1 is
+    // the only checkpoint; the full torn matrix is pinned on synthetic files in Task 3).
+    const uint64_t committed = first_file.size() - 128;
+    for (uint64_t cut : {committed - 1, committed + 1, committed + 63, committed + 127, first_file.size() - 1}) {
+        const fs::path p = uniq("trunc");
+        write_file(p, std::vector<uint8_t>(first_file.begin(), first_file.begin() + (size_t) cut));
+        std::vector<SessionCheckpoint> cps;
+        check(!session_file_checkpoints(p.string(), id, cps, error), "truncated v3 file is refused");
+    }
+
+    // Fault seams on the v3 path: a failed flush or block write leaves no published file and
+    // no temp (the existing R3/R5 semantics, now over the v3 byte stream).
+    {
+        const SavedConversation conv = make_conv(4);
+        const fs::path p = uniq("fault-flush");
+        size_t bytes = 0;
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* step) { return std::strcmp(step, "file_flush") == 0 ? EIO : 0; };
+        check(!session_file_write(p.string(), conv, id, bytes, error, o), "v3 flush fault fails the save");
+        check(!fs::exists(p), "v3 flush fault publishes nothing");
+
+        // a > 16 MiB fixture reaches the block writer, where the "write" seam fires
+        const SavedConversation big = make_conv(5, 32768);
+        const fs::path q = uniq("fault-write");
+        SessionWriteOptions o2 = opt;
+        o2.fault = [](const char* step) { return std::strcmp(step, "write") == 0 ? ENOSPC : 0; };
+        check(!session_file_write(q.string(), big, id, bytes, error, o2), "v3 block-write fault fails the save");
+        check(!fs::exists(q), "v3 block-write fault publishes nothing");
+        int temps = 0;
+        for (auto& e : fs::directory_iterator(append_dir))
+            if (e.path().extension() == ".tmp" || e.path().string().find(".bin.") != std::string::npos) ++temps;
+        check(temps == 0, "failed v3 saves leave no temp files");
+    }
+}
 }  // namespace
 
 int main() {
@@ -480,6 +659,7 @@ int main() {
     trailer_tests();
     header_v3_tests();
     validator_tests();
+    v3_write_tests();
     fs::remove_all(append_dir);
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;
