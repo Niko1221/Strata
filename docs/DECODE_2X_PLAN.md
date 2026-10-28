@@ -31,6 +31,23 @@ defaults ON; tiles gu 8,1,2 / dn 4,1,4 confirmed optimal on Q4_K/Q5_1 (23-config
 
 ## Chunk C-EDGE — riding to upstream's bleeding edge (one session; priority C0)
 
+**DONE 2026-10-28** (`fc5f7097`, tag `pre-edge-20261028` = fallback). All 51 commits kept;
+engine now 0.1.52-metal. 20-file merge resolved: code = ours for the Mac engine +
+theirs for upstream's work, combined by hand where both edited one function
+(`park_source`'s `ParkSource` re-took our `max_cells > 0` drafter gates at its four
+construction sites; `verify.cpp` kept upstream's tap + our `out` arg; `mtl_rt.mm`
+keepalive/zero-copy came in under `STRATA_DS4_RUNTIME`). Docs stayed ours;
+`serve/server.py` kept our answer-room rule (upstream's is DeepSeek-only).
+Verification (single-engine windows): ctest 4/4; `gemv_parity`/`expert_parity` ALL
+PASS; greedy answers IDENTICAL (content + reasoning, 2 prompts) against the pre-merge
+server; needle 20k @ 50 % FOUND (18 942 tokens, 81 s); parking A/B follow-up tokens
+IDENTICAL, restore 7.6 ms (the script's `reused > 0` and `SNAPSHOT_VERIFY` criteria
+are CUDA-only, unmet on Metal by design); decode measured ~10 % FASTER than the
+same-evening control (18.78 vs 21.09 s, 36.83 vs 39.96 s). Pitfalls found: the
+repo's `.gitattributes` uses the mergiraf driver with no driver configured in
+worktrees (silent ours-only "conflicts" — redo with `git merge-file`); parking and
+the serve window MUST not overlap (two engines = swap storm = token-0 stall abort).
+
 Facts measured 2026-10-28 (all in this repo's git):
 - `upstream/main` (Niko1221/Strata) is 1071 commits newer than our merge-base
   (`011c9e60`, 2026-10-21); our branch `metal-live` is 51 commits ahead — those 51
