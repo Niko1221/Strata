@@ -386,7 +386,7 @@ function render(m) {
   }
   modelButton(live);
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, m.time);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -433,18 +433,41 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-// stage-latch: /metrics is sampled once per second and a sub-second RESUME can fall entirely between samples — the rising edge of live.reused latches the KV REUSE lamp for a short flash, so the task-to-task transition is shown even when the window was never sampled
+// synthetic row of a running request, replaced by the DONE row the moment it is written: metrics() carries no live request id, so the engine state IS the dedup; unreported fields keep the dash, never a fake 0
+function liveRequestRow(live, fsm, serverTime) {
+  const start = ((serverTime || Date.now() / 1000) - (live.elapsed_s || 0)) * 1000;
+  const t = new Date(start).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+  const reading = fsm.isReading;
+  const cls = reading ? "st-badge--reading" : "st-badge--generating";
+  // one-word badges, uniform with "Reading…": the engine phase maps to short words through the chat's own TOOL_STATE vocabulary
+  const word = !live.phase ? "Generating"
+    : live.phase.startsWith("writing a tool call") ? "Writing"
+    : live.phase.startsWith("tool call complete") ? "Running"
+    : ({thinking: "Thinking", answering: "Answering"})[live.phase] || "Generating";
+  const text = reading ? "Reading…" : word + "…";
+  // a reused figure this request has not reported yet is not a fact about it: 0 before the RESUME line is not shown
+  const reused = live.reused > 0 ? fmt(live.reused) : "–";
+  // prefill is a finished-phase rate the server reports from the first PP line: shown whenever reported, the dash only before the first report
+  const prefill = live.prefill_tok_s_mean != null ? fmt(live.prefill_tok_s_mean) : "–";
+  const decode = !reading && live.tok_s != null ? fmt(live.tok_s, 1) : "–";
+  const dur = live.elapsed_s == null ? "–" : `${fmt(live.elapsed_s, 1)} s`;
+  return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span></td>
+    <td class="num">${fmt(live.prompt_tokens)}</td><td class="num">${reused}</td>
+    <td class="num">${reading ? "–" : fmt(live.generated)}</td>
+    <td class="num">${prefill}</td><td class="num">${decode}</td><td class="num">–</td><td class="num">${dur}</td></tr>`;
+}
+// stage-latch: /metrics is sampled once per second and a sub-second RESUME can fall between samples — the rising edge of live.reused latches the REUSE lamp for a short flash
 let resumeWasAnnounced = false, resumeFlashUntil = 0;
 let lastReusePct = "";   // the last honest % the running request showed; the merged quiet keeps quoting it while the cache is kept
 function renderKvDonut(fsm, live, eng, last, requests) {
-  // context fill as a KV donut of N_ctx: REUSE is the RESUME prefix, READING shows the volume the prompt still has to read and extends with reported progress, GENERATING extends token by token, FREE is always the true remainder — if the engine reads or keeps less, the difference redraws on the next tick; on the quiet a finished request is one REUSE arc of the kept whole, the other rows zeroed (the per-request anatomy stays in the request history)
+  // context fill as a KV donut of max_context: REUSE is the RESUME prefix, READING extends with reported progress, GENERATING extends token by token, FREE is the true remainder; on the quiet the kept context is one merged REUSE arc (per-request anatomy stays in the history)
   const ctx = eng.max_context || 0;
-  // these are the ring's token counts, answering strictly to the FSM — prompt_tokens is set at admission, so p is the real prompt size in both phases and a real RESUME reuse is never zeroed; without a kept context the widget paints an empty ring, never claiming a cache it cannot see
+  // the ring's token counts answer strictly to the FSM: prompt_tokens is set at admission, so a real RESUME reuse is never zeroed; without a kept context the widget paints an empty ring
   let segReuse = 0, segRead = 0, segGen = 0, used = 0, eff = 0, merged = false;
   if (fsm.isReading) {
     const p = live.prompt_tokens || 0;
     segReuse = Math.min(live.reused || 0, p);                                        // the prefix already in VRAM
-    segRead = kvRead(p, live.reused, live.prompt_read);                             // the prefix is not recounted; once the engine reports a chunk the arc extends with its real progress, from the first token after the prefix
+    segRead = kvRead(p, live.reused, live.prompt_read);                             // the prefix is not recounted; the arc extends with the engine's real reported progress
     used = segReuse + segRead;
     eff = p ? segReuse / p : 0;
   } else if (fsm.isGenerating) {
@@ -518,8 +541,8 @@ function renderKvDonut(fsm, live, eng, last, requests) {
   const lamp = kvLamp(fsm, segReuse > 0, !!live.prompt_read, resumeFlash);
   for (const k of ["reuse", "prefill", "decode", "free"]) $(`kv-leg-${k}`).closest("li").classList.toggle("dim", k !== lamp);
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
-  // Centralized FSM: the single descriptor of what the engine is doing — the phase widgets (the KV donut, the speed cards, the live request row) obey fsm, none reaches for live.state on its own; the model-state card keeps its own engine-start machinery (modelOp/imageNow/starting) outside the FSM. live.state carries exactly one of reading/generating/idle/unloaded, isQueued adds the queue counter's fact, and a failed fetch only reaches setPill (it maps its "error" form onto the queued pill) — neither enters fsm.state
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, serverTime) {
+  // one FSM descriptor of what the engine is doing: the phase widgets (donut, speed cards, live row) obey fsm, none reaches for live.state; the model-state card keeps its own engine-start machinery outside the FSM
   const fsm = {
     isIdle:       live.state === "idle" && !!last,
     isReading:    live.state === "reading",
@@ -628,15 +651,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
-  // recent requests
+  // recent requests — the live row first: while the engine works on a request the table shows it with the
+  // streaming counters, and the real row takes its place the moment DONE appends the history entry
   const body = $("req-body");
-  if (!requests.length) {
+  const liveRow = (fsm.isReading || fsm.isGenerating) ? liveRequestRow(live, fsm, serverTime) : "";
+  if (!requests.length && !liveRow) {
     body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
-                   timeout: ["st-badge--queued", "Timeout"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+                   timeout: ["st-badge--queued", "Timeout"]};                        // a timed-out finish gets the calm warn badge, never raw text
+    body.innerHTML = liveRow + requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
