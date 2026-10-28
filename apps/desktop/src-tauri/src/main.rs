@@ -32,6 +32,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 #[cfg(not(target_os = "linux"))]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -924,14 +925,14 @@ fn run_embedded() {
             // The window's size, place and maximized state are kept as they are left, so the next start reopens the same way.
             if let tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) = event {
                 if window.label() == "main" {
-                    save_window_state(window, false);
+                    schedule_window_state_save(window.clone());
                 }
             }
             // "Minimise to tray" (Settings, off by default): closing the main window hides it and keeps Strata running in the tray; Quit in the
             // tray menu ends it (#3477). If no tray could be made the window closes as before.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    save_window_state(window, true);
+                    save_window_state(window);
                     let prefs = shell::read_prefs();
                     if prefs.tray {
                         api.prevent_close();
@@ -1015,20 +1016,34 @@ fn write_window_state(state: &WindowState) {
     }
 }
 
-/// The last write, so dragging an edge does not write a file on every pixel of movement.
-static WINDOW_STATE_WRITTEN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Bumped by every move or resize; a delayed write only runs for the latest one.
+static WINDOW_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
+/// One delayed write at a time, so a drag does not start a thread per pixel of movement.
+static WINDOW_SAVE_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Record the window as it is now. `force` is for closing, where the last moment must be kept.
-fn save_window_state(window: &tauri::Window, force: bool) {
-    if !force {
-        let mut last = WINDOW_STATE_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(at) = *last {
-            if at.elapsed() < Duration::from_millis(700) {
-                return;
-            }
-        }
-        *last = Some(Instant::now());
+/// Save after the window has settled. A maximize or a restore emits its resize events before the window
+/// reports its final state, so writing at once recorded "not maximized" for a window that was maximized
+/// (and the maximized rectangle as the size to restore to). Waiting for the last event fixes that.
+fn schedule_window_state_save(window: tauri::Window) {
+    let mut seq = WINDOW_SAVE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    if WINDOW_SAVE_PENDING.swap(true, Ordering::SeqCst) {
+        return;
     }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(450));
+        let latest = WINDOW_SAVE_SEQ.load(Ordering::SeqCst);
+        if latest != seq {
+            seq = latest;
+            continue;
+        }
+        save_window_state(&window);
+        WINDOW_SAVE_PENDING.store(false, Ordering::SeqCst);
+        return;
+    });
+}
+
+/// Record the window as it is now.
+fn save_window_state(window: &tauri::Window) {
     // A minimized window reports is_maximized() = false and a place at -32000,-32000. Saving that wrote away the
     // maximized state and the real place, so the next start came back small and off the screen. A minimize says
     // nothing about how the person wants the window; the last state before it stands.
@@ -1092,11 +1107,10 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     );
     #[cfg_attr(windows, allow(unused_variables))]
     let window = builder.build()?;
-    // Maximize before the page shows the window, so the first frame is already full-screen (the first run, and any run
-    // the person left maximized).
-    if restored.maximized {
-        let _ = window.maximize();
-    }
+    // Always maximize before the page shows the window, so the first frame is already full-screen. Strata is a
+    // single-window app that is worked in all day, and opening it small was reported as a defect; the saved
+    // size and place still decide how big it is when the person restores it down again.
+    let _ = window.maximize();
     // A page that fails before it can ask must not leave the app running with no window: show it anyway after a deadline.
     show_window_if_still_hidden(app.handle().clone());
     #[cfg(not(windows))]

@@ -17,10 +17,12 @@
  * writes `ask` into that child's log, so the child's request reaches the same single Approve/Deny card.
  *
  * A helper keeps the mode it was created with. The delegating call records the parent's mode, the child's
- * first tool call pins it in memory, and the host writes the matching permission preset into the child's own
- * log when its turn ends. Later parent mode changes do not rewrite that pin. This prevents a running helper
- * from silently gaining or losing permissions when the person switches the chat's mode. Children created
- * before this pin existed fall back to the parent's current mode, which is the old behaviour.
+ * session creation pins it in memory before the child's first turn (a fresh child otherwise starts from the
+ * default Manual preset), and the host writes the matching permission preset into the child's own log when it
+ * starts watching the child, which is the fallback after a restart. Later parent mode changes do not rewrite
+ * that pin. This prevents a running helper from silently gaining or losing permissions when the person
+ * switches the chat's mode. Children created before this pin existed fall back to the parent's current mode,
+ * which is the old behaviour.
  *
  * The status command `/strata-gate` lets the host confirm the gate is really loaded before it lets a Manual turn
  * start (a Manual chat with no gate would be a chat with the sandbox open and nobody asking).
@@ -434,6 +436,30 @@ export function apply(ctx, config = {}) {
     if (!queue.length) pendingModes.delete(parentId);
     return item?.mode ?? null;
   };
+  /**
+   * Pin a helper the moment its session exists. A fresh child session starts from the profile's
+   * default preset (Manual), and the host only switches it after it starts watching the child, so
+   * a helper's first tool call could run under Manual and ask for approval even when the helper was
+   * started in Plan or Bypass. Taking the delegation's mode here, before the child's first turn,
+   * closes that gap. Taking it at creation (rather than at the first tool call) also means a
+   * delegation that is stopped before it calls a tool cannot leave its mode to be picked up by the
+   * next helper, which used to make a Plan helper ask / a Bypass helper wait for approval.
+   */
+  const pinNewChild = session => {
+    try {
+      if (session?.header?.origin !== 'subagent') return;
+      const parentId = session.header.parentSession;
+      const createdAt = Number(session.header.createdAt);
+      // Only a child created just now belongs to a delegation just requested. A child restored from
+      // its log keeps its creation time, so a resumed helper never consumes a newer delegation's mode.
+      if (!parentId || !Number.isFinite(createdAt) || Date.now() - createdAt > 60_000) return;
+      const mode = takePendingMode(parentId);
+      if (mode) childPinned.set(session.id, PRESET_BY_MODE[mode]);
+    } catch {
+      /* pinning must never stop a helper from starting */
+    }
+  };
+  ctx.on('session/created', pinNewChild);
   const chatOf = (session, depth = 0) => {
     const parentId = session.header?.parentSession;
     if (session.header?.origin === 'subagent' && parentId && depth < 6) {

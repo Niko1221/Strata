@@ -397,6 +397,32 @@ test('a Plan helper stays read-only for a direct message after the parent switch
   assert.equal(r.bridge.childView('keep-plan', childId).agent.mode, 'plan');
 });
 
+test('a Manual helper stopped before any tool does not make the next Plan helper ask', { skip }, async (t) => {
+  const r = await rig(t);
+  const file = join(r.ws, 'plan-after-stop.txt');
+  let stopping = null;
+  const first = await r.run('stale-mode', 'SCRIPT:spawn 1 slow 4000', { mode: 'manual', onFrame: f => {
+    if (stopping || f.type !== 'agent' || f.agent.status !== 'working') return;
+    stopping = r.bridge.stopChildren({ chatId: 'stale-mode', childId: f.agent.id });
+  } });
+  assert.ok(stopping, 'the Manual helper reached working');
+  await stopping;
+  await first;
+  assert.equal((await r.bridge.setMode('stale-mode', 'plan')).mode, 'plan');
+  const cards = [];
+  await r.run('stale-mode', `SCRIPT:spawn 1 call write ${JSON.stringify({ file_path: fwd(file), content: 'no' })}`, {
+    mode: 'plan',
+    onFrame: f => {
+      if (f.type !== 'agent-tool' || f.tool.state !== 'proposed') return;
+      cards.push(f);
+      // Answer the card so a regression ends instead of waiting forever; the assertion still fails.
+      void r.bridge.approve({ chatId: 'stale-mode', callId: f.tool.id, decision: 'deny' }).catch(() => {});
+    },
+  });
+  assert.equal(existsSync(file), false, 'the Plan helper did not write');
+  assert.equal(cards.length, 0, 'the Plan helper was refused instead of asking for approval');
+});
+
 test('the gate pins a helper to the mode its own log records, not the parent\'s current mode', async () => {
   const { apply, MANUAL_PRESET, PLAN_PRESET } = await import('../server/agent/plugins/strata-gate.mjs');
   let handler; const appended = [];
@@ -409,7 +435,7 @@ test('the gate pins a helper to the mode its own log records, not the parent\'s 
   };
   let parentPreset = MANUAL_PRESET; let override = 'never';
   const sessions = new Map([['p', parent], ['c', child]]);
-  apply({ on: (_e, h) => { handler = h; }, inject: () => {}, sessions, permissionPresets: { current: s => s === parent ? parentPreset : childPreset }, approval: { overrideOf: () => override } });
+  apply({ on: (event, h) => { if (event === 'tools/pre-execute') handler = h; }, inject: () => {}, sessions, permissionPresets: { current: s => s === parent ? parentPreset : childPreset }, approval: { overrideOf: () => override } });
   const write = { name: 'write', agent: { session: child }, input: { file_path: 'x' } };
   const allow = async () => ({ kind: 'allow' });
 
@@ -446,4 +472,33 @@ test('the gate pins a helper to the mode its own log records, not the parent\'s 
   assert.equal((await handler({ name: 'pwsh', agent: { session: planChild }, arguments: { command: 'Set-Content x y' } }, allow)).kind, 'deny', 'Plan child cannot run a changing command');
   assert.equal((await handler({ name: 'pwsh', agent: { session: planChild }, arguments: { command: 'Get-Content x' } }, allow)).kind, 'allow', 'Plan child can still read with a read-only command');
   assert.equal((await handler({ name: 'run_code', agent: { session: planChild }, arguments: {} }, allow)).kind, 'deny', 'Plan child cannot run code');
+});
+
+test('a delegation stopped before its first tool cannot leave its mode for the next helper', async () => {
+  const { apply, MANUAL_PRESET, PLAN_PRESET } = await import('../server/agent/plugins/strata-gate.mjs');
+  const handlers = new Map();
+  const parent = { id: 'p', header: { origin: 'user' }, append() {} };
+  let parentPreset = MANUAL_PRESET;
+  apply({
+    on: (event, fn) => { const list = handlers.get(event) ?? []; list.push(fn); handlers.set(event, list); },
+    inject: () => {},
+    sessions: new Map([['p', parent]]),
+    permissionPresets: { current: session => (session === parent ? parentPreset : MANUAL_PRESET) },
+    approval: { overrideOf: () => 'never' },
+  });
+  const pre = exec => handlers.get('tools/pre-execute')[0](exec, async () => ({ kind: 'allow' }));
+  const created = child => handlers.get('session/created')[0](child);
+  const childOf = id => ({ id, header: { origin: 'subagent', parentSession: 'p', createdAt: Date.now() }, ownEvents: () => [], append() {} });
+
+  // A Manual turn starts a helper; it is stopped before it calls any tool.
+  await pre({ name: 'subagent', agent: { session: parent }, arguments: {} });
+  created(childOf('c1'));
+  // The person switches to Plan and asks again. The new helper must be read-only from its first call,
+  // even though its own fresh session still reports the profile's Manual default.
+  parentPreset = PLAN_PRESET;
+  await pre({ name: 'subagent', agent: { session: parent }, arguments: {} });
+  const second = childOf('c2');
+  created(second);
+  const write = { name: 'write', agent: { session: second }, arguments: { file_path: 'x', content: 'y' } };
+  assert.equal((await pre(write)).kind, 'deny', 'the Plan helper refuses the write instead of asking');
 });
