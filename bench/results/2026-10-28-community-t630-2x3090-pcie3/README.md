@@ -26,6 +26,17 @@ An earlier run the same morning with `--url` instead of `--profile` (same server
 119.3 tok/s decode and 1,169 / 1,547 tok/s prompt; it was discarded because without a run config the runner recorded
 one of the two identical cards and none of the engine options.
 
+The runner's files show `--conversation-cache-min-tokens` as `<redacted>`: its secret filter (`SECRET_KEY` in
+`strata_cli/bench_facts.py`, `key|token|secret|password|auth`) matches "token" in the option name. The value is
+20000 (see the command below and `raw/r25/config-prod.json`); the runner's files are left as written. No other
+value is redacted.
+
+The standard run used the production server's learned expert profile (`expert_profile_save`: the adaptive tier's
+ranking, saved every 10 minutes and loaded at the next start), which the runner records as `--expert-profile
+t630-expert-profile.bin`; its `custom_pack` field says none was declared. The sweep rounds below started from the
+shipped `data/expert-profile.bin`. Round 20 compared the two directly and found no difference (-5% to +4% per
+column, inside the spread; hits are 99.7% either way).
+
 ## Hardware and software
 
 - GPUs: 2x NVIDIA GeForce RTX 3090 24 GB, each PCIe 3.0 x16, one on each CPU socket (NUMA node 0 and 1). Power
@@ -52,7 +63,7 @@ one of the two identical cards and none of the engine options.
 ```text
 numactl --interleave=all strata serve --profile t630      # profile, paths shortened, key removed:
 --pack .../packs/iq3_s --native /dev/shm/.../IQ3_S-00001-of-00002.gguf --ple-gguf /dev/shm/.../IQ3_S-00002-of-00002.gguf
---expert-profile data/expert-profile.bin --expert-cache auto --prefill 16384 --spec 4 --spec-min-p 0.7
+--expert-profile <saved learned profile; sweep rounds: data/expert-profile.bin> --expert-cache auto --prefill 16384 --spec 4 --spec-min-p 0.7
 --mtp .../mtp/rt --max-context 131072 --kv int8 --ple-io ram --vision --vram-reserve-mib 1400 --adapt-async 1
 --conversation-cache-mib 40960 --conversation-cache-min-tokens 20000 --conversation-cache-slots 16 --kv-grow
 --trim-stage-weights        "gpu": [0, 1], "layer_split": "25"
