@@ -495,6 +495,12 @@ ConversationBuffer pattern_buf(size_t n, uint8_t seed) {
     return b;
 }
 
+std::vector<uint8_t> pattern_vec(size_t n, uint8_t seed) {
+    std::vector<uint8_t> v(n);
+    for (size_t i = 0; i < n; ++i) v[i] = uint8_t(seed + i * 31);
+    return v;
+}
+
 ConversationKv mk_layer(int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page, int64_t pooled_rows,
                         int64_t idx_dim, uint8_t seed) {
     ConversationKv k;
@@ -649,6 +655,361 @@ void v3_write_tests() {
         check(temps == 0, "failed v3 saves leave no temp files");
     }
 }
+// --- v3 reader (region map, digest authority, cascade) ---------------------------
+
+ConversationKv mk_layer_idx(int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page,
+                            int64_t rows, int64_t idx_dim, uint8_t seed, int64_t idx_block) {
+    (void) idx_block;  // fixture rows are explicit; the FILE carries idx_block through the source
+    return mk_layer(format, cells, heads, head_dim, page, rows, idx_dim, seed);
+}
+
+// committed byte boundary of every appendable structure of a generation (test-side mirror of
+// the engine rule, incl. the draft -1 and the pooled whole-row rule):
+struct Bounds {
+    uint64_t ids = 0, imgs = 0;
+    std::vector<std::array<uint64_t, 5>> layer;
+};
+Bounds gen_bounds(const SavedConversation& s, const std::vector<int64_t>& idx_blocks) {
+    Bounds b;
+    const int64_t S = (int64_t) s.live.ids.size();
+    b.ids = (uint64_t) S * 4;
+    b.imgs = (uint64_t) s.live.imgs.size() * 16;
+    for (size_t j = 0; j < s.kv.size(); ++j) {
+        const ConversationKv& k = s.kv[j];
+        const bool draft = j + 1 == s.kv.size() && k.pooled.empty() && k.pooled_rows == 0 && k.idx_dim == 0;
+        const int64_t t = draft && S > 0 ? S - 1 : S;
+        const int64_t W = k.page_size > 0 ? (t / k.page_size) * k.page_size : t;
+        std::array<uint64_t, 5> v;
+        const uint64_t bpc = (uint64_t) k.heads * (uint64_t) k.head_dim;               // k, v bytes per cell
+        const uint64_t sbpc = (uint64_t) k.heads * (uint64_t) (k.head_dim / 64) * 2;   // scale bytes per cell
+        v[0] = v[1] = bpc * (uint64_t) W;
+        v[2] = v[3] = sbpc * (uint64_t) W;
+        if (k.pooled_rows > 0 && idx_blocks[j] > 0) {
+            const uint64_t rb = k.pooled.size() / (uint64_t) k.pooled_rows;
+            v[4] = (uint64_t) (t / idx_blocks[j]) * rb;  // whole completed pooled rows below the boundary
+        } else {
+            v[4] = k.pooled.size();  // idx_block unknown: the pooled prefix is not append-trusted (ruling)
+        }
+        b.layer.push_back(v);
+    }
+    return b;
+}
+
+// conv2 from conv1: every appendable structure keeps its committed prefix bytes identical and
+// grows with new values; the mutable re-emitted fields are freshly seeded (they may differ).
+SavedConversation chain_next(const SavedConversation& c1, const Bounds& b1, int64_t cells2, int ids2,
+                             int64_t rows2, uint8_t seed2, const std::vector<int64_t>& idx_blocks) {
+    SavedConversation s = c1;
+    s.live.ids.resize((size_t) ids2);
+    for (int i = (int) c1.live.ids.size(); i < ids2; ++i)
+        s.live.ids[(size_t) i] = int32_t(seed2 * 100000 + i);
+    s.live.imgs.push_back({int64_t(ids2) + 3, 0xC3C3});
+    s.live.gdn = pattern_vec(70, seed2);  // growing arrays too
+    s.live.tails = pattern_vec(16, uint8_t(seed2 ^ 9));
+    s.checkpoints = {mk_ckpt(ids2 - 10, uint8_t(seed2 + 77))};
+    s.kv.clear();
+    for (size_t j = 0; j < c1.kv.size(); ++j) {
+        const ConversationKv& k = c1.kv[j];
+        ConversationKv n;
+        n.format = k.format; n.cells = cells2; n.heads = k.heads; n.head_dim = k.head_dim;
+        n.page_size = k.page_size; n.pooled_rows = k.pooled_rows > 0 ? rows2 : 0; n.idx_dim = k.idx_dim;
+        const size_t cell_bytes = size_t(k.heads) * size_t(k.head_dim);
+        auto extend = [&](const ConversationBuffer& src, uint64_t bound, size_t new_size, uint8_t sd) {
+            ConversationBuffer out = pattern_buf(new_size, sd);  // new values everywhere...
+            // ...then the committed prefix must equal the previous generation's bytes exactly:
+            out.visit(0, bound, [&](uint8_t* p, size_t c, size_t o) {
+                src.read(p, o, c);  // same logical position
+                return true;
+            });
+            return out;
+        };
+        n.k = extend(k.k, b1.layer[j][0], size_t(cells2) * cell_bytes, uint8_t(seed2 + 1));
+        n.v = extend(k.v, b1.layer[j][1], size_t(cells2) * cell_bytes, uint8_t(seed2 + 8));
+        const size_t scale2 = size_t(cells2) * size_t(k.heads) * size_t(k.head_dim / 64) * 2;
+        n.k_scale = extend(k.k_scale, b1.layer[j][2], scale2, uint8_t(seed2 + 14));
+        n.v_scale = extend(k.v_scale, b1.layer[j][3], scale2, uint8_t(seed2 + 20));
+        if (rows2 > 0) {
+            const size_t rb = size_t(k.idx_dim) * 4;
+            n.pooled = extend(k.pooled, b1.layer[j][4], size_t(rows2) * rb, uint8_t(seed2 + 24));
+        }
+        s.kv.push_back(std::move(n));
+    }
+    return s;
+}
+
+// Hand-built generation-2 group appended to a real full-v3 file: mirrors put_group_v3
+// (no preamble) with only the appended suffixes, continuing the digest from gen 1's trailer.
+// b1 = generation 1's committed boundaries; ids_saved/imgs_saved = generation 1's record counts;
+// idx_block = the per-layer idx_block the file's appendable geometry carries.
+void append_group2(std::vector<uint8_t>& file, const SavedConversation& c2, const SessionCheckpoint& prev,
+                   const Bounds& b1, size_t ids_saved, size_t imgs_saved, int64_t idx_block,
+                   uint64_t& out_committed) {
+    SessionHasher h(0);
+    SessionHasherState st{};
+    for (int i = 0; i < 4; ++i) st.lanes[i] = prev.trailer.lanes[i];
+    std::memcpy(st.pending, prev.trailer.pending, 32);
+    st.npending = prev.trailer.npending;
+    st.total = prev.trailer.hashed_bytes;
+    h.restore(st);
+    auto put = [&](const void* p, size_t n) {
+        file.insert(file.end(), (const uint8_t*) p, (const uint8_t*) p + n);
+        h.update(p, n);
+    };
+    auto u64 = [&](uint64_t v) { put(&v, 8); };
+    auto i64 = [&](int64_t v) { put(&v, 8); };
+    auto vec = [&](const std::vector<uint8_t>& v) { u64(v.size()); put(v.data(), v.size()); };
+    auto ckpt = [&](const ConversationCheckpoint& c) {
+        u64(c.ids.size());
+        put(c.ids.data(), c.ids.size() * 4);
+        u64(c.imgs.size());
+        for (const auto& k : c.imgs) { i64(k.start); u64(k.hash); }
+        vec(c.gdn); vec(c.ple); vec(c.tails); vec(c.dead); vec(c.block_pos);
+        u64(c.used);
+        u64(0);  // no stage parts
+    };
+    // mutable block (no preamble): live counts, arrays, used, parts_n; full checkpoint records; kv headers+sizes
+    u64(c2.live.ids.size());
+    u64(c2.live.imgs.size());
+    vec(c2.live.gdn); vec(c2.live.ple); vec(c2.live.tails); vec(c2.live.dead); vec(c2.live.block_pos);
+    u64(c2.live.used);
+    u64(0);
+    u64(c2.checkpoints.size());
+    for (const auto& c : c2.checkpoints) ckpt(c);
+    for (size_t j = 0; j < c2.kv.size(); ++j) {
+        const ConversationKv& k = c2.kv[j];
+        for (int64_t x : {int64_t(k.format), k.cells, k.heads, k.head_dim, k.page_size, k.pooled_rows, k.idx_dim,
+                          k.pooled_rows > 0 ? idx_block : 0})
+            i64(x);
+        const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
+        for (size_t p = 0; p < 5; ++p) {
+            u64(b1.layer[j][p]);            // append window [from, to): from = generation 1's committed boundary
+            u64(parts[p]->size());
+        }
+    }
+    // segment block: only the appended suffixes at the rounded boundaries of generation 1:
+    const size_t new_ids = c2.live.ids.size() - ids_saved;
+    put(c2.live.ids.data() + ids_saved, new_ids * 4);
+    const size_t new_imgs = c2.live.imgs.size() - imgs_saved;
+    put(c2.live.imgs.data() + imgs_saved, new_imgs * 16);
+    for (size_t j = 0; j < c2.kv.size(); ++j) {
+        const ConversationKv& k = c2.kv[j];
+        const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
+        for (size_t p = 0; p < 5; ++p) {
+            const uint64_t from = b1.layer[j][p];
+            const uint64_t size = parts[p]->size();
+            if (size <= from) continue;
+            std::vector<uint8_t> buf(size_t(size - from));
+            parts[p]->read(buf.data(), (size_t) from, buf.size());
+            put(buf.data(), buf.size());
+        }
+    }
+    // pad + trailer
+    const uint64_t frame = file.size() - (prev.trailer_offset + 128);  // this group's bytes so far
+    const uint64_t pad = (512 - (frame + 128) % 512) % 512;
+    const uint8_t zeros[512] = {};
+    put(zeros, pad);
+    SessionTrailer t;
+    t.gen = prev.trailer.gen + 1;
+    t.committed_bytes = file.size();
+    t.saved_tokens = c2.live.ids.size();
+    t.digest = h.digest();
+    t.chain = prev.trailer.self_hash;
+    const SessionHasherState hs = h.state();
+    for (int i = 0; i < 4; ++i) t.lanes[i] = hs.lanes[i];
+    std::memcpy(t.pending, hs.pending, 32);
+    t.npending = hs.npending;
+    t.hashed_bytes = hs.total;
+    uint8_t tb[128];
+    trailer_bytes(t, tb);
+    file.insert(file.end(), tb, tb + 128);
+    // fresh header advisory slots
+    std::memcpy(file.data() + 40, &t.committed_bytes, 8);
+    std::memcpy(file.data() + 48, &t.committed_bytes, 8);
+    const uint64_t next = t.committed_bytes + 128;
+    std::memcpy(file.data() + 56, &next, 8);
+    out_committed = t.committed_bytes;
+}
+
+bool same_buf(const ConversationBuffer& a, const ConversationBuffer& b) {
+    if (a.size() != b.size()) return false;
+    bool eq = true;
+    std::vector<uint8_t> tmp;
+    a.visit(0, a.size(), [&](const uint8_t* p, size_t c, size_t o) {
+        tmp.resize(c);
+        b.read(tmp.data(), o, c);
+        if (std::memcmp(p, tmp.data(), c) != 0) eq = false;
+        return eq;
+    });
+    return eq;
+}
+bool same_ckpt(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+    return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
+           a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used &&
+           a.stage_parts.size() == b.stage_parts.size();
+}
+bool same_conv(const SavedConversation& a, const SavedConversation& b) {
+    if (a.geometry != b.geometry || a.layer_hi != b.layer_hi || a.layer_lo != b.layer_lo || a.cvec != b.cvec)
+        return false;
+    if (a.stage_table.size() != b.stage_table.size()) return false;
+    if (!same_ckpt(a.live, b.live)) return false;
+    if (a.checkpoints.size() != b.checkpoints.size()) return false;
+    for (size_t i = 0; i < a.checkpoints.size(); ++i)
+        if (!same_ckpt(a.checkpoints[i], b.checkpoints[i])) return false;
+    if (a.kv.size() != b.kv.size()) return false;
+    for (size_t j = 0; j < a.kv.size(); ++j) {
+        const ConversationKv& x = a.kv[j];
+        const ConversationKv& y = b.kv[j];
+        if (x.format != y.format || x.cells != y.cells || x.heads != y.heads || x.head_dim != y.head_dim ||
+            x.page_size != y.page_size || x.pooled_rows != y.pooled_rows || x.idx_dim != y.idx_dim)
+            return false;
+        if (!same_buf(x.k, y.k) || !same_buf(x.v, y.v) || !same_buf(x.k_scale, y.k_scale) ||
+            !same_buf(x.v_scale, y.v_scale) || !same_buf(x.pooled, y.pooled))
+            return false;
+    }
+    return true;
+}
+
+// One append chain: a real full-v3 write of conv1 + a hand-built gen-2 group. Read back and
+// compare against conv2 (pins the draft -1 rule, the pooled row rule, ids/imgs streams, the
+// mutable newest-copy rule and the digest authority).  With below_boundary, the hand-built
+// group starts its window BELOW generation 1's committed boundary: the region-map builder
+// must refuse that candidate before reading its segments (cascade lands on generation 1).
+void chain_read_test(uint8_t seed, int64_t idx_block, int64_t page, int64_t heads_dim_pairs_dim,
+                     bool below_boundary = false) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    const int64_t cells1 = 1024, ids1 = 1024;
+    SavedConversation c1;
+    for (size_t i = 0; i < c1.geometry.size(); ++i) c1.geometry[i] = int64_t(i) * 3 + 1;
+    c1.layer_lo = 0; c1.layer_hi = 48; c1.cvec = true;
+    c1.live = mk_ckpt((int) ids1, seed);
+    c1.checkpoints = {mk_ckpt((int) ids1 - 4, uint8_t(seed + 40))};
+    const int64_t rows1 = ids1 / idx_block + 1;
+    c1.kv.push_back(mk_layer_idx(1, cells1, 2, heads_dim_pairs_dim, page, rows1, 128, seed, idx_block));
+    c1.kv.push_back(mk_layer_idx(1, cells1 + 64, 2, heads_dim_pairs_dim / 2, page, rows1, 128, uint8_t(seed + 3), idx_block));
+    c1.kv.push_back(mk_layer_idx(2, cells1, 2, heads_dim_pairs_dim, page, 0, 0, uint8_t(seed + 6), idx_block));  // draft
+
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    SavedConversation meta = c1;
+    meta.kv.clear();
+    std::vector<SessionKvSource> sources = make_sources(c1);
+    for (size_t j = 0; j < sources.size(); ++j)
+        sources[j].idx_block = c1.kv[j].pooled_rows > 0 ? idx_block : 0;  // the draft layer has no indexer
+    const fs::path p = uniq("chain");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), meta, sources, id, bytes, error, opt), "chain: gen 1 written");
+
+    std::vector<SessionCheckpoint> cps;
+    check(session_file_checkpoints(p.string(), id, cps, error) && cps.front().trailer.gen == 1, "chain: gen 1 validates");
+    const SessionCheckpoint gen1 = cps.front();
+    const Bounds b1 = gen_bounds(c1, std::vector<int64_t>{idx_block, idx_block, idx_block});
+
+    const int64_t ids2 = 1100, cells2 = 1100;
+    const int64_t rows2 = ids2 / idx_block + 1;
+    SavedConversation c2 = chain_next(c1, b1, cells2, (int) ids2, rows2, uint8_t(seed + 11),
+                                      std::vector<int64_t>{idx_block, idx_block, idx_block});
+
+    auto file = slurp_bin(p);
+    uint64_t committed2 = 0;  // generation 2's committed trailer offset, reported by the builder
+    Bounds bw = b1;
+    if (below_boundary) {  // one cell below the committed boundary: an append must never start there
+        const uint64_t bpc0 = c1.kv[0].k.size() / (uint64_t) c1.kv[0].cells;
+        bw.layer[0][0] -= bpc0;
+    }
+    append_group2(file, c2, gen1, bw, c1.live.ids.size(), c1.live.imgs.size(), idx_block, committed2);
+    write_file(p, file);
+
+    SavedConversation parsed;
+    check(session_file_read(p.string(), id, parsed, bytes, error), "chain: multi-generation file reads");
+    if (below_boundary ? !same_conv(parsed, c1) : !same_conv(parsed, c2)) {
+        std::fprintf(stderr, "FAIL: chain reassembly differs from the %s state\n",
+                     below_boundary ? "generation-1 (a below-boundary append must be refused)" : "generation-2");
+        std::fprintf(stderr, "  live ids %zu/%zu imgs %zu/%zu gdn %zu/%zu ple %zu/%zu tails %zu/%zu used %llu/%llu\n",
+                     parsed.live.ids.size(), c2.live.ids.size(), parsed.live.imgs.size(), c2.live.imgs.size(),
+                     parsed.live.gdn.size(), c2.live.gdn.size(), parsed.live.ple.size(), c2.live.ple.size(),
+                     parsed.live.tails.size(), c2.live.tails.size(), (unsigned long long) parsed.live.used,
+                     (unsigned long long) c2.live.used);
+        std::fprintf(stderr, "  checkpoints %zu/%zu\n", parsed.checkpoints.size(), c2.checkpoints.size());
+        for (size_t j = 0; j < c2.kv.size() && j < parsed.kv.size(); ++j) {
+            const ConversationKv& x = parsed.kv[j];
+            const ConversationKv& y = c2.kv[j];
+            std::fprintf(stderr, "  kv[%zu] cells %lld/%lld heads %lld/%lld hd %lld/%lld page %lld/%lld rows %lld/%lld idx %lld/%lld | k %zu/%zu v %zu/%zu ks %zu/%zu vs %zu/%zu po %zu/%zu\n",
+                         j, (long long) x.cells, (long long) y.cells, (long long) x.heads, (long long) y.heads,
+                         (long long) x.head_dim, (long long) y.head_dim, (long long) x.page_size,
+                         (long long) y.page_size, (long long) x.pooled_rows, (long long) y.pooled_rows,
+                         (long long) x.idx_dim, (long long) y.idx_dim, x.k.size(), y.k.size(), x.v.size(),
+                         y.v.size(), x.k_scale.size(), y.k_scale.size(), x.v_scale.size(), y.v_scale.size(),
+                         x.pooled.size(), y.pooled.size());
+        }
+        std::exit(1);
+    }
+    if (!below_boundary) check(bytes == file.size(), "chain: read reports the file size");
+
+    // Cascade: damage inside generation 2 (truncations and a trailer byte-flip) -> the reader
+    // lands on the generation-1 checkpoint (== c1), never a half state; damage at or below
+    // gen 1's own trailer refuses the file.
+    const uint64_t g2start = gen1.trailer_offset + 128;
+    for (uint64_t cut : {g2start + 30, g2start + (file.size() - g2start) / 2, committed2 + 1, committed2 + 63,
+                         committed2 + 127, file.size() - 1}) {
+        const fs::path q = uniq("cut");
+        write_file(q, std::vector<uint8_t>(file.begin(), file.begin() + (size_t) cut));
+        SavedConversation back;
+        std::string e2;
+        bool ok = session_file_read(q.string(), id, back, bytes, e2);
+        if (!ok || !same_conv(back, c1)) {
+            std::fprintf(stderr, "FAIL: cut %llu did not cascade to the generation-1 checkpoint (ok=%d)\n",
+                         (unsigned long long) cut, int(ok));
+            std::exit(1);
+        }
+        ++checks;
+    }
+    for (uint64_t cut : {gen1.trailer_offset + 64, gen1.trailer_offset - 1}) {  // gen 1 itself damaged
+        const fs::path q = uniq("deepcut");
+        write_file(q, std::vector<uint8_t>(file.begin(), file.begin() + (size_t) cut));
+        SavedConversation back;
+        std::string e2;
+        check(!session_file_read(q.string(), id, back, bytes, e2), "damage below gen 1's trailer refuses the file");
+    }
+    // A byte flip inside generation 2's trailer (no truncation): gen 1 stands.
+    {
+        auto damaged = file;
+        damaged[(size_t) committed2 + 37] ^= 0xFF;
+        const fs::path q = uniq("flip");
+        write_file(q, damaged);
+        SavedConversation back;
+        std::string e2;
+        check(session_file_read(q.string(), id, back, bytes, e2) && same_conv(back, c1),
+              "a damaged newest trailer demotes to the previous checkpoint");
+    }
+}
+
+void reader_tests() {
+    // A full single-generation v3 file reads back exactly (this is the v2-parity golden for v3:
+    // the same SavedConversation the engine would have written).
+    {
+        const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+        std::string error;
+        SessionWriteOptions opt;
+        opt.use_v3 = true;
+        const SavedConversation conv = make_conv(9);
+        const fs::path p = uniq("readfull");
+        size_t bytes = 0;
+        check(session_file_write(p.string(), conv, id, bytes, error, opt), "reader: full v3 write");
+        SavedConversation parsed;
+        bool rd = session_file_read(p.string(), id, parsed, bytes, error);
+        if (!rd) std::fprintf(stderr, "read error: [%s]\n", error.c_str());
+        check(rd, "reader: full v3 read");
+        check(same_conv(parsed, conv), "reader: single-generation reassembly equals the saved state");
+        check(bytes == (size_t) slurp_bin(p).size(), "reader: reports the file size");
+    }
+    // Two chains: engine-aligned idx_block 128 and the misaligned 100 (S1 scenario C).
+    chain_read_test(7, 128, 64, 256);
+    chain_read_test(13, 100, 64, 256);
+    // A hand-built group whose window starts below the committed boundary is refused by the
+    // region-map builder (never read); the restore lands on the intact generation 1.
+    chain_read_test(19, 128, 64, 256, /*below_boundary = */ true);
+}
 }  // namespace
 
 int main() {
@@ -660,6 +1021,7 @@ int main() {
     header_v3_tests();
     validator_tests();
     v3_write_tests();
+    reader_tests();
     fs::remove_all(append_dir);
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;

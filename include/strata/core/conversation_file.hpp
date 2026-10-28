@@ -265,6 +265,10 @@ bool session_file_write(const std::string& path, const SavedConversation& image,
 struct SessionKvSource {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
+    // v3 framing: the engine's pooled-row block size (idx_block).  0 = unknown (e.g. a captured
+    // image): the file then records 0 and append is refused for that layer (the committed pooled
+    // prefix is not append-trusted without it).
+    int64_t idx_block = 0;
     std::array<size_t, 5> sizes{};
     std::function<bool(size_t part, size_t offset, void* dst, size_t n)> read;
     std::function<std::string()> error;
