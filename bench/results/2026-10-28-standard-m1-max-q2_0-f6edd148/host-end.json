@@ -1,0 +1,29 @@
+{
+  "captured_at": "2026-10-28T16:56:48.351102+00:00",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+  "hardware": {
+    "chip_type": "Apple M1 Max",
+    "machine_model": "MacBookPro18,2",
+    "number_processors": "proc 10:8:2:0",
+    "physical_memory": "64 GB"
+  },
+  "gpu": {
+    "sppci_model": "Apple M1 Max",
+    "sppci_cores": "32",
+    "spdisplays_mtlgpufamilysupport": "spdisplays_metal4"
+  },
+  "storage": [
+    {
+      "device_model": "APPLE SSD AP1024R",
+      "size_in_bytes": 1000555581440,
+      "smart_status": "Verified",
+      "spnvme_trim_support": "Yes"
+    }
+  ],
+  "cpu_memory": "hw.memsize: 68719476736\nhw.ncpu: 10\nhw.physicalcpu: 10\nhw.logicalcpu: 10\nhw.model: MacBookPro18,2\nmachdep.cpu.brand_string: Apple M1 Max\n",
+  "vm": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   838376.\nPages active:                                 606389.\nPages inactive:                              2352032.\nPages speculative:                              3593.\nPages throttled:                                   0.\nPages wired down:                             154694.\nPages purgeable:                               11460.\n\"Translation faults\":                     1365837521.\nPages copy-on-write:                        22987796.\nPages zero filled:                        1521110547.\nPages reactivated:                          73637480.\nPages purged:                               11032929.\nFile-backed pages:                           2811482.\nAnonymous pages:                              150532.\nPages stored in compressor:                   551473.\nPages occupied by compressor:                 182485.\nDecompressions:                             96797919.\nCompressions:                              109309943.\nPageins:                                   141569511.\nPageouts:                                     516476.\nSwapins:                                     8493443.\nSwapouts:                                    9179202.\n",
+  "swap": "vm.swapusage: total = 1024.00M  used = 291.31M  free = 732.69M  (encrypted)\n",
+  "power_source": "AC Power",
+  "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "privacy_note": "Explicitly allowlisted hardware/OS/VM/power facts. No process lists, hostnames, usernames, hardware identifiers, volume names, battery IDs or private paths."
+}

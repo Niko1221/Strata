@@ -1,0 +1,14 @@
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: complete. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 7 min 33 s.
+Machine: Apple M1 Max; Apple M1 Max; 64 GB RAM; macOS 26.6.2.
+Model: qwen3.8-flash-next-q2_0, Q2_0, context 32768; engine 0.1.52-metal; track default.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s             Decode tok/s          TTFT s                   Total s               Capped
+  short       n/a                      38.6 (37.9-38.7) n=3  0.81 (0.80-0.82) n=3     13.8 (13.8-13.9) n=3  0/3
+  prompt-4k   373.0 (365.6-377.0) n=3  37.8 (37.1-37.9) n=3  11.01 (10.89-11.23) n=3  21.5 (21.1-25.0) n=3  1/3
+  prompt-16k  369.0 (367.7-369.6) n=3  36.0 (33.4-36.3) n=3  44.45 (44.38-44.60) n=3  58.7 (58.6-59.7) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).

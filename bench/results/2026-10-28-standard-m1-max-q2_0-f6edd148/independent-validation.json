@@ -1,0 +1,57 @@
+{
+  "verification": "passed",
+  "request_records": 22,
+  "output_records": 22,
+  "phase_planned": {
+    "warmup": 1,
+    "performance": 9,
+    "sanity": 12,
+    "concurrency": 0
+  },
+  "artifact_hashes_checked": 6,
+  "corpus_members_checked": 35,
+  "summary_groups_checked": 15,
+  "client_event_traces_checked": 22,
+  "skipped_records": 0,
+  "token_accounting_notes_checked": 0,
+  "independent_sanity": {
+    "I1": true,
+    "I2": true,
+    "I3": true,
+    "I4": true,
+    "R1": true,
+    "R2": true,
+    "R3": true,
+    "R4": true,
+    "T1": true,
+    "T2": true,
+    "T3": true,
+    "T4": true
+  },
+  "quality": {
+    "passed": 12,
+    "total": 12,
+    "categories": {
+      "instruction": {
+        "passed": 4,
+        "total": 4
+      },
+      "retrieval": {
+        "passed": 4,
+        "total": 4
+      },
+      "tool_call": {
+        "passed": 4,
+        "total": 4
+      }
+    }
+  },
+  "limitations": [
+    "Checks saved sanitized evidence, not original wire/SSE data or actual execution; mutually fabricated evidence cannot be detected.",
+    "Does not rehash model weights, retokenize prompts, inspect live configuration/services, or establish template/model-card upstream equivalence.",
+    "Client offsets are checked against saved events; no independent clock or absolute dispatch times are available.",
+    "Concurrency round wall times cannot be independently reconstructed without absolute cross-request dispatch times; aggregate arithmetic is checked.",
+    "Not a complete official schema/privacy/conformance validator or maintainer approval; failed sanity checks can be valid evidence."
+  ],
+  "self_tests_passed": 27
+}

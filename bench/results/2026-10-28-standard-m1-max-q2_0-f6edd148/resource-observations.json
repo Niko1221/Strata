@@ -1,0 +1,17 @@
+{
+  "samples": 105,
+  "first_at": "2026-10-28T16:47:58.893982+00:00",
+  "last_at": "2026-10-28T16:56:46.465499+00:00",
+  "coverage_s": 527.574021625,
+  "sample_interval_s_median": 5.0747603955,
+  "sample_interval_s_max": 5.127315875000022,
+  "highest_observed_process_rss_bytes": {
+    "omlx_server": 92454912,
+    "vision_helper": 1233371136,
+    "strata_engine": 42707763200
+  },
+  "system_swap_used_bytes_first": 305460674.56,
+  "system_swap_used_bytes_last": 305460674.56,
+  "system_swap_used_bytes_max": 305460674.56,
+  "limitations": "Approximately five-second ps RSS and VM snapshots across loading, model hashing and inference. Individual process RSS observations are not exact peaks, GPU allocations, or additive physical-memory accounting. System swap includes background processes. Raw process captures remain private."
+}
