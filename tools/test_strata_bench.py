@@ -167,6 +167,14 @@ class SuiteTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
+    def test_the_key_is_matched_as_written_and_as_a_word(self):
+        """#4483: the key "none" (serve's no-key value) turned "nonempty" into "<key>mpty"; a key is now matched as
+        written and as a whole word, and "none" is no key."""
+        red = B.redactor(key="abcd1234")
+        self.assertEqual(red("key=abcd1234; sha 00abcd1234ff; ABCD1234"), "key=<key>; sha 00abcd1234ff; ABCD1234")
+        text = "the first nonempty reasoning; api_key none"
+        self.assertEqual(B.redactor(key="none")(text), text)
+
     def test_paths_names_ips_and_keys(self):
         red = B.redactor(extra=["Jane Roe Laptop"], key="sk-secret-123456")
         user = os.environ.get("USERNAME") or os.environ.get("USER") or "tester"
