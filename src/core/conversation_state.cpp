@@ -481,7 +481,22 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
     for (uint64_t i = 0; i < qsa + (draft ? 1 : 0); ++i) {
         const auto& st = i == qsa ? *draft : owned(ss, (size_t) i);
         const size_t n = conversation_kv_bytes(st, g, upto, i != qsa);
-        if (!n || !add(bytes, n)) return fail(error, "invalid or overflowing K/V byte estimate");
+        if (!n || !add(bytes, n)) {
+            // the estimate hides WHY it went to zero (the reason lives in the capture's own error string);
+            // a refused save is rare enough to report the reason and the failing state's identity every time
+            std::string why;
+            size_t nb = 0;
+            conversation_kv_capture_bytes(ConversationKv{}, st, g, upto, i != qsa, nb, why);
+            std::fprintf(stderr, "strata: K/V byte estimate failed: pool %llu of %llu (%s) upto %lld: %s - "
+                                 "mode %d int8 %d q4 %d hybrid %d rot %d n_slots %lld n_pages %lld "
+                                 "max_cells %lld idx_rows %lld host %d\n",
+                         (unsigned long long) i, (unsigned long long)(qsa + (draft ? 1 : 0)),
+                         i == qsa ? "draft" : "session", (long long) upto, why.c_str(),
+                         (int)st.kv_mode, (int)st.kv_int8, (int)st.kv_q4, (int)st.kv_hybrid, (int)st.kv_rot,
+                         (long long)st.n_slots, (long long)st.n_pages, (long long)st.max_cells,
+                         (long long)st.idx_pooled_rows, (int)st.host.present());
+            return fail(error, "invalid or overflowing K/V byte estimate");
+        }
     }
     return true;
 }
@@ -667,8 +682,14 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
         const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
         if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
     }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    // an empty drafter (the Apple Silicon decode window runs the draft rounds itself, so the session-side
+    // MtpDrafter keeps a default state): a file written this way has no draft part, so its bounds stay {} -
+    // conversation_kv_part_sizes would refuse the empty state and reject the engine's own file
+    if (draft.max_cells <= 0) l.max_kv_bytes.back() = {};
+    else {
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
+        if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    }
     limits = std::move(l);
     return true;
 }
