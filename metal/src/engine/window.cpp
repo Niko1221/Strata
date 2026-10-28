@@ -1892,9 +1892,10 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         const double r0 = now_ms();
         last_gpu_ms_ = 1000.0 * run_ds(c);
         {
-            static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
-            static int seen = 0;
-            if (kt == Tn && head && ++seen == 20) kprof(c.ds, Tn);   // stream too: the serial replay reads the last window's smap codes (valid slots); timing only, the run's answers go wrong after it
+            // STRATA_METAL_KPROF=1: the GPU time report for each window class (T, head) once that class has run 20 times
+            static const bool k_on = std::getenv("STRATA_METAL_KPROF") != nullptr;
+            static std::map<std::pair<int, bool>, int> seen;
+            if (k_on && ++seen[{Tn, head}] == 20) kprof(c.ds, Tn);   // stream too: the serial replay reads the last window's smap codes (valid slots); timing only, the run's answers go wrong after it
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();

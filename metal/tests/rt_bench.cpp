@@ -127,6 +127,49 @@ static void bw(mtl::Context& cx, int lib, size_t mib) {
     cx.free(out);
 }
 
+// The MoE decode read pattern: `groups` threadgroups each stream `chunk` KiB from a random place in one of
+// `slot`-KiB slots spread over a 1 GiB buffer (like arena expert slots), 47 dispatches per command buffer.
+// Answers: is the expert kernel's ~110 GB/s the scatter itself, or the small grid, or the kernel body?
+static void scatter(mtl::Context& cx, int lib) {
+    const size_t bytes = 2ull << 30;
+    mtl::Buffer src = cx.alloc(bytes);
+    mtl::Buffer out = cx.alloc(64u << 20);
+    mtl::Pipeline ps = cx.pipeline(lib, "k_read_slots");
+    struct Cfg { const char* tag; uint32_t tg, groups, chunk_kib, slot_kib; } cfgs[] = {
+        {"gu 1-layer scatter 3M ", 64, 512, 23, 3145},
+        {"gu 1-layer scatter 16M", 64, 512, 23, 16384},
+        {"gu 1-layer scatter 64M", 64, 512, 23, 65536},
+        {"gu 1-layer contiguous ", 64, 512, 23, 0},
+        {"gu 4x groups scatter  ", 64, 2048, 23, 3145},
+        {"gu 2x-wide scatter    ", 128, 1024, 23, 3145},
+        {"gu big-chunk scatter  ", 64, 128, 92, 3145},
+        {"dense-like scatter    ", 256, 2048, 16, 3145},
+        {"dense-like contiguous ", 256, 2048, 16, 0},
+    };
+    std::printf("%-24s %10s %10s\n", "scatter cfg", "GB/s med", "GB/s best");
+    for (auto c : cfgs) {
+        const uint32_t chunk = c.chunk_kib * 1024 / 16;
+        const uint32_t slot = c.slot_kib ? c.slot_kib * 1024 / 16 : 0;
+        std::vector<mtl::Dispatch> ds;
+        for (int i = 0; i < 47; ++i) {
+            mtl::Dispatch d;
+            d.p = &ps;
+            d.args = {mtl::Arg::B(src), mtl::Arg::B(out), mtl::Arg::V(chunk), mtl::Arg::V(slot),
+                      mtl::Arg::V(uint32_t(double(bytes) / 16 / (slot ? slot : 1))),
+                      mtl::Arg::V(slot ? uint32_t(i + 1) : uint32_t(i + 1) * c.groups * chunk)};
+            d.grid[0] = c.groups;
+            d.tg[0] = c.tg;
+            ds.push_back(d);
+        }
+        double med, best;
+        timed(2, 7, [&] { return cx.run(ds); }, med, best);
+        const double tot = double(c.groups) * chunk * 16 * 47;
+        std::printf("%-24s %10.1f %10.1f\n", c.tag, tot / med / 1e9, tot / best / 1e9);
+    }
+    cx.free(src);
+    cx.free(out);
+}
+
 // A read of `kib` from DRAM per dispatch (each dispatch a different, uncached chunk of a 4 GiB buffer), dependent
 // dispatches in one serial encoder: the bound for a kernel that streams that much once.
 static void bwsize(mtl::Context& cx, int lib) {
@@ -234,5 +277,6 @@ int main(int argc, char** argv) {
     if (mode == "bw" || mode == "all") bw(cx, lib, argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 2048);
     if (mode == "dispatch" || mode == "all") dispatch(cx, lib);
     if (mode == "bwsize" || mode == "all") bwsize(cx, lib);
+    if (mode == "scatter") scatter(cx, lib);
     return 0;
 }
