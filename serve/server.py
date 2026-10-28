@@ -1004,6 +1004,9 @@ class StrataEngine:
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
         self.terminal_batch_sample: dict | None = None
         self.terminal_stage_sample: dict | None = None
+        self.cvec_gate_seq = getattr(self, "cvec_gate_seq", 0)   # verdicts emitted; continues across restart():
+        self.last_cvec_gate = getattr(self, "last_cvec_gate", None)  # a request's seq0 predates a mid-request
+        #                                            restart, so the counter must not reset under it (see _pump)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
@@ -1217,6 +1220,20 @@ class StrataEngine:
                 sample = parse_stage_in_flight_sample(line)
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
+                continue
+            if line.startswith("CVECAUTO "):
+                # the cvec=2 verdict, the engine's own stdout twin of its log line (generate.cpp:15766): the
+                # line precedes the request's tokens and its DONE, and _pump works through the stream in order,
+                # so a request sees DONE only after its own verdict landed - attribution by the seq below is
+                # race-free.  It never enters a token stream.
+                gate = parse_cvec_gate(line)
+                if gate is not None and self.proc is proc:
+                    self.last_cvec_gate = gate
+                    self.cvec_gate_seq += 1
+                    print(f"strata serve: cvec auto: mean {gate['mean']:.4f} max {gate['max']:.4f} "
+                          f"thresh {gate['thresh']:.4f} -> {gate['verdict']}", flush=True)
+                                                          # the live log feed reads serve's stdout, not
+                                                          # the engine's stderr log - echo the same numbers and verdict
                 continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
@@ -1476,10 +1493,24 @@ class StrataEngine:
 
     @staticmethod
     def projection_key(sampling: dict) -> str:
-        """`cvec=0|1`: the experimental-speed-projection control vector for this request, when the engine was
-        started with one (--control-vector-scaled; an engine without one ignores the key).  Absent = on."""
+        """`cvec=0|1|2`: the experimental-speed-projection control vector for this request, when the engine was
+        started with one (--control-vector-scaled; an engine without one ignores the key).  A bool maps to 0/1;
+        the integer 2 and the string "auto" ask the engine's auto mode: measure the refusal direction during
+        prefill and steer the decode only at or below the threshold.  `cvec_threshold` (a finite number, the
+        gate threshold) adds `cvec_thresh=F`: that request's own gate, over the engine's --cvec-threshold.
+        Absent = on."""
         on = sampling.get("experimental_speed_projection")
-        return f" cvec={int(on)}" if isinstance(on, bool) else ""
+        key = ""
+        if isinstance(on, bool):
+            key = f" cvec={int(on)}"
+        elif isinstance(on, int) and on in (0, 1, 2):
+            key = f" cvec={on}"
+        elif isinstance(on, str) and on.lower() == "auto":
+            key = " cvec=2"
+        t = sampling.get("cvec_threshold")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t):
+            key += f" cvec_thresh={t!r}"
+        return key
 
     def _send(self, text: str):
         btrace("send>", text[:60])
@@ -5380,6 +5411,11 @@ class Service:
                     else:
                         yield "ping", None
             with turn:
+                # the engine's cvec_gate_seq at the start of THIS TURN (inside the fifo: a starved request must
+                # not read a verdict another request raised while it waited, and the re-issue passes - ANSWER_ROOM,
+                # reasoning loop recovery, reasoning close retry - re-send inside the same turn and raise a
+                # second one; the newest is the verdict that decoded)
+                gate_seq0 = getattr(self.engine, "cvec_gate_seq", 0)
                 try:
                     with self.status_lock:
                         if trace is not None:
@@ -5650,6 +5686,17 @@ class Service:
                     finish = "disconnect"
                     raise
                 finally:
+                    # this request's cvec-auto verdict: _pump captured it off the engine's CVECAUTO line, which
+                    # precedes this request's tokens and its DONE, so a seq that advanced since the turn's
+                    # gate_seq0 is this request's own (the fifo serializes solo requests).  The newest verdict
+                    # won: a re-issue pass raises a second CVECAUTO and that is what decoded.  gate stays None
+                    # for every non-auto request (the engine emits the line only under cvec_auto); a wholly-
+                    # cached auto request still gets its line, measured zero -> stock.
+                    gate = None
+                    g = getattr(self.engine, "last_cvec_gate", None)
+                    if g and not par and asks_cvec_auto(sampling) \
+                            and getattr(self.engine, "cvec_gate_seq", 0) > gate_seq0:
+                        gate = g["verdict"]
                     # #266: settle this request's status, history and totals while still holding the fifo: once
                     # it is released the next request sets its own status, which this must not record or clear
                     with self.status_lock:
@@ -5667,8 +5714,8 @@ class Service:
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
                             self.history.append({
                                 "id": request_id,
-                                "projection": (sampling or {}).get("experimental_speed_projection") is not False
-                                if loaded else None,
+                                "projection": history_projection(sampling, loaded),
+                                "gate": gate,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 "first_engine_token_s": first_engine_token_s,
@@ -5780,6 +5827,50 @@ class Service:
         if rejected:
             done["rejected_tool_calls"] = rejected
         yield "done", done
+
+
+CVEC_GATE = re.compile(r"CVECAUTO mean=(-?[\d.]+) max=(-?[\d.]+) thresh=(-?(?:inf|[\d.]+)) -> (steer|stock)\s*$")
+
+
+def parse_cvec_gate(line: str) -> dict | None:
+    """The engine's cvec=2 verdict line on its control stdout ("CVECAUTO mean M max X thresh T -> steer|stock",
+    generate.cpp:15766 - the machine twin of the human line it prints to the log), captured by _pump for the
+    request history.  None on any other line (a malformed number counts as another line).  The thresh may be
+    -inf: the documented log-only mode (--cvec-threshold -inf) prints it via %.4f as "-inf"; mean/max are
+    finite dot products and stay strict."""
+    m = CVEC_GATE.search(line)
+    if m:
+        try:
+            mean, mx, thresh = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        except ValueError:
+            return None
+        return {"verdict": m.group(4), "mean": mean, "max": mx, "thresh": thresh}
+    return None
+
+
+def asks_cvec_auto(sampling) -> bool:
+    """The request asks for the auto gate: the string "auto", or the integer 2 (the shape history_projection
+    keeps as "auto").  The engine prints its verdict lines only for a cvec=2 request, so this also gates the
+    gate-line scan: a bool (or absent) request never touches the engine log."""
+    v = (sampling or {}).get("experimental_speed_projection")
+    if isinstance(v, str):
+        return v.lower() == "auto"
+    return isinstance(v, int) and not isinstance(v, bool) and v == 2
+
+
+def history_projection(sampling: dict, loaded: bool):
+    """The request-history 'projection' field (served on GET /metrics): what this request asked the vector to
+    do.  A bool stays bool; the auto request (asks_cvec_auto) is kept as "auto" - the gate decides in the
+    engine request by request, and serve may not report it as on/off (the web page's badge reads this).
+    None when the engine carries no vector at all."""
+    if not loaded:
+        return None
+    if asks_cvec_auto(sampling):
+        return "auto"
+    v = (sampling or {}).get("experimental_speed_projection")
+    if isinstance(v, int) and not isinstance(v, bool):
+        return bool(v)                                  # `0 is not False` is True - normalize the ints
+    return v is not False
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -8263,8 +8354,12 @@ def clean_shared_defaults(d) -> dict:
                 raise ValueError("reasoning_budget_tokens: a whole number of tokens (0: no budget)")
             value = int(value)
         elif key == "experimental_speed_projection":
-            if not isinstance(value, bool):
-                raise ValueError("experimental_speed_projection: true or false")
+            if not isinstance(value, bool) and value != "auto":
+                raise ValueError('experimental_speed_projection: true, false or "auto"')
+        elif key == "cvec_threshold":
+            if not number or not math.isfinite(value):
+                raise ValueError("cvec_threshold: a finite number (the cvec auto gate, e.g. -0.9)")
+            value = float(value)
         else:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value
@@ -8436,10 +8531,16 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.strata_tune={value!r}: expected an object")
             out[key] = {k: v for k, v in value.items() if k in ("pcie_frac", "spec_min_p", "aux_cpus")}
         elif key == "experimental_speed_projection":
-            if not isinstance(value, bool):
-                raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true or "
-                                 "false (the default for requests that leave it out, when the engine has the vector)")
+            if not isinstance(value, bool) and value != "auto":
+                raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true, "
+                                 'false or "auto" (the default for requests that leave it out, when the engine has '
+                                 "the vector)")
             out[key] = value
+        elif key == "cvec_threshold":
+            if not number or not math.isfinite(value):
+                raise SystemExit(f"[strata] config sampling.cvec_threshold={value!r}: expected a finite number "
+                                 "(the cvec auto gate, e.g. -0.9)")
+            out[key] = float(value)
         else:
             print(f"[strata] config sampling.{key}={value!r}: unknown key, ignored", flush=True)
     return out

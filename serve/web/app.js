@@ -535,7 +535,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
+      const proj = r.projection == null ? "" : r.projection === "auto"
+        ? (r.gate === "steer"
+          ? ` <span class="st-badge st-badge--reading" title="cvec auto: the gate fired - this request decoded with the control vector (the refusal-direction dot product crossed the threshold)">ESP</span>`
+          : ` <span class="st-badge" title="cvec auto: the engine's gate decides per request - ${r.gate === "stock" ? "this request stayed stock (the instance log carries the numbers)" : "the vector applies only when the refusal-direction dot product crosses the threshold"}">auto</span>`)
+        : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
