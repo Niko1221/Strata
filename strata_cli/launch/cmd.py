@@ -62,6 +62,13 @@ def _port(value: str) -> int:
     return p
 
 
+def _host(value: str) -> str:
+    try:
+        return S.parse_host(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 def _parallel(value: str) -> int:
     try:
         p = int(value)
@@ -127,6 +134,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     a.add_argument("--access", type=_choice("a way to share Strata", S.ACCESS_KINDS), metavar="local|lan|cloudflare|tailscale",
                    help="local: this computer only; lan: your network; cloudflare: a quick tunnel; tailscale: your tailnet")
     a.add_argument("--port", type=_port, metavar="N", help=f"port (default {S.DEFAULT_PORT})")
+    a.add_argument("--host", type=_host, metavar="ADDRESS",
+                   help="bind to this IPv4 address or localhost instead of the access default; without --access, "
+                        "loopback selects local and any other address selects lan")
     a.add_argument("--api-key", metavar="KEY", help="the key clients must send (made for you when you share beyond this computer)")
     a.add_argument("--api-key-env", metavar="NAME", help="read the key from this environment variable")
     a.add_argument("--new-key", action="store_true", help="make a new API key")
@@ -265,6 +275,12 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.tune_allow_small = True
     if a.access:
         s.access = a.access
+    if a.host is not None:
+        s.host = a.host
+        if not a.access and s.access in ("local", "lan"):
+            s.access = "local" if S.loopback_host(s.host) else "lan"
+    elif a.access:
+        s.host = None                                  # choosing another access mode resets a saved bind override
     if a.port:
         s.port = a.port
     if a.api_key:
@@ -357,7 +373,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
             s.speed = None
         deepseek = bool(catalog.strata.multi_family(s.family))
         notices += S.check_context(s, max_fit_tokens=None, deepseek=deepseek, pack_limit=catalog.pack_limit(s.family, s.model) if deepseek else None)
-    if s.access != "local" and not s.api_key and not s.no_key:
+    if S.shared_access(s) and not s.api_key and not s.no_key:
         from strata_cli.launch import access
         kept = access.kept_key(s.name or f"{s.model or 'model'} {S.context_label(s.context)}")
         s.api_key = kept or access.new_key()
@@ -615,8 +631,10 @@ def running_launches() -> list[dict]:
         except Exception:                                      # noqa: BLE001
             ov = {}
         port = ov.get("port", S.DEFAULT_PORT)
+        from strata_cli.launch import access
+        host = ov.get("host", "127.0.0.1")
         out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
-                    "url": f"http://127.0.0.1:{port}", "host": ov.get("host", "127.0.0.1"), "config": prof.get("source_config")})
+                    "url": access.client_url(host, port), "host": host, "config": prof.get("source_config")})
     return out
 
 
@@ -632,7 +650,7 @@ def _cfg_context(cfg: dict) -> int | None:
 
 def launch_info(name: str | None = None) -> dict | None:
     """Address, key and model name of a launch that is running (or the named preset), for `connect` and the monitor's Connect view."""
-    from strata_cli.launch import store
+    from strata_cli.launch import access, store
     running = running_launches()
     pick = None
     if name:
@@ -650,7 +668,8 @@ def launch_info(name: str | None = None) -> dict | None:
     if pick is None and preset is None:
         return None
     port = (pick or {}).get("port") or (preset.port if preset else S.DEFAULT_PORT)
-    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": (cfg.get("api_key") if str(cfg.get("api_key") or "").strip().lower() != "none" else None) or (preset.api_key if preset else None),
+    fallback_host = access.bind_host(preset) if preset else "127.0.0.1"
+    return {"url": (pick or {}).get("url") or access.client_url(fallback_host, port), "key": (cfg.get("api_key") if str(cfg.get("api_key") or "").strip().lower() != "none" else None) or (preset.api_key if preset else None),
             "model": cfg.get("model_name") or "strata", "context": _cfg_context(cfg), "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
             "port": port, "access": preset.access if preset else None}
 
@@ -750,7 +769,7 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.host or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None

@@ -1449,8 +1449,10 @@ class AccessScreen(Base):
     def refresh_body(self) -> None:
         s = self.ctx.settings
         on = bool(s.api_key)
-        beyond = s.access != "local"
+        beyond = S.shared_access(s)
         t = Text()
+        if s.host is not None:
+            t.append(f"\n   Listen    {s.host}\n")
         t.append(f"\n   Port      [ {s.port} ]   press p to change\n")
         t.append(f"   API key   [ {'on' if on else 'off'} ]   {acc.mask_key(s.api_key)}  ", style=FG if on else WARN)
         t.append(("(recommended for anything beyond this computer; t = no key)" if on else "(t = make a key)") if beyond else "(not needed on this computer)", style=MUTE)
@@ -1479,11 +1481,13 @@ class AccessScreen(Base):
     def on_cursor(self) -> None:
         kind = self.menu().current.key
         s = self.ctx.settings
+        if kind != s.access:
+            s.host = None
         s.access = kind
-        if kind != "local" and not s.api_key and not s.no_key:
+        if S.shared_access(s) and not s.api_key and not s.no_key:
             s.api_key = acc.kept_key() or acc.new_key()
             self.say("An API key was made for you (recommended beyond this computer). Press t if you want no key.")
-        elif kind != "local" and s.no_key:
+        elif S.shared_access(s) and s.no_key:
             self.say(S.NO_KEY_PUBLIC if kind == "cloudflare" else S.NO_KEY_NETWORK, True)
 
     def action_port(self) -> None:
@@ -1513,8 +1517,8 @@ class AccessScreen(Base):
         s = self.ctx.settings
         if s.api_key:
             s.api_key = None
-            s.no_key = s.access != "local"
-            self.say("The API key is off." + ((" " + (S.NO_KEY_PUBLIC if s.access == "cloudflare" else S.NO_KEY_NETWORK)) if s.access != "local" else ""), s.access != "local")
+            s.no_key = S.shared_access(s)
+            self.say("The API key is off." + ((" " + (S.NO_KEY_PUBLIC if s.access == "cloudflare" else S.NO_KEY_NETWORK)) if S.shared_access(s) else ""), S.shared_access(s))
         else:
             s.api_key, s.no_key = acc.new_key(), False
             self.say("The API key is on.")
@@ -1528,8 +1532,10 @@ class AccessScreen(Base):
 
     def commit(self) -> None:
         s = self.ctx.settings
+        if s.access != self.menu().current.key:
+            s.host = None
         s.access = self.menu().current.key
-        if s.access != "local" and not s.api_key and not s.no_key:
+        if S.shared_access(s) and not s.api_key and not s.no_key:
             s.api_key = acc.kept_key() or acc.new_key()
 
     def action_back(self) -> None:
