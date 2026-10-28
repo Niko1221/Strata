@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -679,7 +680,9 @@ Bounds gen_bounds(const SavedConversation& s, const std::vector<int64_t>& idx_bl
     b.imgs = (uint64_t) s.live.imgs.size() * 16;
     for (size_t j = 0; j < s.kv.size(); ++j) {
         const ConversationKv& k = s.kv[j];
-        const bool draft = j + 1 == s.kv.size() && k.pooled.empty() && k.pooled_rows == 0 && k.idx_dim == 0;
+        // The draft layer, structurally: the last layer, sourced un-indexed - no pooled part (and
+        // the file's header carries idx_block 0 for it).  Its idx_dim is the geometry's, NOT zero.
+        const bool draft = j + 1 == s.kv.size() && k.pooled.empty() && k.pooled_rows == 0;
         const int64_t t = draft && S > 0 ? S - 1 : S;
         const int64_t W = k.page_size > 0 ? (t / k.page_size) * k.page_size : t;
         std::array<uint64_t, 5> v;
@@ -731,12 +734,33 @@ SavedConversation chain_next(const SavedConversation& c1, const Bounds& b1, int6
         const size_t scale2 = size_t(cells2) * size_t(k.heads) * size_t(k.head_dim / 64) * 2;
         n.k_scale = extend(k.k_scale, b1.layer[j][2], scale2, uint8_t(seed2 + 14));
         n.v_scale = extend(k.v_scale, b1.layer[j][3], scale2, uint8_t(seed2 + 20));
-        if (rows2 > 0) {
+        if (rows2 > 0 && k.pooled_rows > 0) {  // only an indexed layer carries pooled bytes (engine shape)
             const size_t rb = size_t(k.idx_dim) * 4;
             n.pooled = extend(k.pooled, b1.layer[j][4], size_t(rows2) * rb, uint8_t(seed2 + 24));
         }
         s.kv.push_back(std::move(n));
     }
+    // Stage parts mirror the live record (engine shape: a split session's live record carries one part
+    // per later stage): append-only id/img streams with freshly re-emitted running-state arrays.
+    std::vector<ConversationCheckpoint> lparts;
+    for (size_t k = 0; k < c1.live.stage_parts.size(); ++k) {
+        const ConversationCheckpoint& p = c1.live.stage_parts[k];
+        ConversationCheckpoint n = p;  // the committed prefix stays byte-identical
+        const size_t grow = (size_t) (ids2 - (int) c1.live.ids.size());
+        n.ids.resize(p.ids.size() + grow);
+        for (size_t i = p.ids.size(); i < n.ids.size(); ++i)
+            n.ids[i] = int32_t(seed2 * 7000 + int(k) * 100 + int(i));
+        n.imgs.push_back({int64_t(ids2) + 7 + int64_t(k), 0xC9C9});
+        n.gdn = pattern_vec(64, uint8_t(seed2 + 30 + k));  // re-emitted, may differ
+        n.tails = pattern_vec(16, uint8_t(seed2 ^ uint8_t(0x11 + k)));
+        lparts.push_back(std::move(n));
+    }
+    s.live.stage_parts = std::move(lparts);
+    // checkpoint records are re-emitted whole each generation; a split session carries the parts too
+    const size_t ckparts = c1.checkpoints.empty() ? 0 : c1.checkpoints[0].stage_parts.size();
+    for (auto& c : s.checkpoints)
+        for (size_t k = 0; k < ckparts; ++k)
+            c.stage_parts.push_back(mk_ckpt(ids2 - 20, uint8_t(seed2 + 140 + k)));
     return s;
 }
 
@@ -746,7 +770,7 @@ SavedConversation chain_next(const SavedConversation& c1, const Bounds& b1, int6
 // idx_block = the per-layer idx_block the file's appendable geometry carries.
 void append_group2(std::vector<uint8_t>& file, const SavedConversation& c2, const SessionCheckpoint& prev,
                    const Bounds& b1, size_t ids_saved, size_t imgs_saved, int64_t idx_block,
-                   uint64_t& out_committed) {
+                   uint64_t& out_committed, const std::vector<std::array<uint64_t, 2>>& part_froms = {}) {
     SessionHasher h(0);
     SessionHasherState st{};
     for (int i = 0; i < 4; ++i) st.lanes[i] = prev.trailer.lanes[i];
@@ -761,21 +785,29 @@ void append_group2(std::vector<uint8_t>& file, const SavedConversation& c2, cons
     auto u64 = [&](uint64_t v) { put(&v, 8); };
     auto i64 = [&](int64_t v) { put(&v, 8); };
     auto vec = [&](const std::vector<uint8_t>& v) { u64(v.size()); put(v.data(), v.size()); };
-    auto ckpt = [&](const ConversationCheckpoint& c) {
+    std::function<void(const ConversationCheckpoint&)> ckpt = [&](const ConversationCheckpoint& c) {
         u64(c.ids.size());
         put(c.ids.data(), c.ids.size() * 4);
         u64(c.imgs.size());
         for (const auto& k : c.imgs) { i64(k.start); u64(k.hash); }
         vec(c.gdn); vec(c.ple); vec(c.tails); vec(c.dead); vec(c.block_pos);
         u64(c.used);
-        u64(0);  // no stage parts
+        u64(c.stage_parts.size());  // a split session's records mirror their stage parts (put_checkpoint)
+        for (const auto& p : c.stage_parts) ckpt(p);
     };
     // mutable block (no preamble): live counts, arrays, used, parts_n; full checkpoint records; kv headers+sizes
     u64(c2.live.ids.size());
     u64(c2.live.imgs.size());
     vec(c2.live.gdn); vec(c2.live.ple); vec(c2.live.tails); vec(c2.live.dead); vec(c2.live.block_pos);
     u64(c2.live.used);
-    u64(0);
+    u64(c2.live.stage_parts.size());
+    for (const auto& p : c2.live.stage_parts) {  // parts mirror the live record shape (put_live_v3) and hold none
+        u64(p.ids.size());
+        u64(p.imgs.size());
+        vec(p.gdn); vec(p.ple); vec(p.tails); vec(p.dead); vec(p.block_pos);
+        u64(p.used);
+        u64(0);
+    }
     u64(c2.checkpoints.size());
     for (const auto& c : c2.checkpoints) ckpt(c);
     for (size_t j = 0; j < c2.kv.size(); ++j) {
@@ -794,6 +826,13 @@ void append_group2(std::vector<uint8_t>& file, const SavedConversation& c2, cons
     put(c2.live.ids.data() + ids_saved, new_ids * 4);
     const size_t new_imgs = c2.live.imgs.size() - imgs_saved;
     put(c2.live.imgs.data() + imgs_saved, new_imgs * 16);
+    for (size_t k = 0; k < c2.live.stage_parts.size(); ++k) {  // stage-part mirrors, in stage order
+        const ConversationCheckpoint& p = c2.live.stage_parts[k];
+        const uint64_t pi = k < part_froms.size() ? part_froms[k][0] : 0;
+        const uint64_t pg = k < part_froms.size() ? part_froms[k][1] : 0;
+        put(p.ids.data() + pi, (p.ids.size() - pi) * 4);
+        put(p.imgs.data() + pg, (p.imgs.size() - pg) * 16);
+    }
     for (size_t j = 0; j < c2.kv.size(); ++j) {
         const ConversationKv& k = c2.kv[j];
         const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
@@ -846,9 +885,13 @@ bool same_buf(const ConversationBuffer& a, const ConversationBuffer& b) {
     return eq;
 }
 bool same_ckpt(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
-    return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
-           a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used &&
-           a.stage_parts.size() == b.stage_parts.size();
+    if (!(a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
+          a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used &&
+          a.stage_parts.size() == b.stage_parts.size()))
+        return false;
+    for (size_t k = 0; k < a.stage_parts.size(); ++k)  // stage parts compared by content, recursively
+        if (!same_ckpt(a.stage_parts[k], b.stage_parts[k])) return false;
+    return true;
 }
 bool same_conv(const SavedConversation& a, const SavedConversation& b) {
     if (a.geometry != b.geometry || a.layer_hi != b.layer_hi || a.layer_lo != b.layer_lo || a.cvec != b.cvec)
@@ -890,7 +933,9 @@ void chain_read_test(uint8_t seed, int64_t idx_block, int64_t page, int64_t head
     const int64_t rows1 = ids1 / idx_block + 1;
     c1.kv.push_back(mk_layer_idx(1, cells1, 2, heads_dim_pairs_dim, page, rows1, 128, seed, idx_block));
     c1.kv.push_back(mk_layer_idx(1, cells1 + 64, 2, heads_dim_pairs_dim / 2, page, rows1, 128, uint8_t(seed + 3), idx_block));
-    c1.kv.push_back(mk_layer_idx(2, cells1, 2, heads_dim_pairs_dim, page, 0, 0, uint8_t(seed + 6), idx_block));  // draft
+    // The draft layer, engine-shape: sourced without an indexer (pooled_rows 0, idx_block 0) but the
+    // geometry-derived idx_dim is NOT zero - a whole file written by the engine looks like this.
+    c1.kv.push_back(mk_layer_idx(2, cells1, 2, heads_dim_pairs_dim, page, 0, 128, uint8_t(seed + 6), idx_block));
 
     SessionWriteOptions opt;
     opt.use_v3 = true;
@@ -1028,7 +1073,7 @@ SavedConversation chain_c1(uint8_t seed, int64_t ids1, int64_t idx_block, int64_
     const int64_t rows1 = ids1 / idx_block + 1;
     c1.kv.push_back(mk_layer_idx(1, ids1, 2, hd, page, rows1, 128, seed, idx_block));
     c1.kv.push_back(mk_layer_idx(1, ids1 + 64, 2, hd / 2, page, rows1, 128, uint8_t(seed + 3), idx_block));
-    c1.kv.push_back(mk_layer_idx(2, ids1, 2, hd, page, 0, 0, uint8_t(seed + 6), idx_block));  // draft: no indexer
+    c1.kv.push_back(mk_layer_idx(2, ids1, 2, hd, page, 0, 128, uint8_t(seed + 6), idx_block));  // draft: no indexer, geometry idx_dim
     return c1;
 }
 
@@ -1140,6 +1185,69 @@ void append_chain_test(uint8_t seed) {
           "append chain: a stale plan is refused");
     check(slurp_bin(p) == before, "append chain: the stale refusal touched nothing");
     check(session_file_append_plan(p.string(), id, plan2, error), "append chain: the file still plans after a refusal");
+}
+
+// Split-session append chain (finding B2's guardian): the stage table and per-record stage parts must
+// survive every generation.  Each group re-emits the part records' mutable half and appends only their
+// id/img suffixes; a read of a multi-generation split file must return the NEWEST generation's parts -
+// never a mixture of the generations' records.
+void chain_stage_test(uint8_t seed) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    SavedConversation c1 = chain_c1(seed, 1024, idx, page, hd);
+    c1.stage_table = {{48, 64, 1 << 20, 1 << 16, true}};  // one later stage, draft-carrying like the engine's
+    c1.live.stage_parts = {mk_ckpt(600, uint8_t(seed + 50))};
+    for (auto& c : c1.checkpoints) c.stage_parts = {mk_ckpt(560, uint8_t(seed + 60))};  // every record mirrors the table
+    const Bounds b1 = gen_bounds(c1, idxb);
+
+    const fs::path p = uniq("app-stage");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "stage chain: staged gen 1 written");
+    SavedConversation parsed;
+    check(session_file_read(p.string(), id, parsed, bytes, error) && same_conv(parsed, c1),
+          "stage chain: the staged gen-1 file reads");
+
+    SessionAppendPlan plan1;
+    check(session_file_append_plan(p.string(), id, plan1, error), "stage chain: the staged file plans");
+    check(plan1.prev_parts.size() == 1 && plan1.prev_parts[0][0] == c1.live.stage_parts[0].ids.size() &&
+              plan1.prev_parts[0][1] == c1.live.stage_parts[0].imgs.size(),
+          "stage chain: the plan carries the stage part's record counts");
+
+    SavedConversation c2 = chain_next(c1, b1, 1100, 1100, 1100 / idx + 1, uint8_t(seed + 11), idxb);
+    check(c2.live.stage_parts.size() == 1 && c2.live.stage_parts[0].ids.size() == 600 + 76 &&
+              c2.checkpoints[0].stage_parts.size() == 1,
+          "stage chain: the staged next generation mirrors the parts");
+    const auto gen1_file = slurp_bin(p);
+    size_t delta2 = 0;
+    check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan1, delta2, error, opt),
+          "stage chain: staged gen 2 appended");
+    auto hand = gen1_file;
+    uint64_t hand_committed = 0;
+    append_group2(hand, c2, plan1.checkpoint, b1, c1.live.ids.size(), c1.live.imgs.size(), idx, hand_committed,
+                  {{c1.live.stage_parts[0].ids.size(), c1.live.stage_parts[0].imgs.size()}});
+    check(slurp_bin(p) == hand, "stage chain: the appended group is byte-identical to the hand-built one");
+
+    check(session_file_read(p.string(), id, parsed, bytes, error), "stage chain: the staged two-generation file reads");
+    check(same_conv(parsed, c2), "stage chain: the staged read equals gen 2 (newest parts, not a mixture)");
+
+    // a third generation: the parts chain must keep working across generations
+    const Bounds b2 = gen_bounds(c2, idxb);
+    SavedConversation c3 = chain_next(c2, b2, 1200, 1200, 1200 / idx + 1, uint8_t(seed + 23), idxb);
+    SessionAppendPlan plan2;
+    check(session_file_append_plan(p.string(), id, plan2, error) && plan2.checkpoint.trailer.gen == 2 &&
+              plan2.prev_parts.size() == 1 && plan2.prev_parts[0][0] == c2.live.stage_parts[0].ids.size(),
+          "stage chain: the plan re-derives from the staged gen 2");
+    size_t delta3 = 0;
+    check(session_file_append(p.string(), chain_meta(c3), chain_sources(c3, idx), id, plan2, delta3, error, opt),
+          "stage chain: staged gen 3 appended");
+    check(session_file_read(p.string(), id, parsed, bytes, error) && same_conv(parsed, c3),
+          "stage chain: the three-generation staged file reads as gen 3");
 }
 
 // Gate refusals: a state or file the append path must decline (the caller full-rewrites instead).
@@ -1568,6 +1676,7 @@ void save_gate_tests() {
 
 void append_writer_tests() {
     append_chain_test(7);
+    chain_stage_test(9);
     append_refusal_tests();
     append_seam_tests();
     append_torn_test();
