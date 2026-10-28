@@ -21,10 +21,18 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
 namespace strata::core {
+
+/// The committed prefix of `cells` under the page geometry (whole pages only; `page <= 0`: no rounding).
+/// The same rounding the save gate applies to a trailer's `saved_tokens` (conversation_snapshot's
+/// `whole_cells` in the snapshot extents).
+inline int64_t session_whole_cells(int64_t cells, int64_t page) {
+    return page > 0 ? (cells / page) * page : cells;
+}
 
 /// Everything a sequence needs that is NOT a weight: the per-layer state, the block scratch, and the pinned
 /// handoff between the GPU and the CPU expert pool.
@@ -86,6 +94,24 @@ struct SessionState {
     /// `session_capture`/`session_loop`/`session_token` need no new parameter to reach it.  A `PleRun` whose
     /// `ready()` is false is skipped, which is what every caller had before LEDGER L123.
     PleRun ple;
+
+    // **THE IMMUTABILITY WATERMARK (incremental session saves).**  The lowest token index whose K/V pool rows
+    // MAY differ from what the last save committed; `INT64_MAX` = nothing has been written to any pool since.
+    // Every pool-write chokepoint bumps it (the engine's M1-M7 bumps; the core restore backstops M8/M9), and
+    // the save gate appends only when the watermark proves the region its file already committed is untouched.
+    // The delta is an OPTIMIZATION, never a correctness assumption: a bump at a too-low position costs one
+    // conservative full rewrite, never a wrong file.
+    int64_t kv_first_dirty = std::numeric_limits<int64_t>::max();
+    /// Low-water bump: `pos` is a token index; positions below it may now differ from the last save.
+    /// A negative position is not an index and changes nothing.
+    void mark_kv_dirty(int64_t pos) { if (pos >= 0 && pos < kv_first_dirty) kv_first_dirty = pos; }
+    /// Append eligibility against a file that committed `saved_tokens`: the whole-page prefix of the
+    /// watermark must reach it (the shared partial page is never treated as committed - a write inside it
+    /// sits at that page's whole start, which is below the boundary).  No page geometry: raw comparison.
+    bool kv_append_ok(int64_t page, int64_t saved_tokens) const {
+        return kv_first_dirty == std::numeric_limits<int64_t>::max() ||
+               session_whole_cells(kv_first_dirty, page) >= saved_tokens;
+    }
 };
 
 /// Bytes for a whole session at `max_cells` of context.  Every layer's state is sized at once, because P2.T10
