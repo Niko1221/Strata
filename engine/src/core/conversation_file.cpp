@@ -1221,7 +1221,7 @@ const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<Conve
 }
 
 uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live) {
-    uint64_t n = sat_add(kBlock, uint64_t(1) << 20);                          // write buffer, small vectors
+    uint64_t n = sat_add(sat_mul(2, kBlock), uint64_t(1) << 20);              // the two pipelined write buffers, small vectors
     if (deepest) n = sat_add(n, sat_mul(2, deepest->bytes()));                // the list and the image's copy
     n = sat_add(n, live.state_bytes);                                         // the live running state
     n = sat_add(n, sat_mul(live.tokens, sizeof(int32_t)));                    // its token list
