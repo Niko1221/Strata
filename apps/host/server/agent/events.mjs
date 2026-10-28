@@ -146,6 +146,7 @@ export function plainToolError(text) {
   if (/invalid arguments|missing required property|not a declared property/i.test(t)) return 'The assistant asked this tool in the wrong way. It will usually try again.';
   if (/unknown or no longer available/i.test(t)) return 'That skill is not available.';
   if (/cannot modify|must (?:first )?be read|has not been read|changed since/i.test(t)) return 'The file could not be changed. It may need to be read again first, or it changed in the meantime.';
+  if (/old_string was not found|old_string .*ambig|multiple matches/i.test(t)) return 'The file was not changed: the text to replace is not in it. The assistant will read the file again and retry.';
   if (/sandbox|access denied|permission denied|eacces|eperm/i.test(t)) return 'The computer did not allow this.';
   if (/timed out|timeout/i.test(t)) return 'This took too long and was stopped.';
   if (/does not declare image input|image input/i.test(t)) return 'Picture reading is off for this model. Open Models and turn on Read pictures for it (load it again if it is a local model), or choose a model that reads pictures.';

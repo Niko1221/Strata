@@ -105,6 +105,7 @@ test('the profile loads the gate by path, sizes helper agents to the engine slot
 test('tool failures are said in plain words with the original text kept after them', () => {
   assert.match(plainToolError('Error: URL hostname "127.0.0.1" resolves to a non-public IP address'), /web page could not be opened/);
   assert.match(plainToolError('Error: invalid arguments: missing required property "files"'), /wrong way/);
+  assert.match(plainToolError('Error: old_string was not found in "D:\\\\work\\\\tokens.json"'), /text to replace is not in it/);
   assert.equal(plainToolError('something unusual'), null);
   const text = withPlain('Error: web fetch failed: Error: getaddrinfo ENOTFOUND example.invalid');
   assert.match(text, /^That web page could not be opened/);
