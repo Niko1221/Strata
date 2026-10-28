@@ -23,6 +23,17 @@ const fwd = p => p.replaceAll('\\', '/');
 
 const ev = (type, data, extra = {}) => ({ type: 'event', event: { seq: 1, time: extra.time ?? 1000, type, data } });
 
+test('a helper the run ends with is sealed: its row reads stopped and is final', () => {
+  const cp = new ChildProjector({ id: 's1', name: 'Writer', task: 'Write the notes' });
+  cp.consume(ev('step/start', {}));
+  assert.equal(cp.agent().status, 'queued');
+  assert.equal(cp.seal('interrupted'), true);
+  assert.equal(cp.agent().status, 'interrupted');
+  assert.equal(cp.finished, true, 'a sealed row is final');
+  assert.equal(cp.seal('interrupted'), false, 'sealing twice changes nothing');
+  assert.equal(cp.markStopped(), false, 'a sealed row is not marked again');
+});
+
 test('a helper row follows its helper: queued, working, completed with its closing words, tokens counted', () => {
   let t = 0;
   const cp = new ChildProjector({ id: 'c1', name: 'Check the tests', task: 'Run the unit tests and report', now: () => (t += 100) });

@@ -183,5 +183,22 @@ export class ChildProjector {
     return { frames, row };
   }
 
-  get finished() { return this.status === 'completed' || this.status === 'failed' || this.status === 'cancelled'; }
+  get finished() { return this.status === 'completed' || this.status === 'failed' || this.status === 'cancelled' || this.status === 'interrupted'; }
+
+  /** Make this row final before its stream closes: a helper the run is done with must not stay 'working' (#4218). */
+  seal(status = 'interrupted') {
+    if (this.finished) return false;
+    this.endedAt = this.now();
+    if (status === 'failed') this.failure = this.failure ?? 'Stopped because something went wrong.';
+    this.status = status;
+    return true;
+  }
+
+  /** The person stopped this helper on purpose: the row reads 'stopped, can continue', not 'cancelled'. */
+  markStopped() {
+    if (this.finished && this.status !== 'cancelled') return false;
+    this.endedAt = this.endedAt ?? this.now();
+    this.status = 'interrupted';
+    return true;
+  }
 }

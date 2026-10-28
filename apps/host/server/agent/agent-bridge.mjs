@@ -474,6 +474,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       clearTimeout(turn.settleTimer);
       clearInterval(turn.watchdog);
       turn.follow?.close();
+      // A turn that ends while a helper still works would leave its row open forever: finalise it here, so the
+      // page reads "stopped, can continue" instead of a helper that runs for ever (#4218).
+      for (const child of turn.children.values()) {
+        if (child.done) continue;
+        if (child.cp?.seal?.('interrupted')) { child.done = true; child.endedAt = child.endedAt ?? Date.now(); }
+        try { turn.emitRow?.(child, true); } catch { /* the end of a turn outranks one row */ }
+      }
       for (const child of turn.children.values()) child.follow?.close();
       if (turn.stopping && !failure) projector.ended = turn.guard ? { kind: 'completed' } : { kind: 'aborted', reason: { kind: 'user' } };
       reporter.clear();
