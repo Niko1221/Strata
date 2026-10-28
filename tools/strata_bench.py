@@ -690,8 +690,16 @@ def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None =
     if sel:
         used = [local["gpus"][i] for i in sel if 0 <= i < len(local["gpus"])] or used
     elif len(used) > 1 and static.get("gpu_name"):
-        named = [g for g in used if g["name"] == static["gpu_name"]]
-        used = named[:1] or used[:1]
+        # the server names every card it serves on, " + " between them ("RTX 3090 + RTX 3090" for two of the same):
+        # one local card per name, so a split over identical cards is not reported as one card (#4473)
+        wanted = [n for n in static["gpu_name"].split(" + ") if n and n != "?"]
+        pool, named = list(used), []
+        for name in wanted:
+            hit = next((g for g in pool if g["name"] == name), None)
+            if hit is not None:
+                pool.remove(hit)
+                named.append(hit)
+        used = named if named and len(named) == len(wanted) else (named[:1] or used[:1])
     gpu_names = [g["name"] for g in used] or ([static["gpu_name"]] if static.get("gpu_name") else [])
     m = status.get("machine") or {}
     vram_mib = (m.get("gpu") or {}).get("total_mib") or None
