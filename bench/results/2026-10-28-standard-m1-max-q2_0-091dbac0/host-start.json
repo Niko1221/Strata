@@ -1,0 +1,164 @@
+{
+  "captured_at": "2026-10-28T05:10:11.659142+00:00",
+  "os": {
+    "command": [
+      "sw_vers"
+    ],
+    "returncode": 0,
+    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+    "stderr": ""
+  },
+  "hardware": {
+    "command": [
+      "/usr/sbin/system_profiler",
+      "SPHardwareDataType",
+      "SPDisplaysDataType",
+      "SPNVMeDataType",
+      "-json"
+    ],
+    "returncode": 0,
+    "stdout": {
+      "SPDisplaysDataType": [
+        {
+          "_name": "Apple M1 Max",
+          "spdisplays_mtlgpufamilysupport": "spdisplays_metal4",
+          "spdisplays_ndrvs": [
+            {
+              "_name": "Color LCD",
+              "_spdisplays_display-product-id": "a050",
+              "_spdisplays_display-vendor-id": "610",
+              "_spdisplays_display-week": "0",
+              "_spdisplays_display-year": "0",
+              "_spdisplays_displayID": "1",
+              "_spdisplays_pixels": "3456 x 2234",
+              "_spdisplays_resolution": "1728 x 1117 @ 120.00Hz",
+              "spdisplays_ambient_brightness": "spdisplays_yes",
+              "spdisplays_asleep": "spdisplays_yes",
+              "spdisplays_connection_type": "spdisplays_internal",
+              "spdisplays_display_type": "spdisplays_built-in-liquid-retina-xdr",
+              "spdisplays_main": "spdisplays_yes",
+              "spdisplays_mirror": "spdisplays_off",
+              "spdisplays_online": "spdisplays_yes",
+              "spdisplays_pixelresolution": "spdisplays_3456x2234Retina"
+            }
+          ],
+          "spdisplays_vendor": "sppci_vendor_Apple",
+          "sppci_bus": "spdisplays_builtin",
+          "sppci_cores": "32",
+          "sppci_device_type": "spdisplays_gpu",
+          "sppci_model": "Apple M1 Max"
+        }
+      ],
+      "SPHardwareDataType": [
+        {
+          "_name": "hardware_overview",
+          "activation_lock_status": "activation_lock_enabled",
+          "boot_rom_version": "18000.161.10",
+          "chip_type": "Apple M1 Max",
+          "machine_model": "MacBookPro18,2",
+          "machine_name": "MacBook Pro",
+          "model_number": "Z14X000GDLL/A",
+          "number_processors": "proc 10:8:2:0",
+          "os_loader_version": "18000.161.10",
+          "physical_memory": "64 GB"
+        }
+      ],
+      "SPNVMeDataType": [
+        {
+          "_items": [
+            {
+              "_name": "APPLE SSD AP1024R",
+              "bsd_name": "disk0",
+              "detachable_drive": "no",
+              "device_model": "APPLE SSD AP1024R",
+              "device_revision": "561.100.",
+              "partition_map_type": "guid_partition_map_type",
+              "removable_media": "no",
+              "size": "1 TB",
+              "size_in_bytes": 1000555581440,
+              "smart_status": "Verified",
+              "spnvme_trim_support": "Yes",
+              "volumes": [
+                {
+                  "_name": "iSCPreboot",
+                  "bsd_name": "disk0s1",
+                  "iocontent": "Apple_APFS_ISC",
+                  "size": "524.3 MB",
+                  "size_in_bytes": 524288000
+                },
+                {
+                  "_name": "Macintosh HD",
+                  "bsd_name": "disk0s2",
+                  "iocontent": "Apple_APFS",
+                  "size": "994.66 GB",
+                  "size_in_bytes": 994662584320
+                },
+                {
+                  "_name": "Recovery",
+                  "bsd_name": "disk0s3",
+                  "iocontent": "Apple_APFS_Recovery",
+                  "size": "5.37 GB",
+                  "size_in_bytes": 5368664064
+                }
+              ]
+            }
+          ],
+          "_name": "Apple SSD Controller"
+        }
+      ]
+    },
+    "stderr": ""
+  },
+  "cpu_memory": {
+    "command": [
+      "/usr/sbin/sysctl",
+      "hw.memsize",
+      "hw.ncpu",
+      "hw.physicalcpu",
+      "hw.logicalcpu",
+      "hw.model",
+      "machdep.cpu.brand_string"
+    ],
+    "returncode": 0,
+    "stdout": "hw.memsize: 68719476736\nhw.ncpu: 10\nhw.physicalcpu: 10\nhw.logicalcpu: 10\nhw.model: MacBookPro18,2\nmachdep.cpu.brand_string: Apple M1 Max\n",
+    "stderr": ""
+  },
+  "vm": {
+    "command": [
+      "vm_stat"
+    ],
+    "returncode": 0,
+    "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   462008.\nPages active:                                 876843.\nPages inactive:                              2505681.\nPages speculative:                             19646.\nPages throttled:                                   0.\nPages wired down:                             148251.\nPages purgeable:                                5701.\n\"Translation faults\":                     1302185190.\nPages copy-on-write:                        21596320.\nPages zero filled:                        1466179476.\nPages reactivated:                          68270610.\nPages purged:                                9977817.\nFile-backed pages:                           2676912.\nAnonymous pages:                              725258.\nPages stored in compressor:                   411342.\nPages occupied by compressor:                 125207.\nDecompressions:                             95503629.\nCompressions:                              106918310.\nPageins:                                   132243366.\nPageouts:                                     513209.\nSwapins:                                     8493268.\nSwapouts:                                    9179202.\n",
+    "stderr": ""
+  },
+  "swap": {
+    "command": [
+      "/usr/sbin/sysctl",
+      "vm.swapusage"
+    ],
+    "returncode": 0,
+    "stdout": "vm.swapusage: total = 1024.00M  used = 291.31M  free = 732.69M  (encrypted)\n",
+    "stderr": ""
+  },
+  "power": {
+    "command": [
+      "pmset",
+      "-g",
+      "custom"
+    ],
+    "returncode": 0,
+    "stdout": "Battery Power:\n Sleep On Power Button 1\n powermode            0\n standby              1\n ttyskeepawake        1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         2\n womp                 0\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n powermode            0\n standby              1\n ttyskeepawake        1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         10\n womp                 1\n networkoversleep     0\n sleep                0\n tcpkeepalive         1\n disksleep            10\n",
+    "stderr": ""
+  },
+  "thermal": {
+    "command": [
+      "pmset",
+      "-g",
+      "therm"
+    ],
+    "returncode": 0,
+    "stdout": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "stderr": ""
+  },
+  "privacy_note": "Allowlisted host configuration only; process list, username, hostname, serial identifiers, disk paths, battery identifier and raw telemetry excluded."
+}
