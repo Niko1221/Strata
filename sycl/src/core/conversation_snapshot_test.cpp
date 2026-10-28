@@ -184,6 +184,8 @@ void full_session(int fmt, int mode, int experts) {
     SavedConversation a,b,restored;
     check(conversation_snapshot_save(a,view,ss,g,draft.state,err),"capture complete A");
     check(a.checkpoints[0].used == 17,"upstream checkpoint LRU stamp survives capture");
+    SavedConversation bad;
+    check(conversation_snapshot_save(bad,view,ss,g,draft.state,err),"capture independent invalid-restore fixture");
     fill(177);
     check(conversation_snapshot_save(b,view,ss,g,draft.state,err),"capture complete B");
     {
@@ -216,7 +218,7 @@ void full_session(int fmt, int mode, int experts) {
         check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
     }
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");
-    auto bad=a; bad.kv.back().k.pop_back();
+    bad.kv.back().k.pop_back();
     check(conversation_snapshot_restore(bad,ss,g,draft.state,err)==ConversationRestore::invalid,
           "reject invalid late draft before any main-layer write");
     check(conversation_snapshot_save(restored,view,ss,g,draft.state,err),"capture B after refused restore");
@@ -230,7 +232,10 @@ void full_session(int fmt, int mode, int experts) {
     check(ss.ple_prev[0]==64 && ss.ple_prev[1]==65,"PLE token window reconstructed");
     for (int64_t dirty : {65, 3, 0}) {
         check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
-        ConversationKvReuse reuse{a.kv,65,dirty};
+        SavedConversation donor;
+        check(conversation_snapshot_save(donor,view,ss,g,draft.state,err),"capture independent retained pages");
+        ConversationKvReuse reuse;
+        reuse.kv=std::move(donor.kv); reuse.captured_tokens=65; reuse.unchanged_tokens=dirty;
         const uint8_t* original = nullptr;
         reuse.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
         main.fill_after(91,dirty); draft.fill_after(91,std::max<int64_t>(0,dirty-1));
@@ -285,7 +290,8 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_snapshot_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage.live.gdn &&
               stage_back.live.dead==stage.live.dead && equal(stage_back.kv[0],stage.kv[0]),"stage A/B/A exactness");
         // its retained K/V: the next park copies only what changed, and equals a full capture
-        ConversationKvReuse reuse{stage.kv,65,65,{}};
+        ConversationKvReuse reuse;
+        reuse.kv=std::move(stage_back.kv); reuse.captured_tokens=reuse.unchanged_tokens=65;
         SavedConversation fresh,incremental;
         size_t peak=0,reused=0;
         check(conversation_snapshot_save(fresh,view,ss,g,nullptr,err),"full stage capture reference");
@@ -293,11 +299,14 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_snapshot_save(incremental,view,ss,g,nullptr,err,std::move(reuse),&reused),"incremental stage capture");
         check(reused>0 && incremental.bytes()<=peak && equal(incremental.kv[0],fresh.kv[0]) &&
               incremental.live.gdn==fresh.live.gdn,"an incremental stage capture reuses pages and equals a full one");
-        SavedConversation split_image=stage;
-        split_image.stage_images.push_back(stage);
+        SavedConversation split_image=std::move(stage);
+        split_image.stage_images.push_back(std::move(stage_b));
         check(!conversation_snapshot_validate(split_image,ss,g,draft.state,err),
               "a layer split's image is refused by the whole-session form");
-        ConversationKvReuse wrong{a.kv,65,65,{}};
+        SavedConversation draft_donor;
+        check(conversation_snapshot_save(draft_donor,view,ss,g,draft.state,err),"capture independent draft-bearing reuse");
+        ConversationKvReuse wrong;
+        wrong.kv=std::move(draft_donor.kv); wrong.captured_tokens=wrong.unchanged_tokens=65;
         check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
     }
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
@@ -406,7 +415,9 @@ int main() {
                     check(got == expected,"draft ring contains restored pages");
                 }
             }
-            auto bad=a; bad.head_dim++;
+            ConversationKv bad;
+            check(conversation_kv_save(bad,f.state,f.g,upto,index,err),"capture independent geometry fixture");
+            bad.head_dim++;
             check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject incompatible geometry");
             if (fmt==kKvInt8) {
                 // #293: INT8 K/V saved through the Hadamard rotation (STRATA_KV_ROT=1) never restores into a state
@@ -420,8 +431,10 @@ int main() {
                 check(conversation_kv_restore(a,f.state,f.g,upto,index,err),"unrotated image still restores");
             }
             if (!a.k.empty()) {
-                bad=a; bad.k.pop_back();
-                check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject malformed payload");
+                ConversationKv malformed;
+                check(conversation_kv_save(malformed,f.state,f.g,upto,index,err),"capture independent malformed fixture");
+                malformed.k.pop_back();
+                check(!conversation_kv_restore(malformed,f.state,f.g,upto,index,err),"reject malformed payload");
             }
         }
     }

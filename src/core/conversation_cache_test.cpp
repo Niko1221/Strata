@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <type_traits>
 
 using namespace strata::core;
 
@@ -19,9 +20,161 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     s.cvec = cvec;
     return s;
 }
+// a conversation `ids` that branched from the pinned shared prefix `pin`: its chain holds the pin and, deeper, a
+// checkpoint of its own (one token short of `ids`), so another holder does not supersede it (drop_superseded)
+SavedConversation holder(std::initializer_list<int32_t> ids, std::initializer_list<int32_t> pin) {
+    SavedConversation s = image(ids);
+    s.checkpoints.push_back(ConversationCheckpoint{});
+    s.checkpoints.back().ids = pin;
+    s.checkpoints.back().pinned = true;
+    s.checkpoints.back().gdn.resize(64, 1);
+    s.checkpoints.push_back(ConversationCheckpoint{});
+    s.checkpoints.back().ids.assign(ids.begin(), ids.end() - 1);
+    s.checkpoints.back().gdn.resize(64, 2);
+    return s;
+}
+}
+
+namespace {
+void test_owner_assignment() {
+    static_assert(!std::is_copy_constructible_v<ConversationKvReuse>);
+    static_assert(!std::is_copy_assignable_v<ConversationKvReuse>);
+    static_assert(std::is_nothrow_move_constructible_v<ConversationKvReuse>);
+    static_assert(std::is_nothrow_move_assignable_v<ConversationKvReuse>);
+    static_assert(!std::is_copy_constructible_v<ConversationCache>);
+    static_assert(!std::is_copy_assignable_v<ConversationCache>);
+    static_assert(!std::is_move_constructible_v<ConversationCache>);
+    static_assert(!std::is_move_assignable_v<ConversationCache>);
+    static_assert(!std::is_copy_constructible_v<SavedConversation>);
+    static_assert(!std::is_copy_assignable_v<SavedConversation>);
+    static_assert(!std::is_copy_constructible_v<ConversationKv>);
+    static_assert(!std::is_copy_assignable_v<ConversationKv>);
+    static_assert(std::is_nothrow_move_constructible_v<SavedConversation>);
+    static_assert(std::is_nothrow_move_assignable_v<SavedConversation>);
+    static_assert(std::is_nothrow_move_constructible_v<ConversationKv>);
+    static_assert(std::is_nothrow_move_assignable_v<ConversationKv>);
+    int joined = 0;
+    auto token = [&](uint8_t* p) {
+        return std::shared_ptr<void>(p, [&](void* q) {
+            check(*static_cast<uint8_t*>(q) == 7, "assignment joins before releasing the old allocation");
+            ++joined;
+        });
+    };
+    auto pending_image = [&] {
+        SavedConversation s;
+        s.live.gdn.assign(64, 7);
+        s.live_pending = token(s.live.gdn.data());
+        return s;
+    };
+    {
+        auto a = pending_image(), b = pending_image();
+        auto* incoming = b.live.gdn.data();
+        a = std::move(b);
+        check(joined == 1 && a.live.gdn.data() == incoming, "move joins the old image and transfers the new allocation");
+        auto& self = a;
+        a = std::move(self);
+        check(joined == 1 && a.live.gdn.data() == incoming, "self-move preserves pending ownership");
+    }
+    check(joined == 2, "moved image joins when its owner ends");
+    {
+        auto a = pending_image();
+        SavedConversation complete;
+        complete.live.gdn.assign(64, 9);
+        auto* payload = complete.live.gdn.data();
+        a = std::move(complete);
+        check(joined == 3 && a.live.gdn[0] == 9 && a.live.gdn.data() == payload,
+              "completed replacement retires the destination and transfers storage");
+    }
+    {
+        ConversationKv a, b;
+        a.k.resize(64, 7);
+        a.k.visit(0, 1, [&](uint8_t* p, size_t, size_t) { a.pending = token(p); return true; });
+        b.k.resize(64, 9); b.dev_tag = 42;
+        a = std::move(b);
+        uint8_t x = 0;
+        a.k.read(&x, 0, 1);
+        check(joined == 4 && a.dev_tag == 42 && x == 9, "layer replacement joins old storage and transfers metadata");
+    }
+    for (size_t victim : {size_t(1), size_t(3)}) {
+        std::deque<SavedConversation> entries;
+        for (int i = 0; i < 5; ++i) entries.push_back(pending_image());
+        const int before = joined;
+        entries.erase(entries.begin() + (std::ptrdiff_t) victim);
+        check(joined == before + 1, "either deque shift direction retires only the victim");
+        for (const auto& s : entries)
+            check(s.live.gdn[0] == 7 && s.live_pending, "shifted neighbours retain pending storage");
+    }
+    check(joined == 14, "each shifted image joins exactly once");
+    {
+        auto a = pending_image(), b = pending_image();
+        a.stage_images.push_back(pending_image());
+        a = std::move(b);
+        check(joined == 16 && a.stage_images.empty(), "replacement retires the old image and its stage owners");
+    }
+    check(joined == 17, "replacement stage ownership leaves no pending joins");
+}
+
+void test_evictable_bytes() {
+    // All 4,096 assignments of three possible pins to four distinct conversations.
+    for (unsigned pattern = 0; pattern < 4096; ++pattern) {
+        ConversationCache cache(1u << 24, 8);
+        unsigned pins = 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            auto s = image({80 + (int) i, 90, 100, 110});
+            const unsigned mask = (pattern >> (3 * i)) & 7;
+            pins |= mask;
+            for (unsigned p = 0; p < 3; ++p) if (mask & (1u << p)) {
+                ConversationCheckpoint c;
+                c.ids = {1, (int) p + 2}; c.pinned = true; c.gdn.resize(17 + i);
+                s.checkpoints.push_back(std::move(c));
+            }
+            ConversationCheckpoint unique;
+            unique.ids = {80 + (int) i, 90, 100};
+            s.checkpoints.push_back(std::move(unique));
+            check(cache.put(std::move(s)), "accounting fixture parks distinct branches");
+        }
+        ConversationKv retained;
+        retained.k.resize(100);
+        std::vector<ConversationKv> layers;
+        layers.push_back(std::move(retained));
+        cache.retain(std::move(layers), 10);
+        const size_t bytes = cache.bytes(), entries = cache.size(), evictions = cache.evictions();
+        const size_t preview = cache.evictable_bytes(), reuse = cache.retained_bytes();
+        check(cache.bytes() == bytes && cache.size() == entries && cache.evictions() == evictions,
+              "preview is non-mutating");
+        size_t freed = 0;
+        while (cache.evict_oldest()) freed = bytes - cache.bytes();
+        check(preview == freed, "preview exactly matches repeated eviction");
+        check(cache.evictable_bytes() == 0 && cache.retained_bytes() == reuse,
+              "last holders and retained KV are not evictable");
+        for (unsigned p = 0; p < 3; ++p) if (pins & (1u << p))
+            check(cache.best(std::vector<int32_t>{1, (int) p + 2, 999}, {}, true).tokens == 2,
+                  "every initial pinned prefix survives the drain");
+    }
+    for (size_t n : {size_t(0), size_t(1), size_t(3), size_t(64), size_t(65)}) {
+        ConversationCache cache(1u << 24, 128);
+        for (size_t i = 0; i < n; ++i)
+            check(cache.put(holder({1,2,(int)i+10,0}, {1,2})), "park duplicate pin holders across scratch boundary");
+        const size_t before = cache.bytes(), preview = cache.evictable_bytes();
+        const size_t one = n ? before / n : 0;
+        check(preview == (n ? (n - 1) * one : 0), "only redundant holders count, including large caches");
+        while (cache.evict_oldest()) {}
+        check(preview == before - cache.bytes(), "scratch boundary preview matches actual drain");
+    }
+    for (bool images : {false, true}) {
+        ConversationCache cache(1u << 24, 8);
+        auto a = holder({1,2,3,4}, {1,2}), b = holder({1,2,5,6}, {1,2});
+        if (images) { a.checkpoints[0].imgs = {{0,1}}; b.checkpoints[0].imgs = {{0,2}}; }
+        else b.cvec = false;
+        check(cache.put(std::move(a)) && cache.put(std::move(b)), "park different pin identities");
+        check(cache.evictable_bytes() == 0 && !cache.evict_oldest(), "image and steering identity keep sole holders");
+    }
+}
 }
 
 int main() {
+    test_owner_assignment();
+    test_evictable_bytes();
     {
         ConversationBuffer bytes;
         const size_t first = ConversationBuffer::segment_bytes + 17;
@@ -280,7 +433,7 @@ int main() {
         // entries, conversations A..D.  Each has a prompt P (8 tokens; the read's periodic checkpoint at 4), a first
         // reply R1 (3 tokens; the slot holds P + 2 of them), the next turn as the client renders it (P + R1 + end +
         // header: 14 tokens, the read's turn checkpoint at 12), a second reply R2 (4 tokens; the slot holds 17) and
-        // a third turn (21 tokens).  The engine parks the MAIN session (the prompt as read, plus the admission's
+        // a third turn (21 tokens) plus its first reply token.  The engine parks the MAIN session (the prompt as read, plus the admission's
         // token) whenever another conversation displaces it; the replies are decoded in the slots.  Measured:
         // A's third turn found 199584 of 199839 held tokens (its prompt-read state), B found nothing.
         //   slot_parks:   an idle slot parks what it holds before an admission overwrites it
@@ -290,7 +443,7 @@ int main() {
             std::vector<std::vector<int32_t>> full(4);
             for (int c = 0; c < 4; ++c) {
                 for (int32_t t = 1; t <= 8; ++t) full[(size_t) c].push_back(c * 100 + t);
-                for (int32_t t : {21, 22, 23, 9, 31, 32, 41, 42, 43, 44, 9, 51, 52}) full[(size_t) c].push_back(c * 100 + t);
+                for (int32_t t : {21, 22, 23, 9, 31, 32, 41, 42, 43, 44, 9, 51, 52, 61}) full[(size_t) c].push_back(c * 100 + t);
             }
             auto st = [&](int c, size_t n) { return std::vector<int32_t>(full[(size_t) c].begin(), full[(size_t) c].begin() + (std::ptrdiff_t) n); };
             auto cp = [&](int c, size_t n) { ConversationCheckpoint k; k.ids = st(c, n); return k; };
@@ -719,6 +872,183 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {   // #2255: a client that pins one prefix on every request fills every slot with its holders; parking goes on
+        const size_t one = holder({1,2,3,4}, {1,2}).bytes();
+        ConversationCache cache(one * 8, 3);
+        check(cache.put(holder({1,2,3,4}, {1,2})) && cache.put(holder({1,2,5,6}, {1,2})) &&
+              cache.put(holder({1,2,7,8}, {1,2})) && cache.size() == 3, "three holders of one pin fill the slots");
+        check(cache.put(holder({1,2,9,10}, {1,2})) && cache.size() == 3 && cache.evictions() == 1,
+              "a fourth holder is parked: the oldest holder goes (#2255)");
+        check(cache.best(std::vector<int32_t>{1,2,3,4,0}, {}, true).tokens == 2,
+              "the oldest holder's own tail is gone");
+        check(cache.best(std::vector<int32_t>{1,2,9,10,0}, {}, true).tokens == 4, "the newest holder is kept");
+        check(cache.put(image({20,21,22})) && cache.best(std::vector<int32_t>{1,2,0}, {}, true).tokens == 2,
+              "an unpinned conversation is parked too, and the pinned prefix is still found");
+    }
+    {   // #2255: two pins side by side - the oldest entry is the only holder of pin A, so it stays and a B holder goes
+        const size_t one = holder({1,2,3,4}, {1,2}).bytes();
+        ConversationCache cache(one * 8, 3);
+        cache.put(holder({1,2,3,4}, {1,2}));                              // A: oldest and its only holder
+        cache.put(holder({5,6,7,8}, {5,6}));
+        cache.put(holder({5,6,9,10}, {5,6}));
+        check(cache.put(holder({5,6,11,12}, {5,6})) && cache.size() == 3, "a third B holder is parked");
+        check(cache.best(std::vector<int32_t>{1,2,0}, {}, true).tokens == 2, "pin A (held once) survives");
+        check(cache.best(std::vector<int32_t>{5,6,7,8,0}, {}, true).tokens == 2, "the oldest B holder went instead");
+        check(cache.best(std::vector<int32_t>{5,6,0}, {}, true).tokens == 2, "pin B is still found");
+    }
+    {   // #2255: each entry the last holder of its own pin - nothing can go, parking is refused, every pin stays
+        const size_t one = holder({1,2,3,4}, {1,2}).bytes();
+        ConversationCache cache(one * 8, 2);
+        cache.put(holder({1,2,3,4}, {1,2}));
+        cache.put(holder({5,6,7,8}, {5,6}));
+        check(!cache.evict_oldest() && cache.size() == 2, "the last holder of each pin is never evicted");
+        check(!cache.put(image({9,10,11})) && cache.size() == 2 && cache.evictions() == 0,
+              "parking is refused while every entry is a pin's last holder");
+    }
+    {   // Identical tokens with different steering modes are different pins.
+        auto a = holder({1,2,3,4}, {1,2});
+        auto b = holder({1,2,5,6}, {1,2}); b.cvec = false;
+        ConversationCache cache((a.bytes() + b.bytes()) * 4, 2);
+        check(cache.put(std::move(a)) && cache.put(std::move(b)), "different cvec holders parked");
+        const size_t before = cache.bytes();
+        check(!cache.evict_oldest() && cache.bytes() == before, "different cvec cannot replace the last holder");
+    }
+    {   // Identical tokens with different images are different pins.
+        auto a = holder({1,2,3,4}, {1,2}); a.checkpoints[0].imgs = {{0, 100}};
+        auto b = holder({1,2,5,6}, {1,2}); b.checkpoints[0].imgs = {{0, 200}};
+        ConversationCache cache((a.bytes() + b.bytes()) * 4, 2);
+        check(cache.put(std::move(a)) && cache.put(std::move(b)), "different image holders parked");
+        check(!cache.evict_oldest() && cache.size() == 2, "image identity protects both pins");
+    }
+    {   // Every pin in a multi-pin entry must have a surviving holder; one duplicate is not enough.
+        auto a = holder({1,2,3,4}, {1,2});
+        auto cp = a.checkpoints[0]; cp.ids = {1}; a.checkpoints.push_back(cp);
+        auto b = holder({1,2,5,6}, {1,2});
+        const size_t kept = a.bytes();
+        ConversationCache cache((a.bytes() + b.bytes()) * 4, 2);
+        check(cache.put(std::move(a)) && cache.put(std::move(b)), "multi-pin and newer single-pin holders parked");
+        check(cache.evict_oldest() && cache.size() == 1, "newer redundant holder goes when oldest has a unique pin");
+        check(cache.bytes() == kept && cache.evictions() == 1, "eviction updates exact byte and entry accounting");
+        check(cache.best(std::vector<int32_t>{1,0}, {}, true).tokens == 1, "unique short pin survives");
+        check(cache.best(std::vector<int32_t>{1,2,0}, {}, true).tokens == 2, "shared pin also survives");
+    }
+    {   // Redundant image pins can make room under a byte budget, not only a slot limit.
+        auto a = holder({1,2,3,4}, {1,2}); a.checkpoints[0].imgs = {{0, 100}};
+        auto b = holder({1,2,5,6}, {1,2}); b.checkpoints[0].imgs = {{0, 100}};
+        const size_t budget = a.bytes() + b.bytes(), kept = b.bytes();
+        ConversationCache cache(budget, 8);
+        check(cache.put(std::move(a)) && cache.put(std::move(b)), "image pin holders fill byte budget");
+        check(cache.make_room(1) && cache.size() == 1 && cache.bytes() == kept, "redundant holder evicted for byte pressure");
+        check(cache.best(std::vector<int32_t>{1,2,0}, {{0,100}}, true).tokens == 2, "same image pin remains usable");
+    }
+    {   // #2255 beside a borrow: the guarded donor stays and counts as a holder; redundant holders still make room
+        auto cp = [](std::vector<int32_t> ids, bool pinned = false) {
+            ConversationCheckpoint c; c.ids = std::move(ids); c.pinned = pinned; return c;
+        };
+        // two holders of one pin and an unpinned donor fill three slots: the precheck must not count both holders as
+        // staying, or the borrow is refused although the oldest holder can go
+        SavedConversation donor = image({7, 8, 9, 10, 11});
+        donor.checkpoints = {cp({7, 8}), cp({7, 8, 9, 10})};
+        ConversationCache cache(1 << 20, 3);
+        check(cache.put(holder({1,2,3,4}, {1,2})) && cache.put(holder({1,2,5,6}, {1,2})) && cache.put(std::move(donor)),
+              "two holders of one pin and a donor fill the slots");
+        const auto m = cache.best(std::vector<int64_t>{7, 8, 40}, {}, true);
+        check(cache.borrows(m), "a sibling on the donor's root borrows");
+        cache.guard(m.serial);
+        check(cache.put(image({9, 9, 9})) && !cache.guard_blocked() && cache.size() == 3 && cache.evictions() == 1,
+              "the outgoing conversation parks beside the donor: a redundant holder makes room");
+        check(cache.find(m.serial) != nullptr && cache.best(std::vector<int32_t>{1,2,3,4,0}, {}, true).tokens == 2 &&
+              cache.best(std::vector<int32_t>{1,2,5,6,0}, {}, true).tokens == 4,
+              "the oldest holder went; the newer holder and the donor stay");
+        check(cache.put(image({6, 6, 6})) && !cache.guard_blocked() && cache.evictions() == 2 &&
+              cache.best(std::vector<int64_t>{9, 9, 9, 1}, {}, true).tokens == 0,
+              "the next outgoing one evicts the previous outgoing one, not the pin's last holder");
+        check(cache.best(std::vector<int32_t>{1,2,0}, {}, true).tokens == 2 && cache.find(m.serial) != nullptr,
+              "the pin and the donor survive further parks");
+        cache.unguard();
+
+        // the guarded donor holds the pin past the borrowed root: it keeps the pin parked, so an older holder can go,
+        // and it is never the one evicted even when it is a redundant holder itself
+        SavedConversation doc = image({1, 2, 3, 4, 5, 6, 30});
+        doc.checkpoints = {cp({1, 2}), cp({1, 2, 3, 4, 5, 6}, true), cp({1, 2, 3, 4, 5, 6, 30})};
+        ConversationCache two(1 << 20, 2);
+        check(two.put(holder({1,2,3,4,5,6,50,51}, {1,2,3,4,5,6})) && two.put(std::move(doc)) && two.size() == 2,
+              "an older holder and a donor holding the same pin fill two slots");
+        const auto md = two.best(std::vector<int64_t>{1, 2, 40}, {}, true);
+        check(md.tokens == 2 && two.borrows(md), "a match short of the pin borrows the donor");
+        two.guard(md.serial);
+        check(two.put(image({9, 9, 9})) && !two.guard_blocked() && two.size() == 2 && two.evictions() == 1,
+              "the older holder goes: the guarded donor still holds the pin");
+        check(two.find(md.serial) != nullptr &&
+              two.best(std::vector<int32_t>{1,2,3,4,5,6,50,51,0}, {}, true).tokens == 6,
+              "the donor stays and the pin is still found");
+        two.unguard();
+        ConversationCache young(1 << 20, 2);
+        SavedConversation doc2 = image({1, 2, 3, 4, 5, 6, 30});
+        doc2.checkpoints = {cp({1, 2}), cp({1, 2, 3, 4, 5, 6}, true), cp({1, 2, 3, 4, 5, 6, 30})};
+        check(young.put(std::move(doc2)) && young.put(holder({1,2,3,4,5,6,50,51}, {1,2,3,4,5,6})),
+              "a donor and a newer holder of the same pin fill two slots");
+        const auto my = young.best(std::vector<int64_t>{1, 2, 40}, {}, true);
+        check(young.borrows(my) && young.index_of(my.serial) == 0, "the oldest entry is the donor");
+        young.guard(my.serial);
+        check(young.put(image({9, 9, 9})) && !young.guard_blocked() && young.evictions() == 1 &&
+              young.size() == 2 && young.find(my.serial) != nullptr &&
+              young.best(std::vector<int32_t>{1,2,3,4,5,6,50,51,0}, {}, true).tokens == 6,
+              "the oldest redundant holder is the guarded donor: the newer holder goes instead");
+        young.unguard();
+    }
+    {   // evictable_bytes() during a borrow: the guarded donor is not reclaimable but keeps its pin held
+        auto cp = [](std::vector<int32_t> ids, bool pinned = false) {
+            ConversationCheckpoint c; c.ids = std::move(ids); c.pinned = pinned; return c;
+        };
+        SavedConversation doc = image({1, 2, 3, 4, 5, 6, 30});
+        doc.checkpoints = {cp({1, 2}), cp({1, 2, 3, 4, 5, 6}, true), cp({1, 2, 3, 4, 5, 6, 30})};
+        ConversationCache cache(1 << 20, 8);
+        check(cache.put(std::move(doc)) && cache.put(holder({1,2,3,4,5,6,50,51}, {1,2,3,4,5,6})) &&
+              cache.put(holder({1,2,3,4,5,6,60,61}, {1,2,3,4,5,6})) && cache.put(image({9, 9, 9})),
+              "a donor, two holders of its pin and an ordinary conversation parked");
+        const auto m = cache.best(std::vector<int64_t>{1, 2, 40}, {}, true);
+        check(cache.borrows(m) && cache.index_of(m.serial) == 0, "the oldest entry is the donor");
+        const size_t donor_bytes = cache.find(m.serial)->bytes(), before = cache.bytes();
+        const auto newest = cache.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 60, 61, 0}, {}, true);
+        check(newest.tokens == 8 && cache.find(newest.serial) != nullptr, "the newest holder is found");
+        check(cache.evictable_bytes() == before - cache.find(newest.serial)->bytes(),
+              "unguarded: everything but the pin's last holder (the newest) is reclaimable");
+        cache.guard(m.serial);
+        const size_t preview = cache.evictable_bytes();
+        check(preview == before - donor_bytes, "guarded: everything but the donor, which keeps the pin held");
+        while (cache.evict_oldest()) {}
+        check(cache.size() == 1 && cache.find(m.serial) != nullptr && preview == before - cache.bytes(),
+              "the guarded drain matches the preview and leaves only the donor");
+        cache.unguard();
+    }
+    {   // A middle eviction shifts deque entries; every pending copy must finish before its buffer dies.
+        int joined = 0;
+        ConversationCache cache(1 << 20, 8);
+        auto victim = holder({2, 20, 21}, {2});
+        auto token = [&](uint8_t* payload) {
+            return std::shared_ptr<void>(new char, [payload, &joined](void* p) {
+                check(*payload == 7, "pending copy still owns valid destination storage");
+                ++joined;
+                delete static_cast<char*>(p);
+            });
+        };
+        victim.live.gdn.assign(64, 7);
+        victim.pending = token(victim.live.gdn.data());
+        victim.live_pending = token(victim.live.gdn.data());
+        victim.kv.resize(1);
+        victim.kv[0].k.resize(64, 7);
+        victim.kv[0].k.visit(0, 1, [&](uint8_t* p, size_t, size_t) {
+            victim.kv[0].pending = token(p); return true;
+        });
+        check(cache.put(holder({1, 10, 11}, {1})) && cache.put(std::move(victim)) &&
+              cache.put(holder({2, 30, 31}, {2})) && cache.put(holder({3, 40, 41}, {3})),
+              "park a middle redundant holder with pending checkpoint and KV copies");
+        check(cache.evictable_bytes() > 0 && joined == 0, "preview leaves pending copies owned by the cache");
+        check(cache.evict_oldest() && joined == 3 && cache.size() == 3,
+              "middle eviction completes all pending copies before releasing their storage");
+        check(!cache.evict_oldest(), "each remaining pin keeps its last holder");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

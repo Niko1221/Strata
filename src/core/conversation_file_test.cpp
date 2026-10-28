@@ -332,7 +332,7 @@ int main() {
     }
     // K/V streamed from its owner (no host copy): the same bytes as writing the captured image
     {
-        SavedConversation meta = original;
+        SavedConversation meta = sample();
         meta.kv.clear();
         std::vector<SessionKvSource> sources;
         for (const auto& k : original.kv) {
@@ -439,7 +439,7 @@ int main() {
         const fs::path p = dir / "keep.bin", planted = dir / "keep.bin.tmp";
         check(session_file_write(p.string(), original, id, written, error), "keep: first write");
         spit(planted, std::vector<char>(5, 'p'));
-        SavedConversation meta = original;
+        SavedConversation meta = sample();
         meta.kv.clear();
         std::vector<SessionKvSource> broken(1);
         broken[0].sizes = {100, 0, 0, 0, 0};
@@ -581,7 +581,7 @@ int main() {
         opt.progress = [&](uint64_t d, uint64_t t) { seen.push_back({d, t}); };
         opt.phase = [&](const char* ph, uint64_t b) { phases.push_back(std::string(ph) + ":" + std::to_string(b)); };
         // a file below one block (the sample without its K/V layers) reports too: at the start and its one block
-        SavedConversation small = original;
+        SavedConversation small = sample();
         small.kv.clear();
         check(session_file_write(p.string(), small, id, written, error, opt), "progress: small write");
         check(written > 0 && written < (16u << 20), "progress: the small file is below one block");
@@ -612,7 +612,7 @@ int main() {
         check(session_file_read(p.string(), id, back, n, error, l) && seen.size() == 2 &&
               seen[0].first == (16u << 20) && seen[1].first == n, "progress: the sample's read reports both blocks");
         // a multi-block streamed write: 16 MiB blocks then the partial one, never more than a block apart
-        SavedConversation meta = original;
+        SavedConversation meta = sample();
         meta.kv.clear();
         std::vector<SessionKvSource> big(1);
         big[0].sizes = {(40u << 20) + 123, 0, 0, 0, 0};

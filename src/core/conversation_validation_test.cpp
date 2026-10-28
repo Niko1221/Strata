@@ -96,25 +96,29 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     ss.layer_hi = g.n_layers; ss.gdn_alloc = g.n_gdn_layers(); ss.qsa_alloc = g.n_qsa_layers();
     ss.ple_hist = ple ? (float*) history.data() : nullptr;
     ss.qsa_states = zero_qsa ? nullptr : layers.data();
-    SavedConversation image;
-    image.geometry = {g.n_embd,g.n_layers,g.qsa_interval,g.ssm_state_size,g.ssm_k_heads,g.ssm_v_heads,
-                      g.ssm_d_conv,g.ssm_conv_channels,g.ssm_value_dim,g.n_head,g.n_head_kv,g.head_dim,
-                      g.idx_q_heads,g.idx_key_dim,g.hc,g.hc_lr,g.n_expert,g.n_ff};
-    image.layer_hi = g.n_layers;
-    auto checkpoint = [&](size_t tokens) {
-        ConversationCheckpoint c;
-        c.ids.resize(tokens);
-        for (size_t i = 0; i < tokens; ++i) c.ids[i] = (int32_t) i + 1;
-        c.imgs = {{1, 44}};
-        c.gdn.resize(z.gdn, 13); c.ple.resize(ple ? z.ple : 0, 13);
-        c.tails.resize(g.n_qsa_layers() * z.tail, 13); c.dead.resize(g.n_qsa_layers() * z.dead, 13);
-        c.block_pos.resize(g.n_qsa_layers() * z.block_pos, 13);
-        return c;
+    auto make_image = [&] {
+        SavedConversation image;
+        image.geometry = {g.n_embd,g.n_layers,g.qsa_interval,g.ssm_state_size,g.ssm_k_heads,g.ssm_v_heads,
+                          g.ssm_d_conv,g.ssm_conv_channels,g.ssm_value_dim,g.n_head,g.n_head_kv,g.head_dim,
+                          g.idx_q_heads,g.idx_key_dim,g.hc,g.hc_lr,g.n_expert,g.n_ff};
+        image.layer_hi = g.n_layers;
+        auto checkpoint = [&](size_t tokens) {
+            ConversationCheckpoint c;
+            c.ids.resize(tokens);
+            for (size_t i = 0; i < tokens; ++i) c.ids[i] = (int32_t) i + 1;
+            c.imgs = {{1, 44}};
+            c.gdn.resize(z.gdn, 13); c.ple.resize(ple ? z.ple : 0, 13);
+            c.tails.resize(g.n_qsa_layers() * z.tail, 13); c.dead.resize(g.n_qsa_layers() * z.dead, 13);
+            c.block_pos.resize(g.n_qsa_layers() * z.block_pos, 13);
+            return c;
+        };
+        image.live = checkpoint(9); image.checkpoints.push_back(checkpoint(5));
+        image.kv.reserve((size_t) g.n_qsa_layers() + 1);
+        if (!zero_qsa) { image.kv.push_back(first.image(g, true)); image.kv.push_back(last.image(g, true)); }
+        image.kv.push_back(draft.image(g, false));
+        return image;
     };
-    image.live = checkpoint(9); image.checkpoints.push_back(checkpoint(5));
-    image.kv.reserve((size_t) g.n_qsa_layers() + 1);
-    if (!zero_qsa) { image.kv.push_back(first.image(g, true)); image.kv.push_back(last.image(g, true)); }
-    image.kv.push_back(draft.image(g, false));
+    auto image = make_image();
     check(conversation_snapshot_validate(image, ss, g, draft.st, error), "complete image validates without CUDA");
     size_t estimate = 0;
     check(conversation_snapshot_bytes({image.live.ids,image.live.imgs,image.checkpoints,true},ss,g,draft.st,estimate,error),
@@ -127,7 +131,7 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         return true;
     };
     auto reject = [&](const std::function<void(SavedConversation&)>& mutate, const char* label) {
-        auto bad = image; mutate(bad);
+        auto bad = make_image(); mutate(bad);
         check(conversation_snapshot_restore(bad,ss,g,draft.st,error) == ConversationRestore::invalid,label);
         check(unchanged(), "invalid restore did not touch any layer or running-state buffer");
     };
@@ -215,7 +219,15 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     SavedConversation full,incremental;
     check(conversation_snapshot_save(full,view,ss,g,draft.st,error), "full capture through host transfer backend");
     const size_t full_copies = copied_bytes;
-    ConversationKvReuse reuse{full.kv,9,9};
+    auto capture_reuse = [&] {
+        SavedConversation donor;
+        check(conversation_snapshot_save(donor,view,ss,g,draft.st,error), "capture independent reuse donor");
+        ConversationKvReuse reuse;
+        reuse.kv = std::move(donor.kv);
+        reuse.captured_tokens = reuse.unchanged_tokens = 9;
+        return reuse;
+    };
+    auto reuse = capture_reuse();
     size_t peak = 0, reused = 0;
     check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "incremental capture admission without transfers");
     copied_bytes = 0;
@@ -228,12 +240,12 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         check(incremental.kv[i].k==full.kv[i].k && incremental.kv[i].v==full.kv[i].v &&
               incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&
               incremental.kv[i].pooled==full.kv[i].pooled, "incremental and full capture agree across every payload");
-    reuse = {full.kv,9,9};
+    reuse = capture_reuse();
     reuse.kv.back().k.pop_back();
     copy_calls = sync_calls = 0;
     check(!conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "malformed retained draft rejected before admission");
     check(!copy_calls && !sync_calls, "invalid retained storage performs no CUDA calls");
-    reuse = {full.kv,9,9};
+    reuse = capture_reuse();
     fail_copy = copy_calls + 1;
     SavedConversation unpublished;
     check(!conversation_snapshot_save(unpublished,view,ss,g,draft.st,error,std::move(reuse)), "incremental capture copy failure is reported");
