@@ -34,10 +34,12 @@ test('the composer\'s notice covers every state: downloading, loading, none, and
 
 test('sendMessage checks for a model before it adds the message, picks a chat or calls the host, and waits for the first read of the engine', async () => {
   const source = (await readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
-  const start = source.indexOf('export async function sendMessage');
+  const start = source.indexOf('async function deliverMessage');
+  // sendMessage is now a thin receipt around deliverMessage: the one entry for typed messages, loops, plans, goals and Resume.
+  assert.ok(source.indexOf('deliverMessage(text, options, settle)') > 0, 'sendMessage hands every message to deliverMessage');
   const body = source.slice(start, source.indexOf('\n}\n', start));
   const guard = body.indexOf('noModelNotice(');
-  assert.ok(guard > 0, 'the guard is in sendMessage, the one entry for typed messages, loops, plans, goals and Resume');
+  assert.ok(guard > 0, 'the guard is in deliverMessage, the one entry for typed messages, loops, plans, goals and Resume');
   for (const later of ['newSession()', 'api.', 'fetch(', 'streamReal', 'appendMessage', 'takeChatPhotos']) {
     const at = body.indexOf(later);
     assert.ok(at < 0 || at > guard, `${later} comes after the guard`);
