@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.request
 
+from serve.console import console_print
 from serve import lifeline
 
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
@@ -131,7 +132,7 @@ class StdioTransport:
             if line:
                 self.stderr.append(line)
                 if os.environ.get("STRATA_DEBUG"):
-                    print(f"[mcp {self.name}] {line}", flush=True)
+                    console_print(f"[mcp {self.name}] {line}")
 
     def _read(self):
         for raw in self._lines(self.proc.stdout):
@@ -427,14 +428,14 @@ class McpServer:
                     break
             self.tools, self.status = tools, "ready"
             names = ", ".join(x["name"] for x in tools[:8]) + (", ..." if len(tools) > 8 else "")
-            print(f"[strata] MCP server {self.name!r}: {len(tools)} tool{'s' * (len(tools) != 1)}"
-                  f"{' (' + names + ')' if tools else ''}", flush=True)
+            console_print(f"[strata] MCP server {self.name!r}: {len(tools)} tool{'s' * (len(tools) != 1)}"
+                  f"{' (' + names + ')' if tools else ''}")
             return True
         except McpError as e:
             self.status, self.error, self.tools = "failed", str(e), []
             t.close()
-            print(f"[strata] MCP server {self.name!r} did not start: {e}. Its tools are left out; the chat works "
-                  "without them.", flush=True)
+            console_print(f"[strata] MCP server {self.name!r} did not start: {e}. Its tools are left out; the chat works "
+                  "without them.")
             return False
 
     def call(self, tool: str, arguments: dict, timeout: float, cancel=None) -> dict:
@@ -444,7 +445,7 @@ class McpServer:
                 # start is tried again at most every 10 s, so a broken command does not run on every call
                 if self.status == "failed" and time.monotonic() - self.last_start < 10:
                     raise McpError(f"the server is not running ({self.error or 'it stopped'})")
-                print(f"[strata] MCP server {self.name!r} had stopped; starting it again", flush=True)
+                console_print(f"[strata] MCP server {self.name!r} had stopped; starting it again")
                 if not self._start():
                     raise McpError(f"the server could not be started again: {self.error}")
             t = self.transport
@@ -604,7 +605,7 @@ class McpHub:
                     try:
                         images = cache_images(res, self.media_dir)
                     except OSError as e:
-                        print(f"[strata] MCP image cache unavailable: {e}", file=sys.stderr, flush=True)
+                        console_print(f"[strata] MCP image cache unavailable: {e}", stderr=True)
                     else:
                         if images:
                             out["images"] = images

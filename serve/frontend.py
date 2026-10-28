@@ -28,6 +28,8 @@ from pathlib import Path
 import jinja2
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from serve.console import console_print
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -838,8 +840,8 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
         return CALL_START + "\n<function="
     if kind == "named" and name in names:
         return CALL_START + f"\n<function={name}>\n"
-    print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
-          "request): the model decides, as with \"auto\"", flush=True)
+    console_print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
+          "request): the model decides, as with \"auto\"")
     return None
 
 

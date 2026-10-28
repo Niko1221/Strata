@@ -59,8 +59,8 @@ def install_shared_embeddings():
         p = orig(vision_dir, nbytes)
         if not str(p).startswith("/dev/shm/") and not said:
             said.append(1)
-            print("[strata] /dev/shm has no room for this picture: the engine runs in a container that sees only the host's /dev/shm, so it "
-                  "cannot read the picture. Free /dev/shm (or enlarge it: mount -o remount,size=4G /dev/shm) and send it again.", flush=True)
+            S.console_print("[strata] /dev/shm has no room for this picture: the engine runs in a container that sees only the host's /dev/shm, so it "
+                  "cannot read the picture. Free /dev/shm (or enlarge it: mount -o remount,size=4G /dev/shm) and send it again.")
         return p
     S.combined_embeddings_path = path
 

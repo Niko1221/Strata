@@ -37,6 +37,8 @@ import threading
 import time
 from pathlib import Path
 
+from serve.console import console_print
+
 # Qwen-Image-2.1-Turbo's own schedule (model_index.json "sample_sigmas") plus the terminal 0, as Unsloth's card passes
 # it to sd-cli; it is an 8-step schedule, so another step count leaves the schedule to sd.cpp
 TURBO_SIGMAS = "1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568,0.0"
@@ -196,7 +198,7 @@ class ImageGen:
         return [self.cfg[k] for k in ("exe", "diffusion_model", "vae", "llm") if not Path(self.cfg[k]).exists()]
 
     def _say(self, text: str) -> None:
-        print(f"[strata] {text}", flush=True)
+        console_print(f"[strata] {text}")
         if self.log is not None:
             try:
                 self.log.write(f"[images] {text}\n")
@@ -459,10 +461,10 @@ def restore_session(svc) -> None:
     svc.restore_after_load = None
     try:
         r = svc.engine.session_file("restore", path)
-        print(f"[strata] the conversation from before the image job is back ({r.get('tokens')} tokens)", flush=True)
+        console_print(f"[strata] the conversation from before the image job is back ({r.get('tokens')} tokens)")
     except Exception as e:                           # noqa: BLE001 - the engine runs, without the old cache
-        print(f"[strata] the conversation from before the image job was not restored ({e}); the next request "
-              "reads its prompt again", flush=True)
+        console_print(f"[strata] the conversation from before the image job was not restored ({e}); the next request "
+              "reads its prompt again")
     finally:
         with contextlib.suppress(OSError):
             os.unlink(path)

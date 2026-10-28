@@ -29,6 +29,8 @@ import os
 import threading
 import time
 
+from serve.console import console_print
+
 BLOCK = 64                          # tokens per hashed block of a prompt
 LOAD_TOKENS = 3000                  # the cost of one request already running on a replica, in prompt tokens
 INDEX_MAX = 262144                  # block hashes kept (about 17M tokens of prompts)
@@ -322,7 +324,7 @@ class ReplicaEngine:
         if errors and not self.alive():
             raise next(iter(errors.values()))
         for k, e in errors.items():
-            print(f"[strata] replica {k} did not start ({e}); the others serve", flush=True)
+            console_print(f"[strata] replica {k} did not start ({e}); the others serve")
 
     def unload(self):
         for e in self.engines:
@@ -370,12 +372,12 @@ class ReplicaEngine:
 
             def run(k=k):
                 try:
-                    print(f"[strata] replica {k} had stopped; starting it again", flush=True)
+                    console_print(f"[strata] replica {k} had stopped; starting it again")
                     self.engines[k].restart()
                     self.router.forget(k)
-                    print(f"[strata] replica {k} is running again", flush=True)
+                    console_print(f"[strata] replica {k} is running again")
                 except BaseException as x:       # noqa: BLE001
-                    print(f"[strata] replica {k} did not start again: {x}", flush=True)
+                    console_print(f"[strata] replica {k} did not start again: {x}")
                 finally:
                     self.healing[k] = False
             threading.Thread(target=run, daemon=True).start()

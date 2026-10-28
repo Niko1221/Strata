@@ -5,8 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import frontend  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import frontend  # noqa: E402
 
 TOOLS = [{"name": "functions.exec", "parameters": {"properties": {"input": {"type": "string"}}}},
          {"name": "shell", "parameters": {"properties": {"cmd": {"type": "string"}}}},

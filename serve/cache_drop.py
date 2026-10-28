@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from serve.console import console_print
+
 
 def enabled(env=None) -> bool:
     env = os.environ if env is None else env
@@ -66,5 +68,5 @@ def drop_after_exit(engine, env=None, advise=None) -> int:
     wanted = {"--native", "--pack", "--mmproj", "--model"}
     paths = [v for k, v in zip(args, args[1:]) if k in wanted]
     n = drop(paths or [getattr(engine, "model_path", None)], advise)
-    print(f"[strata] STRATA_DROP_CACHE_ON_EXIT: released the page cache of {n} model files", flush=True)
+    console_print(f"[strata] STRATA_DROP_CACHE_ON_EXIT: released the page cache of {n} model files")
     return n
