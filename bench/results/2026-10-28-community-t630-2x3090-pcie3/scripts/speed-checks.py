@@ -62,7 +62,7 @@ def speed():
             rates.append(n / gen)
         print(f"  {label}: {', '.join(f'{r:.1f}' for r in rates)} tok/s (short prompt)")
     # long context: ~30K tokens of real code as the prompt, then a short answer
-    # The 32,667-token prompt: dungeon-door source concatenated, kept beside this script but not in git
+    # The 32,667-token prompt: private repository source concatenated, kept beside this script but not in git
     # (it is another repo's code). A missing file is an error, never a smaller prompt: when this script was
     # renamed from vllm_checks.py, a path built with str.replace silently fell back to reading the script
     # itself, a 2,117-token "long prompt" (2026-10-14, #132).
@@ -93,7 +93,7 @@ def anthropic_tools_and_budget():
             "tools": [{"name": "read_file", "description": "Read a file from the repo",
                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}},
                                         "required": ["path"]}}],
-            "messages": [{"role": "user", "content": "Open server/engine/combat.js and tell me what it exports."}]}
+            "messages": [{"role": "user", "content": "Open src/app/module.js and tell me what it exports."}]}
     j, dt = post("/v1/messages", body)
     kinds = [b.get("type") for b in j.get("content", [])]
     tool = [b for b in j.get("content", []) if b.get("type") == "tool_use"]

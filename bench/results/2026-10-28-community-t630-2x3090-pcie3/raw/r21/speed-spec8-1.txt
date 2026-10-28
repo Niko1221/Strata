@@ -7,7 +7,7 @@
   ok: 'Bye.'
 == /v1/messages: tools + thinking budget
   stop_reason=tool_use blocks=['thinking', 'tool_use'] usage={'input_tokens': 1, 'output_tokens': 51, 'cache_creation_input_tokens': 308, 'cache_read_input_tokens': 0}
-  tool_use: {"path": "server/engine/combat.js"}; thinking chars: 87; 1.8s
+  tool_use: {"path": "src/app/module.js"}; thinking chars: 87; 1.8s
   budget 1024: thinking ~517 tokens (chars/4), answer 6587 chars, output_tokens=6000, stop=max_tokens
 == speed
   thinking off: 94.6, 135.0, 143.9 tok/s (short prompt)
