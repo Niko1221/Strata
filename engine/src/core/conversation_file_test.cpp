@@ -717,6 +717,45 @@ int main() {
         check(!st.published, "writer fault: nothing was published");
         check(!fs::exists(q) && no_temp(dir), "writer fault: no file and no temporary left behind");
     }
+    // writer-thread starvation (tests seam: fault step "writer_thread"): the save must still complete,
+    // serialized like the un-pipelined FileSink was - and the pipeline witness must NOT appear
+    {
+        auto ns = []() {
+            return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        };
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 4096; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {32u << 20, 16u << 20, 0, 0, 0};
+        std::vector<std::pair<uint64_t, uint64_t>> reads;
+        src[0].read = [&](size_t, size_t, void* d, size_t c) {
+            const uint64_t t0 = ns();
+            std::memset(d, 0x5a, c);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            reads.push_back({t0, ns()});
+            return true;
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> spans;
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::string(step) == "writer_thread" ? EAGAIN : 0; };
+        opt.block_span = [&](uint64_t byte_end, uint64_t b, uint64_t e) { spans.emplace_back(byte_end, b, e); };
+        const fs::path p = dir / "writer-starved.bin";
+        error.clear();
+        check(session_file_write(p.string(), meta, src, id, written, error, opt), "starved writer: the save still completes");
+        check(error.empty(), "starved writer: no error text");
+        check(spans.size() == 3, "starved writer: all three full blocks still written");
+        bool witnessed = false;
+        for (const auto& sp : spans)
+            for (const auto& w : reads)
+                if (w.first <= std::get<1>(sp) && std::get<1>(sp) < w.second) witnessed = true;
+        check(!witnessed, "starved writer: blocks drained in the caller's thread, never during a read");
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(p.string(), id, back, read, error), "starved writer: the file reads back");
+    }
     // A: the SAVE's RAM preflight comes BEFORE the checkpoint is copied
     {
         std::vector<ConversationCheckpoint> chain;
