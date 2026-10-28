@@ -141,3 +141,5 @@ written.
 - `scripts/`: `t630-sweep.py` (one arm per fresh start), `speed-checks.py`, `agent-turns.py`, `agent-and-speed.py`,
   `prefill-curve.py`, `prefill-table.py`. They read from a private repository (the agent-turns context and the 32K
   prompt are its source files), so they document the method rather than run as is.
+- Not included: the raw files of the earlier rounds behind the trim, NUMA, long-prompt and opt-in-switch findings
+  (2026-10-24 to 10-28); those numbers are summarized from our own log.
