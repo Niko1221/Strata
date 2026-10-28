@@ -173,13 +173,15 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_BGCOLOR "F9FAFB"
 !define MUI_TEXTCOLOR "171B1E"
 !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
-!define MUI_WELCOMEPAGE_TITLE "State of the art. At home."
-!define MUI_WELCOMEPAGE_TEXT "Strata runs AI on your own computer.$\r$\n$\r$\nThis takes about a minute and needs no administrator. You choose your first model inside Strata."
-!define MUI_FINISHPAGE_TITLE "Strata is ready."
-!define MUI_FINISHPAGE_TEXT "Open it to pick your first model. Strata downloads it for you and gets it ready."
-!define MUI_FINISHPAGE_RUN_TEXT "Open Strata"
-!define MUI_PAGE_HEADER_TEXT "Installing Strata"
-!define MUI_PAGE_HEADER_SUBTEXT "Copying the app. You can keep working meanwhile."
+; The words are language strings (nsis/strata-languages.nsh), so the installer speaks the language of the person's
+; Windows, like the app does. English stays the first language and the fallback.
+!define MUI_WELCOMEPAGE_TITLE "$(StrataWelcomeTitle)"
+!define MUI_WELCOMEPAGE_TEXT "$(StrataWelcomeText)"
+!define MUI_FINISHPAGE_TITLE "$(StrataFinishTitle)"
+!define MUI_FINISHPAGE_TEXT "$(StrataFinishText)"
+!define MUI_FINISHPAGE_RUN_TEXT "$(StrataOpen)"
+!define MUI_PAGE_HEADER_TEXT "$(StrataInstallHeader)"
+!define MUI_PAGE_HEADER_SUBTEXT "$(StrataInstallSubtext)"
 BrandingText "Strata"
 ShowInstDetails nevershow
 
@@ -431,9 +433,9 @@ FunctionEnd
 !ifdef MUI_PAGE_HEADER_SUBTEXT
   !undef MUI_PAGE_HEADER_SUBTEXT
 !endif
-!define MUI_PAGE_HEADER_TEXT "Choose where to install Strata"
-!define MUI_PAGE_HEADER_SUBTEXT "Pick another drive if C: is short on space."
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Strata is installed into this folder, for your user only (no administrator needed). Models and chats are stored separately, in the data folder you choose inside Strata."
+!define MUI_PAGE_HEADER_TEXT "$(StrataDirHeader)"
+!define MUI_PAGE_HEADER_SUBTEXT "$(StrataDirSubtext)"
+!define MUI_DIRECTORYPAGE_TEXT_TOP "$(StrataDirTop)"
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
 
@@ -454,8 +456,8 @@ Var AppStartMenuFolder
 !ifdef MUI_PAGE_HEADER_SUBTEXT
   !undef MUI_PAGE_HEADER_SUBTEXT
 !endif
-!define MUI_PAGE_HEADER_TEXT "Installing Strata"
-!define MUI_PAGE_HEADER_SUBTEXT "Copying the app. You can keep working meanwhile."
+!define MUI_PAGE_HEADER_TEXT "$(StrataInstallHeader)"
+!define MUI_PAGE_HEADER_SUBTEXT "$(StrataInstallSubtext)"
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
@@ -492,13 +494,15 @@ Function un.DataPage
   ${OrIf} $UpdateMode = 1
     Abort
   ${EndIf}
-  !insertmacro MUI_HEADER_TEXT "Remove your Strata data too?" "Your models, chats and settings stay on this PC unless you tick the box."
+  !insertmacro MUI_HEADER_TEXT "$(StrataRemoveTitle)" "$(StrataRemoveSubtext)"
   nsDialogs::Create 1018
   Pop $0
   ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
-  ${NSD_CreateCheckBox} 0 0 100% 12u "Also remove my Strata data (models, chats, settings)"
+  ${NSD_CreateCheckBox} 0 0 100% 12u "$(StrataRemoveCheck)"
   Pop $DeleteAppDataCheckbox
-  ${NSD_CreateLabel} 12u 18u -12u 96u "If you tick it, these folders are deleted, and nothing else:$\r$\n$\r$\n$LOCALAPPDATA\Strata   (engine, installed copy, tunings)$\r$\n$APPDATA\Strata   (settings)$\r$\n$PROFILE\.strata   (your chats, app settings)$\r$\n$DOCUMENTS\Strata\Models   (models Strata downloaded into its own folder)$\r$\n$\r$\nA model folder you chose yourself is never deleted."
+  ; The paths are the same in every language, so only the words around them are translated.
+  StrCpy $0 "$(StrataRemoveText)$\r$\n$\r$\n$LOCALAPPDATA\Strata   ($(StrataDataEngine))$\r$\n$APPDATA\Strata   ($(StrataDataSettings))$\r$\n$PROFILE\.strata   ($(StrataDataChats))$\r$\n$DOCUMENTS\Strata\Models   ($(StrataDataModels))$\r$\n$\r$\n$(StrataRemoveNote)"
+  ${NSD_CreateLabel} 12u 18u -12u 96u "$0"
   Pop $0
   ${NSD_SetFocus} $DeleteAppDataCheckbox
   nsDialogs::Show
@@ -518,6 +522,199 @@ FunctionEnd
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
+; The installer speaks the nine languages the app speaks (apps/host/src/locales). Windows picks the language of
+; the person's own system; English is first in the list and the fallback. The paths in the uninstall page are the
+; same in every language, so they live in the page itself and only the words around them are translated here.
+
+LangString StrataWelcomeTitle ${LANG_ENGLISH} "State of the art. At home."
+LangString StrataWelcomeTitle ${LANG_SIMPCHINESE} "顶尖技术，就在家里。"
+LangString StrataWelcomeTitle ${LANG_JAPANESE} "最先端を、自宅で。"
+LangString StrataWelcomeTitle ${LANG_GERMAN} "Technik auf höchstem Stand. Bei Ihnen zu Hause."
+LangString StrataWelcomeTitle ${LANG_SPANISH} "La última tecnología. En casa."
+LangString StrataWelcomeTitle ${LANG_RUSSIAN} "Передовая технология. У вас дома."
+LangString StrataWelcomeTitle ${LANG_PORTUGUESEBR} "Tecnologia de ponta. Na sua casa."
+LangString StrataWelcomeTitle ${LANG_KOREAN} "최고의 기술을, 집에서."
+LangString StrataWelcomeTitle ${LANG_FRENCH} "La pointe de la technologie. Chez vous."
+
+LangString StrataWelcomeText ${LANG_ENGLISH} "Strata runs AI on your own computer.$\r$\n$\r$\nThis takes about a minute and needs no administrator. You choose your first model inside Strata."
+LangString StrataWelcomeText ${LANG_SIMPCHINESE} "Strata 在你自己的电脑上运行 AI。$\r$\n$\r$\n大约需要一分钟，不需要管理员权限。第一个模型在 Strata 里选择。"
+LangString StrataWelcomeText ${LANG_JAPANESE} "Strata は自分のパソコンで AI を動かします。$\r$\n$\r$\n約 1 分で終わり、管理者権限は不要です。最初のモデルは Strata の中で選びます。"
+LangString StrataWelcomeText ${LANG_GERMAN} "Strata betreibt KI auf Ihrem eigenen Computer.$\r$\n$\r$\nDas dauert etwa eine Minute und braucht keine Administratorrechte. Das erste Modell wählen Sie in Strata."
+LangString StrataWelcomeText ${LANG_SPANISH} "Strata ejecuta IA en tu propio ordenador.$\r$\n$\r$\nTarda alrededor de un minuto y no necesita administrador. El primer modelo lo eliges dentro de Strata."
+LangString StrataWelcomeText ${LANG_RUSSIAN} "Strata запускает ИИ на вашем компьютере.$\r$\n$\r$\nЭто занимает около минуты и не требует прав администратора. Первую модель вы выберете в Strata."
+LangString StrataWelcomeText ${LANG_PORTUGUESEBR} "O Strata roda IA no seu próprio computador.$\r$\n$\r$\nLeva cerca de um minuto e não precisa de administrador. Você escolhe o primeiro modelo dentro do Strata."
+LangString StrataWelcomeText ${LANG_KOREAN} "Strata는 내 컴퓨터에서 AI를 실행합니다.$\r$\n$\r$\n약 1분이면 되고 관리자 권한이 필요 없습니다. 첫 모델은 Strata 안에서 고릅니다."
+LangString StrataWelcomeText ${LANG_FRENCH} "Strata fait tourner l’IA sur votre propre ordinateur.$\r$\n$\r$\nCela prend environ une minute et ne demande pas de droits d’administrateur. Vous choisissez le premier modèle dans Strata."
+
+LangString StrataFinishTitle ${LANG_ENGLISH} "Strata is ready."
+LangString StrataFinishTitle ${LANG_SIMPCHINESE} "Strata 已就绪。"
+LangString StrataFinishTitle ${LANG_JAPANESE} "Strata の準備ができました。"
+LangString StrataFinishTitle ${LANG_GERMAN} "Strata ist bereit."
+LangString StrataFinishTitle ${LANG_SPANISH} "Strata está listo."
+LangString StrataFinishTitle ${LANG_RUSSIAN} "Strata готов."
+LangString StrataFinishTitle ${LANG_PORTUGUESEBR} "O Strata está pronto."
+LangString StrataFinishTitle ${LANG_KOREAN} "Strata가 준비되었습니다."
+LangString StrataFinishTitle ${LANG_FRENCH} "Strata est prêt."
+
+LangString StrataFinishText ${LANG_ENGLISH} "Open it to pick your first model. Strata downloads it for you and gets it ready."
+LangString StrataFinishText ${LANG_SIMPCHINESE} "打开它选择第一个模型。Strata 会为你下载并准备好。"
+LangString StrataFinishText ${LANG_JAPANESE} "開いて最初のモデルを選んでください。Strata がダウンロードして準備します。"
+LangString StrataFinishText ${LANG_GERMAN} "Öffnen Sie es, um Ihr erstes Modell zu wählen. Strata lädt es herunter und richtet es ein."
+LangString StrataFinishText ${LANG_SPANISH} "Ábrelo para elegir tu primer modelo. Strata lo descarga y lo prepara."
+LangString StrataFinishText ${LANG_RUSSIAN} "Откройте, чтобы выбрать первую модель. Strata скачает её и подготовит."
+LangString StrataFinishText ${LANG_PORTUGUESEBR} "Abra para escolher seu primeiro modelo. O Strata baixa e prepara tudo para você."
+LangString StrataFinishText ${LANG_KOREAN} "열어서 첫 모델을 고르세요. Strata가 내려받아 준비합니다."
+LangString StrataFinishText ${LANG_FRENCH} "Ouvrez-le pour choisir votre premier modèle. Strata le télécharge et le prépare."
+
+LangString StrataOpen ${LANG_ENGLISH} "Open Strata"
+LangString StrataOpen ${LANG_SIMPCHINESE} "打开 Strata"
+LangString StrataOpen ${LANG_JAPANESE} "Strata を開く"
+LangString StrataOpen ${LANG_GERMAN} "Strata öffnen"
+LangString StrataOpen ${LANG_SPANISH} "Abrir Strata"
+LangString StrataOpen ${LANG_RUSSIAN} "Открыть Strata"
+LangString StrataOpen ${LANG_PORTUGUESEBR} "Abrir o Strata"
+LangString StrataOpen ${LANG_KOREAN} "Strata 열기"
+LangString StrataOpen ${LANG_FRENCH} "Ouvrir Strata"
+
+LangString StrataInstallHeader ${LANG_ENGLISH} "Installing Strata"
+LangString StrataInstallHeader ${LANG_SIMPCHINESE} "正在安装 Strata"
+LangString StrataInstallHeader ${LANG_JAPANESE} "Strata をインストールしています"
+LangString StrataInstallHeader ${LANG_GERMAN} "Strata wird installiert"
+LangString StrataInstallHeader ${LANG_SPANISH} "Instalando Strata"
+LangString StrataInstallHeader ${LANG_RUSSIAN} "Установка Strata"
+LangString StrataInstallHeader ${LANG_PORTUGUESEBR} "Instalando o Strata"
+LangString StrataInstallHeader ${LANG_KOREAN} "Strata 설치 중"
+LangString StrataInstallHeader ${LANG_FRENCH} "Installation de Strata"
+
+LangString StrataInstallSubtext ${LANG_ENGLISH} "Copying the app. You can keep working meanwhile."
+LangString StrataInstallSubtext ${LANG_SIMPCHINESE} "正在复制应用，这期间你可以继续工作。"
+LangString StrataInstallSubtext ${LANG_JAPANESE} "アプリをコピーしています。その間も作業を続けられます。"
+LangString StrataInstallSubtext ${LANG_GERMAN} "Die App wird kopiert. Sie können in der Zwischenzeit weiterarbeiten."
+LangString StrataInstallSubtext ${LANG_SPANISH} "Copiando la aplicación. Puedes seguir trabajando mientras tanto."
+LangString StrataInstallSubtext ${LANG_RUSSIAN} "Копирование приложения. Пока это идёт, можно продолжать работу."
+LangString StrataInstallSubtext ${LANG_PORTUGUESEBR} "Copiando o aplicativo. Você pode continuar trabalhando enquanto isso."
+LangString StrataInstallSubtext ${LANG_KOREAN} "앱을 복사하는 중입니다. 그동안 다른 작업을 계속하셔도 됩니다."
+LangString StrataInstallSubtext ${LANG_FRENCH} "Copie de l’application. Vous pouvez continuer à travailler pendant ce temps."
+
+LangString StrataDirHeader ${LANG_ENGLISH} "Choose where to install Strata"
+LangString StrataDirHeader ${LANG_SIMPCHINESE} "选择 Strata 的安装位置"
+LangString StrataDirHeader ${LANG_JAPANESE} "Strata のインストール先を選択"
+LangString StrataDirHeader ${LANG_GERMAN} "Wählen Sie, wohin Strata installiert wird"
+LangString StrataDirHeader ${LANG_SPANISH} "Elige dónde instalar Strata"
+LangString StrataDirHeader ${LANG_RUSSIAN} "Выберите папку для установки Strata"
+LangString StrataDirHeader ${LANG_PORTUGUESEBR} "Escolha onde instalar o Strata"
+LangString StrataDirHeader ${LANG_KOREAN} "Strata를 설치할 위치 선택"
+LangString StrataDirHeader ${LANG_FRENCH} "Choisissez où installer Strata"
+
+LangString StrataDirSubtext ${LANG_ENGLISH} "Pick another drive if C: is short on space."
+LangString StrataDirSubtext ${LANG_SIMPCHINESE} "C 盘空间不足时，可以换一个磁盘。"
+LangString StrataDirSubtext ${LANG_JAPANESE} "C: の空きが少ない場合は別のドライブを選んでください。"
+LangString StrataDirSubtext ${LANG_GERMAN} "Wählen Sie ein anderes Laufwerk, wenn C: wenig Platz hat."
+LangString StrataDirSubtext ${LANG_SPANISH} "Elige otro disco si a C: le queda poco espacio."
+LangString StrataDirSubtext ${LANG_RUSSIAN} "Выберите другой диск, если на C: мало места."
+LangString StrataDirSubtext ${LANG_PORTUGUESEBR} "Escolha outro disco se o C: estiver com pouco espaço."
+LangString StrataDirSubtext ${LANG_KOREAN} "C: 드라이브 공간이 부족하면 다른 드라이브를 고르세요."
+LangString StrataDirSubtext ${LANG_FRENCH} "Choisissez un autre disque si C: manque de place."
+
+LangString StrataDirTop ${LANG_ENGLISH} "Strata is installed into this folder, for your user only (no administrator needed). Models and chats are stored separately, in the data folder you choose inside Strata."
+LangString StrataDirTop ${LANG_SIMPCHINESE} "Strata 会安装到这个文件夹，只对当前用户生效（不需要管理员权限）。模型和对话另外存放，位置在 Strata 里选择。"
+LangString StrataDirTop ${LANG_JAPANESE} "Strata はこのフォルダーに、このユーザーだけ向けにインストールされます（管理者権限は不要）。モデルとチャットは別に保存され、保存先は Strata の中で選びます。"
+LangString StrataDirTop ${LANG_GERMAN} "Strata wird in diesen Ordner installiert, nur für Ihren Benutzer (keine Administratorrechte nötig). Modelle und Chats liegen getrennt davon in dem Datenordner, den Sie in Strata wählen."
+LangString StrataDirTop ${LANG_SPANISH} "Strata se instala en esta carpeta, solo para tu usuario (no hace falta administrador). Los modelos y los chats se guardan aparte, en la carpeta de datos que elijas dentro de Strata."
+LangString StrataDirTop ${LANG_RUSSIAN} "Strata установится в эту папку, только для вашего пользователя (права администратора не нужны). Модели и чаты хранятся отдельно, в папке данных, которую вы выберете в Strata."
+LangString StrataDirTop ${LANG_PORTUGUESEBR} "O Strata é instalado nesta pasta, só para o seu usuário (sem precisar de administrador). Modelos e conversas ficam separados, na pasta de dados que você escolher dentro do Strata."
+LangString StrataDirTop ${LANG_KOREAN} "Strata는 이 폴더에 현재 사용자용으로 설치됩니다(관리자 권한 필요 없음). 모델과 대화는 따로 저장되며, 위치는 Strata 안에서 고릅니다."
+LangString StrataDirTop ${LANG_FRENCH} "Strata s’installe dans ce dossier, pour votre utilisateur uniquement (aucun droit d’administrateur nécessaire). Les modèles et les conversations sont stockés à part, dans le dossier de données que vous choisissez dans Strata."
+
+LangString StrataRemoveTitle ${LANG_ENGLISH} "Remove your Strata data too?"
+LangString StrataRemoveTitle ${LANG_SIMPCHINESE} "同时删除你的 Strata 数据吗？"
+LangString StrataRemoveTitle ${LANG_JAPANESE} "Strata のデータも削除しますか？"
+LangString StrataRemoveTitle ${LANG_GERMAN} "Auch Ihre Strata-Daten löschen?"
+LangString StrataRemoveTitle ${LANG_SPANISH} "¿Eliminar también tus datos de Strata?"
+LangString StrataRemoveTitle ${LANG_RUSSIAN} "Удалить и данные Strata?"
+LangString StrataRemoveTitle ${LANG_PORTUGUESEBR} "Remover também seus dados do Strata?"
+LangString StrataRemoveTitle ${LANG_KOREAN} "Strata 데이터도 삭제할까요?"
+LangString StrataRemoveTitle ${LANG_FRENCH} "Supprimer aussi vos données Strata ?"
+
+LangString StrataRemoveSubtext ${LANG_ENGLISH} "Your models, chats and settings stay on this PC unless you tick the box."
+LangString StrataRemoveSubtext ${LANG_SIMPCHINESE} "不勾选的话，你的模型、对话和设置会留在这台电脑上。"
+LangString StrataRemoveSubtext ${LANG_JAPANESE} "チェックしない限り、モデル・チャット・設定はこの PC に残ります。"
+LangString StrataRemoveSubtext ${LANG_GERMAN} "Ohne Häkchen bleiben Ihre Modelle, Chats und Einstellungen auf diesem PC."
+LangString StrataRemoveSubtext ${LANG_SPANISH} "Tus modelos, chats y ajustes se quedan en este PC salvo que marques la casilla."
+LangString StrataRemoveSubtext ${LANG_RUSSIAN} "Ваши модели, чаты и настройки останутся на этом ПК, если не поставить галочку."
+LangString StrataRemoveSubtext ${LANG_PORTUGUESEBR} "Seus modelos, conversas e ajustes ficam neste PC a menos que você marque a caixa."
+LangString StrataRemoveSubtext ${LANG_KOREAN} "체크하지 않으면 모델, 대화, 설정은 이 PC에 남습니다."
+LangString StrataRemoveSubtext ${LANG_FRENCH} "Vos modèles, conversations et réglages restent sur ce PC sauf si vous cochez la case."
+
+LangString StrataRemoveCheck ${LANG_ENGLISH} "Also remove my Strata data (models, chats, settings)"
+LangString StrataRemoveCheck ${LANG_SIMPCHINESE} "同时删除我的 Strata 数据（模型、对话、设置）"
+LangString StrataRemoveCheck ${LANG_JAPANESE} "Strata のデータも削除する（モデル、チャット、設定）"
+LangString StrataRemoveCheck ${LANG_GERMAN} "Auch meine Strata-Daten löschen (Modelle, Chats, Einstellungen)"
+LangString StrataRemoveCheck ${LANG_SPANISH} "Eliminar también mis datos de Strata (modelos, chats, ajustes)"
+LangString StrataRemoveCheck ${LANG_RUSSIAN} "Удалить и мои данные Strata (модели, чаты, настройки)"
+LangString StrataRemoveCheck ${LANG_PORTUGUESEBR} "Remover também meus dados do Strata (modelos, conversas, ajustes)"
+LangString StrataRemoveCheck ${LANG_KOREAN} "내 Strata 데이터도 삭제(모델, 대화, 설정)"
+LangString StrataRemoveCheck ${LANG_FRENCH} "Supprimer aussi mes données Strata (modèles, conversations, réglages)"
+
+LangString StrataRemoveText ${LANG_ENGLISH} "If you tick it, these folders are deleted, and nothing else:"
+LangString StrataRemoveText ${LANG_SIMPCHINESE} "勾选后只会删除这些文件夹，不会动其他内容："
+LangString StrataRemoveText ${LANG_JAPANESE} "チェックすると、次のフォルダーだけが削除されます:"
+LangString StrataRemoveText ${LANG_GERMAN} "Mit Häkchen werden nur diese Ordner gelöscht:"
+LangString StrataRemoveText ${LANG_SPANISH} "Si la marcas, solo se eliminan estas carpetas:"
+LangString StrataRemoveText ${LANG_RUSSIAN} "Если поставить галочку, удалятся только эти папки:"
+LangString StrataRemoveText ${LANG_PORTUGUESEBR} "Se marcar, apenas estas pastas são removidas:"
+LangString StrataRemoveText ${LANG_KOREAN} "체크하면 다음 폴더만 삭제됩니다:"
+LangString StrataRemoveText ${LANG_FRENCH} "Si vous cochez, seuls ces dossiers sont supprimés :"
+
+LangString StrataDataEngine ${LANG_ENGLISH} "engine, installed copy and tunings"
+LangString StrataDataEngine ${LANG_SIMPCHINESE} "引擎、已安装的副本和调校"
+LangString StrataDataEngine ${LANG_JAPANESE} "エンジン、インストール済みのコピー、調整値"
+LangString StrataDataEngine ${LANG_GERMAN} "Engine, installierte Kopie und Abstimmungen"
+LangString StrataDataEngine ${LANG_SPANISH} "motor, copia instalada y ajustes"
+LangString StrataDataEngine ${LANG_RUSSIAN} "движок, установленная копия и настройки"
+LangString StrataDataEngine ${LANG_PORTUGUESEBR} "motor, cópia instalada e ajustes"
+LangString StrataDataEngine ${LANG_KOREAN} "엔진, 설치된 복사본, 튜닝"
+LangString StrataDataEngine ${LANG_FRENCH} "moteur, copie installée et réglages"
+
+LangString StrataDataSettings ${LANG_ENGLISH} "settings"
+LangString StrataDataSettings ${LANG_SIMPCHINESE} "设置"
+LangString StrataDataSettings ${LANG_JAPANESE} "設定"
+LangString StrataDataSettings ${LANG_GERMAN} "Einstellungen"
+LangString StrataDataSettings ${LANG_SPANISH} "ajustes"
+LangString StrataDataSettings ${LANG_RUSSIAN} "настройки"
+LangString StrataDataSettings ${LANG_PORTUGUESEBR} "ajustes"
+LangString StrataDataSettings ${LANG_KOREAN} "설정"
+LangString StrataDataSettings ${LANG_FRENCH} "réglages"
+
+LangString StrataDataChats ${LANG_ENGLISH} "your chats and app settings"
+LangString StrataDataChats ${LANG_SIMPCHINESE} "你的对话和应用设置"
+LangString StrataDataChats ${LANG_JAPANESE} "チャットとアプリの設定"
+LangString StrataDataChats ${LANG_GERMAN} "Ihre Chats und App-Einstellungen"
+LangString StrataDataChats ${LANG_SPANISH} "tus chats y ajustes de la aplicación"
+LangString StrataDataChats ${LANG_RUSSIAN} "ваши чаты и настройки приложения"
+LangString StrataDataChats ${LANG_PORTUGUESEBR} "suas conversas e ajustes do aplicativo"
+LangString StrataDataChats ${LANG_KOREAN} "대화와 앱 설정"
+LangString StrataDataChats ${LANG_FRENCH} "vos conversations et réglages de l’application"
+
+LangString StrataDataModels ${LANG_ENGLISH} "models Strata downloaded into its own folder"
+LangString StrataDataModels ${LANG_SIMPCHINESE} "Strata 下载到自己文件夹里的模型"
+LangString StrataDataModels ${LANG_JAPANESE} "Strata が自分のフォルダーにダウンロードしたモデル"
+LangString StrataDataModels ${LANG_GERMAN} "Modelle, die Strata in seinen eigenen Ordner geladen hat"
+LangString StrataDataModels ${LANG_SPANISH} "modelos que Strata descargó en su propia carpeta"
+LangString StrataDataModels ${LANG_RUSSIAN} "модели, скачанные Strata в свою папку"
+LangString StrataDataModels ${LANG_PORTUGUESEBR} "modelos que o Strata baixou na própria pasta"
+LangString StrataDataModels ${LANG_KOREAN} "Strata가 자기 폴더에 내려받은 모델"
+LangString StrataDataModels ${LANG_FRENCH} "modèles que Strata a téléchargés dans son propre dossier"
+
+LangString StrataRemoveNote ${LANG_ENGLISH} "A model folder you chose yourself is never deleted."
+LangString StrataRemoveNote ${LANG_SIMPCHINESE} "你自己选择的模型文件夹永远不会被删除。"
+LangString StrataRemoveNote ${LANG_JAPANESE} "自分で選んだモデルのフォルダーは削除されません。"
+LangString StrataRemoveNote ${LANG_GERMAN} "Ein Modellordner, den Sie selbst gewählt haben, wird nie gelöscht."
+LangString StrataRemoveNote ${LANG_SPANISH} "Una carpeta de modelos que hayas elegido tú nunca se elimina."
+LangString StrataRemoveNote ${LANG_RUSSIAN} "Папка моделей, которую вы выбрали сами, не удаляется никогда."
+LangString StrataRemoveNote ${LANG_PORTUGUESEBR} "Uma pasta de modelos escolhida por você nunca é removida."
+LangString StrataRemoveNote ${LANG_KOREAN} "직접 고른 모델 폴더는 절대 삭제되지 않습니다."
+LangString StrataRemoveNote ${LANG_FRENCH} "Un dossier de modèles que vous avez choisi vous-même n’est jamais supprimé."
 
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode

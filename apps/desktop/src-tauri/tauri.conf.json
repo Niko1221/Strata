@@ -69,13 +69,21 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-      "template": "nsis/installer.nsi",
-      "headerImage": "nsis/header.bmp",
-      "sidebarImage": "nsis/sidebar.bmp",
-      "installerIcon": "icons/icon.ico",
+        "template": "nsis/installer.nsi",
+        "headerImage": "nsis/header.bmp",
+        "sidebarImage": "nsis/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
         "compression": "lzma",
         "languages": [
-          "English"
+          "English",
+          "SimpChinese",
+          "Japanese",
+          "German",
+          "Spanish",
+          "Russian",
+          "PortugueseBR",
+          "Korean",
+          "French"
         ]
       }
     }
