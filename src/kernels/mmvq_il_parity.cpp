@@ -463,6 +463,15 @@ int check_tables() {
         ++bad;
         std::printf("FAIL table: an unknown type or ncols must be 0\n");
     }
+    // gfx12 AMD (il_cc's 1202, the key a HIP 12.0 card answers): spot checks read off the R9700's tables -
+    // Q5_K at 2 columns / 512 rows = kIlRows_1202 {1, 0, 2, 2, 2}[class 0] = 1; Q6_K at 3 columns / 2560 rows
+    // (class 1) = {1, 2, 1, 0, 2}[1] = 2; Q6_K at 6 columns / 512 rows in the 5-8 table = {1, 4, 4, 4, 0}[0] = 1;
+    // one-column Q4_K at 6144 rows (class 2) = 2.  The key 120 (RTX 5070 / Blackwell small) must NOT answer these.
+    if (native_mmvq_il_rows_for(1202, 13, 2, 512) != 1 || native_mmvq_il_rows_for(1202, 14, 3, 2560) != 2 ||
+        native_mmvq_il_rows_for(1202, 14, 6, 512) != 1 || native_mmvq_il_rows_for(1202, 12, 1, 6144) != 2) {
+        ++bad;
+        std::printf("FAIL table: the 1202 table is not the R9700's\n");
+    }
     return bad;
 }
 }  // namespace
