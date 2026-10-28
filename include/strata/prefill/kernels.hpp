@@ -33,11 +33,13 @@ void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_l
                       float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr,
                       int64_t ldx = 0, bool f16img = false);
 /// S23 (STRATA_CVEC_FUSE=1): gr_write, then the control vector (v_l = layer l's direction row, *s_l its scale,
-/// *on the request flag, mode 0 project / 1 add; cvec_kernel's arithmetic), then gr_norm_rs with the next half's
-/// norm - one pass over R, the same bits as the three kernels.
+/// *on the request flag - 1 steers, 2 measures into `measure[mlayer * hc + c]` when flag 2 and the row's absolute
+/// index t_base + t equals measure_t -, mode 0 project / 1 add; cvec_kernel's arithmetic), then gr_norm_rs with the
+/// next half's norm - one pass over R, the same bits as the three kernels.
 void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* v_l,
                            const float* s_l, const int* on, int mode, const float* w_norm_next, float eps, float* rs,
-                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr, int64_t ldx = 0, bool f16img = false);
+                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr, int64_t ldx = 0, bool f16img = false,
+                           float* measure = nullptr, int64_t measure_t = -1, int64_t t_base = 0, int mlayer = -1);
 /// lo16[t, k] = bf16(silu(lo[t, k] / hc))
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo = nullptr);
 /// The BF16-weight GEMMs' activation image (gr_* kernels, to_bf16) in FP16 instead of BF16, on the current device.

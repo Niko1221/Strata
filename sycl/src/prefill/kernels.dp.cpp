@@ -283,7 +283,7 @@ auto &sh = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
     float* r = R + row * N;
     const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
     const float s = *s_l;
-    const bool steer = *on != 0 && s != 0.0f;
+    const bool steer = *on == 1 && s != 0.0f;   // flag 2 = measure: CUDA-only, fails closed to stock here
     float x[GRW_PER];
     float dot = 0.0f;
     int k = 0;
@@ -2388,7 +2388,9 @@ void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_l
 }
 void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* v_l,
                            const float* s_l, const int* on, int mode, const float* w_norm_next, float eps, float* rs,
-                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx, bool /*f16img*/) {
+                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx, bool /*f16img*/,
+                           float* /*measure*/, int64_t /*measure_t*/, int64_t /*t_base*/, int /*mlayer*/) {
+    // the measure pass is CUDA-only; the kernel steers on flag == 1 alone, so a measure flag reads as stock
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

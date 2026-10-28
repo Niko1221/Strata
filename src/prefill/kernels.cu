@@ -211,7 +211,8 @@ __global__ void __launch_bounds__(256) gr_write_cvec_norm_rs_kernel(
     float* __restrict__ R, const float* __restrict__ bo, const float* __restrict__ inj, int64_t inj_ld,
     const float* __restrict__ v_l, const float* __restrict__ s_l, const int* __restrict__ on, int mode,
     const float* __restrict__ w, float eps, float* __restrict__ rs_out, uint16_t* __restrict__ xn16,
-    uint16_t* __restrict__ xn16_lo, int64_t ldx, int f16img) {
+    uint16_t* __restrict__ xn16_lo, int64_t ldx, int f16img, float* __restrict__ measure, int64_t measure_t,
+    int64_t t_base, int mlayer) {
     __shared__ float sh[32];
     __shared__ float part[8];
     const int64_t row = blockIdx.x;                 // t * 4 + c
@@ -220,7 +221,9 @@ __global__ void __launch_bounds__(256) gr_write_cvec_norm_rs_kernel(
     float* r = R + row * N;
     const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
     const float s = *s_l;
-    const bool steer = *on != 0 && s != 0.0f;
+    const int flag = *on;
+    const bool steer = flag == 1 && s != 0.0f;
+    const bool meas = flag == 2 && measure != nullptr && s != 0.0f && mode == 0 && t_base + t == measure_t;
     float x[GRW_PER];
     float dot = 0.0f;
     int k = 0;
@@ -228,9 +231,9 @@ __global__ void __launch_bounds__(256) gr_write_cvec_norm_rs_kernel(
     for (int d = threadIdx.x; d < N; d += 256, ++k) {
         const float xv = fmaf(bo[t * N + d], sc, r[d]);
         x[k] = xv;
-        if (steer && mode == 0) dot = fmaf(xv, v_l[d], dot);
+        if ((steer || meas) && mode == 0) dot = fmaf(xv, v_l[d], dot);
     }
-    if (steer && mode == 0) {
+    if ((steer || meas) && mode == 0) {
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, o);
         if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = dot;
@@ -243,6 +246,7 @@ __global__ void __launch_bounds__(256) gr_write_cvec_norm_rs_kernel(
         }
         __syncthreads();
         dot = part[0] * s;
+        if (meas && threadIdx.x == 0) measure[mlayer * HC + c] = dot;   // the gate reads these; nothing is subtracted
     }
     float ss = 0.0f;
     k = 0;
@@ -2618,9 +2622,11 @@ void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_l
 }
 void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* v_l,
                            const float* s_l, const int* on, int mode, const float* w_norm_next, float eps, float* rs,
-                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx, bool f16img) {
+                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx, bool f16img,
+                           float* measure, int64_t measure_t, int64_t t_base, int mlayer) {
     gr_write_cvec_norm_rs_kernel<<<(unsigned) (T * HC), 256, 0, (cudaStream_t) stream>>>(
-        R, bo, inj, inj_ld, v_l, s_l, on, mode, w_norm_next, eps, rs, xn16, xn16_lo, ldx > 0 ? ldx : D, f16img ? 1 : 0);
+        R, bo, inj, inj_ld, v_l, s_l, on, mode, w_norm_next, eps, rs, xn16, xn16_lo, ldx > 0 ? ldx : D, f16img ? 1 : 0,
+        measure, measure_t, t_base, mlayer);
     check("gr_write_cvec_norm_rs");
 }
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo) {

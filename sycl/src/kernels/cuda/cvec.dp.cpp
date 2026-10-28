@@ -14,7 +14,7 @@ constexpr int THREADS = 256;
 constexpr int MAXK = 16;   // n_embd up to 4096, held in registers between the dot and the update
 
 Cvec g_cvec;                 // the description; its device pointers are the uploading device's
-bool g_on_host = false;
+int g_flag_host = 1;         // 0 stock, 1 steer, 2 measure - SYCL implements 0 and 1; 2 fails closed to stock
 // the tables on every device that holds them (a layer split applies the vector on several)
 constexpr int kDevices = 64;
 struct DevTables { float* dir = nullptr; float* s = nullptr; int* on = nullptr; };
@@ -34,7 +34,7 @@ catch (sycl::exception const &exc) {
 bool upload_here(std::string &err) try {
     DevTables& t = g_dev[cur_device()];
     if (t.dir != nullptr) return true;
-    const int flag = g_on_host ? 1 : 0;
+    const int flag = g_flag_host;
     if (DPCT_CHECK_ERROR(t.dir = sycl::malloc_device<float>(
                              g_dir_host.size(), dpct::get_in_order_queue())) !=
             0 ||
@@ -98,7 +98,7 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
     const int64_t t = item_ct1.get_group(1);
     float* r = R + t * r_ld + (int64_t) c * n;
     const float s = s_l[layer];
-    const bool steer = *on != 0 && s != 0.0f;   // uniform over the block
+    const bool steer = *on == 1 && s != 0.0f;   // uniform over the block (flag 2 = measure: not implemented here, steers as stock)
     if (!steer && !write) return;
     const float* v = dir + layer * n;
     const float w = write ? 2.0f * sigmoidf_(inj[t * inj_ld + c] / (float) hc) : 0.0f;
@@ -211,7 +211,7 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
     dpct::select_device(prev);
     g_dir_host = dir;
     g_s_host = s;
-    g_on_host = true;
+    g_flag_host = 1;
     if (!upload_here(err)) return false;
     const DevTables& t = g_dev[cur_device()];
     g_cvec.dir = t.dir;
@@ -229,11 +229,11 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
 
 bool cvec_replicate(std::string& err) { return !g_cvec.loaded() || upload_here(err); }
 
-void cvec_set_enabled(bool on) {
-    if (!g_cvec.loaded() || on == g_on_host) return;
+void cvec_set_enabled(int flag) {
+    if (!g_cvec.loaded() || flag == g_flag_host) return;
     int prev = 0;
     prev = dpct::get_current_device_id();
-    const int v = on ? 1 : 0;
+    const int v = flag;
     for (int d = 0; d < kDevices; ++d) {
         if (g_dev[d].on == nullptr) continue;
         /*
@@ -251,10 +251,15 @@ void cvec_set_enabled(bool on) {
     the selected device if needed.
     */
     dpct::select_device(prev);
-    g_on_host = on;
+    g_flag_host = flag;
 }
 
-bool cvec_enabled() { return g_cvec.loaded() && g_on_host; }
+bool cvec_enabled() { return g_cvec.loaded() && g_flag_host == 1; }
+
+// the measure pass of the conditional gate is CUDA-only: SYCL fails it closed, and the gate reads nothing
+void cvec_measure_reset() {}
+void cvec_measure_set_target(int64_t) {}
+bool cvec_measure_read(std::vector<float>&) { return false; }
 
 bool cvec_tables(const float** dir, const float** s, const int** on) {
     if (!g_cvec.loaded()) return false;
@@ -266,8 +271,9 @@ bool cvec_tables(const float** dir, const float** s, const int** on) {
 
 void cvec_apply(float *R, int64_t layer, int64_t T, int64_t r_ld,
                 const float *bo, int64_t bo_ld, const float *inj,
-                int64_t inj_ld, bool write, void *stream) try {
+                int64_t inj_ld, bool write, void *stream, int64_t t_base) try {
     if (!g_cvec.loaded() || T < 1) return;
+    (void) t_base;   // the measure target is CUDA-only; the kernel steers on the flag alone
     const DevTables& t = g_dev[cur_device()];
     if (t.dir == nullptr) throw std::runtime_error("cvec_apply: the control vector is not on this device (cvec_replicate)");
     const dpct::dim3 grid((unsigned)g_cvec.hc, (unsigned)T);
