@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -1270,7 +1271,9 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     from strata_cli.client import server_url
     target = bench_standard.Target(server_url(url), key)
     redact = bench_facts.redactor(key or "")
-    command = redact("strata " + " ".join(str(part) for part in (a.raw_argv or ["bench", "run", "--suite", "standard-v1"])))
+    parts = [str(part) for part in (a.raw_argv or ["bench", "run", "--suite", "standard-v1"])]
+    # quoted as the shell would take it back, so a --track-notes with spaces stays one argument (#4494)
+    command = redact("strata " + (subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)))
     declared = {"track": a.track, "track_notes": a.track_notes or "no notes given by the operator",
                 "model_revision": a.model_revision, "source_revision": a.source_revision,
                 "tokenizer_revision": a.tokenizer_revision, "quantization": a.quantization,

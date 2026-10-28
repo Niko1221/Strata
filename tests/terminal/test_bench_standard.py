@@ -838,6 +838,9 @@ class CommandLineTests(StandardBase):
         self.assertEqual(doc["hardware"]["background_workloads"], ["browser open"])
         self.assertEqual(doc["software"]["build_options"], ["cuda", "sm86"])
         self.assertTrue(doc["run"]["optional_concurrency"])
+        # #4494: the command is quoted as a shell would take it back, so a note with spaces stays one argument
+        quoted = '"0.2.0 release, setup choices"' if os.name == "nt" else "'0.2.0 release, setup choices'"
+        self.assertIn("--track-notes " + quoted, doc["run"]["command"])
         self.assertIn("--track default", doc["run"]["command"])
         self.assertTrue(doc["run"]["command"].startswith("strata bench run"))
 
