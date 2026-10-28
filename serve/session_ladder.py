@@ -52,6 +52,12 @@ SESSION_HEADERS = ("x-opencode-session-id", "x-session-id", "x-session-affinity"
 SAVE_RETRY_BASE_S = 5.0
 SAVE_RETRY_CAP_S = 300.0
 
+# Task 9 (incremental saves): the fixed bytes every append generation re-emits whatever the conversation
+# grew by - the mutable block (running state, checkpoint, header rewrite): ~4 MiB at the engine's
+# ~90 MB/s measured save rate.  The delta-aware expected_save_seconds clamps an append estimate to at
+# least this, so a session that barely grew still books a save that takes real time.
+APPEND_FLOOR_BYTES = 4 << 20
+
 
 @dataclass
 class ConvEvent:
@@ -92,6 +98,10 @@ class TrackedSession:
     # session's last landed save (the save result's "ms"; None when never saved or unmeasured)
     saved_at_bytes: int = 0           # its byte_count at that save moment: the growth reference the
     # expected_save_seconds estimate scales last_save_ms against
+    last_save_appended: bool = False  # Task 9 (incremental saves): the last landed save APPENDED a
+    # generation onto the session's file (the engine result's "appended" key; False for a full rewrite)
+    last_save_delta_bytes: int = 0    # that append's byte delta (the result's "bytes" when appended;
+    # 0 otherwise): the measured cost anchor the delta-aware expected_save_seconds scales by growth
     save_retry_delay_s: float = 0.0   # final review A: the delay of the retry cooldown the LAST refused
     # save armed (SAVE_RETRY_BASE_S on the first refusal, doubling per successive refusal to
     # SAVE_RETRY_CAP_S; 0.0 when nothing is refused or a save landed)
@@ -549,6 +559,12 @@ class SessionLadder:
             if result is not None:
                 s.last_save_ms = (result or {}).get("ms")
                 s.saved_at_bytes = s.byte_count
+                # Task 9: an appended save reports the DELTA as "bytes" and carries "appended" (an old
+                # engine result without the key is a full rewrite for the estimate's purposes); a full
+                # save clears the pair - it rewrote the whole file, so no append anchor stands.
+                s.last_save_appended = bool((result or {}).get("appended", False))
+                s.last_save_delta_bytes = int(s.last_save_ms is not None and s.last_save_appended
+                                              and (result or {}).get("bytes") or 0)
             s.save_retry_delay_s, s.save_retry_until = 0.0, 0.0
         self._note_file_saved(sid, path)
 
@@ -557,12 +573,24 @@ class SessionLadder:
         quiet gate is derived from it).  With a measured save on record, that measured duration scales by
         how much the conversation has grown since (a 30 s save of a 1 GB conversation predicts 60 s at
         2 GB); without one, the engine's ~100 MB/s write rate over the tracked byte_count is the first
-        estimate.  Clamped to [5, 600] s: the floor keeps the estimate meaningful for any conversation,
-        the ceiling bounds it for the biggest ones.  Lock context: it reads the session's fields without
-        taking the lock - holding it around the read is the caller's, per this file's convention
-        (decisions run in a lock window)."""
+        estimate.  Task 9 (incremental saves): when the measured save APPENDED with a known delta, the
+        estimate scales THAT measured delta by the conversation's growth since the save instead of the
+        whole file - an append writes the growth, not the file.  Honesty rule: an appendable estimate is
+        a FLOOR - the gate may still refuse the next append (dirty watermark, changed geometry), and the
+        save then costs the full-file model, so the append estimate never exceeds it; it also never goes
+        below APPEND_FLOOR_BYTES worth of writing, because every generation re-emits its mutable block
+        whatever the growth.  Clamped to [5, 600] s: the floor keeps the estimate meaningful for any
+        conversation, the ceiling bounds it for the biggest ones.  Lock context: it reads the session's
+        fields without taking the lock - holding it around the read is the caller's, per this file's
+        convention (decisions run in a lock window)."""
         if s.last_save_ms is not None and s.saved_at_bytes:
-            est = s.last_save_ms / 1000 * max(1.0, s.byte_count / max(1, s.saved_at_bytes))
+            full = s.last_save_ms / 1000 * max(1.0, s.byte_count / max(1, s.saved_at_bytes))
+            est = full
+            if s.last_save_appended and s.last_save_delta_bytes > 0:
+                growth = max(0, s.byte_count - s.saved_at_bytes)
+                est = max(s.last_save_ms / 1000 * max(APPEND_FLOOR_BYTES, growth) / s.last_save_delta_bytes,
+                          APPEND_FLOOR_BYTES / 90e6)
+                est = min(est, full)
         else:
             est = s.byte_count / 1e8
         return min(600.0, max(5.0, est))
@@ -925,8 +953,16 @@ class SessionLadder:
         for path in self.saved_files:
             for sid, s in self.tracked.items():
                 if s.file_path == path:
+                    # the Task 9 estimate anchor travels with the file it was saved against: a restarted
+                    # ladder keeps its duration/size/append/delta bookkeeping instead of falling back to
+                    # the size-only first estimate (saved_at_bytes pairs with THIS file, the same pairing
+                    # rule as the prefix above)
                     entries[sid] = {"file": path, "tokens": s.tokens,
-                                    "saved_prefix": s.saved_prefix or ""}
+                                    "saved_prefix": s.saved_prefix or "",
+                                    "last_save_ms": s.last_save_ms,
+                                    "saved_at_bytes": s.saved_at_bytes,
+                                    "appended": s.last_save_appended,
+                                    "delta_bytes": s.last_save_delta_bytes}
                     # the child mark and the save stamp ride with the entry they describe: an adopted
                     # ladder keeps child-first retirement order, the child cap, and the TTL anchor across
                     # the restart (additive keys: an older ladder reading this sidecar ignores them).
@@ -971,6 +1007,8 @@ class SessionLadder:
             prefix = e.get("saved_prefix")
             saved_at = e.get("saved_at")
             parent = e.get("parent")
+            ms, at_bytes = e.get("last_save_ms"), e.get("saved_at_bytes")
+            appended, delta = e.get("appended"), e.get("delta_bytes")
             self.tracked[sid] = TrackedSession(
                 session_id=sid, tokens=tokens, parked=False,
                 save_eligible=(tokens * PARK_COST_KIB_PER_TOKEN / 1024.0 > self.cfg.park_budget_mib
@@ -979,8 +1017,15 @@ class SessionLadder:
                 last_active=0.0, evictions_at_last_switch=0, dirty=False,
                 byte_count=int(tokens * PARK_COST_KIB_PER_TOKEN * 1024),   # the same normalization an
             # on_turn_done intake gives: the estimate stands in until a joined event re-anchors to measured
+            last_save_ms=float(ms) if isinstance(ms, (int, float)) and not isinstance(ms, bool)
+            and ms >= 0 else None,   # a sidecar predating Task 9 has no anchor: the size-only
+            saved_at_bytes=at_bytes if isinstance(at_bytes, int) and not isinstance(at_bytes, bool)
+            and at_bytes >= 0 else 0,   # first estimate applies, exactly as before
+            last_save_appended=appended if isinstance(appended, bool) else False,
+            last_save_delta_bytes=delta if isinstance(delta, int) and not isinstance(delta, bool)
+            and delta >= 0 else 0,
             last_save=(saved_at if isinstance(saved_at, (int, float)) and not isinstance(saved_at, bool)
-                       else 0.0))
+                       else 0.0))     # the child-TTL anchor (also a Task 9 sidecar addition)
             if isinstance(parent, str) and parent and parent != sid:
                 self.parent_of[sid] = parent              # the child mark survives the restart: an
             # adopted child still retires before an older main (pinned by test_parent_identity_...)

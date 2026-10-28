@@ -618,6 +618,52 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(s.saved_at_bytes, s.byte_count)
         self.assertAlmostEqual(s.byte_count / 1e8, self.ladder.expected_save_seconds(s))
 
+    def test_commit_records_append_and_delta(self):
+        # An append save (engine result carrying "appended" and a DELTA as bytes) books both; the
+        # next full save clears the record (it rewrote the whole file).
+        self.seen("ses-a")
+        self.engine.session_file = mock.Mock(
+            return_value={"tokens": 1, "ms": 600.0, "bytes": 10_000_000, "appended": True})
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_idle(self.service, 8.0)
+        s = self.ladder.tracked["ses-a"]
+        self.assertTrue(s.last_save_appended)
+        self.assertEqual(s.last_save_delta_bytes, 10_000_000)
+        self.engine.session_file = mock.Mock(return_value={"tokens": 1, "ms": 4000.0, "bytes": 900_000_000})
+        self.ladder.on_turn_done("ses-a", MID, 0, 0)
+        self.ladder.on_idle(self.service, 8.0)
+        self.assertFalse(s.last_save_appended)
+        self.assertEqual(s.last_save_delta_bytes, 0)
+
+    def _append_anchor(self, byte_count):
+        s = TrackedSession(session_id="ses-a", tokens=MID, parked=False, save_eligible=True,
+                           file_path=None, saved_prefix=None, last_active=0.0,
+                           evictions_at_last_switch=0, byte_count=byte_count)
+        s.last_save_ms, s.saved_at_bytes = 30_000.0, 1_000_000_000        # a 30 s save recorded at 1 GB
+        s.last_save_appended, s.last_save_delta_bytes = True, 300_000_000  # it APPENDED 300 MB of that
+        return s
+
+    def test_expected_save_seconds_appended_scales_with_growth_not_file(self):
+        # The append measured 30 s for 300 MB; this session has grown 100 MB since that save:
+        # the estimate is 30 * 100/300 = 10 s - not the full-file model's 30 * 1.1 = 33 s.
+        self.assertAlmostEqual(10.0, self.ladder.expected_save_seconds(self._append_anchor(1_100_000_000)))
+
+    def test_expected_save_seconds_append_estimate_never_beats_the_full_model(self):
+        # Growth (500 MB) above what the last append moved (300 MB): the append estimate (50 s)
+        # is capped by the full-file model (45 s) - an appendable estimate is a FLOOR, and the
+        # next save may be refused and go full anyway.
+        self.assertAlmostEqual(45.0, self.ladder.expected_save_seconds(self._append_anchor(1_500_000_000)))
+
+    def test_expected_save_seconds_appended_without_known_delta_is_the_full_model(self):
+        # appended True but no recorded delta (a malformed record): exactly the old behavior.
+        s = self._append_anchor(1_100_000_000)
+        s.last_save_delta_bytes = 0
+        self.assertAlmostEqual(33.0, self.ladder.expected_save_seconds(s))
+        # and an OLD ENGINE result (no "appended" key at all) keeps the old behavior too
+        s2 = self._append_anchor(1_100_000_000)
+        s2.last_save_appended = False
+        self.assertAlmostEqual(33.0, self.ladder.expected_save_seconds(s2))
+
 
 class LifecycleEngine(LadderHarness):
     """Task 8's engine half: the recording LadderHarness plus the unload/reload surface the lifecycle
