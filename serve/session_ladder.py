@@ -563,8 +563,10 @@ class SessionLadder:
                 # engine result without the key is a full rewrite for the estimate's purposes); a full
                 # save clears the pair - it rewrote the whole file, so no append anchor stands.
                 s.last_save_appended = bool((result or {}).get("appended", False))
-                s.last_save_delta_bytes = int(s.last_save_ms is not None and s.last_save_appended
-                                              and (result or {}).get("bytes") or 0)
+                # explicit form (review minor n5): the delta stands only for an append with a reported byte
+                # count; anything else records 0 (which the estimate's guard treats as "no append anchor")
+                delta = (result or {}).get("bytes") if s.last_save_appended else None
+                s.last_save_delta_bytes = int(delta) if isinstance(delta, (int, float)) else 0
             s.save_retry_delay_s, s.save_retry_until = 0.0, 0.0
         self._note_file_saved(sid, path)
 

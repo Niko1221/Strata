@@ -449,7 +449,12 @@ public:
         if (fl >= 0) ::fcntl(fd_, F_SETFL, fl & ~O_NONBLOCK);
         if (::lseek(fd_, (off_t) st.st_size, SEEK_SET) < 0) { error_ = std::strerror(errno); return false; }
         size = (uint64_t) st.st_size;
-        return true;   // no try_direct(): the append position is not alignment-friendly by construction
+        // no try_direct(): the append position is not alignment-friendly by construction - the group+trailer
+        // layout ends every generation at a 512-multiple, but the file's own offset at the append point is
+        // that multiple only through the RECORD layout, not a block multiple.  FileSink's direct padding and
+        // exact-size truncate (finish) therefore never engage on this fd: an append's bytes land exactly,
+        // and the EOF rule above (size == plan.file_size == group_start) is what pins the file's size.
+        return true;
     }
     // in-place update at a fixed offset (the 64 B header rewrite): O_APPEND does not apply to pwrite, so
     // later write() calls still land at EOF
