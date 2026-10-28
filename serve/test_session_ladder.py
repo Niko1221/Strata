@@ -37,7 +37,12 @@ from serve.session_ladder import (
 )
 
 # verbatim evidence knobs (Global Constraints): park cost 40.4 KiB/token, engine park minimum 8192.
-CFG = LadderConfig(enabled=True, slot_save_path="/var/lib/strata/sessions", park_budget_mib=4096)
+# The slot path is a fixture, NOT the live /var/lib/strata/sessions: SessionLadder.__init__ adopts the
+# sidecar a previous server process left there (R4), and a unit run on a live host would join synthetic
+# events to the real server's tracked sessions (momo 2026-10-28: the snapshot-size join test lost its
+# "main" to whatever the live ladder-index.json happened to hold; wiring.py's NearTie uses "/unused"
+# for the same reason).  No test in this file writes here - the I/O classes build their own tmpdir cfgs.
+CFG = LadderConfig(enabled=True, slot_save_path="/unused", park_budget_mib=4096)
 
 
 def session(session_id, tokens, byte_count, parked=True, save_eligible=True, evictions_at_last_switch=0, **kw):
