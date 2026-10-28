@@ -2653,8 +2653,12 @@ SessionSaveChoice session_save_gate(const SessionAppendPlan* plan, const std::ve
             return full("layer " + std::to_string(j + 1) + " carve shrank below the file's (an append only grows it)");
     }
     // the immutability watermark (SessionState::kv_append_ok's comparison, kept header-free here): the
-    // whole-page prefix of the lowest rewritten position must reach the boundary the file committed.
-    const int64_t saved = (int64_t) plan->checkpoint.trailer.saved_tokens;
+    // file's trusted region is its whole-page committed prefix (committed segments end at
+    // whole_cells(saved_tokens) and the format re-emits the shared partial page every generation), so the
+    // watermark compares against the ROUNDED boundary.  Measured on live momo: a save whose token count is
+    // not a page multiple had been refusing its own next append forever.
+    const int64_t saved_raw = (int64_t) plan->checkpoint.trailer.saved_tokens;
+    const int64_t saved = page > 0 ? (saved_raw / page) * page : saved_raw;
     const int64_t whole = page > 0 ? (kv_first_dirty / page) * page : kv_first_dirty;
     if (kv_first_dirty != std::numeric_limits<int64_t>::max() && whole < saved)
         return full("pool rows at or below the file's saved boundary may differ from what it committed");

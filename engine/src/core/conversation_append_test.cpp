@@ -1847,6 +1847,20 @@ void save_gate_tests() {
           "a write inside the fresh residue page (whole cells at the boundary) still appends");
     check(session_save_gate(&plan, live, saved - 1, page, why) == SessionSaveChoice::full_rewrite && !why.empty(),
           "dirty below the saved boundary full-rewrites");
+
+    // The live momo finding: a save whose token count is not a page multiple must still earn its own next
+    // append.  The file trusts only its whole-page committed prefix (the shared partial page is re-emitted
+    // every generation), so the watermark compares against saved_tokens rounded down.
+    {
+        SessionAppendPlan up = plan;
+        up.checkpoint.trailer.saved_tokens = 1000;  // unaligned against page 64: committed prefix 960
+        check(session_save_gate(&up, live, 1000, page, why) == SessionSaveChoice::append && why.empty(),
+              "an unaligned save earns its own next append (write starts at the saved token count)");
+        check(session_save_gate(&up, live, 960, page, why) == SessionSaveChoice::append && why.empty(),
+              "a mount rewriting the unaligned file's re-emitted partial page stays eligible");
+        check(session_save_gate(&up, live, 959, page, why) == SessionSaveChoice::full_rewrite && !why.empty(),
+              "a write below the unaligned file's committed prefix full-rewrites");
+    }
     check(session_save_gate(nullptr, live, clean, page, why) == SessionSaveChoice::full_rewrite && !why.empty(),
           "no plan (v2 file, torn tail, foreign file) full-rewrites");
 
