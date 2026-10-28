@@ -592,7 +592,8 @@ def engine_build(cfg: dict | None) -> dict | None:
 
 
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:UD-)?(?:IQ\d_[A-Z]+|Q\d_[A-Z0-9_]+|Q\d_K(?:_[A-Z]+)?|IQ\d_?[A-Z]*|BF16|F16|Q\d))(?=[-_.]|$)")
-SECRET_KEY = re.compile(r"(?i)key|token|secret|password|auth")
+# whole words only, so `fit_max_tokens` or `STRATA_SPEC_MIN_TOKENS` is reported and `api_key` is not (#4472)
+SECRET_KEY = re.compile(r"(?i)(?:^|[-_])(?:keys?|apikey|token|secret|password|passphrase|credentials?|auth|bearer)(?=$|[-_])")
 
 
 def base_if_path(v):

@@ -723,22 +723,33 @@ def _import_words(plan: dict) -> str:
     return "\n".join(lines)
 
 
+# A credential is named by a whole word of the option (`--api-key`, `--hf-token`), not by a substring: counts such as
+# `--max-tokens` or `--conversation-cache-min-tokens` stay readable (#4472).
+_SECRET_WORD = re.compile(r"(?i)(?:^|[-_])(?:keys?|apikey|token|secret|password|passphrase|credentials?|auth|bearer)(?=$|[-_=])")
+
+
+def _takes_value(item: str | None) -> bool:
+    # Strata's options are all `--long`; anything else after a secret option is its value, even "-x..." (hidden)
+    return item is not None and not item.startswith("--")
+
+
 def _redact_argv(args: list[str]) -> list[str]:
     out = []
-    conceal_next = False
-    for item in args:
-        if conceal_next:
-            out.append("<redacted>")
-            conceal_next = False
-            continue
-        if item.startswith("-") and any(word in item.lower() for word in ("key", "token", "secret", "password", "credential")):
+    i = 0
+    while i < len(args):
+        item = args[i]
+        if item.startswith("-") and _SECRET_WORD.search(item.lstrip("-").partition("=")[0]):
             if "=" in item:
                 out.append(item.partition("=")[0] + "=<redacted>")
+            elif _takes_value(args[i + 1] if i + 1 < len(args) else None):
+                # a flag with no value (`--no-token-graph`, `--native-ple-key`) must not hide the next option
+                out += [item, "<redacted>"]
+                i += 1
             else:
                 out.append(item)
-                conceal_next = True
         else:
             out.append(item)
+        i += 1
     return out
 
 

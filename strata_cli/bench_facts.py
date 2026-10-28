@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MODEL_SUFFIXES = (".gguf", ".safetensors", ".pack", ".bin")
-SECRET_KEY = re.compile(r"(?i)key|token|secret|password|auth")
+# whole words only, so `fit_max_tokens` or `STRATA_SPEC_MIN_TOKENS` is reported and `api_key` is not (#4472)
+SECRET_KEY = re.compile(r"(?i)(?:^|[-_])(?:keys?|apikey|token|secret|password|passphrase|credentials?|auth|bearer)(?=$|[-_])")
 
 
 class Why(dict):
