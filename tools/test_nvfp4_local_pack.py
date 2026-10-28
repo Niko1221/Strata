@@ -1,9 +1,16 @@
 """Tests for tools/nvfp4_local_pack.py: the CSF scale decode, the MXFP8 dequantization, the PLE rows."""
+import json
 import pathlib
+import struct
 import sys
 
 import numpy as np
-import pytest
+import unittest
+
+try:
+    import pytest
+except ImportError:                                  # not in requirements.txt: python -m unittest skips this module instead of failing to import it (#3325)
+    raise unittest.SkipTest("pytest is not installed")
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import nvfp4_local_pack as P  # noqa: E402
@@ -109,3 +116,42 @@ def test_nvfp4_blocks_layout_by_hand():
     # within a 16-block: element j in the low nibble, element j+8 in the high one
     blk0 = out[0, 4:12]
     assert [int(b & 15) for b in blk0] == list(range(8)) and [int(b >> 4) for b in blk0] == list(range(8, 16))
+
+
+def _write_shard(path, tensors):
+    """tensors: name -> (dtype, shape, uint8 bytes), written safetensors-style (data after the header)."""
+    hdr, data, off = {}, bytearray(), 0
+    for name, (dt, shape, buf) in tensors.items():
+        hdr[name] = {"dtype": dt, "shape": shape, "data_offsets": [off, off + len(buf)]}
+        data += buf
+        off += len(buf)
+    hj = json.dumps(hdr).encode("utf-8")
+    hj += b" " * (-len(hj) % 8)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(hj)) + hj + data)
+
+
+def test_checkpoint_reads_the_shard_bytes_exactly(tmp_path):
+    a = np.arange(200, dtype=np.uint8)
+    _write_shard(tmp_path / "s1.safetensors", {"t.a": ("U8", [100, 2], a.tobytes())})
+    d = np.arange(4, dtype=np.uint32)
+    c = np.arange(32, dtype=np.uint8)
+    _write_shard(tmp_path / "s2.safetensors", {"t.d": ("U32", [4], d.tobytes()), "t.c": ("U8", [8, 4], c.tobytes())})
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {
+        "t.a": "s1.safetensors", "t.c": "s2.safetensors", "t.d": "s2.safetensors"}}), encoding="utf-8")
+    ck = P.Checkpoint(tmp_path)
+    assert "t.a" in ck and ck.shape("t.a") == [100, 2] and ck.dtype("t.a") == "U8"
+    assert np.array_equal(ck.raw("t.a"), a)                       # the bytes at the tensor's exact range
+    assert np.array_equal(ck.array("t.c", np.uint8), c.reshape(8, 4))
+    assert np.array_equal(ck.array("t.d", np.uint32), d)          # .view through a fresh buffer
+    assert np.array_equal(ck.raw("t.a"), ck.raw("t.a"))           # a second read is still correct
+
+
+def test_checkpoint_names_a_truncated_shard(tmp_path):
+    c = np.arange(32, dtype=np.uint8)
+    _write_shard(tmp_path / "s1.safetensors", {"t.c": ("U8", [8, 4], c.tobytes())})
+    p = tmp_path / "s1.safetensors"
+    p.write_bytes(p.read_bytes()[:-8])                            # the last tensor's range now ends past EOF
+    ck = P.Checkpoint(tmp_path)
+    with pytest.raises(EOFError):
+        ck.raw("t.c")

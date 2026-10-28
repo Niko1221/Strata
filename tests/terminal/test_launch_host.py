@@ -73,6 +73,17 @@ def test_explicit_keyless_and_local_access_do_not_bypass_shared_host_checks():
         assert s.api_key
 
 
+def test_shared_host_keeps_deepseek_pack_context_validation():
+    with Home():
+        cat = catalog(HW_12)
+        s = S.LaunchSettings(family="deepseek41", model="UD-Q8_K_XL", context=524288,
+                             vision="off", access="local", host="192.0.2.10")
+        with mock.patch.object(cat, "pack_limit", return_value=262144):
+            s, notes = cmd.apply_defaults(s, cat)
+        assert s.api_key
+        assert any(n.level == "error" and "512K" in n.text and "256K" in n.text for n in notes)
+
+
 def test_saved_host_overrides_round_trip_and_access_can_reset_it():
     with Home():
         original = S.LaunchSettings(name="Office", family="qwen", model="Q2_0", access="lan", host="192.0.2.10")

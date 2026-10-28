@@ -74,6 +74,17 @@ export function findControl({ env = process.env, platform = process.platform, ex
   return control;
 }
 
+/**
+ * The environment of the server the host starts from a source checkout (#3851): the key travels in the run configuration, so a
+ * STRATA_API_KEY the host itself was started with is removed. Setting it to an empty string made serve/server.py stop with
+ * "an API key was given but it is empty".
+ */
+export function sourceServerEnvironment(env = process.env) {
+  const next = { ...env, PYTHONUNBUFFERED: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+  delete next.STRATA_API_KEY;
+  return next;
+}
+
 /** The environment Control runs in: nothing from the user's Python, and acquiring forbidden. */
 export function controlEnvironment(control, { env = process.env, components = componentsDirectory({ env }), acquire = false } = {}) {
   const next = { ...env };

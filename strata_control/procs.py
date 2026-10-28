@@ -75,7 +75,7 @@ def start_token(pid: int) -> str | None:
                              timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
-    return None if not out or out.endswith("Z") else "s:" + out
+    return None if not out or out.endswith("Z") else "s:" + out.rsplit(None, 1)[0]
 
 
 def started_epoch(pid: int) -> float | None:
@@ -309,10 +309,13 @@ def end_one(record: dict, *, grace: float = 8.0) -> str:
     if not is_same(pid, record["token"], record["cmd"]):
         drop_record(pid)
         return "gone"
+    # once signalled, the start token alone says it still runs: an exiting process has an empty command line on Linux
+    def running():
+        return start_token(pid) == record["token"]
     if not WINDOWS:
         _signal_verified(record, signal.SIGTERM)
         deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+        while time.monotonic() < deadline and running():
             time.sleep(0.1)
         if is_same(pid, record["token"], record["cmd"]):
             _signal_verified(record, signal.SIGKILL)
@@ -320,9 +323,9 @@ def end_one(record: dict, *, grace: float = 8.0) -> str:
         if is_same(pid, record["token"], record["cmd"]):
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)      # one PID, verified just above
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+    while time.monotonic() < deadline and running():
         time.sleep(0.1)
-    if is_same(pid, record["token"], record["cmd"]):
+    if running():
         return "stuck"
     drop_record(pid)
     return "ended"
@@ -354,7 +357,8 @@ def orphans_of(engine_exe: str) -> list[Ident]:
         return []
     mine = {os.getpid()}
     try:
-        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1)    # pid 1 adopts orphans: it is not a starter
+        # pid 1 and a subreaper such as `systemd --user` (an ancestor of every desktop terminal) adopt orphans: they are not starters
+        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1 and q.name().lower() not in INIT_NAMES)
     except psutil.Error:
         pass
     found = []
