@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from '
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { makePrivate } from './private-file.mjs';
+import { netFetch } from './net.mjs';
 
 export const PROVIDER_CATALOG = [
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', protocol: 'openai-responses' },
@@ -50,7 +51,7 @@ export function normalizeBaseUrl(value) {
 const publicConnection = ({ apiKey, ...connection }) => ({ ...connection, apiKeySet: !!apiKey });
 const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
-export function createModelProviders({ directory, changed = () => {}, fetchImpl = fetch, knownThinks = () => null }) {
+export function createModelProviders({ directory, changed = () => {}, fetchImpl = netFetch, knownThinks = () => null }) {
   mkdirSync(directory, { recursive: true });
   const file = join(directory, 'model-providers.json');
   let connections = [];

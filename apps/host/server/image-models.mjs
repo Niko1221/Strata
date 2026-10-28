@@ -1,11 +1,13 @@
 /** Optional diffusion weights have their own library; they never replace the chat model. */
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { matchesGGUF } from './model-files.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { atomicWriteJsonSync, readJsonWithBackupSync } from './atomic-file.mjs';
+import { ensureFreeSpace } from './disk-space.mjs';
 
 export const IMAGE_CATALOG = JSON.parse(readFileSync(new URL('./image-catalog.json', import.meta.url), 'utf8'));
 
@@ -16,15 +18,15 @@ export function createImageModels({ dataDir, modelsDir, real = false, changed = 
   const directory = () => typeof modelsDir === 'function' ? modelsDir() : modelsDir;
   let saved = { schema: 2, selected: 'off', applied: 'off', installed: {}, installedByDirectory: {} };
   try {
-    const previous = JSON.parse(readFileSync(stateFile, 'utf8'));
-    saved = { ...saved, selected: choices.has(previous.selected) ? previous.selected : 'off',
+    const previous = readJsonWithBackupSync(stateFile, null);
+    if (previous && typeof previous === 'object') saved = { ...saved, selected: choices.has(previous.selected) ? previous.selected : 'off',
       applied: choices.has(previous.applied) ? previous.applied : 'off', installedByDirectory: previous.installedByDirectory ?? { [directory()]: previous.installed ?? {} } };
   } catch { /* A new library starts off without downloading anything. */ }
   const runtime = new Map();
   const jobs = new Map();
   const entries = () => saved.installedByDirectory[directory()] ?? {};
   const fileFor = v => entries()[v.id]?.file && matchesGGUF(entries()[v.id].file, v.bytes, directory()) ? entries()[v.id].file : join(directory(), 'image', v.id, v.file);
-  const persist = () => writeFileSync(stateFile, JSON.stringify(saved, null, 2));
+  const persist = () => atomicWriteJsonSync(stateFile, saved);
   function installed(v) {
     const entry = entries()[v.id];
     if (!real) return entry?.simulated === true;
@@ -68,8 +70,7 @@ export function createImageModels({ dataDir, modelsDir, real = false, changed = 
     if (jobs.size) throw new Error('Finish or cancel the current image model download first.');
     if (real) {
       mkdirSync(directory(), { recursive: true });
-      const disk = statfsSync(directory());
-      if (disk.bavail * disk.bsize < v.bytes + 512 * 1024 ** 2) throw new Error('There is not enough free storage for this image model.');
+      ensureFreeSpace(directory(), { need: v.bytes + 512 * 1024 ** 2, label: `the image model "${v.label}"` });
     }
     const controller = new AbortController();
     runtime.set(id, { state: 'downloading', progress: { pct: 0, stage: 'Downloading' } });

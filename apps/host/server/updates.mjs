@@ -1,4 +1,5 @@
 import { OFFLINE_MESSAGE, looksOffline, plainUpdateError } from './update-messages.mjs';
+import { netFetch } from './net.mjs';
 
 /** Read-only release checks. Installing/rolling back needs a managed installer. */
 const RELEASES = 'https://api.github.com/repos/Niko1221/Strata/releases?per_page=30';
@@ -13,7 +14,7 @@ function compare(a, b) {
   return 0;
 }
 
-export async function checkUpdates({ appVersion, engineVersion }, fetcher = fetch) {
+export async function checkUpdates({ appVersion, engineVersion }, fetcher = netFetch) {
   let strata;
   try {
     const response = await fetcher(RELEASES, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10000) });

@@ -58,7 +58,10 @@ function newer(a, b) {
  */
 export function findControl({ env = process.env, platform = process.platform, exists = existsSync, hostDir = resolve(HERE, '..'), components = null } = {}) {
   const updated = updatedControlDirectory({ env, platform, components });
-  const candidates = [{ dir: env.STRATA_CONTROL_DIR }, { dir: join(hostDir, '..', 'control') }, ...(updated ? [updated] : [])]
+  // An explicit folder is an override and the only place looked at: a developer or a test points at one build while the app
+  // keeps its own, and the version the updater installed must not win over it.
+  const explicit = env.STRATA_CONTROL_DIR ? [{ dir: env.STRATA_CONTROL_DIR }] : null;
+  const candidates = (explicit ?? [{ dir: join(hostDir, '..', 'control') }, ...(updated ? [updated] : [])])
     .filter(c => c.dir).map(c => ({ ...c, dir: resolve(c.dir) }));
   let best = null;
   for (const candidate of candidates) {

@@ -14,6 +14,8 @@ import { HOME } from './store.mjs';
 import { tarBinary } from './platform-paths.mjs';
 import { nowIso } from './util.mjs';
 import { require as requireAcquisition } from './acquisition.mjs';
+import { netFetch } from './net.mjs';
+import { ensureFreeSpace } from './disk-space.mjs';
 
 const ENGINE_DIR = join(HOME, 'engine');
 const RELEASES = 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8';
@@ -38,6 +40,11 @@ export function init(hub) {
 
 export function status() {
   return { ...state, engineDir: ENGINE_DIR };
+}
+
+/** True while a download or unpack is in progress (the host keeps the computer awake). */
+export function busy() {
+  return !!running;
 }
 
 function emit() {
@@ -71,7 +78,7 @@ export async function findRelease() {
   state.stage = 'Looking up the current llama.cpp build';
   emit();
 
-  const res = await fetch(RELEASES, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+  const res = await netFetch(RELEASES, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
   const releases = await res.json();
   const matcher = assetMatcher();
@@ -106,6 +113,7 @@ export async function install({ force = false } = {}) {
       }
 
       mkdirSync(ENGINE_DIR, { recursive: true });
+      ensureFreeSpace(ENGINE_DIR, { need: Number(found.asset.size) || 0, label: 'the inference engine' });
       const archive = join(ENGINE_DIR, found.asset.name);
 
       state.status = 'downloading';
@@ -113,7 +121,7 @@ export async function install({ force = false } = {}) {
       state.pct = 0;
       emit();
 
-      const dl = await fetch(found.asset.browser_download_url, { redirect: 'follow', signal: AbortSignal.timeout(600_000) });
+      const dl = await netFetch(found.asset.browser_download_url, { redirect: 'follow', signal: AbortSignal.timeout(600_000) });
       if (!dl.ok || !dl.body) throw new Error(`Download failed (${dl.status})`);
 
       const total = Number(dl.headers.get('content-length')) || found.asset.size || 1;

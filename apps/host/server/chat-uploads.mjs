@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
+import { atomicWriteJsonSync, readJsonWithBackupSync } from './atomic-file.mjs';
 
 export const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -52,7 +53,9 @@ export function createUploads({ dir, folderOf, attachments }) {
   const metaFile = id => join(dir, id + '.json');
   const load = id => {
     if (index.has(id)) return index.get(id);
-    try { const m = JSON.parse(readFileSync(metaFile(id), 'utf8')); index.set(id, m); return m; } catch { return null; }
+    const m = readJsonWithBackupSync(metaFile(id), null);
+    if (m && typeof m === 'object') { index.set(id, m); return m; }
+    return null;
   };
 
   /** Store one file; returns what the page needs to show it. */
@@ -66,7 +69,7 @@ export function createUploads({ dir, folderOf, attachments }) {
       const file = join(dir, id + '.' + IMAGE_TYPES[real]);
       writeFileSync(file, f.bytes);
       const meta = { id, chatId, name: safeName(f.name), type: real, size: f.bytes.length, file, kind: 'image' };
-      writeFileSync(metaFile(id), JSON.stringify(meta)); index.set(id, meta);
+      atomicWriteJsonSync(metaFile(id), meta); index.set(id, meta);
       return { id, kind: 'image', name: meta.name, type: real, size: meta.size, url: `/api/chat/upload/${id}` };
     }
     if (/^image\//i.test(f.type)) throw Object.assign(new Error(`"${safeName(f.name)}" is a picture type the model cannot read. Use PNG, JPEG or WebP.`), { code: 'bad-image' });
