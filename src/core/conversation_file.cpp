@@ -195,6 +195,50 @@ public:
         size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
         return true;
     }
+    // The append target of an existing session (v3 append path): the name itself, never a link or reparse
+    // point, a regular disk file with one name; the pointer sits at EOF for the group's block writes.
+    bool open_append(const std::string& path, uint64_t& size) {
+        std::wstring w;
+        if (!wide(path, w)) { refused_ = true; error_ = "the path is not valid UTF-8"; return false; }
+        h_ = CreateFileW(w.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                         FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!GetFileInformationByHandle(h_, &info)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) { refused_ = true; error_ = "a link or reparse point, not a file"; return false; }
+        if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || GetFileType(h_) != FILE_TYPE_DISK) {
+            refused_ = true;
+            error_ = "not a regular file";
+            return false;
+        }
+        if (info.nNumberOfLinks != 1) { refused_ = true; error_ = "the file has more than one name (hard link)"; return false; }
+        size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        LARGE_INTEGER end{};
+        if (!SetFilePointerEx(h_, end, nullptr, FILE_END)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        return true;
+    }
+    // in-place update at a fixed offset (the 64 B header rewrite); the pointer returns to EOF for the appends
+    bool write_at(uint64_t offset, const uint8_t* p, size_t n) {
+        LARGE_INTEGER at{};
+        at.QuadPart = (LONGLONG) offset;
+        if (!SetFilePointerEx(h_, at, nullptr, FILE_BEGIN)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        while (n) {
+            DWORD w = 0;
+            const DWORD want = (DWORD) std::min<size_t>(n, size_t(1) << 30);
+            if (!WriteFile(h_, p, want, &w, nullptr) || w == 0) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+            p += w; n -= w;
+        }
+        LARGE_INTEGER end{};
+        if (!SetFilePointerEx(h_, end, nullptr, FILE_END)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        return true;
+    }
+    // skip n bytes forward (the framing walk seeks over segment zones instead of reading them)
+    bool seek(uint64_t n) {
+        LARGE_INTEGER d{};
+        d.QuadPart = (LONGLONG) n;
+        if (!SetFilePointerEx(h_, d, nullptr, FILE_CURRENT)) { { const DWORD c_ = GetLastError(); kind_ = win_kind(c_); error_ = last_error(c_); } return false; }
+        return true;
+    }
     // a model input: links followed (model folders are often linked)
     bool open_model(const std::string& path, uint64_t& size) {
         std::wstring w;
@@ -307,18 +351,23 @@ public:
         if (MoveFileExW(temp_.c_str(), final_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             own_ = false;
             st.published = true;
-            // Windows has no folder flush; a test can still make this step fail after the move
-            if (const int e = injected(fault, "dir_flush")) {
-                error = std::string("flushing the directory: ") + std::strerror(e);
-                st.error = errno_kind(e);
-                return false;
-            }
-            return true;
+            return dir_flush(error, true, st, fault);
         }
         const DWORD c = GetLastError();
         st.error = win_kind(c);
         error = last_error(c);
         return false;
+    }
+    // Windows has no folder flush (the rename is WRITE_THROUGH); the seam stands so the append path keeps
+    // the same testable honesty semantics as POSIX.
+    bool dir_flush(std::string& error, bool, SessionStatus& st, const std::function<int(const char*)>* fault,
+                   const char* step = "dir_flush") {
+        if (const int e = injected(fault, step)) {
+            error = std::string("flushing the directory: ") + std::strerror(e);
+            st.error = errno_kind(e);
+            return false;
+        }
+        return true;
     }
     SessionError kind() const { return SessionError::io; }
     ~Publisher() { if (own_) DeleteFileW(temp_.c_str()); }   // only the temporary file this call created
@@ -376,6 +425,46 @@ public:
         if (fl >= 0) ::fcntl(fd_, F_SETFL, fl & ~O_NONBLOCK);
         size = (uint64_t) st.st_size;
         try_direct();
+        return true;
+    }
+    // The append target of an existing session (v3 append path): the name itself is opened, never what a
+    // symbolic link there points to; a regular file with one name, and a FIFO cannot hang it.  The descriptor
+    // is deliberately left buffered: a v3 append group starts 64 bytes into a 512-byte grid - an alignment no
+    // direct transfer could ever use.  NOT O_APPEND: Linux's generic write path would apply O_APPEND to
+    // pwrite too, and the header rewrites must land at offset 0 - the file offset is positioned at EOF here,
+    // so the group's sequential writes still append.
+    bool open_append(const std::string& path, uint64_t& size) {
+        fd_ = ::open(path.c_str(), O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        if (fd_ < 0) {
+            refused_ = errno == ELOOP;
+            kind_ = errno_kind(errno);
+            error_ = errno == ELOOP ? std::string("a symbolic link, not a file") : std::string(std::strerror(errno));
+            return false;
+        }
+        struct stat st {};
+        if (::fstat(fd_, &st) != 0) { error_ = std::strerror(errno); return false; }
+        if (!S_ISREG(st.st_mode)) { refused_ = true; error_ = "not a regular file"; return false; }
+        if (st.st_nlink != 1) { refused_ = true; error_ = "the file has more than one name (hard link)"; return false; }
+        const int fl = ::fcntl(fd_, F_GETFL);
+        if (fl >= 0) ::fcntl(fd_, F_SETFL, fl & ~O_NONBLOCK);
+        if (::lseek(fd_, (off_t) st.st_size, SEEK_SET) < 0) { error_ = std::strerror(errno); return false; }
+        size = (uint64_t) st.st_size;
+        return true;   // no try_direct(): the append position is not alignment-friendly by construction
+    }
+    // in-place update at a fixed offset (the 64 B header rewrite): O_APPEND does not apply to pwrite, so
+    // later write() calls still land at EOF
+    bool write_at(uint64_t offset, const uint8_t* p, size_t n) {
+        while (n) {
+            const ssize_t w = ::pwrite(fd_, p, n, (off_t) offset);
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { kind_ = w < 0 ? errno_kind(errno) : SessionError::io; error_ = w < 0 ? std::strerror(errno) : "short write"; return false; }
+            p += w; n -= (size_t) w; offset += (uint64_t) w;
+        }
+        return true;
+    }
+    // skip n bytes forward (the framing walk seeks over segment zones instead of reading them)
+    bool seek(uint64_t n) {
+        if (::lseek(fd_, (off_t) n, SEEK_CUR) < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
         return true;
     }
     // a model input: links followed (model folders are often linked)
@@ -502,8 +591,13 @@ public:
         }
         own_ = false;
         st.published = true;   // the new file is at its name now: a failure below cannot bring the old one back
+        return dir_flush(error, durable, st, fault);
+    }
+    // Folder flush, shared with the v3 append path's "append_dir_flush" seam: same honesty semantics.
+    bool dir_flush(std::string& error, bool durable, SessionStatus& st, const std::function<int(const char*)>* fault,
+                   const char* step = "dir_flush") {
         if (!durable) return true;
-        e = injected(fault, "dir_flush");
+        int e = injected(fault, step);
         if (!e && ::fsync(dirfd_) != 0) e = errno;
         if (e == EINVAL) { st.dir_flush_unsupported = true; return true; }   // this filesystem cannot flush a folder
         if (e) {
@@ -563,7 +657,8 @@ public:
     bool finish(bool durable) {
         join_writer();
         if (!f_.is_open()) return false;
-        if (fault_) { f_.close(); return false; }
+        if (!fault_ && write_after_fault && written_.load() > 0) fail_with(write_after_fault);   // append seam: the block carrying the trailer never lands
+        if (fault_) { if (!keep_open) f_.close(); return false; }
         const size_t padded = f_.direct() ? (used_ + kAlign - 1) / kAlign * kAlign : used_;
         std::memset(buf_[active_].get() + used_, 0, padded - used_);
         bool ok = f_.write_all(buf_[active_].get(), padded);
@@ -572,7 +667,8 @@ public:
         if (ok && durable && phase) phase("flush", total_);
         if (ok && durable && flush_fault) { fail_with(flush_fault); ok = false; }
         ok = ok && (!durable || f_.sync());
-        ok = f_.close() && ok;
+        if (keep_open) { /* append: the fd stays open for the post-commit header update; the caller closes */ }
+        else ok = f_.close() && ok;
         return ok;
     }
     std::optional<Ticker> progress;
@@ -581,6 +677,9 @@ public:
     uint64_t expected = 0;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
     int writer_thread_fault = 0;            // tests: nonzero forces the synchronous draining fallback
+    int write_after_fault = 0;              // tests (append path): fires at the next block write once at least one
+                                            // block has landed - the torn-tail seam a real crashed append leaves
+    bool keep_open = false;                 // append: finish() flushes and fsyncs but keeps the fd for the header update
 private:
     static uint64_t now_ns() {
         return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -615,6 +714,7 @@ private:
     // FileSink did; every save path and error channel stays the same
     bool drain_sync() {
         if (write_fault) { fail_with(write_fault); return false; }
+        if (write_after_fault && written_.load() > 0) { fail_with(write_after_fault); return false; }   // append seam: a block has already landed
         const uint64_t t0 = now_ns();
         const bool ok = f_.write_all(buf_[active_].get(), kBlock);
         const uint64_t t1 = now_ns();
@@ -649,6 +749,15 @@ private:
                 ready_ = -1;
                 inflight_ = -1;   // abandon any other pending block: the write is failing, and a producer
                 slot_free_.notify_all();   // waiting on a slot must not outlive the writer that cannot free it
+                return;
+            }
+            if (write_after_fault && written_.load() > 0) {   // append seam: a block has already landed
+                std::lock_guard<std::mutex> lk(m_);
+                fail_with(write_after_fault);
+                writer_failed_ = true;
+                ready_ = -1;
+                inflight_ = -1;
+                slot_free_.notify_all();
                 return;
             }
             const uint64_t t0 = now_ns();
@@ -717,6 +826,16 @@ public:
             std::memcpy(d, buf_.get() + at_, c);
             at_ += c; d += c; n -= c;
         }
+        return true;
+    }
+    // skip n bytes forward without reading them (the append-plan framing walk seeks over segment zones).
+    // Buffered leftovers are dropped: the seek lands the descriptor exactly where sequential reading resumes.
+    bool skip(size_t n) {
+        if (n <= have_ - at_) { at_ += n; return true; }
+        n -= have_ - at_;
+        at_ = have_ = 0;
+        if (!f_.seek(n)) return false;
+        total_ += n;   // accounting only: a skip reports no progress (nothing crossed)
         return true;
     }
     std::optional<Ticker> progress;
@@ -861,10 +980,19 @@ void put_live_v3(Out& o, const ConversationCheckpoint& c) {  // counts + running
     o.u64(c.stage_parts.size());
     for (const auto& p : c.stage_parts) put_live_v3(o, p);  // parts of parts are refused before any disk access
 }
-void put_live_segments(Out& o, const ConversationCheckpoint& c) {
-    o.raw(c.ids.data(), c.ids.size() * sizeof(int32_t));
-    o.raw(c.imgs.data(), c.imgs.size() * sizeof(ConversationImageKey));
-    for (const auto& p : c.stage_parts) put_live_segments(o, p);
+// Where each append-only stream of a generation group starts: a full write starts every stream at 0;
+// an append starts ids/imgs (and each stage part's) at the previous generation's record counts.
+struct V3LiveFrom {
+    uint64_t ids = 0, imgs = 0;
+    std::vector<V3LiveFrom> parts;   // one per stage part, in stage order (parts hold no parts)
+};
+void put_live_segments(Out& o, const ConversationCheckpoint& c, const V3LiveFrom* from = nullptr) {
+    const uint64_t fi = from ? from->ids : 0, fg = from ? from->imgs : 0;
+    if (fi > c.ids.size() || fg > c.imgs.size()) { o.ok = false; return; }   // refused long before here
+    o.raw(c.ids.data() + fi, (c.ids.size() - fi) * sizeof(int32_t));
+    o.raw(c.imgs.data() + fg, (c.imgs.size() - fg) * sizeof(ConversationImageKey));
+    for (size_t k = 0; k < c.stage_parts.size(); ++k)
+        put_live_segments(o, c.stage_parts[k], from && k < from->parts.size() ? &from->parts[k] : nullptr);
 }
 // The group's K/V part framing records the append window [from, to) per part: the segment zone
 // then carries exactly the bytes [from, to) of that part, and `to` is the part's total size in
@@ -873,14 +1001,17 @@ void put_live_segments(Out& o, const ConversationCheckpoint& c) {
 // pooled spare row) SHADOWS the older group's stale bytes: the reader truncates the accumulated
 // bytes to `from` before appending, never concatenating the residue twice.
 void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr,
-                  const std::vector<std::array<uint64_t, 5>>* froms = nullptr) {
-    for (int64_t g : s.geometry) o.i64(g);
-    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
-    o.u64(s.stage_table.size());
-    for (const auto& g : s.stage_table) {
-        o.i64(g.layer_lo); o.i64(g.layer_hi); o.i64(g.qsa_alloc); o.i64(g.gdn_alloc); o.u64(g.draft ? 1 : 0);
+                  const std::vector<std::array<uint64_t, 5>>* froms = nullptr, const V3LiveFrom* live_from = nullptr,
+                  bool with_preamble = true) {
+    if (with_preamble) {   // an append group is framed by generation 1's preamble: only a full write re-emits it
+        for (int64_t g : s.geometry) o.i64(g);
+        o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+        o.u64(s.stage_table.size());
+        for (const auto& g : s.stage_table) {
+            o.i64(g.layer_lo); o.i64(g.layer_hi); o.i64(g.qsa_alloc); o.i64(g.gdn_alloc); o.u64(g.draft ? 1 : 0);
+        }
+        o.u64(sources ? sources->size() : s.kv.size());
     }
-    o.u64(sources ? sources->size() : s.kv.size());
     put_live_v3(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);  // whole record: counts AND data (identity can switch)
@@ -904,7 +1035,7 @@ void put_group_v3(Out& o, const SavedConversation& s, const std::vector<SessionK
             for (size_t part = 0; part < 5; ++part) { o.u64(0); o.u64(sz[part]); }
         }
     }
-    put_live_segments(o, s.live);
+    put_live_segments(o, s.live, live_from);
     if (sources) {
         for (size_t j = 0; j < sources->size(); ++j) {
             const auto& k = (*sources)[j];
@@ -937,6 +1068,13 @@ struct In {
     }
     bool u64(uint64_t& v) { return raw(&v, 8); }
     bool i64(int64_t& v) { return raw(&v, 8); }
+    // advance a framing walk past bytes it does not need: same bounds discipline as raw(), no read, no hash
+    bool skip(size_t c) {
+        if (c > left) return fail("payload ends early");
+        if (c && !f->skip(c)) { kind = f->kind(); return fail("read error: " + f->error()); }
+        left -= c;
+        return true;
+    }
     // `elem`: the fewest file bytes one element takes; `limit`: the most elements the caller accepts
     bool count(uint64_t& n, size_t elem, uint64_t limit = UINT64_MAX) {
         if (!u64(n)) return false;
@@ -1676,6 +1814,7 @@ struct V3Walk {
         std::vector<int32_t> ids;
         std::vector<ConversationImageKey> imgs;
         uint64_t want_ids = 0, want_imgs = 0;   // record counts declared by the current group
+        uint64_t have_ids = 0, have_imgs = 0;   // framing mode: records the chain has already accumulated
     };
     Acc live;
     std::vector<Acc> parts;   // one per stage-table entry (a part never has parts of its own)
@@ -1687,6 +1826,11 @@ struct V3Walk {
     std::vector<Geom> geom;
     std::vector<bool> seen;
     size_t layers = 0;
+    bool framing_only = false;  // the append-plan walk: frame and cross-check, seek over segment bytes, never hash
+                                // (the gate verifies the trailer's own resume state instead)
+    std::vector<std::array<uint64_t, 5>> have_bytes;  // bytes accumulated per layer part (framing mode needs them;
+                                                      // read mode tracks the same count through its kv buffers)
+    std::vector<std::array<uint64_t, 5>> last_to;     // newest group: each part's recorded total size
     bool have_prev_saved = false;  // the previous generation's trailer parsed intact (its saved_tokens usable)
     uint64_t prev_saved = 0;
 
@@ -1705,12 +1849,13 @@ struct V3Walk {
             const uint64_t w = prev.page_size > 0 ? (t / (uint64_t) prev.page_size) * (uint64_t) prev.page_size : t;
             return (have / (uint64_t) prev.cells) * w;
         }
-        if (prev.pooled_rows > 0 && prev.idx_block > 0) {
+        if (prev.pooled_rows > 0) {
+            if (prev.idx_block == 0) return UINT64_MAX;  // pooled rows recorded without an idx_block: not append-trusted (Ruling B)
             if (have % (uint64_t) prev.pooled_rows) return UINT64_MAX;
             const uint64_t rows = t / (uint64_t) prev.idx_block;  // whole completed pooled rows below the boundary
             return (have / (uint64_t) prev.pooled_rows) * rows;
         }
-        return UINT64_MAX;  // pooled prefix of a layer without a known idx_block: not append-trusted (Ruling B)
+        return have == 0 ? 0 : UINT64_MAX;  // a generation with no pooled part: nothing committed there; bytes with no row geometry cannot bound an append
     }
 
     bool preamble() {
@@ -1738,8 +1883,10 @@ struct V3Walk {
         }
         if (in.limits.stages && *in.limits.stages != s.stage_table)
             return in.fail("saved with a different layer split than this runtime's");
-        if (!in.count(layers, 104, in.limits.max_kv_layers)) return false;  // one generation-layer is >= 8 + 5 u64
-        kv.assign(layers, {});
+        if (!in.count(layers, 144, in.limits.max_kv_layers)) return false;  // one generation-layer is >= 8 i64 + 5 (from,to) u64 pairs
+        if (!framing_only) kv.assign(layers, {});
+        have_bytes.assign(layers, {});
+        last_to.assign(layers, {});
         geom.assign(layers, {});
         seen.assign(layers, false);
         parts.resize(s.stage_table.size());
@@ -1775,6 +1922,17 @@ struct V3Walk {
     }
 
     bool live_segments(Acc& a) {  // the records appended since the previous generation
+        if (framing_only) {  // declared counts are totals; the DATA in this group is only the suffix since
+                             // the accumulated have - and the same growth rule the reader enforces
+            if (a.want_ids < a.have_ids || a.want_imgs < a.have_imgs)
+                return in.fail("a generation that shrank the live token list (an append chain only grows it)");
+            if (!in.skip((size_t) (a.want_ids - a.have_ids) * sizeof(int32_t) +
+                          (size_t) (a.want_imgs - a.have_imgs) * sizeof(ConversationImageKey)))
+                return false;
+            a.have_ids = a.want_ids;
+            a.have_imgs = a.want_imgs;
+            return true;
+        }
         const size_t have = a.ids.size();
         a.ids.resize((size_t) a.want_ids);
         if (!in.raw(a.ids.data() + have, (size_t)(a.want_ids - have) * sizeof(int32_t))) return false;
@@ -1815,16 +1973,16 @@ struct V3Walk {
                     return in.fail("a generation that shrank the K/V carve (an append chain only grows it)");
             }
             for (size_t p = 0; p < 5; ++p) {
-                const uint64_t have = (uint64_t) kv[j][p].size();
+                const uint64_t got = have_bytes[j][p];  // bytes the chain has accumulated before this group
                 if (!in.u64(wfrom[j][p]) || !in.u64(wto[j][p])) return false;
                 if (wto[j][p] < wfrom[j][p]) return in.fail("an invalid K/V append window (to < from)");
-                if (wto[j][p] < have) return in.fail("a generation that shrank a K/V part (an append chain only grows it)");
-                if (wfrom[j][p] > have)
+                if (wto[j][p] < got) return in.fail("a generation that shrank a K/V part (an append chain only grows it)");
+                if (wfrom[j][p] > got)
                     return in.fail("a generation appends past the bytes its predecessor committed");
                 if (!seen[j]) {  // generation 1 is a full write
                     if (wfrom[j][p] != 0) return in.fail("the first generation does not append from 0");
                 } else if (have_prev_saved) {  // Ruling C: the recorded window must start exactly at the committed boundary
-                    const uint64_t b = committed_boundary(j, p, have);
+                    const uint64_t b = committed_boundary(j, p, got);
                     if (b != UINT64_MAX && b != wfrom[j][p])
                         return in.fail("a generation does not append at its committed boundary");
                 }
@@ -1840,6 +1998,12 @@ struct V3Walk {
         for (size_t j = 0; j < layers; ++j)
             for (size_t p = 0; p < 5; ++p) {
                 const uint64_t from = wfrom[j][p], to = wto[j][p];
+                last_to[j][p] = to;
+                have_bytes[j][p] = to;
+                if (framing_only) {  // the gate walk frames the file; the bytes themselves are never needed
+                    if (to > from && !in.skip((size_t) (to - from))) return false;
+                    continue;
+                }
                 if (from < kv[j][p].size()) kv[j][p].resize_for_overwrite((size_t) from);  // shadow the stale copy
                 const size_t cur = kv[j][p].size();  // == from now
                 if (to == from) continue;
@@ -1858,7 +2022,9 @@ struct V3Walk {
     bool close_group(uint64_t gen, uint64_t frame, bool is_candidate, SessionTrailer& out, uint64_t& prev_self,
                      bool& prev_ok) {
         const uint64_t pad = (512 - (frame + 128) % 512) % 512;
-        if (pad) {
+        if (pad && framing_only) {  // the gate walk only frames: the pad's bytes are the digest's problem, not its own
+            if (!in.skip(pad)) return false;
+        } else if (pad) {
             static const uint8_t kZero[512] = {};
             uint8_t pb[512];
             if (pad > in.left || !in.raw(pb, pad)) return in.left < pad ? in.fail("the group pad is truncated") : false;
@@ -1888,13 +2054,19 @@ struct V3Walk {
         if (in.left != 0 || t.committed_bytes != trailer_pos)
             return in.fail("the checkpoint record does not sit at the end of the generation chain");
         if (t.gen != gen) return in.fail("generation numbering does not match the chain");
-        if (t.saved_tokens != (uint64_t) live.ids.size())
+        if (t.saved_tokens != live.want_ids)
             return in.fail("saved_tokens does not match the live token list");
-        if (in.hash.digest() != t.digest) return in.fail("payload checksum mismatch");
-        const SessionHasherState hs = in.hash.state();  // byte-exact resume-state honesty (drill weakness 6)
-        if (hs.npending != t.npending || hs.total != t.hashed_bytes || std::memcmp(hs.lanes, t.lanes, 32) != 0 ||
-            std::memcmp(hs.pending, t.pending, 32) != 0)
-            return in.fail("the stored resume state does not match this file");
+        if (framing_only) {  // no hashing here: the gate re-verifies the trailer's own stored resume state,
+                             // and this cross-check catches a framing walk that lied about the group sizes
+            if (t.hashed_bytes != (covered - kHeader) - 128 * gen)
+                return in.fail("the checkpoint's hashed_bytes does not match the chain framing");
+        } else {
+            if (in.hash.digest() != t.digest) return in.fail("payload checksum mismatch");
+            const SessionHasherState hs = in.hash.state();  // byte-exact resume-state honesty (drill weakness 6)
+            if (hs.npending != t.npending || hs.total != t.hashed_bytes || std::memcmp(hs.lanes, t.lanes, 32) != 0 ||
+                std::memcmp(hs.pending, t.pending, 32) != 0)
+                return in.fail("the stored resume state does not match this file");
+        }
         if (prev_ok) {
             if (t.chain != prev_self) return in.fail("the checkpoint chain is broken");
         } else if (gen == 1 && t.chain != genesis) {
@@ -2057,7 +2229,331 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     st.error = SessionError::none;
     return true;
 }
+
+// ---- append path: the save-side gate plan and the commit-disciplined group writer ----------------
+//
+// Commit discipline (spec §Commit discipline, drill S3's fault-hook map): gate re-verify -> header
+// anchor at the new group's start (degrading) -> streamed group (mutable block fresh, ids/imgs and
+// K/V parts suffix-only) -> hashed pad -> 128 B trailer -> fsync (the commit point) -> header
+// advance (non-fatal) -> folder flush (dir_flush honesty).  No temp, no rename, and never a
+// truncation or rollback of a torn tail: the validator and reader cascade over it, and the gate
+// declines appends until a full rewrite re-lays the file.
+
+bool append_plan_impl(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& out,
+                      std::string& error) {
+    std::vector<SessionCheckpoint> cands;
+    if (!session_file_checkpoints(path, id, cands, error)) {
+        if (error.empty()) error = "session file: " + path + ": append refused (no validated checkpoint)";
+        return false;
+    }
+    SessionReadLimits limits;  // the gate reads only bounded framing; the runtime's own limits apply at restore
+    std::string last;
+    for (const auto& cand : cands) {  // newest first; a failing candidate demotes exactly like the reader's
+        error.clear();
+        RawFile rf;
+        uint64_t sz = 0;
+        if (!rf.open_session(path, sz)) {
+            error = "session file: " + path + ": " + rf.error();
+            return false;  // the file vanished or turned un-openable under the validator: refuse, never guess
+        }
+        rf.force_buffered();  // small reads alternating with seeks: O_DIRECT alignment rules refuse that mix
+        FileSource f(rf);
+        if (!f.ok()) { error = "session file: " + f.error(); return false; }
+        uint8_t h[kHeader];
+        if (!f.read(h, kHeader)) { error = "session file: header read error: " + f.error(); return false; }
+        SessionHeaderV3 hv;
+        if (!header_parse_v3(h, id, hv, error)) return false;
+        const uint64_t covered = cand.trailer_offset + 128;
+        SavedConversation probe;  // only the preamble fields matter here; segment zones are seeked past
+        In in{&f, SessionHasher(0), covered - kHeader, error, limits};
+        V3Walk w{in, probe, covered, trailer_genesis_chain(id)};
+        w.framing_only = true;
+        SessionTrailer tr;
+        uint64_t prev_self = 0;
+        bool prev_ok = false, ok = false;
+        for (uint64_t g = 1; g <= cand.trailer.gen; ++g) {
+            const uint64_t left0 = in.left;
+            if (g == 1 && !w.preamble()) break;
+            if (!w.group_body()) break;
+            if (!w.close_group(g, left0 - in.left, g == cand.trailer.gen, tr, prev_self, prev_ok)) break;
+            w.have_prev_saved = prev_ok;
+            w.prev_saved = tr.saved_tokens;
+            if (g == cand.trailer.gen) ok = true;
+        }
+        if (!ok) { last = error.empty() ? "the checkpoint chain is unreadable" : error; continue; }
+        // resume-state self-verification: the stored state must reproduce the stored digest, no file bytes
+        SessionHasherState hs{};
+        for (int i = 0; i < 4; ++i) hs.lanes[i] = tr.lanes[i];
+        std::memcpy(hs.pending, tr.pending, 32);
+        hs.npending = tr.npending;
+        hs.total = tr.hashed_bytes;
+        SessionHasher hh(0);
+        hh.restore(hs);
+        if (hh.digest() != tr.digest) { last = "the stored resume state does not reproduce this checkpoint's digest"; continue; }
+        // the EOF rule: a torn tail is rewritten in full before appending again
+        if (sz != covered) {
+            last = "the file has " + std::to_string(sz - covered) +
+                   " bytes past its newest checkpoint record (a torn tail is rewritten in full before appending)";
+            continue;
+        }
+        // the engine's append boundaries for the next group, recomputed from this generation's own framing
+        w.have_prev_saved = true;
+        w.prev_saved = tr.saved_tokens;  // geom[] now holds this generation's geometry, last_to[] its part sizes
+        std::vector<std::array<uint64_t, 5>> bounds(w.layers);
+        bool bad = false;
+        for (size_t j = 0; j < w.layers && !bad; ++j)
+            for (size_t p = 0; p < 5; ++p) {
+                const uint64_t b = w.committed_boundary(j, p, w.last_to[j][p]);
+                if (b == UINT64_MAX) {
+                    last = "layer " + std::to_string(j + 1) + " part " + std::to_string(p + 1) +
+                           " has no recomputable committed boundary (a recorded idx_block of 0 or a non-uniform "
+                           "part): its prefix is not append-trusted";
+                    bad = true;
+                    break;
+                }
+                if (b > w.last_to[j][p]) { last = "the file's recorded sizes fall below the engine's committed boundary"; bad = true; break; }
+                bounds[j][p] = b;
+            }
+        if (bad) continue;
+        out.checkpoint = cand;
+        out.group_start = covered;
+        out.prev_ids = w.live.want_ids;
+        out.prev_imgs = w.live.want_imgs;
+        out.prev_parts.clear();
+        for (const auto& pa : w.parts) out.prev_parts.push_back({pa.want_ids, pa.want_imgs});
+        out.stage_table = probe.stage_table;
+        out.geometry = probe.geometry;
+        out.layer_lo = probe.layer_lo;
+        out.layer_hi = probe.layer_hi;
+        out.prev_geom.clear();
+        for (size_t j = 0; j < w.layers; ++j) {
+            const auto& g = w.geom[j];
+            out.prev_geom.push_back({g.format, g.cells, g.heads, g.head_dim, g.page_size, g.pooled_rows, g.idx_dim,
+                                     g.idx_block});
+        }
+        out.prev_bounds = std::move(bounds);
+        out.hasher = SessionHasher(0);
+        out.hasher.restore(hs);  // append continues this digest without re-hashing any committed byte
+        error.clear();
+        return true;
+    }
+    error = "session file: " + path + ": append refused: " +
+            (last.empty() ? std::string("no checkpoint chain validated") : last);
+    return false;
+}
+
+bool append_impl(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>* sources,
+                 const SessionFileIdentity& id, const SessionAppendPlan& plan, size_t& bytes, std::string& error,
+                 const SessionWriteOptions& opt, SessionStatus& st) {
+    st = {};
+    st.error = SessionError::invalid;   // every refusal below happens before any disk access
+    std::string bad;
+    if (!stage_parts_consistent(meta, bad)) { error = "session file: " + bad; return false; }
+    if (!meta.kv.empty()) { error = "session file: append takes the K/V as sources only"; return false; }
+    if (!meta.stage_images.empty()) { error = "session file: append cannot write a staged multi-image session"; return false; }
+
+    // the gate: never trust a stale plan - re-verify the file fresh, then cross-check the state to write
+    SessionAppendPlan fresh;
+    if (!append_plan_impl(path, id, fresh, error)) return false;
+    if (fresh.checkpoint.trailer_offset != plan.checkpoint.trailer_offset ||
+        fresh.checkpoint.file_size != plan.checkpoint.file_size ||
+        fresh.checkpoint.trailer.self_hash != plan.checkpoint.trailer.self_hash) {
+        error = "session file: the append plan no longer matches " + path + " (it changed since the plan was made)";
+        return false;
+    }
+    if (meta.geometry != fresh.geometry) { error = "session file: append with a different model geometry than this file's"; return false; }
+    if (meta.layer_lo != fresh.layer_lo || meta.layer_hi != fresh.layer_hi) { error = "session file: append with a different layer range than this file's"; return false; }
+    if (meta.stage_table != fresh.stage_table) { error = "session file: append with a different stage table (only a full write records that)"; return false; }
+    if (meta.live.ids.size() < fresh.prev_ids || meta.live.imgs.size() < fresh.prev_imgs) {
+        error = "session file: the live state shrank below what this file committed (an append only extends it)";
+        return false;
+    }
+    if (meta.live.stage_parts.size() != fresh.prev_parts.size()) { error = "session file: the stage parts changed (only a full write records that)"; return false; }
+    for (size_t k = 0; k < meta.live.stage_parts.size(); ++k) {
+        const auto& part = meta.live.stage_parts[k];
+        if (part.ids.size() < fresh.prev_parts[k][0] || part.imgs.size() < fresh.prev_parts[k][1]) {
+            error = "session file: a stage part shrank below what this file committed"; return false;
+        }
+    }
+    if (sources->size() != fresh.prev_geom.size()) { error = "session file: the K/V source count does not match the file's layer count"; return false; }
+    for (size_t j = 0; j < sources->size(); ++j) {
+        const auto& k = (*sources)[j];
+        const auto& g = fresh.prev_geom[j];
+        if (k.format != g.format || k.heads != g.heads || k.head_dim != g.head_dim || k.page_size != g.page_size ||
+            k.idx_dim != g.idx_dim || k.idx_block != g.idx_block) {
+            error = "session file: layer " + std::to_string(j + 1) + " K/V geometry changed (only a full write records that)";
+            return false;
+        }
+        if (k.cells < g.cells || k.pooled_rows < g.pooled_rows) { error = "session file: a K/V carve shrank (only a full write records that)"; return false; }
+        for (size_t p = 0; p < 5; ++p)
+            if (k.sizes[p] < fresh.prev_bounds[j][p]) { error = "session file: a K/V part shrank below its committed boundary"; return false; }
+    }
+
+    std::vector<std::array<uint64_t, 5>> froms = fresh.prev_bounds;
+    V3LiveFrom live_from;
+    live_from.ids = fresh.prev_ids;
+    live_from.imgs = fresh.prev_imgs;
+    for (const auto& pp : fresh.prev_parts) { V3LiveFrom q; q.ids = pp[0]; q.imgs = pp[1]; live_from.parts.push_back(std::move(q)); }
+
+    Out sizing;
+    put_group_v3(sizing, meta, sources, &froms, &live_from, false);
+    const uint64_t group = sizing.n;
+    const uint64_t group_start = fresh.group_start;
+    const uint64_t pad = (512 - (group + 128) % 512) % 512;
+    const uint64_t delta = group + pad + 128;
+    if (sizing.overflow || group > UINT64_MAX - group_start - 512 ||
+        group_start + delta > (uint64_t) std::numeric_limits<size_t>::max()) {
+        error = "session file: the appended state is too large for this build";
+        return false;
+    }
+    st.error = SessionError::io;   // every failure from here on is disk-side
+    if (opt.min_free_bytes) {
+        uint64_t avail = 0;
+        if (!free_space(path, avail)) { error = "session file: cannot read the free disk space for " + path; st.error = SessionError::storage; return false; }
+        if (avail < delta || avail - delta < opt.min_free_bytes) {
+            st.error = SessionError::storage;
+            error = "session file: not enough disk space (" + std::to_string(delta >> 20) + " MiB plus a reserve of " +
+                    std::to_string(opt.min_free_bytes >> 20) + " MiB needed, " + std::to_string(avail >> 20) +
+                    " MiB free)";
+            return false;
+        }
+    }
+    const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
+
+    RawFile raw;
+    uint64_t size = 0;
+    if (!raw.open_append(path, size)) {
+        st.error = raw.refused() ? SessionError::invalid : raw.kind();
+        error = "session file: " + path + ": " + raw.error();
+        return false;
+    }
+    if (size != fresh.checkpoint.file_size || size != group_start) {
+        error = "session file: " + path + " changed underneath the append gate";
+        return false;
+    }
+    // seam "append_verify": the last refusal point.  Nothing has been written yet: refusal leaves the
+    // file byte-identical, and the append path has no temp to clean up.
+    if (const int e = injected(fault, "append_verify")) {
+        error = "session file: " + path + ": append refused at append_verify: " + std::strerror(e);
+        st.error = errno_kind(e);
+        return false;
+    }
+
+    // seam "append_anchor": point the header fast pair at the new group's start BEFORE writing it, so a
+    // crash in the torn window is found by the fast path.  Degrading, never fatal: scan-back covers a stale pair.
+    const uint64_t committed_prev = fresh.checkpoint.trailer.committed_bytes;
+    uint8_t h[kHeader];
+    header_bytes_v3(h, id, {committed_prev, committed_prev, group_start});
+    if (!injected(fault, "append_anchor")) (void) (raw.write_at(0, h, kHeader) && (!opt.durable || raw.sync()));
+
+    FileSink f(raw);
+    if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
+    f.keep_open = true;   // the commit fsync happens in finish(); the post-commit header update needs this fd
+    if (opt.progress) f.progress.emplace(opt.progress);
+    if (opt.block_span) f.block_span.emplace(opt.block_span);
+    f.phase = opt.phase;
+    f.expected = delta;
+    if (f.progress) (*f.progress)(0, delta);   // the descriptor is open and gated: the transfer starts
+    f.write_after_fault = injected(fault, "append_write");    // torn-tail seam: it fires only after a block landed
+    f.flush_fault = injected(fault, "trailer_flush");         // the post-trailer commit fsync
+    f.writer_thread_fault = injected(fault, "writer_thread"); // starvation fallback (an optimization loss)
+
+    SessionHasher hash = fresh.hasher;   // byte-exact continuation of the validated trailer state
+    Out out;
+    out.f = &f;
+    out.hash = &hash;
+    put_group_v3(out, meta, sources, &froms, &live_from, false);
+    bool ok = out.ok && out.n == group;
+    if (ok) { static const uint8_t kZeros[512] = {}; out.raw(kZeros, pad); }   // the pad is hashed; the trailer is not
+    const int e_trailer = injected(fault, "trailer_write");
+    if (ok && !e_trailer) {
+        SessionTrailer tr;
+        tr.gen = fresh.checkpoint.trailer.gen + 1;
+        tr.committed_bytes = group_start + group + pad;
+        tr.saved_tokens = (uint64_t) meta.live.ids.size();
+        tr.digest = hash.digest();
+        tr.chain = fresh.checkpoint.trailer.self_hash;
+        const SessionHasherState hs = hash.state();
+        for (int i = 0; i < 4; ++i) tr.lanes[i] = hs.lanes[i];
+        std::memcpy(tr.pending, hs.pending, 32);
+        tr.npending = hs.npending;
+        tr.hashed_bytes = hs.total;
+        uint8_t tb[128];
+        trailer_bytes(tr, tb);
+        ok = f.write(tb, 128);
+    }
+    // finish(): flushes the remaining blocks (seam "trailer_flush" fires at its fsync) - the commit point
+    const bool torn_trailer = e_trailer != 0;
+    const bool fin = f.finish(opt.durable);
+    if (!ok || torn_trailer || !fin) {
+        // the seam refused the trailer before handing it to the sink: the errno is the seam's own
+        std::string why = torn_trailer ? std::string(std::strerror(e_trailer))
+                                       : out.read_failed ? "K/V source read" + (out.read_error.empty() ? std::string() : ": " + out.read_error)
+                                                         : f.error();
+        st.error = torn_trailer ? errno_kind(e_trailer)
+                                : out.read_failed ? SessionError::io : f.kind();
+        error = "session file: appending to " + path + " failed" + (why.empty() ? std::string() : ": " + why) +
+                " (whatever landed stands as a torn tail: the previous checkpoint is intact, and the gate declines appends until a full rewrite)";
+        return false;   // no truncation, no rollback, no temp: the torn tail is the design
+    }
+
+    // seam "header_update": the commit is already durable, so advancing the header is non-fatal by design -
+    // a stale fast pair self-heals at the next save's anchor (drill scenario I).
+    const uint64_t committed_new = group_start + group + pad;
+    header_bytes_v3(h, id, {committed_new, committed_new, committed_new + 128});
+    if (!injected(fault, "header_update")) (void) (raw.write_at(0, h, kHeader) && (!opt.durable || raw.sync()));
+
+    // seam "append_dir_flush": the folder flush, same honesty semantics as a full save's "dir_flush"
+    Publisher pub;
+    std::string perr;
+    if (!pub.open(path, perr)) {
+        st.published = true;   // the append itself is committed and flushed
+        st.error = pub.kind();
+        error = "session file: appending to " + path + " committed, but " + perr;
+        return false;
+    }
+    if (!pub.dir_flush(perr, opt.durable, st, fault, "append_dir_flush")) {
+        st.published = true;   // the file was flushed; only the folder flush is lost
+        error = "session file: appending to " + path + " committed, but " + perr + " (the appended bytes are flushed; the folder entry may not survive a power loss)";
+        return false;
+    }
+    if (!raw.close()) {
+        st.published = true;   // the commit was already fsynced: a close failure cannot undo it
+        st.error = raw.kind();
+        error = "session file: closing " + path + " after the append failed: " + raw.error();
+        return false;
+    }
+    st.error = SessionError::none;
+    bytes = (size_t) delta;
+    return true;
+}
 } // namespace
+
+bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& plan,
+                              std::string& error) {
+    try {
+        return append_plan_impl(path, id, plan, error);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while checking " + path + " for an append";
+        return false;
+    }
+}
+
+bool session_file_append(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
+                         const SessionFileIdentity& id, const SessionAppendPlan& plan, size_t& bytes, std::string& error,
+                         const SessionWriteOptions& options, SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = append_impl(path, meta, &kv, id, plan, bytes, error, options, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while appending to " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
+}
 
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus* status) {
