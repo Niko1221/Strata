@@ -528,7 +528,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   never truncated, so it is the whole prompt), and `tokens[]`, one per generated token in order, each with the
   vocabulary `id` it was sampled
   from, the `logprob` the engine wrote, and the `field` it spells: `reasoning_content`, `content`, `gap` for a token
-  no piece of text claimed (the blank run before the answer, say), `stop` for the end token, `tail` for anything after
+  no piece of text claimed (the end-of-thinking tag, the blank run before the answer), `stop` for the end token,
+  `tail` for anything after
   the reply's last text. `token`/`bytes` come with them, and `top_logprobs` (ids and values) when the engine sent
   alternatives. `len(tokens)` equals `usage.completion_tokens` and the last entry is the end token, which the two
   OpenAI arrays do not have: they are a projection of this sequence, not the sequence. `logprob` here is the engine's
