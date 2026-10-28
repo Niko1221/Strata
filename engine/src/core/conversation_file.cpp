@@ -1295,10 +1295,10 @@ bool trailer_parse(const uint8_t* b, SessionTrailer& out) {
     std::memcpy(&t.hashed_bytes, b + 112, 8);
     uint64_t self;
     std::memcpy(&self, b + 120, 8);
-    if (self != session_hash64(b, 120, 0)) return false;
-    t.self_hash = self;
-    out = t;
-    return true;
+    if (self != session_hash64(b, 120, 0)) return false;  // self_hash re-derivation: covers [0,120),
+    t.self_hash = self;   // and the tail [124,128) holds the value's own high half - corruption of ANY
+    out = t;              // byte in the record breaks this equality (the drill's F3-class pad case
+    return true;          // cannot arise: there is no byte in use that the hash does not pin)
 }
 
 void trailer_bytes(const SessionTrailer& t, uint8_t (&b)[128]) {
@@ -1312,8 +1312,11 @@ void trailer_bytes(const SessionTrailer& t, uint8_t (&b)[128]) {
     std::memcpy(b + 48, t.lanes, 32);
     std::memcpy(b + 80, t.pending, 32);
     std::memcpy(b + 112, &t.hashed_bytes, 8);
-    const uint64_t self = session_hash64(b, 120, 0);
-    std::memcpy(b + 120, &self, 8);
+    const uint64_t self = session_hash64(b, 120, 0);  // self_hash covers [0,120): every field, hashed
+    std::memcpy(b + 120, &self, 8);                   // directly off the record.  The full 8-byte value
+    // lands at [120,128): its high half at [124,128) is the record's tail - pinned by construction and
+    // by the parse-side re-hash equality (the drill's F3-class torn-pad case demotes at parse, never
+    // trusts: corrupting the tail breaks the equality).
 }
 
 uint64_t trailer_genesis_chain(const SessionFileIdentity& id) {
