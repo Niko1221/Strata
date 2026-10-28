@@ -5860,6 +5860,9 @@ int main(int argc, char** argv) {
             uint64_t bytes = 0;
             if (!strata::core::WeightTable::pool_bytes(o.pack, bytes, err, &sk)) return false;
             dense.release();
+            // the process-wide range that `load` also reads may be stale from an earlier stage's
+            // set_layer_range (an explicit split loads its later stages eagerly): reset it to ours
+            strata::core::NativeDense::set_layer_range((int) lo, (int) hi);
             table = strata::core::WeightTable{};
             cudaFree(base);
             base = nullptr;
