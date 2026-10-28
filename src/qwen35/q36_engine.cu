@@ -26,6 +26,8 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
+#include "strata/kernels/lora.hpp"
+#include "strata/kernels/lora_adapters.hpp"
 #include "q36_kernels.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -53,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -1114,9 +1117,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     return true;
 }
 
+
 /// Expert e of layer L as its native blob [gate | up | down] (L.L.bytes) at dst (host memory).
-void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
-    std::memcpy(dst, L.src_g + (size_t) e * L.src_gsz, L.src_gsz);
+void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {    std::memcpy(dst, L.src_g + (size_t) e * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.L.up_off, L.src_u + (size_t) e * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
 }
@@ -1203,6 +1206,7 @@ struct Engine {
         std::vector<ImgKey> imgs;           // the pictures among them
         bool active = false;                // a batch slot is decoding in it
         uint64_t used = 0;                  // when it was last used (the LRU pick)
+        int lora_state = -1;                // the adapter setting its state was read with (-1 = no adapter / unused)
     };
     std::vector<Sess> sess;
     int n_sess = 1, cur = 0;
@@ -1925,6 +1929,9 @@ struct Engine {
                 }
             }
             mm(L.ssm_out, gdn_y, y, T);
+            // --lora: out += s B (A y), the adapter on this projection (a no-op when none is loaded, and the
+            // per-request switch is a device flag, so the captured graphs are the same either way)
+            strata::kernels::lora_apply((int64_t) li, gdn_y, 0, T, y, 0, st);
         } else {
             prep_in(T);
             apply(L.wq, xq, qg, T);
@@ -1997,6 +2004,7 @@ struct Engine {
                 }
             }
             mm(L.wo, att, y, T);
+            strata::kernels::lora_apply((int64_t) li, att, 0, T, y, 0, st);   // --lora (as on ssm_out)
         }
         add_rms_post(L, T);
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
@@ -3013,8 +3021,49 @@ struct Sampling {
     float temperature = 0.f, top_p = 1.f, min_p = 0.f, repeat = 1.f, freq = 0.f, present = 0.f;
     int top_k = 20, last_n = 0;
     unsigned long long seed = 0;
+    // logprobs=K (0..20): after each "T id" an "LP logprob id:logprob ..." line, the same wire the ordinary path
+    // writes.  -1 (absent) = no LP lines, so a server that never asks reads today's output.
+    int logprobs = -1;
+    // allowed=a,b,c: with logprobs, print only these ids (the server renormalises them).
+    std::vector<int32_t> allowed;
     bool needs_logits() const { return temperature > 0.f || repeat != 1.f || freq != 0.f || present != 0.f; }
 };
+
+/// The `LP` line of one generated token, taken from the head logits of the step that produced it -- **before**
+/// sampling, penalties and temperature, as src/program/generate.cpp's emit_lp_line does: one server-side reader
+/// parses both.  `row` is that whole row (n_vocab floats); `token` is the id the sampler chose from it.
+void emit_lp(const std::vector<float>& row, int32_t token, int k, const std::vector<int32_t>& allowed) {
+    if (k < 0) return;
+    if (row.empty() || token < 0 || (size_t) token >= row.size()) {   // a row the sampler could not have used
+        std::printf("LP nan\n");
+        return;
+    }
+    float mx = -INFINITY;
+    for (const float v : row) mx = std::max(mx, v);
+    double se = 0.0;
+    for (const float v : row) se += std::exp((double) v - (double) mx);
+    const double lse = (double) mx + std::log(se);
+    std::printf("LP %.6f", (double) row[(size_t) token] - lse);
+    if (!allowed.empty()) {
+        // only the ids the caller named: the server renormalises them over that set (allowed_token_ids)
+        for (const int32_t id : allowed) {
+            if (id == token || id < 0 || (size_t) id >= row.size()) continue;
+            std::printf(" %d:%.6f", (int) id, (double) row[(size_t) id] - lse);
+        }
+        std::printf("\n");
+        return;
+    }
+    if (k > 0) {
+        std::vector<int32_t> ord(row.size());
+        for (size_t v = 0; v < row.size(); ++v) ord[v] = (int32_t) v;
+        const int kk = std::min<int>(k, (int) row.size());
+        std::partial_sort(ord.begin(), ord.begin() + kk, ord.end(),
+                          [&](int32_t a, int32_t b) { return row[(size_t) a] > row[(size_t) b]; });
+        for (int j = 0; j < kk; ++j)
+            std::printf(" %d:%.6f", ord[(size_t) j], (double) row[(size_t) ord[(size_t) j]] - lse);
+    }
+    std::printf("\n");
+}
 
 int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
     if (s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f)) {
@@ -3401,7 +3450,9 @@ struct Serve {
     }
 
     /// The length of session ss's held tokens when they are a proper start of `ids` with the same pictures, else 0.
-    size_t match_len(const Engine::Sess& ss, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
+    size_t match_len(const Engine::Sess& ss, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs,
+                     int want_lora) const {
+        if (want_lora >= 0 && ss.lora_state != want_lora) return 0;   // its state belongs to the other weights
         const size_t L = ss.live.size();
         if (L == 0 || L >= ids.size() || !std::equal(ss.live.begin(), ss.live.end(), ids.begin())) return 0;
         std::vector<ImgKey> in_live;
@@ -3414,13 +3465,13 @@ struct Serve {
 
     /// The session a request alone takes: the one holding the longest start of its prompt, else an empty one, else the
     /// least recently used (never a decoding slot).
-    int pick_session(const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
+    int pick_session(const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs, int want_lora) const {
         int best = -1, free_empty = -1, lru = -1;
         size_t bl = 0;
         for (int i = 0; i < E.n_sess; ++i) {
             const Engine::Sess& ss = E.sess[(size_t) i];
             if (ss.active) continue;
-            const size_t l = match_len(ss, ids, imgs);
+            const size_t l = match_len(ss, ids, imgs, want_lora);
             if (l > bl) { bl = l; best = i; }
             if (ss.live.empty() && free_empty < 0) free_empty = i;
             if (lru < 0 || ss.used < E.sess[(size_t) lru].used) lru = i;
@@ -3451,6 +3502,7 @@ struct Serve {
         }
         const long long max_new = std::strtoll(p, &p, 10);
         Sampling smp;
+        int req_lora = 1;   // lora=0|1: the request's wish for the loaded adapter (1 = on when absent)
         std::vector<uint64_t> img_keys;
         for (;;) {
             while (*p == ' ') ++p;
@@ -3470,6 +3522,20 @@ struct Serve {
             else if (key == "penalty_freq") smp.freq = std::strtof(v, nullptr);
             else if (key == "penalty_present") smp.present = std::strtof(v, nullptr);
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
+            else if (key == "logprobs") smp.logprobs = std::atoi(v);
+            else if (key == "lora") req_lora = std::atoi(v) != 0;
+            else if (key == "allowed") {
+                smp.allowed.clear();
+                const char* q = v;
+                while (*q) {
+                    char* qe = nullptr;
+                    const long x = std::strtol(q, &qe, 10);
+                    if (qe == q) { smp.allowed.clear(); break; }
+                    smp.allowed.push_back((int32_t) x);
+                    q = *qe == ',' ? qe + 1 : qe;
+                    if (*qe != ',' && *qe != '\0') { smp.allowed.clear(); break; }
+                }
+            }
             else if (key == "img_keys") {
                 const char* q = v;
                 img_keys.clear();
@@ -3516,16 +3582,32 @@ struct Serve {
             if (!ve.empty()) { std::printf("ERR %s\n", ve.c_str()); std::fflush(stdout); return; }
         }
         stop.store(false);
+        // lora=0|1 asks for the loaded adapter off/on for this request (as generate.cpp honours it).  The kernel side
+        // is a device flag the captured graphs read on every launch, so a switch is one synchronized memcpy; what
+        // must not survive it is a session's held state - the KV / recurrent state belongs to the weights it was
+        // read with.  Sessions are tagged (Sess::lora_state) and match_len reuses only a state-matching prefix, so
+        // a switch re-prefills from the start instead of continuing a state no model produced.  The flag is
+        // process-wide, so a request that would flip it while a batch slot decodes is refused.
+        const bool have_lora = strata::kernels::lora().loaded;
+        const bool want_lora = have_lora ? req_lora != 0 : true;
+        if (have_lora && want_lora != strata::kernels::lora_enabled() && n_active > 0) {
+            std::printf("ERR lora=%d: another slot is decoding under the opposite setting; retry when it finishes\n",
+                        want_lora ? 1 : 0);
+            std::fflush(stdout);
+            return;
+        }
+        strata::kernels::lora_set_enabled(want_lora);   // no-op when no adapter is loaded or the flag already matches
+        const int want_state = have_lora ? (want_lora ? 1 : 0) : -1;
         // ---- the session: the held state continues when the request extends it (the recurrent state cannot step back)
-        const int s = adm ? slot : pick_session(ids, ir.imgs);
+        const int s = adm ? slot : pick_session(ids, ir.imgs, want_state);
         Engine::Sess& ss = E.sess[(size_t) s];
-        size_t reuse = match_len(ss, ids, ir.imgs);
+        size_t reuse = match_len(ss, ids, ir.imgs, want_state);
         if (adm) {   // another session holding more of this prompt (the conversation was read alone): copy its state
             int src = -1;
             size_t best = reuse;
             for (int i = 0; i < E.n_sess; ++i) {
                 if (i == s || E.sess[(size_t) i].active) continue;
-                const size_t l = match_len(E.sess[(size_t) i], ids, ir.imgs);
+                const size_t l = match_len(E.sess[(size_t) i], ids, ir.imgs, want_state);
                 if (l > best) { best = l; src = i; }
             }
             if (src >= 0) {
@@ -3539,6 +3621,7 @@ struct Serve {
             ss.live.clear();
             ss.imgs.clear();
         }
+        ss.lora_state = want_state;
         if (geni) E.set_images(ir.rows, ir.cell_row, ir.mrope, (int64_t) ids.size(), ir.delta);
         else E.clear_images();
         const auto t0 = Clock::now();
@@ -3582,18 +3665,29 @@ struct Serve {
         const auto d0 = Clock::now();
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
+        // logprobs: the `LP` line must describe the distribution the token was drawn from, so the request needs the
+        // whole head row on the host.  The row is also what sampling mutates (penalties divide / subtract in place),
+        // hence a copy: `lp_row` is the untouched row, `lg` is the one the sampler works on.
+        const bool want_lp = smp.logprobs >= 0;
+        std::vector<float> lp_row;
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
-        // text); sampled ones, and requests beside others, one token at a time
-        const bool spec = E.mtp_d > 0 && !smp.needs_logits() && !adm;
+        // text); sampled ones, and requests beside others, one token at a time.  A request that asks for logprobs
+        // decodes one token at a time too: a draft's row is stepped past before its LP line could be written.
+        const bool spec = E.mtp_d > 0 && !smp.needs_logits() && !adm && !want_lp;
         std::vector<int32_t> fix, drafts;
         int32_t picks[16];
         int nx = smp.needs_logits() ? -1 : E.greedy();
         if (adm) {
-            if (smp.needs_logits()) {
+            if (want_lp) {
+                E.host_logits(lg);
+                lp_row = lg;
+                nx = sample(lg, smp, hist, rng);
+            } else if (smp.needs_logits()) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
             }
             std::printf("T %d\n", nx);
+            if (want_lp) emit_lp(lp_row, nx, smp.logprobs, smp.allowed);
             ++produced;
             hist.push_back(nx);
             const char* fin = is_eos(nx) ? "stop" : stop.load() ? "cancel" : max_new <= 1 ? "length"
@@ -3623,12 +3717,18 @@ struct Serve {
             return;
         }
         for (;;) {
-            if (smp.needs_logits()) {
+            if (want_lp) {
+                E.host_logits(lg);   // the row as the head wrote it ...
+                lp_row = lg;         // ... kept before sample() applies the penalties in place
+                if (smp.needs_logits()) nx = sample(lg, smp, hist, rng);
+                // greedy: nx already holds E.greedy()'s pick from this same row (a draft cannot be in flight: spec is off)
+            } else if (smp.needs_logits()) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
             }
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
+                if (want_lp) emit_lp(lp_row, t, smp.logprobs, smp.allowed);   // one flush with the token
                 std::fflush(stdout);
                 ++produced;
                 hist.push_back(t);
@@ -3677,6 +3777,11 @@ struct Serve {
 
     int run() {
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
+        if (strata::kernels::lora().loaded) {   // the server reads it to tell a client whether `"lora": false` applies
+            int covered = 0;
+            for (bool a : strata::kernels::lora().adapted) covered += a;
+            std::printf("INFO lora=%d\n", covered);
+        }
         std::printf("READY %d stop\n", E.ctx);
         std::fflush(stdout);
         std::thread reader([&] {
@@ -3739,6 +3844,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
+    std::vector<std::pair<std::string, float>> lora_files;   // --lora / --lora-scaled: (adapter GGUF, scale)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3779,6 +3885,20 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
+        else if (a == "--lora") lora_files.push_back({next(), 1.0f});
+        else if (a == "--lora-scaled") {   // FILE:SCALE[,FILE:SCALE...]
+            std::stringstream list(next());
+            std::string item;
+            while (std::getline(list, item, ',')) {
+                if (item.empty()) continue;
+                const size_t colon = item.rfind(':');
+                if (colon == std::string::npos || colon + 1 >= item.size()) {
+                    std::fprintf(stderr, "strata-q36: --lora-scaled: expected FILE:SCALE, got '%s'\n", item.c_str());
+                    return 2;
+                }
+                lora_files.push_back({item.substr(0, colon), (float) std::atof(item.c_str() + colon + 1)});
+            }
+        }
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -3789,6 +3909,7 @@ int strata::qwen35::run(int argc, char** argv) {
         } else {
             std::fprintf(stderr,
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
+                         "       [--lora FILE | --lora-scaled FILE:SCALE[,FILE:SCALE...]]  (llama.cpp adapter GGUFs)\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
                          "--bench-tg N)\n");
             return 2;
@@ -3865,6 +3986,15 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
     }
+    // the adapter's tables are uploaded before any graph is captured (the graphs hold their addresses)
+    uint64_t lora_digest = 0;
+    std::string lora_summary = "0";
+    if (!lora_files.empty() && !strata::kernels::load_lora_adapters(lora_files, m.g, lora_summary, lora_digest, err)) {
+        std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
+        return 1;
+    }
+    (void) lora_digest;   // identifies the tables (kept for the session cache a later per-request switch will need)
+    (void) lora_summary;  // the shared loader prints it ("strata: LoRA: N layers adapted")
     struct Report {
         Engine& E;
         ~Report() {
