@@ -952,6 +952,7 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                 else "the optional concurrency stage did not run")
     for pointer_text in scan_nulls(doc):
         doc["missing"][pointer_text] = why.get(pointer_text) or default_reason(doc, pointer_text)
+    doc = facts.redact_object(doc, redact)         # results.json gets the same redaction as the other files (#4484)
     problems = validate(doc)
     if problems:
         raise ProfileError("the benchmark report failed its own validation: " + problems[0], 6)

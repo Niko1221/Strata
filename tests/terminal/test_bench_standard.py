@@ -908,6 +908,20 @@ class CommandLineTests(StandardBase):
         start.assert_not_called()
 
 
+    def test_results_json_is_redacted_like_the_other_files(self):
+        """#4484: the operator's free text (track notes, background) reached results.json unredacted while the README
+        had it replaced."""
+        out = self.root / "redact"
+        code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--track", "custom",
+                                      "--track-notes", "models in /home/alice/m", "--background", "rsync to /home/alice/bak")
+        self.assertEqual(code, 0, errors)
+        raw = (out / "results.json").read_text(encoding="utf-8")
+        self.assertNotIn("alice", raw)
+        doc = bs.load(out)
+        self.assertEqual(doc["configuration"]["track_notes"], "models in /home/<user>/m")
+        self.assertEqual(doc["hardware"]["background_workloads"], ["rsync to /home/<user>/bak"])
+
+
 class EngineProcessTests(unittest.TestCase):
     def test_start_engine_runs_serve_with_the_profile_and_stop_ends_only_that_process(self):
         class Fake:
