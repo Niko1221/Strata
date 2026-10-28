@@ -734,9 +734,9 @@ int main() {
             check(session_deepest_checkpoint(chain) == &chain[1], "save: no pin, the deepest as before");
         }
         const uint64_t need = session_save_peak_bytes(&chain[1], live);
-        check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (16u << 20) &&
-              need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (18u << 20),
-              "save: the peak counts two checkpoint copies, the live state, tokens and the buffer");
+        check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (32u << 20) &&
+              need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (34u << 20),
+              "save: the peak counts two checkpoint copies, the live state, tokens and the two pipelined buffers");
         SessionSaveLive huge = live;
         huge.state_bytes = UINT64_MAX;
         check(session_save_peak_bytes(&chain[1], huge) == UINT64_MAX, "save: the peak saturates");
