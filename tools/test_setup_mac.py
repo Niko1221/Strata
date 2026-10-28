@@ -49,6 +49,13 @@ class MacCheck(unittest.TestCase):
         self.assertTrue(info["clt"])
         self.assertEqual(M.mac_problems(info), [])
 
+    def test_an_intel_python_on_apple_silicon_is_still_an_apple_silicon_mac(self):     # #3894
+        with mock.patch.object(M.platform, "machine", return_value="x86_64"):
+            info = M.mac_info(fake_run({**M5, "machdep.cpu.brand_string": "Apple M1 Max"}))
+        self.assertTrue(info["arm64"])
+        self.assertTrue(info["rosetta_python"])
+        self.assertNotIn("Intel", " ".join(M.mac_problems(info)))
+
     def test_intel_old_macos_and_missing_tools_are_named(self):
         with mock.patch.object(M.platform, "machine", return_value="x86_64"):
             info = M.mac_info(fake_run({**M5, "macos": "14.6", "machdep.cpu.brand_string": "Intel Core i9"}, clt_rc=2))
@@ -380,6 +387,56 @@ class ControlMode(unittest.TestCase):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
         self.assertIn('if sys.platform == "darwin" and not CONTROL:', src)
         self.assertIn('if sys.platform == "darwin" and CONTROL:', src)
+
+
+class UpdateFlow(unittest.TestCase):
+    """update.sh asks the same questions as a setup run but does not download model files: a model chosen there must
+    be named, not dropped in silence (an M1 Max picked IQ3_S in update.sh and got no model and no message)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name).resolve() / "data"
+        self.models = Path(self.tmp.name).resolve() / "own"
+        self.data.mkdir()
+        self.models.mkdir()
+        self.said, self.warned = [], []
+
+    def run_update(self, argv=("--update", "--model", "IQ3_S", "--vision", "no", "--yes")):
+        with mock.patch.object(M, "mac_configs", lambda: []), \
+                mock.patch.object(M.S, "data_folder_for", lambda a: (self.data, [])), \
+                mock.patch.object(M, "mac_info", lambda run=None: {"chip": "Apple M1 Max", "ram_gb": 32.0,
+                                                                   "macos": "26.6.2", "arm64": True, "clt": True}), \
+                mock.patch.object(M, "mac_problems", lambda info: []), \
+                mock.patch.object(M.S, "free_gb", lambda p: 200.0), \
+                mock.patch.object(M.S, "step", lambda *a, **k: None), \
+                mock.patch.object(M.S, "say", lambda *a, **k: self.said.append(" ".join(str(x) for x in a))), \
+                mock.patch.object(M.S, "ok", lambda *a, **k: None), \
+                mock.patch.object(M.S, "warn", lambda *a, **k: self.warned.append(" ".join(str(x) for x in a))), \
+                mock.patch.object(M.S, "pip_install", lambda *a, **k: None), \
+                mock.patch.object(M.S, "get_llama_cpp", lambda: self.data / "llama"), \
+                mock.patch.object(M, "build_engine", lambda llama, jobs=None: self.data / "strata"), \
+                mock.patch.object(M.S, "download", side_effect=AssertionError("an update must not download")):
+            return M.main([*argv, "--data-dir", str(self.data), "--gguf-dir", str(self.models)])
+
+    def test_a_model_chosen_in_an_update_is_named_not_dropped(self):
+        self.assertEqual(self.run_update(), 0)
+        self.assertIn("IQ3_S is not installed here", " ".join(self.warned))
+        self.assertIn("does not download model files", " ".join(self.warned))
+        self.assertIn("./setup.sh --setup", " ".join(self.said))
+
+    def test_an_installed_model_keeps_the_update_quiet(self):
+        for n in M.model_shard_names("IQ3_S"):
+            f = self.models / n
+            f.write_bytes(b"x")
+            f.with_name(f.name + ".done").write_text("whole")
+        tag = M.S.FAMILIES["qwen"]["tag"] + "IQ3_S"
+        pack = self.data / "packs" / tag.lower()
+        (pack / "tokenizer").mkdir(parents=True)
+        (pack / "native_experts.txt").write_text("x")
+        (pack / "tokenizer" / "vocab.json").write_text("{}")
+        self.assertEqual(self.run_update(), 0)
+        self.assertFalse([w for w in self.warned if "not installed here" in w], self.warned)
 
 
 class Source(unittest.TestCase):

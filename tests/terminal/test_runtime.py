@@ -21,7 +21,7 @@ from unittest import mock
 from strata_cli.cli import main
 from strata_cli import bench
 from strata_cli.client import Endpoint
-from strata_control import calibration, journal, management, owner_transport, profiles, recipes, runtime
+from strata_control import calibration, journal, management, owner_transport, procs, profiles, recipes, runtime
 
 
 WINDOWS = os.name == "nt"
@@ -675,7 +675,7 @@ class RuntimeTests(unittest.TestCase):
             self.config.write_text(json.dumps(edited), encoding="utf-8")
             plan = runtime.plan_restart("local", allow_source_migration=True)
             code, result = self._cli("restart", "--profile", "local", "--allow-source-migration",
-                                     "--startup-wait", "5", "--wait", "20",
+                                     "--startup-wait", "30", "--wait", "20",
                                      "--if-source-sha256", plan["candidate_source_sha256"])
         self.assertEqual(code, 6)
         self.assertFalse(result["ok"])
@@ -772,7 +772,7 @@ class RuntimeTests(unittest.TestCase):
             proposed["source_config"] = str(next_config)
             profiles.save("local", proposed, expected_revision=revision)
             digest = hashlib.sha256(next_config.read_bytes()).hexdigest()
-            result = runtime.restart("local", timeout=20, startup_wait=5, allow_source_switch=True,
+            result = runtime.restart("local", timeout=20, startup_wait=30, allow_source_switch=True,
                                      expected_source_sha256=digest)
         self.assertFalse(result["ok"])
         self.assertTrue(result["rolled_back"])
@@ -1159,6 +1159,53 @@ class RuntimeTests(unittest.TestCase):
             image.return_value = r"C:\Windows\System32\svchost.exe"
             self.assertTrue(runtime._child_present({"pid": 1, "started": 5}))   # a creation time decides by itself
 
+    def test_a_process_created_after_the_marker_was_written_is_not_the_recorded_child(self):
+        # 2026-10-22: the app was force-killed, its marker had no creation time, the number now belonged to another Python program, and every
+        # load said "lost host child is still present" until the marker was deleted by hand. The child was started BEFORE its marker was written.
+        child = {"pid": 4242}
+        with mock.patch.object(runtime, "_pid_exists", return_value=True), \
+                mock.patch.object(runtime.winproc, "process_image", create=True, return_value="C:\\Python\\python.exe"), \
+                mock.patch.object(runtime.procs, "started_epoch") as created:
+            created.return_value = 1000.0 + 60
+            self.assertFalse(runtime._child_present(child, written=1000.0), "created a minute after the marker: another process")
+            created.return_value = 1000.0 - 5
+            self.assertTrue(runtime._child_present(child, written=1000.0), "created before the marker: could be the child, keep refusing")
+            created.return_value = 1000.0 + 1.5
+            self.assertTrue(runtime._child_present(child, written=1000.0), "inside the clock slack: keep refusing")
+            created.return_value = None
+            self.assertTrue(runtime._child_present(child, written=1000.0), "creation time unreadable: never guess")
+            created.return_value = 1000.0 + 60
+            self.assertTrue(runtime._child_present({"pid": 4242, "started": 7}, written=1000.0) is True, "a recorded creation time decides by itself")
+            self.assertTrue(runtime._child_present(child), "no marker time: unchanged")
+
+    def test_a_marker_left_by_a_killed_app_is_cleaned_up_when_its_number_belongs_to_a_later_program(self):
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            state_path, marker = self._stale_host(victim.pid)             # a marker with no creation time (Windows could not read it)
+            old = time.time() - 3600
+            os.utime(marker, (old, old))                                  # written an hour ago: the victim started after it
+            started = runtime.start("local", wait=10, shutdown_timeout=2)
+            self.assertTrue(started["ok"], started)
+            self.assertFalse(marker.exists(), "the stale marker was removed")
+            self.assertIsNone(victim.poll(), "the program that reused the number was left alone")
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+
+    def test_started_epoch_reads_a_live_process_and_nothing_for_a_dead_number(self):
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            now = time.time()
+            created = procs.started_epoch(victim.pid)
+            self.assertIsNotNone(created)
+            self.assertLess(abs(created - now), 60)
+        finally:
+            victim.kill()
+            victim.wait(timeout=10)
+        self.assertIsNone(procs.started_epoch(victim.pid))
+        self.assertIsNone(procs.started_epoch(0))
+        self.assertIsNone(procs.started_epoch(-5))
+
     @unittest.skipUnless(WINDOWS, "os.kill(pid, 0) ends a process on Windows; liveness is a handle query")
     def test_liveness_check_does_not_end_the_process_it_asks_about(self):
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -1195,6 +1242,53 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(profiles.ProfileError, "Everyone"):
                 runtime.runtime_dir()
 
+    def test_ready_pid_may_be_a_child_of_the_launcher_on_windows_only(self):
+        # #3683: a Windows venv's python.exe starts the real interpreter as its child, so the server that writes the ready file
+        # is one process below the pid the host started. It must still match; a stranger or a distant process must not.
+        parents = {200: 100, 300: 200, 400: 300, 500: 400}
+        with mock.patch.object(runtime.procs, "parent_of", side_effect=lambda pid: parents.get(pid)):
+            with mock.patch.object(runtime, "WINDOWS", True):
+                self.assertTrue(runtime._ready_pid_is_child(100, 100))
+                self.assertTrue(runtime._ready_pid_is_child(200, 100))
+                self.assertTrue(runtime._ready_pid_is_child(300, 100))
+                self.assertTrue(runtime._ready_pid_is_child(400, 100))
+                self.assertFalse(runtime._ready_pid_is_child(500, 100))      # too far below
+                self.assertFalse(runtime._ready_pid_is_child(999, 100))      # unrelated
+                self.assertFalse(runtime._ready_pid_is_child(None, 100))
+                self.assertFalse(runtime._ready_pid_is_child("200", 100))
+                self.assertFalse(runtime._ready_pid_is_child(0, 100))
+            with mock.patch.object(runtime, "WINDOWS", False):
+                self.assertTrue(runtime._ready_pid_is_child(100, 100))
+                self.assertFalse(runtime._ready_pid_is_child(200, 100))      # POSIX has no launcher in between
+
+    @unittest.skipUnless(WINDOWS, "the venv launcher is a Windows thing")
+    def test_server_started_through_a_launcher_process_becomes_ready(self):
+        launcher = self.root / "launcher.cmd"
+        launcher.write_bytes(f'@echo off\r\n"{sys.executable}" %*\r\n'.encode())
+        host = runtime.Host("local", shutdown_timeout=2, startup_wait=20)
+        plan, args, source, original = host._plan()
+        with mock.patch.object(sys, "executable", str(launcher)):
+            host._launch(args, source, original, plan["profile_revision"])
+        try:
+            result = host._wait_ready(30)
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(result["generation_ready"])
+            ready = json.loads(host.ready_path.read_text(encoding="utf-8"))
+            self.assertNotEqual(ready["pid"], host.child.pid)               # the server is below the launcher
+        finally:
+            host._stop_child()
+
+    def test_a_ready_file_that_is_not_ours_is_named_in_the_status_phase(self):
+        host = runtime.Host("local", shutdown_timeout=2, startup_wait=10)
+        host.child = mock.Mock(pid=111)
+        host.child.poll.return_value = None
+        host.ready_path = self.root / "ready.json"
+        host.ready_path.write_text(json.dumps({"pid": 222, "instance_id": "a" * 32}), encoding="utf-8")
+        with mock.patch.object(runtime.procs, "parent_of", return_value=None):
+            self.assertEqual(host._status()["phase"], "ready_file_not_matched")
+        host.ready_path.unlink()
+        self.assertEqual(host._status()["phase"], "loading")
+
     def test_exclusive_lease_waits_for_shared_holders_and_shared_holders_coexist(self):
         first = runtime.acquire_activity_lease(shared=True)
         second = runtime.acquire_activity_lease(shared=True)
@@ -1212,6 +1306,17 @@ class RuntimeTests(unittest.TestCase):
         finally:
             runtime._unlock_file(exclusive)
             os.close(exclusive)
+
+
+class StartWaitLimit(unittest.TestCase):
+    def test_a_start_may_wait_up_to_thirty_minutes_for_a_big_model(self):                    # #3949
+        from strata_control import runtime as rt, profiles as pr
+        self.assertEqual(rt.MAX_START_WAIT, 1800)
+        with self.assertRaisesRegex(pr.ProfileError, "start wait must be 0..1800"):
+            rt.start("x", wait=1801)
+        with mock.patch.object(rt, "_name", side_effect=pr.ProfileError("reached")):
+            with self.assertRaisesRegex(pr.ProfileError, "reached"):
+                rt.start("x", wait=1800)
 
 
 if __name__ == "__main__":

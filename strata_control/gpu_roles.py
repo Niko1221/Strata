@@ -107,12 +107,15 @@ def pick_main(cs: list[dict]) -> tuple[dict | None, str]:
 
 def recommend(cards: list[dict], vendor: str | None = None) -> dict[str, Any]:
     """The recommended roles: {"roles": {index: role}, "main": index|None, "why": code, "reasons": {index: code}}.
-    The best card is Main, every other card starts as Helper, EXCEPT a card with 8 GB or less, an integrated chip beside a card with memory of
+    The best card is Main, every other card starts as Helper, EXCEPT a card with 8 GB or less when a bigger card is there (or it has under 4 GB), an integrated chip beside a card with memory of
     its own, and a card the engine cannot run: those start Off."""
     cs = rows(cards, vendor)
     main, why = pick_main(cs)
     roles: dict[int, str] = {}
     reasons: dict[int, str] = {}
+    # An 8 GB card is a poor Helper beside a bigger card, but a perfectly good one when 8 GB is all there is: two GTX 1080s are a working
+    # 16 GB pool (#3655). A card with 8 GB or less starts Off only when a bigger usable card is there, or when it is too small to help.
+    has_bigger = any(_can_run(c) and not _shares(c) and round(_mem(c)) > OFF_AT_OR_BELOW_GB for c in cs)
     for c in cs:
         i = _idx(c)
         if main is not None and c is main:
@@ -121,7 +124,7 @@ def recommend(cards: list[dict], vendor: str | None = None) -> dict[str, Any]:
             roles[i], reasons[i] = "off", "cannot_run"
         elif _shares(c) and main is not None:
             roles[i], reasons[i] = "off", "igpu"
-        elif round(_mem(c)) <= OFF_AT_OR_BELOW_GB:
+        elif round(_mem(c)) <= OFF_AT_OR_BELOW_GB and (has_bigger or _mem(c) < gpu_fit.MIN_CARD_GB):
             roles[i], reasons[i] = "off", "small"
         else:
             roles[i], reasons[i] = "helper", "helper"

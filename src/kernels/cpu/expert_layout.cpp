@@ -10,7 +10,7 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
-#else
+#elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
 #include <fstream>
@@ -39,6 +39,38 @@ int cpu_isa_cap() {
     return cap;
 }
 
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && !defined(_M_IX86)
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+bool cpu_avx1_ok() { return false; }
+bool cpu_sse42_ok() { return false; }
+bool cpu_gather_fast() { return false; }
+bool cpu_gather_fast_here() { return false; }
+bool cpu_avxvnni_ok() { return false; }
+std::string cpu_name() {
+#if defined(__APPLE__)
+    return "unknown";   // as before: the Metal build's cpuid shim read all zeros
+#else
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) {
+                const size_t b = line.find_first_not_of(" \t", c + 1);
+                if (b != std::string::npos) return line.substr(b);
+            }
+        }
+    }
+#if defined(__aarch64__)
+    return "aarch64";
+#else
+    return "unknown";
+#endif
+#endif  // __APPLE__
+}
+#else
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -186,6 +218,8 @@ bool cpu_sse42_ok() {
     return ok;
 }
 
+#endif  // x86 cpu probes
+
 const char* isa_floor_build() {
 #if defined(STRATA_ISA_FLOOR_AVX)
     return "avx";
@@ -196,6 +230,7 @@ const char* isa_floor_build() {
 #endif
 }
 
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 namespace {
 void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #if defined(_MSC_VER)
@@ -207,6 +242,7 @@ void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #endif
 }
 }  // namespace
+#endif  // x86 cpuid helper
 
 int iq256_gather_setting() {
     static const int s = [] {
@@ -217,6 +253,7 @@ int iq256_gather_setting() {
     return s;
 }
 
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 bool cpu_gather_fast() {
     static const bool ok = [] {
         if (cpu_isa_cap() < 3) return false;   // STRATA_FORCE_ISA: as on a CPU that stops at AVX2
@@ -295,6 +332,7 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+#endif  // x86 cpuid probes
 
 // ---- the AVX-512 probe and the oracle flag (#795) ----
 //
@@ -322,6 +360,9 @@ const char* CpuFeatures::reason() const {
 
 CpuFeatures cpu_features() {
     CpuFeatures f;
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && !defined(_M_IX86)
+    return f;   // the AVX-512 kernels are x86-only: no AVX-512 on this architecture
+#else
     int reg[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(reg, 0);
@@ -341,6 +382,7 @@ CpuFeatures cpu_features() {
     f.avx512_vnni = (ecx >> 11) & 1u;
     f.avx512_vbmi = (ecx >> 1) & 1u;
     return f;
+#endif
 }
 
 void cpu_require_expert_support() {
@@ -383,6 +425,8 @@ void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
 int native_gu_mt_min(int) { return 2; }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_gu_rows_invariant(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_down_rows_invariant(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
@@ -503,6 +547,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
                   ": the pack is inconsistent (repack with tools/iq_pack.py)";
             return false;
         }
+        for (int64_t l = 0; l < n_layers; ++l) L.fmt[(size_t) l].layer = (int) l;
         HadamardSpec h;
         if (have && !hadamard_parse(pack_dir + "/hadamard.txt", n_layers, h, err)) return false;
         hadamard_set(std::move(h));

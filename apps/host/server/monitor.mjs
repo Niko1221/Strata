@@ -3,6 +3,9 @@ import { variant as catalogVariant, footprint } from './catalog.mjs';
 import { detect, cachedHardware } from './hardware.mjs';
 import { readGpuTelemetry, gpuMemoryTotals } from './device-probes.mjs';
 import { createSystemSampler } from './system-telemetry.mjs';
+import { sensorPace, WATCH_MS } from './sensor-pace.mjs';
+import { readTemperatures } from './temperature-telemetry.mjs';
+import { addEnergy, energyWh } from './energy-meter.mjs';
 import { state as servingState } from './serving.mjs';
 import { originalDashboard } from './monitor-dashboard.mjs';
 import { get as getStore } from './store.mjs';
@@ -58,7 +61,17 @@ let hwCache = null;
 let ticker = null;
 let memoryWarningShown = false;
 let sensorsPending = false, sensorsAt = 0;
+/* The Monitor screen asks (GET /api/monitor) every few seconds while it is open; a model that is loaded counts as live (#4066). */
+let watchedUntil = 0, liveProbe = () => false;
+export function watch() {
+  const wasIdle = Date.now() >= watchedUntil;
+  watchedUntil = Date.now() + WATCH_MS;
+  if (wasIdle) sensorsAt = 0;                                    // opening the Monitor after a quiet spell reads the card at once
+}
+export function setLiveProbe(probe) { liveProbe = typeof probe === 'function' ? probe : () => false; }
 let systemReading=null;
+/* CPU and SSD temperatures (null where this PC cannot give one) and the GPU energy used since the host started (#3628). */
+let temperatures={cpuTempC:null,ssdTempC:null};
 const sampleSystem=createSystemSampler();
 const finite = value => typeof value==='number'&&Number.isFinite(value);
 function aggregate(readings,key,mode='sum') {
@@ -71,7 +84,7 @@ function hardwareSnapshot() {
   const demo=process.env.STRATA_REAL_ENGINE!=='1',hw=state.hardware;
   const devices=cachedHardware()?.gpus??hwCache?.gpus??[];
   const memoryPools=Math.max(1,devices.filter(g=>!g.unified).length+Number(devices.some(g=>g.unified)));
-  const readings=demo?devices.map((gpu,i)=>({id:gpu.id??`${gpu.vendor}:${gpu.index}`,source:'demo',sampledAt:new Date().toISOString(),utilizationPct:Math.round(clamp(hw.gpuLoad+i*2,0,100)),temperatureC:Math.round(hw.gpuTempC+i),memoryUsedGb:round(Math.min(gpu.vramGb,hw.vramUsedGb/memoryPools),2),powerW:gpu.unified?null:round(35+hw.gpuLoad*2,0),powerLimitW:gpu.unified?null:300,pcieGen:gpu.unified?null:4,pcieGenMax:gpu.unified?null:4,pcieWidth:gpu.unified?null:16,pcieRxMbs:gpu.unified?null:round(hw.gpuLoad*1.2,1)})):hw.gpus.map(g=>({...g}));
+  const readings=demo?devices.map((gpu,i)=>({id:gpu.id??`${gpu.vendor}:${gpu.index}`,source:'demo',sampledAt:new Date().toISOString(),utilizationPct:Math.round(clamp(hw.gpuLoad+i*2,0,100)),temperatureC:Math.round(hw.gpuTempC+i),memoryUsedGb:round(Math.min(gpu.vramGb,hw.vramUsedGb/memoryPools),2),powerW:gpu.unified?null:round(35+hw.gpuLoad*2,0),powerLimitW:gpu.unified?null:300,pcieGen:gpu.unified?null:4,pcieGenMax:gpu.unified?null:4,pcieWidth:gpu.unified?null:16,pcieRxMbs:gpu.unified?null:round(hw.gpuLoad*1.2,1),fanPct:gpu.unified?null:Math.round(30+hw.gpuLoad*0.5),clockMhz:gpu.unified?null:Math.round(1400+hw.gpuLoad*14)})):hw.gpus.map(g=>({...g}));
   const memory = gpuMemoryTotals(devices,readings);
   return {
     gpus:readings,cpus:systemReading?.cpus??[],cpuLoad:systemReading?.cpuLoad??null,
@@ -81,7 +94,9 @@ function hardwareSnapshot() {
     ramUsedGb:systemReading?.ramUsedGb??null,ramTotalGb:systemReading?.ramTotalGb??hw.ramTotalGb,
     gpuTempC:aggregate(readings,'temperatureC','max'),tempLimitC:hw.tempLimitC,
     powerW:aggregate(readings,'powerW'),powerLimitW:aggregate(readings,'powerLimitW'),
-    pcieRxMbs:aggregate(readings,'pcieRxMbs'),diskReadGbs:systemReading?.diskReadGbs??null,diskWriteMbs:systemReading?.diskWriteMbs??null,
+    pcieRxMbs:aggregate(readings,'pcieRxMbs'),
+    cpuTempC:demo?54:temperatures.cpuTempC,ssdTempC:demo?41:temperatures.ssdTempC,energyWh:round(energyWh(),3),
+    diskReadGbs:systemReading?.diskReadGbs??null,diskWriteMbs:systemReading?.diskWriteMbs??null,
   };
 }
 
@@ -108,14 +123,16 @@ function approach(current, target, factor = 0.22) {
 }
 
 function tick() {
-  if(!sensorsPending&&Date.now()-sensorsAt>=3000){
+  const pace=sensorPace({live:supervisor.status().running||!!liveProbe(),watchedUntil});
+  if(!sensorsPending&&Date.now()-sensorsAt>=pace.intervalMs){
     sensorsPending=true;sensorsAt=Date.now();
     const hardware=cachedHardware()??hwCache;
-    void Promise.all([readGpuTelemetry(hardware?.gpus??[]),sampleSystem(hardware?.processors??[])])
-      .then(([readings,system])=>{state.hardware.gpus=readings;systemReading=system;})
+    void Promise.all([readGpuTelemetry(hardware?.gpus??[],{transfer:pace.transfer}),sampleSystem(hardware?.processors??[]),(process.env.STRATA_REAL_ENGINE==='1'?readTemperatures():Promise.resolve(temperatures)).catch(()=>({cpuTempC:null,ssdTempC:null}))])
+      .then(([readings,system,temps])=>{state.hardware.gpus=readings;systemReading=system;temperatures=temps;})
       .catch(()=>{state.hardware.gpus=[];systemReading=null;})
       .finally(()=>{sensorsPending=false;});
   }
+  addEnergy(hardwareSnapshot().powerW,Date.now());
   const hw = state.hardware;
   const busy = state.phase === 'generating' || state.phase === 'reading' || state.phase === 'thinking';
 

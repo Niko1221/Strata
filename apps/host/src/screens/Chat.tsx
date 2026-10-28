@@ -28,6 +28,7 @@ import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
 import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
+import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
@@ -38,6 +39,8 @@ import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
 import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { copyText } from '../lib/clipboard';
+import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
@@ -210,6 +213,9 @@ export function ChatScreen() {
     }, [streaming]);
     /** Whether the reader is following the newest message rather than reading back. */
     const pinned = useRef(true);
+    /** When the reader last used the wheel, a finger, a key or the scrollbar on the transcript. */
+    const readerInput = useRef(0);
+    const seenMessages = useRef(0);
     /**
      * Scrolls to the newest message and stays there.
      *
@@ -264,8 +270,13 @@ export function ChatScreen() {
         const el = scroller.current;
         if (!el || (session?.showcase && !streaming))
             return;
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-        if (nearBottom)
+        // The reader's own scrolling decides (#4014): a wheel notch is about 100 px and used to land inside a 120 px band that pulled
+        // the view back on every token. `pinned` is set by the scroller's wheel, touch, key and scroll handlers below.
+        const count = session?.messages.length ?? 0;
+        const sent = count > seenMessages.current && session?.messages.at(-1)?.role === 'user';
+        seenMessages.current = count;
+        // Sending a message always brings the reader to it, as it did before; only the answer's growth waits for the reader.
+        if (pinned.current || sent)
             scrollToLatest();
     }, [session?.messages.length, session?.messages.at(-1)?.content, scrollToLatest]);
     // Scroll position is remembered per conversation, so returning to one puts you
@@ -419,9 +430,17 @@ export function ChatScreen() {
             // the way back is worth offering.
             // The threshold has to tolerate the height estimate moving under
             // us, or the pill flickers as turns render during a scroll.
-            const away = el.scrollHeight - el.scrollTop - el.clientHeight > 400;
-            pinned.current = !away;
-            setAwayFromBottom(away);
+            const distance = distanceFromBottom(el);
+            pinned.current = followAfterScroll(distance, pinned.current, Date.now() - readerInput.current);
+            setAwayFromBottom(distance > PILL_DISTANCE);
+        }} onWheel={(e) => {
+            readerInput.current = Date.now();
+            if (wheelLeavesBottom(e.deltaY) && e.currentTarget.scrollTop > 0)
+                pinned.current = false;
+        }} onTouchMove={() => { readerInput.current = Date.now(); }} onPointerDown={() => { readerInput.current = Date.now(); }} onKeyDown={(e) => {
+            readerInput.current = Date.now();
+            if (KEYS_UP.has(e.key) && e.target === e.currentTarget && e.currentTarget.scrollTop > 0)
+                pinned.current = false;
         }}>
 
             <div className="chat__inner">
@@ -615,11 +634,11 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     if (m.role === 'user') {
         return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
-        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink}/> : m.content}</div>
+        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink} imageSession={activeSession}/> : <span className="st-bubble__text">{m.content}</span>}</div>
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
-            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void navigator.clipboard.writeText(m.content)}/>
+            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void copyText(m.content, 'Message', { toast: pushToast })}/>
             <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
@@ -638,9 +657,9 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
 
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
-        {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
-        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
+        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
+        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />
@@ -658,11 +677,11 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
           <span className="st-msg__actions">
             {tr(isLast ? <>
-              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void navigator.clipboard.writeText(m.content)}/>
+              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/>
               <IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/>
             </> : null)}
             <MessageMenu label={tr("More response actions")}>
-              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void navigator.clipboard.writeText(m.content)}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
+              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}

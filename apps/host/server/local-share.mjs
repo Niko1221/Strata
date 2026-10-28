@@ -14,8 +14,22 @@ export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0
     if (listener) throw new Error('Sharing is already starting.');
     listener = http.createServer(async (req, res) => {
       const path = apiPath(new URL(req.url ?? '/', 'http://localhost').pathname);
+      const method = req.method ?? 'GET';
+      // #3208: with an API key set, a browser page of any site can call the shared API - the key decides, not the
+      // origin. The browser's preflight (OPTIONS) never carries the key (the spec says so), so it is answered here,
+      // before the path check and the key check; the real request that follows still goes through both. Without a
+      // key no CORS headers go out, as before: the listener stays "a device on this network" (SECURITY.md), and a
+      // web page of another site on the internet cannot read the model through it.
+      if (hasKey()) {
+        res.setHeader('access-control-allow-origin', '*');
+        res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+        // the headers the preflight asks for (SDKs add their own; Anthropic browser clients send anthropic-version)
+        res.setHeader('access-control-allow-headers', String(req.headers['access-control-request-headers'] ?? '') || 'authorization, content-type, x-api-key, x-strata-client, anthropic-version, anthropic-beta');
+        res.setHeader('access-control-max-age', '600');
+        if (method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+      }
       if (!['/v1/models','/v1/chat/completions','/v1/messages'].includes(path)) { res.writeHead(404); res.end('Not found'); return; }
-      try { await handle(req, res, path, req.method ?? 'GET'); }
+      try { await handle(req, res, path, method); }
       catch { if (!res.headersSent) res.writeHead(500); res.end('Request failed'); }
     });
     try { await new Promise((resolve,reject) => { listener.once('error',reject); listener.listen(port,host,resolve); }); }

@@ -430,6 +430,30 @@ class WindowsDetection(unittest.TestCase):
                 (pub / setup.WIN_HIP_ASSET).unlink()           # installed: kept, nothing downloaded again
                 self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}), eng)
 
+    def test_prebuilt_hip_zip_archs_as_list_or_string(self):
+        """#3810 review: gfx names are names, not numbers - an installed ready-made engine is recognised (no download again) and a zip
+        is accepted whether BUILD.json writes archs as a list or as the ';'-separated string."""
+        import json
+        import zipfile
+        for archs in (["gfx1100", "gfx1151"], "gfx1100;gfx1151"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                pub = root / "pub"
+                pub.mkdir()
+                ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
+                meta = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": archs, "lib_dirs": ["rocm/bin"]}
+                with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
+                    z.writestr(setup.EXE, "engine")
+                    z.writestr("strata-device.exe", "probe")
+                    z.writestr("rocm/bin/amdhip64_7.dll", "dll")
+                    z.writestr("BUILD.json", json.dumps(meta))
+                with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "say", lambda *a, **k: None),                         mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
+                    eng = setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"})
+                    self.assertEqual(eng, root / "engine", archs)
+                    (pub / setup.WIN_HIP_ASSET).unlink()           # installed: recognised, nothing downloaded again
+                    self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"}), eng, archs)
+                    self.assertEqual(setup.engine_archs_hip(), ["gfx1100", "gfx1151"], archs)
+
 
 _HIP_DEVICES = setup.hip_devices                      # the real parser, for the tests that mock setup.hip_devices
 
@@ -651,13 +675,24 @@ class EngineLaunchEnv(unittest.TestCase):
         (eng / "BUILD.json").write_text('{"backend": "hip", "lib_dirs": ["rocm/bin"]}', encoding="utf-8")
         return eng
 
-    def test_engine_env_puts_rocm_bin_first(self):
+    def test_engine_env_puts_rocm_bin_first_on_windows(self):
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}):
+            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 env = setup.engine_env(eng)
             self.assertEqual(env["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
             self.assertTrue(env["PATH"].endswith("C:\\Windows"))
+
+    def test_engine_env_puts_rocm_bin_first_on_ld_library_path(self):
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.dict("os.environ", {"PATH": "/usr/bin", "LD_LIBRARY_PATH": "/usr/lib"}), \
+                 mock.patch.object(setup.os, "name", "posix"):
+                env = setup.engine_env(eng)
+            self.assertEqual(env["LD_LIBRARY_PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+            self.assertTrue(env["LD_LIBRARY_PATH"].endswith("/usr/lib"))
+            self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_engine_without_lib_dirs_keeps_the_environment(self):
         with tempfile.TemporaryDirectory() as t:
@@ -672,7 +707,8 @@ class EngineLaunchEnv(unittest.TestCase):
             return mock.Mock(stdout="qwen4exp qwen35moe\n")
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.object(setup.subprocess, "run", fake_run):
+            with mock.patch.object(setup.subprocess, "run", fake_run), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 names = setup.engine_families(eng)
             self.assertEqual(names, {"qwen4exp", "qwen35moe"})
             self.assertEqual(seen["cmd"][1], "--families")
@@ -688,7 +724,7 @@ class EngineLaunchEnv(unittest.TestCase):
             eng = self.engine(Path(t))
             probe = eng / ("strata-device.exe" if setup.WIN else "strata-device")
             probe.write_text("x")
-            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None):
+            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None), mock.patch.object(setup.os, "name", "nt"):
                 found = setup.hip_devices(probe)
             self.assertEqual(found[0]["arch"], "gfx1100")
             self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))

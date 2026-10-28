@@ -23,6 +23,13 @@ void iq256_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_
 void iq256_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
                 float* const* out, int r0, int r1);
 
+/// The DeepSeek-V4.1 CPU lane's rows (src/dsv41/ds4_gg_cpu.cpp).  The same loops as iq256_rows / iq256_gu_rows with ggml's float
+/// order, so a token's dot is ggml-cpu's vec_dot bit for bit at any number of tokens (the main engine's iq256_* are unchanged),
+/// and IQ1_M (29), whose ggml dot is single-token.  The caller checks AVX2 support.
+bool iq256x_supported(int ggml_type) noexcept;
+void iq256x_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
+                 float* const* out, int r0, int r1);
+
 /// The kernels' variants, a mask.  Every variant computes the same bits; they differ in speed from core to core.
 /// kIq256Gather: IQ3_XXS, IQ3_S and IQ2_S read their grid entries with one gather (STRATA_IQ256_GATHER).
 /// kIq256Vnni: AVX-VNNI's vpdpwssd / vpdpbusd, every format and iq4nl256_down_rows (cpu_avxvnni_ok).
@@ -48,5 +55,9 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
 /// The same in a given variant (only the kIq256Vnni bit matters here).
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                           float* const* out, int r0, int r1);
+
+// Singleton-equivalent IQ4_NL down rows; caller checks the linked ggml AVX2/FMA path.
+void iq4nl_reference_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq,
+                          int nt, float* const* out, int r0, int r1);
 
 }  // namespace strata::kernels::cpu
