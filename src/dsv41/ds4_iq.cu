@@ -2,8 +2,13 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_iq.cu - a GGUF's low-bit routed experts on the device (see ds4_iq.cuh).  The block layouts and grids are
 // ggml's (ggml-common.h, MIT, third_party/ggml/LICENSE); the sign and grid tricks are llama.cpp's vecdotq.cuh.
+#include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_iq.cuh"
+#if defined(STRATA_METAL)
+#include <ds4_metal_host.h>
+#endif
 #include "ds4_numerics.cuh"
+#include "ds4_experts_rule.hpp"
 
 #include <cuda_fp16.h>
 #if !defined(STRATA_USE_HIP)
@@ -1119,7 +1124,7 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
 // its codebook loaded once; HIP keeps the full grid (one tile a block)
 template <auto Kernel>
 int resident_ctas() {   // (a static a kernel: the occupancy differs by the codebook's shared memory)
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
     return 1 << 30;
 #else
     static std::atomic<int> cache[16];
@@ -1148,17 +1153,17 @@ template <int T, int NE>
 void launch_gu(const Args& a, int groups, cudaStream_t s) {
     const int tiles = a.n_ff / (kWarps * kGuRW);
     if constexpr (kPersist<T>)
-        gate_up_kernel<T, NE><<<items_grid<T>(groups * tiles, resident_ctas<gate_up_kernel<T, NE, kGuRW>>()), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(gate_up_kernel<T, NE>, items_grid<T>(groups * tiles, resident_ctas<gate_up_kernel<T, NE, kGuRW>>()), kThreads, 0, s, a, groups);
     else
-        gate_up_kernel<T, NE><<<dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(gate_up_kernel<T, NE>, dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s, a, groups);
 }
 template <int T, int NE>
 void launch_dn(const Args& a, int groups, cudaStream_t s) {
     const int tiles = a.n_embd / (kWarps * kDnRW);
     if constexpr (kPersist<T>)
-        down_kernel<T, NE><<<items_grid<T>(groups * tiles, resident_ctas<down_kernel<T, NE, kDnRW>>()), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(down_kernel<T, NE>, items_grid<T>(groups * tiles, resident_ctas<down_kernel<T, NE, kDnRW>>()), kThreads, 0, s, a, groups);
     else
-        down_kernel<T, NE><<<dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(down_kernel<T, NE>, dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s, a, groups);
 }
 template <int T>
 void gu_ne(const Args& a, int groups, int ne, cudaStream_t s) {
@@ -1182,16 +1187,16 @@ void launch_set(const SetArgs& a, dim3 grid, cudaStream_t s) {
 #endif
 #if !defined(STRATA_USE_HIP)
     if (tc_ok()) {
-        set_tc_kernel<T, GU><<<grid, kThreads, 0, s>>>(a);
+        strata_ds4_launch(set_tc_kernel<T, GU>, grid, kThreads, 0, s, a);
         return;
     }
 #endif
     if (a.max_rows <= 16) {   // (a block of 64 rows would do 64 rows' FMAs for the few there are)
         grid.x = (unsigned) ((a.max_rows + 15) / 16);
-        set_kernel<T, GU, 16><<<grid, kThreads, 0, s>>>(a);
+        strata_ds4_launch(set_kernel<T, GU, 16>, grid, kThreads, 0, s, a);
         return;
     }
-    set_kernel<T, GU><<<grid, kThreads, 0, s>>>(a);
+    strata_ds4_launch(set_kernel<T, GU>, grid, kThreads, 0, s, a);
 }
 // the light sets' int8 rows, per stream (kLightMaxExp kLightRows rows of k)
 struct LightBuf {
@@ -1231,13 +1236,13 @@ void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
     if (a.max_rows <= 4) {   // few rows: work items round a persistent grid (the codebook per block is then the cost)
         if constexpr (kPersist<T>)
-            light_kernel<T, 4, GU><<<items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s>>>(a, b.q, b.d);
+            strata_ds4_launch(light_kernel<T, 4, GU>, items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s, a, b.q, b.d);
         else   // (a small codebook: the release's kernel, which is the faster there)
-            light_kernel_rows<T, 4, GU><<<dim3((unsigned) tiles, (unsigned) a.n_exp), kThreads, 0, s>>>(a, b.q, b.d);
+            strata_ds4_launch(light_kernel_rows<T, 4, GU>, dim3((unsigned) tiles, (unsigned) a.n_exp), kThreads, 0, s, a, b.q, b.d);
     } else {   // more rows: compute bound, the release's kernel and grid
         const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
-        if (a.max_rows <= 8) light_kernel_rows<T, 8, GU><<<grid, kThreads, 0, s>>>(a, b.q, b.d);
-        else light_kernel_rows<T, kLightRows, GU><<<grid, kThreads, 0, s>>>(a, b.q, b.d);
+        if (a.max_rows <= 8) strata_ds4_launch(light_kernel_rows<T, 8, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+        else strata_ds4_launch(light_kernel_rows<T, kLightRows, GU>, grid, kThreads, 0, s, a, b.q, b.d);
     }
 }
 bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
@@ -1245,7 +1250,7 @@ bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
     LightBuf* b = light_buf(s, K);
     if (b == nullptr) return false;
     const dim3 gq((unsigned) ((K / 32 + kWarps - 1) / kWarps), (unsigned) (a.n_exp * kLightRows));
-    light_q8_kernel<<<gq, kThreads, 0, s>>>(gu ? a.xf : nullptr, gu ? nullptr : a.xh, a.idx, a.ldx, K, a.bounds,
+    strata_ds4_launch(light_q8_kernel, gq, kThreads, 0, s, gu ? a.xf : nullptr, gu ? nullptr : a.xh, a.idx, a.ldx, K, a.bounds,
                                             a.row0, b->q, b->d);
     if (gu) {
         if (a.tg == kMXFP4) {
@@ -1270,15 +1275,62 @@ bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
 template <int T>
 void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     const dim3 grid((unsigned) ((max_n + kWarps - 1) / kWarps), (unsigned) nj);
-    if (max_c <= 1) mv_kernel<T, 1><<<grid, kThreads, 0, s>>>(J);
-    else if (max_c <= 4) mv_kernel<T, 4><<<grid, kThreads, 0, s>>>(J);
-    else mv_kernel<T, 16><<<grid, kThreads, 0, s>>>(J);
+    if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
+    else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
+    else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
 }
 
 
 // ---------------------------------------------------------------- whole matrices as 16-bit rows (the chunked prompt's GEMMs)
 // n rows of k values from `raw` (ld bytes a row): one thread a 32-value sub-block, the sub-block's codes and scales from decode<>
-// (value = d s q - m of its half, ggml's dequantize_row_*), rounded to BF16 (bf16) or F16
+// (value = d s q - m of its half, ggml's dequantize_row_*), rounded to BF16 (bf16) or F16.
+// The 32 values go through shared memory and are written coalesced (a warp's 32 threads cover 1024 contiguous values): a
+// thread writing its own 32 values straight to dst wrote 2 bytes every 64 (a warp's store touches 32 cache lines), which
+// measured 0.5 G weights/s on the R9700 - the 8K prompt's q_b stage 4 s.  DS4_DQ_OLD=1 keeps the old kernel for A/B.
+template <int T>
+__global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __restrict__ raw, size_t ld, int k, int n,
+                                                            uint16_t* __restrict__ dst, bool bf16) {
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    __shared__ uint16_t sm[kThreads * 32];
+    load_tab<T>(tab);
+    __syncthreads();
+    const int nsb = k / 32;
+    const size_t total = (size_t) n * (size_t) nsb;   // 32-value sub-blocks
+    const size_t vals = (size_t) n * (size_t) k;
+    for (size_t base = (size_t) blockIdx.x * kThreads; base < total; base += (size_t) gridDim.x * kThreads) {
+        const size_t i = base + threadIdx.x;
+        uint16_t* o = sm + threadIdx.x * 32;
+        if (i < total) {
+            const size_t r = i / (size_t) nsb;
+            const int kb = (int) (i - r * (size_t) nsb);
+            Sub sb;
+            sb.m0 = sb.m1 = 0.0f;
+            decode<T>(raw + r * ld, kb, tab, sb);
+            const float d0 = __fmul_rn(sb.d, (float) sb.s0), d1 = __fmul_rn(sb.d, (float) sb.s1);
+#pragma unroll
+            for (int j = 0; j < 32; ++j) {
+                const int q = (int) (int8_t) ((uint32_t) sb.q[j >> 2] >> (8 * (j & 3)));
+                const float v = j < 16 ? __fsub_rn(__fmul_rn(d0, (float) q), sb.m0) : __fsub_rn(__fmul_rn(d1, (float) q), sb.m1);
+                o[j] = bf16 ? strata::ds4::bf16_rn(v) : __half_as_ushort(__float2half_rn(v));
+            }
+        } else {
+#pragma unroll
+            for (int j = 0; j < 32; ++j) o[j] = 0;
+        }
+        __syncthreads();
+        // sm[m] is the block's value m (the sub-blocks are contiguous in the row-major output, rows included): write it
+        // a thread's 32 values apart, so a warp's stores are 512 contiguous bytes each
+        const size_t go = base * 32;
+        uint16_t* d = dst + go;
+#pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const size_t m = (size_t) j * kThreads + threadIdx.x;
+            if (go + m < vals) d[m] = sm[m];
+        }
+        __syncthreads();
+    }
+}
+
 template <int T>
 __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __restrict__ raw, size_t ld, int k, int n,
                                                            uint16_t* __restrict__ dst, bool bf16) {
@@ -1287,29 +1339,97 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
     __syncthreads();
     const int nsb = k / 32;
     const size_t total = (size_t) n * (size_t) nsb;
+    // A warp stages its 32 sub-blocks in shared through contiguous uint4 loads and decodes from there: a lane reading its own
+    // 176-byte block at that stride touched 32 scattered sectors per instruction - the dequant's remaining cost once the stores
+    // were vectorised (15.4 s of a 4K prompt, 23 GB of quantised input at ~1.5 GB/s).  Each lane decodes with the index relative
+    // to the staged buffer (kb - kb0), which is exactly equivalent because kb0 is a multiple of the 8 sub-blocks in a block.
+    constexpr int kQKv = kQK<T>;
+    constexpr int kSpan = (kQKv == 32 ? 32 : 4) * Ty<T>::B;      // bytes of a warp's 32 sub-blocks
+    constexpr bool kCanStage = Ty<T>::TAB == 0;                  // (a codebook table already fills shared for the i-quants)
+    const bool staged = (nsb % 32 == 0) && kCanStage;
+    __shared__ uint4 sin4[kCanStage ? (kThreads / 32) * 44 : 1];
+    const int lane32 = threadIdx.x & 31, wq = threadIdx.x >> 5;
     for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (size_t) gridDim.x * blockDim.x) {
         const size_t r = i / (size_t) nsb;
         const int kb = (int) (i - r * (size_t) nsb);
         Sub sb;
         sb.m0 = sb.m1 = 0.0f;
-        decode<T>(raw + r * ld, kb, tab, sb);
+        if (staged) {
+            const size_t wbase = i - (size_t) lane32;   // (uniform in the warp: blockDim and the stride are multiples of 32)
+            const size_t r0 = wbase / (size_t) nsb;
+            const int kb0 = (int) (wbase - r0 * (size_t) nsb);
+            const uint8_t* srcp = raw + r0 * ld + (size_t) (kb0 * Ty<T>::B) / (kQKv / 32);
+            uint4* st = sin4 + wq * 44;
+            for (int c = lane32; c < kSpan / 16; c += 32) st[c] = ((const uint4*) srcp)[c];
+            __threadfence_block();
+            __syncwarp();
+            decode<T>((const uint8_t*) st, kb - kb0, tab, sb);
+        } else
+            decode<T>(raw + r * ld, kb, tab, sb);
         const float d0 = __fmul_rn(sb.d, (float) sb.s0), d1 = __fmul_rn(sb.d, (float) sb.s1);
         uint16_t* o = dst + r * (size_t) k + (size_t) kb * 32;
+        // (the 32 halves packed into four 16-byte stores: 32 two-byte stores a lane, each lane 64 bytes from the next, write
+        // ~16x the bytes they carry in DRAM sectors - measured as the dense dequant's whole cost: 6.6 GB to FP16 in 20.0 s)
+        uint32_t hw[16];
 #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int q = (int) (int8_t) ((uint32_t) sb.q[j >> 2] >> (8 * (j & 3)));
-            const float v = j < 16 ? __fsub_rn(__fmul_rn(d0, (float) q), sb.m0) : __fsub_rn(__fmul_rn(d1, (float) q), sb.m1);
-            o[j] = bf16 ? strata::ds4::bf16_rn(v) : __half_as_ushort(__float2half_rn(v));
+        for (int j = 0; j < 16; ++j) {
+            const int q0 = (int) (int8_t) ((uint32_t) sb.q[j >> 1] >> (8 * ((2 * j) & 3)));
+            const int q1 = (int) (int8_t) ((uint32_t) sb.q[j >> 1] >> (8 * ((2 * j + 1) & 3)));
+            const bool lo = (2 * j) < 16;
+            const float v0 = lo ? __fsub_rn(__fmul_rn(d0, (float) q0), sb.m0) : __fsub_rn(__fmul_rn(d1, (float) q0), sb.m1);
+            const bool lo1 = (2 * j + 1) < 16;
+            const float v1 = lo1 ? __fsub_rn(__fmul_rn(d0, (float) q1), sb.m0) : __fsub_rn(__fmul_rn(d1, (float) q1), sb.m1);
+            const uint32_t h0 = bf16 ? strata::ds4::bf16_rn(v0) : __half_as_ushort(__float2half_rn(v0));
+            const uint32_t h1 = bf16 ? strata::ds4::bf16_rn(v1) : __half_as_ushort(__float2half_rn(v1));
+            hw[j] = h0 | (h1 << 16);
         }
+        uint4* o4 = (uint4*) o;
+        o4[0] = make_uint4(hw[0], hw[1], hw[2], hw[3]);
+        o4[1] = make_uint4(hw[4], hw[5], hw[6], hw[7]);
+        o4[2] = make_uint4(hw[8], hw[9], hw[10], hw[11]);
+        o4[3] = make_uint4(hw[12], hw[13], hw[14], hw[15]);
     }
 }
 
 }  // namespace
 
+// Which dense dequantizer: dq_rows_kernel2 (the coalesced transpose, 0.2.7 DS Support: 566 -> 592 ppts on the R9700, ids identical) or the
+// row-per-lane dq_rows_kernel, which main's fd33cb6ee gave 16-byte stores and a staged input: the Strix Halo (gfx11) 4K
+// prompt 79.5 -> 88.5 tok/s with it, so a gfx11 device defaults to it.  DS4_DQ_OLD=1 forces it anywhere, DS4_DQ_OLD=0 forces kernel2
+// anywhere.  The detection is the device's gcnArchName (HIP only; a CUDA build has no gfx11).  Decided once per device.
+static bool dq_use_old_kernel() {
+    const char* dq_env = std::getenv("DS4_DQ_OLD");
+    const int env = dq_env != nullptr && *dq_env != '\0' ? (std::atoi(dq_env) != 0 ? 1 : 0) : -1;
+    const bool v026 = strata::ds4::defaults_026();   // DS4_DEFAULTS=026: 0.2.6's row-per-lane dequantizer (the same values, bit for bit)
+    if (env >= 0 || v026) return strata::ds4::dq_old_default(env, false, v026);
+#if defined(STRATA_USE_HIP)
+    static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    int c = cache[dev].load();
+    if (c == 0) {
+        cudaDeviceProp prop{};
+        const bool yes = cudaGetDeviceProperties(&prop, dev) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx11", 5) == 0;
+        c = yes ? 2 : 1;
+        cache[dev].store(c);
+    }
+    return c == 2;
+#else
+    return false;
+#endif
+}
+
 bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* dst, bool bf16, cudaStream_t s) {
     if (raw == nullptr || k % 256 != 0 || n <= 0) return false;
     const unsigned blocks = (unsigned) std::min<size_t>(((size_t) n * (size_t) (k / 32) + kThreads - 1) / kThreads, 65535);
-#define DS4_DQ(T) dq_rows_kernel<T><<<blocks, kThreads, 0, s>>>((const uint8_t*) raw, ld, k, n, dst, bf16)
+    const bool old = dq_use_old_kernel();
+#define DS4_DQ(T) do {                                                                                    \
+        if (old)                                                                                          \
+            strata_ds4_launch(dq_rows_kernel<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);      \
+        else                                                                                              \
+            strata_ds4_launch(dq_rows_kernel2<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);     \
+    } while (0)
     switch (type) {
         case kIQ2_XXS: DS4_DQ(kIQ2_XXS); break;
         case kIQ2_XS: DS4_DQ(kIQ2_XS); break;
@@ -1331,6 +1451,12 @@ bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* 
 }
 
 bool supported(int t) {
+#if defined(STRATA_METAL)
+    // The MSL kernels (metal/src/engine/msl/ds4_iq.metal) implement the 2.0-bit types plus IQ1_M; IQ1_S and IQ4_NL
+    // have CUDA kernels here but no Metal ones.  Saying so makes those layers "cpu only" (ds4_model.cu, expert_layout),
+    // so their experts stay on the CPU lane instead of stopping in "kernel launch with no Metal dispatch".
+    if (t == kIQ1_S || t == kIQ4_NL) return false;
+#endif
     // the types the kernels below are instantiated for (DS4_IQ_SWITCH + the trellis ones + the dense K-quants)
     switch (t) {
         case kIQ2_XXS: case kIQ2_XS: case kIQ2_S: case kIQ3_XXS: case kIQ3_S: case kIQ4_XS:
@@ -1397,6 +1523,12 @@ const char* name(int t) {
 }
 
 bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // gate_up_kernel on the Metal dispatch (the prompt / window path's expert GEMM); the launch below is the fallback
+    if (::strata::dsv41::metal_host::iq_gu(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups, a.tr, a.n_embd,
+                                           a.n_ff, a.limit, a.xq, a.xd, a.h, a.tg, groups))
+        return true;
+#endif
     if (is_tq(a.tg)) return tq::gate_up(a, groups, ne_max, s);
     if (a.n_embd % 256 != 0 || a.n_ff % (kWarps * kGuRW) != 0) return false;
 #define GU_(T) gu_ne<T>(a, groups, ne_max, s)
@@ -1406,6 +1538,12 @@ bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
 }
 
 bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // down_kernel on the Metal dispatch; the launch below is the fallback
+    if (::strata::dsv41::metal_host::iq_dn(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups, a.tr, a.n_embd,
+                                           a.n_ff, a.hq, a.hd, a.part, a.td, groups))
+        return true;
+#endif
     if (is_tq(a.td)) return tq::down(a, groups, ne_max, s);
     if (a.n_ff % 256 != 0 || a.n_embd % (kWarps * kDnRW) != 0) return false;
 #define DN_(T) dn_ne<T>(a, groups, ne_max, s)
@@ -1443,6 +1581,10 @@ long long hipk_launches() {
 }
 
 bool set_gate_up(const SetArgs& a, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (a.hbounds != nullptr && ::strata::dsv41::metal_host::iq_set_gu(a.wbase, a.stride, a.tr, a.hbounds, a.n_exp, a.total_rows, a.n_embd, a.n_ff, a.limit, a.xf, a.ldx, a.idx, a.h, a.ldo, a.tg, a.td))
+        return true;
+#endif
     if (is_tq(a.tg)) return tq::set_gate_up(a, s);
     if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;
     SetArgs t = a;
@@ -1458,6 +1600,10 @@ bool set_gate_up(const SetArgs& a, cudaStream_t s) {
 }
 
 bool set_down(const SetArgs& a, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (a.hbounds != nullptr && ::strata::dsv41::metal_host::iq_set_dn(a.wbase, a.stride, a.tr, a.hbounds, a.n_exp, a.total_rows, a.n_embd, a.n_ff, a.limit, a.xh, a.ldx, a.y, a.ldo, a.tg, a.td))
+        return true;
+#endif
     if (is_tq(a.td)) return tq::set_down(a, s);
     if (a.n_ff % 256 != 0 || a.n_embd % BN != 0) return false;
     SetArgs t = a;
@@ -1473,6 +1619,9 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
 }
 
 bool mv(const MvJob* jobs, int n, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (n > 0 && n <= 64 && ::strata::dsv41::metal_host::iq_mv((const void*) jobs, n)) return true;
+#endif
     {   // the trellis jobs go to their kernels, the others on
         MvJob tqj[64], oth[64];
         int nt = 0, no = 0;

@@ -18,6 +18,8 @@ import sys
 import time
 import urllib.request
 
+from highlight import StreamHighlighter
+
 
 def stream(url, messages, think, max_tokens):
     body = {"model": "strata", "messages": messages, "stream": True, "max_tokens": max_tokens,
@@ -43,6 +45,7 @@ def main() -> int:
     a = ap.parse_args()
     url = f"http://{a.host}:{a.port}/v1/chat/completions"
     gray, reset = ("\033[90m", "\033[0m") if sys.stdout.isatty() else ("", "")
+    hl = StreamHighlighter(color=sys.stdout.isatty())
     messages, pending = [], []
     think = "none" if a.no_think else a.think
     print(f"Strata chat ({url}).  /image <path> = attach a picture, /think none|low|medium|high (now: {think}), "
@@ -98,11 +101,14 @@ def main() -> int:
                     if in_think:
                         print(reset + "\n", end="")
                         in_think = False
-                    print(content, end="", flush=True)
+                    print(hl.feed(content), end="", flush=True)
                     answer.append(content)
                 n += 1
             if in_think:
                 print(reset, end="")
+            out = hl.flush()
+            if out:
+                print(out, end="")
         except OSError as e:
             print(f"\n(could not reach the server at {url}: {e})")
             messages.pop()

@@ -20,6 +20,9 @@ from there when it is present.  Nor a vision tower: vision_pack.py makes it from
 (--vision: another folder), and the pack takes it and its geometry (vision.<key>, image_token_id) from there when it is
 present; without it the engine reads text only.
 
+For older GGUF converters that omit sparse-attention geometry, pass --config-json /path/to/the/source/model/config.json.
+Existing metadata must agree with that configuration; the weights are never rewritten.
+
 A quant that leaves the two Engram tables out (v1.1.16's Maya-S; Maya's quants hold them since) takes them from a set
 of GGUF files that holds them, beside it: --engram, else ../Engram/ (unsloth's MXFP8 shard of them, where setups before
 v1.1.17 put it) when it is whole.
@@ -253,6 +256,29 @@ def ple_to_engram(kv: dict):
         kv["%s.engram.%s" % (a, k)] = v
 
 
+def apply_source_config(kv: dict, config: dict):
+    """Fill sparse-attention geometry omitted by older converters from the model's own config.json."""
+    a = kv["general.architecture"]
+    text = config.get("text_config", config)
+    fields = {
+        "embedding_length": "hidden_size", "block_count": "num_hidden_layers",
+        "expert_count": "n_routed_experts", "attention.compress_ratios": "compress_ratios",
+        "attention.kv_source_layers": "kv_source_layer_ids",
+        "attention.indexer.source_layers": "index_source_layer_ids",
+        "attention.indexer.candidate_source_layer": "candidate_source_layer_id",
+        "attention.indexer.candidate_top_k_blocks": "candidate_topk_blocks",
+        "attention.indexer.candidate_block_size": "candidate_block_size",
+    }
+    for name, source in fields.items():
+        if source not in text:
+            continue
+        keys = ["%s.%s" % (a, k) for k in (name, *ALIASES.get(name, ()))]
+        for key in keys:
+            if key in kv and kv[key] != text[source]:
+                raise SystemExit("source config %s disagrees with GGUF %s" % (source, key))
+        kv.setdefault(keys[0], text[source])
+
+
 def int_tensors_to_engram(gs, kv: dict):
     """The IST-DAS sets carry the Engram's hash parameters as integer tensors of the first shard (engram_token_map I32,
     engram_primes / engram_offsets / engram_multipliers I64, one row a layer) instead of metadata: read them into the
@@ -276,7 +302,8 @@ def int_tensors_to_engram(gs, kv: dict):
     # the IST-DAS spelling of the Engram's scalar keys -> the dotted ones this pack reads
     for dotted, theirs in (("engram.layers", "engram.layer_ids"), ("engram.max_ngram_size", "engram_max_ngram_size"),
                            ("engram.head_count", "engram_n_heads"), ("engram.head_dim", "engram_head_dim"),
-                           ("engram.pad_token_id", "engram_pad_token_id")):
+                           ("engram.pad_token_id", "engram_pad_token_id"),
+                           ("engram.head_dim", "engram.key_length"), ("engram.pad_token_id", "engram.pad_id")):
         if "%s.%s" % (a, dotted) not in kv and "%s.%s" % (a, theirs) in kv:
             kv["%s.%s" % (a, dotted)] = kv["%s.%s" % (a, theirs)]
 
@@ -413,6 +440,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, help="the directory of the GGUF's shards")
     ap.add_argument("--out", help="default: <model>/maya-ds4")
+    ap.add_argument("--config-json", help="the exact source model config.json, to fill sparse-attention geometry omitted by older GGUF converters")
     ap.add_argument("--vision", help="vision_pack.py's folder (default: <model>/../vision; taken when it is there)")
     ap.add_argument("--dspark-gguf", help="unsloth's DSpark drafter GGUF (dspark-*-Q8_0.gguf, architecture dflash): its three "
                                           "blocks become mtp.0-2 beside the trunk's tensors (default: the first dspark-*.gguf "
@@ -461,6 +489,8 @@ def main() -> int:
     if kv is None:
         arch = next((g.kv.get("general.architecture") for g in gs), None)
         raise SystemExit("%s: not a DeepSeek-V4.1 GGUF (architecture %r)" % (model, arch))
+    if a.config_json:
+        apply_source_config(kv, json.loads(pathlib.Path(a.config_json).expanduser().read_text()))
     split = int(kv.get("split.count", 1))
     if split != len(shards):
         counts = sorted({m.group(1) for m in (re.search(r"-of-(\d{5})\.gguf$", p.name) for p in shards) if m})

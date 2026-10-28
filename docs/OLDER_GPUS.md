@@ -21,6 +21,7 @@ unchanged. Numbers are the reporters' own, on one machine each, unless the text 
 
 | Cards | Compute capability | How it runs | What is different on it |
 | --- | --- | --- | --- |
+| Quadro M6000, GTX 900 series (Maxwell) | 5.2 | a source build with CUDA 12.x | Opt-in, one reporter, [below](#maxwell-sm_52). No native half-precision arithmetic. Not in the ready-made CUDA 12 engine |
 | Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32; seven scheduling switches on by default ([below](#tesla-p100-sm_60)); opt-in `STRATA_Q8_SM60=1` ([below](#pascal-gp100-a-q8_0-decode-kernel-opt-in)) |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there); dense weights dequantized by a wide kernel; expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores; prompt attention on `mma.m8n8k4`; a leaner attention kernel. See [NVIDIA_V100.md](NVIDIA_V100.md) |
@@ -40,6 +41,23 @@ too and cannot hold any of the model.
 | RX 5700, 6 GB RX 5600 (RDNA1) | gfx1010 | as above; a 6 GB card leaves about 50 expert slots |
 | Radeon PRO V520 / Pro 5600M (RDNA1) | gfx1011 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1011`; builds with 0 errors, untested on hardware |
 | Instinct MI50 / MI60, Radeon VII | gfx906 (wave64) | built by hand: `-DSTRATA_HIP_GFX906=ON` |
+
+### Maxwell (sm_52)
+
+One reporter ran Strata v0.1.44.1 on two Quadro M6000 24 GB (Ubuntu, driver 580) with Qwen3.8-Flash-Next at IQ1 and saw about
+22 tokens a second. Nobody has checked the answer text on these cards yet, and Maxwell has no native half-precision arithmetic,
+so treat it as a test. The ready-made CUDA 12 engine holds no sm_52 code; build from source with a CUDA 12.x toolkit (CUDA 13
+cannot compile for Maxwell):
+
+```
+cmake -B build -G Ninja -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=52
+cmake --build build -j
+```
+
+CMake prints a warning for sm_52 and goes on. A release build still needs sm_75 or newer, and without `STRATA_EXPERIMENTAL_SM60=ON`
+the build stops as before. `setup.py` does not install an engine for a Maxwell card, because none of the ready-made engines holds
+code for it. On a PC with only Maxwell cards it lists the card as not supported, prints this recipe as a warning and stops. If you
+try the build, please post a short chat and one code answer from the card.
 
 ## NVIDIA: the CUDA 12 engine
 
@@ -129,7 +147,7 @@ in [DETAILS.md](DETAILS.md#rtx-30-series-sm_86-and-tesla-p100-sm_60-bitwise-deco
 ## Pascal GP100: a Q8_0 decode kernel (opt-in)
 
 GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projections read their weights at 40-80 GB/s of about
-730, decoding K- and i-quant blocks one int at a time. Two opt-in changes, both measured on a PH402 only:
+730, decoding K- and i-quant blocks one int at a time. Six opt-in changes, all measured on a PH402 only:
 
 - **`STRATA_Q8_SM60=1`** packs every Q8_0 dense matrix and the head into the planes of `STRATA_Q8_PACKED` and runs them on
   `src/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
@@ -141,13 +159,90 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
 - **`STRATA_IQ_STAGE_TABLES=1`** stages IQ3_XXS and IQ3_S codebooks in shared memory in the grouped expert kernels. Bitwise the
   same output. Interleaved A/Bs on a Tesla P100 showed no end-to-end change, so it is off by default. On an RTX 3090 Ti, forced on,
   the same layers took 3-13% longer.
+- **`STRATA_DOWN_WS=1`** (compute capability 6.0 only, CUDA build with `STRATA_EXPERIMENTAL_SM60`): the verify window's IQ4_NL / Q2_0
+  expert down rows (n_ff 640) take `native_down_ws_kernel`. It stages a block's rows in shared memory with 16-byte loads and then
+  runs expert mode 0's row dots on them, so the output is bit for bit mode 0's (and mode 8's, which equals it). The author's numbers
+  on one PH402 die, Swift 1.5 IQ3_S, one-token window: IQ4_NL 72.6 us (mode 8, the cc 6.0 default) and 54.5 us (mode 0) become
+  42.3 us; Q2_0 53.5 / 65.4 us become 38.6 us. It replaces the down step in either expert mode. Not measured end to end on a
+  single card here.
+- **`STRATA_PATTN_SM60=1`** (prompt reading with int8 K/V, CUDA build with `STRATA_EXPERIMENTAL_SM60`, compute capability 6.x): below
+  sm_70 the prompt reads each QSA layer's attention through the decode kernels, 32 queries a call, with 817 KB of partial results a
+  query and a merge kernel. The switch runs a score kernel and a value kernel that merges as it folds
+  (`src/kernels/cuda/qsa_pattn.cu`), in the same scratch and with the same arithmetic in the same order, so the output matches the
+  decode kernels bit for bit. If a launch fails or the shape does not fit, the usual loop runs. The author measured a 1,536-query
+  chunk's attention at 43.3 -> 30.8 ms per QSA layer at 26K context on one GP100 die, and 2-3% less time on 8K-150K token prompts
+  on four dies; we have not measured it here, and nobody has measured compute capability 6.1. `qsa_pattn_parity` (built with the
+  tests in this build) checks the bytes on random data.
+- **`STRATA_SELECT_LONG=1`** (decode, CUDA build with `STRATA_EXPERIMENTAL_SM60`, compute capability 6.x by default): past
+  `STRATA_SELECT_LONG_AT` cells (default 65,536) a decode window's QSA select runs a top-k over several CTAs a query (six kernels)
+  and a decode block scorer without warp shuffles, in place of one CTA a query. They return the same ids and the same score bits
+  (`qsa_select_long_parity` checks this on random data). Each costs a few more kernels a call, which only a long context pays
+  back, so the verifier keeps a second set of window graphs for it: expect some more VRAM for graphs, and nothing changes below
+  the threshold. `STRATA_TOPK_MULTI=0` and `STRATA_SCORES_DX=0` turn one half off. The author measured, on four GP100 dies with
+  every expert resident and `--pipeline-windows 3`, 51.0 -> 52.5 tok/s (+2.9%) decoding 400 tokens at 115K context, and no change
+  below 64K; we have not measured it. A build without the sm_6x kernels ignores the switch with a warning.
+- **`STRATA_MMQ_WS=1`** (prompt reading, CUDA build with `STRATA_EXPERIMENTAL_SM60`, every visible card compute capability 6.0): a
+  layer whose routed experts are all resident in VRAM, on this GPU alone (no peer, CPU or streamed share), runs its gate/up as one
+  weight-stationary launch over all its experts, one `swiglu_quant` over all its rows and its down as one launch, in place of a
+  gate/up, swiglu and down MMQ launch per 16-expert group. A CTA holds 128 or 256 weight rows of one expert and runs them against
+  up to 64 of that expert's rows, so each weight block is decoded once per pass. Gate/up for IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS and
+  IQ3_S, down for Q2_0 and IQ4_NL; the products keep MMQ's int8 values, scales and per-32-value epilogue order, so the results are
+  MMQ's bits. Every other layer keeps its path. `STRATA_WS_FAST=1` adds a down kernel for the IQ4_NL 32-token tier with fewer
+  instructions per pass (the same bits). The author measured, on four GP100 dies with every expert resident, prompt reads 31-37%
+  shorter (240 tokens 2,156 -> 1,364 ms; a fresh 26K read 41,231 -> 28,555 ms; one run per arm) and decode unchanged; we have not
+  measured it. A single 16 GB card that keeps experts in RAM takes the per-group path. `prefill_ws_parity_test` compares the
+  products with MMQ on random experts; its verdict needs a GP100.
 
-Neither change is measured on compute capability 6.1, which has `__dp4a`. Two practical notes for GP100 cards: the default
+None of these changes is measured on compute capability 6.1, which has `__dp4a`. Two practical notes for GP100 cards: the default
 application clock is 759 MHz and a layer split leaves each die idle most of a window, so lock the clocks
 (`nvidia-smi -i <dies> -ac 715,1050` as administrator). And a second engine pinned to the same logical CPUs halves this one's
 decode; keep two engines on different logical CPUs.
 
 `tools/q8_sm60_check.cu` checks the kernel against a CPU reference on these shapes (1-8 columns).
+
+### Pascal GP100: 4-bit gate/up expert slots (opt-in, `STRATA_EXPERT_NIBBLE=1`)
+
+On a GP100 die the verify window's gate/up expert kernels wait on each block's serial chain (the weights, two codebook
+lookups per four weights, the emulated dp4a, the reduction), not on memory bandwidth. IQ2_S, IQ3_XXS and IQ3_S have
+only 3 or 8 magnitudes in their grids, so every weight is one of at most 16 signed values: `STRATA_EXPERT_NIBBLE=1`
+keeps those layers' gate/up experts in VRAM as 16 bytes of 4-bit codes per 32 weights (one 16-byte load), with the
+integer scale and the fp16 `d` of each block kept as they are, and decodes four weights in 1-4 integer instructions. The
+down rows stay GGUF blocks. The host copy, the pack and its tools do not change: the conversion runs on the GPU while
+the slots are filled. Only the CUDA build with `STRATA_EXPERIMENTAL_SM60` has the kernels.
+
+- **The answers are meant to be bit for bit the default's.** The 4-bit kernels run the production integer chain and float tail in
+  the production order (`native_gu_multi_kernel`'s sub-16 rows), and SwiGLU, the q8_1 step and the down projection are
+  the layout's own (mode 8 on a GP100). At every start each item is decoded with the production loader, encoded,
+  decoded from the written code and compared, and the GGUF blocks are rebuilt from every slot and compared with the
+  blob byte for byte; any difference refuses the start and names the layer. The prompt path's MMQ gathers the GGUF
+  blocks rebuilt from the slots (the copy it makes today, with the 4-bit codes read instead): the same bytes. The kernels that
+  existed before this change have the same SASS in the sm_60 build with and without it (446 kernels in `iq_kernels.cu` compared).
+  `iq_nibble_parity --synthetic-only` checks the codec, the rebuilt blocks and the expert step on random experts of every format
+  pair with no model file; `iq_nibble_parity <model shard>` does the same on a model's layers, against the GGUF blobs in mode 8 and
+  in the CUDA layout (`STRATA_SM60_TABLE=0`). Both need a GP100.
+- **It needs every expert in VRAM** on the card that runs its layer: a profile that ranks every pair, room for the
+  larger slots (per layer of 512 experts: +175 MiB for IQ3_S, +250 MiB for IQ3_XXS, +350 MiB for IQ2_S), and a prompt
+  path with its own buffers, no loan of cache slots (`--no-prefill-borrow` on one GPU; a layer split's stages keep
+  their own when their cards have room, #340). `STRATA_EXPERT_NIBBLE_SKIP=<layers>` keeps layers in their GGUF slots;
+  `STRATA_EXPERT_NIBBLE_FMTS=22,18,21` picks the formats.
+- **It does not start with what it cannot serve.** With the switch set, a build without `STRATA_EXPERIMENTAL_SM60`, a card other
+  than compute capability 6.0, `--peer-device`, `--expert-cache-device1..3`, `--kv-grow`, `--vram-elastic`, no `--expert-profile`,
+  `--expert-cache 0`, `STRATA_MMQ_DIRECT`, `STRATA_PREFILL_MMQ=0`, `STRATA_PF_FUSED=1`, `STRATA_FS_SLOTS`, `STRATA_EXPERT_V2=1` or
+  `STRATA_EXP_MODE` other than 0 or 8 make the engine say so in a warning and start with the usual GGUF slots. What is only known
+  later (a layer with an expert out of VRAM, a loan of cache slots, a prompt chunk other than the one the run without the switch
+  reads) still refuses the start with the reason. The adaptive tier is off with the switch. `STRATA_EXPERT_NIBBLE_RECHECK=1` (debug)
+  hashes every 4-bit slot again after each request.
+- **Opt-in `STRATA_NIB_GU_PROTO=1`** (with `STRATA_EXPERT_NIBBLE=1`): the 4-bit gate/up runs `nibx_gu_kernel`
+  (`nib_gu_proto.cuh`), the same row dot with the group's activations staged once per two row blocks by 16-byte
+  loads. The author measured, on one GP100 die, a layer's gate/up at 54-57 us instead of 67-72 us at one token (x1.24-1.27) and
+  x1.22-1.39 at two to four tokens.
+- The author measured the switch on a PH402 SKU 200 (two boards, four GP100 dies of 48 SMs and 32 GB each, clocks locked at 715 /
+  1050 MHz), Windows 11, CUDA 12.9, engine 0.1.45.3, Swift 1.5 IQ3_S (abliterated) pack, layer split 12,24,36,
+  `--trim-stage-weights`, MTP with `--spec-min-p 0.85`, `--pipeline-windows 2`, 1M context, every expert resident: 47 of 48 layers
+  converted (+12.7 GiB of VRAM over the four dies, +3.1 s of start-up). Decode of eight prompts (8K, 26K and 88K-token contexts),
+  token-weighted: 47.3 -> 51.9 tok/s (+9.7%; each prompt +9.5..+10.9%). Prompt reading 2.3..3.0% slower (the gather rebuilds the
+  GGUF blocks). The replies of 15 requests, including a 260K-token read, matched the engine without the switch. We have not
+  measured it on this code.
 
 ## Tesla P40 (sm_61): what was measured and changed
 

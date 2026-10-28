@@ -38,6 +38,29 @@ def find(dest: Path) -> Path | None:
 ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".zip")
 MAX_UNPACKED = 8 << 30                  # a DeepSeek engine package is under a GB; this only stops an archive that unpacks into something huge
 
+LIB_VAR = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+
+
+def lib_dirs(exe: str | os.PathLike) -> list[str]:
+    """The folders that must be on the library path when this engine starts: its own package folder, then the folders the package's
+    BUILD.json names.  A Windows HIP package keeps the ROCm DLLs (hipBLAS / rocBLAS and their imports) in ``rocm/bin``, which is also
+    where rocBLAS's kernel folders and ``../.kpack`` are laid out from (strata_control/engine_component.py package_lib_dirs).  A CUDA
+    package keeps everything beside the program, so this is its folder alone."""
+    from strata_control import engine_component as ec
+    try:
+        return ec.package_lib_dirs(Path(exe).parent)
+    except OSError:
+        return [str(Path(exe).parent)]
+
+
+def start_env(exe: str | os.PathLike, environ: dict | None = None) -> dict:
+    """`environ` (the process's own by default) with this package's folders first on PATH (Windows) / LD_LIBRARY_PATH."""
+    env = dict(os.environ if environ is None else environ)
+    dirs = [d for d in lib_dirs(exe) if Path(d).is_dir()]
+    if dirs:
+        env[LIB_VAR] = os.pathsep.join(dirs + ([env[LIB_VAR]] if env.get(LIB_VAR) else []))
+    return env
+
 
 def pending(dest: Path) -> list[Path]:
     """Packages the person put in `dest` (engine-dsv41/) by hand: strata-dsv41-*.tar.gz / .zip, newest first."""
@@ -186,10 +209,12 @@ def source_reachable(source: str, timeout: float = 10.0) -> bool:
 
 
 def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
-    """The new engine starts: `strata-dsv41 --version` runs, loads its libraries and names itself (it needs no graphics card and no model)."""
+    """The new engine starts: `strata-dsv41 --version` runs, loads its libraries and names itself (it needs no graphics card and no model).
+    The package's own folders go on the library path first: a Windows HIP package carries the ROCm runtime it loads in rocm/bin."""
     import subprocess
     try:
-        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(Path(exe).parent))
+        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(Path(exe).parent),
+                              env=start_env(exe))
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"it could not be started ({exc})"
     first = ((done.stdout or "").strip().splitlines() or [""])[0]

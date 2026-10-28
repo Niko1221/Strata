@@ -1040,7 +1040,7 @@ def _doctor(a: argparse.Namespace) -> int:
         if live_probe is not None:
             print(f"Live GPU probe: {live_probe['status']}")
             for card in live_probe["cards"]:
-                print(f"  GPU {card['index']}: {card['name']} | {card['memory_mib']} MiB | "
+                print(f"  GPU {card['index']}: {card['name']} | {str(card['memory_mib']) + ' MiB' if card['memory_mib'] is not None else 'unified memory'} | "
                       f"driver {card['driver_version']} | {card['uuid']}")
     return 0 if report["ok"] else 5
 

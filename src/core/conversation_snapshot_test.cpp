@@ -12,10 +12,26 @@
 #include <string>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace strata::core;
 using namespace strata::kernels;
+
+namespace {
+// STRATA_CKPT_ASYNC=1 (the ctest entries conversation_snapshot_test_ckpt_async / _vram_slots): the checkpoint's GDN bytes land in
+// the background; the test reads them at once, so it joins after each save (the engine's readers join before they read)
+template <class... A> bool ckpt_save(A&&... a) {
+    const bool ok = conversation_checkpoint_save(std::forward<A>(a)...);
+    conversation_checkpoint_join(nullptr);
+    return ok;
+}
+template <class... A> bool snap_save(A&&... a) {
+    const bool ok = conversation_snapshot_save(std::forward<A>(a)...);
+    conversation_checkpoint_join(nullptr);
+    return ok;
+}
+}  // namespace
 
 namespace {
 int checks = 0;
@@ -115,6 +131,7 @@ void full_session(int fmt, int mode, int experts) {
     auto& g=main.g;
     g.n_layers=4; g.n_expert=experts;
     g.ssm_state_size=2; g.ssm_v_heads=2; g.ssm_conv_channels=8;
+    if (std::getenv("STRATA_TEST_BIG_GDN")) { g.ssm_state_size=64; g.ssm_v_heads=64; }   // a GDN state over 1 MiB: the async checkpoint path
     SessionState ss;
     ss.max_cells=96; ss.qsa_states=&main.state;
     ss.layer_hi=g.n_layers; ss.gdn_alloc=g.n_gdn_layers(); ss.qsa_alloc=g.n_qsa_layers();   // the whole-model carve
@@ -142,15 +159,15 @@ void full_session(int fmt, int mode, int experts) {
     fill(13);
     ConversationCheckpoint checkpoint;
     checkpoint.ids.assign(ids.begin(),ids.begin()+3);
-    check(conversation_checkpoint_save(checkpoint,ss,g,err),"save complete running checkpoint");
+    check(ckpt_save(checkpoint,ss,g,err),"save complete running checkpoint");
     checkpoint.used = 17;
     checkpoints.push_back(std::move(checkpoint));
     const ConversationView view{ids,images,checkpoints,true};
     SavedConversation a,b,restored;
-    check(conversation_snapshot_save(a,view,ss,g,draft.state,err),"capture complete A");
+    check(snap_save(a,view,ss,g,draft.state,err),"capture complete A");
     check(a.checkpoints[0].used == 17,"upstream checkpoint LRU stamp survives capture");
     fill(177);
-    check(conversation_snapshot_save(b,view,ss,g,draft.state,err),"capture complete B");
+    check(snap_save(b,view,ss,g,draft.state,err),"capture complete B");
     {
         // disk save path: metadata + streamed K/V give the same file as the captured image
         SavedConversation meta;
@@ -184,15 +201,30 @@ void full_session(int fmt, int mode, int experts) {
     auto bad=a; bad.kv.back().k.pop_back();
     check(conversation_snapshot_restore(bad,ss,g,draft.state,err)==ConversationRestore::invalid,
           "reject invalid late draft before any main-layer write");
-    check(conversation_snapshot_save(restored,view,ss,g,draft.state,err),"capture B after refused restore");
+    check(snap_save(restored,view,ss,g,draft.state,err),"capture B after refused restore");
     check(restored.live.gdn==b.live.gdn && restored.live.dead==b.live.dead &&
           equal(restored.kv[0],b.kv[0]) && equal(restored.kv[1],b.kv[1]),"refusal preserves all tested state");
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore complete A");
-    check(conversation_snapshot_save(restored,view,ss,g,draft.state,err),"capture restored A");
+    check(snap_save(restored,view,ss,g,draft.state,err),"capture restored A");
     check(restored.live.gdn==a.live.gdn && restored.live.ple==a.live.ple && restored.live.tails==a.live.tails &&
           restored.live.dead==a.live.dead && restored.live.block_pos==a.live.block_pos &&
           equal(restored.kv[0],a.kv[0]) && equal(restored.kv[1],a.kv[1]),"whole-session A/B/A exactness including spare key");
     check(ss.ple_prev[0]==64 && ss.ple_prev[1]==65,"PLE token window reconstructed");
+    {
+        // #2409: a restore writes into the session's own buffers. After the copy stream exists (the restores above made
+        // it) a restore of either image allocates nothing on the card: free memory does not move (2 MiB allocation
+        // granules; 4 MiB of slack for a desktop card's other programs).
+        check(conversation_copy_stream_ready(0),"this thread has its copy stream after the first restore");
+        cudaDeviceSynchronize();
+        size_t before=0,after=0,total=0;
+        check(cudaMemGetInfo(&before,&total)==cudaSuccess,"free memory before the repeated restores");
+        for(int i=0;i<6;++i)
+            check(conversation_snapshot_restore(i%2?b:a,ss,g,draft.state,err)==ConversationRestore::restored,"repeated restore");
+        cudaDeviceSynchronize();
+        check(cudaMemGetInfo(&after,&total)==cudaSuccess,"free memory after the repeated restores");
+        check((long long)after+(4ll<<20)>=(long long)before,"six more restores allocate nothing on the card");
+        check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"A is back");
+    }
     {
         // a borrowed prefix (ConversationCache::borrows): the K/V of A's first tokens and A's checkpoint there, A
         // untouched - the same bytes as restoring A whole and rewinding to that checkpoint
@@ -204,7 +236,7 @@ void full_session(int fmt, int mode, int experts) {
         want_state.ids=got_state.ids=a.checkpoints[0].ids;
         check(conversation_kv_save(want_main,main.state,g,at,true,err) &&
               conversation_kv_save(want_draft,draft.state,g,at,false,err) &&
-              conversation_checkpoint_save(want_state,ss,g,err),"capture the rewound prefix");
+              ckpt_save(want_state,ss,g,err),"capture the rewound prefix");
         fill(201);   // another conversation in the session
         const SavedConversation untouched=a;
         check(conversation_snapshot_restore_prefix(a,(int64_t)a.live.ids.size()+1,ss,g,draft.state,err)==
@@ -216,7 +248,7 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"mount the checkpoint over it");
         check(conversation_kv_save(got_main,main.state,g,at,true,err) &&
               conversation_kv_save(got_draft,draft.state,g,at,false,err) &&
-              conversation_checkpoint_save(got_state,ss,g,err),"capture the borrowed prefix");
+              ckpt_save(got_state,ss,g,err),"capture the borrowed prefix");
         check(equal(got_main,want_main) && equal(got_draft,want_draft),
               "borrowed K/V equals the whole restore's prefix");
         check(got_state.gdn==want_state.gdn && got_state.ple==want_state.ple && got_state.tails==want_state.tails &&
@@ -236,10 +268,10 @@ void full_session(int fmt, int mode, int experts) {
         cuda_check(cudaMemcpy(main.state.idx_pooled+(ids.size()/4)*g.idx_key_dim,
                               main.state.idx_dead,sizes.dead,cudaMemcpyDeviceToDevice));
         SavedConversation fresh,incremental;
-        check(conversation_snapshot_save(fresh,view,ss,g,draft.state,err),"full capture reference after growth or rewind");
+        check(snap_save(fresh,view,ss,g,draft.state,err),"full capture reference after growth or rewind");
         size_t peak=0,reused=0;
         check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.state,peak,err),"admit incremental capture peak");
-        check(conversation_snapshot_save(incremental,view,ss,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
+        check(snap_save(incremental,view,ss,g,draft.state,err,std::move(reuse),&reused),"capture with retained pages");
         check(incremental.bytes() <= peak,"incremental allocation stays within admitted bound");
         check(incremental.live.gdn==fresh.live.gdn && incremental.live.ple==fresh.live.ple &&
               incremental.live.dead==fresh.live.dead && equal(incremental.kv[0],fresh.kv[0]) &&
@@ -261,7 +293,7 @@ void full_session(int fmt, int mode, int experts) {
               conversation_snapshot_bytes(view,ss,g,nullptr,without,err) && without<with_draft,
               "a stage image's estimate leaves the draft out");
         SavedConversation stage,stage_b,stage_back;
-        check(conversation_snapshot_save(stage,view,ss,g,nullptr,err),"capture a stage image");
+        check(snap_save(stage,view,ss,g,nullptr,err),"capture a stage image");
         check(stage.kv.size()==a.kv.size()-1 && equal(stage.kv[0],a.kv[0]) && stage.live.gdn==a.live.gdn,
               "a stage image holds the session's own layers, no draft");
         check(stage.bytes()<a.bytes(),"a stage image is smaller by the draft ring");
@@ -269,21 +301,21 @@ void full_session(int fmt, int mode, int experts) {
         check(!conversation_snapshot_validate(stage,ss,g,draft.state,err),"a stage image is refused where a draft is expected");
         check(!conversation_snapshot_validate(a,ss,g,nullptr,err),"an image with a draft is refused where none is expected");
         fill(201);
-        check(conversation_snapshot_save(stage_b,view,ss,g,nullptr,err),"capture another stage state");
+        check(snap_save(stage_b,view,ss,g,nullptr,err),"capture another stage state");
         check(conversation_snapshot_restore(a,ss,g,nullptr,err)==ConversationRestore::invalid,
               "restoring a draft image as a stage image is refused before any write");
-        check(conversation_snapshot_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage_b.live.gdn &&
+        check(snap_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage_b.live.gdn &&
               equal(stage_back.kv[0],stage_b.kv[0]),"the refusal left the stage untouched");
         check(conversation_snapshot_restore(stage,ss,g,nullptr,err)==ConversationRestore::restored,"restore a stage image");
-        check(conversation_snapshot_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage.live.gdn &&
+        check(snap_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage.live.gdn &&
               stage_back.live.dead==stage.live.dead && equal(stage_back.kv[0],stage.kv[0]),"stage A/B/A exactness");
         // its retained K/V: the next park copies only what changed, and equals a full capture
         ConversationKvReuse reuse{stage.kv,65,65,{}};
         SavedConversation fresh,incremental;
         size_t peak=0,reused=0;
-        check(conversation_snapshot_save(fresh,view,ss,g,nullptr,err),"full stage capture reference");
+        check(snap_save(fresh,view,ss,g,nullptr,err),"full stage capture reference");
         check(conversation_snapshot_capture_bytes(reuse,view,ss,g,nullptr,peak,err),"admit an incremental stage capture");
-        check(conversation_snapshot_save(incremental,view,ss,g,nullptr,err,std::move(reuse),&reused),"incremental stage capture");
+        check(snap_save(incremental,view,ss,g,nullptr,err,std::move(reuse),&reused),"incremental stage capture");
         check(reused>0 && incremental.bytes()<=peak && equal(incremental.kv[0],fresh.kv[0]) &&
               incremental.live.gdn==fresh.live.gdn,"an incremental stage capture reuses pages and equals a full one");
         SavedConversation split_image=stage;
