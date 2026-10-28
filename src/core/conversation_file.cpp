@@ -1844,7 +1844,10 @@ struct V3Walk {
     // recorded window governs and the digest stays the authority.
     uint64_t committed_boundary(size_t j, size_t p, uint64_t have) const {
         const Geom& prev = geom[j];
-        const bool draft = j + 1 == layers && prev.pooled_rows == 0 && prev.idx_dim == 0;
+        // The draft layer, identified STRUCTURALLY: the last layer, sourced un-indexed.  A real save
+        // records idx_dim from the geometry (never zero - conversation_kv_source), so the discriminator
+        // is the sourced shape: no pooled part AND no indexer block (conversation_snapshot.cpp:532).
+        const bool draft = j + 1 == layers && prev.pooled_rows == 0 && prev.idx_block == 0;
         const uint64_t t = draft && prev_saved > 0 ? prev_saved - 1 : prev_saved;
         if (p < 4) {
             if (prev.cells == 0) return 0;
@@ -1947,6 +1950,10 @@ struct V3Walk {
     }
 
     bool group_body() {  // mutable block then segment block, in the canonical group order
+        // Each generation re-emits the live record's stage parts: the list must describe THIS group,
+        // never a mixture of the chain's generations (the same fresh-per-group discipline as
+        // s.checkpoints below; ids/imgs arrive separately through the segment accumulators).
+        s.live.stage_parts.clear();
         if (!live_mutable(s.live, live, (uint64_t) s.stage_table.size(), in.limits.max_state_bytes, false))
             return false;
         uint64_t n = 0;
