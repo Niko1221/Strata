@@ -37,7 +37,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     onConnectEngine?: () => void;
     onReady?: () => void;
 }) {
-    const native = useNative(), imageLibrary = useStore(s => s.imageModels), hardware = useStore(s => s.hardware);
+    const native = useNative(), imageLibrary = useStore(s => s.imageModels), hardware = useStore(s => s.hardware), connection = useStore(s => s.connection);
     // The choices are kept while the page is closed (Models -> Monitor -> Models used to start them over and a person lost track of what was downloading).
     const [family, setFamily] = useKept('models.family', ''), [size, setSize] = useKept('models.size', ''), [context, setContext] = useKept('models.context', 32768), [vision, setVision] = useKept('models.vision', 'yes');
     const manual = useStore(s => s.setup?.choices?.onboarding?.manual ?? false);
@@ -182,6 +182,19 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         setPending(false);
     } }
     async function download() { await perform(async () => { const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: downloadValues }); setJobId(result.id); setPlan(null); }); }
+    // The host says `checking` until its first look at the installation ends; a state read from disk last time may still be on
+    // its way. Without a model to show, "Set up Strata / Connect engine" was a wrong first screen on every start, replaced a
+    // few seconds later by the installed model. Only a host that is really offline offers the setup card early.
+    const reading = !native || (native.checking === true && !native.installed);
+    if (reading && connection !== 'offline') {
+        return <Screen plainHeader title={<span className="sr-only">{tr("Models")}</span>}>
+      <div className="native-model-layout native-model-layout--fit">
+        <div className="stack">
+          <section className="st-card native-choice"><p className="small muted">{tr('Loading your models and settings…')}</p></section>
+        </div>
+      </div>
+    </Screen>;
+    }
     return <Screen plainHeader title={<span className="sr-only">{tr("Models")}</span>} titleDetail={<FamilySwitch families={families} selected={selectedFamily?.family} onPick={f => { setFamily(f.family); setSize((f.sizes.find(s => native?.installed?.models.some(m => m.model === s.id && m.ready)) ?? f.sizes[0])?.id ?? ''); setVision('yes'); setError(''); }}/>} actions={<Btn icon="sliders" aria-pressed={expert} aria-expanded={expert} aria-controls="native-expert-settings" onClick={() => { setExpert(v => !v); setMultiple(false); }}>{tr(expert ? 'Close expert mode' : 'Expert mode')}</Btn>}>
   <div className="native-model-layout native-model-layout--fit">
    <div className="stack">
