@@ -199,7 +199,7 @@ class ModelPathWins(unittest.TestCase):
         r = self.runner(model_path=str(self.mine))
         said = []
         r.emit_cb = lambda e: said.append(e.text)
-        desc = {"context": 32768, "kv": "int8", "images": "off"}
+        desc = {"context": 32768, "kv": "q4_0", "images": "off"}   # 32K installs record the 4-bit K/V default
         with mock.patch.object(Runner, "check_own_files"), mock.patch.object(Runner, "resolved_vision"),              mock.patch.object(Runner, "installed_state", return_value=(self.cfg_path, desc)),              mock.patch.object(Runner, "_spawn", side_effect=RuntimeError("setup would run")):
             with self.assertRaises(RuntimeError):
                 r.ensure_model()
@@ -211,7 +211,7 @@ class ModelPathWins(unittest.TestCase):
         r = self.runner()
         said = []
         r.emit_cb = lambda e: said.append(e.text)
-        desc = {"context": 32768, "kv": "int8", "images": "off"}
+        desc = {"context": 32768, "kv": "q4_0", "images": "off"}   # 32K installs record the 4-bit K/V default
         with mock.patch.object(Runner, "check_own_files"), mock.patch.object(Runner, "resolved_vision"),              mock.patch.object(Runner, "installed_state", return_value=(self.cfg_path, desc)):
             self.assertEqual(r.ensure_model(), self.cfg_path)
         self.assertTrue(any("already installed with these choices" in x for x in said))

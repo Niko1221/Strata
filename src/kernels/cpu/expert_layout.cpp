@@ -7,7 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#if defined(_MSC_VER)
+#if defined(__aarch64__)
+#define STRATA_CPU_ARM64 1
+#elif defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
@@ -39,6 +41,7 @@ int cpu_isa_cap() {
     return cap;
 }
 
+<<<<<<< HEAD
 #if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && !defined(_M_IX86)
 bool cpu_avx512_ok() { return false; }
 bool cpu_avx512bw_ok() { return false; }
@@ -69,6 +72,34 @@ std::string cpu_name() {
     return "unknown";
 #endif
 #endif  // __APPLE__
+=======
+#if defined(STRATA_CPU_ARM64)
+// Arm64: no AVX.  The i-quant experts run on ggml-cpu's NEON dot products (native_expert.cpp); NEON is the baseline
+// of every Arm64 CPU, so the "AVX2-class" check passes.  Strata's own AVX-512 / AVX-2 kernels are not built.
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return true; }
+bool cpu_avx1_ok() { return false; }    // the older-x86 floors (#394 #595 #623) do not apply
+bool cpu_sse42_ok() { return false; }
+bool cpu_avxvnni_ok() { return false; }
+const char* isa_floor_build() { return ""; }
+bool cpu_gather_fast() { return false; }
+bool cpu_gather_fast_here() { return false; }
+// the gathered grid decode is a feature of Strata's AVX-2 i-quant kernels (iq_avx2.cpp), which Arm64 does not build:
+// always the plain decode (0), whatever the environment says.
+int iq256_gather_setting() { return 0; }
+
+std::string cpu_name() {
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0 || line.rfind("Hardware", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos && c + 2 <= line.size()) return line.substr(c + 2);
+        }
+    }
+    return "aarch64";
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 }
 #else
 bool cpu_avx512_ok() {
@@ -332,7 +363,11 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+<<<<<<< HEAD
 #endif  // x86 cpuid probes
+=======
+#endif   // !defined(STRATA_CPU_ARM64)
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 // ---- the AVX-512 probe and the oracle flag (#795) ----
 //
@@ -347,6 +382,17 @@ void expert_set_oracle_q8_0(bool enabled) { g_oracle_q8_0.store(enabled, std::me
 
 bool expert_oracle_q8_0_enabled() { return g_oracle_q8_0.load(std::memory_order_relaxed); }
 
+#if defined(STRATA_CPU_ARM64)
+const char* CpuFeatures::reason() const { return "not an x86-64 CPU"; }
+CpuFeatures cpu_features() { return CpuFeatures{}; }
+
+void cpu_require_expert_support() {
+    std::fprintf(stderr,
+                 "strata: this CPU cannot run the canonical Q2_0 pack's expert kernel (AVX-512 VNNI + VBMI, x86-64 only).\n"
+                 "        On Arm64 use a native i-quant pack: IQ2_XS, IQ3_XXS or IQ3_S.\n");
+    std::exit(1);
+}
+#else
 const char* CpuFeatures::reason() const {
     if (usable()) return "ok";
     // Named individually: "AVX-512 not supported" sends a user looking for a new CPU when the machine may have
@@ -395,6 +441,7 @@ void cpu_require_expert_support() {
                  f.reason());
     std::exit(1);
 }
+#endif   // !defined(STRATA_CPU_ARM64)
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {

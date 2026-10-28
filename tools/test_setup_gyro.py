@@ -8,6 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 import strata_mcp as M  # noqa: E402
 
 

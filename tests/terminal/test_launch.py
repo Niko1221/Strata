@@ -322,12 +322,12 @@ class RunConfig(unittest.TestCase):
         self.assertNotIn("api_key", cfg)
 
     def test_installed_config_matching(self):
-        d = {"context": 32768, "kv": "int8", "images": "off"}
+        d = {"context": 32768, "kv": "q4_0", "images": "off"}   # 32K installs record the 4-bit K/V default
         self.assertTrue(desc_matches(d, S.LaunchSettings(context=32768)))
         self.assertFalse(desc_matches(d, S.LaunchSettings(context=65536)))
         self.assertFalse(desc_matches(d, S.LaunchSettings(context=32768, vision="on")))
         self.assertFalse(desc_matches({**d, "images": "cpu"}, S.LaunchSettings(context=32768, vision="off")))
-        self.assertFalse(desc_matches(d, S.LaunchSettings(context=32768, kv="q4_0")))
+        self.assertFalse(desc_matches(d, S.LaunchSettings(context=32768, kv="int8")))
 
     def test_tune_words(self):
         self.assertEqual(tune_words({"outcome": "improved", "gain_pct": 4.2})[0], "faster")
@@ -485,7 +485,7 @@ class AdoptRules(unittest.TestCase):
             self.assertEqual(problems, [])
             a = cfg["args"]
             self.assertEqual(a[a.index("--max-context") + 1], "32768")
-            self.assertEqual(a[a.index("--kv") + 1], "int8")
+            self.assertEqual(a[a.index("--kv") + 1], "q4_0")     # 32768: the 4-bit K/V is the default from there up
             self.assertIn("--ple-gguf", a)
             self.assertIn("--mtp", a)
             self.assertEqual((cfg["exe"], cfg["backend"]), ("component:strata-engine", "sycl"))

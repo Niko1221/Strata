@@ -219,6 +219,18 @@ bool under_wddm() {
 #endif
 }
 
+// WSL2 on its own, for defaults that read /proc (Linux's numbers, but Windows owns the real memory): WSL2 without
+// /dev/dxg still reaches the Windows driver, and its MemAvailable says nothing about what WDDM will let a pin cost.
+bool under_wsl2() {
+#ifdef _WIN32
+    return false;
+#else
+    static const bool wsl = std::getenv("WSL_DISTRO_NAME") != nullptr || std::getenv("WSL_INTEROP") != nullptr ||
+                            std::filesystem::exists("/proc/sys/fs/binfmt_misc/WSLInterop");
+    return wsl;
+#endif
+}
+
 // #620 #486: " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the error first)
 std::string vram_free_note() {
     (void) cudaGetLastError();
@@ -559,7 +571,9 @@ struct Options {
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
     std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
+    bool kv_explicit = false;          ///< --kv was given: never second-guessed by a context-sized default
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
+    bool kv_resident_explicit = false; ///< --kv-resident was given: never overridden by the auto streaming default
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
@@ -902,14 +916,16 @@ void usage() {
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
                  "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
-                 "                       VRAM; default fp16 until gate G-C accepts int8\n"
+                 "                       VRAM; default fp16 below a 32768-cell context, q4_0 from 32768 cells on\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
-                 "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
-                 "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
+                 "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. Default 0:\n"
+                 "                       all of it in VRAM, except 20480 from a 65536-cell context when the pinned\n"
+                 "                       RAM is free (not under WDDM or WSL2, not with --kv-grow). A context of N\n"
+                 "                       cells or fewer is not streamed\n"
                  "  --kv-grow            the K/V takes VRAM only for the cells the requests reach and the expert\n"
                  "                       cache holds the rest, giving slots back as the context grows (one GPU, with\n"
                  "                       --expert-profile; STRATA_KV_GROW=1/0 also). Default: the whole --max-context\n"
@@ -3017,8 +3033,8 @@ int main(int argc, char** argv) {
         else if (a == "--ple-inflight") o.ple_inflight = std::atoi(next("--ple-inflight"));
         else if (a == "--ple-delay-us") o.ple_delay_us = std::atof(next("--ple-delay-us"));
         else if (a == "--ple-sync-submit") o.ple_sync_submit = true;
-        else if (a == "--kv") o.kv = next("--kv");
-        else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
+        else if (a == "--kv") { o.kv = next("--kv"); o.kv_explicit = true; }
+        else if (a == "--kv-resident") { o.kv_resident = std::atoll(next("--kv-resident")); o.kv_resident_explicit = true; }
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
@@ -3728,6 +3744,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
         return 2;
     }
+    // Long contexts default to the 4-bit K/V: at 32,768 cells and up, the K/V stops being a rounding-error
+    // question and becomes a VRAM question - 576 B/cell against fp16's 2,112, decode ~4% faster at 128K
+    // (Hadamard-rotated codes, PR #21, bench/results/2026-09-27-kv-q4).  An explicit --kv - including
+    // --kv fp16 - always wins, and every shorter context keeps the old fp16 default byte for byte.
+    if (!o.kv_explicit && o.max_context >= 32768) {
+        o.kv = "q4_0";
+        std::fprintf(stderr, "strata generate: --kv not given at a %lld-cell context: the K/V runs q4_0 "
+                             "(576 B/cell vs fp16's 2,112; decode ~4%% faster at 128K, bench/results/"
+                             "2026-09-27-kv-q4); --kv fp16, int8 or k8v4 picks another format\n",
+                     (long long) o.max_context);
+    }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
@@ -4222,6 +4249,12 @@ int main(int argc, char** argv) {
         }
         strata::kernels::cpu::cpu_require_expert_support();
     } else if (!strata::kernels::cpu::cpu_avx512_ok())
+#if defined(__aarch64__)
+        // Arm64: cpu_avx2_ok() is true because NEON is the baseline, but no AVX kernel is compiled here - the
+        // i-quant rows run on ggml-cpu's NEON vec_dot (native_expert.cpp, portable_stubs.cpp).
+        std::fprintf(stderr, "strata generate: this is an Arm64 CPU (NEON): the expert kernels run on ggml-cpu's "
+                             "NEON vec_dot (Strata's AVX-2 / AVX-512 kernels are x86-64 only)\n");
+#else
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok()
@@ -4229,6 +4262,7 @@ int main(int argc, char** argv) {
                             ? "AVX1 128-bit (iq_avx1, the older-CPU build)"
                             : "ggml-cpu vec_dot (no AVX2: the older-CPU build)")
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
+#endif
     // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
     // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
     strata::core::ModelGeometry g;
@@ -5860,6 +5894,7 @@ int main(int argc, char** argv) {
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
+        bool kv_elastic = false;   // the default KV streaming below stays off when this is on
         {
             const char* ev = std::getenv("STRATA_KV_GROW");
             bool remote = false;
@@ -5874,8 +5909,39 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
                                      "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
+            kv_elastic = on;
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
+        }
+        // KV streaming as a default for long contexts: from 65,536 cells the whole K/V in VRAM eats the expert-slot
+        // budget even in q4_0 (the default format there: 576 B x 65,536 cells x the QSA layers), while decode's hot
+        // window is a few thousand cells.  Streaming keeps min(20,480 cells) of each QSA layer resident and puts the
+        // whole K/V in pinned host RAM; the freed VRAM goes to expert slots (docs/DETAILS.md, "KV streaming").  A
+        // pin refused at qsa_state_init fails the start, so the default only turns on when a host-memory sample says
+        // the pinning fits with room; it stays off under WDDM/WSL2 (the #253 pinned-arena limit) and under --kv-grow
+        // (which needs the whole K/V in VRAM).  An explicit --kv-resident overrides all of this, as --kv does the
+        // format default above.
+        if (!o.kv_resident_explicit && o.kv_resident == 0 && !kv_elastic && !multi_gpu && o.max_context >= 65536 &&
+            g.n_qsa_layers() > 0 && !under_wddm() && !under_wsl2()) {
+            const int64_t want = std::max<int64_t>(20480, strata::core::qsa_kv_resident_min());
+            strata::core::qsa_set_kv_resident(want);   // qsa_kv_stream_host_bytes reads the resident global
+            const uint64_t need = strata::core::qsa_kv_stream_host_bytes(g, o.max_context);
+            const auto mem = strata::core::sample_host_memory();
+            if (need != 0 && mem && mem->available >= need + (2ull << 30)) {
+                o.kv_resident = want;
+                std::fprintf(stderr, "strata generate: --kv-resident not given at a %lld-cell context: KV streaming "
+                                     "on - %lld cells of each QSA layer in VRAM, the whole K/V in %.2f GiB of pinned "
+                                     "RAM (%.1f GiB free). --kv-resident 0 keeps it all in VRAM\n",
+                             (long long) o.max_context, (long long) want, (double) need / 1073741824.0,
+                             (double) mem->available / 1073741824.0);
+            } else {
+                strata::core::qsa_set_kv_resident(0);  // session_bytes sizes the un-streamed pools
+                std::fprintf(stderr, "strata generate: KV streaming stays off: it would pin %.2f GiB of host RAM "
+                                     "for a %lld-cell context and %s (a refused pin fails the start). "
+                                     "--kv-resident %lld turns it on anyway\n",
+                             (double) need / 1073741824.0, (long long) o.max_context, ram_note(mem).c_str(),
+                             (long long) want);
+            }
         }
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");

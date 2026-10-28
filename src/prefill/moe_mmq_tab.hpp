@@ -27,4 +27,10 @@ extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ4_NL>(ggml_backend_cuda_cont
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ4_XS>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_Q8_0>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 
+/// NVFP4's two pointer-table instances, the same split as the gathered products: the int8-activation one (W4A8) is
+/// built with the plain architectures (mmq_tab_nvfp4_w4a8.cu, Blackwell's FP4 MMA hidden), the FP4-activation one
+/// (W4A4) only in the 12xa strata_mmq_w4a4 (mmq_tab_nvfp4_w4a4.cu).  run_tab picks them by fp4_activations.
+bool mul_mat_q_tab_nvfp4_w4a8(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+bool mul_mat_q_tab_nvfp4_w4a4(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+
 }  // namespace strata::prefill::mmq

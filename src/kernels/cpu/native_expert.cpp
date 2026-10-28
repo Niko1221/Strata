@@ -160,6 +160,13 @@ bool native_experts_available() noexcept { return true; }
 // compiled for AVX-512 and iq_avx2.cpp / kq_avx2.cpp for AVX2, and native_gu_rows asks these on every CPU before it
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
+#if defined(__aarch64__)
+// Arm64: Strata's multi-token i-quant kernels are AVX-2 / AVX-512 (x86-64 only), so every probe says no and
+// native_gu_rows runs the rows on ggml-cpu's NEON dot products instead.
+bool iq512_supported(int) noexcept { return false; }
+bool iq256_supported(int) noexcept { return false; }
+bool kq256_supported(int) noexcept { return false; }
+#else
 bool iq512_supported(int type) noexcept {
     return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
 }
@@ -169,6 +176,7 @@ bool iq256_supported(int type) noexcept {
 }
 
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
+#endif
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
@@ -229,13 +237,21 @@ namespace {
 // iq_avx2.cpp is compiled for AVX2 (an AVX-only CPU, or STRATA_FORCE_ISA=avx, keeps ggml's).  STRATA_NO_Q8K_AVX2=1:
 // ggml's on any CPU.
 bool q8k_avx2(int type) {
+#if defined(__aarch64__)
+    static const bool on = false;   // q8k_quant_avx2 is x86-64 only: ggml's NEON from_float below
+#else
     static const bool on = cpu_avx2_ok() && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
+#endif
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 // the older CPUs' copy (iq_avx1.cpp): byte-identical like the AVX-2 one, and only where AVX2 is absent (same
 // policy as STRATA_NO_IQ128 above; STRATA_NO_Q8K_AVX1=1 keeps ggml's scalar reference on those CPUs).
 bool q8k_avx1(int type) {
+#if defined(__aarch64__)
+    static const bool on = false;   // q8k_quant_avx1 is x86-64 only
+#else
     static const bool on = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_Q8K_AVX1") == nullptr;
+#endif
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 }  // namespace
@@ -518,7 +534,11 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
                       int r0, int r1) {
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
+#if defined(__aarch64__)
+    static const bool iq4nl_mt = false;   // the AVX-2 kernel is x86-only: ggml-cpu's NEON dot below
+#else
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
+#endif
     static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),

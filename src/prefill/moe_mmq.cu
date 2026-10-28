@@ -260,7 +260,9 @@ __global__ void prep_group_kernel(GuardTab g, int64_t guard, uint8_t* tail_gu, u
 }
 
 // the pointer-table MMQ per type: the native packs' nine types (CMake's _strata_mmq_tab_types, all of them checked
-// bit for bit by prefill_mmq_tab_test).  false: no instance - the optional Q5_0 and K-quant experts keep the gather
+// bit for bit by prefill_mmq_tab_test) plus NVFP4, whose two instances follow the gathered split (mmq_tab_nvfp4_w4a8.cu
+// with the plain architectures, mmq_tab_nvfp4_w4a4.cu in the 12xa strata_mmq_w4a4).  false: no instance - the
+// optional Q5_0 and K-quant experts keep the gather
 bool run_tab(ggml_backend_cuda_context* ctx, const mmq_args* a, const mmq_x_tab* tab, cudaStream_t s) {
     const ggml_type t = a ? a->type_x : GGML_TYPE_COUNT;
 #define STRATA_TAB_CASE(T) case T: return ctx == nullptr || mul_mat_q_tab_case<T>(*ctx, *a, *tab, s)
@@ -274,6 +276,14 @@ bool run_tab(ggml_backend_cuda_context* ctx, const mmq_args* a, const mmq_x_tab*
         STRATA_TAB_CASE(GGML_TYPE_IQ4_NL);
         STRATA_TAB_CASE(GGML_TYPE_IQ4_XS);
         STRATA_TAB_CASE(GGML_TYPE_Q8_0);
+#if !defined(GGML_USE_HIP)
+        // the same W4A4/W4A8 choice as the gathered product (fp4_activations): W4A4 only with the 12xa image on an
+        // sm_12x card; a probe miss (sm_121 against a 120a build) keeps the W4A8 pointer table
+        case GGML_TYPE_NVFP4:
+            return ctx == nullptr ||
+                   (fp4_activations(t) ? mul_mat_q_tab_nvfp4_w4a4(*ctx, *a, *tab, s)
+                                       : mul_mat_q_tab_nvfp4_w4a8(*ctx, *a, *tab, s));
+#endif
         default: return false;
     }
 #undef STRATA_TAB_CASE
@@ -307,11 +317,24 @@ bool built() { return true; }
 Nvfp4Mode nvfp4_mode() {
     static const Nvfp4Mode m = [] {
         const char* e = std::getenv("STRATA_PREFILL_NVFP4");
-        if (e == nullptr || std::strcmp(e, "w4a8") == 0) return Nvfp4Mode::W4A8;
-        if (std::strcmp(e, "w4a4") == 0) return Nvfp4Mode::W4A4;
-        if (std::strcmp(e, "fp16") == 0) return Nvfp4Mode::FP16;
-        std::fprintf(stderr, "STRATA_PREFILL_NVFP4=%s: expected w4a8, w4a4 or fp16\n", e);
-        std::exit(1);
+        if (e != nullptr) {
+            if (std::strcmp(e, "w4a8") == 0) return Nvfp4Mode::W4A8;
+            if (std::strcmp(e, "w4a4") == 0) return Nvfp4Mode::W4A4;
+            if (std::strcmp(e, "fp16") == 0) return Nvfp4Mode::FP16;
+            std::fprintf(stderr, "STRATA_PREFILL_NVFP4=%s: expected w4a8, w4a4 or fp16\n", e);
+            std::exit(1);
+        }
+        // nothing asked: W4A4 where this build's 12xa image and the card's FP4 MMA meet (Blackwell's FP4 MMA runs
+        // near twice INT8's rate, and W4A4 skips the per-layer Q8_1 activation pass) - the same probe as
+        // fp4_activations, so every other card and a build without the image keep the W4A8 path of the last release
+        if (w4a4_available()) {
+            std::fprintf(stderr, "prefill mmq: the NVFP4 prompt products run W4A4 (FP4 activations on Blackwell's FP4 "
+                                 "MMA): the first token's distribution drifts from the FP16 prefill by KL up to 0.04, "
+                                 "mean 0.008 (docs/NVFP4.md); STRATA_PREFILL_NVFP4=w4a8 runs the int8-activation path "
+                                 "(W4A8) as before\n");
+            return Nvfp4Mode::W4A4;
+        }
+        return Nvfp4Mode::W4A8;
     }();
     return m;
 }

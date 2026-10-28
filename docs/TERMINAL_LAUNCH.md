@@ -146,7 +146,16 @@ strata launch --family deepseek41 --model ist-das-2.00bpw
 
 ## After the start: the monitor
 
+<<<<<<< HEAD
 The monitor has seven views. Press `1` to `7` or use the arrow keys.
+=======
+The Strata Monitor with the new **Overview** (key 1: model state bar, speed, GPU load, unified memory with the expert cache's size, temperature, power, PCIe, CPU, disk, context fill, the KV cache hit of the
+newest request that reports reuse, system RAM, recent requests; read from the
+server's `/metrics`, the same data as the browser Monitor), the other five views as before, and **7 Connect** (the seventh view: the arrow keys reach it like the others, and every view's hint says 1-7): the address, the key (hidden until `k`), and the setup for each app
+(`c` copy, `w` write it for you after a backup, `h` check it: one prompt and one tool call sent the way that app sends them). The list keeps two things apart: **Vendor tested** (the app
+version its maker tested the setup with: history) and **This server** (Not checked / Passed / Failed for your server, after `h`). `q` asks: keep serving in the background, or stop
+(stopping unloads the model and frees the graphics memory).
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 | Key | View |
 | --- | --- |

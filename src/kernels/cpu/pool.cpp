@@ -1010,7 +1010,11 @@ void ExpertPool::worker(int id) {
             } else
 #endif
             {
+<<<<<<< HEAD
                 strata_cpu_pause();
+=======
+                strata::cpu_pause();
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
                 if ((++spins & 1023u) != 0) continue;
             }
             if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
@@ -1131,7 +1135,11 @@ void ExpertPool::wait_parked(const char* what) {
     uint32_t spins = 0;
     std::chrono::steady_clock::time_point t0{};
     while (parked_count() != (uint32_t) n_) {
+<<<<<<< HEAD
         strata_cpu_pause();
+=======
+        strata::cpu_pause();
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u) t0 = now;
@@ -1158,7 +1166,11 @@ void ExpertPool::wait_done(int n) {
         else
             d = done_.load(std::memory_order_acquire);
         if (d >= (uint32_t) n) return;                                // `>=`: never a wait that an overshoot outlives
+<<<<<<< HEAD
         strata_cpu_pause();
+=======
+        strata::cpu_pause();
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock

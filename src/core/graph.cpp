@@ -97,7 +97,11 @@ bool CapturedGraph::wait_ms(int timeout_ms) const {
         if (q == cudaSuccess) return true;
         if (q != cudaErrorNotReady) return false;   // a real error, not "not finished"
         if (std::chrono::steady_clock::now() >= deadline) return false;
+<<<<<<< HEAD
         for (int i = 0; i < 64; ++i) strata_cpu_pause();
+=======
+        for (int i = 0; i < 64; ++i) strata::cpu_pause();
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
     }
 }
 

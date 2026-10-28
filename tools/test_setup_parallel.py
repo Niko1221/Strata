@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import setup as S  # noqa: E402
+S.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 
 
 class Parallel(unittest.TestCase):

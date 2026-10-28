@@ -771,6 +771,21 @@ int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
+uint64_t qsa_kv_stream_host_bytes(const ModelGeometry& g, int64_t max_cells) {
+    // what KV streaming pins into host RAM: every main QSA layer's whole-K/V copy, as qsa_state_init allocates it
+    // (the + 4 * 256 is its page-table tail).  The drafter's ring copy (mode 2, a few thousand cells) is its own
+    // and small; it is not counted.  0: with the current globals the main states would not stream at all.
+    if (g.n_qsa_layers() <= 0 || qsa_kv_resident() <= 0) return 0;
+    const QsaShapes s = qsa_shapes(g);
+    const KvPlan p = kv_plan(s, max_cells, 0);
+    if (p.mode != 1) return 0;
+    QsaState st{};   // the main state's format bits, as qsa_state_init sets them (ring_cells = 0)
+    st.kv_q4 = g_kv_q4;
+    st.kv_int8 = g_kv_int8 && !g_kv_q4;
+    if (g_kv_hybrid) { st.kv_hybrid = true; st.kv_int8 = false; st.kv_q4 = false; }
+    return (uint64_t) g.n_qsa_layers() * ((uint64_t) p.pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256);
+}
+
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);

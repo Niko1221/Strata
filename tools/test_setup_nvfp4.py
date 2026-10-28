@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 
 A, B = "owner/pack-a", "owner/pack-b"
 REV_A, REV_B = "a" * 40, "b" * 40

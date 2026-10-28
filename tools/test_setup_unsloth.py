@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 
 M = "UD-Q4_K_XL"
 REV = "38bb39ee97821de2c9009abb7e93950eec396e66"
@@ -259,7 +260,7 @@ class Main(Base):
         self.assertEqual(code, 0, out)
         args = cfg["args"]
         self.assertIn("--kv-resident", args)
-        kv_gb = 131072 * 13 * 1056 / 1e9
+        kv_gb = 131072 * 13 * 576 / 1e9   # 128K: the K/V defaults to 4-bit now (576 B/cell, was int8's 1,056)
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], str(40 - int(-(-kv_gb // 1))))
 
     def test_old_engine_stops_before_the_download(self):

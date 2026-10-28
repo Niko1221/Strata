@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 
 LISTINGS = json.loads((ROOT / "tools" / "test_setup_rocm_indexes.json").read_text(encoding="utf-8"))["indexes"]
 

@@ -63,6 +63,18 @@ struct Dev {
 
 // random blocks with a sane fp16 scale at each block's start (every format here begins with it)
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
+    if (t == GGML_TYPE_NVFP4) {
+        // ggml's NVFP4 block (ggml-common.h): 64 values - four UE4M3 sub-block scales, then 32 packed E2M1
+        // nibbles.  Random nibbles are always finite, but a random scale byte can encode an E4M3 inf or NaN;
+        // scales stay in the normal mid-range so the gathered reference (the negative control's baseline)
+        // stays finite.
+        std::uniform_int_distribution<int> scb(0x20, 0x50), rb(0, 255);
+        const size_t nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
+        for (size_t i = 0; i < nb * 36; ++i) m[i] = (uint8_t) rb(rng);
+        for (size_t b = 0; b < nb; ++b)
+            for (int j = 0; j < 4; ++j) m[b * 36 + (size_t) j] = (uint8_t) scb(rng);
+        return;
+    }
     const size_t bs = ggml_type_size(t), nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
     const float lo = t == GGML_TYPE_Q8_0 ? 0.0001f : t == GGML_TYPE_IQ3_S ? 0.0004f : t == GGML_TYPE_IQ4_XS ? 0.00005f
@@ -95,13 +107,16 @@ struct Shape {
     const char* role;
 };
 
-// activations for `total` rows of `cols`, quantized for type t (q8_1), plus an identity map and the bounds
+// activations for `total` rows of `cols`, quantized for type t (q8_1; NVFP4 w4a4: NVFP4 with one float scale per
+// row in ys), plus an identity map and the bounds
 struct Acts {
-    Dev x, xq, ids, bounds;
+    Dev x, xq, ids, bounds, ys;
     int64_t total;
+    bool fp4;   // the w4a4 mode is live for this type: quantize writes its per-row scales to ys
     Acts(ggml_type t, int64_t cols, const std::vector<int>& cnt, std::mt19937& rng, cudaStream_t s)
         : x((size_t) std::max<int64_t>(1, sum(cnt)) * cols * 4), xq(mmq::q8_bytes(std::max<int64_t>(1, sum(cnt)), cols)),
-          ids((size_t) (sum(cnt) + kIdsPad) * 4), bounds((cnt.size() + 1) * 4), total(sum(cnt)) {
+          ids((size_t) (sum(cnt) + kIdsPad) * 4), bounds((cnt.size() + 1) * 4), ys((sum(cnt) + kIdsPad) * 4),
+          total(sum(cnt)), fp4(mmq::fp4_activations((int) t)) {
         std::vector<float> hx((size_t) std::max<int64_t>(1, total) * cols);
         std::normal_distribution<float> nd(0.0f, 1.0f);
         for (auto& v : hx) v = nd(rng);
@@ -112,7 +127,9 @@ struct Acts {
         // MMQ loads a whole tile's J ids from an expert's first row, and its stream-k fixup does so for every column
         // tile of max_rows, also past the last row (upstream behaviour, harmless values): padded for memcheck
         mmq::iota((int32_t*) ids.p, total + kIdsPad, s);
-        if (total > 0) mmq::quantize((const float*) x.p, nullptr, xq.p, (int) t, cols, cols, total, s);
+        if (total > 0)
+            mmq::quantize((const float*) x.p, nullptr, xq.p, (int) t, cols, cols, total, s,
+                          fp4 ? (float*) ys.p : nullptr);
         ck(cudaStreamSynchronize(s), "acts");
     }
     static int64_t sum(const std::vector<int>& c) {
@@ -127,6 +144,7 @@ mmq::Product product(const Shape& sh, const Acts& a, int n, int64_t max_rows, fl
     p.type = (int) sh.t; p.w_rows = sh.rows; p.w_cols = sh.cols;
     p.n = n; p.xq = a.xq.p; p.bounds = (const int32_t*) a.bounds.p; p.ids = (const int32_t*) a.ids.p;
     p.total_rows = a.total; p.max_rows = max_rows; p.dst = dst; p.ld_dst = sh.rows;
+    p.y_scale = a.fp4 ? (const float*) a.ys.p : nullptr;   // NVFP4 w4a4: the per-row activation scales
     return p;
 }
 
@@ -565,9 +583,17 @@ int main() {
         const Shape other[] = {{GGML_TYPE_IQ2_XXS, 1280, 2560, "gate/up"}, {GGML_TYPE_IQ2_XS, 1280, 2560, "gate/up"},
                                {GGML_TYPE_IQ2_S, 1280, 2560, "gate/up"},   {GGML_TYPE_IQ3_XXS, 1280, 2560, "gate/up"},
                                {GGML_TYPE_IQ4_XS, 1280, 2560, "gate/up"},  {GGML_TYPE_Q8_0, 1280, 2560, "gate/up"},
-                               {GGML_TYPE_IQ4_NL, 1280, 2560, "gate/up"},  {GGML_TYPE_Q2_0, 2560, 640, "down"}};
+                               {GGML_TYPE_IQ4_NL, 1280, 2560, "gate/up"},  {GGML_TYPE_Q2_0, 2560, 640, "down"},
+                               {GGML_TYPE_NVFP4, 1280, 2560, "gate/up"},   {GGML_TYPE_NVFP4, 2560, 640, "down"}};
+        // which NVFP4 instance the launch picks (the W4A4 one needs the 12xa image; the engine's auto default and
+        // STRATA_PREFILL_NVFP4 decide it)
+        std::printf("NVFP4 prompt products: %s\n",
+                    !mmq::supported(GGML_TYPE_NVFP4) ? "off (STRATA_PREFILL_NVFP4=fp16): these rows are skipped"
+                    : mmq::fp4_activations(GGML_TYPE_NVFP4) ? "w4a4 (FP4 x FP4 on Blackwell's FP4 MMA)"
+                                                            : "w4a8 (Q8_1 activations on int8 tensor cores)");
         for (const Shape& sh : other) {
-            if (!mmq::tab_fits((int) sh.t, sh.rows)) {   // all nine types have an instance (CMake's tab types)
+            if (sh.t == GGML_TYPE_NVFP4 && !mmq::supported(GGML_TYPE_NVFP4)) continue;
+            if (!mmq::tab_fits((int) sh.t, sh.rows)) {   // all nine tab types plus NVFP4 have an instance (CMake)
                 std::printf("FAIL: no pointer-table MMQ for %s %s\n", ggml_type_name(sh.t), sh.role);
                 return 1;
             }

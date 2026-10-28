@@ -65,8 +65,83 @@ the bytes over PCIe. The PCIe share of the missed experts is therefore 0.25 for 
 0.55 the copy kernel was 40% of all GPU kernel time (nsys, 300-token decode). Measurements are in
 [History](#history--older-measurements).
 
+<<<<<<< HEAD
 `STRATA_ROUTE_TAIL_SKIP` is off by default for NVFP4 experts, because it moves the answers by more than the quantization
 itself. `STRATA_ROUTE_TAIL_SKIP=7` turns it on.
+=======
+RTX 5090, 64K context, int8 K/V, `--vram-reserve-mib 1500`:
+
+| | NVFP4 pack | IQ2_XS, same engine |
+| --- | ---: | ---: |
+| experts in RAM | 63.3 GiB | 33.0 GiB |
+| expert cache slots | ~8,350 | ~17,300 |
+| decode, 400-token answer | 114-116 tokens/s | 132-139 tokens/s |
+| a 32K prompt | 3,900 tokens/s | 5,600 tokens/s |
+
+An NVFP4 expert blob is 2.76 MB, against 1.51 MB for IQ2_XS: the cache holds half as many, and a miss costs twice
+the bytes over PCIe. The PCIe share of the missed experts is therefore 0.25 for an NVFP4 pack, not the usual 0.55.
+At 0.55 the copy kernel was 40% of all GPU kernel time (nsys, 300-token decode). A sweep at 262K context gave the
+following decode rates:
+
+| PCIe share | short prompt | 32K prompt |
+| --- | ---: | ---: |
+| 0.55 | 103 tokens/s | 105 |
+| 0.40 | 110 | 117 |
+| 0.25 | 117 | 124 |
+| 0.10 | 112 | 118 |
+
+## Measured in Strata (2026-10-13)
+
+The numbers above are the fork author's, on his RTX 5090 and 128 GB. These were measured here, on the ready-made GPTQ
+pack (`--family nvfp4 --model NVFP4`).
+
+Quality, the quant yardstick (`tools/quant_quality.py`, 4,995 teacher-forced positions of code, docs, English, other
+languages and an agent transcript, against Unsloth's Q8_0; RTX 3060 box):
+
+| | same top token as Q8_0 | mean KL | KL p99 |
+| --- | ---: | ---: | ---: |
+| NVFP4 GPTQ, experts on the CPU | 92.09% | 0.070 | 1.12 |
+| NVFP4 GPTQ, 1,500 experts on the GPU | 91.79% | 0.069 | 1.07 |
+| the same with `STRATA_ROUTE_TAIL_SKIP=7` | 88.59% | 0.118 | 1.76 |
+| NVFP4 GPTQ with the GSQ-RCO IQ4_NL n-gram table instead of the FP8 one | 92.15% | 0.069 | 1.07 |
+| for comparison, the same tool: Unsloth UD-Q5_K_XL | 94.55% | 0.038 | 0.64 |
+| Unsloth UD-Q4_K_XL | 93.09% | 0.056 | - |
+| Unsloth UD-IQ4_XS | 88.91% | 0.101 | 1.60 |
+| GSQ-RCO IQ3_S | 87.69% | 0.144 | 1.98 |
+
+The route tail skip moves the answers by more than the quantization itself, so it is off by default for NVFP4
+experts. `STRATA_ROUTE_TAIL_SKIP=7` turns it on: +7-25% decode on the RTX 3060, +47-55% on the RTX 5070 (64 GB).
+
+Decode experts (`nvfp4_decode_bench`, 64 distinct experts per call, the share of the card's DRAM bandwidth):
+
+| tokens per expert | RTX 5070 | RTX 3060 | Tesla P100 |
+| --- | ---: | ---: | ---: |
+| 1 | 0.294 ms (89%) | 0.554 ms (89%) | 0.910 ms |
+| 2 | 0.298 ms (88%) | 0.596 ms | 1.247 ms |
+| 4 | 0.335 ms (79%) | 0.766 ms | 1.954 ms |
+
+Each weight is decoded once for all the tokens of a verify window (before the port's kernel work: 2.26 ms on the 3060
+at 4 tokens), bit for bit the same results.
+
+Prompt experts on the RTX 5070 (`mmq_expert_bench`, one launch of 16 experts with 625 rows each, gate/up + down): w4a8
+1.52 ms, w4a4x2 (`STRATA_PREFILL_NVFP4=w4a4x2`) 1.13 ms, w4a4x2 with down too (`STRATA_PREFILL_X2_MIN_K=640`)
+0.995 ms, UD-IQ4_XS's experts 1.20 ms. First-token KL against the exact FP16 path (24 prompts, 1.5-8K tokens): w4a8
+0.0068, w4a4x2 0.0056, w4a4x2 with down 0.0044. On a 64 GB PC the prompt waits for the experts read from the SSD,
+so the modes give the same prompt speed there. The engine picks the mode itself now - `w4a4` where its 12xa image
+meets an sm_12x card's FP4 MMA, `w4a8` everywhere else (the Prompt path precision section below).
+On RTX 20-40 the NVFP4 prompt products are 1.35-1.6x slower than IQ3_S / IQ4_NL ones at 32K: NVFP4's 16-value scales
+are applied in FP32 after every int8 step, which only Blackwell's FP4 tensor cores avoid.
+
+Below its RAM need (68 GB of experts plus room) setup runs the pack in the RAM-budget mode (`--resident-budget-gib`,
+the RAM less 24 GB), as for Unsloth's files. Mapped experts (`--mmap-experts`) on a 64 GB Windows PC filled the RAM.
+
+Images: the packs keep Qwen's vision tower unquantized, so the original's image encoder reads pictures for them
+(`--vision`; strata-vision opens the dense GGUF for the vocabulary). Checked on an RTX 5070 and an RTX 3060 against
+IQ3_XXS's answers on the same picture (a number in the picture read, two shapes with their colours and sides). The
+encoder on the GPU takes ~1.1 GiB of VRAM: on the 3060 at 8K context the cache held 1,293 experts with images against
+1,734 without. Pictures are on by default; setup and the app pick the CPU reader under 24 GB of graphics memory and the
+GPU reader from 24 GB (`--vision cpu` / `--vision gpu` change it).
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 ## Where the global scales go
 
@@ -83,6 +158,7 @@ range.
 
 `STRATA_PREFILL_NVFP4` picks how the batched prompt path multiplies the experts:
 
+<<<<<<< HEAD
 | Mode | Kernel | Activations | One product against FP64 (`mmq_nvfp4_parity`) |
 | --- | --- | --- | --- |
 | `w4a8` (default) | llama.cpp MMQ, int8 tensor cores | q8_1, float block scales | 0.53% |
@@ -96,6 +172,24 @@ The FP4 MMA exists only in the arch-specific target, so `src/prefill/mmq_nvfp4_w
 activation quantizer) is the one unit CMake builds with `12x` to `12xa` (`strata_mmq_w4a4`). The rest of the engine keeps
 the architectures as given and runs on sm_121 too. A card without that unit's image (another architecture, or sm_121
 against a 120a build) falls back to `w4a8` with a note.
+=======
+| mode | kernel | activations | one product vs FP64 (`mmq_nvfp4_parity`) |
+|---|---|---|---|
+| `w4a8` (the default except on Blackwell) | llama.cpp MMQ, int8 tensor cores | q8_1, float block scales | 0.53% |
+| `w4a4` (the default on sm_12x in a 12xa build) | llama.cpp MMQ, Blackwell FP4 MMA | NVFP4 | 8.6% |
+| `fp16` | dequantize + cuBLAS FP16 GEMM | FP16 | reference |
+
+`src/prefill/mmq_nvfp4_w4a8.cu` compiles mmq.cuh's int8 NVFP4 path with Blackwell's FP4 MMA hidden from both the
+device code and the host's tile config, so it is the same on every architecture; decode already multiplies at this
+precision. The FP4 MMA exists only in the arch-specific target, so `src/prefill/mmq_nvfp4_w4a4.cu` (the FP4 x FP4
+kernel and its FP4 activation quantizer) is the one unit CMake builds with `12x` -> `12xa` (`strata_mmq_w4a4`);
+the rest of the engine keeps the architectures as given and runs on sm_121 too. A card without that unit's image
+(another architecture, or sm_121 against a 120a build) falls back to `w4a8` with a note. The direct prompt path
+(`STRATA_MMQ_TAB`, `STRATA_MMQ_DIRECT=1`) has the same two instances of the pointer table
+(`src/prefill/mmq_tab_nvfp4_w4a8.cu`, `src/prefill/mmq_tab_nvfp4_w4a4.cu`) behind the same probe;
+`prefill_mmq_tab_test` checked them bit for bit against the copied launches on a GB10 - 94 NVFP4 products,
+2026-10-27.
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 > **Measured on:** first-token KL divergence against `fp16`, 8 prompts (code and prose, 1K to 8K tokens). Hardware and
 > Strata version not recorded. The noise floor is the same `fp16` path cut into 4096-token chunks instead of 8192.
@@ -107,8 +201,18 @@ against a 120a build) falls back to `w4a8` with a note.
 | `w4a4` | 0.0080 | 0.0027 | 0.040 | 7/8 | 2,904 tok/s |
 | `fp16` | reference | | | | 1,905 tok/s |
 
+<<<<<<< HEAD
 `w4a8` is the default. It is 4.5x closer to the reference than `w4a4`, at 86% of its speed, and it is the precision every
 generated token already runs at. `fp16` is the choice when the prompt must be read exactly.
+=======
+Left unset, the engine probes once at start (`w4a4_available()`): where its 12xa image and an sm_12x card's FP4 MMA
+meet, the prompt products run `w4a4` - near twice the int8 rate, and it skips the per-layer Q8_1 activation pass - and
+the log names the choice; every other card or a build without the image keeps `w4a8`, the precision every generated
+token already runs at. `w4a4` moves the first token further from the FP16 prefill: KL mean 0.0080, max 0.040, top-1
+agreement 7/8 against the noise floor's 0.0016 and 8/8 (the table above). `STRATA_PREFILL_NVFP4=w4a8` keeps the int8
+activations everywhere, `=w4a4` forces the FP4 one (with a note and the fallback when the probe misses), and `fp16`
+is the choice when the prompt must be read exactly.
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 `STRATA_DUMP_MOE_INPUT` with `mmq_nvfp4_parity --real` tests one product on a real prompt's rows: layer 20, its 12
 busiest experts, max|x|/rms 4 median and 9 at most.

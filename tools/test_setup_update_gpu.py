@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 
 V100 = {"index": 1, "name": "Tesla V100-PCIE-32GB", "vram_gb": 32.0, "arch": "70", "driver": "580"}
 R4090 = lambda i: {"index": i, "name": "RTX 4090", "vram_gb": 24.0, "arch": "89", "driver": "580"}  # noqa: E731

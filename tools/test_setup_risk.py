@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
+setup.ARM64 = False  # the Arm64 port's CPU checks are not the x86 ones these tests exercise
 from test_setup_golden import PROFILES, card, install  # noqa: E402
 
 
@@ -232,7 +233,7 @@ class LowRamGpus(unittest.TestCase):
         ram, found = PROFILES["47GB-2x16GB"]                              # #384: 2 x 16 GB, 47 GB, IQ3_XXS at 64K
         code, out, cfg, _ = install(ram, found, ["--family", "qwen", "--model", "IQ3_XXS", "--no-start",
                                                  "--gpus", "0,1"])
-        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 65536, "int8")
+        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 65536, "q4_0")   # 64K: the K/V defaults to 4-bit now (576 B/cell)
         self.assertIn(f"the GPUs hold ~{100 * 2 * one / setup.MODELS['IQ3_XXS']['arena_gb']:.0f}% of them", out)
 
     def test_asked_and_answered_two(self):

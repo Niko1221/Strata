@@ -1781,17 +1781,33 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
 endif()
 
+<<<<<<< HEAD
 if(STRATA_CPU_X86)
   add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
 else()
   add_library(strata_kernels_cpu STATIC src/kernels/cpu/portable.cpp src/kernels/cpu/pool.cpp
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
+=======
+# Arm64 (e.g. NVIDIA GB10 / DGX Spark): Strata's AVX kernels are x86-only; portable_stubs.cpp stands in for them
+# and ggml-cpu's NEON dot products run the native (i-quant) experts; the NVFP4 rows have a NEON kernel.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(STRATA_CPU_ARM64 ON)
+endif()
+if(STRATA_CPU_ARM64)
+  add_library(strata_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
+              src/kernels/cpu/portable_stubs.cpp src/kernels/cpu/hadamard.cpp)
+else()
+  add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
+              src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
-if(MSVC)
+if(STRATA_CPU_ARM64)
+  # no x86 flags
+elseif(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
@@ -1906,6 +1922,7 @@ if(STRATA_NATIVE_EXPERTS)
   endif()
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
+<<<<<<< HEAD
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)
   if(STRATA_CPU_X86)
     target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
@@ -1916,9 +1933,23 @@ if(STRATA_NATIVE_EXPERTS)
     # the trellis dispatcher alone (the DeepSeek engine's CPU lane and Gyro): tq_cpu.cpp runs its scalar rows when the x86 units are
     # not compiled (the Metal build does the same)
     target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/tq_cpu.cpp)
+=======
+  if(STRATA_CPU_ARM64)
+    # no AVX translation units; the trellis and NVFP4 rows are CPU-portable (tq_cpu.cpp, nvfp4_neon.cpp)
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/tq_cpu.cpp
+                                             src/kernels/cpu/nvfp4_neon.cpp)
+  else()
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
+                                             src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
+                                             src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
+                                             src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
+                                             src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
   endif()
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
-  if(MSVC)
+  if(STRATA_CPU_ARM64)
+    # no x86 flags
+  elseif(MSVC)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp
                                 PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
@@ -1971,6 +2002,7 @@ if(STRATA_NATIVE_EXPERTS)
   # the x86 kernels' parity programs and benches (to the matching endif below): not on arm64, which has none of those kernels
   if(STRATA_CPU_X86)
   # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
+<<<<<<< HEAD
   add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
   target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
@@ -2014,21 +2046,51 @@ if(STRATA_NATIVE_EXPERTS)
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
+=======
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
+    target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
+      target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
+      add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
+      set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
+      add_test(NAME router_dot_parity COMMAND router_dot_parity)
+      add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
+    endif()
+  endif()
+  # the AVX-2 expert kernels' variants (iq_avx2.cpp, q2_avx2.cpp) bit for bit against each other at 1..8 tokens and
+  # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(iq_avx2_parity src/kernels/cpu/iq_avx2_parity.cpp)
+    target_link_libraries(iq_avx2_parity PRIVATE strata_kernels_cpu)
+    # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
+    add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
+    target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
+      add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
+    endif()
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
   endif()
   # the older CPUs' AVX1 expert rows (iq_avx1.cpp) against ggml-cpu's dots and against their own one-token
   # rows at every width; --bench: ms per expert, the weights streamed from DRAM.  Runs on any AVX CPU:
   # on an AVX2 machine it checks the older-CPU path as an AVX-only machine would run it.
-  add_executable(iq_avx1_parity src/kernels/cpu/iq_avx1_parity.cpp)
-  target_link_libraries(iq_avx1_parity PRIVATE strata_kernels_cpu)
-  if(STRATA_BUILD_TESTS)
-    add_test(NAME iq_avx1_parity COMMAND iq_avx1_parity)
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(iq_avx1_parity src/kernels/cpu/iq_avx1_parity.cpp)
+    target_link_libraries(iq_avx1_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME iq_avx1_parity COMMAND iq_avx1_parity)
+    endif()
   endif()
   # the AVX-2 Q8_K activation quantizer against ggml's, byte for byte (--bench: its time)
-  add_executable(q8k_quant_parity src/kernels/cpu/q8k_quant_parity.cpp)
-  target_link_libraries(q8k_quant_parity PRIVATE strata_kernels_cpu)
-  if(STRATA_BUILD_TESTS)
-    add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
-    add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(q8k_quant_parity src/kernels/cpu/q8k_quant_parity.cpp)
+    target_link_libraries(q8k_quant_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
+      add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
+    endif()
   endif()
   endif()   # STRATA_CPU_X86
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
@@ -2172,15 +2234,21 @@ if(STRATA_NATIVE_EXPERTS)
     if(_strata_mmq_tab_on)
       set(_strata_tab_cuh ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_mmq_tab.cuh)
       # the native packs' nine types, the ones prefill_mmq_tab_test checks bit for bit; the optional Q5_0 / K-quant
-      # instances (STRATA_ORCA_Q4KS_MMQ, STRATA_MMQ_KQUANTS) get no pointer table and keep the gather
+      # instances (STRATA_ORCA_Q4KS_MMQ, STRATA_MMQ_KQUANTS) get no pointer table and keep the gather.  NVFP4 is not
+      # in the list: its two instances are the fixed TUs below, the W4A8 one here (plain arch, FP4 MMA hidden) and
+      # the W4A4 one in strata_mmq_w4a4 (12xa) - the same split as the gathered products
       set(_strata_mmq_tab_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
       foreach(_t IN LISTS _strata_mmq_tab_types)
         string(TOUPPER ${_t} _strata_tab_T)
         configure_file(src/prefill/mmq_tab_instance.cu.in ${CMAKE_BINARY_DIR}/mmq_tab/mmq-tab-${_t}.cu @ONLY)
         target_sources(strata_mmq PRIVATE ${CMAKE_BINARY_DIR}/mmq_tab/mmq-tab-${_t}.cu)
       endforeach()
+      target_sources(strata_mmq PRIVATE src/prefill/mmq_tab_nvfp4_w4a8.cu)
+      if(TARGET strata_mmq_w4a4)   # the W4A4 pointer table lives with the 12xa unit
+        target_sources(strata_mmq_w4a4 PRIVATE src/prefill/mmq_tab_nvfp4_w4a4.cu)
+      endif()
       target_compile_definitions(strata_mmq PRIVATE STRATA_MMQ_TAB=1)
-      message(STATUS "STRATA_MMQ_TAB on: pointer-table MMQ for ${_strata_mmq_tab_types}")
+      message(STATUS "STRATA_MMQ_TAB on: pointer-table MMQ for ${_strata_mmq_tab_types} and NVFP4 (W4A8; W4A4 in strata_mmq_w4a4)")
     endif()
     target_include_directories(strata_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -2404,7 +2472,9 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(hip_ple_iq4 tests/hip/ple_iq4.cpp)
     target_link_libraries(hip_ple_iq4 PRIVATE strata_kernels strata_hip_runtime ggml-base)
   endif()
-  # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
+  # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin).
+  # Built on Arm64 too: the test asks cpu_avx512_ok() / cpu_avx2_ok() itself, so there it skips the AVX-512 kernel and
+  # checks nvfp4_neon.cpp's NEON rows (nvfp4_256_*) against ggml-cpu's Arm64 dot, bit for bit like the AVX2 rows.
   add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
@@ -2595,9 +2665,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(copy_events_test PRIVATE include)
   add_test(NAME copy_events_test COMMAND copy_events_test)
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
-  add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
-  target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)
-  add_test(NAME pool_stress COMMAND pool_stress 20)
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
+    target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)
+    add_test(NAME pool_stress COMMAND pool_stress 20)
+  endif()
 
   # #795: nothing an AVX2-only CPU can reach may hold AVX-512 / AVX-VNNI-class instructions.  (1) the linked test binary
   # (every CPU kernel file plus ggml-cpu; on Linux, the kernel library) is disassembled and any function with such instructions must be a kernel of

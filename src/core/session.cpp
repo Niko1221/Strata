@@ -21,9 +21,15 @@
 #include <cstring>
 #include <vector>
 
+<<<<<<< HEAD
 // The doorbell spin.  x86 pauses, aarch64 yields (include/strata/platform/cpu_relax.hpp).
 #include "strata/platform/cpu_relax.hpp"
 #define STRATA_SPIN_PAUSE() strata_cpu_pause()
+=======
+// `cpu_pause` for the doorbell spin.  Per-architecture in strata/platform/cpu_relax.hpp.
+#include "strata/platform/cpu_relax.hpp"
+#define STRATA_SPIN_PAUSE() strata::cpu_pause()
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 
 namespace strata::core {
 namespace {
@@ -969,7 +975,11 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
         progress_at("token: the CPU experts of layer", l);
         if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
+<<<<<<< HEAD
         strata_store_fence();
+=======
+        strata::store_fence();
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
         *flag = want;
         const auto t2 = Clock::now();
         tg.ms_wait += std::chrono::duration<double, std::milli>(t1 - t0).count();

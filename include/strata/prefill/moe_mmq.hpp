@@ -20,9 +20,10 @@ bool supported(int ggml_type);
 /// `w_rows` rows that fits the card's shared memory - the same test its tile choice makes, which aborts the process
 /// ("J_best=0") when nothing fits.  false (said once per type) keeps that product on the non-MMQ path.
 bool fits(int ggml_type, int64_t w_rows);
-/// NVFP4 prompt precision, STRATA_PREFILL_NVFP4: w4a8 (default) - int8 tensor cores, Q8_1 activations, what decode
-/// runs at; w4a4 - Blackwell's FP4 x FP4 MMA, activations rounded to NVFP4 (faster, first-token KL up to 0.03 vs
-/// fp16); fp16 - the dequantize + FP16 GEMM path (the reference).
+/// NVFP4 prompt precision, STRATA_PREFILL_NVFP4: unset (default) - w4a4 where a 12xa build meets an sm_12x card
+/// (Blackwell's FP4 MMA, near twice int8's rate), w4a8 everywhere else, exactly as before; w4a8 - int8 tensor cores,
+/// Q8_1 activations, what decode runs at; w4a4 - Blackwell's FP4 x FP4 MMA, activations rounded to NVFP4 (faster,
+/// first-token KL up to 0.04 vs fp16, docs/NVFP4.md); fp16 - the dequantize + FP16 GEMM path (the reference).
 enum class Nvfp4Mode { W4A8, W4A4, FP16 };
 Nvfp4Mode nvfp4_mode();
 /// Bytes of one expert's gate+up ([2*n_ff, n_embd]) or down ([n_embd, n_ff]) weights in `ggml_type`.

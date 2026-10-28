@@ -306,6 +306,10 @@ int64_t qsa_kv_resident();
 int64_t qsa_kv_resident_min();
 /// Pinned host bytes the streamed states hold (their host copies).
 uint64_t qsa_kv_host_bytes();
+/// Pinned host RAM KV streaming would need for a context of `max_cells` with the current globals: every main
+/// QSA layer's whole-K/V copy (0: those globals and that context would not stream).  A refused pin fails the
+/// start (qsa_state_init), so a default that turns streaming on must clear this much free RAM first.
+uint64_t qsa_kv_stream_host_bytes(const ModelGeometry& g, int64_t max_cells);
 /// Plan v0.3 P7: store K/V as INT8 with FP16 scales per 64 values (half the VRAM of FP16). Set before sizing and
 /// initializing the session; default off until gate G-C accepts it.
 void qsa_set_kv_int8(bool enabled);

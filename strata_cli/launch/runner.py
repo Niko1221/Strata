@@ -255,7 +255,7 @@ def desc_matches(desc: dict, s: S.LaunchSettings) -> bool:
     (The graphics cards are not part of it: they go into each launch's own config, see apply_cards.)"""
     if s.context and desc.get("context") != s.context:
         return False
-    want_kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
+    want_kv = s.kv or ("q4_0" if int(s.context or 32768) >= 32768 else "int8" if int(s.context or 32768) > 8192 else "fp16")
     if desc.get("kv") not in (None, want_kv) and (s.context or 32768) > 8192:
         return False
     images = desc.get("images") or "off"
@@ -311,7 +311,8 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
 
     if s.context:
         put("--max-context", str(int(s.context)))
-    kv = s.kv or ("int8" if (s.context or 32768) > 8192 else "fp16")
+    # 4-bit from 32K up, 8-bit between 8K and 32K, fp16 below: the same tier the engine and setup.py pick
+    kv = s.kv or ("q4_0" if int(s.context or 32768) >= 32768 else "int8" if int(s.context or 32768) > 8192 else "fp16")
     if "--kv" in args or s.kv:
         put("--kv", kv)
     if cfg.get("arch") == "deepseek41":                      # the engine's own tower: --vision on / off is its whole picture setting

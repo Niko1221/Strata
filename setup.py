@@ -89,6 +89,10 @@ def home() -> Path:
 
 
 WIN = os.name == "nt"
+# The Arm64 CPU port (NVIDIA GB10 / DGX Spark, Apple Silicon): NEON is baseline, Strata's AVX kernels are not
+# built, and the CPU expert rows run on ggml-cpu's NEON dots / nvfp4_neon.cpp.  Setup reports it as "Arm64 / NEON"
+# and builds the normal engine with no STRATA_ISA_FLOOR (the x86 floor tests do not apply).
+ARM64 = platform.machine().lower() in ("aarch64", "arm64")
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  Every file has a fixed size and SHA-256 too (REPO_PINS); a revision the repository no longer has stops the
@@ -1338,6 +1342,21 @@ def cpu_info():
     """(name, avx2, avx512): avx512 means everything Strata's fast AVX-512 kernels use (F, BW, VL, VNNI, VBMI),
     the same test the engine makes (cpu_avx512_ok), not just AVX-512F."""
     name, avx2, avx512 = platform.processor() or "unknown CPU", False, False
+    if ARM64:
+        # Arm64: NEON is the baseline, so the CPU experts and NVFP4 rows run (expert_layout.cpp answers
+        # cpu_avx2_ok() = true and nvfp4_neon.cpp provides the 256-bit NVFP4 rows).  /proc/cpuinfo has no "model
+        # name" line on Arm64 Linux (only "processor : 0"), so lscpu names the cores; the fastest cluster first.
+        try:
+            txt = open("/proc/cpuinfo").read()
+            m = re.search(r"^(?:Processor|Hardware)\s*:\s*(.*)$", txt, re.M)
+            name = m.group(1) if m else name
+        except OSError:
+            pass
+        if name == platform.processor():
+            m = re.search(r"^Model name:\s*(.*)$", out(["lscpu"]), re.M)
+            if m:
+                name = m.group(1).strip()
+        return name, True, False
     if WIN:
         pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
         avx2 = bool(pf(40)) or _cpuid_avx2()      # PF_AVX2_INSTRUCTIONS_AVAILABLE, else the CPU itself (#159)
@@ -1489,6 +1508,7 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
+<<<<<<< HEAD
             try:
                 mem_gb = float(mem) / 1024.0   # nvidia-smi nounits: MiB
             except ValueError:
@@ -1503,9 +1523,22 @@ def gpus():
                 continue
             found.append({"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
                           "driver": drv})
+=======
+            unified = not mem.replace(".", "").isdigit()      # "[N/A]": the GPU shares the system's memory (GB10)
+            vram = unified_vram_gb() if unified else float(mem) / 1024.0
+            found.append({"index": int(idx), "name": name, "vram_gb": vram, "arch": cc.replace(".", ""),
+                          "driver": drv, **({"unified": True} if unified else {})})
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
         except ValueError:
             continue
     return found
+
+
+def unified_vram_gb() -> float:
+    """A GPU that reports no memory size of its own (NVIDIA GB10 / DGX Spark: CPU and GPU share one pool): the part of
+    that pool counted as VRAM.  A quarter of the RAM, at most 32 GB - the experts live in RAM as well, and the same
+    bytes must not be counted twice."""
+    return min(ram_gb() / 4, 32.0)
 
 
 def gpu_drives_display(g) -> bool:
@@ -3865,6 +3898,12 @@ def nvfp4_cpu_note(avx2: bool, avx512: bool) -> str:
     on AVX-512 rows when the CPU has them, else on AVX2 rows (bit-equal to ggml's AVX2 dot).  Measured (docs/NVFP4.md):
     per core the AVX2 rows are ~10% slower, and on a whole pool that reads DRAM the two are the same speed up to two
     tokens a window (Ryzen 7 255: 58.9 vs 58.7 GB/s) and ~12% apart at four.  A note only: nothing is refused."""
+    if ARM64:
+        # Arm64: the AVX-512 / AVX2 rows below are x86-64 only and are not built.  nvfp4_neon.cpp's NEON rows stand in
+        # (they copy ggml-cpu's Arm64 nvfp4 dot step for step), so this says what runs and nothing measured that was
+        # not measured: docs/NVFP4.md's numbers are x86-64 only, and no Arm64 run of an NVFP4 pack is recorded yet.
+        return ("this is an Arm64 CPU: NVFP4's CPU expert rows run on Strata's Arm64 NEON kernel (nvfp4_neon.cpp), "
+                "which matches ggml-cpu's Arm64 dot; the AVX2 numbers quoted for NVFP4 are not measured on Arm64")
     if avx512 or not avx2:
         return ""                                      # no AVX2 at all: the older-CPU build's own warning says it
     return ("this CPU has no AVX-512, so NVFP4's CPU rows run on AVX2: about as fast when memory-bound, up to ~12% "
@@ -7613,8 +7652,8 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
     else:
-        eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
-                                                                                    else {}))
+        eng = None if a.build or hip or ARM64 else get_prebuilt(   # no ready-made Arm64 engine: compile it
+            a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12 else {}))
     if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
         pip_cuda_libs(cuda_tk)
         if vision != "none" and not (eng / VEXE).exists():
@@ -9203,9 +9242,14 @@ def main() -> int:
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
+<<<<<<< HEAD
     ok(f"CPU: {cpu} ({'ARM64' if is_arm64() else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
     # (a unified-memory GPU - a DGX Spark's GB10 - is on the CPU's own link, not PCIe: nvidia-smi's "1.0 x1" there means nothing)
     link = None if hip or gpu.get("uma") else pcie_link(int(gpu.get("index", 0)))
+=======
+    ok(f"CPU: {cpu} ({'Arm64 / NEON' if ARM64 else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    link = None if hip else pcie_link(int(gpu.get("index", 0)))
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
     if link is not None:
         line, problem = pcie_lines(link)
         ok(line)
@@ -9470,14 +9514,15 @@ def main() -> int:
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
+    # 32K and up, the context's memory of it is the scarce thing: 4-bit is the quiet default there
+    kv = "fp16" if ctx <= 8192 else (a.kv or ("q4_0" if ctx >= 32768 else "int8"))
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
-        say("  1) 8-bit   (recommended: what every published number was measured with)")
+        say("  1) 8-bit   (what every published number was measured with)")
         say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
-        kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
+        kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "2" if ctx >= 32768 else "1", a.yes)) - 1]
     if ctx > 8192:
         ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL

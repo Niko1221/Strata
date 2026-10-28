@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // include/strata/platform/cpu_relax.hpp - the spin-wait hint and the store fence, per architecture.
 //
 // x86: `_mm_pause` and `_mm_sfence` (the fence orders the write-combining stores into pinned host memory before
@@ -32,4 +33,27 @@ inline void strata_load_fence() { __asm__ __volatile__("dmb ishld" ::: "memory")
 inline void strata_cpu_pause() {}
 inline void strata_store_fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
 inline void strata_load_fence() { std::atomic_thread_fence(std::memory_order_acquire); }
+=======
+// include/strata/platform/cpu_relax.hpp - the spin-wait hint and the store fence, per CPU architecture.
+// x86: `pause` / `sfence`.  Arm64: `yield` / `dmb ishst`.
+#pragma once
+
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+namespace strata {
+inline void cpu_pause() noexcept { _mm_pause(); }
+inline void store_fence() noexcept { _mm_sfence(); }
+}  // namespace strata
+#elif defined(__aarch64__)
+namespace strata {
+inline void cpu_pause() noexcept { __asm__ volatile("yield" ::: "memory"); }
+inline void store_fence() noexcept { __asm__ volatile("dmb ishst" ::: "memory"); }
+}  // namespace strata
+#else
+#include <atomic>
+namespace strata {
+inline void cpu_pause() noexcept {}
+inline void store_fence() noexcept { std::atomic_thread_fence(std::memory_order_release); }
+}  // namespace strata
+>>>>>>> a55e1f37 (checkpoint: the Arm64 CPU port, NVFP4 in the MMQ pointer tables, a 4-bit K/V at 64K and the Terminal's overview - the working tree as it stood, not built or measured by me)
 #endif

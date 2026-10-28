@@ -1,7 +1,7 @@
 """The monitor's Overview (view 1): the browser Monitor's page redone for the terminal.
 
-A model-state bar, eight tiles with sparklines (speed, GPU load, VRAM, GPU temperature, power, PCIe, CPU, disk), bars for context fill,
-experts in VRAM and system RAM, and the recent requests. It reads what the browser Monitor reads: the server's `/metrics`
+A model-state bar, eight tiles with sparklines (speed, GPU load, unified memory, GPU temperature, power, PCIe, CPU, disk), bars for context
+fill, the KV cache hit of the newest request that reports reuse, and system RAM, and the recent requests. It reads what the browser Monitor reads: the server's `/metrics`
 (live state, engine facts, the hardware sample and a minute of history per series, the last requests) as the app's
 apps/host/src/lib/native-monitor.ts maps it: the context used is the current request's prompt + generated tokens while one runs, else the
 last request's; the speed is the live rate while generating, else the last request's.
@@ -29,7 +29,7 @@ AMBER = "#f5c56b"
 RED = "#f28b82"
 ACCENT = "#34d399"
 GREY = "#59636b"
-STATES = ("Idle", "Reading", "Generating", "Queued", "Error")
+STATES = ("Idle", "Reading", "Generating", "Queued")     # Error is not printed as a legend: it joins the line, in red, only when the model has one
 # the classic Windows console draws with its 16 palette colours; these are the names that map onto them (glyphs="solid")
 SOLID_ACCENT, SOLID_BLUE, SOLID_AMBER, SOLID_RED, SOLID_TRACK = "bright_green", "bright_blue", "yellow", "red", "bright_black"
 
@@ -59,6 +59,51 @@ def request_speed(r: dict) -> float | None:
     if r.get("decode_tok_s") is not None and _num(r.get("decode_tok_s")) is not None:
         return _num(r.get("decode_tok_s"))
     return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None   # one token has no decode span (a probe showed 1,250 tok/s)
+
+
+def prefill_speed(r: dict) -> float | None:
+    """The prompt reading speed of one finished request: the tokens the engine actually read over the time it spent
+    reading them, the same arithmetic its own request line prints (a reused prompt token is never read again).  None when
+    the server sent no prompt timing for that request."""
+    if _num(r.get("prefill_tok_s")) is not None:
+        return _num(r.get("prefill_tok_s"))
+    ms, read = _num(r.get("prompt_ms")), _num(r.get("prompt_read"))
+    if read is None and _num(r.get("prompt_tokens")) is not None:
+        read = _num(r.get("prompt_tokens")) - (_num(r.get("reused")) or 0)
+    return round(read / (ms / 1000.0), 1) if read and ms and ms > 0 else None
+
+
+def active_requests(metrics: dict, live: dict) -> list[dict]:
+    """The requests the engine is working on right now, in the same shape as the finished ones so the request table can draw both.
+    With `--parallel` the server lists every occupied batch slot (`live.slots`), so each one gets a row; on the single-turn path it
+    reports only the request it is running, and a request still queued is a count rather than a row (the state line already says how
+    many are queued).  Nothing is invented: the speed is the live rate the server gives for that request, and what it does not report
+    (`reused` for a request that has not finished reading its prompt) stays missing."""
+    sampled, mean_pre = _num(metrics.get("time")), _num(live.get("prefill_tok_s_mean"))
+
+    def row(state: str, prompt, read_rate, generated, gen_rate, elapsed):
+        return {"time": (sampled - elapsed) if (sampled is not None and elapsed is not None) else None, "state": state,
+                "prompt": prompt, "reused": None, "output": generated or None, "prefill": read_rate, "tps": gen_rate,
+                "duration": elapsed, "active": True}
+
+    rows = []
+    for s in (live.get("slots") if isinstance(live.get("slots"), list) else []):
+        if not isinstance(s, dict) or s.get("state") not in ("reading", "decoding"):
+            continue
+        elapsed, read = _num(s.get("elapsed_s")), _num(s.get("prompt_read"))
+        reading = s.get("state") == "reading"
+        # a slot's own reading speed: the tokens it has read over the time it has been running, the engine's mean only when that slot
+        # sends no read count; a decoding slot's prefill is not attributed to it, so its READ cell stays missing
+        rate = round(read / elapsed, 1) if (reading and read and elapsed and elapsed > 0) else (mean_pre if reading else None)
+        rows.append(row("Read" if reading else "Gen", _num(s.get("prompt_tokens")), rate, _num(s.get("generated")),
+                        _num(s.get("tok_s")), elapsed))
+    if rows:
+        return rows
+    state = str(live.get("state") or "")                      # reading / generating: the one request on the single-turn path
+    if state not in ("reading", "generating"):
+        return []
+    return [row("Read" if state == "reading" else "Gen", _num(live.get("prompt_tokens")), mean_pre, _num(live.get("generated")),
+                _num(live.get("tok_s")) if state == "generating" else None, _num(live.get("elapsed_s")))]
 
 
 def _cards(hw: dict, static: dict) -> list[dict]:
@@ -148,13 +193,17 @@ def build(metrics: dict | None) -> dict | None:
                 "cores": _num(static.get("cores")), "threads": _num(static.get("threads")), "sockets": _num(static.get("sockets")),
                 "numa": _num(static.get("numa_nodes"))},
         "disk": {"read": _num(hw.get("disk_read_mb")), "write": _num(hw.get("disk_write_mb")), "hist": _series(history, "disk_read_mb")},
-        "ram": (_gib(hw.get("ram_used")), _gib(hw.get("ram_total"))),
+        "ram": (_gib(hw.get("ram_used")), _gib(hw.get("ram_total"))), "ram_hist": _series(history, "ram_used", GIB),
         "experts": {"slots": slots, "total": total_slots, "gb": (cache_mib / 1024.0 if cache_mib is not None else None)},
-        "recent": [{"time": _num(r.get("time")), "state": ("Error" if r.get("error") else
-                                                           {"stop": "Done", "length": "Done", "tool_calls": "Done"}.get(r.get("finish_reason") or r.get("finish"), "Done")
-                                                           if (r.get("finish_reason") or r.get("finish")) not in ("cancelled", "error", "abort") else "Stopped"),
+        # what the request ended as: the server's `finish`.  "error" and "timeout" are the ones that say the reply never came, so they
+        # are the red Error rows; a client that walked away ("cancel", "disconnect") is the amber Stopped
+        "recent": [{"time": _num(r.get("time")), "state": ("Error" if (r.get("error") or (r.get("finish_reason") or r.get("finish")) in ("error", "timeout"))
+                                                           else "Stopped" if (r.get("finish_reason") or r.get("finish"))
+                                                           in ("cancel", "cancelled", "abort", "disconnect") else "Done"),
                     "prompt": _num(r.get("prompt_tokens")), "reused": _num(r.get("reused")), "output": _num(r.get("output_tokens")),
-                    "tps": request_speed(r), "duration": _num(r.get("duration_s"))} for r in recent[:6]],
+                    "prefill": prefill_speed(r), "tps": request_speed(r),
+                    "duration": _num(r.get("duration_s"))} for r in recent[:10]],      # newest first, as the server sends them
+        "active": active_requests(metrics, live),
         "sampled_at": _num(metrics.get("time")),
     }
     cards = model["gpu"]["cards"]
@@ -249,6 +298,12 @@ def short_gpu(name: str | None) -> str:
     return name
 
 
+def blink(now: float) -> bool:
+    """The bright second of the running requests' pulse, dim the next: the monitor repaints every `--interval` (one second by
+    default), so an active request's status reads as blinking."""
+    return int(now) % 2 == 0
+
+
 def fmt(v: float | None, digits: int = 0, unit: str = "") -> str:
     if v is None:
         return "--"
@@ -325,6 +380,8 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
 
     # ---- heading, tabs, rule
     head = Text(no_wrap=True, overflow="crop")
+    if view_label == "Overview":
+        view_label = "DGX Spark"
     head.append(f"STRATA  {view_label}   ", style=f"bold {accent}")
     head.append(connection + "   ", style=f"bold {accent}")
     label = f"{model.get('model') or ''} {k(ctx_max) if ctx_max else ''}".strip()
@@ -344,7 +401,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     bar_w = max(20, min(width, 110) - 2)
     st = Text(no_wrap=True, overflow="crop")
     st.append("Model state  ", style=f"bold {accent}")
-    for n in STATES:
+    for n in STATES + (("Error",) if state == "Error" else ()):      # the sample "Error" is not on the line: a real one arrives in red
         txt = f"[{n}]" if n == state else n
         st.append(txt + "  ", style=(state_color if n == state and state != "Idle" else "bold" if n == state else "dim"))
     if done is not None and total:
@@ -364,15 +421,19 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     inner = tile_w - 4
     spd, spd_note, spd_hist = model["speed"]
     util_scale = dict(lo=0, hi=100)
+    e = model["experts"]
+    ram_used, ram_total = model["ram"]
     tiles1 = [
         _tile("Speed", f"{fmt(spd, 1)} tok/s" if spd is not None else "-- tok/s", spd_note, spark(spd_hist, inner, glyphs), tile_w, accent=accent, box_style=box_style),
         _tile("GPU load", f"{fmt(g['util'])} %", f"busiest of {ncards} cards" if ncards else
               short_gpu(g["name"]) if g["count"] in (None, 1) else f"{short_gpu(g['name'])} +{int(g['count']) - 1}",
               spark(g["util_hist"], inner, glyphs, **util_scale), tile_w, accent=accent, box_style=box_style),
-        _tile("VRAM", f"{fmt(g['vram_used'], 1)} / {fmt(g['vram_total'], 0)} GB",
-              (f"all {ncards} cards" if ncards else
-               f"{int(model['experts']['slots']):,} experts cached" if model["experts"]["slots"] is not None else "graphics memory"),
-              spark(g["vram_hist"], inner, glyphs, lo=0, hi=g["vram_total"]), tile_w, accent=accent, box_style=box_style),
+        # the memory the model really shares on a unified-memory machine (GB10 and friends): the system's, with the expert
+        # cache's size under it - a discrete card's per-card memory is the Cards strip's job, not this tile's
+        _tile("Unified Memory", f"{fmt(ram_used, 1)} / {fmt(ram_total, 0)} GB",
+              (f"{int(e['slots']):,} - {e['gb']:.1f} GB" if e["slots"] is not None and e["gb"] is not None else
+               f"{int(e['slots']):,} experts" if e["slots"] is not None else ""),
+              spark(model["ram_hist"], inner, glyphs, lo=0, hi=ram_total), tile_w, accent=accent, box_style=box_style),
         _tile("GPU temp", f"{fmt(g['temp'])} °C" if not ascii_mode else f"{fmt(g['temp'])} C", "hottest card" if ncards else "",
               spark(g["temp_hist"], inner, glyphs, lo=20, hi=100), tile_w, accent=plain(AMBER) if color else "default", box_style=box_style),
     ]
@@ -400,42 +461,88 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
         return t
 
     # ---- bars and requests
-    left_w = max(24, min(width, 110) * 2 // 5)
+    # the two speeds apart: READ t/s is the prompt read, GEN t/s the answer (the engine's own request line prints both).  A narrow
+    # terminal gives whole columns up rather than print numbers cut in half: below 100 columns the duration goes, below 90 the reused
+    # count too - on a short screen the prompt and the two speeds are what matters.  The third number in each entry is that column's
+    # widest cell, so the table's own width is known before it is drawn: TIME to the second, and two spaces between columns
+    fixed_cols = [("TIME", "left", 8), ("STATUS", "left", 6)]
+    value_cols = [("PROMPT", "right", 6, lambda r: tokens(r["prompt"]))]
+    if width >= 90:
+        value_cols.append(("REUSED", "right", 6, lambda r: tokens(r["reused"])))
+    value_cols += [("OUTPUT", "right", 6, lambda r: tokens(r["output"])), ("READ t/s", "right", 8, lambda r: fmt(r["prefill"], 1)),
+                   ("GEN t/s", "right", 7, lambda r: fmt(r["tps"], 1))]
+    if width >= 100:
+        value_cols.append(("DURATION", "right", 8, lambda r: fmt(r["duration"], 1, " s")))
+    table_w = (sum(max(w, len(h)) for h, _, w in fixed_cols) + sum(max(w, len(h)) for h, _, w, _ in value_cols)
+               + 2 * (len(fixed_cols) + len(value_cols) - 1))
+    # the bars are the shorter half, so they give the room back to the table rather than have it elide a number (never below 14: a bar
+    # that short says nothing either).  Eight is what the two-column grid holding the table and the bars spends: 2 spaces on each side
+    # of each column
+    left_w = max(14, min(max(20, min(width, 110) // 3) if width >= 100 else max(18, min(width, 110) // 4), width - 8 - table_w))
     used_ctx = (ctx_used / ctx_max) if ctx_used is not None and ctx_max else None
-    e = model["experts"]
-    e_frac = (e["slots"] / e["total"]) if e["slots"] is not None and e["total"] else None
-    ram_used, ram_total = model["ram"]
     ram_frac = (ram_used / ram_total) if ram_used is not None and ram_total else None
-    lines: list[Text] = []
-    t = Text(no_wrap=True, overflow="crop")
-    t.append("Context fill  ", style=f"bold {accent}")
-    t.append(f"{k(ctx_used)} / {k(ctx_max)}" + (f"  {used_ctx * 100:.0f}%" if used_ctx is not None else ""))
-    lines += [t, bar(used_ctx, left_w, glyphs, accent)]
-    t = Text(no_wrap=True, overflow="crop")
-    t.append("Experts in VRAM   ")
-    t.append(f"{fmt(e['slots'])}" + (f" · {e['gb']:.1f} GB" if e["gb"] is not None else ""), style="dim")
-    lines += [t, bar(e_frac, left_w, glyphs, accent)]
-    t = Text(no_wrap=True, overflow="crop")
-    t.append("System RAM        ")
-    t.append(f"{fmt(ram_used, 1)} / {fmt(ram_total, 0)} GB", style="dim")
-    lines += [t, bar(ram_frac, left_w, glyphs, plain(RED) if ram_frac is not None and ram_frac > 0.9 else accent)]
+
+    def bar_caption(long_label: str, short_label: str, value: str, label_style: str = "", value_style: str = "") -> Text:
+        """One bar's caption: the full wording when the column has room for label and value together, the short word when the request
+        table has taken the space - a caption cut in half ("KV Cache Hit   0 /") tells you less than the short word does."""
+        t = Text(no_wrap=True, overflow="crop")
+        t.append(long_label if len(long_label) + len(value) <= left_w else short_label + " ", style=label_style)
+        t.append(value, style=value_style)
+        return t
+
+    def room(short_label: str, value: str) -> bool:
+        """Will that caption and value fit with only the short label?  If not, the value part is left out rather than cut in half."""
+        return len(short_label) + 1 + len(value) <= left_w
+
+    ctx_value = f"{k(ctx_used)} / {k(ctx_max)}"
+    if used_ctx is not None and room("Context", ctx_value + f"  {used_ctx * 100:.0f}%"):
+        ctx_value += f"  {used_ctx * 100:.0f}%"
+    # the KV cache hit of the newest request the server reported reuse for: the prompt tokens the cache already held
+    # over that request's context.  A running request reports no reuse yet (the server only knows it once the prompt
+    # has been read), so the newest finished one carries the number; none reports it: "-- / --", never a made-up 0%.
+    hit_reused, hit_prompt = next(((r["reused"], r["prompt"]) for r in model["recent"]
+                                   if r["reused"] is not None and r["prompt"]), (None, None))
+    hit_frac = (hit_reused / hit_prompt) if hit_reused is not None and hit_prompt else None
+    hit_value = f"{k(hit_reused)} / {k(hit_prompt)}"
+    if hit_frac is not None and room("KV hit", hit_value + f"  {hit_frac * 100:.0f}%"):
+        hit_value += f"  {hit_frac * 100:.0f}%"
+    lines = [
+        bar_caption("Context fill  ", "Context", ctx_value, label_style=f"bold {accent}"),
+        bar(used_ctx, left_w, glyphs, accent),
+        bar_caption("KV Cache Hit    ", "KV hit", hit_value, value_style="dim"),
+        bar(hit_frac, left_w, glyphs, accent),
+        bar_caption("System RAM        ", "RAM", f"{fmt(ram_used, 1)} / {fmt(ram_total, 0)} GB", value_style="dim"),
+        bar(ram_frac, left_w, glyphs, plain(RED) if ram_frac is not None and ram_frac > 0.9 else accent),
+    ]
 
     req = Table(box=None, padding=(0, 1), show_header=True, header_style="dim", pad_edge=False)
-    for col, just in (("TIME", "left"), ("STATUS", "left"), ("PROMPT", "right"), ("REUSED", "right"), ("OUTPUT", "right"), ("TOK/S", "right"),
-                      ("DURATION", "right")):
-        req.add_column(col, justify=just, no_wrap=True)
+    for title, just, _ in fixed_cols:                # (`head` is the page heading's Text: never rebind it in a loop)
+        req.add_column(title, justify=just, no_wrap=True)
+    for title, just, _, _ in value_cols:
+        req.add_column(title, justify=just, no_wrap=True)
     strip_rows = (1 + min(ncards, 4) + (1 if ncards > 4 else 0) + 1) if ncards else 0
-    show = max(2, min(6, height - 20 - strip_rows))
-    for r in model["recent"][:show]:
+    # ten requests at most, and only as many as the terminal has room for: the ones still running on top, then the finished ones newest
+    # first (the order the server sends them).  Four running rows at the most - past that, --parallel leaves no room for the log
+    show = max(2, min(10, height - 20 - strip_rows))
+    running = (model.get("active") or [])[:4]
+    rows = running + list(model["recent"])[:max(0, 10 - len(running))]
+    pulse = blink(now)                     # an active request's status flashes: bold colour, then dim
+    for r in rows[:show]:
         stamp = time.strftime("%H:%M:%S", time.localtime(r["time"])) if r["time"] else "--"
-        req.add_row(stamp, Text(r["state"], style=plain(accent) if r["state"] == "Done" else plain(RED if r["state"] == "Error" else AMBER)),
-                    tokens(r["prompt"]), tokens(r["reused"]), tokens(r["output"]), fmt(r["tps"], 1), fmt(r["duration"], 1, " s"))
-    if not model["recent"]:
-        req.add_row("No requests yet", "", "", "", "", "", "")
-    bottom = Table.grid(padding=(0, 3))
+        if r.get("active"):
+            status = Text(r["state"], style=(f"bold {plain(BLUE if r['state'] == 'Read' else accent)}" if pulse else "dim"))
+        else:
+            status = Text(r["state"], style=plain(accent) if r["state"] == "Done" else plain(RED if r["state"] == "Error" else AMBER))
+        vals = [stamp, status, tokens(r["prompt"]), tokens(r["reused"]), tokens(r["output"]), fmt(r["prefill"], 1), fmt(r["tps"], 1)]
+        if width >= 100:
+            vals.append(fmt(r["duration"], 1, " s"))
+        req.add_row(*vals)
+    bottom = Table.grid(padding=(0, 2))
     bottom.add_column(width=left_w)
     bottom.add_column()
-    right = Group(Text("Recent requests", style=f"bold {accent}"), req)
+    # no requests: a line under the heading, not a table row - the row would stretch TIME to its length and squeeze the numbers
+    right = Group(Text("Recent requests", style=f"bold {accent}"),
+                  req if rows else Text("No requests yet", style="dim"))
     bottom.add_row(Group(*lines), right)
 
     hint = Text(f"{nav.keys(connect)} views" + "   / filter   Space freeze   r refresh   t theme   b open in browser   ? help   q quit", style="dim")

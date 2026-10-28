@@ -93,14 +93,16 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         args += ["--expert-profile", str(profile), "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5"]
         if mtp.exists():
             args += ["--mtp", str(mtp)]
-        args += ["--max-context", str(context), "--kv", kv or ("int8" if context > 8192 else "fp16")]
+        # the same KV tier the engine and setup.py pick: 4-bit from 32K up, 8-bit between, fp16 below
+        kv_eff = kv or ("q4_0" if context >= 32768 else "int8" if context > 8192 else "fp16")
+        args += ["--max-context", str(context), "--kv", kv_eff]
         if backend == "sycl":
             # an Intel Arc, as sycl/setup_intel.py writes it: an A-series card on i915 loads the experts into a RAM arena and the CPU computes the misses
             # (--ple-io ram); every other Arc (xe: the B70) streams the experts from the GGUF into VRAM (--stream-experts); both keep a VRAM reserve
             reserve = "1024" if context <= 32768 else "2048"
             if vram_gb:                                  # 0.2.2: a card a few hundred MiB short gets a smaller context / reserve (vram_fit)
                 from strata_control import vram_fit
-                fr = vram_fit.plan(model, vram_gb, context, kv or "int8", int(reserve), "auto", "intel", title=model, ctx_fixed=True)   # the context was settled by max_context or the person
+                fr = vram_fit.plan(model, vram_gb, context, kv_eff, int(reserve), "auto", "intel", title=model, ctx_fixed=True)   # the context was settled by max_context or the person
                 if fr.changed:
                     args[args.index("--max-context") + 1] = str(fr.ctx)
                     reserve = str(fr.reserve_mib)

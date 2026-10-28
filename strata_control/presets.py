@@ -98,6 +98,8 @@ def choices_from_config(cfg: dict[str, Any], *, use: str = "chat") -> dict[str, 
         return None
 
     ctx = val("--max-context")
+    # no --kv in the args: the format the launch would pick, the tier setup/the engine use (no --max-context: 32K)
+    kv_ctx = int(ctx) if ctx and ctx.isdigit() else 32768
     native = val("--native") or val("--model") or ""
     quant = (_QUANT.search(Path(native).name) or _QUANT.search(str(cfg.get("model_name") or "")))
     profile = cfg.get("ui_resource_profile")
@@ -108,7 +110,7 @@ def choices_from_config(cfg: dict[str, Any], *, use: str = "chat") -> dict[str, 
         "quant": quant.group(1).upper() if quant else None,
         "model_file": native,
         "context": int(ctx) if ctx and ctx.isdigit() else None,
-        "kv": val("--kv") or "int8",
+        "kv": val("--kv") or ("q4_0" if kv_ctx >= 32768 else "int8" if kv_ctx > 8192 else "fp16"),
         "vision": bool(cfg.get("ui_vision_enabled")) or "--vision" in args,
         "goal": "room" if room else "speed",
         "reserve_mib": int(reserve) if isinstance(reserve, (int, float)) else 0,
