@@ -565,6 +565,7 @@ public:
         return ok;
     }
     std::optional<Ticker> progress;
+    std::optional<std::function<void(uint64_t, uint64_t, uint64_t)>> block_span;   // tests only, see SessionWriteOptions
     SessionPhase phase;
     uint64_t expected = 0;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
@@ -572,7 +573,13 @@ private:
     void fail_with(int e) { fault_ = true; fault_kind_ = errno_kind(e); fault_msg_ = std::strerror(e); }
     bool drain() {
         if (write_fault) { fail_with(write_fault); return false; }
+        const auto t0 = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const bool full = used_ == kBlock;
         if (!f_.write_all(buf_.get(), used_)) return false;
+        const auto t1 = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (full && block_span) (*block_span)(total_, uint64_t(t0), uint64_t(t1));   // tests: this block's OS write
         used_ = 0;
         if (progress) (*progress)(total_, expected);
         return true;
@@ -1062,6 +1069,7 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     FileSink f(raw);
     if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
     if (opt.progress) f.progress.emplace(opt.progress);
+    if (opt.block_span) f.block_span.emplace(opt.block_span);
     f.phase = opt.phase;
     f.expected = total;
     if (f.progress) (*f.progress)(0, total);   // the temporary file exists: the transfer starts
