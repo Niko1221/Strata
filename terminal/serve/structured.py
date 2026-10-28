@@ -128,6 +128,14 @@ def prepare_format(response_format, messages, with_tools=False):
     kind = response_format.get("type")
     if kind == "text":
         return messages, None
+    if kind == "lark":
+        # serve/constrain.py's passthrough (T1) builds the grammar into a token mask downstream; there is
+        # nothing to add to the prompt and nothing to validate after the turn - a grammar that cannot be
+        # built there drops to free decoding, never an error here.  Without a grammar there is no format.
+        grammar = response_format.get("grammar")
+        if not isinstance(grammar, str) or not grammar:
+            raise ValueError("response_format.lark needs a non-empty grammar string")
+        return messages, None
     if kind == "json_object":
         schema = {"type": "object"}
         modules = None                 # the standard library is enough for "one JSON object"
