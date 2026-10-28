@@ -305,11 +305,23 @@ inline bool fused_ring() {
     // not cover (Unsloth UD-IQ4_XS's Q8_0 down projections) would run MMQ in them at the full chunk and overflow them
     // (garbage, an illegal memory access or a hung prompt on gfx1151).  A pack with such a layer keeps MMQ's buffers;
     // its covered layers still take the fused kernels.
-    static const bool all = [&lay] {
-        for (const auto& f : lay.fmt)
-            if (!fused::native_supported(f.gu_type, f.d_type)) return false;
-        return !lay.fmt.empty();
-    }();
+    // PER DEVICE: native_supported() asks the CURRENT device (the SM count and compute capability of moe_fused_iq.cu's
+    // dev_info()), so on a layer split over unlike cards the answer differs by stage: an 84-SM 5080 takes the fused
+    // kernels at 12.0, a 70-SM 5070 Ti beside it does not.  Cached as one global bool, the answer came from whichever
+    // card happened to be current at the first call: on a split whose first stage was the 5080 the MoE buffers were
+    // shrunk for every stage, and each 5070 Ti stage then failed every chunk >= stream_all_min() with "Prefill: the
+    // fused layout's MoE buffers are too small for layer 25's expert path at a chunk of 8192 tokens" (measured
+    // 2026-10-26, 2x 5080 + 2x 5070 Ti, --layer-split 12,25,37 - layer 25 opens the first 5070 Ti stage).  Atomic
+    // because the batch-slot threads read this too; a lost race recomputes the same per-device answer.
+    static std::atomic<int8_t> per_dev[32];   // 0 unknown, 1 every layer covered on this device, 2 not
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 32) { (void) cudaGetLastError(); dev = 0; }
+    const int8_t known = per_dev[dev].load(std::memory_order_relaxed);
+    if (known != 0) return known == 1;
+    bool all = !lay.fmt.empty();
+    for (const auto& f : lay.fmt)
+        if (!fused::native_supported(f.gu_type, f.d_type)) { all = false; break; }
+    per_dev[dev].store(all ? 1 : 2, std::memory_order_relaxed);
     return all;
 }
 // the largest ring: 512 slots; 1024 with the Q2_0 pack's fused experts (P3's smaller buffers, measured there) - the
