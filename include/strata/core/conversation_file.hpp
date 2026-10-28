@@ -150,10 +150,12 @@ struct SessionWriteOptions {
                                    // movement and may lag the bytes already handed off by at most the blocks in flight
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
-    // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
+    // tests: return an errno value to make a step fail ("write", "file_flush", "writer_thread", "rename",
+    // "dir_flush"), 0 to go on; "writer_thread" forces the synchronous draining fallback
     std::function<int(const char* step)> fault;
     // tests only: one call per FULL block written to the OS by the write path; `byte_end` is the file bytes
     // written so far and (begin_ns, end_ns) are steady_clock nanoseconds bracketing the block's write_all.
+    // Called on the writer thread - or the caller's thread when the writer could not start.
     std::function<void(uint64_t byte_end, uint64_t begin_ns, uint64_t end_ns)> block_span;
 };
 
