@@ -75,15 +75,13 @@ __global__ void quantize_q8_0_kernel(const float* __restrict__ x, uint8_t* __res
 /// `moe_hit_parity`.  This function's job is different: it must match **this engine's own CPU reference**,
 /// because a hit and a miss for the same expert on the same layer have to produce the same number.  The CPU
 /// path is the reference - C1 passes on it - so the hit path is brought to it, not the reverse.
-#if defined(__HIPCC__)   // AMD keeps the thread-a-block kernel
-__global__ void quantize_q8_0_scaled_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
-                                            float* __restrict__ scales, long long n_blocks) {
+__global__ void quantize_q8_0_scaled_thread_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
+                                                   float* __restrict__ scales, long long n_blocks) {
     const long long b = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= n_blocks) return;
     quantize_q8_0_scaled_block(x + b * QK8_0, blocks + b * 34, scales + b);
 }
 
-#else
 // A warp a block, lane i on value i: the block's |max| is a max over the same values (0 for none above it, as the
 // serial scan from 0 through fmaxf), so every byte is the per-thread loop's.
 __global__ void quantize_q8_0_scaled_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
@@ -114,8 +112,6 @@ __global__ void quantize_q8_0_scaled_kernel(const float* __restrict__ x, uint8_t
     v = v < -127 ? -127 : (v > 127 ? 127 : v);
     out[2 + i] = (uint8_t) (int8_t) v;
 }
-
-#endif
 
 __global__ void dequant_q8_0_kernel(const uint8_t* __restrict__ blocks, float* __restrict__ x,
                                     long long n_blocks) {
@@ -354,12 +350,17 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
     }
     const long long nb = n / QK8_0;
     const int threads = 128;
-#if defined(__HIPCC__)
-    const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
-#else
-    const unsigned grid = (unsigned) ((nb + threads / 32 - 1) / (threads / 32));   // a warp a block
-#endif
-    quantize_q8_0_scaled_kernel<<<grid, threads, 0, (cudaStream_t) stream>>>(x, blocks, scales, nb);
+    static const bool old_q80 = [] {
+        const char* e = std::getenv("STRATA_OLD_Q80_SCALED");
+        return e != nullptr && e[0] == '1';
+    }();
+    if (old_q80) {
+        const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
+        quantize_q8_0_scaled_thread_kernel<<<grid, threads, 0, (cudaStream_t) stream>>>(x, blocks, scales, nb);
+    } else {
+        const unsigned grid = (unsigned) ((nb + threads / 32 - 1) / (threads / 32));   // a warp a block
+        quantize_q8_0_scaled_kernel<<<grid, threads, 0, (cudaStream_t) stream>>>(x, blocks, scales, nb);
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "quantize_q8_0_scaled launch: %s\n", cudaGetErrorString(e));

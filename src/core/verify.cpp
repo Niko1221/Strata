@@ -388,15 +388,24 @@ int early_ple_flag_mode() {
 // A one-token window always keeps its token, so its graph advances the sequence state itself (the GDN conv history
 // and recurrence state) and Verifier::commit launches no commit graph after it (eddoursul's fork, F7).  CUDA only:
 // HIP keeps the commit graph after every window (STRATA_ONE_TOKEN_COMMIT=0 does too).
-// The head's hyper-connection read for the window's tokens in one launch set (CUDA; HIP keeps gr_read per token;
-// STRATA_HEAD_MIX_MULTI=0 does too): bitwise the same sums.
+// The head's hyper-connection read for the window's tokens in one launch set (CUDA + gfx12 HIP default;
+// STRATA_HEAD_MIX_MULTI=0 / 1 forces off / on): bitwise the same sums.
 bool head_mix_multi_enabled() {
 #if defined(STRATA_USE_HIP)
-    static const bool on = [] {
-        const char* v = std::getenv("STRATA_HEAD_MIX_MULTI");   // HIP: opt-in (=1)
-        return v != nullptr && std::atoi(v) != 0;
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_HEAD_MIX_MULTI");
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    if (env >= 0) return env != 0;
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!per_dev[dev]) {
+        cudaDeviceProp p;
+        per_dev[dev] = cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                       strata::kernels::gfx_arch_is_gfx12(p.gcnArchName) ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
 #else
     static const bool on = [] {
         const char* v = std::getenv("STRATA_HEAD_MIX_MULTI");
@@ -2412,6 +2421,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // S25 (STRATA_HC_Q8=1): the final mixer from the GGUF's Q8_0 projections too, through the same multi read
         // (no pending write, no inject)
         const bool mix_q8 = hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
+        bool q8_head = false;
         if (mix_q8) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
@@ -2422,8 +2432,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.q8_down = (const uint8_t*) hd->hc_q8; a.q8_up = (const uint8_t*) hu->hc_q8;
                 a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
                 a.mixed = head_mixed_ + t * N;
+                if (qcnt_ != nullptr) { a.q8_cnt = qcnt_; a.q8_mixed = xq_ + (size_t) t * (N / 32) * 36; }
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            q8_head = fused_gr_read_multi(fa, T, xn_, cs);
         }
         else if (fuse_head_gr) {
             FusedGrArgs fa[kFusedGrMaxT];
@@ -2440,8 +2451,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.rs = rs_ + t * HC;
                 a.inject_out = head_inj_;
                 a.mixed = head_mixed_ + t * N;
+                if (qcnt_ != nullptr && head_ != nullptr && head_->loaded()) {
+                    a.q8_cnt = qcnt_;
+                    a.q8_mixed = xq_ + (size_t) t * (N / 32) * 36;
+                }
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            q8_head = fused_gr_read_multi(fa, T, xn_, cs);
         } else if (head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
             // the final mixer, the window's tokens in one read (fused_gr_read_multi without the pending write: the
             // last layer's write was done above; its sums are gr_read's)
@@ -2455,8 +2470,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 fa[t].w_norm = (const float*) hn->data; fa[t].w_down = (const uint16_t*) hd->data;
                 fa[t].w_up = (const uint16_t*) hu->data; fa[t].eps = EPS;
                 fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = head_mixed_ + t * N;
+                if (qcnt_ != nullptr) { fa[t].q8_cnt = qcnt_; fa[t].q8_mixed = xq_ + (size_t) t * (N / 32) * 36; }
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            q8_head = fused_gr_read_multi(fa, T, xn_, cs);
         } else {
             for (int t = 0; t < T; ++t) {
                 BlockBuffers bb = ss.block;
@@ -2471,7 +2487,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (head_ != nullptr && head_->loaded()) {
             try {
-                native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
+                if (!q8_head) native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
                 if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) T, (int) n_vocab_)) {
                     if (T >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) T, cs);
                     strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, head_logits_, (int) N,
