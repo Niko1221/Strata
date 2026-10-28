@@ -29,6 +29,48 @@ T2 verify window costs 1.6× T1 (weights re-decode per token); spec depth 3/4 me
 no gain at today's kernel speeds (draft accept ~65–75 %); MOE_DN2 no gain; HC_Q8
 defaults ON; tiles gu 8,1,2 / dn 4,1,4 confirmed optimal on Q4_K/Q5_1 (23-config sweep).
 
+## Chunk C-EDGE — riding to upstream's bleeding edge (one session; priority C0)
+
+Facts measured 2026-10-28 (all in this repo's git):
+- `upstream/main` (Niko1221/Strata) is 1071 commits newer than our merge-base
+  (`011c9e60`, 2026-10-21); our branch `metal-live` is 51 commits ahead — those 51
+  ARE the Mac engine (parking, cut-flag handshake, sampling, batch, M1 tiles,
+  session port, host sampler) plus PRs #3333/#3615/#3301/#3527 merged locally.
+- Upstream did NOT touch `window.cpp`; upstream grew a parallel DS4 Mac line
+  (`metal/src/engine/ds4_*`). `git merge-tree` previews **20 conflicting files**:
+  `generate.cpp`, `conversation_snapshot.cpp`, `conversation_state.cpp`,
+  `conversation_cache.hpp/_test.cpp`, `conversation_snapshot.hpp`, `verify.hpp/cpp`,
+  `prefill.cpp`, `mtl_rt.h/.mm`, `runtime.hpp/cpp`, `stubs.cpp`, `stubs_0145.cpp`,
+  `metal/CMakeLists.txt`, `serve/server.py`, `.gitignore`, docs (DETAILS/MAC).
+- The "needle lost at 17K+" fix (`845941f5`) is in `src/dsv41/ds4_kernels.cu`
+  (DeepSeek CUDA) — it does NOT apply to the Mac engine. Our QSA path is clean:
+  20 000-token needle at 50 % depth answered correctly on the live huihui server
+  (2026-10-28, `tools/needle_bench.py`).
+- Upstream Metal fixes worth reading into during the merge: `2a220c1d` (sparse_attn
+  binding read stale rows — short prompts and follow-up turns answered differently
+  every run), `8810e00c` (prompt hc_mix reads each row once: bit-identical, +4.5 %
+  at 3K prompt), `7c77f388` (commit queued GPU work before the CPU lane), and
+  `42890ca7` (stubs for the layer-major prefill kernels — REQUIRED, the Mac build
+  shares `prefill.cpp`). Upstream `7a34c60d` (KVA keeps the draft layer off
+  approximated cells) must be reconciled with our `c84cb517` max_cells > 0 gates.
+- Engine version crosses 0.1.47-metal → 0.1.48 (upstream 0.2.3).
+
+Steps (one session):
+1. `git worktree add /tmp/edge metal-edge` (branch off `metal-live`); merge
+   `upstream/main` there. Live tree and serving box untouched.
+2. Resolve the 20 conflicts with intent: ours = the Mac engine (window.cpp line);
+   theirs = DS4/KVA/prefill rework. Re-run the stub regeneration recipe
+   (gen_stubs.py, union of link logs, last `-I*/include` wins — the
+   stubs-regen skill) after the first failed link.
+3. Full `ninja` (not just strata — new sources arrive), `ctest`, parity tools compile.
+4. Serve-verification window (harness; end STARTED + health-checked):
+   `tools/needle_bench.py` battery incl. >17k, `parking_test.py` + disk slot
+   save/restore, byte-identity vs the saved w3/BASE answers, tok/s regression
+   gate 20.7/23.0/22.2 ±2 %, one kprof run for class-comparability with C0.
+5. Only then fast-forward `metal-live` to `metal-edge`; keep the pre-merge tag
+   (`git tag pre-edge-20261028 metal-live`) as the fallback; settings live in
+   the untracked config json + scripts and survive untouched.
+
 ## Chunks (each fits one regular session)
 
 ### C0 — Wildcard forensics (half session; env/knob only) — DO FIRST
@@ -87,10 +129,11 @@ Full battery on the final engine; measured-numbers table in `docs/DETAILS.md`
 
 ## Order and stacking
 
-C0 → C1 (parallel-safe) → C2 → C3 → C4 → C5 → C6.
-C1 and C4 both touch dense: C1 is tiles (cheap, first), C4 is unpack code (deep).
-C3 + C4 are independent and each is worth ~+20–30 %; C0 and C5 are the multipliers
-around them.
+C-EDGE (upstream rebase, section above) first: it re-numbers the ground under
+every class timing, and it carries real Mac fixes. Then C0 → C1 (parallel-safe)
+→ C2 → C3 → C4 → C5 → C6. C1 and C4 both touch dense: C1 is tiles (cheap,
+first), C4 is unpack code (deep). C3 + C4 are independent and each is worth
+~+20–30 %; C0 and C5 are the multipliers around them.
 
 ## Machine and harness notes for the next session
 
