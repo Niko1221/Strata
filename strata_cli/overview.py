@@ -58,7 +58,7 @@ def request_speed(r: dict) -> float | None:
     out, ms = _num(r.get("output_tokens")), _num(r.get("decode_ms"))
     if r.get("decode_tok_s") is not None and _num(r.get("decode_tok_s")) is not None:
         return _num(r.get("decode_tok_s"))
-    return round(out / (ms / 1000.0), 1) if out and ms and ms > 0 else None
+    return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None   # one token has no decode span (a probe showed 1,250 tok/s)
 
 
 def _cards(hw: dict, static: dict) -> list[dict]:

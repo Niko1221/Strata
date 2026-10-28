@@ -21,7 +21,8 @@ from typing import Callable
 
 PLACEHOLDER_KEY = "strata-local"      # the tested configs' placeholder when the server has no key (not a secret)
 OUTPUT_CAP = 4096                     # the output cap every tested config used
-COMPACT_AT = 15000                    # where the tested configs make the app compact its conversation
+TESTED_CONTEXT = 32768                # the window every config below was tested on
+COMPACT_AT = 15000                    # and where those tested configs make the app compact its conversation
 
 
 @dataclass
@@ -40,6 +41,17 @@ class Target:
     @property
     def input_limit(self) -> int:
         return max(1024, self.context - OUTPUT_CAP)
+
+
+def compact_at(t: Target) -> int:
+    """Where the app should compact its conversation: the share of the input limit the tested configs used, so that the
+    summarising request (which carries the whole conversation) still fits the window.
+
+    A flat 15,000 summarises a wider server every 15,000 tokens - 6% of a 256K window - while the tested configs compact
+    a 32K server at 52% of its input limit. The share is what carries over, not the number: a 32K server keeps exactly
+    the value it was tested at."""
+    tested_limit = TESTED_CONTEXT - OUTPUT_CAP
+    return max(COMPACT_AT, int(t.input_limit * COMPACT_AT / tested_limit))
 
 
 @dataclass
@@ -80,7 +92,7 @@ def _j(obj) -> str:
 def opencode_file(t: Target) -> str:
     return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}", "small_model": f"strata/{t.model}",
                "autoupdate": False,
-               "compaction": {"auto": True, "buffer": max(1024, t.input_limit - COMPACT_AT)},
+               "compaction": {"auto": True, "buffer": max(1024, t.input_limit - compact_at(t))},
                "share": "disabled",
                "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "name": "Strata (local)",
                                        "options": {"baseURL": t.base, "apiKey": t.key},
@@ -90,7 +102,7 @@ def opencode_file(t: Target) -> str:
 
 def codex_file(t: Target) -> str:
     return (f'model = "{t.model}"\nmodel_provider = "strata"\nmodel_context_window = {t.context}\n'
-            f"model_auto_compact_token_limit = {COMPACT_AT}\nmodel_reasoning_summary = \"auto\"\napproval_policy = \"never\"\n"
+            f"model_auto_compact_token_limit = {compact_at(t)}\nmodel_reasoning_summary = \"auto\"\napproval_policy = \"never\"\n"
             'sandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n\n[model_providers.strata]\n'
             f'name = "Strata (local)"\nbase_url = "{t.base}"\nwire_api = "responses"\nenv_key = "STRATA_API_KEY"\n'
             "stream_idle_timeout_ms = 600000\n")
@@ -118,7 +130,7 @@ def omp_models(t: Target) -> str:
 
 def omp_config(t: Target) -> str:
     return ("modelRoles:\n  default: strata/" + t.model + "\ndefaultThinkingLevel: medium\ncompaction:\n  enabled: true\n  thresholdTokens: "
-            + str(COMPACT_AT) + "\n  keepRecentTokens: 4000\n  methodOrder:\n    - soft\n  idleEnabled: false\nsetupVersion: 2\n")
+            + str(compact_at(t)) + "\n  keepRecentTokens: 4000\n  methodOrder:\n    - soft\n  idleEnabled: false\nsetupVersion: 2\n")
 
 
 def pi_models(t: Target) -> str:
@@ -131,12 +143,12 @@ def pi_models(t: Target) -> str:
 
 def pi_settings(t: Target) -> str:
     return _j({"defaultProvider": "strata", "defaultModel": t.model, "defaultThinkingLevel": "medium",
-               "compaction": {"enabled": True, "reserveTokens": max(1024, t.context - COMPACT_AT), "keepRecentTokens": 4000}})
+               "compaction": {"enabled": True, "reserveTokens": max(1024, t.context - compact_at(t)), "keepRecentTokens": 4000}})
 
 
 def hermes_file(t: Target) -> str:
     return ("model:\n  default: " + t.model + "\n  provider: lmstudio\n  base_url: " + t.base + "\n  context_length: " + str(t.context) +
-            "\ncompression:\n  enabled: true\n  threshold_tokens: " + str(COMPACT_AT) + "\nauxiliary:\n  compression:\n    context_length: 65536\n")
+            "\ncompression:\n  enabled: true\n  threshold_tokens: " + str(compact_at(t)) + "\nauxiliary:\n  compression:\n    context_length: 65536\n")
 
 
 def openclaw_file(t: Target) -> str:
@@ -181,14 +193,15 @@ def _limits_omp(t: Target) -> list[str]:
 
 def _limits_pi(t: Target) -> list[str]:
     return ["pi has the smallest prompt of the eight (1.5K tokens): the most room for the conversation.",
-            "It compacts after the turn that crosses the line, so one turn can reach about 15K tokens before it summarises."]
+            "It compacts after the turn that crosses the line, so one turn can reach about %dK tokens before it summarises."
+            % round(compact_at(t) / 1000)]
 
 
 def _limits_hermes(t: Target) -> list[str]:
     out = ["Hermes refuses a window under 64,000 tokens unless the provider is lmstudio with an explicit context_length: the config uses "
            "that, and auxiliary.compression.context_length 65536 for its summariser (the same floor).",
            "Its system prompt and 20 tools take about 12.9K tokens (40% of a 32K window): about 19K is left for the conversation.",
-           "Its compaction threshold is floored at its own 64K minimum, so it compacts later than 15K (around 20K); it still fits 32K."]
+           "Its own 64K minimum floors the compaction threshold, so it compacts later than the value above (around 20K on a 32K window); it still fits 32K."]
     if t.context < 65536:
         out.insert(0, "WARNING: Hermes is built for 64K or more. At %dK it works only through the workaround above." % (t.context // 1024))
     return out

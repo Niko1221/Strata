@@ -46,12 +46,26 @@ bool in_range(const std::string& name) {
 bool hc_q8_env() {
     // STRATA_HC_Q8: 1 = on (the GGUF's own Q8_0 projections, or - a bf16 pack - a Q8_0 copy quantized at load); 0 = off;
     // unset / auto = on for gfx12 (RDNA4: the R9700 decode +2.5 to +4%, KL 0.0003-0.0010 over its noise floor) unless
-    // STRATA_GFX12_DEFAULTS=0, off elsewhere
+    // STRATA_GFX12_DEFAULTS=0; also on for gfx1151 (Strix Halo, STRATA_HC_Q8=0 turns it off), off elsewhere
     static const bool on = [] {
         const char* v = std::getenv("STRATA_HC_Q8");
         if (v != nullptr && v[0] == '1') return true;
         if (v != nullptr && v[0] != '\0' && std::strcmp(v, "auto") != 0) return false;
 #if defined(STRATA_USE_HIP)
+        {   // Strix Halo (gfx1151): on by default (decode +9.5%, json/code/tool/chat/agent +7.9..+10.7%); the answers differ in
+            // near-tie tokens by about the size of the engine's own CPU-vs-GPU expert rounding (docs/AMD_HIP.md);
+            // STRATA_HC_Q8=0 keeps the bf16 read
+            int dev1151 = 0;
+            cudaDeviceProp p1151;
+            const bool g1151 = cudaGetDevice(&dev1151) == cudaSuccess && cudaGetDeviceProperties(&p1151, dev1151) == cudaSuccess &&
+                               strata::kernels::gfx_arch_is_gfx1151(p1151.gcnArchName);
+            (void) cudaGetLastError();
+            if (g1151) {
+                std::fprintf(stderr, "strata: Strix Halo (gfx1151): 8-bit hyper-connection weights are on (decode about 9%% faster, "
+                                     "answers can differ in near-tie tokens); STRATA_HC_Q8=0 keeps the bf16 read\n");
+                return true;
+            }
+        }
         const char* d = std::getenv("STRATA_GFX12_DEFAULTS");
         if (d != nullptr && d[0] == '0') return false;
         int dev = 0;

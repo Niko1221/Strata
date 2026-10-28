@@ -164,8 +164,12 @@ class FakeRoot(unittest.TestCase):
         self.strata.disk_free = lambda p: 1000.0
         self.tools = M.Tools(self.strata)
         self.extra = []
+        # the tests must never see a Strata server that happens to run on the real default port on this PC
+        self._default_port = M.DEFAULT_PORT
+        M.DEFAULT_PORT = free_port()
 
     def tearDown(self):
+        M.DEFAULT_PORT = self._default_port
         for p in self.extra:
             if p.poll() is None:
                 p.kill()
@@ -755,7 +759,8 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro"], "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro", "deepseek41"],
+                         "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes, DeepSeek (0.2.7.1) last")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
         gy = {x["model"]: x for x in fams[1]["sizes"]}
@@ -768,9 +773,29 @@ class MacCatalog(unittest.TestCase):
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"fits"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"fits"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"does not fit"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
+        self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
+
+    def test_deepseek_on_a_mac_offers_the_two_sets_that_were_run_with_the_mac_words(self):
+        s, hw = self.hw(128)
+        ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
+        by = {x["model"]: x for x in ds["sizes"]}
+        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw"], "the 1.75 bpw set was never run on a Mac")
+        for x in by.values():
+            self.assertTrue(x["multi_file"] and not x["images"])
+            self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
+            self.assertIn("read from the SSD", x["on_this_pc"])
+            self.assertGreater(x["disk_gb"], x["download_gb"])
+        s, hw = self.hw(32)
+        ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
+        for x in ds["sizes"]:                           # a small Mac: said plainly, never refused
+            self.assertTrue(x["on_this_pc"].startswith("slow here"), x["on_this_pc"])
+            self.assertIn("can still be installed", x["on_this_pc"])
+        from strata_cli.launch import catalog as C
+        self.assertEqual(C.verdict(by["IST-DAS-2.00bpw"]["on_this_pc"])[0], C.FITS)
+        self.assertEqual(C.verdict(ds["sizes"][0]["on_this_pc"])[0], C.TIGHT)
 
     def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
         s, hw = self.hw(32)
@@ -790,6 +815,22 @@ class MacCatalog(unittest.TestCase):
             s2, hw2 = self.hw(8)
             s2.hardware = lambda fresh=False: hw2
             M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
+    def test_the_install_plan_for_deepseek_on_a_mac_is_text_only_at_8k(self):
+        s, hw = self.hw(128)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as own:
+            plan, args = M.Tools(s).install_plan("deepseek41", "IST-DAS-2.00bpw", None, None, None, None, None, None, None, None, None, None)
+        self.assertEqual(args[:9], ["--yes", "--no-start", "--family", "deepseek41", "--model", "IST-DAS-2.00bpw", "--context", "8192", "--vision"])
+        self.assertEqual(args[args.index("--vision") + 1], "no", "the Metal engine has not run DeepSeek's picture tower")
+        for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
+            self.assertNotIn(flag, args)
+        self.assertTrue(plan["ram"].startswith("runs on this Mac's memory"))
+        with self.assertRaises(M.ToolError):            # UD-Q8_K_XL (508 GB) and the 1.75 set were never run on a Mac
+            M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None, None)
+        with self.assertRaises(M.ToolError):
+            M.Tools(s).install_plan("deepseek41", "IST-DAS-2.25bpw", None, "yes", None, None, None, None, None, None, None, None)
 
     def test_a_pc_is_unchanged(self):
         s = M.Strata(HERE.parent)
@@ -811,11 +852,50 @@ class MixedGraphics(unittest.TestCase):
         self.assertTrue(by["nvidia"]["usable"])
         self.assertFalse(by["amd"]["usable"])
         self.assertIn("NVIDIA card", by["amd"]["problem"])
+        # the RTX and the Ryzen iGPU both say index 0 (each make counts from 0), so the report gives each a stable id of its own
+        self.assertEqual((by["nvidia"]["index"], by["amd"]["index"]), (0, 0))
+        self.assertEqual(sorted(g["id"] for g in hw["gpus"]), ["amd:0", "nvidia:0"])
         rec = s.recommend({**hw, "ram_gb": 92.0})
         self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
         # with no NVIDIA card the integrated GPU stays what it was
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+    def test_two_gtx_1080_are_a_working_pc_on_the_cuda_12_engine(self):
+        """#3655: Pascal cards were flagged 'not supported' and both started Off, so the app said no card was usable. When Pascal is all the PC has
+        (and no AMD card), setup runs them with the CUDA 12 engine, and the hardware report now says so; a newer card keeps the old behaviour."""
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        pascal = [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"},
+                  {"index": 1, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"}]
+        igpu = [{"index": 0, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5, "arch": "gfx90c", "uma": True}]
+        patches = (mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),
+                   mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]), mock.patch.object(S, "amd_problem", lambda g: "integrated graphics"),
+                   mock.patch.dict(M.os.environ, {"STRATA_EXPERIMENTAL_SM60": ""}), mock.patch.object(S, "OLD_GPUS", None))
+        with mock.patch.object(S, "gpus", lambda: [dict(g) for g in pascal]):
+            for p in patches:
+                p.start()
+            try:
+                hw = s._hardware()
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        nv = [g for g in hw["gpus"] if g["vendor"] == "nvidia"]
+        self.assertEqual([(g["usable"], g["problem"], g.get("engine_variant")) for g in nv], [(True, None, "cuda12")] * 2)
+        # a newer card in the PC: Pascal stays an opt-in, the ready-made engine is recommended
+        mixed = [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "581.15"},
+                 {"index": 1, "name": "NVIDIA GeForce RTX 3060", "vram_gb": 12.0, "arch": "86", "driver": "581.15"}]
+        with mock.patch.object(S, "gpus", lambda: [dict(g) for g in mixed]):
+            for p in patches:
+                p.start()
+            try:
+                hw = s._hardware()
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+        by = {g["name"]: g for g in hw["gpus"] if g["vendor"] == "nvidia"}
+        self.assertFalse(by["NVIDIA GeForce GTX 1080"]["usable"])
+        self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
 
     def test_an_amd_card_the_installed_engine_has_no_code_for_is_not_usable(self):
         """#3203: the engine package lists its GPU code; a card outside it is flagged unusable with the plain reason, so no list offers it."""

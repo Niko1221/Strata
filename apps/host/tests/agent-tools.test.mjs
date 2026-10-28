@@ -15,7 +15,7 @@ import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile, GATE_PLUGIN } from '../server/agent/profile.mjs';
 import { STANDARD_PLUGIN_IDS, REMOVED_PLUGIN_IDS, standardPreset } from '../server/agent/preset.mjs';
-import { isReadOnlyShell, manualDecision, READ_ONLY_TOOLS } from '../server/agent/plugins/strata-gate.mjs';
+import { isReadOnlyShell, manualDecision, maskQuotes, READ_ONLY_TOOLS } from '../server/agent/plugins/strata-gate.mjs';
 import { plainToolError, withPlain } from '../server/agent/events.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
@@ -33,6 +33,42 @@ test('the gate: only commands that provably just look are allowed without a ques
     assert.equal(isReadOnlyShell(bad), false, bad);
   }
   assert.equal(isReadOnlyShell('x'.repeat(700)), false, 'a long command is never trusted');
+});
+
+test('the gate: quoted text is data, so an & ( ) ; { } in a quoted path does not make a look-only command ask (2026-10-22)', () => {
+  for (const ok of [
+    'Get-ChildItem "C:\\Users\\AI-Server\\Downloads\\GUI Q&A" | Select-Object -First 5 Name',
+    'Get-Content "C:\\Users\\AI-Server\\Downloads\\GUI Q&A\\a.txt"',
+    "Get-ChildItem 'C:\\Users\\x\\Notes (old) {draft}; v2'",
+    'Select-String -Path a.txt "a|b"',
+    'Select-String needle "C:\\x\\a & b.txt" | Measure-Object',
+    'git log --oneline "docs/Q&A.md"',
+    'cat "my file (1).txt"',
+    "Get-ChildItem 'it''s here'",
+  ]) assert.equal(isReadOnlyShell(ok), true, ok);
+  // Quoting does not hide anything that acts: outside the quotes the same characters still ask, and inside double quotes an expansion does.
+  for (const bad of [
+    'Get-ChildItem C:\\Q&A',
+    'Get-ChildItem "C:\\a" ; Remove-Item x',
+    'Get-ChildItem "C:\\a" & calc',
+    'Get-ChildItem "C:\\a" > out.txt',
+    'Get-ChildItem "$env:USERPROFILE"',
+    'Get-ChildItem "$(whoami)"',
+    'Get-ChildItem "a`b"',
+    "Get-ChildItem 'unterminated",
+    'Get-ChildItem "unterminated',
+    'git diff "--output=out.txt"',
+    'git diff --out"put"=out.txt',
+    'git diff --"output"=out.txt',
+    'Get-Content "a"b',
+    '"Remove-Item" x',
+    'Set-Content "a.txt" "x"',
+    'Get-ChildItem "a" | Remove-Item',
+    'curl "http://x"',
+  ]) assert.equal(isReadOnlyShell(bad), false, bad);
+  assert.equal(maskQuotes('Get-ChildItem "C:\\Q&A" | Select-Object Name'), 'Get-ChildItem "_" | Select-Object Name');
+  assert.equal(maskQuotes("echo 'a' \"b\""), 'echo "_" "_"');
+  assert.equal(maskQuotes('echo "$HOME"'), null);
 });
 
 test('the gate: every tool outside the read-only list asks, including unknown and connected ones', () => {

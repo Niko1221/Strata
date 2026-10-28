@@ -169,6 +169,11 @@ public:
     /// build with the pointer-table MMQ (STRATA_MMQ_TAB).
     static size_t slot_guard_bytes();
 
+    /// STRATA_EXPERT_NIBBLE=1: whether every converted layer's experts reach the prompt path's MMQ gather only (the
+    /// GGUF blocks rebuilt from the 4-bit slots); false with the first layer and the reason in `why`.  Pure: the
+    /// layers' formats, the environment and the visible GPUs (generate.cpp asks once, before anything is allocated).
+    static bool nibble_prompt_check(std::string& why);
+
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
@@ -184,6 +189,13 @@ public:
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+    /// DFlash2 prompt taps (CUDA / HIP, single stage): before `run`, ask for the completed output of each layer in `layers` (zero-based; the
+    /// mean of the hc streams) for the prompt rows at positions >= `first_pos`, at most `cap_rows` rows per chunk (a staging buffer of
+    /// cap_rows x layers x n_embd floats is allocated at the first chunk).  After each chunk that has such rows, on_taps(taps
+    /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
+    void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
+    void clear_taps();
+    std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
@@ -202,6 +214,10 @@ public:
     /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
     std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
     int64_t stopped_at() const { return stopped_at_; }
+    /// KVA: the end of the positions the last run approximated (they are a prefix: chunks from the run's first position
+    /// on), i.e. the first position whose final rows are real; 0 when that run approximated nothing.  Raised chunk by
+    /// chunk, before on_chunk reports the chunk, so the draft layer can skip the chunk's cells.  Reset by every run.
+    int64_t kva_floor() const { return kva_floor_; }
     /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
     /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's
     /// thread takes the driver's lock).  Before the run, with nothing of this path in flight.  False: a slot could
@@ -246,20 +262,43 @@ public:
     /// the share is on for chunks below 1024 tokens (STRATA_PREFILL_CPU_SHARE=0 turns it off).
     static void arm_cpu_share(bool applies, bool by_default = false);
 
+    /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
+    /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
+    /// On a layer split it is the last stage's (the one that reports the rows), asked through the first.
+    bool layer_major_mid() const {
+        const Prefill* p = this;
+        while (p->next_ != nullptr) p = p->next_;
+        return p->lm_mid_;
+    }
+
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
+    // Layer-major prefill: the super-chunk's buffers for an n-token prompt (its size, 0 = not this prompt: `why`),
+    // the run, and the buffers given back after it.  `cap` (> 0): at most that many tokens (a layer split's stages
+    // share one size); lm_prepare_chain sizes every stage of a split.
+    int64_t lm_prepare(int64_t n, std::string& why, int64_t cap = 0);
+    int64_t lm_prepare_chain(int64_t n, std::string& why);
+    void lm_release_chain();
+    bool run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    void lm_release();
+    bool lm_mid_ = false;
+    bool lm_by_default_ = false;   ///< the walk is on because nothing was set (a wider VRAM margin, the measured super-chunk size)
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
     bool drain_pipeline(std::string& err);
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
+    std::vector<int> tap_layers_;
+    int64_t tap_first_ = 0, tap_cap_ = 0;
+    float* tap_dev_ = nullptr;
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
     int64_t stopped_at_ = -1;           ///< stop_at_chunk ended the last run after this many tokens (-1: it read all)
+    int64_t kva_floor_ = 0;             ///< kva_floor()
     bool pipe_chunked_ = false;         ///< a later stage: the chunks came from a --prefill-pipe plan (set likewise)
     int64_t force_chunk_ = 0;           ///< force_chunk, for the next run (0: none)
     bool force_single_ = false, force_planned_ = false;

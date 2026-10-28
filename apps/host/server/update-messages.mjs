@@ -35,7 +35,7 @@ export function plainUpdateError(error, subject = 'engine') {
   } else if (/another update is already running/i.test(raw)) {
     message = 'An update is already running.';
     next = `Wait a moment, then press ${button} in Settings.`;
-  } else if (/test start|did not answer a one-token|did not become ready/i.test(raw)) {
+  } else if (/test start|did not start correctly|did not answer a one-token|did not become ready/i.test(raw)) {
     message = `The new ${subject} didn't start correctly, so nothing was changed. ${keep}`;
   } else if (looksOffline(error) || looksOffline(raw)) {
     message = 'No internet connection.';

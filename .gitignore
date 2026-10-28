@@ -63,6 +63,10 @@ build-vision-cuda12.bat
 /.ccache/
 /.rocm-win/
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 gap/.server
@@ -88,3 +92,9 @@ node_modules/
 /apps/host/docs/checkpoints/
 # ref-backup bundles taken before a fork refresh (git bundle files, tens of MB)
 /_backup/
+
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/

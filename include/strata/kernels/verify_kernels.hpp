@@ -123,6 +123,12 @@ void embedding_gather_dev(const uint8_t* codes, const float* scales, const float
                           uint64_t row_groups, float* out, void* stream);
 /// R[t][c][:] = x[t][:] for the hc streams.
 void broadcast_streams(const float* x, float* R, int64_t n_embd, int hc, int n_tok, void* stream);
+/// out[:n_embd] = the mean of the hc streams of ONE row R[hc][n_embd] (the DFlash2 drafter's target features; only the
+/// STRATA_TAP_FILE hook calls it).
+void hc_mean_streams(const float* R, float* out, int64_t n_embd, int hc, void* stream);
+/// STRATA_ROUTE_STATS only: acc[r] += the number of ids of row r (k per row, n rows <= 8) that no earlier row of the window holds
+/// (duplicates inside a row count once).
+void route_marginal_stats(const int32_t* ids, int n, int k, unsigned long long* acc, void* stream);
 /// dst[:n] = src[(*index) * stride + :n]  (index read from device memory; a negative index copies nothing).
 void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* index, int64_t n, void* stream);
 
@@ -186,5 +192,10 @@ void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream);
 /// A sliding attention window: for `n` step records (kStepCount ints each, n_kv at [1]) the selection becomes the
 /// last `window` cells: ids[q * ids_stride + j] = max(0, n_kv - window) + j and the record's width = the count.
 void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, void* stream);
+/// window_ids whose window starts no lower than the cell `*floor_cell` (device-visible memory, read when the kernel
+/// runs; KVA: the first draft cell built from a real row).  `window` may be INT_MAX for "every cell".  A floor of 0
+/// selects exactly what window_ids selects.  CUDA / HIP only.
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream);
 
 }  // namespace strata::kernels

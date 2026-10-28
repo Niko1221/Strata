@@ -170,5 +170,9 @@ test('Windows: a PowerShell that is missing or fails is reported as before', asy
   f.child.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }));
   await assert.rejects(missing, e => e.code === 'ENOENT');
   const g = fakeShell(); const failed = watchedWindowsDialog('powershell.exe', [], { spawnProcess: g.spawnProcess });
-  g.child.emit('close', 1); await assert.rejects(failed, e => e.code === 1);
+  g.child.emit('close', 1);
+  // Ended by security software before any window opened (#3831): the app asks for the path instead of an error.
+  assert.deepEqual(await failed, { noDialog: true });
+  const h = fakeShell(); const late = watchedWindowsDialog('powershell.exe', [], { spawnProcess: h.spawnProcess });
+  h.child.stdout.emit('data', 'READY\n'); h.child.emit('close', 1); await assert.rejects(late, e => e.code === 1);
 });

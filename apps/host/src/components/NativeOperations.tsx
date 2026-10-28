@@ -6,6 +6,7 @@ import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpda
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { Btn, Dialog, ErrorNotice, Select } from './ui';
 import { NativeProgress } from './NativeModels';
+import { jobErrorText } from '../lib/native-job-diagnostics';
 export function NativeBenchmark({ open, onClose }: {
     open: boolean;
     onClose: () => void;
@@ -114,7 +115,7 @@ export function NativeOperations() {
     }
     return <div className="stack stack--lg native-engine-settings">
  <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Update component")}</h2>{tr(update === 'available' ? <Btn size="sm" variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => setConfirm(true)}>{tr("Update available")}</Btn> : null)}{tr(update !== 'available' ? <Btn size="sm" disabled={update === 'checking'} onClick={() => void checkForUpdates()}>{tr(update === 'checking' ? 'Checking…' : 'Check for updates')}</Btn> : null)}</div><p className="small muted">{tr("Update the engine for this computer. Your models and settings are kept.")}</p>{tr(update === 'current' ? <p className="small muted">{tr("Up to date")}</p> : null)}{tr(checkError ? <p className="small inline-error" role="alert">{tr(checkError)}</p> : null)}{tr(update === 'available' && (native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</section>
- <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Diagnostics")}</h2><Btn size="sm" onClick={() => setShowLogs(true)}>{tr("View logs")}</Btn></div><p className="small muted">{tr("Downloads, preparation and engine failures include their original messages here.")}</p>{tr(native?.jobs.filter(j => j.state === 'error').slice(-3).map(j => <ErrorNotice key={j.id} message={j.error ?? j.summary} detail={j.details}/>))}</section>
+ <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Diagnostics")}</h2><Btn size="sm" onClick={() => setShowLogs(true)}>{tr("View logs")}</Btn></div><p className="small muted">{tr("Downloads, preparation and engine failures include their original messages here.")}</p>{tr(native?.jobs.filter(j => j.state === 'error').slice(-3).map(j => <ErrorNotice key={j.id} message={jobErrorText(j, native.jobs)} detail={j.details}/>))}</section>
  <Dialog open={showLogs} wide title={tr("Engine logs")} onClose={() => setShowLogs(false)} actions={<><Btn icon="download" disabled={saving} onClick={() => void saveLogs()}>{tr(saving ? 'Working…' : 'Save logs')}</Btn><Btn variant="primary" onClick={() => setShowLogs(false)}>{tr("Close")}</Btn></>}>
   <pre className="native-log" aria-label={tr("Engine log")}>{logs.length ? logs.map(l => `${l.at} · ${l.line}`).join(String.fromCharCode(10)) : tr('No engine messages yet.')}</pre>
   {tr(saved ? <p className="small" role="status">{tr("Saved to {0}", [saved])}</p> : null)}

@@ -62,7 +62,10 @@ export function watchedWindowsDialog(shell, args, { readyMs = 30_000, openMs = 2
     const later = () => { clearTimeout(timer); ready = true; setTimeout(() => end(resolve, { stdout: '' }), openMs).unref?.(); };
     child.stdout?.on('data', chunk => { stdout += chunk; if (!ready && /^READY\s*$/m.test(stdout)) { clearTimeout(timer); later(); } });
     child.on('error', error => end(reject, error));
-    child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer); code === 0 ? resolve({ stdout }) : reject(Object.assign(new Error('exit ' + code), { code })); });
+    child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer);
+      // PowerShell ended before its window opened (security software ended it, #3831): the person types the path instead.
+      if (!ready) return resolve({ noDialog: true });
+      code === 0 ? resolve({ stdout }) : reject(Object.assign(new Error('exit ' + code), { code })); });
   });
 }
 

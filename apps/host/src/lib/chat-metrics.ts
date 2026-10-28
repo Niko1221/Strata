@@ -13,7 +13,10 @@ export function chatMetrics(session:Session|null, monitor:MonitorState|null, con
   const finished=latest?(latest.contextUsed??latest.inputTokens!+(latest.tokens??0)):null;
   const liveUsed=active&&Number.isFinite(monitor!.context.usedTokens)&&monitor!.context.usedTokens>0?monitor!.context.usedTokens:null;
   const live=replies.some(m=>m.streaming)||(active&&['reading','thinking','generating'].includes(monitor!.phase));
-  const used=live?(liveUsed??finished):(finished??liveUsed);
+  // While a turn runs, its own figure comes first: the host reports what the context holds after each model request of the turn. The engine's live
+  // figure belongs to the request in flight (a small one between two tools read as 1%), and `finished` to an earlier reply.
+  const turnUsed=replies.find(m=>m.streaming&&Number.isFinite(m.contextUsed)&&m.contextUsed!>0)?.contextUsed??null;
+  const used=live?(turnUsed??liveUsed??finished):(finished??liveUsed);
   const max=remote?(replies.at(-1)?.contextMax||null):configuredContext??(active?monitor!.context.maxTokens:latest?.contextMax??null);
   const streaming=replies.find(m=>m.streaming);
   // Answer speed: everything the model generated over its decode time. While a reply streams it is that reply's; after it, the LAST reply's own

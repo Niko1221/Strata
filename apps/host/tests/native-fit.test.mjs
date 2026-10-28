@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 
 const { code } = await transform(await readFile(new URL('../src/lib/native-fit.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
-const { fitOn, memoryNeeded, RECOMMENDED, VERSION_GROUPS, groupOpen, recommendedVersions, PICK_NOTE, OTHER_NOTE, MTP_VRAM_GB } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { fitOn, cacheGb, memoryNeeded, RECOMMENDED, VERSION_GROUPS, groupOpen, recommendedVersions, PICK_NOTE, OTHER_NOTE, MTP_VRAM_GB } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const swift = { ram_needed_gb: 48, experts_gb: 35.5 };
 const gyroS = { ram_needed_gb: 27.6, experts_gb: 25.8, mem_total: true };
@@ -82,4 +82,16 @@ test('the tiers of the engine are 40 GB Swift IQ2_XS, 48 GB IQ3_XXS, 64 GB IQ3_S
     assert.ok(m, file);
     assert.deepEqual([...m[1].matchAll(/\(([\d.]+),\s*"(\w+)",\s*"(\w+)"\)/g)].map(x => [Number(x[1]), x[2], x[3]]), [[62, 'qwen', 'IQ3_S'], [46, 'qwen', 'IQ3_XXS'], [38, 'swift', 'IQ2_XS']], file);
   }
+});
+
+test('the conversation context and cache format move the estimate (#3832)', () => {
+  const pc = { ram_gb: 64, vram_gb: 16 };
+  const base = fitOn(swift, pc);
+  assert.deepEqual(fitOn(swift, pc, true, { context: 32768, kv: 'int8' }), base, 'the default context is what the fixed figure already held');
+  const big = fitOn(swift, pc, true, { context: 524288, kv: 'int8' });
+  assert.ok(big.vramUseGb >= base.vramUseGb && big.ramUseGb > base.ramUseGb, 'a bigger cache takes graphics memory from the experts, which then sit in RAM');
+  assert.ok(fitOn(swift, pc, true, { context: 524288, kv: 'q4_0' }).ramUseGb < big.ramUseGb, 'a smaller cache format leaves more room');
+  assert.ok(Math.abs(cacheGb(524288, 'int8') * 1024 - 7361) < 25, 'the 512K Int8 cache is the 7361 MiB the engine reports');
+  const tight = fitOn(q4, pc, true, { context: 524288, kv: 'int8' });
+  assert.ok(tight.spillGb > fitOn(q4, pc).spillGb, 'what no longer fits is read from the SSD and the card says so');
 });

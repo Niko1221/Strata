@@ -29,7 +29,10 @@ def _preflight(argv):
 
 if __name__ == "__main__":
     # a newer Control installed by `strata update` takes over before anything heavy is imported (stdlib only)
-    from strata_cli.handover import maybe_hand_over
+    from strata_cli.handover import maybe_hand_over, refuse_old_updater
+    refused = refuse_old_updater(sys.argv[1:])
+    if refused is not None:
+        raise SystemExit(refused)
     handed = maybe_hand_over(sys.argv[1:])
     if handed is not None:
         raise SystemExit(handed)

@@ -41,9 +41,11 @@ b=${BUILD_DIR:-$repo/build-sycl}
 # an existing build folder keeps its cache: a switch given now reaches it (only this one, so AOT and the rest stay as configured)
 [ -z "${I8_ESIMD:-}" ] || cmake -S $repo/sycl -B $b -DSTRATA_SYCL_I8_ESIMD="$I8_ESIMD" >/dev/null 2>&1
 cmake --build $b -j ${JOBS:-12} ${1:+--target "$@"} -- -k 0 2>&1 | tee $b/build.log | grep -E '^FAILED|error:|^ninja: build stopped|Linking|^\[[0-9]+/[0-9]+\] Linking' | tail -40
-echo "BUILD EXIT ${PIPESTATUS[0]}"
+rc=${PIPESTATUS[0]}                       # cmake's status, kept: the script ends with this, not with the status of the greps below (#2990)
+echo "BUILD EXIT $rc"
 grep -c 'error:' $b/build.log | sed 's/^/errors: /'
 grep -E '^FAILED' $b/build.log | sed 's#.*/##' | sort | uniq | head -60
 if grep -q 'IGC: Internal Compiler Error' $b/build.log 2>/dev/null; then
   echo "build.sh: the device compiler (ocloc $(ocloc_version || echo '?')) crashed: try  docker build --pull -t strata-sycl-dev sycl/tools  or  I8_ESIMD=OFF  (#3219)"
 fi
+exit "$rc"

@@ -75,7 +75,31 @@ def start_token(pid: int) -> str | None:
                              timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
-    return None if not out or out.endswith("Z") else "s:" + out
+    return None if not out or out.endswith("Z") else "s:" + out.rsplit(None, 1)[0]
+
+
+def started_epoch(pid: int) -> float | None:
+    """When the process at `pid` was created, in seconds since 1970, or None when there is no such process or the time cannot be read.
+    A number recorded in an old file can belong to a later process; a creation time after the file was written proves it does."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    if psutil is not None:
+        try:
+            return float(psutil.Process(pid).create_time())
+        except (psutil.Error, OSError):
+            return None
+    if WINDOWS:
+        from strata_control import winproc
+        ticks = winproc.process_started(pid)
+        return None if ticks is None else (ticks - 116444736000000000) / 1e7     # 100 ns ticks since 1601
+    if sys.platform.startswith("linux"):
+        token = start_token(pid)
+        try:
+            boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+            return boot + int(token[2:]) / os.sysconf("SC_CLK_TCK") if token else None
+        except (OSError, ValueError, StopIteration):
+            return None
+    return None
 
 
 def command_line(pid: int) -> list[str] | None:
@@ -285,10 +309,13 @@ def end_one(record: dict, *, grace: float = 8.0) -> str:
     if not is_same(pid, record["token"], record["cmd"]):
         drop_record(pid)
         return "gone"
+    # once signalled, the start token alone says it still runs: an exiting process has an empty command line on Linux
+    def running():
+        return start_token(pid) == record["token"]
     if not WINDOWS:
         _signal_verified(record, signal.SIGTERM)
         deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+        while time.monotonic() < deadline and running():
             time.sleep(0.1)
         if is_same(pid, record["token"], record["cmd"]):
             _signal_verified(record, signal.SIGKILL)
@@ -296,9 +323,9 @@ def end_one(record: dict, *, grace: float = 8.0) -> str:
         if is_same(pid, record["token"], record["cmd"]):
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)      # one PID, verified just above
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+    while time.monotonic() < deadline and running():
         time.sleep(0.1)
-    if is_same(pid, record["token"], record["cmd"]):
+    if running():
         return "stuck"
     drop_record(pid)
     return "ended"
@@ -330,7 +357,8 @@ def orphans_of(engine_exe: str) -> list[Ident]:
         return []
     mine = {os.getpid()}
     try:
-        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1)    # pid 1 adopts orphans: it is not a starter
+        # pid 1 and a subreaper such as `systemd --user` (an ancestor of every desktop terminal) adopt orphans: they are not starters
+        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1 and q.name().lower() not in INIT_NAMES)
     except psutil.Error:
         pass
     found = []

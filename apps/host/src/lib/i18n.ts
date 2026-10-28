@@ -7,6 +7,35 @@ import tune_es from '../locales/tune-es.json';
 import tune_ru from '../locales/tune-ru.json';
 import tune_pt from '../locales/tune-pt.json';
 import tune_ko from '../locales/tune-ko.json';
+import tune_fr from '../locales/tune-fr.json';
+import tools_en from '../locales/tools-en.json';
+import tools_zh from '../locales/tools-zh.json';
+import tools_ja from '../locales/tools-ja.json';
+import tools_de from '../locales/tools-de.json';
+import tools_es from '../locales/tools-es.json';
+import tools_ru from '../locales/tools-ru.json';
+import tools_pt from '../locales/tools-pt.json';
+import tools_ko from '../locales/tools-ko.json';
+import tools_fr from '../locales/tools-fr.json';
+import fix_en from '../locales/fix-en.json';
+import fix_zh from '../locales/fix-zh.json';
+import fix_ja from '../locales/fix-ja.json';
+import fix_de from '../locales/fix-de.json';
+import fix_es from '../locales/fix-es.json';
+import fix_ru from '../locales/fix-ru.json';
+import fix_pt from '../locales/fix-pt.json';
+import fix_ko from '../locales/fix-ko.json';
+import fix_fr from '../locales/fix-fr.json';
+/* The strings of the 0.2.7 GitHub items (gh-<lang>.json, scripts/make-gh-locales.py). */
+import gh_en from '../locales/gh-en.json';
+import gh_zh from '../locales/gh-zh.json';
+import gh_ja from '../locales/gh-ja.json';
+import gh_de from '../locales/gh-de.json';
+import gh_es from '../locales/gh-es.json';
+import gh_ru from '../locales/gh-ru.json';
+import gh_pt from '../locales/gh-pt.json';
+import gh_ko from '../locales/gh-ko.json';
+import gh_fr from '../locales/gh-fr.json';
 import base_zh from '../locales/zh.json';
 import base_ja from '../locales/ja.json';
 import base_de from '../locales/de.json';
@@ -14,13 +43,16 @@ import base_es from '../locales/es.json';
 import base_ru from '../locales/ru.json';
 import base_pt from '../locales/pt.json';
 import base_ko from '../locales/ko.json';
+import base_fr from '../locales/fr.json';
 
-export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'}] as const;
+export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'fr',label:'Français'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'}] as const;
 export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
-const english:Record<string,string>={...baseEnglish,...tune_en};
-const [zh,ja,de,es,ru,pt,ko]=[{...base_zh,...tune_zh},{...base_ja,...tune_ja},{...base_de,...tune_de},{...base_es,...tune_es},{...base_ru,...tune_ru},{...base_pt,...tune_pt},{...base_ko,...tune_ko}] as Record<string,string>[];
-const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,es,ru,pt,ko};
+/* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
+/* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en};
+const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr}] as Record<string,string>[];
+const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,fr,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);
 const ids=new Map(Object.entries(english).map(([id,value])=>[decode(value),id]));
@@ -36,7 +68,7 @@ const patterns=Object.entries(english).filter(([,value])=>/\{\d+\}/.test(value))
  expression+=escape(value.slice(at));
  return{id,slots,pattern:new RegExp('^'+expression+'$'),specificity:value.replace(/\{\d+\}/g,'').length};
 }).sort((a,b)=>b.specificity-a.specificity);
-const localizedTemplateSlots:Record<string,number[]>={s2473:[1,2],s0825:[0,1],s2455:[0],s2456:[0],s7400:[1]};
+const localizedTemplateSlots:Record<string,number[]>={s1242:[0],s2473:[1,2],s0825:[0,1],s2455:[0],s2456:[0],s7400:[1]};
 
 /** Translate interface copy only. Non-string React children pass through unchanged. */
 export function tr<T>(value:T,values?:readonly unknown[]):T{

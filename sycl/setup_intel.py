@@ -11,7 +11,7 @@ setup.py's, unchanged.  What is replaced:
     sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
-  - pictures (on by default on an Alchemist card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
+  - pictures (on by default on every Arc card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
     AMD packages carry beside their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
     /dev/shm, which strata-sycl.sh shares with the container.  The reader choice is strata_control/vision_reader.py's one rule (CPU reader under
     24 GB of VRAM); an Arc of 24 GB or more also keeps the CPU reader unless --vision gpu asks for the SYCL one (`strata-vision-sycl`, compiled
@@ -133,16 +133,26 @@ def drop(args, name, value=False):
 # Pictures on an Intel Arc: the CPU reader encodes on the host and the embeddings reach the engine through /dev/shm.  Tested end to end
 # on the Arc A750 (i915, Alchemist; 2026-10-19, docs/INTEL.md): 47 picture requests (shapes, text, two pictures in one request, a picture in the
 # history, text after pictures) through the CPU reader and the same through the SYCL GPU reader, in the container and outside it, no GPU fault.
-# The first picture request on the Arc Pro B70 (Battlemage, xe, engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU with the CPU reader: an xe
-# engine reset (ccs + bcs) and "Fault response: Unsuccessful -EINVAL", the request ended 503.  That fault is in the engine on xe and has not been
-# looked at again (the B70 is gone), so a Battlemage card keeps pictures opt-in (--vision yes) and is told so.
-PICTURES_ON_BY_DEFAULT_IDS = ALCHEMIST_IDS
+# Owner decision 2026-10-22: an Arc B-series (Battlemage, xe) card is allowed to run like any Arc, pictures included.  The first picture request on the
+# Arc Pro B70 (engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU with the CPU reader: an xe engine reset (ccs + bcs) and "Fault response:
+# Unsuccessful -EINVAL", the request ended 503.  That fault has not been looked at again (the B70 is gone), so it is a known risk, not a refusal:
+# pictures are on, the CPU reader is kept, and the person is told once that the card is new to Strata and how to report a problem.
+PICTURES_ON_BY_DEFAULT_IDS = ALCHEMIST_IDS | frozenset(INTEL_ARC)      # every Arc card setup knows
 
 
 def pictures_on_by_default(driver: str, devid: str = "") -> bool:
-    """Pictures are on in setup's default for an Alchemist card (i915, or the A-series on xe), which has run them; a Battlemage card
-    (xe, the B-series) keeps them opt-in until the first-picture GPU fault of the B70 is understood."""
-    return driver == "i915" or devid in PICTURES_ON_BY_DEFAULT_IDS
+    """Pictures are on in setup's default for every Arc card (they were opt-in on a B-series card until 2026-10-22)."""
+    return True
+
+
+def is_b_series(driver: str, devid: str = "") -> bool:
+    """A Battlemage (B-series) card: on xe and not an Alchemist id (an unknown id on xe counts as one: it is newer than the A-series)."""
+    return driver != "i915" and devid not in ALCHEMIST_IDS
+
+
+B_SERIES_LINE = ("This Intel Arc B-series card is new to Strata and we have not tested it ourselves, so pictures and long answers may fail on it. "
+                 "If something fails, run again with --vision no to turn pictures off, and tell us at https://github.com/Niko1221/Strata/issues "
+                 "(say it is a B-series card and attach the engine log).")
 
 
 READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: BUILD.json and, for pictures, the CPU reader strata-vision
@@ -537,10 +547,8 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv and not pictures_on_by_default(intel[0]["driver"], intel[0].get("devid", "")):
-        sys.argv += ["--vision", "none"]
-        S.say("  Pictures are off by default on this card (Arc Pro B70 test of 2026-10-19: the first picture reset the GPU, docs/INTEL.md): "
-              "--vision yes turns them on")
+    if is_b_series(intel[0]["driver"], intel[0].get("devid", "")):
+        S.say("  " + B_SERIES_LINE)
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())

@@ -39,6 +39,14 @@ class Choice(unittest.TestCase):
             self.assertEqual(tk, 12, archs)
             self.assertIn(f"sm_{min(archs)} is older than CUDA 13 supports", why)
 
+    def test_a_driver_too_old_for_cuda13_gets_the_cuda12_engine(self):       # #3843
+        self.assertEqual(setup.cuda_choice([86], None, 576)[0], 12)
+        self.assertIn("older than CUDA 13 needs", setup.cuda_choice([86], None, 576)[1])
+        self.assertEqual(setup.cuda_choice([86], None, 580), (13, None))
+        self.assertEqual(setup.cuda_choice([86], None, 0), (13, None))          # driver unknown: as before
+        self.assertEqual(setup.cuda_choice([86], None, 500), (13, None))        # too old for both: setup stops with the driver message
+        self.assertEqual(setup.cuda_choice([86], "13", 576)[0], 13)             # chosen by hand: kept
+
     def test_the_override_is_honored_with_a_warning(self):
         tk, why = setup.cuda_choice([70], "13")
         self.assertEqual(tk, 13)                       # recommend, never force: kept, and said
@@ -80,8 +88,32 @@ class OptIn(unittest.TestCase):
         self.assertIn("only kind", setup.old_gpus_opt_in([V100]))
         self.assertIsNone(setup.old_gpus_opt_in([V100], other=True))            # an AMD card it can use instead
         self.assertIsNone(setup.old_gpus_opt_in([card(0, "GTX 980", 4.0, "52")]))
+        # #3218: a Maxwell card is never routed to the CUDA 12 engine (it holds no sm_52 code), with or without a switch
+        m6000 = card(0, "Quadro M6000", 24.0, "52")
+        self.assertTrue(setup.sm60_card("60") and setup.sm60_card("70") and not setup.sm60_card("75"))
+        self.assertFalse(setup.sm60_card("52"))
+        self.assertIn("not supported", setup.gpu_problem(m6000))
+        self.assertIn("Maxwell only runs from a source build", setup.gpu_problem(m6000))
+        self.assertNotIn("experimental: choose it", setup.gpu_problem(m6000))
+        self.assertIsNone(setup.old_gpus_opt_in([m6000]))
+        for env in ({"STRATA_EXPERIMENTAL_SM60": "1"}, {"STRATA_EXPERIMENTAL_SM52": "1"}):
+            with mock.patch.dict(os.environ, env):
+                self.assertFalse(setup.sm60_card("52"))
+                self.assertIn("not supported", setup.gpu_problem(m6000))
+                self.assertIsNone(setup.old_gpus_opt_in([m6000]))
+        self.assertIsNone(setup.old_gpus_opt_in([m6000], named=[0], cuda="12"))   # naming it does not admit it either
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
             self.assertEqual(setup.old_gpus_opt_in([rtx, v100]), "STRATA_EXPERIMENTAL_SM60=1")
+
+    def test_maxwell_note_is_a_warning_with_the_recipe(self):
+        m6000 = card(0, "Quadro M6000", 24.0, "52")
+        note = setup.maxwell_note([m6000, {**m6000, "index": 1}])
+        self.assertIn("GPU 0 (Quadro M6000), GPU 1 (Quadro M6000)", note)
+        self.assertIn("-DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=52", note)
+        self.assertIn("docs/OLDER_GPUS.md", note)
+        self.assertNotIn("STRATA_EXPERIMENTAL_SM52", note)                       # no switch the user has to set
+        self.assertEqual(setup.maxwell_note([V100, P40]), "")
+        self.assertEqual(setup.maxwell_note([]), "")
 
     def test_named(self):
         self.assertEqual(setup.named_gpus(None, "0,2"), [0, 2])
@@ -189,6 +221,26 @@ class Install(unittest.TestCase):
         self.assertIn("sm_70 is older than CUDA 13 supports", out)
         self.assertIn("experimental", out)
 
+    def test_a_maxwell_pc_is_warned_with_the_recipe_and_gets_no_engine(self):
+        """#3218: no ready-made engine holds sm_52 code, so none is installed; the way forward is printed, with or
+        without any switch (a user never has to set one)."""
+        m6000 = card(0, "Quadro M6000", 24.0, "52")
+        for env in (None, {"STRATA_EXPERIMENTAL_SM60": "1"}, {"STRATA_EXPERIMENTAL_SM52": "1"}):
+            with self.subTest(env=env):
+                code, out, cfg, calls, libs = self.run_setup(95.0, [m6000], argv_for("qwen", "IQ3_XXS"), env)
+                self.assertNotEqual(code, 0, out[-3000:])
+                self.assertEqual((calls, libs), ([], []))
+                self.assertIsNone(cfg)
+                self.assertIn("Maxwell (compute capability 5.2)", out)
+                self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=52", out)
+                self.assertIn("docs/OLDER_GPUS.md", out)
+
+    def test_a_maxwell_card_beside_a_newer_one_is_not_a_warning(self):
+        rtx = card(0, "NVIDIA GeForce RTX 3090", 24.0, "86")
+        code, out, cfg, calls, _ = self.run_setup(95.0, [rtx, card(1, "GTX 980", 4.0, "52")], argv_for("qwen", "IQ3_XXS"))
+        self.assertEqual((code, calls), (0, [13]), out[-3000:])
+        self.assertNotIn("Maxwell (compute capability", out)
+
     def test_a_p40_with_an_older_driver(self):
         code, out, cfg, calls, _ = self.run_setup(95.0, [P40], argv_for("qwen", "IQ3_XXS"))
         self.assertEqual(code, 0, out[-3000:])                 # driver 535: enough for CUDA 12
@@ -225,12 +277,17 @@ class Install(unittest.TestCase):
                 self.assertEqual((calls, cfg["cuda"]), ([12], 12))
                 self.assertIn("--cuda 12 (as you chose", out)
 
-    def test_an_old_driver_is_told_about_cuda12(self):
-        code, out, _, _, _ = self.run_setup(127.8, [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89", "550.54")],
+    def test_an_old_driver_gets_cuda12_by_itself(self):                     # #3843: said in one line, not a stop
+        code, out, cfg, calls, _ = self.run_setup(127.8, [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89", "550.54")],
+                                                  argv_for("qwen", "IQ3_XXS"))
+        self.assertEqual(code, 0, out[-3000:])
+        self.assertEqual((calls, cfg["cuda"]), ([12], 12))
+        self.assertIn("older than CUDA 13 needs (580): this model runs the CUDA 12 engine", out)
+        code, out, _, _, _ = self.run_setup(127.8, [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89", "470.10")],
                                             argv_for("qwen", "IQ3_XXS"))
-        self.assertEqual(code, 1)
-        self.assertIn("580 or newer is needed", out)
-        self.assertIn("--cuda 12", out)
+        self.assertEqual(code, 1)                                                # too old for both: the stop stays
+        self.assertIn("is too old", out)
+        self.assertNotIn("--cuda 12", out)
         code, out, cfg, calls, _ = self.run_setup(127.8, [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89", "550.54")],
                                                   argv_for("qwen", "IQ3_XXS") + ["--cuda", "12"])
         self.assertEqual(code, 0, out[-3000:])

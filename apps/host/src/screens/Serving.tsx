@@ -1,3 +1,4 @@
+import { copyText } from '../lib/clipboard';
 import { tr } from '../lib/i18n';
 import { appBaseUrl } from '../lib/connect-urls';
 import { deviceLabel, instanceLabel } from '../lib/runtime-models';
@@ -73,13 +74,7 @@ export function ServingScreen() {
         }
     }
     async function copyConnectionValue(value: string, label: string) {
-        try {
-            await navigator.clipboard.writeText(value);
-            pushToast('success', 'Copied', label);
-        }
-        catch {
-            pushToast('warn', 'Couldn’t copy', 'Select the value and copy it manually.');
-        }
+        await copyText(value, label, { toast: pushToast });
     }
     const code = `curl ${serving.baseUrl}${protocol === 'responses' ? '/responses' : protocol === 'openai' ? serving.endpoints.openai : serving.endpoints.anthropic} \\\n  -H 'Content-Type: application/json'${serving.access.apiKeySet ? " \\\n  -H 'Authorization: Bearer YOUR_API_KEY'" : ''} \\\n  -d '${JSON.stringify({ model: loaded?.apiModelId ?? 'YOUR_MODEL_ID', ...(protocol === 'responses' ? { input: 'Hello', store: false } : { ...(protocol === 'anthropic' ? { max_tokens: 256 } : {}), messages: [{ role: 'user', content: 'Hello' }] }) }, null, 2)}'`;
     return <Screen title={tr("Serving")} actions={<><Btn icon="link" onClick={() => setCloudflareOpen(true)}>{tr("Cloudflare tunnel")}</Btn><IconBtn name="info" title={tr("Connection guide")} onClick={() => setGuide(true)}/></>}><div className="stack stack--lg">

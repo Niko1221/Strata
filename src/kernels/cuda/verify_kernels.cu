@@ -5,7 +5,9 @@
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
+#include "strata/kernels/window_start.hpp"  // KVA: the draft layer's window floor
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/pdl.hpp"
 
@@ -276,7 +278,7 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
-    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const float d = q8_1_finite(q81_div(amax, 127.0f));   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit (#3948: and its division)
     const int8_t q = q8_1_quant(xi, d, amax);
     xq[idx / 32].qs[idx % 32] = q;
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
@@ -578,6 +580,29 @@ __global__ void broadcast_streams_kernel(const float* __restrict__ x, float* __r
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n * hc) return;
     R[(size_t) t * n * hc + i] = x[(size_t) t * n + i % n];
+}
+
+__global__ void hc_mean_streams_kernel(const float* __restrict__ R, float* __restrict__ out, int64_t n, int hc) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float s = 0.0f;
+    for (int c = 0; c < hc; ++c) s += R[(size_t) c * n + i];
+    out[i] = s / (float) hc;
+}
+
+__global__ void route_marginal_stats_kernel(const int32_t* __restrict__ ids, int n, int k, unsigned long long* acc) {
+    const int r = threadIdx.x;
+    if (r >= n) return;
+    int fresh = 0;
+    for (int j = 0; j < k; ++j) {
+        const int32_t e = ids[r * k + j];
+        bool seen = false;
+        for (int j2 = 0; j2 < j && !seen; ++j2) seen = ids[r * k + j2] == e;
+        for (int r2 = 0; r2 < r && !seen; ++r2)
+            for (int j2 = 0; j2 < k && !seen; ++j2) seen = ids[r2 * k + j2] == e;
+        if (!seen) ++fresh;
+    }
+    atomicAdd(acc + r, (unsigned long long) fresh);
 }
 
 __global__ void copy_indexed_kernel(float* __restrict__ dst, const float* __restrict__ src, int64_t stride,
@@ -991,6 +1016,30 @@ __global__ void window_ids_kernel(int32_t* steps, int window, int32_t* ids, long
 void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, void* stream) {
     window_ids_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride);
     check("window_ids");
+}
+
+namespace {
+// window_ids with a floor read from (mapped) memory when the kernel RUNS: the captured graph keeps the pointer, the
+// value changes between sessions.  A floor of 0 gives window_ids' selection exactly (strata::kernels::window_start).
+__global__ void window_ids_floor_kernel(int32_t* steps, int window, int32_t* ids, long long stride,
+                                        const volatile int32_t* floor_cell) {
+    const int q = blockIdx.y;
+    int32_t* st = steps + q * 4;
+    const int n_kv = st[1];
+    const int start = strata::kernels::window_start(n_kv, window, *floor_cell);
+    const int width = n_kv - start;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < width; j += gridDim.x * blockDim.x)
+        ids[q * stride + j] = start + j;
+    __syncthreads();
+    if (blockIdx.x == 0 && threadIdx.x == 0) st[3] = width;
+}
+}  // namespace
+
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream) {
+    window_ids_floor_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride,
+                                                                                    floor_cell);
+    check("window_ids_floor");
 }
 
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
@@ -1512,6 +1561,16 @@ void broadcast_streams(const float* x, float* R, int64_t n_embd, int hc, int n_t
     broadcast_streams_kernel<<<dim3((unsigned) ((n_embd * hc + 255) / 256), (unsigned) n_tok), 256, 0,
                                (cudaStream_t) stream>>>(x, R, n_embd, hc);
     check("broadcast_streams");
+}
+
+void hc_mean_streams(const float* R, float* out, int64_t n_embd, int hc, void* stream) {
+    hc_mean_streams_kernel<<<(unsigned) ((n_embd + 255) / 256), 256, 0, (cudaStream_t) stream>>>(R, out, n_embd, hc);
+    check("hc_mean_streams");
+}
+
+void route_marginal_stats(const int32_t* ids, int n, int k, unsigned long long* acc, void* stream) {
+    route_marginal_stats_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(ids, n, k, acc);
+    check("route_marginal_stats");
 }
 
 void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* index, int64_t n, void* stream) {

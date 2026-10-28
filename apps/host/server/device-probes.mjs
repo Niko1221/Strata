@@ -1,6 +1,7 @@
 /** Physical topology and GPU sensors; unavailable values stay null. */
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { probe, round } from './util.mjs';
+import { windowsGpuReading } from './windows-gpu.mjs';
 
 /** Unified GPUs share one system memory pool; dedicated GPUs each have their own. */
 export function gpuMemoryTotals(devices, readings) {
@@ -39,13 +40,15 @@ export function parseNvidiaDevices(raw) {
     return [{id:uuid,index:Number(index),sensorIndex:Number(index),busId:bus?.toLowerCase(),vendor:'nvidia',name,vramGb:round((number(memory)??0)/1024,1),unified:false,backend:'cuda',driver}];
   });
 }
+/** A percentage reading; "[N/A]" and out-of-range values are no reading. */
+const percentOf = v => { const n=number(v); return n!==null&&n>=0&&n<=100?n:null; };
 export function parseNvidiaReadings(raw) {
   return raw.split('\n').flatMap(line=>{
-    const [id,temp,load,memory,power,limit,gen,maxGen,width]=line.split(',').map(s=>s.trim());
+    const [id,temp,load,memory,power,limit,gen,maxGen,width,fan,clock]=line.split(',').map(s=>s.trim());
     if (!id?.startsWith('GPU-')) return [];
     const t=number(temp),u=number(load),m=number(memory);
     const positive = v => { const n=number(v); return n!==null&&n>=0?n:null; };
-    return [{id,temperatureC:t!==null&&t>=0&&t<=150?t:null,utilizationPct:u!==null&&u>=0&&u<=100?u:null,memoryUsedGb:m!==null&&m>=0?round(m/1024,2):null,powerW:positive(power),powerLimitW:positive(limit),pcieGen:positive(gen),pcieGenMax:positive(maxGen),pcieWidth:positive(width),pcieRxMbs:null}];
+    return [{id,temperatureC:t!==null&&t>=0&&t<=150?t:null,utilizationPct:u!==null&&u>=0&&u<=100?u:null,memoryUsedGb:m!==null&&m>=0?round(m/1024,2):null,powerW:positive(power),powerLimitW:positive(limit),pcieGen:positive(gen),pcieGenMax:positive(maxGen),pcieWidth:positive(width),pcieRxMbs:null,fanPct:percentOf(fan),clockMhz:positive(clock)}];
   });
 }
 export function parsePcieThroughput(raw) {
@@ -72,23 +75,30 @@ export async function detectDrmGpus() {
   }
   return result;
 }
-export async function readGpuTelemetry(gpus) {
+/** `transfer: false` skips the PCIe throughput sample (a second nvidia-smi); it only means something while a model runs. */
+export async function readGpuTelemetry(gpus, { transfer: wantTransfer = true, run = probe } = {}) {
   const now=new Date().toISOString();
   const hasNvidia=gpus.some(g=>g.vendor==='nvidia');
-  let raw=hasNvidia?await probe('nvidia-smi',['--query-gpu=uuid,temperature.gpu,utilization.gpu,memory.used,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current','--format=csv,noheader,nounits'],2000):'';
+  let raw=hasNvidia?await run('nvidia-smi',['--query-gpu=uuid,temperature.gpu,utilization.gpu,memory.used,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,fan.speed,clocks.current.graphics','--format=csv,noheader,nounits'],2000):'';
   // Older drivers can reject a field; retain their basic sensors in that case.
-  if(hasNvidia&&!raw)raw=await probe('nvidia-smi',['--query-gpu=uuid,temperature.gpu,utilization.gpu,memory.used','--format=csv,noheader,nounits'],2000);
+  if(hasNvidia&&!raw)raw=await run('nvidia-smi',['--query-gpu=uuid,temperature.gpu,utilization.gpu,memory.used','--format=csv,noheader,nounits'],2000);
   const nvidia=new Map(parseNvidiaReadings(raw).map(r=>[r.id,r]));
-  const transfer=hasNvidia?parsePcieThroughput(await probe('nvidia-smi',['dmon','-s','t','-c','1'],1500)):new Map();
+  const transfer=hasNvidia&&wantTransfer?parsePcieThroughput(await run('nvidia-smi',['dmon','-s','t','-c','1'],1500)):new Map();
   return Promise.all(gpus.map(async gpu=>{
     let reading=nvidia.get(gpu.id)??{id:gpu.id??`${gpu.vendor}:${gpu.index}`,temperatureC:null,utilizationPct:null,memoryUsedGb:null,powerW:null,powerLimitW:null,pcieGen:null,pcieGenMax:null,pcieWidth:null,pcieRxMbs:null};
     if(gpu.vendor==='nvidia')reading={...reading,pcieRxMbs:transfer.get(gpu.sensorIndex??gpu.index)??null};
+    if(gpu.luid&&!nvidia.has(gpu.id)) {
+      const counters=windowsGpuReading(gpu.luid);
+      if(counters)reading={...reading,utilizationPct:counters.utilizationPct,memoryUsedGb:round(counters.memoryUsedGb,2)};
+    }
     if(gpu.sensorPath&&!nvidia.has(gpu.id)) {
-      let temperature=null,power=null,powerLimit=null;
+      let temperature=null,power=null,powerLimit=null,fanPwm=null,clockHz=null;
       for(const hwmon of await list(`${gpu.sensorPath}/hwmon`)) {
         const folder=`${gpu.sensorPath}/hwmon/${hwmon}`,inputs=(await list(folder)).filter(n=>/^temp\d+_input$/.test(n));
         power ??= number(await read(`${folder}/power1_average`)) ?? number(await read(`${folder}/power1_input`));
         powerLimit ??= number(await read(`${folder}/power1_cap`));
+        fanPwm ??= number(await read(`${folder}/pwm1`));          // 0-255, the fan's duty as the amdgpu driver reports it
+        clockHz ??= number(await read(`${folder}/freq1_input`));  // the graphics clock in Hz
         for(const input of inputs) {
           const label=await read(`${folder}/${input.replace('_input','_label')}`);
           if(label&&!/edge|gpu/i.test(label))continue;
@@ -100,7 +110,7 @@ export async function readGpuTelemetry(gpus) {
       const utilization=number(await read(`${gpu.sensorPath}/gpu_busy_percent`)),bytes=number(await read(`${gpu.sensorPath}/mem_info_vram_used`));
       const gen=path=>read(path).then(raw=>({2.5:1,5:2,8:3,16:4,32:5,64:6}[Number.parseFloat(raw)]??null));
       const [pcieGen,pcieGenMax,width]=await Promise.all([gen(`${gpu.sensorPath}/current_link_speed`),gen(`${gpu.sensorPath}/max_link_speed`),read(`${gpu.sensorPath}/current_link_width`)]);
-      reading={...reading,temperatureC:temperature,utilizationPct:utilization!==null&&utilization>=0&&utilization<=100?utilization:null,memoryUsedGb:bytes!==null&&bytes>=0?round(bytes/1024**3,2):null,powerW:power!==null&&power>=0?power/1e6:null,powerLimitW:powerLimit!==null&&powerLimit>=0?powerLimit/1e6:null,pcieGen,pcieGenMax,pcieWidth:number(width)};
+      reading={...reading,fanPct:fanPwm!==null&&fanPwm>=0&&fanPwm<=255?Math.round(fanPwm/255*100):null,clockMhz:clockHz!==null&&clockHz>0?Math.round(clockHz/1e6):null,temperatureC:temperature,utilizationPct:utilization!==null&&utilization>=0&&utilization<=100?utilization:null,memoryUsedGb:bytes!==null&&bytes>=0?round(bytes/1024**3,2):null,powerW:power!==null&&power>=0?power/1e6:null,powerLimitW:powerLimit!==null&&powerLimit>=0?powerLimit/1e6:null,pcieGen,pcieGenMax,pcieWidth:number(width)};
     }
     return {...reading,sampledAt:now,source:Object.entries(reading).some(([key,value])=>key!=='id'&&typeof value==='number')?'sensor':'none'};
   }));

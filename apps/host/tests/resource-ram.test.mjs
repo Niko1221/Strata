@@ -90,3 +90,28 @@ test('an engine that stopped because the GPU expert cache got no room is started
   assert.equal(flag(saferStart(cfg, tenGb, undefined, 'server_exited: strata serve: verify: needs the profile-filled VRAM expert tier').config.args, '--vram-reserve-mib'), '1092', 'without the numbers: a fixed step, no model size needed');
   assert.equal(cfg.args[cfg.args.indexOf('--vram-reserve-mib') + 1], '2048', 'the input config is not changed');
 });
+
+test('0.2.3 tuning: the Work profile takes 80% of the PHYSICAL cores rounded up, never more than the cores less the host thread', () => {
+  const w = cores => Number(flag(resourceSettings({ gpu: 0, args: [] }, { cpu: { cores }, ram_gb: 64, gpus: [{ index: 0, vram_gb: 12 }] }, 'work').args, '--pool-workers'));
+  assert.equal(w(6), 5, 'Ryzen 5 7600: the engine\'s own 5 (floor gave 4, 8-10% slower; 12 logical threads gave 9 in 0.2.1)');
+  assert.equal(w(4), 3);
+  assert.equal(w(8), 7);
+  assert.equal(w(10), 8);
+  assert.equal(w(12), 10);
+  assert.equal(w(16), 13);
+  assert.equal(w(2), 1);
+  const own = { gpu: 0, args: ['--pool-workers', '3'] };
+  assert.equal(flag(resourceSettings(own, { cpu: { cores: 6 }, ram_gb: 64, gpus: [] }, 'work').args, '--pool-workers'), '3', 'a count the person set stays when it is lower');
+});
+
+test('0.2.3 tuning: Work keeps a fifth of the card but no more than 1536 MiB on a card of 16 GB or less; a CPU picture reader needs no 2048 floor', () => {
+  const card = gb => ({ cpu: { cores: 6 }, ram_gb: 64, gpus: [{ index: 0, vram_gb: gb, drives_display: true }] });
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, card(11.9), 'work').vram_reserve_mib, 1536, 'RTX 5070: 2437 gave 38 tok/s, 1536 gave 46 (Gyro-S 64K), with 1.1 GiB still free');
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, card(16), 'work').vram_reserve_mib, 1536);
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, card(24), 'work').vram_reserve_mib, 4915, 'above 16 GB the fifth stays');
+  assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: false } }, card(12), 'performance').vram_reserve_mib, 1536, 'the CPU reader takes no VRAM');
+  assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: false } }, card(12), 'work').vram_reserve_mib, 1536);
+  assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: true } }, card(12), 'performance').vram_reserve_mib, 2048, 'the GPU reader keeps its 2048');
+  assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: true } }, card(12), 'work').vram_reserve_mib, 2048);
+  assert.equal(resourceSettings({ gpu: 0, args: ['--vram-reserve-mib', '3000'], user_args: ['--vram-reserve-mib', '3000'] }, card(12), 'work').vram_reserve_mib, 3000, 'the person\'s own number is kept');
+});

@@ -365,14 +365,98 @@ class ToolLoop(unittest.TestCase):
         self.assertNotIn("y" * 501, second)
 
     def test_max_rounds(self):
-        self.start(call_script("fake__echo", text="again"))          # the model never stops calling
+        self.start(call_script("fake__echo", text="first result"),
+                   call_script("fake__echo", text="second result"), "</think>\n\nSummary of both results.")
         code, text = self.post({"strata_mcp": True})
-        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
-        self.assertEqual(len(self.engine.prompts), 3)                # 2 rounds of tools, then the limit
+        self.assertEqual(code, 200, text)
+        chunks = self.chunks(text)
+        mcp = [chunk["strata_mcp"] for chunk in chunks if "strata_mcp" in chunk]
+        self.assertEqual(len(self.engine.prompts), 3)
         self.assertEqual(sum(m["event"] == "call" for m in mcp), 2)
         self.assertIn({"event": "limit", "max_rounds": 2}, mcp)
-        self.assertTrue(mcp[-1].get("skipped"))
-        self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertFalse(any(m.get("skipped") for m in mcp))
+        self.assertIn("Summary of both results.", "".join(chunk["choices"][0]["delta"].get("content", "")
+                                                        for chunk in chunks))
+        final_prompt = self.engine.prompt_text(2)
+        self.assertIn("<tool_response>\nfirst result\n</tool_response>", final_prompt)
+        self.assertIn("<tool_response>\nsecond result\n</tool_response>", final_prompt)
+        self.assertIn("No tools are available for this final reply", final_prompt)
+        self.assertNotIn("<tools>", final_prompt)
+        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(chunks[-1]["usage"]["prompt_tokens"], len(self.engine.prompts[2]))
+
+    def test_max_rounds_non_stream_with_existing_system(self):
+        self.hub.settings["max_rounds"] = 1
+        self.start(call_script("fake__add", a=2, b=3), "</think>\n\nThe result is 5.")
+        code, text = self.post({"strata_mcp": True, "messages": [
+            {"role": "system", "content": "Keep answers concise."},
+            {"role": "developer", "content": "Use the provided evidence."},
+            {"role": "user", "content": "Add 2 and 3."}]}, stream=False)
+        self.assertEqual(code, 200, text)
+        response = json.loads(text)
+        self.assertIn("The result is 5.", response["choices"][0]["message"]["content"])
+        final_prompt = self.engine.prompt_text(1)
+        self.assertIn("Keep answers concise.", final_prompt)
+        self.assertIn("Use the provided evidence.", final_prompt)
+        self.assertIn("<tool_response>\n5\n</tool_response>", final_prompt)
+        self.assertNotIn("<tools>", final_prompt)
+
+    def test_max_rounds_counts_rounds_with_multiple_calls(self):
+        self.hub.settings["max_rounds"] = 1
+        self.start(call_script("fake__echo", text="source A") + "\n" +
+                   call_script("fake__echo", text="source B"), "</think>\n\nBoth sources agree.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        chunks = self.chunks(text)
+        mcp = [chunk["strata_mcp"] for chunk in chunks if "strata_mcp" in chunk]
+        calls = [event for event in mcp if event["event"] == "call"]
+        self.assertEqual([event["round"] for event in calls], [1, 1])
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("<tool_response>\nsource A\n</tool_response>", self.engine.prompt_text(1))
+        self.assertIn("<tool_response>\nsource B\n</tool_response>", self.engine.prompt_text(1))
+        self.assertIn("Both sources agree.", "".join(chunk["choices"][0]["delta"].get("content", "")
+                                                  for chunk in chunks))
+
+    def test_sixteen_rounds_then_final_answer(self):
+        self.hub.settings["max_rounds"] = 16
+        scripts = [call_script("fake__echo", text=f"source {index}") for index in range(16)]
+        self.start(*scripts, "</think>\n\nSummary after sixteen rounds.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        chunks = self.chunks(text)
+        mcp = [chunk["strata_mcp"] for chunk in chunks if "strata_mcp" in chunk]
+        self.assertEqual(sum(event["event"] == "call" for event in mcp), 16)
+        self.assertIn({"event": "limit", "max_rounds": 16}, mcp)
+        self.assertEqual(len(self.engine.prompts), 17)
+        final_prompt = self.engine.prompt_text(16)
+        self.assertIn("<tool_response>\nsource 0\n</tool_response>", final_prompt)
+        self.assertIn("<tool_response>\nsource 15\n</tool_response>", final_prompt)
+        self.assertNotIn("<tools>", final_prompt)
+        self.assertIn("Summary after sixteen rounds.", "".join(chunk["choices"][0]["delta"].get("content", "")
+                                                              for chunk in chunks))
+
+    def test_max_rounds_preserves_errors_and_disables_client_tools(self):
+        self.hub.settings["max_rounds"] = 1
+        own = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+        self.start(call_script("fake__fail"), "</think>\n\nThe source failed; here is what is known.")
+        code, text = self.post({"strata_mcp": True, "tools": own})
+        self.assertEqual(code, 200, text)
+        chunks = self.chunks(text)
+        self.assertFalse(any(chunk["choices"][0]["delta"].get("tool_calls") for chunk in chunks))
+        self.assertIn("error: it failed on purpose", self.engine.prompt_text(1))
+        self.assertNotIn("<tools>", self.engine.prompt_text(1))
+        self.assertIn("here is what is known", "".join(chunk["choices"][0]["delta"].get("content", "")
+                                                     for chunk in chunks))
+
+    def test_max_rounds_does_not_execute_more_calls(self):
+        self.hub.settings["max_rounds"] = 1
+        self.start(call_script("fake__echo", text="known"), call_script("fake__echo", text="must not run"))
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        self.assertEqual(len(self.engine.prompts), 2)
+        mcp = [chunk["strata_mcp"] for chunk in self.chunks(text) if "strata_mcp" in chunk]
+        self.assertEqual(sum(event["event"] == "call" for event in mcp), 1)
+        self.assertNotIn("must not run", Path(self.log.name).read_text())
 
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""
