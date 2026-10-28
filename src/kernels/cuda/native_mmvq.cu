@@ -1941,6 +1941,121 @@ struct IlQ3K {
         }
     }
 };
+// IQ3_XXS (18) and IQ3_S (21): block layouts as ggml-common.h:410-421; load and apply repeat Split<18> / Split<21>.
+#include "iq3_grid.inc.h"
+struct Iq3XxsBlock { uint16_t d; uint8_t qs[3 * (QK / 8)]; };
+struct Iq3SBlock { uint16_t d; uint8_t qs[QK / 4]; uint8_t qh[QK / 32]; uint8_t signs[QK / 8]; uint8_t scales[QK / 64]; };
+static_assert(sizeof(Iq3XxsBlock) == 98 && sizeof(Iq3SBlock) == 110, "IQ3 block layouts");
+// Two u16 loads: the 98/110-byte blocks leave their ints 2-byte aligned.
+__device__ __forceinline__ int iq3_int_b2(const void* p, int i32) {
+    const auto* x = static_cast<const uint16_t*>(p) + 2 * i32;
+    return int(x[0]) | (int(x[1]) << 16);
+}
+struct Iq3IlDot { int g[8]; int ls; float dw; };
+__device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
+    const uint32_t p = __popc(v) & 1;
+    const uint32_t s = v ^ p << 7;
+    return s * 0x01010101;
+}
+// Lane l: weight words 2 * (l % 8) on, and q8_1 block l % 8 of each 256-superblock.
+struct Iq3XxsIlTraits {
+    using Block = Iq3XxsBlock;
+    using W = Iq3IlDot;
+    [[maybe_unused]] static constexpr int TYPE = 18;   // ggml type
+    static constexpr int DIV = QK, T = 8, KBY = QK / Q8K;
+    __device__ static int kqs(int tid) { return 2 * (tid % T); }
+    __device__ static W load(const Block* __restrict__ bq3, int iqs) {
+        const int2 q3_packed = make_int2(iq3_int_b2(bq3->qs, iqs), iq3_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* q3 = reinterpret_cast<const uint8_t*>(&q3_packed);
+        const uint32_t aux32 = uint32_t(iq3_int_b2(bq3->qs, QK / 16 + iqs / 2));
+        W r;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {   // iq_kernels.cu Split<18>::load
+            const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
+            const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
+            const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+            r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
+            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+            r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+        }
+        r.ls = int(aux32 >> 28);
+        r.dw = __half2float(__ushort_as_half(bq3->d));
+        return r;
+    }
+};
+struct Iq3SIlTraits {
+    using Block = Iq3SBlock;
+    using W = Iq3IlDot;
+    [[maybe_unused]] static constexpr int TYPE = 21;   // ggml type
+    static constexpr int DIV = QK, T = 8, KBY = QK / Q8K;
+    __device__ static int kqs(int tid) { return 2 * (tid % T); }
+    __device__ static W load(const Block* __restrict__ bq3, int iqs) {
+        const int2 qs_packed = make_int2(iq3_int_b2(bq3->qs, iqs + 0), iq3_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* qs = reinterpret_cast<const uint8_t*>(&qs_packed);
+        const int qh = bq3->qh[iqs / 2];
+        const int signs_packed_32 = iq3_int_b2(bq3->signs, iqs / 2);
+        const uint8_t* signs_packed_8 = reinterpret_cast<const uint8_t*>(&signs_packed_32);
+        W r;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {   // iq_kernels.cu Split<21>::load
+            const int2 grid_pos = make_int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
+                                            iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+            const int signs0 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21), 0x00000000);
+            const int signs1 = __vcmpne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17), 0x00000000);
+            r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
+            r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+        }
+        r.ls = 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+        r.dw = __half2float(__ushort_as_half(bq3->d));
+        return r;
+    }
+};
+template <int NC, class X>
+__device__ __forceinline__ void iq3_cols(const X& x, int b, int (&u)[8][NC], float (&d8)[NC]) {
+#pragma unroll
+    for (int j = 0; j < 8; ++j) x.u(b, j, u[j]);
+    x.scales(b, d8);
+}
+struct IlIQ3XXS {
+    using F = Iq3XxsIlTraits;
+    static constexpr bool PM = false;
+    static constexpr bool HAS_PF = false;   // no PF variant (as IlQ3K)
+    template <int NC, class X>
+    __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
+        int u[8][NC];
+        float d8[NC];
+        iq3_cols<NC>(x, kby + iqs / 2, u, d8);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {   // Split<18>::apply_u
+            int sumi = 0;
+#pragma unroll
+            for (int j = 0; j < 8; ++j) sumi = STRATA_DP4A(r.g[j], u[j][c], sumi);
+            sumi = (r.ls * sumi + sumi / 2) / 2;
+            const float d = r.dw * d8[c];
+            out[c] = d * sumi;
+        }
+    }
+};
+struct IlIQ3S {
+    using F = Iq3SIlTraits;
+    static constexpr bool PM = false;
+    static constexpr bool HAS_PF = false;   // no PF variant (as IlQ3K)
+    template <int NC, class X>
+    __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
+        int u[8][NC];
+        float d8[NC];
+        iq3_cols<NC>(x, kby + iqs / 2, u, d8);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {   // Split<21>::apply_u
+            int sumi = 0;
+#pragma unroll
+            for (int j = 0; j < 8; ++j) sumi = STRATA_DP4A(r.g[j], u[j][c], sumi);
+            sumi *= r.ls;
+            const float d = r.dw * d8[c];
+            out[c] = d * sumi;
+        }
+    }
+};
 struct IlQ6K {
     using F = Q6KTraits;
     static constexpr bool PM = false;
@@ -2168,6 +2283,10 @@ __global__ void native_mmvq_il_pf_kernel(const typename I::F::Block* __restrict_
 }
 #endif  // STRATA_IL_PF
 
+// IQ3 chains its chunks into one accumulator as the baseline does; four streams round differently under fp contraction.
+template <class I> inline constexpr bool kIlSingleStream = false;
+template <> inline constexpr bool kIlSingleStream<IlIQ3XXS> = true;
+template <> inline constexpr bool kIlSingleStream<IlIQ3S> = true;
 template <typename I, int NC, int R>
 __launch_bounds__(4 * WARP)
 __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
@@ -2202,7 +2321,7 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
                         float o[NC];
                         I::template apply<NC>(wv, x, kbx * F::KBY, kqs, o);
 #pragma unroll
-                        for (int c = 0; c < NC; ++c) acc[v][i][c] += o[c];
+                        for (int c = 0; c < NC; ++c) acc[kIlSingleStream<I> ? 0 : v][i][c] += o[c];
                     }
                 }
             }
@@ -3693,6 +3812,8 @@ constexpr IlRows kIlRows_1202[] = {
     {13, {{1, 0, 2, 2, 2}, {1, 0, 1, 0, 4}, {1, 1, 1, 4, 4}}},   // Q5_K
     {14, {{0, 2, 2, 1, 1}, {1, 2, 1, 0, 2}, {1, 0, 1, 1, 1}}},   // Q6_K
     {11, {{1, 0, 2, 2, 2}, {1, 0, 2, 4, 4}, {1, 0, 0, 4, 4}}},   // Q3_K
+    {18, {{0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 1, 1, 1}}},   // IQ3_XXS (T3 kept 0: run1/run2 disagreed on 2 cells)
+    {21, {{0, 0, 0, 1, 1}, {0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}}},   // IQ3_S
 };
 // Ada (sm_89): the cells where two cards agree.  mmvq_il_parity --bench --emit-table was run on an RTX 4070 (46 SMs,
 // #3453) and on an RTX 4080 (48 SMs, same issue); a cell is kept only where both runs give the same rows count, else 0
@@ -3767,6 +3888,8 @@ constexpr IlRows58 kIlRows58_1202[] = {   // 4 = 2 rows a warp here (launch_il_r
     {13, {{1, 4, 0, 4, 4}, {1, 0, 4, 4, 2}, {1, 1, 2, 0, 2}, {1, 1, 1, 1, 4}}},   // Q5_K
     {14, {{4, 4, 4, 4, 4}, {1, 4, 4, 4, 4}, {1, 4, 4, 4, 0}, {1, 1, 1, 1, 1}}},   // Q6_K
     {11, {{1, 0, 4, 0, 4}, {1, 0, 4, 4, 4}, {1, 4, 4, 0, 2}, {1, 4, 0, 4, 4}}},   // Q3_K
+    {18, {{0, 0, 2, 2, 2}, {0, 0, 0, 0, 0}, {1, 1, 4, 0, 2}, {1, 1, 0, 4, 0}}},   // IQ3_XXS (T7 class3 + T8 c2/c4: run1/run2 disagreed)
+    {21, {{0, 0, 2, 2, 2}, {0, 0, 0, 0, 0}, {1, 1, 4, 0, 2}, {1, 1, 2, 2, 2}}},   // IQ3_S (T7 class3: run1 4, run2 2 -> 0)
 };
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
@@ -3985,12 +4108,19 @@ bool il_arch_ok() {
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
+           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11 ||
+            ggml_type == 21 || ggml_type == 18);
 }
+
+// IQ3 IL only fires for n_in <= 4096: that is the range the parity gate covers and where the R9700 bench wins sit.
+// (IQ3 uses kIlSingleStream, so the accumulation order matches at any size; the cap is a coverage boundary, not a
+// rounding one.) Past it the call takes the plain kernel.
+constexpr int kIq3IlMaxNIn = 4096;
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream) {
-    if (!native_mmvq_il_supported(ggml_type, ncols, n_out)) {
+    const bool iq3 = ggml_type == 18 || ggml_type == 21;
+    if (!native_mmvq_il_supported(ggml_type, ncols, n_out) || (iq3 && n_in > kIq3IlMaxNIn)) {
         native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
         return;
     }
@@ -4008,6 +4138,8 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     case 13: launch_il_rows<IlQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 14: launch_il_rows<IlQ6K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 11: launch_il_rows<IlQ3K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 21: launch_il_rows<IlIQ3S>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 18: launch_il_rows<IlIQ3XXS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     }
     launch_check();
 }

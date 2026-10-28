@@ -139,6 +139,25 @@ const Case CASES[] = {
     {"Q3_K 2560x640", 11, 2560, 640, 256, 110, {108, -1}},
     {"Q3_K 2560x512", 11, 2560, 512, 256, 110, {108, -1}},
     {"Q3_K 2560x2051 odd", 11, 2560, 2051, 256, 110, {108, -1}},
+    // IQ3 inside the four-stream window (n_in <= 4096, native_mmvq_il's kIq3IlMaxNIn): 4096 is its edge
+    {"IQ3_S 2560x512", 21, 2560, 512, 256, 110, {0, -1}},
+    {"IQ3_S 2560x640", 21, 2560, 640, 256, 110, {0, -1}},
+    {"IQ3_S 2560x2051 odd", 21, 2560, 2051, 256, 110, {0, -1}},
+    {"IQ3_S 2560x6144", 21, 2560, 6144, 256, 110, {0, -1}},
+    {"IQ3_S 2560x10240", 21, 2560, 10240, 256, 110, {0, -1}},
+    {"IQ3_S 2560x12288", 21, 2560, 12288, 256, 110, {0, -1}},
+    {"IQ3_S 4096x640", 21, 4096, 640, 256, 110, {0, -1}},
+    {"IQ3_XXS 2560x512", 18, 2560, 512, 256, 98, {0, -1}},
+    {"IQ3_XXS 2560x640", 18, 2560, 640, 256, 98, {0, -1}},
+    {"IQ3_XXS 2560x2051 odd", 18, 2560, 2051, 256, 98, {0, -1}},
+    {"IQ3_XXS 2560x6144", 18, 2560, 6144, 256, 98, {0, -1}},
+    {"IQ3_XXS 2560x10240", 18, 2560, 10240, 256, 98, {0, -1}},
+    {"IQ3_XXS 2560x12288", 18, 2560, 12288, 256, 98, {0, -1}},
+    {"IQ3_XXS 4096x640", 18, 4096, 640, 256, 98, {0, -1}},
+    {"IQ3_S 256x512", 21, 256, 512, 256, 110, {0, -1}},
+    {"IQ3_S 512x512", 21, 512, 512, 256, 110, {0, -1}},
+    {"IQ3_XXS 256x512", 18, 256, 512, 256, 98, {0, -1}},
+    {"IQ3_XXS 512x512", 18, 512, 512, 256, 98, {0, -1}},
 };
 
 uint16_t sane_half(std::mt19937& rng) {
@@ -289,8 +308,8 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
 // A cell with several measured shapes takes the worst (smallest) gain of the best choice, as the shipped table does for
 // two cards; a class with no measured shape prints the value of its neighbour below it (or 0).
 void emit_table() {
-    const int types[] = {23, 12, 13, 14, 11};
-    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K", "Q3_K"};
+    const int types[] = {23, 12, 13, 14, 11, 21, 18};
+    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K", "Q3_K", "IQ3_S", "IQ3_XXS"};
     std::printf("// measured on this card by mmvq_il_parity --bench --emit-table\n");
     // per cell: the rows count whose WORST ratio to native_mmvq over the cell's measured shapes is the best, taken only
     // when that worst ratio is under 0.97 (else 0); a class with no measured shape takes its lower neighbour's value
@@ -318,7 +337,7 @@ void emit_table() {
         return best_worst < 0.97 ? best : 0;
     };
     const int pf_today = g_pf.empty() ? -1 : 0;
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 7; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 2; nc <= 4; ++nc) {
             int prev = 0;
@@ -332,7 +351,7 @@ void emit_table() {
         std::printf("}},   // %s\n", names[ti]);
     }
     std::printf("// 5-8 columns (kIlRows58_<cc>; rows 4 runs as 2 there):\n");
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 7; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 5; nc <= 8; ++nc) {
             int prev = 0;
@@ -347,7 +366,7 @@ void emit_table() {
     }
     if (!g_pf.empty()) {   // the joint (variant, rows) table over the listed variants: kIlPf_80 / kIlPf58_80
         std::printf("// variant << 4 | rows over --pf (kIlPf_<cc>), 2-4 columns:\n");
-        for (int ti = 0; ti < 5; ++ti) {
+        for (int ti = 0; ti < 7; ++ti) {
             std::printf("    {%d, {", types[ti]);
             for (int nc = 2; nc <= 4; ++nc) {
                 int prev = 0;
@@ -361,7 +380,7 @@ void emit_table() {
             std::printf("}},   // %s\n", names[ti]);
         }
         std::printf("// 5-8 columns (kIlPf58_<cc>):\n");
-        for (int ti = 0; ti < 5; ++ti) {
+        for (int ti = 0; ti < 7; ++ti) {
             std::printf("    {%d, {", types[ti]);
             for (int nc = 5; nc <= 8; ++nc) {
                 int prev = 0;
@@ -376,7 +395,7 @@ void emit_table() {
         }
     }
     std::printf("// one column (kIl1RowsShared):\n");
-    for (int ti = 0; ti < 5; ++ti) {
+    for (int ti = 0; ti < 7; ++ti) {
         std::printf("    {%d, {", types[ti]);
         int prev = 0;
         for (int cls = 0; cls < 5; ++cls) {
@@ -467,8 +486,12 @@ int check_tables() {
     // Q5_K at 2 columns / 512 rows = kIlRows_1202 {1, 0, 2, 2, 2}[class 0] = 1; Q6_K at 3 columns / 2560 rows
     // (class 1) = {1, 2, 1, 0, 2}[1] = 2; Q6_K at 6 columns / 512 rows in the 5-8 table = {1, 4, 4, 4, 0}[0] = 1;
     // one-column Q4_K at 6144 rows (class 2) = 2.  The key 120 (RTX 5070 / Blackwell small) must NOT answer these.
+    // IQ3 rows (job D): IQ3_S 4col/6144 (class 2) = {0,0,1,1,1}[2] = 1; IQ3_S 7col/2048 (class 1, 5-8 table) =
+    // {1,1,4,0,2}[1] = 1; IQ3_XXS 5col/10240 (class 3) = {0,0,2,2,2}[3] = 2; IQ3_XXS 6col is an all-zero row = 0.
     if (native_mmvq_il_rows_for(1202, 13, 2, 512) != 1 || native_mmvq_il_rows_for(1202, 14, 3, 2560) != 2 ||
-        native_mmvq_il_rows_for(1202, 14, 6, 512) != 1 || native_mmvq_il_rows_for(1202, 12, 1, 6144) != 2) {
+        native_mmvq_il_rows_for(1202, 14, 6, 512) != 1 || native_mmvq_il_rows_for(1202, 12, 1, 6144) != 2 ||
+        native_mmvq_il_rows_for(1202, 21, 4, 6144) != 1 || native_mmvq_il_rows_for(1202, 21, 7, 2048) != 1 ||
+        native_mmvq_il_rows_for(1202, 18, 5, 10240) != 2 || native_mmvq_il_rows_for(1202, 18, 6, 640) != 0) {
         ++bad;
         std::printf("FAIL table: the 1202 table is not the R9700's\n");
     }
