@@ -239,6 +239,9 @@ struct SessionWriteOptions {
     // tests: return an errno value to make a step fail ("write", "file_flush", "writer_thread", "rename",
     // "dir_flush"), 0 to go on; "writer_thread" forces the synchronous draining fallback
     std::function<int(const char* step)> fault;
+    // write format v3 (the append-log layout: header + generation group + 128 B trailer) instead of v2.
+    // Reading auto-detects by header version; this only chooses what a full write emits.
+    bool use_v3 = false;
     // tests only: one call per FULL block written to the OS by the write path; `byte_end` is the file bytes
     // written so far and (begin_ns, end_ns) are steady_clock nanoseconds bracketing the block's write_all.
     // Called on the writer thread - or the caller's thread when the writer could not start.
