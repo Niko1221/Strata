@@ -378,6 +378,26 @@ Merge the field into the existing config (this is not a complete run config), ch
 engine, and remove it to go back. If the engine runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`:
 `MemoryHigh` counts the page cache that `--mmap-experts` reads from.
 
+**The engine can lock that memory itself (HIP on Linux, opt-in: `"STRATA_HIP_MLOCK": "1"` in the `env`).** ROCm maps
+host memory for the GPU through a KFD userptr (HMM) without pinning it, unlike `cudaHostRegister` on NVIDIA. On a GPU
+without XNACK (every RDNA card) an invalidation of such a page - reclaim, swap, compaction - evicts all of the process's
+GPU queues until the range is validated again, and under memory pressure that can last tens of seconds: the "no progress
+for 60 s ... 0 layers served" stalls. With the switch on, every `cudaHostRegister`, `cudaHostAlloc` and `cudaMallocHost`
+of the HIP build also `mlock`s its range (and `munlock`s it before it is unregistered or freed). It needs an unlimited
+memlock limit (`ulimit -l unlimited`, `LimitMEMLOCK=infinity`, `docker --ulimit memlock=-1`): the start log prints the
+limit, and a refusal is logged once and changes nothing else. `/health` reports `locked_mib`. Locked memory cannot be
+swapped or reclaimed, so on a host short of RAM other processes take that pressure. Unset or `0`: nothing is locked.
+CUDA and Metal need no switch: their pinned memory is pinned already (Metal wires its arena itself).
+
+mlock does not stop page migration: set `vm.compact_unevictable_allowed=0` (persist it in `/etc/sysctl.d/`) so that
+compaction leaves locked pages in place. Still not covered: khugepaged, fork() of the engine, CMA / memory offline.
+
+Measured on one RX 7900 XTX (gfx1100, ROCm 7.10, Linux 6.18, 64 GB, Swift IQ3_S, 32 GiB of resident experts,
+`HSA_USERPTR_FOR_PAGED_MEM` at its default, `vm.compact_unevictable_allowed=0`), 30K-220K-token prompts while another
+process held RAM down to 5 GiB free: without the lock the engine stalled after 103 s and 63 s; with it, two 30-minute
+runs had no stall (37 GiB locked). `HSA_USERPTR_FOR_PAGED_MEM=0` is then not needed, and the default keeps the arena
+page-locked (prompt reads about twice as fast there).
+
 ## RDNA4 (gfx1201)
 
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per workgroup, the

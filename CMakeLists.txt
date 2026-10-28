@@ -519,6 +519,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(qsa_scores_gfx1100_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180
       ENVIRONMENT "STRATA_SCORES_THREAD=1;STRATA_SCORES_THREAD_TRACE=1")
   endif()
+  # STRATA_HIP_MLOCK's lock / unlock bookkeeping (strata/platform/hip_host_lock.hpp): Linux, no GPU needed
+  if(STRATA_ENABLE_HIP AND STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_source_files_properties(src/core/hip_host_lock_test.cpp PROPERTIES LANGUAGE HIP)
+    add_executable(hip_host_lock_test src/core/hip_host_lock_test.cpp)
+    target_include_directories(hip_host_lock_test PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(hip_host_lock_test PRIVATE ${_strata_gpu_runtime_target})
+    enable_testing()
+    add_test(NAME hip_host_lock_test COMMAND hip_host_lock_test)
+    set_tests_properties(hip_host_lock_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)

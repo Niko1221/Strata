@@ -2821,6 +2821,12 @@ class StartCrashReported(unittest.TestCase):
                     StrataEngine("strata", [], log=str(log))
             return str(cm.exception), out.getvalue()
 
+    def test_vm_locked_mib(self):
+        from serve.server import vm_locked_mib
+        self.assertIsNone(vm_locked_mib(None))
+        if sys.platform.startswith("linux"):
+            self.assertGreaterEqual(vm_locked_mib(os.getpid()), 0)
+
     def test_status_words(self):
         from serve.server import engine_crashed, engine_exit_words
         self.assertEqual(engine_exit_words(None), "")

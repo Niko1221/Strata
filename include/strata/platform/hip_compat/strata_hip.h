@@ -17,6 +17,7 @@
 #endif
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+#include "strata/platform/hip_host_lock.hpp"   // cudaHostRegister / cudaHostAlloc + mlock on Linux
 
 #include <cstdint>
 #include <cstdlib>
@@ -117,16 +118,16 @@ inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, in
 // whole kernel and the spin never sees the other side.  So every mapped allocation is made coherent here.
 inline hipError_t strata_host_alloc(void** p, size_t bytes, unsigned int flags) {
     if (flags & hipHostMallocMapped) flags |= hipHostMallocCoherent;
-    return hipHostMalloc(p, bytes, flags);
+    return ::strata::hip_compat::host_alloc(p, bytes, flags);   // + mlock on Linux (strata/platform/hip_host_lock.hpp)
 }
 template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, unsigned int flags) {
     return strata_host_alloc(reinterpret_cast<void**>(p), bytes, flags);
 }
 #define cudaHostAlloc strata_host_alloc
-#define cudaMallocHost(ptr, size) hipHostMalloc(ptr, size, hipHostMallocDefault)
-#define cudaFreeHost hipHostFree
-#define cudaHostRegister hipHostRegister
-#define cudaHostUnregister hipHostUnregister
+#define cudaMallocHost(ptr, size) ::strata::hip_compat::host_alloc(ptr, size, hipHostMallocDefault)
+#define cudaFreeHost ::strata::hip_compat::host_free
+#define cudaHostRegister ::strata::hip_compat::host_register
+#define cudaHostUnregister ::strata::hip_compat::host_unregister
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
