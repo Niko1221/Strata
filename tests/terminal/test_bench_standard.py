@@ -841,6 +841,15 @@ class CommandLineTests(StandardBase):
         self.assertIn("--track default", doc["run"]["command"])
         self.assertTrue(doc["run"]["command"].startswith("strata bench run"))
 
+    def test_run_command_can_be_pasted_back_into_a_shell(self):
+        out = self.root / "quoted"
+        code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--track", "default",
+                                      "--track-notes", "Tuned: both cards, production")
+        self.assertEqual(code, 0, errors)
+        command = bs.load(out)["run"]["command"]
+        self.assertRegex(command, r'--track-notes ["\']Tuned: both cards, production["\']')
+        self.assertIn("--track default", command)
+
     def test_report_reads_a_standard_result_in_three_forms(self):
         out = self.root / "rep"
         self.assertEqual(self.invoke("--url", self.server.url, "--out", str(out))[0], 0)
