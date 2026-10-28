@@ -68,5 +68,5 @@ test('the Models screen passes the set\'s disk to the card, and the version line
   assert.match(screen, /<PcFitCard [^>]*diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
   const picker = read('../src/components/VersionPicker.tsx');
   assert.match(picker, /tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(selected\.disk_gb\)\]\)/);
-  assert.match(picker, /: fit \? `\$\{gb\(fit\.memoryGb\)\} RAM \+ VRAM` : ''/, 'every other model keeps its line');
+assert.match(picker, /: fit \? tr\('\{0\} RAM \+ VRAM', \[gb\(fit\.memoryGb\)\]\) : ''/, 'every other model keeps its line');
 });

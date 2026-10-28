@@ -95,3 +95,33 @@ test('the conversation context and cache format move the estimate (#3832)', () =
   const tight = fitOn(q4, pc, true, { context: 524288, kv: 'int8' });
   assert.ok(tight.spillGb > fitOn(q4, pc).spillGb, 'what no longer fits is read from the SSD and the card says so');
 });
+
+test('512K on a 16 GB card is short, not "fits fully in memory" (#3832)', () => {
+  // The report of #3832: Swift 1.5 IQ3_XXS (43.9 GB RAM + VRAM), RTX 3080 Ti Laptop 16 GB, 63.8 GB RAM, 512K INT8.
+  const pc = { ram_gb: 63.8, vram_gb: 16 };
+  const model = { ram_needed_gb: 60, experts_gb: 42.9 };
+  const contexts = [8192, 32768, 131072, 524288];
+  const fits = contexts.map(context => fitOn(model, pc, true, { context, kv: 'int8' }));
+  assert.deepEqual(fits.map(f => f.verdict), ['fits', 'fits', 'fits', 'short'], '8K, 32K and 128K fit; 512K does not');
+  assert.deepEqual(fits.map(f => f.cacheGb), [0.2, 0.6, 1.9, 7.2], 'each context has its own cache size');
+  assert.ok(fits.every((f, i) => i === 0 || f.cacheGb > fits[i - 1].cacheGb), 'the cache grows with the context');
+  assert.ok(fits.every((f, i) => i === 0 || f.ramUseGb > fits[i - 1].ramUseGb), 'and takes more of the RAM as it grows');
+  const big = fits[3];
+  assert.ok(big.shortGb >= 0.5 && big.shortGb <= 2, `about 1 GB short, got ${big.shortGb}`);
+  assert.equal(big.spillGb, 0, 'the experts still sit in RAM: the disk figure alone used to hide the shortfall');
+  assert.equal(big.note.text, 'About {0} GB will be read from the SSD, so answers can be a little slower.');
+  assert.deepEqual(big.note.values, [big.shortGb]);
+  const lowRam = fitOn(model, { ram_gb: 32, vram_gb: 16 }, true, { context: 524288, kv: 'int8' });
+  assert.equal(lowRam.verdict, 'short');
+  assert.ok(lowRam.note.values[0] > 10, 'with 32 GB of RAM the line names the disk reading, not only the 1 GB the card is short');
+  assert.equal(fitOn(model, pc, true, { context: 524288, kv: 'q4_0' }).verdict, 'fits', 'the 4-bit cache is how 512K fits a 16 GB card');
+});
+
+test('a model that reads from the SSD is never called "fits fully in memory"', () => {
+  const f = fitOn(q4, { ram_gb: 64, vram_gb: 12 });
+  assert.ok(f.spillGb > 0);
+  assert.equal(f.verdict, 'spill');
+  assert.equal(f.note.text, 'About {0} GB will be read from the SSD, so answers can be a little slower.');
+  assert.deepEqual(f.note.values, [f.spillGb]);
+  assert.equal(fitOn(swift, null).verdict, 'unknown', 'no hardware report, no verdict');
+});
