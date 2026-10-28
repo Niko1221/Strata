@@ -438,6 +438,31 @@ class LadderIndex(unittest.TestCase):
         fresh.on_start(service)
         self.assertEqual(service.restore_after_load, path)   # warm resume survives the server restart
 
+    def test_an_appended_save_persists_duration_append_flag_and_delta(self):
+        # The expected_save_seconds bookkeeping (duration, size-at-save, append flag and the appended
+        # DELTA) survives the server process in the sidecar: a restarted ladder that lost its last
+        # save to an append keeps its delta-aware estimate instead of its anchor.
+        engine = SimpleNamespace(batch=0, session_file=lambda action, path:
+                                 {"tokens": 150123, "bytes": 20_000_000, "ms": 250.0, "appended": True})
+        service = SimpleNamespace(engine=engine)
+        ladder = SessionLadder(self.cfg)
+        ladder.on_arrival(service, "ses-a", "ses-a conversation text")
+        ladder.on_turn_done("ses-a", tokens=150123, byte_count=0, reused=0)
+        ladder.on_arrival(service, "ses-b", "interloper conversation")   # the save lands: append bookkeeping too
+        entry = json.loads(open(self.index).read())["entries"]["ses-a"]
+        self.assertEqual(entry["appended"], True)
+        self.assertEqual(entry["delta_bytes"], 20_000_000)
+        self.assertEqual(entry["last_save_ms"], 250.0)
+        self.assertGreater(entry["saved_at_bytes"], 0)
+        path = os.path.join(self.dir.name, "llm-session-ses-a.bin")
+        open(path, "wb").close()
+        fresh = SessionLadder(self.cfg)
+        s = fresh.tracked["ses-a"]
+        self.assertTrue(s.last_save_appended)
+        self.assertEqual(s.last_save_delta_bytes, 20_000_000)
+        self.assertEqual(s.last_save_ms, 250.0)
+        self.assertEqual(s.saved_at_bytes, entry["saved_at_bytes"])
+
     def test_the_warm_handoff_consumes_the_index_entry(self):
         self._save_ses_a()
         path = os.path.join(self.dir.name, "llm-session-ses-a.bin")
