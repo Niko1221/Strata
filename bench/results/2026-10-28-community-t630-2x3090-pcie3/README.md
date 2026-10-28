@@ -73,6 +73,10 @@ numactl --interleave=all strata serve --profile t630      # profile, paths short
 --trim-stage-weights        "gpu": [0, 1], "layer_split": "25"
 ```
 
+`--kv-grow` is in the profile from the one-card days but inert here: the engine turns it off on a layer split ("needs one
+GPU"). `--adapt-async 1` is inert too (the log says "off: not with a layer split in the arena mode"), so the blocking
+adaptive tier runs instead.
+
 ## Method
 
 Every arm is a fresh server start after dropping the page cache, against the same profile with one change. Requests
