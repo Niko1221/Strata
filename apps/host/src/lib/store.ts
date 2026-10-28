@@ -1686,39 +1686,139 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
+export type SendStatus = 'sent' | 'queued' | 'handled' | 'rejected';
+
+/** What became of a message as it left the box: it joined the chat, waited in its queue, ran as a command, or was refused. */
+export interface SendOutcome {
+  accepted: boolean;
+  status: SendStatus;
+  sessionId?: string;
+}
+
+export interface SendPromise extends Promise<SendOutcome> {
+  /** The verdict as soon as the text has a home: in the chat, in its queue, or handled as a command — earlier than the answer's end. */
+  accepted: Promise<SendOutcome>;
+}
+
+export interface SendOptions {
+  fromLoop?: boolean;
+  goalAction?: 'resume';
+  planId?: string;
+  shown?: string;
+  title?: string;
+  markdown?: boolean;
+}
+
+export interface ComposerSendHandlers {
+  /** Clears the box and the quote bar. Runs at most once, only for an accepted send. */
+  clear: (outcome: SendOutcome) => void;
+  /** Puts back what the person had. Runs at most once, only for a refused or failed send. */
+  restore: () => void;
+}
+
+/**
+ * Waits for a send's verdict and settles the composer exactly once. A refusal or a throw never sends
+ * again, and `clear` and `restore` cannot both run for one message.
+ */
+export async function settleComposerSend(send: Pick<SendPromise, 'accepted'>, handlers: ComposerSendHandlers): Promise<SendOutcome> {
+  let outcome: SendOutcome;
+  try {
+    outcome = await send.accepted;
+  } catch {
+    try { handlers.restore(); } catch { /* the verdict stands even if redrawing the box failed */ }
+    return { accepted: false, status: 'rejected' };
+  }
+  try {
+    if (outcome.accepted) handlers.clear(outcome);
+    else handlers.restore();
+  } catch { /* the verdict stands even if redrawing the box failed */ }
+  return outcome;
+}
+
+/**
+ * Sends a message and says what happened to it.
+ *
+ * `accepted` settles as soon as the text has a home, so the composer can clear without waiting for the
+ * answer. The returned promise still settles when any turn it started has finished, so callers that need
+ * the answer keep working as before.
+ */
+export function sendMessage(text: string, options: SendOptions = {}): SendPromise {
+  let resolveAccepted!: (outcome: SendOutcome) => void;
+  const accepted = new Promise<SendOutcome>((resolve) => { resolveAccepted = resolve; });
+  let verdict: SendOutcome | null = null;
+  const settle = (outcome: SendOutcome): SendOutcome => {
+    if (!verdict) {
+      verdict = outcome;
+      resolveAccepted(outcome);
+    }
+    return verdict;
+  };
+  const completion = deliverMessage(text, options, settle);
+  // A throw before the verdict still has to answer the composer: it is a refusal, not a sent message.
+  void completion.catch(() => { settle({ accepted: false, status: 'rejected' }); });
+  return Object.assign(completion, { accepted });
+}
+
+async function deliverMessage(text: string, options: SendOptions, settle: (outcome: SendOutcome) => SendOutcome): Promise<SendOutcome> {
   if (state.streaming) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
     if (waiting && line && !options.planId && !options.goalAction) {
-      try { if (!(await queueMessage(waiting, line))) pushToast('info', 'The assistant is still answering', 'Send your message when it has finished.'); }
+      try {
+        if (await queueMessage(waiting, line)) return settle({ accepted: true, status: 'queued', sessionId: waiting });
+        pushToast('info', 'The assistant is still answering', 'Send your message when it has finished.');
+      }
       catch (e) { pushToast('error', 'The message was not queued', plainFailureText(e instanceof Error ? e.message : String(e)).message); }
+      return settle({ accepted: false, status: 'rejected', sessionId: waiting });
     }
-    return;
+    return settle({ accepted: false, status: 'rejected', ...(waiting ? { sessionId: waiting } : {}) });
   }
   const resume = options.goalAction === 'resume';
   const planStart = options.planId;
   const loopCommand = options.fromLoop || resume || planStart ? null : parseLoop(text.trim());
-  if (loopCommand) { await runLoopCommand(loopCommand); return; }
+  if (loopCommand) {
+    // The command is consumed as soon as it parses; a loop's first answer can take minutes, and the box
+    // must not keep the command while it runs. The returned promise still waits for that turn.
+    const handled = settle({ accepted: true, status: 'handled', ...(state.activeSession ? { sessionId: state.activeSession } : {}) });
+    await runLoopCommand(loopCommand);
+    return handled;
+  }
   const demoPrompt = resume || planStart ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
-    if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else if (state.connection === 'live' && demoPrompt) pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
-    else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
-    else startTimeSkipDemo(demoPrompt);
-    return;
+    if (!demoPrompt) {
+      pushToast('info', 'Add a prompt after /time-skip');
+      return settle({ accepted: false, status: 'rejected' });
+    }
+    if (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready')) {
+      void startTimeSkipReal(demoPrompt);
+      return settle({ accepted: true, status: 'handled', ...(state.activeSession ? { sessionId: state.activeSession } : {}) });
+    }
+    if (state.connection === 'live') {
+      pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
+      return settle({ accepted: false, status: 'rejected' });
+    }
+    if (state.connection === 'connecting') {
+      pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
+      return settle({ accepted: false, status: 'rejected' });
+    }
+    startTimeSkipDemo(demoPrompt);
+    return settle({ accepted: true, status: 'handled', ...(state.activeSession ? { sessionId: state.activeSession } : {}) });
   }
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
   if (state.connection === 'live') {
     // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
-    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
+    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return settle({ accepted: false, status: 'rejected' }); }
     const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
-    if (why) { pushToast('info', why.title, why.message); return; }
+    if (why) {
+      pushToast('info', why.title, why.message);
+      return settle({ accepted: false, status: 'rejected' });
+    }
   }
   const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
-  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
+  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return settle({ accepted: false, status: 'rejected' });}
   const pictures=takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
-  if(!body&&!resume&&!planStart)return;
+  if(!body&&!resume&&!planStart)return settle({ accepted: false, status: 'rejected' });
 
   let sessionId = state.activeSession;
   if (!sessionId) sessionId = newSession().id;
@@ -1759,6 +1859,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));
+  // The message is in the chat now: from here on a failure is the turn's, not a refused send.
+  const sent = settle({ accepted: true, status: 'sent', sessionId });
 
   const turnAbort = new AbortController();
   markTurn(sessionId, { abort: turnAbort, agent: false });
@@ -1932,6 +2034,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     const next = releasedMessages.get(sessionId)?.shift();
     if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }
+  return sent;
 }
 
 /** Messages the host handed back when a goal ended with some still waiting; sent one after another. */
