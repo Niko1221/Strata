@@ -115,6 +115,7 @@ export function ChatScreen() {
         return () => document.removeEventListener('keydown', exit);
     }, [expanded]);
     const [previews, setPreviews] = useState<PreviewArtifact[]>([]);
+    const [previewsFor, setPreviewsFor] = useState<string | null>(null);
     const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
     const timeSkipRuns = (session?.timeSkips ?? []).filter(run => session?.messages.some(m => m.timeSkipId === run.id && m.role === 'assistant') && (!run.job || (run.job.files?.length ?? 0) > 0));
     const runTabs = timeSkipRuns.map((run, i) => ({ id: timeSkipTabId(run.id), title: timeSkipRuns.length > 1 ? `Time-skip ${i + 1}` : 'Time-skip', icon: 'branch' as const, controls: 'time-skip-content' })).filter(tab => !session?.closedPreviews?.includes(tab.id));
@@ -130,16 +131,33 @@ export function ChatScreen() {
     const selectedRun = timeSkipRuns.find(run => timeSkipTabId(run.id) === selectedPreview);
     const inlinePreview = splitWidth >= (selectedRun || planShown ? 760 : 1120);
     const paneWidth = previewWidth(splitWidth, previewFraction);
-    const splitStyle = inlinePreview && selectedPreview && !expanded ? { gridTemplateColumns: `minmax(0,1fr) ${paneWidth}px` } : undefined;
-    const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
+    // The pane's width is reserved only when the pane has something to show. A selected id whose panel renders nothing
+    // (an artifact that is gone, a plan or run that no longer exists) used to leave a blank 627px column and squeezed
+    // the answer into the corner; the selection is cleared below once the chat's own artifacts are known.
+    const artifactKnown = previews.some(a => a.id === selectedPreview)
+        || (session?.messages ?? []).some(m => (m.artifacts ?? []).some(a => a.id === selectedPreview));
+    const paneShown = !setupVisible && (!!selectedRun || planShown || artifactKnown);
+    const splitStyle = inlinePreview && paneShown && !expanded ? { gridTemplateColumns: `minmax(0,1fr) ${paneWidth}px` } : undefined;
+    const resizeHandle = paneShown && inlinePreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
-    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
+    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); setPreviewsFor(session?.id ?? null); }, [session?.id]);
     useEffect(() => {
         const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()];
         if (items.length)
             setPreviews(old => [...old.filter(a => !items.some(b => a.id === b.id)), ...items.filter(a => !session?.closedPreviews?.includes(a.id))]);
     }, [previewCount]);
+    // A selection whose artifact, run or plan is gone is cleared once this chat's own artifacts are known, so the toolbar
+    // and the pane never point at something that cannot be shown.
+    useEffect(() => {
+        if (!selectedPreview || previewsFor !== (session?.id ?? null))
+            return;
+        const known = previews.some(a => a.id === selectedPreview)
+            || timeSkipRuns.some(r => timeSkipTabId(r.id) === selectedPreview)
+            || (planTab.length > 0 && selectedPreview === planTabId);
+        if (!known)
+            setSelectedPreview(null);
+    }, [selectedPreview, previewsFor, session?.id, previews, planTab.length, runCount]);
     const localUrls = useRef<string[]>([]);
     useEffect(() => {
         const id = session?.previewOpen;
@@ -398,7 +416,7 @@ export function ChatScreen() {
     if (!session) {
         return (<>
         <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
-        <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
+        <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={paneShown && inlinePreview || undefined} data-expanded={expanded && paneShown && inlinePreview || undefined}>
          <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller}>
             {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
@@ -420,7 +438,7 @@ export function ChatScreen() {
       {/* The composer belongs to the conversation column, not the window: with
                 the context panel open, a full-width composer sat underneath the panel
                 and drifted out of alignment with the transcript it belongs to. */}
-      <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
+      <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={paneShown && inlinePreview || undefined} data-expanded={expanded && paneShown && inlinePreview || undefined}>
         <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller} onScroll={(e) => {
             const el = e.currentTarget;
