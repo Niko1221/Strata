@@ -149,6 +149,23 @@ test('a helper conversation is kept for its chat after the run, and cannot be re
   assert.equal(after.transcript.filter(entry => entry.role === 'user' && /SCRIPT:echo second/.test(entry.text)).length, 1, 'the sent message is not duplicated by its Harness echo');
 });
 
+test('a timed-out client retry with the same client id delivers one helper message, not two', { skip }, async (t) => {
+  const r = await rig(t);
+  const { frames } = await r.run('dup-send', 'SCRIPT:spawn 1 echo first');
+  const id = [...rows(frames).keys()][0];
+  const first = await r.bridge.promptChild({ chatId: 'dup-send', childId: id, text: 'SCRIPT:echo once', clientId: 'same-client' });
+  const retry = await r.bridge.promptChild({ chatId: 'dup-send', childId: id, text: 'SCRIPT:echo once', clientId: 'same-client' });
+  assert.equal(retry.messageId, first.messageId, 'the retry joins the accepted request');
+  for (let i = 0; i < 100; i += 1) {
+    const now = r.bridge.childView('dup-send', id);
+    if (now.transcript.some(entry => entry.role === 'assistant' && /once/.test(entry.text))) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const view = r.bridge.childView('dup-send', id);
+  assert.equal(view.transcript.filter(entry => entry.role === 'user' && /once/.test(entry.text)).length, 1, 'one user line');
+  assert.equal(view.transcript.filter(entry => entry.role === 'assistant' && /once/.test(entry.text)).length, 1, 'one answer');
+});
+
 test('helpers are limited to the Harness cap (4, or the slot count if larger); the fifth is refused with a message the model reads', { skip }, async (t) => {
   const r = await rig(t, { slots: 2 });
   const { frames } = await r.run('few', 'SCRIPT:spawn 5 slow 30');
@@ -216,12 +233,15 @@ test('a helper stopped on request reads "interrupted" and can be asked to go on'
   const stopped = r.bridge.childView('resume-helper', id);
   assert.equal(stopped.agent.status, 'interrupted');
   await r.bridge.promptChild({ chatId: 'resume-helper', childId: id, text: 'SCRIPT:echo again' });
-  for (let i = 0; i < 100; i += 1) {
-    const now = r.bridge.childView('resume-helper', id);
-    if (now.transcript.some(entry => entry.role === 'assistant' && /again/.test(entry.text))) break;
+  // Wait for the helper's terminal status, not merely its first answer words. The old loop broke on the
+  // assistant/message event while the turn was still finishing, so a loaded machine made it read "working".
+  let resumed = r.bridge.childView('resume-helper', id);
+  for (let i = 0; i < 200; i += 1) {
+    resumed = r.bridge.childView('resume-helper', id);
+    const answered = resumed.transcript.some(entry => entry.role === 'assistant' && /again/.test(entry.text));
+    if (answered && resumed.agent.status === 'completed') break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  const resumed = r.bridge.childView('resume-helper', id);
   assert.ok(resumed.transcript.some(entry => entry.role === 'assistant' && /again/.test(entry.text)), 'the stopped helper went on');
   assert.equal(resumed.agent.status, 'completed');
   assert.equal(frames.at(-1).type, 'done');
@@ -317,38 +337,113 @@ test('goal bar: the state, pause, edit and remove work from outside a turn, and 
   await assert.rejects(r.bridge.goalControl({ chatId: 'bar', action: 'explode' }), /no goal|not known/i);
 });
 
-test('mode change mid-run: Manual to Bypass settles the question already waiting and the very next tool call does not ask again', { skip }, async (t) => {
+test('mode change mid-run: a helper keeps the Manual mode it started with; switching the parent does not answer its question', { skip }, async (t) => {
   const r = await rig(t);
   const first = join(r.ws, 'before.txt');
-  let asked = null; const cards = [];
-  const run = r.run('mid', `SCRIPT:spawn 1 call write ${JSON.stringify({ file_path: fwd(first), content: 'one' })}`, { mode: 'manual', onFrame: f => { if (f.type === 'agent-tool') { cards.push(f.tool); if (f.tool.state === 'proposed') asked = f.tool; } } });
+  let asked = null;
+  const run = r.run('mid', `SCRIPT:spawn 1 call write ${JSON.stringify({ file_path: fwd(first), content: 'one' })}`, { mode: 'manual', onFrame: f => { if (f.type === 'agent-tool' && f.tool.state === 'proposed') asked = f.tool; } });
   for (let i = 0; i < 200 && !asked; i++) await new Promise(res => setTimeout(res, 50));
   assert.ok(asked, 'Manual asked first');
   const switched = await r.bridge.setMode('mid', 'bypass');
   assert.deepEqual({ applied: switched.applied, mode: switched.mode }, { applied: true, mode: 'bypass' });
-  assert.equal(switched.settled, 1, 'the waiting question was settled by the new mode');
+  assert.equal(switched.settled, 0, 'an existing helper keeps its own question');
+  assert.equal(r.bridge.pendingFor('mid').length, 1, 'the helper is still waiting for the person');
+  await r.bridge.approve({ chatId: 'mid', callId: asked.id, decision: 'approve' });
   await run;
   assert.equal(readFileSync(first, 'utf8').trim(), 'one');
   assert.equal(r.bridge.pendingFor('mid').length, 0);
-  // Bypass then Plan: nothing waiting, and the chat now reports Plan to the next call.
+  // A later parent switch still does not rewrite the finished helper's recorded mode.
   assert.equal((await r.bridge.setMode('mid', 'plan')).mode, 'plan');
   assert.deepEqual(await r.bridge.setMode('nobody-yet', 'manual'), { applied: false, mode: 'manual', reason: 'no session yet' });
+  const view = r.bridge.childView('mid', asked.id.split(':')[0]);
+  assert.equal(view.agent.mode, 'manual');
 });
 
-test('the gate stops a helper asking once the chat has left Manual', async () => {
-  const { apply, MANUAL_PRESET } = await import('../server/agent/plugins/strata-gate.mjs');
+test('a Bypass helper keeps Bypass for a direct message after the parent switches to Plan', { skip }, async (t) => {
+  const r = await rig(t);
+  const file = join(r.ws, 'bypass-kept.txt');
+  let childId = null;
+  const run = r.run('keep-bypass', 'SCRIPT:spawn 1 slow 20', { mode: 'bypass', onFrame: f => {
+    if (f.type === 'agent' && f.agent.status === 'working') childId = f.agent.id;
+  } });
+  for (let i = 0; i < 200 && !childId; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(childId, 'the helper started');
+  assert.equal((await r.bridge.setMode('keep-bypass', 'plan')).mode, 'plan');
+  await r.bridge.promptChild({ chatId: 'keep-bypass', childId, text: `SCRIPT:call write ${JSON.stringify({ file_path: fwd(file), content: 'still bypass' })}` });
+  for (let i = 0; i < 300 && !existsSync(file); i += 1) await new Promise(resolve => setTimeout(resolve, 100));
+  await run;
+  assert.equal(existsSync(file), true, 'the pinned Bypass helper wrote without asking');
+  assert.equal(readFileSync(file, 'utf8').trim(), 'still bypass');
+  assert.equal(r.bridge.childView('keep-bypass', childId).agent.mode, 'bypass');
+});
+
+test('a Plan helper stays read-only for a direct message after the parent switches to Bypass', { skip }, async (t) => {
+  const r = await rig(t);
+  const first = join(r.ws, 'plan-denied.txt');
+  const second = join(r.ws, 'plan-still-denied.txt');
+  const firstRun = await r.run('keep-plan', `SCRIPT:spawn 1 call write ${JSON.stringify({ file_path: fwd(first), content: 'no' })}`, { mode: 'plan' });
+  const childId = [...rows(firstRun.frames).keys()][0];
+  assert.ok(childId, 'the Plan helper started');
+  assert.equal(existsSync(first), false, 'the first Plan write did not run');
+  assert.equal(r.bridge.childView('keep-plan', childId).agent.mode, 'plan');
+  assert.equal((await r.bridge.setMode('keep-plan', 'bypass')).mode, 'bypass');
+  await r.bridge.promptChild({ chatId: 'keep-plan', childId, text: `SCRIPT:call write ${JSON.stringify({ file_path: fwd(second), content: 'no' })}` });
+  for (let i = 0; i < 100; i += 1) {
+    const view = r.bridge.childView('keep-plan', childId);
+    if (view.agent.status === 'completed' && view.transcript.some(entry => entry.role === 'assistant' && /Tool finished/.test(entry.text))) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(existsSync(second), false, 'the parent switch did not widen the Plan helper');
+  assert.equal(r.bridge.childView('keep-plan', childId).agent.mode, 'plan');
+});
+
+test('the gate pins a helper to the mode its own log records, not the parent\'s current mode', async () => {
+  const { apply, MANUAL_PRESET, PLAN_PRESET } = await import('../server/agent/plugins/strata-gate.mjs');
   let handler; const appended = [];
   const parent = { header: { origin: 'user' } };
-  const child = { header: { origin: 'subagent', parentSession: 'p' }, append: (type, data) => appended.push([type, data.policy]) };
-  let preset = MANUAL_PRESET; let override = 'ask';
-  apply({ on: (_e, h) => { handler = h; }, inject: () => {}, sessions: new Map([['p', parent]]), permissionPresets: { current: () => preset }, approval: { overrideOf: () => override } });
-  const exec = { name: 'write', agent: { session: child }, input: { file_path: 'x' } };
-  await handler(exec, async () => ({ kind: 'allow' }));
-  assert.deepEqual(appended, [], 'in Manual the helper keeps asking');
-  preset = 'strata-bypass-ish';
-  await handler(exec, async () => ({ kind: 'allow' }));
-  assert.deepEqual(appended, [['approval/policy', 'never']], 'the first call after the switch un-pins the helper');
-  override = 'never';
-  await handler(exec, async () => ({ kind: 'allow' }));
-  assert.equal(appended.length, 1, 'and does it once');
+  let childPreset = MANUAL_PRESET;
+  const child = {
+    header: { origin: 'subagent', parentSession: 'p' },
+    ownEvents: () => childPreset ? [{ type: 'permission/preset', data: { preset: childPreset } }] : [],
+    append: (type, data) => appended.push([type, data.policy]),
+  };
+  let parentPreset = MANUAL_PRESET; let override = 'never';
+  const sessions = new Map([['p', parent], ['c', child]]);
+  apply({ on: (_e, h) => { handler = h; }, inject: () => {}, sessions, permissionPresets: { current: s => s === parent ? parentPreset : childPreset }, approval: { overrideOf: () => override } });
+  const write = { name: 'write', agent: { session: child }, input: { file_path: 'x' } };
+  const allow = async () => ({ kind: 'allow' });
+
+  assert.equal((await handler(write, allow)).kind, 'ask', 'the Manual child asks');
+  assert.deepEqual(appended, [['approval/policy', 'ask']], 'the child is given the approval policy it needs');
+  override = 'ask';
+  parentPreset = 'strata-bypass';
+  assert.equal((await handler(write, allow)).kind, 'ask', 'the parent switch does not stop the child asking');
+  assert.equal(appended.length, 1, 'the answer is recorded once');
+
+  childPreset = 'strata-bypass';
+  child.ownEvents = () => [{ type: 'permission/preset', data: { preset: childPreset } }];
+  child.header.origin = 'subagent';
+  // A fresh child session with its own Bypass pin must not ask even while the parent is Manual.
+  const bypassChild = {
+    header: { origin: 'subagent', parentSession: 'p' },
+    ownEvents: () => [{ type: 'permission/preset', data: { preset: 'strata-bypass' } }],
+    append: (type, data) => appended.push([type, data.policy]),
+  };
+  parentPreset = MANUAL_PRESET; override = 'ask';
+  const bypassExec = { name: 'write', agent: { session: bypassChild }, input: { file_path: 'x' } };
+  assert.equal((await handler(bypassExec, allow)).kind, 'allow', 'Bypass child runs without a question');
+
+  const planChild = {
+    header: { origin: 'subagent', parentSession: 'p' },
+    ownEvents: () => [{ type: 'permission/preset', data: { preset: PLAN_PRESET } }],
+    append: (type, data) => appended.push([type, data.policy]),
+  };
+  const planExec = { name: 'mcp__other__write', agent: { session: planChild }, input: {} };
+  assert.equal((await handler(planExec, allow)).kind, 'deny', 'Plan child cannot use a connected changing tool');
+  // The child's own sandbox is seeded from the Harness default, so Plan must refuse built-in changes itself.
+  assert.equal((await handler({ name: 'write', agent: { session: planChild }, arguments: { file_path: 'x', content: 'y' } }, allow)).kind, 'deny', 'Plan child cannot write a file');
+  assert.equal((await handler({ name: 'edit', agent: { session: planChild }, arguments: { file_path: 'x' } }, allow)).kind, 'deny', 'Plan child cannot edit a file');
+  assert.equal((await handler({ name: 'pwsh', agent: { session: planChild }, arguments: { command: 'Set-Content x y' } }, allow)).kind, 'deny', 'Plan child cannot run a changing command');
+  assert.equal((await handler({ name: 'pwsh', agent: { session: planChild }, arguments: { command: 'Get-Content x' } }, allow)).kind, 'allow', 'Plan child can still read with a read-only command');
+  assert.equal((await handler({ name: 'run_code', agent: { session: planChild }, arguments: {} }, allow)).kind, 'deny', 'Plan child cannot run code');
 });

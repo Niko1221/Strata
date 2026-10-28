@@ -2057,7 +2057,14 @@ async function api(req, res, path, method, url) {
     catch (e) { return error(res, 502, e.message); }
   }
   /* One helper's conversation and row. The chat id is required: a helper belongs to exactly one chat, and its
-     transcript must never be readable from another. Kept in this process, so it is empty after a host restart. */
+     transcript must never be readable from another. The host keeps the transcript on disk, so a restart still
+     shows the conversation; `historyOnly` says whether the runtime can still be asked to continue it. */
+  /* The saved helper rows of one chat, without transcripts: the page's small status poll. */
+  if (path === '/api/chat/subagents' && method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId') ?? '';
+    if (!sessionId) return error(res, 400, 'sessionId is required');
+    return json(res, 200, { agents: agent.childRows(sessionId) });
+  }
   const childRoute = /^\/api\/chat\/subagents\/([^/]+)$/.exec(path);
   if (childRoute && method === 'GET') {
     const sessionId = url.searchParams.get('sessionId') ?? '';
@@ -2077,10 +2084,22 @@ async function api(req, res, path, method, url) {
     try { b = await readBody(req); } catch (e) { return error(res, 400, e.message); }
     if (typeof b.sessionId !== 'string' || !b.sessionId.trim()) return error(res, 400, 'sessionId is required');
     if (typeof b.childId !== 'string' || !b.childId.trim()) return error(res, 400, 'childId is required');
-    if (typeof b.text !== 'string' || !b.text.trim()) return error(res, 400, 'text is required');
-    if (b.text.length > 20_000) return error(res, 400, 'text is too long');
-    try { return json(res, 200, await agent.promptChild({ chatId: b.sessionId, childId: b.childId, text: b.text })); }
-    catch (e) { return error(res, e.code === 'child-gone' ? 404 : e.code === 'child-text' ? 400 : 502, e.message, e.code ? { code: e.code } : {}); }
+    const internal = b.continue === true;
+    if (!internal && (typeof b.text !== 'string' || !b.text.trim())) return error(res, 400, 'text is required');
+    if (!internal && b.text.length > 20_000) return error(res, 400, 'text is too long');
+    if (b.clientId !== undefined && (typeof b.clientId !== 'string' || b.clientId.length > 120)) return error(res, 400, 'clientId is not valid');
+    try {
+      return json(res, 200, await agent.promptChild({
+        chatId: b.sessionId,
+        childId: b.childId,
+        text: b.text,
+        internal,
+        clientId: b.clientId ?? null,
+      }));
+    } catch (e) {
+      const status = e.code === 'child-gone' ? 404 : e.code === 'child-text' ? 400 : e.code === 'child-history-only' ? 409 : 502;
+      return error(res, status, e.message, e.code ? { code: e.code } : {});
+    }
   }
 
   // --- chat ---------------------------------------------------------------

@@ -17,6 +17,8 @@ import { dirname } from 'node:path';
 
 const VERSION = 1;
 const STATUSES = new Set(['working', 'completed', 'failed', 'queued', 'cancelled', 'interrupted']);
+/** The chat mode pinned when the helper started; absent on rows written before modes were recorded. */
+const MODES = new Set(['manual', 'plan', 'bypass']);
 const FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const LIVE = new Set(['working', 'queued']);
 export const MAX_ROWS_PER_CHAT = 500;
@@ -57,11 +59,13 @@ function normalize(raw, previous, now) {
   const warning = LIVE.has(status)
     ? null
     : (typeof raw.warning === 'string' && raw.warning.trim() ? clip(raw.warning, 300) : previous?.warning ?? null);
+  const mode = MODES.has(raw.mode) ? raw.mode : previous?.mode ?? null;
   return {
     id,
     name: clip(raw.name, 120) || previous?.name || 'Helper',
     description,
     ...(descriptionKey ? { descriptionKey } : {}),
+    ...(mode ? { mode } : {}),
     status,
     durationMs,
     tokens: count(raw.tokens, previous?.tokens ?? 0),

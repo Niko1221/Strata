@@ -150,11 +150,33 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   // The helper rows belong to the host, not to the page. They are saved before a row is sent, so a page
   // that reloads, a host that restarts and a stream that missed its last frame all read the same answer (#4218).
   const rowStore = createAgentRowStore({ file: join(root, 'rows.json'), log });
-  // Helper conversations are for the page, not for a restart: kept in this process, bounded by the store's cap.
-  // The row itself stays on disk, so a restarted host still lists the helper and can still be asked to continue it.
-  const childTranscripts = createChildTranscriptStore();
+  // Helper conversations are saved beside the helper rows. The row list is still the index; the JSONL
+  // transcript is the conversation the page reads after a restart, bounded by the store's caps.
+  const childTranscripts = createChildTranscriptStore({ dir: join(root, 'children'), log });
   /** childKey -> { chatId, childId, cp, stream, closed }: a follow stream for a helper prompted outside a chat turn. */
   const childWatchers = new Map();
+  /**
+   * One in-flight or recently accepted panel message per client id. A timed-out browser retry with the same
+   * client id joins this promise instead of delivering the message a second time. The map is intentionally
+   * process-local: after a host restart the page marks unconfirmed sends and shows them for an explicit retry.
+   */
+  const childPrompts = new Map();
+  const CHILD_PROMPT_TTL = 10 * 60 * 1000;
+  const rememberChildPrompt = (key, promise) => {
+    if (!key) return;
+    childPrompts.set(key, { promise, at: Date.now() });
+    while (childPrompts.size > 300) childPrompts.delete(childPrompts.keys().next().value);
+  };
+  const knownChildPrompt = key => {
+    if (!key) return null;
+    const known = childPrompts.get(key);
+    if (!known) return null;
+    if (Date.now() - known.at > CHILD_PROMPT_TTL) {
+      childPrompts.delete(key);
+      return null;
+    }
+    return known.promise;
+  };
   /** The Harness's own settled duration for a helper, when its projection cache still has one. */
   const settledDurationOf = id => {
     try {
@@ -651,7 +673,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       const id = d.childId;
       if (!id || turn.children.has(id)) return;
       const transcript = childTranscripts.acquire(chatId, id);
-      const cp = new ChildProjector({ id, name: d.label || 'Helper', transcript });
+      const pendingCall = [...turn.subagentCalls.values()].find(call => call && call.childId == null) ?? null;
+      if (pendingCall) pendingCall.childId = id;
+      const task = pendingCall?.prompt ?? pendingCall?.description ?? d.label ?? '';
+      // The helper keeps the parent's mode at the moment its delegation was requested.
+      const mode = pendingCall?.mode ?? turn.mode;
+      const cp = new ChildProjector({ id, name: d.label || 'Helper', task, mode, transcript });
       const child = { id, cp, follow: null, noticed: false, done: false, lastRow: 0, rowPending: false, endedAt: 0, transcript };
       turn.children.set(id, child);
       emitRow(child, true);
@@ -664,9 +691,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (item.type === 'event' && item.event.type === 'turn/end' && child.rowPending) emitRow(child, true);
         const { frames, row } = cp.consume(item);
         for (const f of frames) emit(f);
-        if (item.type === 'event' && item.event.type === 'turn/end') { child.done = true; child.endedAt = Date.now(); if (turn.requestedStops?.has(child.id)) child.cp.markStopped(); emitRow(child, true); armSettle(); return; }
+        if (item.type === 'event' && item.event.type === 'turn/end') {
+          child.done = true; child.endedAt = Date.now();
+          if (turn.requestedStops?.has(child.id)) child.cp.markStopped();
+          childTranscripts.flush(chatId, child.id);
+          // The child is idle now: record its pinned mode in its own session for the next run and for
+          // a host restart. Doing this while the first turn is starting would interfere with it.
+          if (child.cp.mode) void applyMode(runtime, child.id, child.cp.mode).catch(e => log(`agent · helper mode could not be pinned: ${e.message}`));
+          emitRow(child, true); armSettle(); return;
+        }
         if (item.type === 'event' && child.done && cp.status === 'working') { child.done = false; }
-        if (row) emitRow(child);
+        if (row) { childTranscripts.flush(chatId, child.id); emitRow(child); }
       };
       child.follow = runtime.gw.openStream('session/follow', {
         request: { address: { kind: 'subagent', parentSessionId: sessionId, childSessionId: id, mode: d.mode ?? 'unknown' }, assistantStream: true },
@@ -677,7 +712,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         },
         onError: e => {
           log(`agent · helper stream ended: ${e.message}`);
-          if (!child.done) { child.done = true; child.endedAt = Date.now(); cp.transcript.close(child.endedAt); cp.status = 'failed'; cp.failure = 'Lost contact with this helper.'; cp.endedAt = Date.now(); emitRow(child, true); armSettle(); }
+          if (!child.done) {
+            child.done = true; child.endedAt = Date.now();
+            cp.transcript.close(child.endedAt);
+            cp.transcript.finishTools(child.endedAt);
+            cp.status = 'failed'; cp.failure = 'Lost contact with this helper.'; cp.endedAt = Date.now();
+            childTranscripts.flush(chatId, child.id);
+            emitRow(child, true); armSettle();
+          }
         },
       });
       // A late reader still gets the final row: flush any row held back by the throttle.
@@ -704,7 +746,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           if (!turn.parentOpen) { turn.parentOpen = true; clearTimeout(turn.settleTimer); }
           break;
         case 'tool/call':
-          if (d.name === 'subagent' || d.name === 'subagent_fork') turn.subagentCalls.set(d.callId, parseArgs(d.arguments));
+          if (d.name === 'subagent' || d.name === 'subagent_fork') turn.subagentCalls.set(d.callId, { ...parseArgs(d.arguments), childId: null, mode: turn.mode });
           break;
         case 'subagent/catalog':
           openChild(d);
@@ -714,7 +756,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           const text = (d.message?.content ?? []).map(p => p.text ?? '').join(' ');
           const started = /started subagent ([0-9a-f-]{36})/i.exec(text);
           const child = started ? turn.children.get(started[1]) : null;
-          if (call && child) { child.cp.task = String(call.prompt ?? call.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 140); emitRow(child, true); }
+          if (call && child) {
+            child.cp.setTask(String(call.prompt ?? call.description ?? ''));
+            childTranscripts.flush(chatId, child.id);
+            emitRow(child, true);
+          }
           break;
         }
         case 'user/message':
@@ -1240,9 +1286,10 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       c.turn.mode = want;
       c.turn.projector.policy = MODE_PRESETS[want].approval;
       if (want !== 'manual') {
-        const helpers = c.turn.children;
+        // Only the parent's own questions follow this switch. A running helper keeps the mode it was
+        // created with, so its pending question is answered in the helper panel, not auto-settled here.
         for (const [key, entry] of [...pending.entries()]) {
-          if (entry.sessionId !== sessionId && !helpers?.has(entry.sessionId)) continue;
+          if (entry.sessionId !== sessionId) continue;
           pending.delete(key);
           try { await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome: want === 'bypass' ? 'allowed-once' : 'rejected' }); settled++; } catch { /* already answered */ }
         }
@@ -1257,7 +1304,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     // A helper agent's question carries the helper's session id in front of its call id. Only a helper that belongs to
     // THIS chat's run can be answered from this chat.
     const [maybeChild] = String(callId).split(':');
-    const ownHelper = callId.includes(':') && chats.get(chatId)?.turn?.children.has(maybeChild);
+    // A helper prompted outside the parent turn is not in `turn.children`; its saved row, transcript
+    // or watcher still proves it belongs to this chat and its question may be answered from the panel.
+    const ownHelper = callId.includes(':') && (
+      chats.get(chatId)?.turn?.children.has(maybeChild)
+      || !!childRow(chatId, maybeChild)
+      || childTranscripts.has(chatId, maybeChild)
+      || childWatchers.has(`${chatId}\u0000${maybeChild}`)
+    );
     const key = ownHelper ? callId : `${sessionId}:${callId}`;
     // The durable `approval/asked` (which makes the card say "needs approval") and the waterfall frame
     // (which makes it answerable) travel on different streams; a fast click can beat the second one.
@@ -1434,15 +1488,20 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
    * Follow a helper that was prompted while no chat turn was running. The turn's own follow stream is
    * closed when its run ends, so without this the continued turn would change nothing on screen.
    */
-  function watchChild(chatId, childId, sentAt = Date.now()) {
+  function watchChild(chatId, childId, sentAt = Date.now(), internalRequestId = null) {
     const key = `${chatId}\u0000${childId}`;
     const known = childWatchers.get(key);
-    if (known && !known.closed) return known;
+    if (known && !known.closed) {
+      if (internalRequestId) known.cp.markInternal(internalRequestId);
+      return known;
+    }
     const parentSessionId = sessionMap[chatId]?.sessionId;
     if (!parentSessionId || !rt?.hp.running) return null;
     const saved = childRow(chatId, childId);
     const transcript = childTranscripts.acquire(chatId, childId);
-    const cp = new ChildProjector({ id: childId, name: saved?.name || 'Helper', task: saved?.description ?? '', transcript });
+    const cp = new ChildProjector({ id: childId, name: saved?.name || 'Helper', task: saved?.description ?? '', mode: saved?.mode ?? null, transcript });
+    if (internalRequestId) cp.markInternal(internalRequestId);
+    if (saved?.mode) void applyMode(rt, childId, saved.mode).catch(e => log(`agent · helper mode could not be restored: ${e.message}`));
     if (saved) {
       // A continued helper keeps its own clock and token count instead of starting them again.
       cp.startedAt = saved.startedAt ?? cp.startedAt;
@@ -1471,18 +1530,21 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         }
         for (const entry of pending) {
           const shown = transcript.entries.some(row => row.role === 'user' && row.text === entry.text && row.at >= sentAt - 1000);
-          if (!shown) transcript.beginUser(entry.text, entry.at);
+          if (!shown) transcript.beginUser(entry.text, entry.at, entry.sourceId);
         }
         saveChildRow(chatId, childId, cp);
+        childTranscripts.flush(chatId, childId);
         // A new turn that began and ended entirely before the stream opened: the snapshot already has its end.
         if (cp.finished && cp.endedAt != null && cp.endedAt >= sentAt) close();
         return;
       }
       if (item.type === 'event' && !advanceEvent(transcript, item.event)) return;
       const { row } = cp.consume(item);
-      if (row) saveChildRow(chatId, childId, cp);
+      if (row) { saveChildRow(chatId, childId, cp); childTranscripts.flush(chatId, childId); }
       if (item.type === 'event' && item.event.type === 'turn/end') {
         saveChildRow(chatId, childId, cp);
+        childTranscripts.flush(chatId, childId);
+        if (cp.mode) void applyMode(rt, childId, cp.mode).catch(e => log(`agent · helper mode could not be pinned: ${e.message}`));
         close();
       }
     };
@@ -1493,12 +1555,21 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       onItem: fold,
       onError: e => {
         log(`agent · helper follow stream ended: ${e.message}`);
-        if (!cp.finished) cp.seal('failed');
+        if (!cp.finished) {
+          cp.seal('failed');
+          cp.transcript.finishTools(cp.endedAt ?? Date.now());
+        }
         saveChildRow(chatId, childId, cp);
+        childTranscripts.flush(chatId, childId);
         close();
       },
     });
     return watcher;
+  }
+
+  /** The saved helper rows of one chat, without any transcript text (a small status poll). */
+  function childRows(chatId) {
+    return rowStore.all(chatId);
   }
 
   /** One helper's conversation and row for the page. Null when this chat has never seen that helper. */
@@ -1508,14 +1579,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const watcher = childWatchers.get(`${chatId}\u0000${childId}`) ?? null;
     const cp = turnChild && !chats.get(chatId)?.turn?.finished ? turnChild.cp : watcher?.cp ?? turnChild?.cp ?? null;
     const transcript = childTranscripts.view(chatId, childId)
-      ?? (cp ? cp.transcript.view() : null);
+      ?? (cp ? cp.transcript.viewRich() : null);
     if (!saved && !turnChild && !watcher && transcript == null) return null;
     const live = cp ? { ...cp.agent(), childSessionId: childId } : null;
     return {
       agent: live ?? (saved ? { ...saved, childSessionId: childId } : null),
       transcript: transcript ?? [],
+      // The page can read a saved history even when this process no longer has the helper live.
       available: transcript != null,
+      historyOnly: transcript != null && !saved && !turnChild && !watcher,
       live: !!(cp && !cp.finished),
+      revision: childTranscripts.revision(chatId, childId) || (cp?.transcript.revision ?? 0),
       serverNow: Date.now(),
     };
   }
@@ -1527,11 +1601,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
    * `queue` adds a later turn; `steer` would aim at the nearest step. A message from the panel is a
    * later turn, so it is `queue`. The request id is minted here, the same way a session prompt's is.
    */
-  async function promptChild({ chatId, childId, text, signal }) {
-    const value = String(text ?? '').trim();
+  async function promptChild({ chatId, childId, text, signal, internal = false, clientId = null }) {
+    const internalText = 'Continue from where you left off. Do not repeat what you have already written.';
+    const value = internal ? internalText : String(text ?? '').trim();
     if (!value) throw new AgentUnavailable('Type a message for the helper first.', 'child-text');
-    if (!childRow(chatId, childId) && !childTranscripts.has(chatId, childId) && !chats.get(chatId)?.turn?.children.has(childId)) {
+    const saved = childRow(chatId, childId);
+    const turnChild = chats.get(chatId)?.turn?.children.get(childId) ?? null;
+    const watcher = childWatchers.get(`${chatId}\u0000${childId}`) ?? null;
+    if (!saved && !turnChild && !watcher && !childTranscripts.has(chatId, childId)) {
       throw new AgentUnavailable('That helper is not known in this chat.', 'child-gone');
+    }
+    if (!saved && !turnChild && !watcher) {
+      // The page may still read the saved transcript, but the runtime no longer knows this child.
+      throw new AgentUnavailable('Only the history of this helper is available. You can read it, but cannot continue.', 'child-history-only');
     }
     const parentSessionId = sessionMap[chatId]?.sessionId;
     if (!parentSessionId) throw new AgentUnavailable('This chat has not started an agent session yet.', 'child-no-session');
@@ -1548,33 +1630,62 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const turn = chats.get(chatId)?.turn;
     const followed = turn && !turn.finished && turn.children.has(childId);
     const transcript = childTranscripts.acquire(chatId, childId);
-    // Show the sent line at once. The Harness echo as user/message clears this mark instead of adding a second line.
-    const sentAt = Date.now();
-    const echo = transcript.beginUser(value, sentAt);
-    try {
-      const receipt = await rt.gw.rpc('subagents/prompt', {
-        request: {
-          requestId: `subagent-${randomUUID()}`,
-          parentSessionId,
-          childSessionId: childId,
-          mode: 'continuable',
-          delivery: 'queue',
-          content: [{ type: 'text', text: value }],
-        },
-      });
-      if (!followed) watchChild(chatId, childId, sentAt);
-      return { messageId: receipt?.messageId ?? null, childId };
-    } catch (e) {
-      transcript.cancelUser(echo);
-      if (e instanceof AgentUnavailable) throw e;
-      if (e?.code === 'subagent/parent-unavailable') {
-        // The host restarted and its own Agent for this chat is not live yet: `subagents/prompt` requires
-        // the exact live direct parent (dsh-subagent/lib/index.js:3192-3193). One message in the chat
-        // resumes it, and then the helper can be asked to go on.
-        throw new AgentUnavailable('Strata restarted, so this chat has to be opened once before the helper can go on. Send a message in the chat, then try again.', 'child-parent-cold');
-      }
-      throw new AgentUnavailable('The helper did not accept the message. Try again.', 'child-prompt-failed', e.message);
+    const activeChild = followed || (watcher && !watcher.closed);
+    if (!activeChild && saved?.mode && rt) {
+      // An idle, resumed helper is put back into its own mode before a new run; a running helper keeps
+      // the mode already pinned in the gate.
+      await applyMode(rt, childId, saved.mode).catch(e => log(`agent · helper mode could not be restored: ${e.message}`));
     }
+    const cleanClient = typeof clientId === 'string' ? clientId.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80) : '';
+    const requestKey = cleanClient ? `${chatId}\u0000${childId}\u0000${cleanClient}` : null;
+    const known = knownChildPrompt(requestKey);
+    if (known) return known;
+    const requestId = `subagent-${internal ? 'continue-' : ''}${cleanClient || randomUUID()}`;
+    const send = async () => {
+      // A direct message shows at once; a Continue action is a host instruction and never becomes a
+      // fake user bubble. Its Harness echo is recognised by this request id and shown as a notice.
+      const sentAt = Date.now();
+      const echo = internal ? null : transcript.beginUser(value, sentAt, requestId);
+      if (internal) {
+        const cp = turnChild?.cp ?? watcher?.cp ?? null;
+        cp?.markInternal(requestId);
+      }
+      try {
+        const receipt = await rt.gw.rpc('subagents/prompt', {
+          request: {
+            requestId,
+            parentSessionId,
+            childSessionId: childId,
+            mode: 'continuable',
+            delivery: 'queue',
+            content: [{ type: 'text', text: value }],
+          },
+        });
+        if (!followed) watchChild(chatId, childId, sentAt, internal ? requestId : null);
+        return { messageId: receipt?.messageId ?? null, childId, requestId };
+      } catch (e) {
+        if (echo) transcript.cancelUser(echo);
+        if (e instanceof AgentUnavailable) throw e;
+        if (e?.code === 'subagent/parent-unavailable') {
+          // The host restarted and its own Agent for this chat is not live yet: `subagents/prompt` requires
+          // the exact live direct parent (dsh-subagent/lib/index.js:3192-3193). One message in the chat
+          // resumes it, and then the helper can be asked to go on.
+          throw new AgentUnavailable('Strata restarted, so this chat has to be opened once before the helper can go on. Send a message in the chat, then try again.', 'child-parent-cold');
+        }
+        if (e?.code === 'subagent/not-resumable' || e?.code === 'subagent/unauthorized') {
+          throw new AgentUnavailable('Only the history of this helper is available. You can read it, but cannot continue.', 'child-history-only', e.message);
+        }
+        throw new AgentUnavailable('The helper did not accept the message. Try again.', 'child-prompt-failed', e.message);
+      }
+    };
+    const work = send();
+    rememberChildPrompt(requestKey, work);
+    // A failed request is retryable with the same client id; do not keep a rejected promise in the map.
+    work.catch(() => {
+      const entry = requestKey ? childPrompts.get(requestKey) : null;
+      if (entry?.promise === work) childPrompts.delete(requestKey);
+    });
+    return work;
   }
 
   async function stop(chatId, { waitMs = 20_000 } = {}) {
@@ -1636,7 +1747,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     delete sessionMap[chatId]; chats.delete(chatId); rowStore.remove(chatId); persist();
   }
 
-  return { compactCommand, goalState, goalControl, harnessDir, status, activeTurns, agentSnapshot, syncAgentChat, syncAgentChats, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, stopChildren, childView, promptChild, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap, chats, rowStore, childTranscripts, childWatchers }) };
+  return { compactCommand, goalState, goalControl, harnessDir, status, activeTurns, agentSnapshot, syncAgentChat, syncAgentChats, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, stopChildren, childRows, childView, promptChild, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap, chats, rowStore, childTranscripts, childWatchers, childPrompts }) };
 }
 
 /** A goal that stopped by itself, in words. */

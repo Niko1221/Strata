@@ -10,7 +10,8 @@ import { downloadSessionLog } from '../lib/session-log';
 import { SubagentRow } from './SubagentRow';
 import { ChatModelPicker } from './ChatModelPicker';
 import { runningAgents } from '../lib/agents';
-import { useStore } from '../lib/store';
+import { api } from '../lib/client';
+import { applyAgentRows, useStore } from '../lib/store';
 import type { Session } from '../lib/types';
 import type { PreviewArtifact } from '../lib/artifacts';
 export function ChatToolbar({ session, items, selected, onSelect, onClose, onCloseTab, inline, expanded, onExpand, extraTabs = [], previewWidth }: {
@@ -30,9 +31,27 @@ export function ChatToolbar({ session, items, selected, onSelect, onClose, onClo
     const [agents, setAgents] = useState(false), [menu, setMenu] = useState(false), [settings, setSettings] = useState(false);
     const agentsRef = useRef<HTMLButtonElement>(null), menuRef = useRef<HTMLButtonElement>(null);
     const count = runningAgents(session?.agents ?? []);
+    const liveAgents = (session?.agents ?? []).some(a => a.status === 'working' || a.status === 'queued');
     const [now, setNow] = useState(Date.now);
     useEffect(() => { if (!agents || !count)
         return; setNow(Date.now()); const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [agents, count, session?.id]);
+    // A helper prompted outside a parent turn saves its own row on the host; the page's chat stream
+    // knows nothing about it. While any row is live, merge the small host row list (no transcripts).
+    useEffect(() => {
+        const id = session?.id;
+        if (!id || !liveAgents) return;
+        let alive = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const tick = async () => {
+            try {
+                const answer = await api.get<{ agents?: unknown[] }>(`/api/chat/subagents?sessionId=${encodeURIComponent(id)}`);
+                if (alive && Array.isArray(answer.agents)) applyAgentRows(id, answer.agents);
+            } catch { /* a transient host gap: the next tick retries */ }
+            if (alive) timer = setTimeout(() => { void tick(); }, 2000);
+        };
+        void tick();
+        return () => { alive = false; if (timer) clearTimeout(timer); };
+    }, [session?.id, liveAgents]);
     useEffect(() => setAgents(false), [session?.id]);
     const previews = !!selected && inline;
     const title = session ? sessionTitle(session) : tr('New chat');

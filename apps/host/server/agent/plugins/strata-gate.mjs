@@ -15,7 +15,12 @@
  * Children. A subagent's approval policy is pinned to `never` by the Harness (its requests are rejected on the
  * spot). For a child of a Manual chat that would hide the card and the child could not do anything. The gate
  * writes `ask` into that child's log, so the child's request reaches the same single Approve/Deny card.
- * Plan and Bypass children are untouched.
+ *
+ * A helper keeps the mode it was created with. The delegating call records the parent's mode, the child's
+ * first tool call pins it in memory, and the host writes the matching permission preset into the child's own
+ * log when its turn ends. Later parent mode changes do not rewrite that pin. This prevents a running helper
+ * from silently gaining or losing permissions when the person switches the chat's mode. Children created
+ * before this pin existed fall back to the parent's current mode, which is the old behaviour.
  *
  * The status command `/strata-gate` lets the host confirm the gate is really loaded before it lets a Manual turn
  * start (a Manual chat with no gate would be a chat with the sandbox open and nobody asking).
@@ -28,6 +33,12 @@ export const inject = ['approval', 'permissionPresets', 'sessions', 'tools'];
 export const MANUAL_PRESET = 'strata-manual';
 /** Preset key the host writes for Plan (read-only, nothing may change). */
 export const PLAN_PRESET = 'strata-plan';
+/** Preset key the host writes for Bypass (full access, never asks). */
+export const BYPASS_PRESET = 'strata-bypass';
+/** The three modes a helper may be pinned to, and the preset each one means. */
+export const PRESET_BY_MODE = Object.freeze({ manual: MANUAL_PRESET, plan: PLAN_PRESET, bypass: BYPASS_PRESET });
+export const MODE_BY_PRESET = Object.freeze(Object.fromEntries(Object.entries(PRESET_BY_MODE).map(([mode, preset]) => [preset, mode])));
+export const MODES = Object.freeze(Object.keys(PRESET_BY_MODE));
 /** The app's own look-only tool server (the person's instruction tools): it only hands back text. */
 const LOOK_ONLY_SERVER = 'mcp__strata-instructions__';
 /** The tools a person wrote as commands (Settings -> Tools): the card says which one runs and with what text. */
@@ -361,6 +372,8 @@ function browserDecision(name, args) {
   return { kind: 'ask', reason: `Use the browser (${name.replace(/^browser_/, '').replace(/_/g, ' ')})` };
 }
 
+const PLAN_REFUSAL = 'Plan mode only looks and changes nothing, so it cannot use this tool. Switch to Manual or Bypass to use it.';
+
 /**
  * Plan mode changes nothing. A connected tool (a person's tool server, a command they wrote, the browser) is not under the sandbox, so
  * Plan refuses it instead of letting it run. The look-only instruction tools are fine.
@@ -368,8 +381,33 @@ function browserDecision(name, args) {
  */
 export function planDecision(exec) {
   const tool = String(exec.name ?? '');
+  const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+  // A child's own sandbox starts from the Harness default, so Plan must refuse the changing
+  // built-in tools itself instead of trusting the sandbox to be read-only.
+  if (tool === 'write' || tool === 'edit' || tool === 'job_kill' || tool === 'run_code') return { kind: 'deny', reason: PLAN_REFUSAL };
+  if (SHELL_TOOLS.has(tool) && !isReadOnlyShell(args.command)) return { kind: 'deny', reason: PLAN_REFUSAL };
   if (!tool.startsWith('mcp__') || tool.startsWith(LOOK_ONLY_SERVER)) return null;
-  return { kind: 'deny', reason: 'Plan mode only looks and changes nothing, so it cannot use this tool. Switch to Manual or Bypass to use it.' };
+  return { kind: 'deny', reason: PLAN_REFUSAL };
+}
+
+/**
+ * The preset explicitly recorded in a child's own log. The host sets this once, right after the child is
+ * opened, to the mode the parent was in when the delegation was requested. It is not a parent lookup, so a
+ * later parent switch cannot rewrite it, and it survives a host restart with the child session.
+ */
+export function pinnedChildPreset(session) {
+  try {
+    const events = typeof session?.ownEvents === 'function' ? session.ownEvents() : [];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event?.type !== 'permission/preset') continue;
+      const preset = event?.data?.preset;
+      if (MODE_BY_PRESET[preset]) return preset;
+    }
+  } catch {
+    /* a session being restored has no readable log yet: fall back to the parent */
+  }
+  return null;
 }
 
 /**
@@ -383,6 +421,19 @@ export function apply(ctx, config = {}) {
   const webAllowed = new Set();
   /** A question already on the screen for a chat, so two searches started together share one card. */
   const webAsking = new Map();
+  /** Parent session id -> modes of delegations whose child has not made its first tool call yet. */
+  const pendingModes = new Map();
+  /** Child session id -> the preset pinned when its first tool call was seen. */
+  const childPinned = new Map();
+  const takePendingMode = parentId => {
+    const queue = pendingModes.get(parentId);
+    if (!queue?.length) return null;
+    const cutoff = Date.now() - 120_000;
+    while (queue.length && queue[0].at < cutoff) queue.shift();
+    const item = queue.shift();
+    if (!queue.length) pendingModes.delete(parentId);
+    return item?.mode ?? null;
+  };
   const chatOf = (session, depth = 0) => {
     const parentId = session.header?.parentSession;
     if (session.header?.origin === 'subagent' && parentId && depth < 6) {
@@ -406,8 +457,27 @@ export function apply(ctx, config = {}) {
     return { kind: 'deny', reason: WEB_REFUSAL };
   }
 
-  /** The preset a session is really working under: a child follows the chat that started it. */
+  /**
+   * The preset a session is really working under. A helper is pinned to the permission preset the host
+   * wrote into its own log at creation; the parent's current mode is only a fallback for children created
+   * before that write landed (or before their log is readable).
+   */
   const effectivePreset = (session, depth = 0) => {
+    if (session.header?.origin === 'subagent') {
+      const known = childPinned.get(session.id);
+      if (known) return known;
+      // The queue is the mode in force when the delegation was requested, so it wins over a default
+      // preset already present in a fresh child's log. The child's own preset is the restart fallback.
+      const parentId = session.header?.parentSession;
+      const queued = parentId ? takePendingMode(parentId) : null;
+      if (queued) {
+        const preset = PRESET_BY_MODE[queued];
+        childPinned.set(session.id, preset);
+        return preset;
+      }
+      const persisted = pinnedChildPreset(session);
+      if (persisted) return persisted;
+    }
     const parentId = session.header?.parentSession;
     if (session.header?.origin === 'subagent' && parentId && depth < 6) {
       const parent = ctx.sessions.get(parentId);
@@ -418,7 +488,7 @@ export function apply(ctx, config = {}) {
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     const agent = exec.agent;
-    if (!agent || exec.name === 'run_code') return next();
+    if (!agent) return next();
     // Fail closed (T4): a session whose preset cannot be read (a reset in progress, a helper whose chat is gone) is treated as Manual, so
     // anything this file cannot prove is read-only still asks. It used to run unasked.
     let preset;
@@ -426,10 +496,25 @@ export function apply(ctx, config = {}) {
       preset = MANUAL_PRESET;
       try { console.warn(`[strata-gate] could not read the permission mode for this call (${e?.message ?? e}); treating it as Manual`); } catch { /* logging must never decide a permission */ }
     }
-    // A helper that was set to ask while the chat was in Manual must stop asking the moment the chat leaves Manual,
-    // so a mode change applies to the very next tool call of a running goal and its helpers.
-    if (preset !== MANUAL_PRESET && agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) === 'ask') {
-      agent.session.append('approval/policy', { policy: 'never' });
+    // `run_code` executes inside its own confinement, which is not the permission preset's sandbox.
+    // In Plan it must never run: a child's seeded sandbox can still be writable.
+    if (exec.name === 'run_code') return preset === PLAN_PRESET ? planDecision(exec) : next();
+    // The delegating call records the mode in force at this instant. The first tool call of the child
+    // takes that value and pins it, so a parent switch after the delegation cannot change the child.
+    if (exec.name === 'subagent' || exec.name === 'subagent_fork') {
+      const queue = pendingModes.get(agent.session.id) ?? [];
+      queue.push({ mode: MODE_BY_PRESET[preset] ?? 'manual', at: Date.now() });
+      pendingModes.set(agent.session.id, queue);
+      while (queue.length > 20) queue.shift();
+    }
+    // A helper's approval policy starts as `never`. Manual helpers need `ask`; Plan and Bypass must stay
+    // `never`, including a child that asked earlier in its life. This is keyed to the child's own
+    // permission preset, never to the parent's current mode.
+    if (agent.session.header?.origin === 'subagent') {
+      const wantAsk = preset === MANUAL_PRESET;
+      const override = ctx.approval.overrideOf(agent.session);
+      if (wantAsk && override !== 'ask') agent.session.append('approval/policy', { policy: 'ask' });
+      else if (!wantAsk && override === 'ask') agent.session.append('approval/policy', { policy: 'never' });
     }
     if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
     if (preset !== MANUAL_PRESET) return next();
@@ -438,15 +523,7 @@ export function apply(ctx, config = {}) {
     if (gate.web) {
       // The person's switch, or a yes already given in this chat: no question.
       if (web.skipAsk === true || webAllowed.has(chatOf(agent.session))) return next();
-      // A helper's own approval policy is `never`; it must be `ask` for the question to reach the person.
-      if (agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) !== 'ask') {
-        agent.session.append('approval/policy', { policy: 'ask' });
-      }
       return (await askWeb(exec, gate, agent)) ?? next();
-    }
-    // A child's approval policy is pinned to `never` by the Harness; asking is how its request reaches the person.
-    if (agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) !== 'ask') {
-      agent.session.append('approval/policy', { policy: 'ask' });
     }
     const downstream = await next();
     if (downstream.kind !== 'allow') return downstream;

@@ -413,6 +413,8 @@ export interface SessionAgent {
   name: string;
   description: string;
   status: 'working' | 'completed' | 'failed' | 'queued' | 'cancelled' | 'interrupted';
+  /** The chat mode pinned when this helper started; later parent switches do not change it. */
+  mode?: 'manual' | 'plan' | 'bypass';
   /** What the host wants the person to know about this helper (a stop that did not take, a row repaired at start). */
   warning?: string;
   durationMs: number;

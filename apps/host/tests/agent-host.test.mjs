@@ -215,7 +215,7 @@ test('A09 over HTTP: a helper conversation is readable from its own chat, and a 
   assert.ok(after.transcript.some(entry => entry.role === 'assistant' && /second/.test(entry.text)), 'the helper answered the new message');
 });
 
-test('A10 over HTTP: after a host restart the helper row is still there, its kept conversation is not, and a prompt resumes the child', { skip }, async t => {
+test('A10 over HTTP: after a host restart the helper row and its conversation are still there, and a prompt resumes the child', { skip }, async t => {
   const first = await setup(t);
   const frames = await first.send('chat-h-cold', 'SCRIPT:spawn 1 echo before-restart');
   const row = frames.filter(f => f.type === 'agent').at(-1).agent;
@@ -226,8 +226,10 @@ test('A10 over HTTP: after a host restart the helper row is still there, its kep
   const read = async () => (await fetch(`${second.host.base}/api/chat/subagents/${encodeURIComponent(row.id)}?sessionId=chat-h-cold`)).json();
   const cold = await read();
   assert.equal(cold.agent.status, 'completed', 'the saved row survived the restart');
-  assert.equal(cold.available, false, 'the conversation lived in the old process only');
-  assert.deepEqual(cold.transcript, []);
+  assert.equal(cold.available, true, 'the saved conversation survived the restart');
+  assert.equal(cold.historyOnly, false, 'the saved row still points at a resumable child');
+  assert.ok(cold.transcript.some(entry => entry.text.includes('before-restart')), JSON.stringify(cold.transcript));
+  assert.equal(cold.transcript[0].kind, 'task', 'the first saved line is the task card');
   const coldTry = await second.host.post('/api/chat/subagent/prompt', { sessionId: 'chat-h-cold', childId: row.id, text: 'SCRIPT:echo after-restart' });
   assert.equal(coldTry.status, 502);
   assert.equal(coldTry.body.code, 'child-parent-cold', 'a restarted host says what to do instead of failing silently');

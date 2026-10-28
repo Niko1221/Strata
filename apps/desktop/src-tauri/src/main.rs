@@ -994,13 +994,12 @@ fn parse_window_state(text: &str) -> WindowState {
     let x = number("x").unwrap_or(i32::MIN as i64);
     let y = number("y").unwrap_or(i32::MIN as i64);
     let sane = (800..=20000).contains(&width) && (500..=20000).contains(&height) && x.abs() < 20000 && y.abs() < 20000;
-    WindowState {
-        maximized,
-        width: if sane { width as u32 } else { 1440 },
-        height: if sane { height as u32 } else { 920 },
-        x: if sane { x as i32 } else { i32::MIN },
-        y: if sane { y as i32 } else { i32::MIN },
+    // A state that cannot be used (a minimized window's -32000,-32000, a monitor that is gone) is not a request for a
+    // small window: the app starts maximized, as it does on the first run.
+    if !sane {
+        return WindowState::default();
     }
+    WindowState { maximized, width: width as u32, height: height as u32, x: x as i32, y: y as i32 }
 }
 
 fn write_window_state(state: &WindowState) {
@@ -1030,6 +1029,12 @@ fn save_window_state(window: &tauri::Window, force: bool) {
         }
         *last = Some(Instant::now());
     }
+    // A minimized window reports is_maximized() = false and a place at -32000,-32000. Saving that wrote away the
+    // maximized state and the real place, so the next start came back small and off the screen. A minimize says
+    // nothing about how the person wants the window; the last state before it stands.
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
     let mut state = read_window_state();
     let maximized = window.is_maximized().unwrap_or(false);
     state.maximized = maximized;
@@ -1042,8 +1047,11 @@ fn save_window_state(window: &tauri::Window, force: bool) {
             }
         }
         if let Ok(position) = window.outer_position() {
-            state.x = position.x;
-            state.y = position.y;
+            // A place beyond any screen is not a place to return to; keep the last good one.
+            if position.x.abs() < 20000 && position.y.abs() < 20000 {
+                state.x = position.x;
+                state.y = position.y;
+            }
         }
     }
     write_window_state(&state);
@@ -1374,6 +1382,10 @@ mod tests {
         let unusable = parse_window_state(r#"{"maximized":false,"width":10,"height":10,"x":999999,"y":-999999}"#);
         assert_eq!((unusable.width, unusable.height), (1440, 920), "an unusable size falls back to the default");
         assert_eq!(unusable.x, i32::MIN, "a place off the screen is not restored");
+        assert!(unusable.maximized, "an unusable state opens maximized, not as a small window");
+        // A minimized window writes -32000,-32000 and "maximized": false; that is not a request for a small window.
+        let minimized = parse_window_state(r#"{"maximized":false,"width":2560,"height":1369,"x":-32000,"y":-32000}"#);
+        assert!(minimized.maximized);
 
         assert!(parse_window_state("not json").maximized, "a damaged file is the default, not a broken start");
     }

@@ -1214,6 +1214,34 @@ function patchSession(id: string, fn: (s: Session) => Session) {
   set({ sessions });
 }
 
+/** Merge one fresh helper row from the host (the panel's poll) into the chat's rows. */
+export function applyAgentFrame(id: string, frame: unknown) {
+  if (!id || !frame) return;
+  const current = state.sessions.find(s => s.id === id)?.agents ?? [];
+  const next = updateAgent(current, frame);
+  const before = current.find(a => a.id === (frame as { id?: unknown }).id);
+  const after = next.find(a => a.id === (frame as { id?: unknown }).id);
+  if (before && after && before.status === after.status && before.updatedAt === after.updatedAt
+    && before.mode === after.mode && before.tokens === after.tokens && before.warning === after.warning
+    && before.description === after.description) return;
+  patchSession(id, s => ({ ...s, agents: next }));
+}
+
+/** Merge the host's saved helper rows (a small status poll, no transcript text) into the chat. */
+export function applyAgentRows(id: string, rows: unknown[]) {
+  if (!id || !Array.isArray(rows) || !rows.length) return;
+  const current = state.sessions.find(s => s.id === id)?.agents ?? [];
+  const next = rows.reduce<NonNullable<Session['agents']>>((list, row) => updateAgent(list, row), current);
+  const changed = next.length !== current.length || next.some((agent, index) => {
+    const before = current[index];
+    return !before || before.id !== agent.id || before.status !== agent.status || before.updatedAt !== agent.updatedAt
+      || before.mode !== agent.mode || before.tokens !== agent.tokens || before.warning !== agent.warning
+      || before.description !== agent.description;
+  });
+  if (!changed) return;
+  patchSession(id, s => ({ ...s, agents: next }));
+}
+
 // The demo clock belongs to the session, so hiding the sidebar or navigating
 // away never pauses it. Only start and completion are written to storage.
 const timeSkipTimers = new Map<string, ReturnType<typeof setTimeout>>();
