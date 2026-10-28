@@ -57,7 +57,15 @@
       "installerIcon": "icons/icon.ico",
         "compression": "lzma",
         "languages": [
-          "English"
+          "English",
+          "SimpChinese",
+          "Japanese",
+          "German",
+          "Spanish",
+          "Russian",
+          "PortugueseBR",
+          "Korean",
+          "French"
         ]
       }
     }
