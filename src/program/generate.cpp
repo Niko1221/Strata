@@ -9455,8 +9455,8 @@ int main(int argc, char** argv) {
             const size_t n_st = stages.size();
             // the draft layer's K/V lives on the last stage's GPU (the drafter is loaded there): with a split it is
             // saved with that stage's image, under its device; stage 0's image holds none
-            const strata::core::QsaState* draft0 = (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
-            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && !mtp_first && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
+            const strata::core::QsaState* draft0 = (n_st > 0 && !mtp_first) || !use_mtp || mtp.kv_state().max_cells <= 0 ? nullptr : &mtp.kv_state();   // no --mtp, or a drafter this engine holds elsewhere (the Metal window runs the draft rounds; its session-side ring is empty and parks no K/V): no draft part
+            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && mtp.kv_state().max_cells > 0 && !mtp_first && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
             strata::core::ConversationCheckpointSplit cs;
             if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);   // #752: two-phase; a bad_alloc leaves `checks` whole
             struct MergeBack {
@@ -12168,7 +12168,7 @@ int main(int argc, char** argv) {
                         // K/V source exists (conversation_kv_source refuses, as its comment says).  Capture the
                         // host image exactly as parking does, and the image overload of session_file_write
                         // writes the same file the streamed CUDA path would.
-                        const strata::core::QsaState* draft_disk = use_mtp ? &mtp.kv_state() : nullptr;   // park's draft0 choice
+                        const strata::core::QsaState* draft_disk = use_mtp && mtp.kv_state().max_cells > 0 ? &mtp.kv_state() : nullptr;   // park's draft0 choice
                         size_t est = 0;
                         if (!strata::core::conversation_snapshot_bytes(view, ss, g, draft_disk, est, err)) {
                             refuse(err, strata::core::SessionError::io);
@@ -12229,7 +12229,7 @@ int main(int argc, char** argv) {
                 } else {
                     strata::core::SavedConversation image;
 #if defined(STRATA_GPU_METAL)
-                    const strata::core::QsaState* draft_disk = use_mtp ? &mtp.kv_state() : nullptr;   // the save side wrote it this way
+                    const strata::core::QsaState* draft_disk = use_mtp && mtp.kv_state().max_cells > 0 ? &mtp.kv_state() : nullptr;   // the save side wrote it this way
 #else
                     const strata::core::QsaState* draft_disk = &mtp.kv_state();
 #endif
@@ -12735,7 +12735,7 @@ int main(int argc, char** argv) {
             if (incoming) for (size_t i = 0; i < stages.size(); ++i) {
                 const strata::core::OnDevice on(stages[i]->dev);
                 if (!strata::core::conversation_snapshot_validate(incoming->stage_images[i], stages[i]->ss, g,
-                        use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
+                        use_mtp && mtp.kv_state().max_cells > 0 && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
                     std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage snapshot (%s)\n",
                                  err.c_str());
                     incoming.reset();
@@ -12744,7 +12744,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
-                    use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
+                    use_mtp && mtp.kv_state().max_cells > 0 && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
@@ -12752,8 +12752,8 @@ int main(int argc, char** argv) {
             if (borrow) {
                 const strata::core::SavedConversation* donor = conversations.find(parked.serial);
                 if (donor == nullptr ||
-                    !strata::core::conversation_snapshot_validate(*donor, ss, g, use_mtp ? &mtp.kv_state() : nullptr,
-                                                                  err)) {
+                    !strata::core::conversation_snapshot_validate(*donor, ss, g,
+                            use_mtp && mtp.kv_state().max_cells > 0 ? &mtp.kv_state() : nullptr, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: cannot borrow from a parked conversation "
                                          "(%s)\n", err.empty() ? "gone" : err.c_str());
                     borrow = false;
@@ -12870,7 +12870,8 @@ int main(int argc, char** argv) {
                 const strata::core::SavedConversation* donor = conversations.find(parked.serial);   // still parked
                 if (donor == nullptr ||
                     strata::core::conversation_snapshot_restore_prefix(*donor, parked.tokens, ss, g,
-                                                                       use_mtp ? &mtp.kv_state() : nullptr, err) !=
+                                                                       use_mtp && mtp.kv_state().max_cells > 0
+                                                                           ? &mtp.kv_state() : nullptr, err) !=
                         strata::core::ConversationRestore::restored) {
                     // validated above and guarded while parking: a failure here is fatal, as for a whole restore
                     std::printf("ERR restoring a borrowed conversation prefix: %s\n",
@@ -12896,7 +12897,7 @@ int main(int argc, char** argv) {
             if (incoming) {
                 const auto t0 = Clock::now();
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
-                        use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
+                        use_mtp && mtp.kv_state().max_cells > 0 && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
@@ -12906,7 +12907,7 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < stages.size(); ++i) {   // the later stages' parts
                     const strata::core::OnDevice on(stages[i]->dev);
                     if (strata::core::conversation_snapshot_restore(incoming->stage_images[i], stages[i]->ss, g,
-                            use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
+                            use_mtp && mtp.kv_state().max_cells > 0 && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
                         strata::core::ConversationRestore::restored) {
                         std::printf("ERR restoring parked conversation (stage CUDA%d): %s\n", stages[i]->dev,
                                     err.c_str());
@@ -12914,7 +12915,7 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
-                if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
+                if (use_mtp && mtp.kv_state().max_cells > 0 && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();
                     const strata::core::OnDevice on_d(stages.empty() || mtp_first ? 0 : stages.back()->dev);
