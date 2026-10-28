@@ -6174,6 +6174,95 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
         self.assertEqual(ids[1][:len(first) - 8], first[:len(first) - 8])   # all but the generation header
 
 
+class SystemRemindersTail(unittest.TestCase):
+    """"system_reminders": "tail" moves a client's system-reminder block out of a past turn onto the last user
+    turn, so the tokens a slot holds for the conversation's next turn keep matching and the conversation is not
+    read again (opencode#23595: the block is dropped from the past turn on the next request, cutting the shared
+    prefix there - measured here at 155306 tokens in, 211990 read)."""
+
+    def user_contents(self, msgs, tail):
+        from serve.frontend import openai_to_messages
+        return [m["content"] for m in openai_to_messages({"messages": msgs}, tail)[0] if m["role"] == "user"]
+
+    def test_a_block_in_a_past_turn_moves_to_the_last_turn(self):
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        msgs = [{"role": "user", "content": "door tiles " + rem},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "next step"}]
+        kept, last = self.user_contents(msgs, True)
+        self.assertEqual(kept, "door tiles")                      # the past turn is byte-stable again
+        self.assertTrue(last.endswith(rem))                       # the block is the newest thing in the prompt
+        self.assertEqual(self.user_contents(msgs, False)[0], "door tiles " + rem)   # off: as before
+
+    def test_a_block_already_in_the_last_turn_is_not_moved_twice(self):
+        rem = "<system-reminder>\nmode: act\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + rem}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c " + rem}]
+        kept, last = self.user_contents(msgs, True)
+        self.assertEqual(kept, "a " + rem)                        # identical in a past turn: left where it is
+        self.assertEqual(last.count(rem), 1)
+
+    def test_two_blocks_in_two_past_turns_are_moved_once_each(self):
+        """The tail is built turn by turn, so only the blocks of the turn being cleared are appended: joining
+        everything moved so far copied an earlier block once per later turn (2 copies with 2 turns, the first of
+        k blocks k times) - a tail that grows with the conversation and is not byte-stable."""
+        a, b = "<system-reminder>\nmode: plan\n</system-reminder>", "<system-reminder>\nAGENTS rules\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + a}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c " + b}, {"role": "assistant", "content": "d"},
+                {"role": "user", "content": "e"}]
+        users = self.user_contents(msgs, True)
+        # both past turns byte-stable, and each block once on the last turn, in the order it was sent
+        self.assertEqual(users, ["a", "c", "e\n" + a + "\n" + b])
+
+    def test_the_responses_route_moves_the_block_too(self):
+        """#451: /v1/responses builds its messages in serve/responses.py and never runs the chat route's
+        converter, so the rule has to be passed there.  Codex CLI is the client that switches modes."""
+        from serve.responses import input_messages
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        req = {"instructions": "sys", "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "door tiles " + rem}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next step"}]}]}
+        users = lambda tail: [m["content"] for m in input_messages(req, tail) if m["role"] == "user"]   # noqa: E731
+        self.assertEqual(users(True), ["door tiles", "next step\n" + rem])
+        self.assertEqual(users(False), ["door tiles " + rem, "next step"])   # off: as Codex sent it
+
+
+class DivergenceNote(unittest.TestCase):
+    """Service.note_divergence compares a request with what each batch slot holds for its next turn (prompt +
+    the generated tokens) and logs the cut - so a reply a client replays differently than the engine generated
+    is named, which a prompt-vs-prompt comparison cannot see."""
+
+    def service(self, path, held):
+        svc = Service.__new__(Service)
+        svc.engine = SimpleNamespace(log_path=path, slot_held=held)
+        svc.tok = SimpleNamespace(decode=lambda ids: "".join(chr(i) for i in ids))
+        svc.conv_log = SimpleNamespace(state={"last_event": "parked", "last_tokens": 6003, "last_at": time.time()})
+        return svc
+
+    def test_a_replayed_reply_cut_is_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = list(range(97, 107)) * 600                      # 6000 tokens of shared prompt
+            held = [base + [81, 82, 83]]                           # ... plus what the engine generated
+            svc = self.service(str(Path(d) / "engine.log"), held)
+            svc.note_divergence(base + [81, 82, 83])
+            svc.note_divergence(base + [87, 88, 89] + base[:2000])  # the client replays the reply differently
+            line = (Path(d) / "engine.log.divergence").read_text(encoding="utf-8")
+            self.assertIn("prefix 6000", line)
+            self.assertIn("slot 0", line)
+            self.assertIn("QRS", line)                             # the text the slot holds at the cut
+            self.assertIn("WXY", line)                             # and what the client sent there
+            self.assertIn("last_cache: parked 6003", line)         # the engine's last cache event, for context
+
+    def test_a_request_extending_the_held_prefix_is_not_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = list(range(97, 107)) * 600
+            held = [base + [81, 82, 83]]
+            svc = self.service(str(Path(d) / "engine.log"), held)
+            svc.note_divergence(base + [81, 82, 83, 65])
+            self.assertFalse((Path(d) / "engine.log.divergence").exists())
+
+
 class ToolOrder(unittest.TestCase):
     """A tool set that comes back in another order is put back in the order it was first seen (RealScaniX, #1624): the
     template renders the tool list before the system prompt, so a client whose MCP tools register in a varying order
