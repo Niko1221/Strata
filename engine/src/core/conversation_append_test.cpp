@@ -127,17 +127,19 @@ void trailer_tests() {
     std::memcpy(&v, bytes + 112, 8);
     check(v == 999936, "trailer hashed_bytes offset");
 
-    // self_hash covers every byte in use: [0, 120), seed 0.
+    // self_hash covers every byte in use: session_hash64 of [0, 120), seed 0, computed directly off
+    // the record; the 8-byte value lands at [120,128), so the tail [124,128) is the value's own high
+    // half - pinned by the parse-side re-derivation exactly like every other byte (no uncovered pad).
     uint64_t self;
     std::memcpy(&self, bytes + 120, 8);
-    check(self == session_hash64(bytes, 120, 0), "trailer self_hash covers bytes 0..119");
+    check(self == session_hash64(bytes, 120, 0), "trailer self_hash = hash(record [0,120))");
 
     SessionTrailer back;
     check(trailer_parse(bytes, back), "trailer parse accepts a written record");
     check(std::memcmp(&back, &canon, sizeof back) == 0, "trailer write/parse round-trip (self_hash recomputed consistently)");
 
-    // Single-byte corruption at EVERY offset is rejected: bytes 0..119 by the self_hash,
-    // 120..127 by the self_hash value itself (no uncovered pad).
+    // Single-byte corruption at EVERY offset is rejected: bytes 0..119 by the re-hash,
+    // 120..127 by the stored self_hash value itself (no uncovered pad anywhere in the record).
     for (int off = 0; off < 128; ++off) {
         uint8_t bad[128];
         std::memcpy(bad, bytes, 128);
