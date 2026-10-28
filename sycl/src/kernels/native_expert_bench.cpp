@@ -16,6 +16,7 @@
 #include "ggml.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,16 @@
 
 namespace cpu = strata::kernels::cpu;
 namespace K = strata::kernels;
+
+uint64_t fnv1a(const void* data, size_t bytes) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < bytes; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -48,9 +59,6 @@ int main(int argc, char** argv) {
     int failures = 0;
     dpct::queue_ptr s;
     s = dpct::get_current_device().create_queue(true);
-    dpct::event_ptr e0, e1;
-    e0 = new sycl::event();
-    e1 = new sycl::event();
     for (int l : layers) {
         const strata::TensorInfo* t[3] = {};
         const char* roles[3] = {"gate", "up", "down"};
@@ -91,16 +99,16 @@ int main(int argc, char** argv) {
         float* dout;
         unsigned long long* dptr;
         int32_t *dstart, *dn, *ddst, *dtok;
-        cudaMalloc((void**) &dblob, blobs.size());
-        cudaMalloc(&dx, x.size() * 4);
-        cudaMalloc(&dxq, (size_t) NTOK * H / 32 * 36);
-        cudaMalloc(&dscr, K::native_expert_scratch_bytes(NE, FF));
-        cudaMalloc((void**) &dout, (size_t) NE * H * 4);
-        cudaMalloc((void**) &dptr, (size_t) G * 8);
-        cudaMalloc((void**) &dstart, (size_t) (G + 1) * 4);
-        cudaMalloc((void**) &dn, 4);
-        cudaMalloc((void**) &ddst, (size_t) NE * 4);
-        cudaMalloc((void**) &dtok, (size_t) NE * 4);
+        dblob = sycl::malloc_device<uint8_t>(blobs.size(), *s);
+        dx = sycl::malloc_device(x.size() * sizeof(float), *s);
+        dxq = sycl::malloc_device((size_t) NTOK * H / 32 * 36, *s);
+        dscr = sycl::malloc_device(K::native_expert_scratch_bytes(NE, FF), *s);
+        dout = sycl::malloc_device<float>((size_t) NE * H, *s);
+        dptr = sycl::malloc_device<unsigned long long>(G, *s);
+        dstart = sycl::malloc_device<int32_t>(G + 1, *s);
+        dn = sycl::malloc_device<int32_t>(1, *s);
+        ddst = sycl::malloc_device<int32_t>(NE, *s);
+        dtok = sycl::malloc_device<int32_t>(NE, *s);
         for (int g = 0; g < G; ++g) {
             ptr[g] = (unsigned long long) (dblob + (size_t) g * f.bytes);
             start[g] = g * T;
@@ -110,26 +118,27 @@ int main(int argc, char** argv) {
             }
         }
         start[G] = NE;
-        cudaMemcpy(dblob, blobs.data(), blobs.size(), cudaMemcpyHostToDevice);
-        cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dptr, ptr.data(), (size_t) G * 8, cudaMemcpyHostToDevice);
-        cudaMemcpy(dstart, start.data(), (size_t) (G + 1) * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dn, &G, 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(ddst, dst.data(), (size_t) NE * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dtok, tok.data(), (size_t) NE * 4, cudaMemcpyHostToDevice);
+        s->memcpy(dblob, blobs.data(), blobs.size());
+        s->memcpy(dx, x.data(), x.size() * sizeof(float));
+        s->memcpy(dptr, ptr.data(), (size_t) G * sizeof(*dptr));
+        s->memcpy(dstart, start.data(), (size_t) (G + 1) * sizeof(*dstart));
+        s->memcpy(dn, &G, sizeof(*dn));
+        s->memcpy(ddst, dst.data(), (size_t) NE * sizeof(*ddst));
+        s->memcpy(dtok, tok.data(), (size_t) NE * sizeof(*dtok));
         K::quantize_q8_1_rows((const float*) dx, NTOK, H, dxq, s);
+        s->wait_and_throw();
         auto run = [&](int m, int phase) {
             K::native_expert_set_mode(m, phase);
             K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G, NE, dxq, dscr, dout, s);
         };
         std::vector<float> ref((size_t) NE * H), got((size_t) NE * H);
-        cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
+        s->memset(dout, 0xff, got.size() * sizeof(float));
         run(mref, 0);
-        cudaMemcpyAsync(ref.data(), dout, ref.size() * 4, cudaMemcpyDeviceToHost, s);
-        cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
+        s->memcpy(ref.data(), dout, ref.size() * sizeof(float));
+        s->memset(dout, 0xff, got.size() * sizeof(float));
         run(mode, 0);
-        cudaMemcpyAsync(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost, s);
-        if (cudaStreamSynchronize(s) != cudaSuccess) { std::printf("layer %d: CUDA error\n", l); return 1; }
+        s->memcpy(got.data(), dout, got.size() * sizeof(float));
+        s->wait_and_throw();
         size_t ndiff = 0;
         double worst = 0;
         for (size_t i = 0; i < ref.size(); ++i)
@@ -139,13 +148,13 @@ int main(int argc, char** argv) {
             }
         auto time = [&](int m, int phase) {
             for (int i = 0; i < 10; ++i) run(m, phase);
-            cudaEventRecord(e0, s);
+            sycl::event e0 = s->ext_oneapi_submit_barrier();
             for (int i = 0; i < iters; ++i) run(m, phase);
-            cudaEventRecord(e1, s);
-            cudaEventSynchronize(e1);
-            float ms = 0;
-            cudaEventElapsedTime(&ms, e0, e1);
-            return 1e3 * ms / iters;
+            sycl::event e1 = s->ext_oneapi_submit_barrier();
+            e1.wait_and_throw();
+            const auto begin = e0.get_profiling_info<sycl::info::event_profiling::command_start>();
+            const auto end = e1.get_profiling_info<sycl::info::event_profiling::command_end>();
+            return (double) (end - begin) / 1e3 / iters;
         };
         const double gu_b = (double) G * 2 * f.up_off, d_b = (double) G * dsz;
         double us[2][3] = {{1e30, 1e30, 1e30}, {1e30, 1e30, 1e30}};
@@ -153,18 +162,21 @@ int main(int argc, char** argv) {
             for (int k = 0; k < 2; ++k)
                 for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
         std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
-                    " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
+                    " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
+                    " | hash %016llx | %s\n",
                     l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,
                     mref, us[0][0], us[0][1], gu_b / us[0][1] / 1e3, us[0][2], d_b / us[0][2] / 1e3,
                     mode, us[1][0], us[1][1], gu_b / us[1][1] / 1e3, us[1][2], d_b / us[1][2] / 1e3,
+                    (unsigned long long) fnv1a(got.data(), got.size() * sizeof(float)),
                     ndiff ? "DIFFERS" : "bitwise equal");
         if (ndiff) {
             std::printf("          %zu of %zu outputs differ, worst rel %.2e\n", ndiff, ref.size(), worst);
             ++failures;
         }
         K::native_expert_set_mode(-1, 0);
-        cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
-        cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
+        sycl::free(dblob, *s); sycl::free(dx, *s); sycl::free(dxq, *s); sycl::free(dscr, *s);
+        sycl::free(dout, *s); sycl::free(dptr, *s); sycl::free(dstart, *s); sycl::free(dn, *s);
+        sycl::free(ddst, *s); sycl::free(dtok, *s);
     }
     std::printf("native_expert_bench: %d differing\n", failures);
     return failures ? 1 : 0;

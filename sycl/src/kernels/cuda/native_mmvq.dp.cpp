@@ -32,6 +32,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
+#include "strata/kernels/iq4_lut.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "s26_tsum.dp.hpp"
 
@@ -1752,7 +1753,25 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         if constexpr (NCOLS > 1) {
-            if (mmvq_large_grf(s)) {
+            static const bool shape_grf = [] {
+                const char* v = std::getenv("STRATA_Q6_SHAPE_GRF");
+                return v && v[0] == '1';
+            }();
+            const bool eligible = (n_in == 6144 && n_out == 2560) ||
+                (n_in == 2560 && (n_out == 512 || n_out == 640)) ||
+                (NCOLS >= 3 && n_in == 2560 && n_out == 6144) ||
+                (NCOLS >= 4 && n_in == 2560 && (n_out == 10240 || n_out == 12288));
+            const bool bounded_grf = shape_grf && eligible &&
+                std::getenv("STRATA_MMVQ_LARGE_GRF") == nullptr &&
+                strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Battlemage;
+            if (bounded_grf) {
+                static const bool note = [] {
+                    std::fprintf(stderr, "strata: shape-guarded Q6_K large-GRF dispatch enabled\n");
+                    return true;
+                }();
+                (void) note;
+            }
+            if (mmvq_large_grf(s) || bounded_grf) {
                 s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
                     sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
                     sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
@@ -1874,7 +1893,13 @@ struct WideQ5K {
     static A act(const Q81Block* xb, int g) { return WideQ4K::act(xb, g); }
     static float dot(const W& r, const A& v) { return WideQ4K::dot(r, v); }
 };
+#ifndef STRATA_IQ4_LUT_SWAR
+#define STRATA_IQ4_LUT_SWAR 0
+#endif
 __dpct_inline__ uint32_t iq4_lut4(uint32_t q4) {   // four nibbles -> four codebook bytes, codebook in registers
+#if STRATA_IQ4_LUT_SWAR
+    return iq4_lut4_swar(q4);
+#else
     constexpr uint32_t t0 = 0xBFAD9881u, t1 = 0xF6EADDCFu, t2 = 0x26190D01u, t3 = 0x71594535u;
     uint32_t r = 0;
 #pragma unroll
@@ -1884,6 +1909,7 @@ __dpct_inline__ uint32_t iq4_lut4(uint32_t q4) {   // four nibbles -> four codeb
         r |= ((t >> (8 * (n & 3))) & 0xFF) << (8 * i);
     }
     return r;
+#endif
 }
 struct WideIQ4XS {
     using Block = IQ4XSBlock;
@@ -1985,7 +2011,29 @@ template <typename F, int NCOLS>
 void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-#define STRATA_WKR(RP) if (wide_k_rpw() == RP) { \
+    int rpw = wide_k_rpw();
+    static const bool shape_reuse = [] {
+        const char* v = std::getenv("STRATA_MMVQ_SHAPE_RPW");
+        return v && v[0] == '1';
+    }();
+    if (shape_reuse && std::getenv("STRATA_MMVQ_WIDE_K_RPW") == nullptr &&
+        strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Battlemage) {
+        bool eligible = false;
+        if constexpr (std::is_same_v<F, WideQ4K>)
+            eligible = (n_in == 2560 && (n_out == 6144 || n_out == 10240 || n_out == 12288)) ||
+                       (n_in == 6144 && n_out == 2560);
+        if constexpr (std::is_same_v<F, WideQ5K>)
+            eligible = (n_in == 2560 && n_out == 12288) || (n_in == 6144 && n_out == 2560);
+        if (eligible && NCOLS <= 4) {
+            rpw = 2;
+            static const bool note = [] {
+                std::fprintf(stderr, "strata: shape-guarded Q4_K/Q5_K dense row reuse enabled\n");
+                return true;
+            }();
+            (void) note;
+        }
+    }
+#define STRATA_WKR(RP) if (rpw == RP) { \
         const unsigned b = unsigned((std::size_t(n_out) + WARPS * RP - 1) / (WARPS * RP)); \
         s->parallel_for<dpct_kernel_name<class native_mmvq_wide_rpw, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
             sycl::nd_range<3>(sycl::range(1, 1, b) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)), \
