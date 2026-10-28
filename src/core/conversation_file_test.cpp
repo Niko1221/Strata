@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <new>
 #include <utility>
 #include <vector>
@@ -627,6 +628,67 @@ int main() {
         // the allowance of a blocking step: bounded, growing with its size
         check(session_phase_limit_s(0) == 60 && session_phase_limit_s(1198691396) == 60 + (1198691396 >> 22) &&
               session_phase_limit_s(UINT64_MAX) == 3600, "phase limit: 60 s + 1 s per 4 MiB, at most an hour");
+    }
+    // the pipeline witness: the OS write of a full block must lie entirely inside some source-read window.
+    // A serialized copy->write loop cannot produce this: its writes happen strictly between reads, never inside one.
+    {
+        auto ns = []() {
+            return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        };
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> src(1);
+        src[0].format = 2; src[0].cells = 4096; src[0].heads = 2; src[0].head_dim = 256;
+        src[0].page_size = 64; src[0].pooled_rows = 0; src[0].idx_dim = 0;
+        src[0].sizes = {32u << 20, 16u << 20, 0, 0, 0};
+        std::vector<std::pair<uint64_t, uint64_t>> reads;   // every source-read window [begin_ns, end_ns]
+        src[0].read = [&](size_t, size_t, void* d, size_t c) {
+            const uint64_t t0 = ns();
+            std::memset(d, 0x5a, c);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));   // a device copy's worth of time
+            reads.push_back({t0, ns()});
+            return true;
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> spans;   // (byte_end, begin_ns, end_ns) per full block
+        std::vector<uint64_t> seen;                                    // progress reports
+        SessionWriteOptions opt;
+        opt.block_span = [&](uint64_t byte_end, uint64_t b, uint64_t e) { spans.emplace_back(byte_end, b, e); };
+        opt.progress = [&](uint64_t done, uint64_t) { seen.push_back(done); };
+        const fs::path p = dir / "pipeline.bin";
+        check(session_file_write(p.string(), meta, src, id, written, error, opt), "pipeline: 48 MiB streamed write");
+        check(spans.size() == 3, "pipeline: three full 16 MiB blocks written");
+        bool overlap = false;
+        for (const auto& sp : spans)
+            for (const auto& w : reads)
+                if (w.first <= std::get<1>(sp) && std::get<2>(sp) <= w.second) overlap = true;
+        check(overlap, "pipeline: a block's OS write lies entirely inside a source-read window");
+        // the bytes stay the ordinary streamed-write bytes: a captured-image twin must write the identical file
+        SavedConversation twin = original;
+        twin.kv.clear();
+        ConversationKv kv;
+        kv.format = 2; kv.cells = 4096; kv.heads = 2; kv.head_dim = 256;
+        kv.page_size = 64; kv.pooled_rows = 0; kv.idx_dim = 0;
+        auto flat = [](size_t n) {
+            ConversationBuffer b;
+            b.resize(n);
+            b.visit(0, n, [](uint8_t* q, size_t c, size_t) { std::memset(q, 0x5a, c); return true; });
+            return b;
+        };
+        kv.k = flat(32u << 20);
+        kv.v = flat(16u << 20);
+        twin.kv.push_back(std::move(kv));
+        const fs::path t = dir / "pipeline-twin.bin";
+        check(session_file_write(t.string(), twin, id, written, error), "pipeline: captured-image twin write");
+        check(slurp(p) == slurp(t), "pipeline: the streamed file is the captured-image file, byte for byte");
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(p.string(), id, back, read, error), "pipeline: the file reads back");
+        check(back.kv.size() == 1 && back.kv[0].k.size() == (32u << 20) && back.kv[0].v.size() == (16u << 20),
+              "pipeline: the K/V parts round trip their sizes");
+        bool monotonic = !seen.empty() && seen.front() == 0;
+        for (size_t i = 1; i < seen.size(); ++i) monotonic = monotonic && seen[i] > seen[i - 1];
+        check(monotonic && seen.back() == written, "pipeline: progress never goes back and ends at the file size");
     }
     // A: the SAVE's RAM preflight comes BEFORE the checkpoint is copied
     {
