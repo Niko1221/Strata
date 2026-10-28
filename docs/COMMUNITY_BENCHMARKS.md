@@ -73,6 +73,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-28: one RX 6900 XT 16 GB (gfx1030), Ryzen 9 5950X, 64 GB DDR4-3600](../bench/results/2026-10-28-community-rx-6900xt-hc-persist/README.md):
+  engine 0.1.52 source build on Arch ROCm 7.2.4, Coder IQ1_M, IQ2_XS and Swift 1.5 IQ3_S; `STRATA_HC_PERSIST=1` on a
+  single card: decode +4.0 % to +7.8 % (chat) and +3.2 % to +5.8 % (agent), prompts unchanged, three interleaved passes;
+  `--vram-reserve-mib`, `--adapt-swaps` and `--pool-workers` sweeps within the noise (15 workers fastest).
 
 ## Run the standard benchmark
 

@@ -1,0 +1,62 @@
+{
+ "exe": "<STRATA>/engine/strata",
+ "args": [
+  "--pack",
+  "<DATA>/packs/swift-iq3_s",
+  "--native",
+  "<DATA>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<DATA>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--expert-profile",
+  "<STRATA>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--mtp",
+  "<DATA>/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "int8",
+  "--vision",
+  "--spec-min-p",
+  "0.70",
+  "--pcie-frac",
+  "0.20",
+  "--adapt-every",
+  "1",
+  "--adapt-swaps",
+  "160",
+  "--adapt-decay",
+  "0.97",
+  "--vram-reserve-mib",
+  "3072"
+ ],
+ "cwd": "<STRATA>",
+ "tokenizer": "<DATA>/packs/swift-iq3_s/tokenizer",
+ "model_name": "swift-1.5-iq3_s",
+ "log": "<BENCH>/engine-swift-base-p1.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "port": 8097,
+ "backend": "hip",
+ "env": {
+  "STRATA_ROCBLAS_TUNING": "<STRATA>/tools/hip",
+  "STRATA_HIP_PROMPT_F16": "1",
+  "STRATA_SELECT_SIMT": "1"
+ },
+ "draft_vocab": "cjk",
+ "vision": {
+  "exe": "<STRATA>/engine/strata-vision",
+  "mmproj": "<DATA>/models/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "<DATA>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "gpu": false,
+  "max_tokens": 300,
+  "threads": 16
+ },
+ "open_browser": false
+}
