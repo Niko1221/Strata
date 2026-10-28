@@ -1,0 +1,103 @@
+OS:
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+NAME="Debian GNU/Linux"
+VERSION_ID="13"
+VERSION="13 (trixie)"
+VERSION_CODENAME=trixie
+DEBIAN_VERSION_FULL=13.7
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+KERNEL:
+Linux <HOST> 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+CPU:
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           39 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  20
+On-line CPU(s) list:                     0-19
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Core(TM) i9-10900 CPU @ 2.80GHz
+CPU family:                              6
+Model:                                   165
+Thread(s) per core:                      2
+Core(s) per socket:                      10
+Socket(s):                               1
+Stepping:                                5
+CPU(s) scaling MHz:                      43%
+CPU max MHz:                             5200.0000
+CPU min MHz:                             800.0000
+BogoMIPS:                                5599.85
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid mpx rdseed adx smap clflushopt intel_pt xsaveopt xsavec xgetbv1 xsaves dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp vnmi pku ospke md_clear flush_l1d arch_capabilities
+Virtualization:                          VT-x
+L1d cache:                               320 KiB (10 instances)
+L1i cache:                               320 KiB (10 instances)
+L2 cache:                                2.5 MiB (10 instances)
+L3 cache:                                20 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-19
+Vulnerability Gather data sampling:      Mitigation; Microcode
+Vulnerability Indirect target selection: Mitigation; Aligned branch/return thunks
+Vulnerability Itlb multihit:             KVM: Mitigation: Split huge pages
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT vulnerable
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; Enhanced IBRS
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop
+Vulnerability Srbds:                     Mitigation; Microcode
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+MEMORY:
+               total        used        free      shared  buff/cache   available
+Mem:     67287965696  1286643712 30142971904      126976 36610867200 66001321984
+Swap:    51565817856    39403520 51526414336
+GPU PCI:
+03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 33 [Radeon RX 7600/7600 XT/7600M XT/7600S/7700S / PRO W7600] [1002:7480] (rev cf) (prog-if 00 [VGA controller])
+	Subsystem: ASUSTeK Computer Inc. Device [1043:05fb]
+	Control: I/O+ Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0, Cache Line Size: 64 bytes
+	Interrupt: pin A routed to IRQ 161
+	Region 0: Memory at 40000000 (64-bit, prefetchable) [size=256M]
+	Region 2: Memory at 50000000 (64-bit, prefetchable) [size=2M]
+	Region 4: I/O ports at 3000 [size=256]
+	Region 5: Memory at 50300000 (32-bit, non-prefetchable) [size=1M]
+	Expansion ROM at 50400000 [disabled] [size=128K]
+	Capabilities: <access denied>
+	Kernel driver in use: amdgpu
+	Kernel modules: amdgpu
+
+GPU SYSFS:
+current_link_speed=16.0 GT/s PCIe
+current_link_width=8
+max_link_speed=16.0 GT/s PCIe
+max_link_width=8
+STORAGE:
+NAME    MODEL                   TRAN     SIZE
+sda     STORAGE DEVICE          usb        0B
+sdb     STORAGE DEVICE          usb        0B
+nvme0n1 Lexar SSD NM610 PRO 1TB nvme   931.5G
+BUILD:
+{
+ "source": "local-hip",
+ "backend": "hip",
+ "version": "0.1.53",
+ "archs": [
+  "gfx1102"
+ ],
+ "vision": "none",
+ "lib_dirs": [
+  "<HOME>/Strata/.venv/lib/python3.13/site-packages/_rocm_sdk_devel/lib",
+  "<HOME>/Strata/.venv/lib/python3.13/site-packages/_rocm_sdk_libraries_gfx110X_dgpu/lib"
+ ],
+ "src": "7a4844f3e4e4f80a"
+}COMMIT:
+46c152a1310f77cd2f0ce2c7cd213962df14fe83

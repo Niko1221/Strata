@@ -1,0 +1,20 @@
+device 0: AMD Radeon RX 7600
+  arch gfx1102, 8.0 GiB, wave32
+device 0: AMD Radeon RX 7600
+  HIP arch            gfx1102 wave32 (compiled for gfx1102)
+  multiprocessors     16
+  VRAM total / free   7.984 GiB (8573157376 B) / 7.932 GiB (8516534272 B)
+  driver / runtime    70253210 / 70253210
+
+memory plan  --max-context 20480
+  KV + indexer keys   0.267387 GB
+  recurrent state     0.000000 GB  (GDN recurrence + conv history, NOT evictable)
+  expert cache        5.675613 GB  (4105 slots of 1,382,400 B)
+  VRAM pool           5.943000 GB
+  expert arena (DRAM) 0.000000 GB
+  card free           7.932 GiB (8516534272 B)
+  plan + KV vs free   FITS
+
+selftest: arena 0.062 GiB (67108864 B), used 0.002 GiB (2097152 B) after two 1 MiB allocations
+selftest: over-allocation refused as required
+strata-device selftest OK

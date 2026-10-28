@@ -1,0 +1,56 @@
+[
+ {
+  "length": "16k",
+  "depth": 10,
+  "prompt_tokens": 14998,
+  "seconds": 68.5,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "16k",
+  "depth": 50,
+  "prompt_tokens": 14998,
+  "seconds": 68.6,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ },
+ {
+  "length": "16k",
+  "depth": 90,
+  "prompt_tokens": 14999,
+  "seconds": 68.7,
+  "found": true,
+  "word": "willow-cobalt-696",
+  "answer": "willow-cobalt-696"
+ },
+ {
+  "length": "24k",
+  "depth": 10,
+  "prompt_tokens": 22646,
+  "seconds": 100.3,
+  "found": true,
+  "word": "falcon-saffron-138",
+  "answer": "falcon-saffron-138"
+ },
+ {
+  "length": "24k",
+  "depth": 50,
+  "prompt_tokens": 22644,
+  "seconds": 100.6,
+  "found": true,
+  "word": "quartz-tundra-528",
+  "answer": "quartz-tundra-528"
+ },
+ {
+  "length": "24k",
+  "depth": 90,
+  "prompt_tokens": 22644,
+  "seconds": 100.7,
+  "found": true,
+  "word": "quartz-glacier-192",
+  "answer": "quartz-glacier-192"
+ }
+]

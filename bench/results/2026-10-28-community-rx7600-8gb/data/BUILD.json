@@ -1,0 +1,14 @@
+{
+ "source": "local-hip",
+ "backend": "hip",
+ "version": "0.1.53",
+ "archs": [
+  "gfx1102"
+ ],
+ "vision": "none",
+ "lib_dirs": [
+  "<STRATA>/.venv/lib/python3.13/site-packages/_rocm_sdk_devel/lib",
+  "<STRATA>/.venv/lib/python3.13/site-packages/_rocm_sdk_libraries_gfx110X_dgpu/lib"
+ ],
+ "src": "7a4844f3e4e4f80a"
+}

@@ -1,0 +1,72 @@
+[
+  {
+    "path": "<HOME>/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "bytes": 37623740192,
+    "sha256": "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720"
+  },
+  {
+    "path": "<HOME>/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "bytes": 28800138432,
+    "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+  },
+  {
+    "path": "<HOME>/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "bytes": 29608446496,
+    "sha256": "e11083ba855e7666b48ea3f2db6a9c3a20c18751a012cc24f948de91b7087fad"
+  },
+  {
+    "path": "<HOME>/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "bytes": 28800138432,
+    "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+  },
+  {
+    "path": "<HOME>/Strata/engine/strata",
+    "bytes": 45201496,
+    "sha256": "81901871628113f2f7e9a0e8831d8877deae9ffafc311eeecd7241c24168100a"
+  },
+  {
+    "path": "<HOME>/Strata/engine/BUILD.json",
+    "bytes": 345,
+    "sha256": "e5cc45abc0c619252d5060dd1b5109b6844f1150b6ab752d1c7df27cc6ff460c"
+  },
+  {
+    "path": "<HOME>/Strata/data/expert-profile.bin",
+    "bytes": 196632,
+    "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+  },
+  {
+    "path": "<HOME>/Strata/data/expert-profile-coder.bin",
+    "bytes": 98328,
+    "sha256": "a514661124d5305effe9c1bcecff7dc069af398b2b19ff9d11628a2cad0a8915"
+  },
+  {
+    "path": "<HOME>/Strata/strata-q2_0.json",
+    "bytes": 1657,
+    "sha256": "c6dddcf38b8bfd849836d14a372778c4b36266023cc825fcf8147a1a19245cbb"
+  },
+  {
+    "path": "<HOME>/Strata/strata-coder-iq1_m.json",
+    "bytes": 1736,
+    "sha256": "8277789640e87be0b4837af4a75483ca248828766e74da0364e91a9e88526ab3"
+  },
+  {
+    "path": "<HOME>/Strata-data/packs/q2_0/index.txt",
+    "bytes": 93561,
+    "sha256": "c758314d495a1261d06a806b1c415596dfabe62e0cbf44ce592dc84c53229ccd"
+  },
+  {
+    "path": "<HOME>/Strata-data/packs/q2_0/dense.bin",
+    "bytes": 1485606400,
+    "sha256": "a43d7d0b69525335f4b000d5197a1d3aefcd3c0014fc3e12b3455e0a5d827ba2"
+  },
+  {
+    "path": "<HOME>/Strata-data/packs/coder-iq1_m/index.txt",
+    "bytes": 93633,
+    "sha256": "2cb3352786bcae81ea4d933eee6b2d5db45774069320c924a6dea48eb65a3cd3"
+  },
+  {
+    "path": "<HOME>/Strata-data/packs/coder-iq1_m/dense.bin",
+    "bytes": 1475120640,
+    "sha256": "99853263806e25450074fc9945f1e955b175bea05aa171ceeb6b5837bf6a1d9d"
+  }
+]
