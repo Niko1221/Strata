@@ -88,8 +88,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .state-card__head { display: flex; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
 .state-card, .metric-card, .req-card, .ctx-card, .cc-card, .mcp-card { min-width: 0; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
-.badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
-.badges .st-badge.on { opacity: 1; }
+/* inactive Model-state pill: a transparent body on the card, the calm AA text of its state (the dark literals
+   below), the state dot — never a bright badge seen through 38 % opacity; active is exactly the kit's badge */
+.badges .st-badge:not(.on) { background: transparent; border-color: var(--st-line); }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
@@ -101,7 +102,19 @@ main { flex: 1; min-height: 0; display: flex; }
 .speed-values > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .speed-values > div:last-child { text-align: right; }
 .speed-values .st-metric__value { font-size: clamp(20px, 2.2vw, var(--st-fs-stat)); }
-.st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
+/* speed counters wear the colour of their own running phase; a phase not running dims to its own hue mixed toward
+   the card surface at per-family WCAG-solved keeps (--dim-* in the scoping blocks) — never opacity, never white */
+.speed-values .sv .st-metric__value, .speed-values .sv .st-metric__sub, .speed-values .sv .st-metric__value small { transition: color var(--st-dur); }
+.speed-values #sv-speed.dim .st-metric__value { color: color-mix(in srgb, var(--st-accent-text) var(--dim-accent-value), var(--st-surface)); }
+.speed-values #sv-prefill.dim .st-metric__value { color: color-mix(in srgb, var(--st-info-text) var(--dim-info-value), var(--st-surface)); }
+.speed-values #sv-speed.dim .st-metric__sub { color: color-mix(in srgb, var(--st-accent-text) var(--dim-accent-caption), var(--dim-caption-partner)); }
+.speed-values #sv-prefill.dim .st-metric__sub { color: color-mix(in srgb, var(--st-info-text) var(--dim-info-caption), var(--st-surface)); }
+.speed-values .sv.dim .st-metric__value small { color: color-mix(in srgb, var(--st-ink-muted) var(--dim-unit), var(--st-surface)); }
+.speed-values .sv--reading .st-metric__value { color: var(--st-info-text); }
+.speed-values .sv--reading .st-metric__sub { color: var(--st-info-text); }
+.speed-values .sv--generating .st-metric__value { color: var(--st-accent-text); }
+.speed-values .sv--generating .st-metric__sub { color: var(--st-accent-text); }
+.st-metric__spark .speed-prefill { color: var(--st-info); }   /* the Reading line blue, the Decode line keeps the card's green — no green-on-green */
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
 .monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
@@ -176,21 +189,46 @@ main { flex: 1; min-height: 0; display: flex; }
 .mcp-server__tools .chip { height: 26px; padding: 0 10px; font-family: var(--st-font-mono); }
 .mcp-note { margin: 0; }
 
-/* palette scoping: every contrast figure here was measured on its own theme surface — the literals are dark-scoped,
-   the light theme keeps the kit's own colour tokens. Dimming is colour work, not opacity.
-   palette T2: the Cached ring family (arc, frames, chip) quotes the card's line token exactly — var(--st-line),
-   the colour the table's badge outlines carry, so the arc, chip and legend entry read as the same line color as
-   the request-table frames (accepted below the model's graphics threshold: a deliberate match, see the
-   contrast-layer exception).
-   palette T1: --dim-legend is the WCAG-solved keep for the legend's dim text (4.5 on the theme's surface) */
+/* palette scoping: contrast figures are measured per theme surface — the literals are dark-scoped, the light theme
+   keeps the kit's own colour tokens. Dimming is colour work, not opacity: --dim-* keeps are per-family
+   WCAG-solved mixes (each keeps its own hue at the highest share that clears 4.5 text / 3.0 graphics).
+   --kv-cached quotes var(--st-line) exactly in both themes — the accepted exception, deliberately matching the
+   table's badge outlines below the graphics threshold (recorded in the contrast layer's known exceptions) */
 [data-theme="dark"] {
+  --st-accent: #6AD09D;
+  --st-accent-text: #6AD09D;
+  --st-accent-tint: rgba(106, 208, 157, .12);
+  --st-info-text: var(--st-info);   /* Reading-family text tracks --st-info's live value; light keeps its own token */
+  /* palette T1: per-family dim keeps (WCAG-solved on #161a1d, rounded up) */
+  --dim-accent-value: 47%;
+  --dim-accent-caption: 65%;
+  --dim-info-value: 56%;
+  --dim-info-caption: 77%;
+  --dim-unit: 84%;
   --dim-legend: 49%;
+  --dim-caption-partner: var(--st-surface);
+  /* palette T2: the Cached family quotes the card's line token exactly — a deliberate match with the request-table frames, accepted below the graphics threshold */
   --kv-cached: var(--st-line);
 }
 [data-theme="light"] {
+  /* palette T1 light: keeps solved on #ffffff; the kit's own colour tokens are not touched */
+  --dim-accent-value: 78%;
+  --dim-accent-caption: 95%;  /* colour decision (accepted): the light green caption mixes toward --st-ink */
+  --dim-info-value: 68%;
+  --dim-info-caption: 89%;
+  --dim-unit: 96%;
   --dim-legend: 62%;
+  --dim-caption-partner: var(--st-ink);
+  /* palette T2: same direct card-line quote in the light theme */
   --kv-cached: var(--st-line);
 }
+/* inactive Model-state pills: readable text in the state's own hue (AA on the card surface); accent green means "writing now" and only that */
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="idle"] { color: #7E868D; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="reading"] { color: #6C8AA8; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="queued"] { color: #98875A; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="error"] { color: #A67B82; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="generating"] { color: #5D8D75; }
+/* the dark Speed numbers, their captions and the ESP badge carry no literal of their own — every colour resolves through the phase tokens above */
 
 /* ---------------------------------------------------------------- about */
 .about { max-width: min(100%, 1100px); }
