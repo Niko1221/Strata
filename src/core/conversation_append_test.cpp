@@ -1012,6 +1012,506 @@ void reader_tests() {
 }
 }  // namespace
 
+// --- v3 append writer (gate, commit discipline, fault seams) ---------------------------
+
+// The chain fixture (same shape as chain_read_test): three K/V layers - two pooled, one draft -
+// grown generation to generation.  ids1 == cells1 keeps the fixture engine-aligned.
+SavedConversation chain_c1(uint8_t seed, int64_t ids1, int64_t idx_block, int64_t page, int64_t hd) {
+    SavedConversation c1;
+    for (size_t i = 0; i < c1.geometry.size(); ++i) c1.geometry[i] = int64_t(i) * 3 + 1;
+    c1.layer_lo = 0; c1.layer_hi = 48; c1.cvec = true;
+    c1.live = mk_ckpt((int) ids1, seed);
+    c1.checkpoints = {mk_ckpt((int) ids1 - 4, uint8_t(seed + 40))};
+    const int64_t rows1 = ids1 / idx_block + 1;
+    c1.kv.push_back(mk_layer_idx(1, ids1, 2, hd, page, rows1, 128, seed, idx_block));
+    c1.kv.push_back(mk_layer_idx(1, ids1 + 64, 2, hd / 2, page, rows1, 128, uint8_t(seed + 3), idx_block));
+    c1.kv.push_back(mk_layer_idx(2, ids1, 2, hd, page, 0, 0, uint8_t(seed + 6), idx_block));  // draft: no indexer
+    return c1;
+}
+
+std::vector<SessionKvSource> chain_sources(const SavedConversation& s, int64_t idx_block) {
+    auto sources = make_sources(s);
+    for (size_t j = 0; j < sources.size(); ++j)
+        sources[j].idx_block = s.kv[j].pooled_rows > 0 ? idx_block : 0;  // the draft layer has no indexer
+    return sources;
+}
+
+SavedConversation chain_meta(const SavedConversation& c) {
+    SavedConversation m = c;
+    m.kv.clear();  // append (and streamed full writes) take the K/V as sources only
+    return m;
+}
+
+size_t count_files(const fs::path& dir) {
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir))
+        if (fs::is_regular_file(e)) ++n;
+    return n;
+}
+
+SessionHeaderV3 head_of(const fs::path& p, const SessionFileIdentity& id) {
+    const auto b = slurp_bin(p);
+    SessionHeaderV3 hv;
+    std::string e;
+    check(header_parse_v3(b.data(), id, hv, e), "header_of: the file's own header parses");
+    return hv;
+}
+
+// One real append chain: full v3 write of gen 1, append gen 2 (byte-identical to the hand-built
+// group of Task 5, read-equal to gen 2, validator chain intact), append gen 3, then a stale plan
+// refused without touching the file.
+void append_chain_test(uint8_t seed) {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    SavedConversation c1 = chain_c1(seed, 1024, idx, page, hd);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    const fs::path p = uniq("app-chain");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "append chain: gen 1 written (v3, sources)");
+    const auto gen1_file = slurp_bin(p);
+    check(gen1_file.size() == bytes, "append chain: the full write reports the file size");
+
+    // the gate: newest checkpoint, self-verified resume state, engine boundaries pinned against the
+    // test-side mirror of the rule (whole cells + page, whole completed pooled rows, draft -1)
+    SessionAppendPlan plan1;
+    check(session_file_append_plan(p.string(), id, plan1, error), "append chain: plan on a gen-1 file");
+    check(plan1.checkpoint.trailer.gen == 1 && plan1.checkpoint.trailer_offset + 128 == gen1_file.size(),
+          "append chain: the plan names gen 1's trailer");
+    check(plan1.group_start == gen1_file.size(), "append chain: the new group starts at EOF");
+    check(plan1.prev_ids == c1.live.ids.size() && plan1.prev_imgs == c1.live.imgs.size(),
+          "append chain: the plan carries the newest record counts");
+    check(plan1.prev_bounds == b1.layer, "append chain: plan boundaries equal the engine rule");
+    check(plan1.prev_geom.size() == 3 && plan1.prev_geom[0].idx_block == idx && plan1.prev_geom[1].idx_block == idx &&
+              plan1.prev_geom[2].idx_block == 0 && plan1.prev_geom[2].pooled_rows == 0,
+          "append chain: the plan carries the file's layer geometry (draft: no idx_block)");
+    check(plan1.checkpoint.file_size == gen1_file.size(), "append chain: the plan knows the file size");
+
+    // append gen 2 through the real writer; the file must come out byte-identical to the
+    // hand-built group (same mutable block, same (from, to) windows, same suffix ranges)
+    SavedConversation c2 = chain_next(c1, b1, 1100, 1100, 1100 / idx + 1, uint8_t(seed + 11), idxb);
+    size_t delta2 = 0;
+    check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan1, delta2, error, opt),
+          "append chain: gen 2 appended");
+    const auto f2 = slurp_bin(p);
+    check(f2.size() == gen1_file.size() + delta2, "append chain: append reports the byte delta");
+    auto hand = gen1_file;
+    uint64_t hand_committed = 0;
+    append_group2(hand, c2, plan1.checkpoint, b1, c1.live.ids.size(), c1.live.imgs.size(), idx, hand_committed);
+    check(f2 == hand, "append chain: the written group is byte-identical to the hand-built one");
+    check(hand_committed + 128 == f2.size(), "append chain: the new trailer is the end of the file");
+
+    SavedConversation parsed;
+    check(session_file_read(p.string(), id, parsed, bytes, error), "append chain: the two-generation file reads");
+    check(same_conv(parsed, c2), "append chain: the read state equals gen 2");
+
+    std::vector<SessionCheckpoint> cps;
+    check(session_file_checkpoints(p.string(), id, cps, error) && cps.size() >= 2 && cps.front().trailer.gen == 2 &&
+              cps.front().trailer.chain == cps.back().trailer.self_hash && cps.back().trailer.gen == 1 &&
+              cps.front().trailer.saved_tokens == c2.live.ids.size(),
+          "append chain: both generations validate and chain");
+    check(cps.front().trailer.committed_bytes + 128 == f2.size(), "append chain: the structural rule holds");
+
+    // append gen 3 on top of gen 2 (the plan machinery itself must chain)
+    const Bounds b2 = gen_bounds(c2, idxb);
+    SavedConversation c3 = chain_next(c2, b2, 1200, 1200, 1200 / idx + 1, uint8_t(seed + 23), idxb);
+    SessionAppendPlan plan2;
+    check(session_file_append_plan(p.string(), id, plan2, error) && plan2.checkpoint.trailer.gen == 2 &&
+              plan2.prev_ids == c2.live.ids.size() && plan2.prev_bounds == b2.layer,
+          "append chain: the plan re-derives from gen 2");
+    size_t delta3 = 0;
+    check(session_file_append(p.string(), chain_meta(c3), chain_sources(c3, idx), id, plan2, delta3, error, opt),
+          "append chain: gen 3 appended");
+    check(session_file_read(p.string(), id, parsed, bytes, error) && same_conv(parsed, c3),
+          "append chain: the three-generation file reads as gen 3");
+
+    // a stale plan (made before the file moved on) is refused and leaves the file byte-identical
+    const auto before = slurp_bin(p);
+    size_t dummy = 0;
+    check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan1, dummy, error, opt),
+          "append chain: a stale plan is refused");
+    check(slurp_bin(p) == before, "append chain: the stale refusal touched nothing");
+    check(session_file_append_plan(p.string(), id, plan2, error), "append chain: the file still plans after a refusal");
+}
+
+// Gate refusals: a state or file the append path must decline (the caller full-rewrites instead).
+void append_refusal_tests() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    auto fresh_chain_file = [&](SavedConversation& c1out, fs::path& pout) {
+        c1out = chain_c1(17, 1024, idx, page, hd);
+        pout = uniq("app-refuse");
+        size_t bytes = 0;
+        check(session_file_write(pout.string(), chain_meta(c1out), chain_sources(c1out, idx), id, bytes, error, opt),
+              "refusal fixture: gen 1 written");
+    };
+
+    SavedConversation c1;
+    fs::path p;
+    fresh_chain_file(c1, p);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    SavedConversation c2 = chain_next(c1, b1, 1100, 1100, 1100 / idx + 1, 29, idxb);
+    SessionAppendPlan plan;
+    check(session_file_append_plan(p.string(), id, plan, error), "refusal fixture: plans fine");
+    const auto before = slurp_bin(p);
+    size_t dummy = 0;
+
+    // a live state that shrank below what the file committed (an edit/undo): append cannot express it
+    {
+        SavedConversation s = c2;
+        s.live.ids.resize(c1.live.ids.size() - 8);
+        check(!session_file_append(p.string(), chain_meta(s), chain_sources(s, idx), id, plan, dummy, error, opt),
+              "a shrunken live list refuses the append");
+    }
+    // a K/V part smaller than its committed boundary (pool freed under the file)
+    {
+        SavedConversation s = c2;
+        s.kv[0].pooled.resize((size_t) b1.layer[0][4] - 1);
+        check(!session_file_append(p.string(), chain_meta(s), chain_sources(s, idx), id, plan, dummy, error, opt),
+              "a K/V part below its committed boundary refuses the append");
+    }
+    // changed K/V geometry (a different runtime layout): only a full rewrite can record it
+    {
+        SavedConversation s = c2;
+        s.kv[0].head_dim += 64;
+        s.kv[0].k = pattern_buf((size_t) s.kv[0].cells * 2 * (size_t) s.kv[0].head_dim, 3);
+        s.kv[0].v = pattern_buf((size_t) s.kv[0].cells * 2 * (size_t) s.kv[0].head_dim, 4);
+        s.kv[0].k_scale = pattern_buf((size_t) s.kv[0].cells * 2 * (size_t) (s.kv[0].head_dim / 64) * 2, 5);
+        s.kv[0].v_scale = pattern_buf((size_t) s.kv[0].cells * 2 * (size_t) (s.kv[0].head_dim / 64) * 2, 6);
+        check(!session_file_append(p.string(), chain_meta(s), chain_sources(s, idx), id, plan, dummy, error, opt),
+              "changed K/V geometry refuses the append");
+    }
+    // a different stage table
+    {
+        SavedConversation m = chain_meta(c2);
+        m.stage_table.push_back(SessionStageGeom{});
+        check(!session_file_append(p.string(), m, chain_sources(c2, idx), id, plan, dummy, error, opt),
+              "a changed stage table refuses the append");
+    }
+    check(slurp_bin(p) == before, "all refusals left the file byte-identical");
+
+    // a v2 file cannot be appended to at all
+    {
+        const fs::path q = uniq("app-v2");
+        size_t bytes = 0;
+        SavedConversation conv = make_conv(23);
+        check(session_file_write(q.string(), conv, id, bytes, error), "refusal fixture: a v2 file");
+        SessionAppendPlan pv2;
+        check(!session_file_append_plan(q.string(), id, pv2, error), "an append plan on a v2 file is refused");
+        check(!session_file_append(q.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, dummy, error, opt),
+              "an append on a v2 file is refused");
+    }
+    // a captured-image v3 write records idx_block 0: its pooled prefix is not append-trusted
+    {
+        const fs::path q = uniq("app-captured");
+        size_t bytes = 0;
+        SavedConversation conv = make_conv(31);  // pooled rows, no engine idx_block known
+        check(session_file_write(q.string(), conv, id, bytes, error, opt), "refusal fixture: a captured v3 file");
+        SessionAppendPlan pc;
+        check(!session_file_append_plan(q.string(), id, pc, error),
+              "an append plan on a captured file (no idx_block) is refused");
+    }
+    // a missing file
+    {
+        SessionAppendPlan pm;
+        check(!session_file_append_plan((append_dir / "no-such-session.bin").string(), id, pm, error),
+              "an append plan on a missing file is refused");
+    }
+}
+
+// The commit-discipline seams, in file order.  Each: what the seam must prove, per the S3 drill's
+// fault-hook map (the append path creates no temp: the torn-tail rule replaces the old-file rule).
+void append_seam_tests() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+
+    SavedConversation c1 = chain_c1(41, 1024, idx, page, hd);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    SavedConversation c2 = chain_next(c1, b1, 1100, 1100, 1100 / idx + 1, 53, idxb);
+
+    auto gen1_copy = [&]() {
+        const fs::path p = uniq("app-seam");
+        size_t bytes = 0;
+        check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+              "seam fixture: gen 1");
+        return p;
+    };
+
+    // "append_verify": refused before any write; the file is byte-identical and no temp is created
+    {
+        const fs::path p = gen1_copy();
+        const auto before = slurp_bin(p);
+        const size_t files_before = count_files(append_dir);
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "append_verify") == 0 ? EIO : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "verify seam fixture: plans fine");
+        SessionStatus st;
+        size_t dummy = 0;
+        check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, dummy, error, o, &st),
+              "the append_verify seam fails the append");
+        check(st.error == SessionError::io, "the verify seam reports its errno kind");
+        check(slurp_bin(p) == before, "the verify seam left the file byte-identical");
+        check(count_files(append_dir) == files_before, "the append path creates no temp file");
+        SavedConversation parsed;
+        check(session_file_read(p.string(), id, parsed, dummy, error) && same_conv(parsed, c1),
+              "the file still reads as gen 1 after the refusal");
+        check(session_file_append_plan(p.string(), id, plan, error), "the file still plans after the refusal");
+    }
+
+    // "append_anchor": degrading, never fatal - the save completes and the header still advances
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "append_anchor") == 0 ? EIO : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "anchor seam: plans fine");
+        size_t delta = 0;
+        check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, o),
+              "an anchor fault does not fail the save");
+        const auto f = slurp_bin(p);
+        const SessionHeaderV3 hv = head_of(p, id);
+        check(hv.reserved0 == f.size() - 128 && hv.reserved1 == f.size(),
+              "the header advanced despite the anchor fault (header_update is the fast pair)");
+        SavedConversation parsed;
+        size_t dummy = 0;
+        check(session_file_read(p.string(), id, parsed, dummy, error) && same_conv(parsed, c2), "the append stands");
+    }
+
+    // "trailer_write": the group stands, the trailer never lands; the previous checkpoint carries
+    // the restore, and the next append plan declines until a full rewrite heals the torn tail
+    uint64_t small_delta = 0;
+    {
+        const fs::path p = gen1_copy();
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "torn twin fixture: plans fine");
+        size_t delta = 0;
+        check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, opt),
+              "torn twin: a clean append gives the reference delta");
+        small_delta = delta;
+    }
+    {
+        const fs::path p = gen1_copy();
+        const uint64_t gen1_size = slurp_bin(p).size();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "trailer_write") == 0 ? ENOSPC : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "trailer_write seam: plans fine");
+        SessionStatus st;
+        size_t dummy = 0;
+        check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, dummy, error, o, &st),
+              "the trailer_write seam fails the save");
+        check(st.error == SessionError::storage, "the trailer_write seam reports ENOSPC as storage");
+        const auto f = slurp_bin(p);
+        check(f.size() == gen1_size + small_delta - 128, "the torn file ends mid-group (no trailer)");
+        SavedConversation parsed;
+        size_t dummy2 = 0;
+        check(session_file_read(p.string(), id, parsed, dummy2, error) && same_conv(parsed, c1),
+              "the restore cascades to gen 1 over the torn tail");
+        check(dummy2 == gen1_size, "the read reports only the trusted coverage");
+        SessionAppendPlan pl;
+        check(!session_file_append_plan(p.string(), id, pl, error),
+              "the next append plan declines until self-heal (EOF rule)");
+    }
+
+    // "trailer_flush": the fsync after the trailer fails.  In-process the bytes are all there (the
+    // commit completed); the drill's power-loss semantics are pinned by the cut matrix below.
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "trailer_flush") == 0 ? EIO : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "trailer_flush seam: plans fine");
+        size_t delta = 0;
+        check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, o),
+              "the trailer_flush seam fails the save");
+        const auto f = slurp_bin(p);
+        const uint64_t base = f.size() - small_delta;  // gen 1's size: the commit landed whole
+        SavedConversation parsed;
+        size_t dummy = 0;
+        check(session_file_read(p.string(), id, parsed, dummy, error) && same_conv(parsed, c2),
+              "the trailer landed: the file reads complete (the save failure is honest, the bytes are not the promise)");
+        check(dummy == f.size(), "the complete read reports the full file");
+        // the drill pairing: with the trailer torn at every cut (power loss cut the flush), the
+        // restore lands on gen 1 and the append gate declines until a full rewrite
+        const uint64_t committed2 = f.size() - 128;
+        for (uint64_t cut : {committed2 - 1, committed2 + 1, committed2 + 63, committed2 + 127, f.size() - 1}) {
+            const fs::path q = uniq("app-cut");
+            write_file(q, std::vector<uint8_t>(f.begin(), f.begin() + (size_t) cut));
+            SavedConversation r;
+            size_t rb = 0;
+            std::string re;
+            check(session_file_read(q.string(), id, r, rb, re) && same_conv(r, c1) && rb == base,
+                  "a torn trailer cut cascades to gen 1");
+            SessionAppendPlan pl;
+            check(!session_file_append_plan(q.string(), id, pl, re), "the gate declines every torn cut");
+        }
+        // self-heal: the full-rewrite path rewrites over the torn file, and append works again
+        size_t bytes = 0;
+        check(session_file_write(p.string(), chain_meta(c2), chain_sources(c2, idx), id, bytes, error, opt),
+              "self-heal: a full rewrite replaces the torn file");
+        SessionAppendPlan pl;
+        check(session_file_append_plan(p.string(), id, pl, error), "after self-heal the file plans again");
+    }
+
+    // "header_update": the commit is already durable, so the update is non-fatal; the stale fast
+    // pair self-heals at the next save (drill scenario I)
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "header_update") == 0 ? EIO : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "header_update seam: plans fine");
+        const uint64_t gen1_size = slurp_bin(p).size();
+        size_t delta = 0;
+        check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, o),
+              "a header_update fault does not fail the save");
+        const auto f = slurp_bin(p);
+        const SessionHeaderV3 hv = head_of(p, id);
+        check(hv.reserved0 == gen1_size - 128 && hv.reserved1 == gen1_size, "the header stayed stale");
+        SavedConversation parsed;
+        size_t dummy = 0;
+        check(session_file_read(p.string(), id, parsed, dummy, error) && same_conv(parsed, c2),
+              "the stale fast pair is not needed: scan-back trust reads the commit");
+        check(session_file_append_plan(p.string(), id, plan, error), "the gate still trusts the committed gen 2");
+        // the next save anchors the header fresh
+        SavedConversation c3 = chain_next(c2, gen_bounds(c2, idxb), 1200, 1200, 1200 / idx + 1, 67, idxb);
+        check(session_file_append(p.string(), chain_meta(c3), chain_sources(c3, idx), id, plan, delta, error, opt),
+              "the next append works");
+        const auto f3 = slurp_bin(p);
+        const SessionHeaderV3 hv3 = head_of(p, id);
+        check(hv3.reserved0 == f3.size() - 128 && hv3.reserved1 == f3.size(), "the next save healed the fast pair");
+    }
+
+    // "writer_thread": the un-pipelined fallback is an optimization loss, not a failure
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "writer_thread") == 0 ? 1 : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "writer_thread seam: plans fine");
+        size_t delta = 0;
+        check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, o),
+              "the starved-writer fallback still appends");
+        check(delta == small_delta, "the fallback wrote the same bytes");
+        SavedConversation parsed;
+        size_t dummy = 0;
+        check(session_file_read(p.string(), id, parsed, dummy, error) && same_conv(parsed, c2),
+              "the fallback append reads as gen 2");
+    }
+
+    // "append_dir_flush": the folder-flush honesty of the full-save path, mirrored
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "append_dir_flush") == 0 ? EINVAL : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "dir_flush seam: plans fine");
+        SessionStatus st;
+        size_t delta = 0;
+        check(session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, delta, error, o, &st),
+              "a filesystem that cannot flush a folder still appends");
+        check(st.dir_flush_unsupported, "the unsupported folder flush is reported, not a failure");
+        check(st.published == false, "no publish semantics on an append");
+    }
+    {
+        const fs::path p = gen1_copy();
+        SessionWriteOptions o = opt;
+        o.fault = [](const char* s) { return std::strcmp(s, "append_dir_flush") == 0 ? EIO : 0; };
+        SessionAppendPlan plan;
+        check(session_file_append_plan(p.string(), id, plan, error), "dir_flush EIO seam: plans fine");
+        SessionStatus st;
+        size_t dummy = 0;
+        check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, dummy, error, o, &st),
+              "a folder flush fault fails the append honestly");
+        check(st.published, "the honesty flag: the append itself is committed, only the folder flush is lost");
+        SavedConversation parsed;
+        size_t rb = 0;
+        check(session_file_read(p.string(), id, parsed, rb, error) && same_conv(parsed, c2),
+              "the committed append stands despite the reported failure");
+    }
+}
+
+// "append_write" torn tail on a real large save: at least one full block lands and the trailer's
+// block never does.  The cascade, the declining gate, the full-rewrite self-heal and append-after-
+// heal run end to end against the real reader and validator (the drill's per-cut proof, applied to
+// a genuinely torn file).
+void append_torn_test() {
+    const SessionFileIdentity id{0x1234567890ABCDEFull, 0x0F0F0F0F0F0F0F0Full};
+    std::string error;
+    SessionWriteOptions opt;
+    opt.use_v3 = true;
+    const int64_t idx = 128, page = 64, hd = 256;
+    const std::vector<int64_t> idxb{idx, idx, idx};
+    const size_t kBlock = 16u << 20;  // the FileSink block, same constant the writer uses
+
+    SavedConversation c1 = chain_c1(71, 10000, idx, page, hd);
+    const Bounds b1 = gen_bounds(c1, idxb);
+    SavedConversation c2 = chain_next(c1, b1, 20000, 20000, 20000 / idx + 1, 83, idxb);  // delta > one block
+
+    const fs::path p = uniq("app-torn");
+    size_t bytes = 0;
+    check(session_file_write(p.string(), chain_meta(c1), chain_sources(c1, idx), id, bytes, error, opt),
+          "torn fixture: gen 1 written");
+    const uint64_t gen1_size = slurp_bin(p).size();
+
+    SessionWriteOptions o = opt;
+    o.fault = [](const char* s) { return std::strcmp(s, "append_write") == 0 ? ENOSPC : 0; };
+    SessionAppendPlan plan;
+    check(session_file_append_plan(p.string(), id, plan, error), "torn seam: plans fine");
+    check(plan.prev_bounds == b1.layer, "torn seam: boundaries hold at the large fixture");
+    const size_t files_before = count_files(append_dir);
+    SessionStatus st;
+    size_t dummy = 0;
+    check(!session_file_append(p.string(), chain_meta(c2), chain_sources(c2, idx), id, plan, dummy, error, o, &st),
+          "the append_write seam fails the save");
+    check(st.error == SessionError::storage, "the append_write seam reports ENOSPC as storage");
+    const auto torn = slurp_bin(p);
+    check(torn.size() == gen1_size + kBlock, "exactly one full block landed: the torn tail");
+    check(count_files(append_dir) == files_before, "no temp file on the append path");
+
+    SavedConversation parsed;
+    size_t rb = 0;
+    check(session_file_read(p.string(), id, parsed, rb, error) && same_conv(parsed, c1),
+          "the real reader cascades to gen 1 over the torn tail");
+    check(rb == gen1_size, "the read reports only the trusted coverage");
+    SessionAppendPlan pl;
+    check(!session_file_append_plan(p.string(), id, pl, error), "the gate declines the torn file (full rewrite next)");
+
+    // self-heal, then append works again on the healed file
+    check(session_file_write(p.string(), chain_meta(c2), chain_sources(c2, idx), id, bytes, error, opt),
+          "self-heal: the full rewrite replaces the torn file");
+    check(session_file_read(p.string(), id, parsed, rb, error) && same_conv(parsed, c2), "the healed file reads as gen 2");
+    SavedConversation c3 = chain_next(c2, gen_bounds(c2, idxb), 21000, 21000, 21000 / idx + 1, 97, idxb);
+    check(session_file_append_plan(p.string(), id, pl, error) && pl.checkpoint.trailer.gen == 1 &&
+              pl.prev_bounds == gen_bounds(c2, idxb).layer,
+          "the healed file plans with gen-2 boundaries");
+    check(session_file_append(p.string(), chain_meta(c3), chain_sources(c3, idx), id, pl, dummy, error, opt),
+          "append works again after the self-heal");
+    check(session_file_read(p.string(), id, parsed, rb, error) && same_conv(parsed, c3), "and reads as gen 3");
+}
+
+void append_writer_tests() {
+    append_chain_test(7);
+    append_refusal_tests();
+    append_seam_tests();
+    append_torn_test();
+}
+
 int main() {
     append_dir = fs::temp_directory_path() / "strata_append_test";
     fs::remove_all(append_dir);
@@ -1022,6 +1522,7 @@ int main() {
     validator_tests();
     v3_write_tests();
     reader_tests();
+    append_writer_tests();
     fs::remove_all(append_dir);
     std::printf("conversation_append_test: %d checks passed\n", checks);
     return 0;

@@ -278,6 +278,52 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
 
+// The save-side gate of the append path (spec §Commit discipline): the validator's newest
+// chain-valid checkpoint, its trailer's stored hasher state restored and SELF-VERIFIED (it must
+// reproduce the stored digest), and the newest generation's framing read through the chain walk
+// (mutable blocks only - the segment bytes are seeked over, never read): the record counts of
+// ids/imgs/stage parts and, per K/V layer part, the committed byte boundary the next group must
+// append at or above (whole cells rounded to the page size, whole completed pooled rows, the
+// draft layer's -1).  A boundary that cannot be recomputed (pooled rows written without a known
+// idx_block, a non-cell-proportional part) refuses the append: the caller full-rewrites.  So does
+// any file with bytes past its newest trailer (the EOF rule: a torn tail is rewritten in full
+// before appending again).  False = append declined for any reason (the caller's full-rewrite
+// verdict); the file is never touched.
+struct SessionAppendPlan {
+    SessionCheckpoint checkpoint;                      // the newest candidate the framing walk verified
+    SessionHasher hasher;                              // resumed from the checkpoint trailer's state
+    uint64_t group_start = 0;                          // checkpoint.trailer_offset + 128: where the new group starts
+    uint64_t prev_ids = 0, prev_imgs = 0;              // the newest generation's live record counts
+    std::vector<std::array<uint64_t, 2>> prev_parts;  // per stage part (stage order): its ids/imgs counts
+    std::vector<SessionStageGeom> stage_table;         // the file's stage table: an append never changes it
+    std::array<int64_t, 18> geometry{};                // the file's model geometry and layer carve
+    int64_t layer_lo = 0, layer_hi = 0;
+    struct LayerGeom {  // per layer: the append may grow the carve, never change or shrink it
+        int64_t format = 0, cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0,
+                idx_block = 0;
+    };
+    std::vector<LayerGeom> prev_geom;
+    std::vector<std::array<uint64_t, 5>> prev_bounds;  // per layer, per part: bytes already committed (the window's `from`)
+};
+bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& plan,
+                              std::string& error);
+
+// Appends one generation group to an existing v3 session file - no temp file, no rename, ever.
+// The gate re-checks `plan` against a freshly computed plan first (a plan made before something
+// else changed this file is refused; `append_verify` seam, refusal leaves the file byte-identical),
+// anchors the header fast pair at the new group's start (`append_anchor`, degrading, never fatal),
+// streams the group (mutable block fresh, ids/imgs and K/V parts suffix-only from the plan's
+// boundaries: `append_write` seam), pads it, and writes the 128 B trailer continuing the digest
+// chain (`trailer_write`, then the commit fsync `trailer_flush`).  Only after that commit is
+// durable does the header advance to the new generation (`header_update` seam - non-fatal: a
+// stale fast pair self-heals at the next save's anchor).  `bytes` reports the appended delta.
+// A failure at any fatal seam leaves the file torn or whole; the previous checkpoint always
+// stands (the reader cascades to it, the next `session_file_append_plan` declines until a full
+// rewrite heals it).
+bool session_file_append(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
+                         const SessionFileIdentity& id, const SessionAppendPlan& plan, size_t& bytes, std::string& error,
+                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
+
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);
