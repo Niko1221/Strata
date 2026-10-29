@@ -1,3 +1,7 @@
+#if !(defined(__x86_64__) || defined(_M_X64))   // (x86 defines it below, inside its guard)
+// the band GEMM's chunk width, defined here because the uses are outside the AVX-512 guard
+constexpr int kGemmK = 256;
+#endif
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/kernels/cpu/exl3_cpu.cpp - EXL3 routed experts on the CPU (see include/strata/kernels/cpu/exl3_cpu.hpp).
@@ -139,6 +143,9 @@ void band_scalar(const Exl3Part& m, const float* xh, int tc0, int ks0, int ks1, 
             }
         }
 }
+
+// band_gemm's chunk of inputs (see below); outside the x86 section, as exl3_cpu_gemm_scratch() sizes by it on any CPU
+constexpr int kGemmK = 256;
 
 // ---------------------------------------------------------------- AVX-512
 #if defined(EXL3_X86)
@@ -319,8 +326,7 @@ EXL3_AVX512 void rows_avx512_n(const Exl3Part& m, const float* const* xh, int ks
 // band_gemm: a band's byte-sum products for many activations - each chunk of kGemmK inputs decoded ONCE into F32
 // (wc, in L2), then multiplied as a GEMM: tiles of TB activations x 64 columns, the sums in registers, two FMAs a
 // load.  The prompt path's CPU rows, where an expert serves tens to hundreds of tokens: one decode (~6 instructions a
-// 16-weight row) for all of them instead of one per kExl3CpuMaxN.
-constexpr int kGemmK = 256;
+// 16-weight row) for all of them instead of one per kExl3CpuMaxN.  (kGemmK is defined above the AVX-512 section.)
 
 template <int K>
 EXL3_AVX512 void decode_chunk(const Exl3Part& m, int tc0, int ks0, int ks1, float* wc /* (ks1 - ks0) 16 x 128 */) {

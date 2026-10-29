@@ -2,7 +2,7 @@ import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { scopedMonitor, instanceLabel, deviceLabel } from '../lib/runtime-models';
 /** The original Strata dashboard, adapted to the current shell and device inventory. */
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { SnapshotDialog } from '../components/SnapshotDialog';
 import { requestSummary } from '../lib/monitor-summary';
@@ -14,6 +14,8 @@ import { Screen } from '../components/layout';
 import { contextLabel, duration, tokens, tps } from '../lib/format';
 import { defaultGpuSet, gpuCapacity, gpuId, gpuMetric, gpuReported, hasReading, shortGpuName } from '../lib/monitor-hardware';
 import { useStore } from '../lib/store';
+import { api } from '../lib/client';
+import { useMoney } from '../lib/money';
 import { useKept } from '../lib/kept-state';
 import type { Hardware, MonitorState, ServeRequest } from '../lib/types';
 import { useNative, nativeRouting, type NativeState } from '../lib/native';
@@ -57,12 +59,21 @@ function requestStatus(request: ServeRequest) {
 }
 export function MonitorScreen() {
     const native = useNative();
+    // While this screen is open and visible the host reads the graphics card every 3 s; otherwise it asks only every 30 s (#4066).
+    useEffect(() => {
+        const ask = () => { if (typeof document === 'undefined' || document.visibilityState !== 'hidden')
+            void api.get('/api/monitor').catch(() => undefined); };
+        ask();
+        const timer = setInterval(ask, 10000);
+        return () => clearInterval(timer);
+    }, []);
     return <LegacyMonitorScreen native={native?.instances.length ? native : null}/>;
 }
 function LegacyMonitorScreen({ native }: {
     native: NativeState | null;
 }) {
     const storedLive = useStore(s => s.monitor), inventory = useStore(s => s.hardware);
+    const electricityPrice = useStore(s => s.electricityPrice), money = useMoney();
     const storedRuntime = useStore(s => s.runtime), serving = useStore(s => s.serving);
     const [instanceSelection, setInstanceSelection] = useState('all');
     const routing = native ? nativeRouting(native, inventory) : null;
@@ -137,6 +148,16 @@ function LegacyMonitorScreen({ native }: {
     const cacheMemory = cacheKnown ? data.expertCache.memoryGb : null;
     const cachePercent = hasReading(cacheMemory) ? percent(cacheMemory, gpuCapacity(defaultDevices)) : cacheKnown ? percent(data.expertCache.used, data.expertCache.total) : null;
     const ramPct = percent(data.hardware.ramUsedGb, data.hardware.ramTotalGb);
+    // The readings strip under the cards: what the GPU used and cost since Strata started, the fan and clock, and the temperatures this PC can give.
+    const energyWh = data.hardware.energyWh, fan = gpuValue('fanPct', 'max'), clock = gpuValue('clockMhz', 'max');
+    const readingsStrip = [
+        hasReading(energyWh) ? { label: 'Energy since start', value: energyWh >= 1000 ? `${number(energyWh / 1000, 2)} kWh` : `${number(energyWh, 1)} Wh` } : null,
+        hasReading(energyWh) && electricityPrice > 0 ? { label: 'Cost since start', value: money.format(energyWh / 1000 * electricityPrice) } : null,
+        hasReading(fan) ? { label: 'GPU fan', value: `${number(fan)} %` } : null,
+        hasReading(clock) ? { label: 'GPU clock', value: `${number(clock)} MHz` } : null,
+        hasReading(data.hardware.cpuTempC) ? { label: 'CPU temperature', value: `${number(data.hardware.cpuTempC)} °C` } : null,
+        hasReading(data.hardware.ssdTempC) ? { label: 'SSD temperature', value: `${number(data.hardware.ssdTempC)} °C` } : null,
+    ].filter((line): line is { label: string; value: string } => line !== null);
     const history = data.history, timestamps = history.map(s => s.t);
     const historyGpu = (key: Parameters<typeof gpuMetric>[2], fallback: 'gpuLoad' | 'vramUsedGb' | 'gpuTempC' | 'powerW' | 'pcieRxMbs', mode: Parameters<typeof gpuMetric>[3] = 'sum') => history.map(sample => sample.gpus ? gpuMetric(selectedGpus, sample.gpus, key, mode) : (sample.gpuIds ? selectedGpus.length === sample.gpuIds.length && selectedGpus.every(gpu => sample.gpuIds!.includes(gpuId(gpu))) : gpuChoice === 'all') ? sample[fallback] : null);
     const historyCpu = history.map(sample => cpuChoice === 'all' ? sample.cpuLoad : sample.cpus?.find(p => p.id === cpuChoice)?.utilizationPct);
@@ -175,6 +196,7 @@ function LegacyMonitorScreen({ native }: {
       <MonitorMetric label={tr("CPU")} icon="cpu" value={number(cpu)} unit={hasReading(cpu) ? '%' : ''} source={hasReading(cpu) ? 'Measured' : 'Unavailable'} sub={cpuName} chart={chart('CPU utilization', historyCpu, '%', 100)}/>
       <MonitorMetric label={tr("Disk read")} icon="disk" value={number(hasReading(data.hardware.diskReadGbs) ? data.hardware.diskReadGbs >= 1 ? data.hardware.diskReadGbs : data.hardware.diskReadGbs * 1024 : null, 1)} unit={hasReading(data.hardware.diskReadGbs) ? data.hardware.diskReadGbs >= 1 ? 'GB/s' : 'MB/s' : ''} source={hasReading(data.hardware.diskReadGbs) ? 'Measured' : 'Unavailable'} sub={hasReading(data.hardware.diskWriteMbs) ? `Write ${number(data.hardware.diskWriteMbs, 1)} MB/s` : 'Read throughput'} chart={chart('Disk read', history.map(s => hasReading(s.diskReadGbs) ? s.diskReadGbs * 1024 : null), 'MB/s', undefined, 'var(--st-info)')}/>
     </div>
+    {tr(readingsStrip.length ? <section className="st-card monitor-readings" aria-label={tr("Energy and temperature readings")}><dl>{readingsStrip.map(item => <div key={item.label}><dt>{tr(item.label)}</dt><dd className="num">{item.value}</dd></div>)}</dl></section> : null)}
     <div className="monitor-context-requests">
       <section className="st-card monitor-context"><h2 className="h4">{tr("Context fill")}</h2><div className="monitor-context__gauge"><Gauge value={contextPct ?? 0} label={tr(hasReading(contextPct) ? `${Math.round(contextPct)}%` : '—')} sub={contextKnown ? `${tokens(contextUsed)} / ${contextLabel(data.context.maxTokens)}` : selection === 'all' && (runtime?.instances.length ?? 0) > 1 ? 'Select a model to see context' : 'No recorded request usage'}/></div>
         <div className="monitor-bar-reading"><span>{tr("Experts in VRAM")}</span><span className="muted num">{tr(cacheKnown ? `${number(data.expertCache.used)}${hasReading(cacheMemory) ? ` · ${number(cacheMemory, 1)} GB` : ''}` : '—')}</span></div><ReadingBar label={tr("Experts in VRAM")} value={cachePercent}/>

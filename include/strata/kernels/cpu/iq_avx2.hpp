@@ -56,4 +56,8 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                           float* const* out, int r0, int r1);
 
+// Singleton-equivalent IQ4_NL down rows; caller checks the linked ggml AVX2/FMA path.
+void iq4nl_reference_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq,
+                          int nt, float* const* out, int r0, int r1);
+
 }  // namespace strata::kernels::cpu

@@ -5,6 +5,8 @@
 #include "strata/kernels/dequant_bf16.hpp"
 #include "strata/core/tc_sm75.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/defaults_026.hpp"
+#include "strata/core/sm120_series.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -285,14 +287,18 @@ bool dequant_wide_on() {
     static const int env = [] { const char* v = std::getenv("STRATA_DEQUANT_WIDE"); return v != nullptr && v[0] != '\0' ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
     if (g_dequant_wide >= 0) return g_dequant_wide != 0;
     if (env >= 0) return env != 0;
-    static int per_dev[64];   // 0 unknown, 1 no, 2 yes: sm_61 (measured on a Tesla P40) and sm_86 (RTX 3060 / A4000, 0.1.45: short-prompt TTFT -12..-17%, bitwise)
+    // 0 unknown, 1 no, 2 yes: sm_61 (measured on a Tesla P40), sm_86 (RTX 3060 / A4000, 0.1.45: short-prompt TTFT -12..-17%,
+    // bitwise) and sm_80 (CMP 170HX: a 3,259-token prompt 857 -> 792 ms of GPU time, prompts +4-7%, bitwise)
+    static int per_dev[64];
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { (void) cudaGetLastError(); return false; }
     if (!per_dev[dev]) {
         int major = 0, minor = 0;
         if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
-        per_dev[dev] = (major == 6 && minor == 1) || (major == 8 && minor == 6) ? 2 : 1;
+        // sm_80 is the 0.2.7 addition (#3779): STRATA_DEFAULTS=026 gives it the per-group kernels again, as 0.2.6 had
+        per_dev[dev] = (major == 6 && minor == 1) || (major == 8 && minor == 6) ||
+                       (major == 8 && minor == 0 && strata::sm80_default_on(nullptr, strata::qwen_defaults_026())) ? 2 : 1;
     }
     return per_dev[dev] == 2;
 }

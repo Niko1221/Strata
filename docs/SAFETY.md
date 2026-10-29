@@ -10,11 +10,13 @@ you trust can check it. Where Strata does less than you might hope, the page say
   outside model service, you open the server to other devices or to the internet, or the agent searches the web or opens a page
   (see [What the agent can do](#what-the-coding-agent-can-do-on-your-pc)).
 - **There is no telemetry.** Strata sends no usage data, no crash reports and no analytics, and has no account to sign in to.
-- **Starting and running a model never downloads anything.** Downloads and updates are separate steps that you start.
+- **Starting and running a model never downloads anything**, except that `strata launch` updates an installed DeepSeek
+  engine package by itself when the signed feed has a newer one (below). Other downloads and updates are steps that you start.
 - **The server listens on your PC only.** Reaching it from another device needs an API key.
 - **Once a model is downloaded, Strata runs without internet.** Starting, loading, serving and chatting need no
   connection. Only things you ask for use it: the agent's web search and web pages, an outside model service, the tunnel,
-  and installs and updates (a first model install also fetches llama.cpp's preparation scripts).
+  and installs and updates (a first model install also fetches llama.cpp's preparation scripts), plus the DeepSeek engine
+  check of `strata launch` (without a connection it gives up after at most 10 s and the launch goes on).
 - **Downloads are checked.** Updates come from a signed feed. Every model file has a fixed SHA-256 and size, and an install
   stops if the pinned version of a file is gone (the details are [below](#how-downloads-are-checked)).
 - **In its default mode the coding agent asks before it changes anything**, and once per chat before its first web search or web page.
@@ -44,7 +46,7 @@ Like any download, each connection below shows the other side your IP address an
 | --- | --- | --- |
 | Model files, the picture reader, the speed-up layer (MTP) | huggingface.co, or the mirror in `HF_ENDPOINT` if you set one | When you install a model |
 | The same files from ModelScope, for PCs that cannot reach Hugging Face | modelscope.cn | Only if you ask for it (`--source modelscope`). Strata never switches to it by itself |
-| Engine, Terminal and Control updates | The signed feed on GitHub Releases of Niko1221/Strata | When you install an engine, press **Update engine** or **Check for updates**, or run `strata update`. Opening **Settings, Engine** does not connect: it shows the result of your last check |
+| Engine, Terminal and Control updates | The signed feed on GitHub Releases of Niko1221/Strata | When you install an engine, press **Update engine** or **Check for updates**, or run `strata update`; the DeepSeek engine also on `strata launch` (below). Opening **Settings, Engine** does not connect: it shows the result of your last check |
 | App updates | `latest.json` on the same GitHub Releases, through Tauri's updater | When you press **Check for updates** or **Update Strata** |
 | llama.cpp source code (a fixed commit) | github.com/ggml-org/llama.cpp | During a model install, if it is not on your PC yet. Strata uses only its model-preparation scripts |
 | Web search and web pages | DuckDuckGo, with Bing as the second source; or Exa, Perplexity or DeepSeek if you save a key for them. Any page the agent is asked to open goes to that page's site | When the agent uses its search or "open web pages" tool. In Manual mode it asks you first, once per chat |
@@ -61,7 +63,11 @@ That is the full list found in the code. Some details:
 - **Nothing checks for updates in the background.** The app does not check when it starts, and not when you open Settings,
   Engine either: that screen shows the result of your last check, or nothing if you have not checked. The checks in the table
   run when you press a button or run a command. With no connection, the check says so and nothing else happens. The Terminal fetches an engine by itself only when none is
-  installed, and `strata launch` asks first.
+  installed, and `strata launch` asks first. One exception: `strata launch` with a DeepSeek model first checks whether the
+  signed feed can be reached (at most 10 s; without a connection it says nothing and goes on), then reads it, and when it has
+  a newer DeepSeek engine package for this PC, fetches and checks it, starts it once (`--version`), switches to it and removes
+  the older one. On a failure the installed one keeps running. Not when the launch is given `--dsv41-package` or
+  `STRATA_DSV41_EXE` is set (`strata_cli/launch/runner.py`, `upgrade_dsv41_engine`).
 - **Starting and serving never download.** `strata serve` and the app's load button fetch nothing. The app sets
   `STRATA_PACKAGED=1` and `STRATA_NO_ACQUIRE=1` for its parts (`apps/desktop/src-tauri/src/main.rs`), and the downloaders
   refuse to run under them (`strata_control/acquisition.py`, `apps/host/server/acquisition.mjs`). That is why the app
@@ -164,7 +170,9 @@ In **Manual**:
 - **These ask:** writing or editing a file, any command that is not on a short list of look-only commands, and every tool
   you connect. In the browser tool, opening a page, clicking and typing ask.
 - **These do not ask:** reading files, listing and searching folders, and look-only commands such as `ls`, `cat` and
-  `git status`. A command with a redirect, a chain (`;`, `&&`), a variable or anything else the check does not recognise asks.
+  `git status`. Each of those commands runs unasked only with options that just look: `sort -o FILE`, `rg --pre PROGRAM`,
+  `tail -f`, `date -s` and `git grep -O` ask, as does any option the check does not know. A command with a redirect, a
+  chain (`;`, `&&`), a variable or anything else the check does not recognise asks.
 - **Web search and opening web pages ask once per chat.** The first one in a chat shows a card with the search words and the
   service they go to, or with the address of the page. **Approve** covers the rest of that chat. **Deny** tells the assistant
   you did not allow the web, and it carries on without it. Plan and Bypass do not ask. The model picks the search words and

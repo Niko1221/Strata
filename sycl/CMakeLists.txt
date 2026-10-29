@@ -279,6 +279,33 @@ target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
+  # Host-only proposal contracts of the gated MTP proposal; no SYCL runtime or GPU library needed.
+  add_executable(gated_proposal_test ${STRATA_ROOT}/src/core/gated_proposal_test.cpp)
+  target_include_directories(gated_proposal_test PRIVATE ${STRATA_ROOT}/include)
+  add_test(NAME gated_proposal_test COMMAND gated_proposal_test)
+  add_executable(spec_admission_test ${STRATA_ROOT}/src/core/spec_admission_test.cpp ${STRATA_ROOT}/src/spec/draft_policy.cpp)
+  target_include_directories(spec_admission_test PRIVATE ${STRATA_ROOT}/include)
+  add_test(NAME spec_admission_default COMMAND ${CMAKE_COMMAND} -E env --unset=STRATA_SPEC_PROB_GATE $<TARGET_FILE:spec_admission_test>)
+  add_test(NAME spec_admission_pick COMMAND ${CMAKE_COMMAND} -E env STRATA_SPEC_PROB_GATE=pick $<TARGET_FILE:spec_admission_test> pick)
+  add_test(NAME spec_admission_top COMMAND ${CMAKE_COMMAND} -E env STRATA_SPEC_PROB_GATE=top $<TARGET_FILE:spec_admission_test> top)
+  add_test(NAME spec_admission_exact_top_only COMMAND ${CMAKE_COMMAND} -E env STRATA_SPEC_PROB_GATE=TOP $<TARGET_FILE:spec_admission_test> pick)
+  if(STRATA_NATIVE_EXPERTS)
+    # a token's native expert rows are the same bits at every number of tokens that share its expert (host CPU kernels)
+    add_executable(native_arithmetic_parity ${STRATA_ROOT}/src/kernels/cpu/native_arithmetic_parity.cpp)
+    target_link_libraries(native_arithmetic_parity PRIVATE strata_kernels_cpu)
+    add_test(NAME native_arithmetic_parity COMMAND native_arithmetic_parity)
+    add_test(NAME native_arithmetic_parity_avx COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_FORCE_ISA=avx $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_kq256 COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_KQ256=1 $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_MT_MIN=1 $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_no512 COMMAND ${CMAKE_COMMAND} -E env STRATA_NO_IQ512=1 $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_ggml COMMAND ${CMAKE_COMMAND} -E env STRATA_NO_IQ512=1 STRATA_NO_IQ256=1 STRATA_NO_IQ4NL=1 $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_nvfp4_avx2 COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_NO_NVFP4_512=1 $<TARGET_FILE:native_arithmetic_parity>)
+    add_test(NAME native_arithmetic_parity_nvfp4_ggml COMMAND ${CMAKE_COMMAND} -E env
+             STRATA_NO_NVFP4_512=1 STRATA_NO_NVFP4_256=1 $<TARGET_FILE:native_arithmetic_parity>)
+  endif()
   foreach(p IN ITEMS dequant_s2 s2_gemv shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
                      s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
@@ -414,6 +441,9 @@ if(STRATA_SYCL_PARITY)
   add_executable(esimd_moe_mode_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_moe_mode_test.cpp)   # 151-b70: the default choice of the expert chain (no GPU)
   target_include_directories(esimd_moe_mode_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME esimd_moe_mode_test COMMAND esimd_moe_mode_test)
+  add_executable(pipeline_auto_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/pipeline_auto_test.cpp)   # the default of --pipeline-windows (no GPU)
+  target_include_directories(pipeline_auto_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME pipeline_auto_test COMMAND pipeline_auto_test)
   if(_i8_esimd)   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build, nor with STRATA_SYCL_I8_ESIMD=OFF
     add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
     add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
@@ -424,6 +454,13 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # SYCL port: the same grouped native experts timed per mode on real GGUF rows at the decode window's shape
+    # (G experts, T tokens), checked bit for bit against the reference mode.  The source was in the tree without a
+    # target, so the numbers that decide the decode expert path could not be reproduced.
+    #   native_expert_bench <shard1.gguf> <layer> <G> <T> <ref mode> <mode> [iters]
+    add_executable(native_expert_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_bench.cpp)
+    target_include_directories(native_expert_bench PRIVATE ${STRATA_ROOT}/third_party/ggml)
+    target_link_libraries(native_expert_bench PRIVATE strata_kernels strata_kernels_cpu)
     # Gyro (APR) trellis experts on real GGUF tensors: tq_sycl_parity <pack> <model.gguf> [layer ...]
     add_executable(tq_sycl_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/tq_sycl_parity.cpp)
     target_include_directories(tq_sycl_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)

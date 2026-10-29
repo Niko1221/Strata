@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -93,6 +94,16 @@ struct HostMemory {
 bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/meminfo",
                            const std::string& self_cgroup = "/proc/self/cgroup",
                            const std::string& cgroup_root = "/sys/fs/cgroup");
+
+/// #4051: wait for the RAM an arena needs to come back.  An engine that was still exiting (or a program that was ending)
+/// holds memory a few seconds longer than its process; loading into that shortfall sent a 60 GiB host into reclaim for
+/// good.  Calls `sample(available)` (false: the RAM cannot be read; the wait ends) every `step_s` seconds, through
+/// `sleep(step_s)`, until `available >= need` or `max_wait_s` seconds have gone.  `waited` gets the seconds waited,
+/// `available` the last reading.  True when the RAM is there.  `progress(waited, available)` is called about every
+/// `note_s` seconds while waiting.  `max_wait_s <= 0` is no wait at all.
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available);
 
 /// Bound a resident budget by RAM and commit capacity after headroom; leave 256 MiB more when clamping.
 /// Pass UINT64_MAX for commit when the platform does not report it.
@@ -671,7 +682,7 @@ int tail_skip_rank();
 void set_tail_skip_rank(int r);
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out);
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic = strata::kernels::cpu::NativeArithmetic::Default);
 
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about
@@ -819,7 +830,11 @@ public:
     /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
     /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
     bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    /// STRATA_RAM_ADAPT: the same move as replace_resident, but `in` is copied out of the finished stage buffer
+    /// a demand read left it in (no file read).  False, nothing changed, when `in` is not staged or still filling.
+    bool replace_resident_staged(int64_t layer, int64_t in, int64_t out);
     int64_t ram_adapts() const { return ram_adapts_; }
+    int64_t ram_staged() const { return ram_staged_; }   ///< of ram_adapts(): copied out of a stage buffer
     // ---- 149-prefetch (STRATA_RAM_ADAPT2): the same promotion, staged.  `ram_stage` queues the read of `in` on an I/O thread
     // (false: already queued, the queue is full, or no compact copy); `ram_install` - called by the decode thread at a window
     // boundary, when no window reads the RAM copy - puts every read that has landed into `out`'s place, unless the GPU tier
@@ -1106,7 +1121,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
-    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    int64_t ram_adapts_ = 0;                  ///< replace_resident(_staged): experts moved into the compact copy
+    int64_t ram_staged_ = 0;                  ///< replace_resident_staged: of those, copied out of a stage buffer
     std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     // 149-prefetch: the staged promotions (ram_stage / ram_install)
     struct RamJob { int64_t layer, in, out; std::vector<uint8_t> buf; int state; };   ///< state 0 queued, 1 reading, 2 landed, 3 failed

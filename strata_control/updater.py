@@ -258,11 +258,10 @@ def detect_hardware(environ=None) -> dict:
     selection treats as "cannot tell", never as a refusal."""
     environ = os.environ if environ is None else environ
     prefer = ""
-    forced = str(environ.get(ec.ENV_BACKEND, "")).strip().lower()
-    if forced.startswith("hip-") and forced not in ec.BACKEND_MATRIX:
+    family, prefer = ec.split_backend(environ.get(ec.ENV_BACKEND, ""))
+    if prefer:
         # "hip-rx9070" is how the feed labels a package; accept it as "the hip family, this variant"
-        prefer = forced[4:]
-        environ = {**environ, ec.ENV_BACKEND: "hip"}
+        environ = {**environ, ec.ENV_BACKEND: family}
     backend, how = ec.detect_backend(environ)
     hw = {"platform": host_platform(), "backend": backend, "backend_source": how, "runtime": ec.runtime_version(),
           "nvidia_driver": None, "cuda_archs": [], "gfx": [], "gpu_names": [], "variant_wanted": prefer,
@@ -366,6 +365,8 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
         loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
     except feedmod.FeedDowngrade as exc:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
+    for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
+        ctx.say("feed", line)
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})
@@ -704,15 +705,31 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         raise
 
 
+def _runs_on_dsv41_engine(config) -> bool:
+    """True for a DeepSeek run config. The test start swaps the engine for the one being updated (the Strata engine), and a DeepSeek model
+    runs on strata-dsv41, which has its own package: the Strata engine rejects its options ('unknown argument: --eos') and a good engine
+    would be refused. Unreadable configs count as not DeepSeek, so they are tried as before."""
+    try:
+        cfg = json.loads(Path(config).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    exe = cfg.get("exe")
+    return cfg.get("arch") == "deepseek41" or (isinstance(exe, str) and "strata-dsv41" in exe.replace("\\", "/").rsplit("/", 1)[-1].lower())
+
+
 def discover_run_config(environ=None) -> Path | None:
     """A saved model's run config for the test start: the one a saved profile uses if its files are all present, otherwise any
-    installed model whose files are present. None when no model is installed (the first run)."""
+    installed model whose files are present. DeepSeek models are left out (they run on strata-dsv41, not on the engine under test).
+    None when no model can be used (the first run)."""
     from strata_control import models, profiles
     try:
         listed = models.list_installed()
     except Exception:                                   # noqa: BLE001 - discovery is best effort
         return None
-    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")]
+    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")
+             and not _runs_on_dsv41_engine(m["source_config"])]
     if not ready:
         return None
     try:
@@ -788,6 +805,55 @@ def _keep_log(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> Non
         logs = sorted(target.glob("test-start-*.log"), key=lambda p: p.stat().st_mtime)
         for old in logs[:-5]:
             old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_RECORD_LIMIT = 65536                     # bytes read from any one kept file
+_RECORDS_KEPT = 3                         # failed test starts whose records stay in .updates/logs
+
+
+def _scrub(value, key: str = ""):
+    """A kept JSON record without anything that could authorise a request: keys that name a token or a key keep only their first
+    characters (enough to see that two records agree), the API key is dropped."""
+    if isinstance(value, dict):
+        return {k: _scrub(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, key) for v in value]
+    low = key.lower()
+    if isinstance(value, str) and value and ("api_key" in low or low in ("key", "authorization")):
+        return "<removed>"
+    if isinstance(value, str) and ("token" in low or "secret" in low or low.endswith("_key")):
+        return value[:8] + "...(rest removed)"
+    return value
+
+
+def _keep_records(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> None:
+    """A failed test start keeps what the sandbox knew, because the sandbox is deleted right after (#3654): the run config the test used
+    (without keys), the host, child and ready records of the runtime (their PIDs show a mismatch), and the host and server logs, next to the
+    engine log in ``.updates/logs/test-start-<version>-failed``. The last few failed starts are kept. Best effort: it never hides the failure."""
+    try:
+        target = updates_dir(ctx.components) / "logs" / f"test-start-{component.version}-failed"
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True)
+        wanted = [sandbox / "run.json", sandbox / "engine.log"]
+        wanted += sorted((sandbox / "runtime").glob("*.json")) + sorted((sandbox / "runtime").glob("*.log"))
+        for source in wanted:
+            try:
+                if not source.is_file():
+                    continue
+                data = source.read_bytes()[-_RECORD_LIMIT:]
+                if source.suffix == ".json":
+                    try:
+                        data = (json.dumps(_scrub(json.loads(data.decode("utf-8-sig"))), indent=1) + "\n").encode("utf-8")
+                    except ValueError:
+                        pass                                                   # not JSON after all: kept as it is
+                (target / source.name).write_bytes(data)
+            except OSError:
+                continue
+        folders = sorted((d for d in target.parent.glob("test-start-*-failed") if d.is_dir()), key=lambda d: d.stat().st_mtime)
+        for old in folders[:-_RECORDS_KEPT]:
+            shutil.rmtree(old, ignore_errors=True)
     except OSError:
         pass
 
@@ -916,14 +982,18 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
                     started = {**started, **runtime.verify(name, timeout=min(ctx.test_timeout, 600), load=True)}
                 if not started.get("ok") or started.get("state") != "ready" or started.get("generation_ready") is not True:
                     _keep_log(sandbox, component, ctx)
+                    _keep_records(sandbox, component, ctx)
                     raise _test_start_failure(component, started, ctx, _log_tail(sandbox, component))
                 _keep_log(sandbox, component, ctx)
                 return {"mode": "full", "model": cfg.get("model_name") or source.stem, "state": started["state"],
                         "generation_ready": True, "detail": "started, answered a one-token probe, stopped"}
             except TestStartFailed:
                 _keep_log(sandbox, component, ctx)
+                _keep_records(sandbox, component, ctx)
                 raise
             except Exception as exc:                    # noqa: BLE001
+                _keep_log(sandbox, component, ctx)
+                _keep_records(sandbox, component, ctx)
                 raise TestStartFailed(component.version, f"{type(exc).__name__}: {exc}") from None
             finally:
                 try:
