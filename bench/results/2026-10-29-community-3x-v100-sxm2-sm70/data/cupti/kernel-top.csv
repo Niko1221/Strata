@@ -1,0 +1,16 @@
+rank,kernel,calls,calls_per_window,gpu_ms,gpu_ms_per_window,share_pct
+1,wait_flag_ge_kernel,22608,144.92,551.94,3.538,10.29
+2,native_mmvq_il_kernel,8280,53.08,424.07,2.718,7.91
+3,gr_down_staged_kernel,16623,106.56,356.62,2.286,6.65
+4,gr_up_fast_kernel,16719,107.17,334.64,2.145,6.24
+5,native_down_lds_kernel,6123,39.25,313.60,2.010,5.85
+6,fetch_blobs_kernel,7536,48.31,233.20,1.495,4.35
+7,native_gu_fused_kernel,3140,20.13,212.71,1.363,3.97
+8,native_gu_fused_kernel,2669,17.11,181.75,1.165,3.39
+9,bf16_f32_mmvf_multi_kernel,16836,107.92,176.00,1.128,3.28
+10,native_mmvq_il_kernel,3036,19.46,167.39,1.073,3.12
+11,native_q6_k_mmvq_kernel,1218,7.81,161.42,1.035,3.01
+12,native_mmvq_il_kernel,2346,15.04,116.70,0.748,2.18
+13,native_gu_fused_kernel,1570,10.06,109.16,0.700,2.04
+14,route_multi,7248,46.46,98.70,0.633,1.84
+15,gr_norm_split_fast_kernel,16671,106.87,89.28,0.572,1.66

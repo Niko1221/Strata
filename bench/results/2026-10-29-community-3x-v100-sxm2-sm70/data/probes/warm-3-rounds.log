@@ -1,0 +1,6 @@
+round 100.1 t/s prompt 20040
+round 109.5 t/s prompt 5
+round 108.0 t/s prompt 5
+strata decode timing: 81 windows, avg T 3.63, 3.16 tokens/window, 31.57 ms/window = adapt wait 0.84 + verify 27.79 (GPU-reach wait 7.41 + per-layer host 2.34 [plan 0.32 actq 0.23 jobs 0.05 CPU 4.16] + stage 0.13) + commit/emit 0.46 + draft 2.44 + adapt join 0.03 + other 0.01; per layer-window: CPU experts 0.50 (0.68 entries), VRAM hits 35.05, PCIe 0.03; 11.2 swaps/window
+strata decode timing: 85 windows, avg T 3.73, 3.01 tokens/window, 27.50 ms/window = adapt wait 0.13 + verify 24.55 (GPU-reach wait 7.99 + per-layer host 0.73 [plan 0.26 actq 0.07 jobs 0.02 CPU 0.96] + stage 0.12) + commit/emit 0.42 + draft 2.40 + adapt join 0.00 + other 0.00; per layer-window: CPU experts 0.12 (0.13 entries), VRAM hits 36.93, PCIe 0.00; 1.9 swaps/window
+strata decode timing: 87 windows, avg T 3.69, 2.94 tokens/window, 27.24 ms/window = adapt wait 0.04 + verify 24.42 (GPU-reach wait 7.95 + per-layer host 0.78 [plan 0.26 actq 0.07 jobs 0.02 CPU 0.95] + stage 0.12) + commit/emit 0.42 + draft 2.35 + adapt join 0.00 + other 0.00; per layer-window: CPU experts 0.13 (0.13 entries), VRAM hits 36.55, PCIe 0.00; 0.9 swaps/window

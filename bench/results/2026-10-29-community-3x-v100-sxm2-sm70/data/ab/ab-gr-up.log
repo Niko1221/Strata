@@ -1,0 +1,9 @@
+[17:46:37] old ready (55s)
+[17:46:49] old decode=93.90 t/s  33.66 ms/window
+[17:46:57] md5 基线 ok
+[17:50:21] new0 FAIL: 没起来
+                 [--api-monitor] [--idle-unload SECONDS]
+                 [--min-free-vram-mib MIN_FREE_VRAM_MIB]
+                 [--before-load BEFORE_LOAD] [--slot-save-path DIR]
+                 [--replicas N] [--split-serve PREFILL,DECODE]
+server.py: error: port 8095 is already in use - is Strata (or another server) already running? Close it, or start this one with a different --port

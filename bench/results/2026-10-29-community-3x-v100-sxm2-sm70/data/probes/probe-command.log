@@ -1,0 +1,2 @@
+bash: -c: line 1: syntax error near unexpected token `do'
+bash: -c: line 1: `bash -c for r in 1 2 3; do R=$(curl -s -m 600 -X POST http://127.0.0.1:8095/v1/chat/completions -H "Content-Type: application/json" --data-binary @/tmp/wp.json); printf "%s" "$R" | python3 -c "import json,sys;t=json.load(sys.stdin).get(\"timings\",{});print(\"round\",t.get(\"predicted_per_second\",0))"; done; grep "decode timing" /tmp/strata-engine.log | tail -3'

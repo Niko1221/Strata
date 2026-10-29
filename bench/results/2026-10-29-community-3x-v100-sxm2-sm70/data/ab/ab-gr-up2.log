@@ -1,0 +1,13 @@
+[17:52:51] old ready (55s)
+[17:53:04] old decode=93.10 t/s  33.94 ms/window
+[17:53:12] md5 基线 ok
+[17:54:11] new0 ready (60s)
+[17:54:24] new0 decode=91.90 t/s  34.39 ms/window
+[17:54:32] 位级一致
+[17:55:31] new8 ready (60s)
+[17:55:44] new8 decode=93.40 t/s  33.83 ms/window
+[17:56:43] new2 ready (60s)
+[17:56:56] new2 decode=93.40 t/s  33.83 ms/window
+[17:56:56] restore
+[17:58:10] health OK after 75s
+NRestarts=0 SubState=running 
