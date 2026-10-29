@@ -493,6 +493,7 @@ def _stop_all(name: str | None) -> int:
     from strata_control import profiles, runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
     stopped = 0
+    failed = 0
     for prof in targets:
         prof = prof if prof.startswith("launch-") else "launch-" + S.slug(prof)
         st = runtime.status(prof)
@@ -500,12 +501,11 @@ def _stop_all(name: str | None) -> int:
             r = runtime.stop(prof, timeout=180)
             _say(f"Stopped {prof[7:]}." if r.get("ok") else f"Could not stop {prof[7:]}: {r.get('error') or r.get('state')}.")
             stopped += 1 if r.get("ok") else 0
+            failed += 0 if r.get("ok") else 1
         access.stop_tunnel(prof)
-    if not stopped and not targets:
+    if not stopped and not failed:
         _say("Nothing from `strata launch` is running.")
-    elif not stopped:
-        _say("Nothing from `strata launch` is running.")
-    return 0
+    return 1 if failed else 0
 
 
 def _can_ask() -> bool:

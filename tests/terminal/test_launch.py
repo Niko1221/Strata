@@ -1062,6 +1062,30 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no saved preset", err)
 
+    def test_stop_failure_returns_nonzero_without_saying_nothing_is_running(self):
+        for args in (["launch", "--stop"], ["launch", "--stop", "--preset", "Office"]):
+            with self.subTest(args=args), \
+                 mock.patch("strata_control.profiles.list_profiles", return_value=[{"id": "launch-office"}]), \
+                 mock.patch("strata_control.runtime.status", return_value={"state": "ready"}), \
+                 mock.patch("strata_control.runtime.stop", return_value={"ok": False, "error": "leftover_process_not_ended"}) as stop, \
+                 mock.patch.object(access, "stop_tunnel"):
+                code, out, err = run_cli(args)
+                self.assertEqual(code, 1, err)
+                self.assertIn("Could not stop office: leftover_process_not_ended.", out)
+                self.assertNotIn("Nothing from `strata launch` is running.", out)
+                stop.assert_called_once_with("launch-office", timeout=180)
+
+    def test_stop_failure_returns_nonzero_even_when_another_stop_succeeds(self):
+        with mock.patch("strata_control.profiles.list_profiles", return_value=[{"id": "launch-office"}, {"id": "launch-home"}]), \
+             mock.patch("strata_control.runtime.status", return_value={"state": "ready"}), \
+             mock.patch("strata_control.runtime.stop", side_effect=[{"ok": False, "error": "leftover_process_not_ended"}, {"ok": True}]), \
+             mock.patch.object(access, "stop_tunnel"):
+            code, out, err = run_cli(["launch", "--stop"])
+        self.assertEqual(code, 1, err)
+        self.assertIn("Could not stop office: leftover_process_not_ended.", out)
+        self.assertIn("Stopped home.", out)
+        self.assertNotIn("Nothing from `strata launch` is running.", out)
+
     def test_feed_flag_reaches_the_runner(self):
         seen = {}
 
