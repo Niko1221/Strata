@@ -73,6 +73,11 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-29: 2x RTX 4070 12 GB (sm_89, PCIe Gen4 x8/x8, overclocked), Ryzen 9 5950X, 128 GB DDR4-3200](../bench/results/2026-10-29-community-rtx-4070-qwen3-8-flash-next-iq3-s/README.md):
+  Strata v0.2.6 CUDA source build (engine 0.1.51), original Flash-Next IQ3_S, 131,072-token context, layer split 25, tuned (`STRATA_STAGE_TRIM=1 STRATA_PREFILL_CPU_SHARE=auto STRATA_SPLIT_MTP_BATCH=1`, `--spec 3`);
+  prompt 1,113 / 2,333 / 2,810 tok/s at 4K / 16K / 32K, chat decode 82.1 tok/s, agent session 69% cache hit. Standard benchmark on the same engine
+  ([2026-10-29-standard-rtx-4070-dc2aa70e](../bench/results/2026-10-29-standard-rtx-4070-dc2aa70e/README.md), track custom): 21/21, 12/12 sanity,
+  prompt 1,182 (4K) / 2,421 (16K) tok/s, decode 81-86 tok/s.
 
 ## Run the standard benchmark
 

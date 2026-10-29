@@ -1,0 +1,9 @@
+c04e49e3e279b102073f14b16842effb0afa63556469259b0ca6b2b32632c410  ./config.json
+bf1f4992909dbe0dd6d8f77c76d7d3abdf0838b7d64e181055ee9c8adef0e600  ./engine-log-excerpt.txt
+92f7bb9272c62de470da7b0bcd2293369b3afb97eef745b4534958f9ec2912e4  ./OPERATOR-NOTES.md
+44c87e6092b42b0be41c1b99255cdc9fb8d79097037af030e0c888d255ef4a6e  ./outputs.jsonl
+12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce  ./provenance/chat_template.jinja
+bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2  ./provenance/corpus-build.json
+e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407  ./provenance/corpus-manifest.sha256
+effdb4f55c66b56ec4d6f86e6f66107f386326f97562328a7b97b00b092ec87f  ./README.md
+6bab7d7f5e63cd48c3be101a85e2bda924fbec553c6c75a61c80bff185f76759  ./results.json
