@@ -81,5 +81,15 @@
  "fx80": "Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.",
  "fx81": "{0} RAM + VRAM, plus about {1} GB of disk",
  "fx82": "Faster answers on 12 GB NVIDIA cards",
- "fx83": "Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed."
+ "fx83": "Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed.",
+ "fx84": "Summarize older messages",
+ "fx85": "Start summarizing older messages",
+ "fx86": "Advanced: room kept free",
+ "fx87": "Room kept free before summarizing",
+ "fx88": "Strata keeps some of the window free so a summary and an answer still fit. Less room starts summarizing later; on windows up to 256K this, not the percent, is what decides.",
+ "fx89": "On {0} ({1} tokens) that starts at about {2} tokens ({3}% of the window).",
+ "fx90": "Load a model to see the number for your window.",
+ "fx91": "A STRATA_COMPACTION_… setting from the environment answers right now; choosing here replaces it.",
+ "fx92": "The choice was not saved.",
+ "fx93": "How full a chat has to get before the assistant condenses its beginning to make room. Later keeps more of the conversation and leaves less room for one answer; the assistant picks the new number up on its next message."
 }

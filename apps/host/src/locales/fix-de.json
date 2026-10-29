@@ -81,5 +81,15 @@
  "fx80": "Braucht etwa {0} GB freien Speicherplatz. Was nicht in den Speicher passt, wird von Ihrer SSD gelesen.",
  "fx81": "{0} RAM + VRAM, dazu etwa {1} GB Speicherplatz",
  "fx82": "Schnellere Antworten auf NVIDIA-Karten mit 12 GB",
- "fx83": "Bevorzugt die Teile des Modells, die schon auf der Grafikkarte liegen. Das macht Antworten auf Karten mit 12 GB schneller. Standardmäßig aus: In langen Agent-Sitzungen kann sich das Modell wiederholen und schwächere Ergebnisse liefern. Schalten Sie die Option ein, wenn Sie vor allem chatten und die Geschwindigkeit wollen."
+ "fx83": "Bevorzugt die Teile des Modells, die schon auf der Grafikkarte liegen. Das macht Antworten auf Karten mit 12 GB schneller. Standardmäßig aus: In langen Agent-Sitzungen kann sich das Modell wiederholen und schwächere Ergebnisse liefern. Schalten Sie die Option ein, wenn Sie vor allem chatten und die Geschwindigkeit wollen.",
+ "fx84": "Ältere Nachrichten zusammenfassen",
+ "fx85": "Ältere Nachrichten ab hier zusammenfassen",
+ "fx86": "Erweitert: freier Platz im Fenster",
+ "fx87": "Vor dem Zusammenfassen freier Platz",
+ "fx88": "Strata hält einen Teil des Fensters frei, damit Zusammenfassung und Antwort passen. Weniger freier Platz bedeutet späteres Zusammenfassen; bis 256K entscheidet dies, nicht der Prozentsatz.",
+ "fx89": "Bei {0} ({1} Token) beginnt es bei etwa {2} Token ({3} % des Fensters).",
+ "fx90": "Lade ein Modell, um den Wert für dein Fenster zu sehen.",
+ "fx91": "Im Moment antwortet die Umgebungsvariable STRATA_COMPACTION_…; eine Auswahl hier ersetzt sie.",
+ "fx92": "Die Auswahl wurde nicht gespeichert.",
+ "fx93": "Wie voll ein Chat sein muss, bevor der Assistent den Anfang verdichtet. Später lässt mehr Gespräch stehen, aber weniger Platz für eine Antwort; die neue Zahl gilt ab der nächsten Nachricht."
 }

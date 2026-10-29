@@ -159,7 +159,33 @@ export function compactionHeadroom(context, outputBudget, env = process.env) {
  * decides, so 0.8 makes a 256K chat summarise its history at 204K tokens. A value outside the range is ignored.
  */
 export const DEFAULT_THRESHOLD_RATIO = 0.8;
+
+/**
+ * The person's own choice in the app (Settings -> "Summarize older messages"), set by the host from its saved settings.
+ * It sets the whole choice: a name left null means "not chosen", so the environment and then the default still apply for
+ * it, and an operator's `STRATA_COMPACTION_*` keep working until the person touches the control.
+ */
+let chosen = { thresholdRatio: null, headroomFraction: null };
+/**
+ * A saved or sent value as a number, or null. Only a real number counts: `Number(null)` is 0, and 0 is a legal
+ * headroom, so an unset setting would otherwise quietly become "keep no room at all".
+ */
+export function compactionNumber(value, min, max) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+  const n = typeof value === 'number' ? value : Number.parseFloat(String(value));
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+export function setCompactionChoice(next = {}) {
+  chosen = {
+    thresholdRatio: compactionNumber(next?.thresholdRatio, 0.1, 0.99),
+    headroomFraction: compactionNumber(next?.headroomFraction, 0, 0.5),
+  };
+  return { ...chosen };
+}
+export const compactionChoice = () => ({ ...chosen });
+
 export function thresholdRatio(env = process.env) {
+  if (chosen.thresholdRatio !== null) return chosen.thresholdRatio;
   const v = Number.parseFloat(env?.STRATA_COMPACTION_THRESHOLD_RATIO);
   return Number.isFinite(v) && v >= 0.1 && v <= 0.99 ? v : DEFAULT_THRESHOLD_RATIO;
 }
@@ -167,6 +193,7 @@ export function thresholdRatio(env = process.env) {
 /** The fraction of the room left after the reply that compaction keeps free; `STRATA_COMPACTION_HEADROOM_FRACTION` (0..0.5) moves it from the default 0.125. */
 export const DEFAULT_HEADROOM_FRACTION = 0.125;
 export function headroomFraction(env = process.env) {
+  if (chosen.headroomFraction !== null) return chosen.headroomFraction;
   const v = Number.parseFloat(env?.STRATA_COMPACTION_HEADROOM_FRACTION);
   return Number.isFinite(v) && v >= 0 && v <= 0.5 ? v : DEFAULT_HEADROOM_FRACTION;
 }
