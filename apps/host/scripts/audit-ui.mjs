@@ -14,6 +14,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import postcss from 'postcss';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const APP = join(ROOT, 'src/styles/app.css');
@@ -34,8 +35,9 @@ const KIT_SCALES = {
 
 /** Durations that belong to a looping indicator, not to a transition. */
 const LOOP_DURATION_OK = new Set([
-  '1s', '720ms', '1.1s', '1.15s', '1.4s', '1.6s', '1.8s',
+  '1s', '720ms', '1.1s', '1.15s', '1.2s', '1.4s', '1.6s', '1.8s',
   '420ms', '560ms', '260ms', // spring pops and the step marker
+  '16s', '35s', // long, slow loops: the drop zone hint and the live status verb
 ]);
 
 /** The only infinite animations allowed, and why. */
@@ -79,6 +81,8 @@ const BLUR_ALLOWED = new Set([
 const ELEVATION_ALLOWED = new Set([
   '.modal',
   '.dialog-surface', // modal content sheet
+  '.family-switch button[aria-selected="true"]', // selected segmented control: the lift is the selection affordance
+  '.native-choice__col .native-resource-choice button[data-selected="true"]', // same, in the model picker
   '.message-overflow[open] > div', // floating message menu
   '.app[data-nav-open=\'true\'] > .nav', // dismissible navigation sheet
   '.st-tab[aria-checked=\'true\']', // selected segmented control
@@ -107,6 +111,16 @@ const ELEVATION_ALLOWED = new Set([
  */
 const CAPSULE_CONTROLS = ['.st-btn', '.st-input', '.st-tab', '.navitem', '.navsession', '.slashmenu__item', '.treerow'];
 
+/**
+ * Reading content keeps its proportions when the person changes the reading size: headings, code,
+ * tables and the small print are expressed in em / the --st-content-fs base on purpose, not on the
+ * px scale the rest of the interface uses. The comment above those rules in app.css says so.
+ */
+const RELATIVE_FONT_OK = [/^\.st-bubble\b/, /^\.st-msg__meta\b/, /^\.md-math\b/, /^\.st-msg--assistant \.st-collapse__body$/];
+
+/** One-element progress bars, not lists: a width transition here cannot thrash a layout. */
+const LAYOUT_TRANSITION_OK = new Set(['.tune-live__bar i', '.tune-compare__bar i', '.tsw__prog i', '.tsf__prog i']);
+
 /** Literal colours that are deliberate and documented. */
 const DOCUMENTED_LITERALS = ['#05261b', '#12c68e', '#0a7a55'];
 
@@ -116,100 +130,109 @@ const fail = (file, line, message) => failures.push(`${file}:${line}  ${message}
 
 /* ------------------------------------------------------------ app.css ---- */
 
-const css = readFileSync(APP, 'utf8');
+// Windows checkouts keep CRLF in the working tree. The selector matcher below is line-anchored, so a
+// trailing '\r' hid every selector and reported approved surfaces as "(top level)". Normalise first.
+const css = readFileSync(APP, 'utf8').replace(/\r\n?/g, '\n');
 const lines = css.split('\n');
-let selector = '(top level)';
-let inKeyframes = false;
+/**
+ * Parse the stylesheet instead of matching it line by line. This file has many one-line rules and
+ * multi-line selector lists; the old line matcher only saw a selector when a whole line ended in `{`
+ * and no selector when it ended in `}`, so a declaration was attributed to whatever rule came before
+ * it (often "(top level)"). A correct selector makes the approved-surface checks meaningful.
+ */
+const root = postcss.parse(css);
+root.walkDecls((decl) => {
+  const rule = decl.parent;
+  if (!rule || rule.type !== 'rule') return;
+  let at = rule.parent;
+  while (at && at.type !== 'atrule') at = at.parent;
+  if (at && /keyframes/i.test(at.name)) return;
+  const selector = rule.selector.trim();
+  const n = decl.source.start.line;
+  const prop = decl.prop.toLowerCase();
+  const value = decl.value.trim() + (decl.important ? ' !important' : '');
 
-lines.forEach((raw, i) => {
-  const line = raw.replace(/\/\*.*?\*\//g, '');
-  const n = i + 1;
+  // --- static design-system rules -------------------------------------
+  if (prop === 'border-radius') {
+    for (const part of value.split(/\s+/)) {
+      if (!KIT_SCALES.radius.has(part) && !part.startsWith('var(') && !part.includes('%')) {
+        fail('app.css', n, `off-scale radius "${part}" in ${selector}`);
+      }
+    }
+  }
+  const relativeFont = value.endsWith('em') || value.endsWith('%') || value.includes('--st-content-fs');
+  if (prop === 'font-size' && !value.startsWith('var(') && !value.includes('clamp') && !KIT_SCALES.fontSize.has(value)
+      && !(relativeFont && RELATIVE_FONT_OK.some((re) => re.test(selector)))) {
+    fail('app.css', n, `off-scale font-size "${value}" in ${selector}`);
+  }
+  if (prop === 'box-shadow' && !KIT_SCALES.shadow.some((re) => re.test(value))) {
+    fail('app.css', n, `shadow is not a kit token: "${value}" in ${selector}`);
+  }
+  if (/gradient|radial|conic/.test(value) && prop.startsWith('background')) {
+    fail('app.css', n, `gradient in ${selector} — the system is flat`);
+  }
+  if (/^(color|background|background-color|border-color)$/.test(prop)) {
+    const literals = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g);
+    if (literals && !value.includes('data:image') && !value.includes('currentColor')
+        && !DOCUMENTED_LITERALS.some((d) => value.includes(d))) {
+      fail('app.css', n, `literal colour "${value}" in ${selector} — use a token`);
+    }
+  }
 
-  const sel = line.match(/^([^@{}\s][^{}]*)\{$/);
-  if (sel) selector = sel[1].trim();
-  if (/@keyframes/.test(line)) inKeyframes = true;
-  if (inKeyframes && /^\}/.test(line)) inKeyframes = false;
+  // --- materials ------------------------------------------------------
+  // Values must be a --st-material-* token: that is what collapses the blur
+  // under reduced transparency, so gating cannot be forgotten.
+  if (prop === 'backdrop-filter' || prop === '-webkit-backdrop-filter') {
+    if (!/^var\(--st-material-(thin|regular|thick)\)$/.test(value) && !(selector === '.scrim' && value === 'none !important')) {
+      fail('app.css', n, `blur must use a --st-material-* token (it carries the gating): "${value}"`);
+    }
+    if (!BLUR_ALLOWED.has(selector)) {
+      fail('app.css', n, `material on "${selector}", which is not an approved surface — it does not overlay moving content`);
+    }
+  }
+  if (prop === 'box-shadow' && /var\(--st-sh-(card|bar|pop)\)/.test(value) && !ELEVATION_ALLOWED.has(selector)) {
+    fail('app.css', n, `elevation shadow on "${selector}" — shadows are reserved for surfaces that overlap content`);
+  }
 
-  for (const [, prop, rawValue] of line.matchAll(/([a-z-]+)\s*:\s*([^;]+);/g)) {
-    const value = rawValue.trim();
-
-    // --- static design-system rules -------------------------------------
-    if (prop === 'border-radius') {
-      for (const part of value.split(/\s+/)) {
-        if (!KIT_SCALES.radius.has(part) && !part.startsWith('var(') && !part.includes('%')) {
-          fail('app.css', n, `off-scale radius "${part}" in ${selector}`);
-        }
+  if (prop === 'transition') {
+    if (/^\d/.test(value) || /(^|[\s,])\d+m?s\b/.test(value)) {
+      fail('app.css', n, `raw duration in transition — use a --st-t-* token: "${value}"`);
+    }
+    for (const part of value.split(',')) {
+      const prop0 = part.trim().split(/\s+/)[0];
+      if (LAYOUT_PROPS.includes(prop0) && !LAYOUT_TRANSITION_OK.has(selector)) {
+        fail('app.css', n, `transition on layout property "${prop0}" in ${selector}`);
       }
     }
-    if (prop === 'font-size' && !value.startsWith('var(') && !value.includes('clamp') && !KIT_SCALES.fontSize.has(value)) {
-      fail('app.css', n, `off-scale font-size "${value}" in ${selector}`);
+  }
+  if (prop === 'transition-property') {
+    for (const p of value.split(',').map((v) => v.trim())) {
+      if (LAYOUT_PROPS.includes(p)) fail('app.css', n, `transition on layout property "${p}" in ${selector}`);
     }
-    if (prop === 'box-shadow' && !KIT_SCALES.shadow.some((re) => re.test(value))) {
-      fail('app.css', n, `shadow is not a kit token: "${value}" in ${selector}`);
+  }
+  if (prop === 'animation' || prop === 'animation-name') {
+    const name = value.match(/^(st-[a-z-]+)/)?.[1];
+    const infinite = /infinite/.test(value);
+    if (infinite && name && !INFINITE_OK.has(name)) {
+      fail('app.css', n, `looping animation "${name}" is not on the allowlist — nothing loops while idle`);
     }
-    if (/gradient|radial|conic/.test(value) && prop.startsWith('background')) {
-      fail('app.css', n, `gradient in ${selector} — the system is flat`);
+    const duration = value.match(/\b(\d+(?:\.\d+)?m?s)\b/)?.[1];
+    if (duration && !LOOP_DURATION_OK.has(duration)) {
+      fail('app.css', n, `raw animation duration "${duration}" in ${selector} — use a --st-t-* token`);
     }
-    if (/^(color|background|background-color|border-color)$/.test(prop)) {
-      const literals = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g);
-      if (literals && !value.includes('data:image') && !value.includes('currentColor')
-          && !DOCUMENTED_LITERALS.some((d) => value.includes(d))) {
-        fail('app.css', n, `literal colour "${value}" in ${selector} — use a token`);
-      }
-    }
-
-    // --- motion rules ----------------------------------------------------
-    // --- materials ------------------------------------------------------
-    // Values must be a --st-material-* token: that is what collapses the blur
-    // under reduced transparency, so gating cannot be forgotten.
-    if (prop === 'backdrop-filter' || prop === '-webkit-backdrop-filter') {
-      if (!/^var\(--st-material-(thin|regular|thick)\)$/.test(value) && !(selector === '.scrim' && value === 'none !important')) {
-        fail('app.css', n, `blur must use a --st-material-* token (it carries the gating): "${value}"`);
-      }
-      if (!BLUR_ALLOWED.has(selector)) {
-        fail('app.css', n, `material on "${selector}", which is not an approved surface — it does not overlay moving content`);
-      }
-    }
-    if (prop === 'box-shadow' && /var\(--st-sh-(card|bar|pop)\)/.test(value) && !ELEVATION_ALLOWED.has(selector)) {
-      fail('app.css', n, `elevation shadow on "${selector}" — shadows are reserved for surfaces that overlap content`);
-    }
-
-    if (prop === 'transition') {
-      if (/^\d/.test(value) || /(^|[\s,])\d+m?s\b/.test(value)) {
-        fail('app.css', n, `raw duration in transition — use a --st-t-* token: "${value}"`);
-      }
-      for (const part of value.split(',')) {
-        const prop0 = part.trim().split(/\s+/)[0];
-        if (LAYOUT_PROPS.includes(prop0)) {
-          fail('app.css', n, `transition on layout property "${prop0}" in ${selector}`);
-        }
-      }
-    }
-    if (prop === 'transition-property') {
-      for (const p of value.split(',').map((v) => v.trim())) {
-        if (LAYOUT_PROPS.includes(p)) fail('app.css', n, `transition on layout property "${p}" in ${selector}`);
-      }
-    }
-    if (prop === 'animation' || prop === 'animation-name') {
-      const name = value.match(/^(st-[a-z-]+)/)?.[1];
-      const infinite = /infinite/.test(value);
-      if (infinite && name && !INFINITE_OK.has(name)) {
-        fail('app.css', n, `looping animation "${name}" is not on the allowlist — nothing loops while idle`);
-      }
-      const duration = value.match(/\b(\d+(?:\.\d+)?m?s)\b/)?.[1];
-      if (duration && !LOOP_DURATION_OK.has(duration)) {
-        fail('app.css', n, `raw animation duration "${duration}" in ${selector} — use a --st-t-* token`);
-      }
-    }
-    if (prop === 'animation-duration' && /^\d/.test(value) && !LOOP_DURATION_OK.has(value)) {
-      fail('app.css', n, `raw animation-duration "${value}" in ${selector}`);
-    }
+  }
+  if (prop === 'animation-duration' && /^\d/.test(value) && !LOOP_DURATION_OK.has(value)) {
+    fail('app.css', n, `raw animation-duration "${value}"`);
   }
 });
 
 /* ------------------------------------------------- kit sync + motion scale -- */
 
-for (const file of ['tokens.css', 'components.css']) {
+// The design kit is an input that is not present in every checkout (this one has the app's synced
+// copy only). Compare when it is there; otherwise the copy under src/styles/kit is the versioned
+// source of truth, and the audit says so instead of failing every run in a source drop.
+const kitPresent = existsSync(KIT_SRC);
+for (const file of kitPresent ? ['tokens.css', 'components.css'] : []) {
   const a = join(KIT_SRC, file);
   const b = join(KIT_COPY, file);
   if (!existsSync(a) || !existsSync(b)) {
@@ -263,7 +286,9 @@ const referenced = new Set();
 for (const file of [...readdirSync(join(ROOT, 'src'), { recursive: true })].filter((f) => /\.tsx$/.test(String(f)))) {
   const full = join(ROOT, 'src', String(file));
   if (!statSync(full).isFile()) continue;
-  for (const m of readFileSync(full, 'utf8').matchAll(/name="([a-z-]+)"/g)) referenced.add(m[1]);
+  // Only the Icon/IconBtn component's name is an icon. A radio group's `name="models-folder-choice"`
+  // is an input name, not a sprite symbol.
+  for (const m of readFileSync(full, 'utf8').matchAll(/<Icon(?:Btn)?\b[^>]*\bname="([a-z-]+)"/g)) referenced.add(m[1]);
 }
 for (const name of referenced) {
   if (!symbols.has(name)) fail('src', 0, `icon "${name}" is referenced but not in the sprite — run npm run sync:kit`);
@@ -330,12 +355,14 @@ for (const name of referenced) {
     if (!statSync(full).isFile()) continue;
     for (const m of readFileSync(full, 'utf8').matchAll(/setProperty\(\s*['"`](--st-[a-z0-9-]+)/g)) declared.add(m[1]);
   }
+  // A var() with a fallback is defined for its use: `var(--st-surface-3, var(--st-surface-2))` is a
+  // deliberate optional token, not a silently dropped declaration. Only a bare var() must resolve.
   const used = new Map();
-  for (const m of all.matchAll(/var\((--st-[a-z0-9-]+)/g)) {
-    if (!used.has(m[1])) used.set(m[1], true);
+  for (const m of all.matchAll(/var\((--st-[a-z0-9-]+)\s*(,)?/g)) {
+    used.set(m[1], (used.get(m[1]) ?? false) || !m[2]);
   }
-  for (const name of used.keys()) {
-    if (!declared.has(name)) {
+  for (const [name, needsDefinition] of used) {
+    if (needsDefinition && !declared.has(name)) {
       fail('src/styles/app.css', 0, `var(${name}) has no definition — the declaration using it is silently dropped`);
     }
   }
@@ -349,7 +376,7 @@ for (const u of used) {
 }
 const SCALE = ['--st-t-micro', '--st-t-control', '--st-t-local', '--st-t-surface', '--st-t-choreo'];
 notes.push(`motion scale: ${SCALE.filter((t) => tokens.has(t)).length}/5 tokens declared, ${used.size} in use`);
-notes.push(`kit copy: in sync with ../ui`);
+notes.push(kitPresent ? `kit copy: in sync with ../ui` : 'kit source ../ui is not in this checkout; the synced copy is authoritative');
 
 /* ------------------------------------------------------------------ report -- */
 

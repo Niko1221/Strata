@@ -866,3 +866,10 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
   .subagent-msg--user .subagent-bubble { max-width:100%; }
   .subagent-tool__target { max-width:18em; }
 }
+
+/* The small lines the class audit found unstyled: a helper's warning, a goal's state, a diff sign and
+   the reading wrapper of a monitor metric. Same tokens as their neighbours; no new visual language. */
+.subagent-row__warning { margin:4px 0 0; color:var(--st-warn-text); font-size:var(--st-fs-xs); line-height:1.45; }
+.goalbar__state { flex:none; color:var(--st-ink-muted); font-size:var(--st-fs-xs); white-space:nowrap; }
+.tsc-diff__sign { color:var(--st-ink-muted); font-family:var(--st-font-mono); text-align:center; }
+.monitor-metric__reading { min-width:0; }
