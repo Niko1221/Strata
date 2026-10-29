@@ -98,6 +98,21 @@ test('picture reading off sticks: no vision section and no --vision on the engin
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+test('DeepSeek load keeps valued vision options and removes only the bare flag', async () => {
+  for (const vision of [['--vision', 'off'], ['--vision', 'on'], ['--vision']]) {
+    for (const tail of [[], ['--dspark', 'none']]) {
+      const base = ['--pack', '/p', '--eos', '1'];
+      const f = fixture({ arch: 'deepseek41', exe: 'strata-dsv41', args: [...base, ...vision, ...tail] });
+      try {
+        await f.native.refresh(true);
+        const job = await finish(f.native, f.native.operation('load', { model: 'q2_0' }).id);
+        assert.equal(job.state, 'done', job.error);
+        assert.deepEqual(f.saved[0].args, [...base, ...(vision.length===2?vision:[]), ...tail]);
+      } finally { await f.native.close(); f.cleanup(); }
+    }
+  }
+});
+
 test('picture reading on keeps --vision; the Models screen sees the prepared pictures instead of "off"', async () => {
   const f = fixture({ vision: visionSection });
   try {

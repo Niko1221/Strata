@@ -85,7 +85,7 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
     base, out, i = list(cfg["args"]), [], 0
     while i < len(base):
         x = base[i]
-        if x in DROP_FLAG:
+        if x in DROP_FLAG and not (x == "--vision" and i + 1 < len(base) and not base[i + 1].startswith("--")):
             i += 1
             continue
         if x in DROP_VALUE:
