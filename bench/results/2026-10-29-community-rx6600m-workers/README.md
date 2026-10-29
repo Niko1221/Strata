@@ -36,18 +36,18 @@ build-hip-gfx1032\strata.exe --pack <pack> ^
 
 | Explicit workers | Decode tok/s | Decode ms | Pool ms/round | Wait for rings ms/round | Log |
 | ---: | --- | ---: | --- | --- | --- |
-| automatic | 3.89 | 16,443.6 | 53.6 | 214.8 | [auto-r1.log](auto-r1.log) |
-| automatic | 4.08 | 15,672.2 | 52.3 | 207.8 | [auto-r2.log](auto-r2.log) |
-| 1 | 3.81 | 16,799.1 | 107.9 | 173.8 | [w01-r1.log](w01-r1.log) |
-| 1 | 3.72 | 17,221.3 | 117.8 | 170.9 | [w01-r2.log](w01-r2.log) |
-| 3 | 4.16 | 15,398.7 | 63.9 | 192.4 | [w03-r1.log](w03-r1.log) |
-| 3 | 4.07 | 15,738.3 | 74.8 | 175.0 | [w03-r2.log](w03-r2.log) |
-| 5 | 4.16 | 15,377.7 | 49.8 | 205.3 | [w05-r1.log](w05-r1.log) |
-| 5 | 4.06 | 15,768.7 | 54.6 | 207.0 | [w05-r2.log](w05-r2.log) |
-| 9 | 4.15 | 15,436.3 | 51.3 | 204.9 | [w09-r1.log](w09-r1.log) |
-| 9 | 4.01 | 15,976.2 | 54.7 | 210.5 | [w09-r2.log](w09-r2.log) |
-| 13 | 4.17 | 15,355.0 | 46.2 | 208.4 | [w13-r1.log](w13-r1.log) |
-| 13 | 4.02 | 15,911.7 | 49.8 | 213.7 | [w13-r2.log](w13-r2.log) |
+| automatic | 3.89 | 16,443.6 | 53.6 | 214.8 | [auto-r1.log](auto-r1.log.txt) |
+| automatic | 4.08 | 15,672.2 | 52.3 | 207.8 | [auto-r2.log](auto-r2.log.txt) |
+| 1 | 3.81 | 16,799.1 | 107.9 | 173.8 | [w01-r1.log](w01-r1.log.txt) |
+| 1 | 3.72 | 17,221.3 | 117.8 | 170.9 | [w01-r2.log](w01-r2.log.txt) |
+| 3 | 4.16 | 15,398.7 | 63.9 | 192.4 | [w03-r1.log](w03-r1.log.txt) |
+| 3 | 4.07 | 15,738.3 | 74.8 | 175.0 | [w03-r2.log](w03-r2.log.txt) |
+| 5 | 4.16 | 15,377.7 | 49.8 | 205.3 | [w05-r1.log](w05-r1.log.txt) |
+| 5 | 4.06 | 15,768.7 | 54.6 | 207.0 | [w05-r2.log](w05-r2.log.txt) |
+| 9 | 4.15 | 15,436.3 | 51.3 | 204.9 | [w09-r1.log](w09-r1.log.txt) |
+| 9 | 4.01 | 15,976.2 | 54.7 | 210.5 | [w09-r2.log](w09-r2.log.txt) |
+| 13 | 4.17 | 15,355.0 | 46.2 | 208.4 | [w13-r1.log](w13-r1.log.txt) |
+| 13 | 4.02 | 15,911.7 | 49.8 | 213.7 | [w13-r2.log](w13-r2.log.txt) |
 
 The automatic choice was 9 workers: five performance cores after the host's, plus four of the eight
 efficiency cores. The pool's share of a round falls from 108 ms at 1 worker to 46 ms at 13, and the wait for
@@ -61,10 +61,10 @@ Same session and settings, explicit `--pool-workers 9`, new-token count varied:
 
 | New tokens | Decode tok/s | Decode ms | Rounds | Decode ms/round | Pool ms/round | Wait for rings ms/round | Log |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 16 | 5.71 | 2,800.5 | 15 | 187 | 76.3 | 88.4 | [len16.log](len16.log) |
-| 32 | 4.63 | 6,911.4 | 29 | 238 | 62.0 | 155.6 | [len32.log](len32.log) |
-| 64 | 4.15 | 15,436.3 | 56 | 276 | 51.3 | 204.9 | [w09-r1.log](w09-r1.log) |
-| 64 | 4.01 | 15,976.2 | 56 | 285 | 54.7 | 210.5 | [w09-r2.log](w09-r2.log) |
+| 16 | 5.71 | 2,800.5 | 15 | 187 | 76.3 | 88.4 | [len16.log](len16.log.txt) |
+| 32 | 4.63 | 6,911.4 | 29 | 238 | 62.0 | 155.6 | [len32.log](len32.log.txt) |
+| 64 | 4.15 | 15,436.3 | 56 | 276 | 51.3 | 204.9 | [w09-r1.log](w09-r1.log.txt) |
+| 64 | 4.01 | 15,976.2 | 56 | 285 | 54.7 | 210.5 | [w09-r2.log](w09-r2.log.txt) |
 
 The 16-token run repeats the 5.70 tok/s this card measured in its first GPU run. Over a longer run the average
 round grows from 187 ms to about 280 ms while the pool's share of it falls, and the adaptive tier moved 1,087
