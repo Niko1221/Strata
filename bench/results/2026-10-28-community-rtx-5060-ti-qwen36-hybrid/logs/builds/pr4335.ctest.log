@@ -1,0 +1,28 @@
+ 1/16 Test   #1: conversation_cache_test ...........   Passed    0.54 sec
+ 2/16 Test   #2: conversation_split_failure_test ...   Passed    0.04 sec
+ 3/16 Test   #3: conversation_memory_test ..........   Passed    0.05 sec
+ 4/16 Test   #4: conversation_file_test ............   Passed    2.90 sec
+ 5/16 Test   #5: session_save_reclaim_test .........   Passed    0.15 sec
+ 6/16 Test  #10: model_family_test .................   Passed    0.18 sec
+      Start 119: qwen35_sampling_test
+ 7/16 Test #119: qwen35_sampling_test ..............   Passed    0.58 sec
+      Start 129: message_boundary_test
+ 8/16 Test #129: message_boundary_test .............   Passed    0.06 sec
+      Start 130: split_ring_test
+ 9/16 Test #130: split_ring_test ...................   Passed    0.05 sec
+      Start 131: conv_cache_test
+10/16 Test #131: conv_cache_test ...................   Passed    0.04 sec
+      Start 134: draft_kv_plan_test
+11/16 Test #134: draft_kv_plan_test ................   Passed    0.04 sec
+      Start 135: coupled_draft_test
+12/16 Test #135: coupled_draft_test ................   Passed    0.04 sec
+      Start 136: spec_prob_test
+13/16 Test #136: spec_prob_test ....................   Passed    4.21 sec
+      Start 143: bf16_bits_test
+14/16 Test #143: bf16_bits_test ....................   Passed    5.37 sec
+      Start 144: batch_rows_test
+15/16 Test #144: batch_rows_test ...................   Passed    0.05 sec
+      Start 145: batch_groups_test
+16/16 Test #145: batch_groups_test .................   Passed    0.05 sec
+100% tests passed, 0 tests failed out of 16
+Total Test time (real) =  14.41 sec

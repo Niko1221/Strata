@@ -1,0 +1,9 @@
+strata-q36: <local path redacted>
+strata: K-quant prompt kernels from <local path redacted>
+strata-q36: prompt experts on MMQ (int8)
+strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free
+strata-q36: hybrid experts: 63 of 256 per layer in VRAM (4.61 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 11.9 s
+strata-q36: warmed up in 1.0 s (one prompt chunk, a decode step)
+strata-q36: prompt 1025 tokens in 808.9 ms (1267.2 tok/s), 97 generated in 2563.6 ms (37.8 tok/s)
+strata-q36: hybrid experts: 7738 of 30720 batch entries on the GPU (25.2%), 22982 on the CPU pool in 1011 ms, 0 slot replacements
+gen: 13962 25816 9988 314 72281 18887 67926 321 95464 6765 271 760 3766 26388 45366 47957 264 6297 6044 1785 10042 1172 7077 7786 640 16484 321 3050 28701 9883 13 561 6007 11870 3808 660 7189 27718 29797 7561 1510 327 1701 7561 1510 8695 7561 1510 4958 823 7561 1510 18479 31789 32530 383 264 69892 28701 16456 25 47029 87 478 1328 8 984 220 16 22 361 220 24 27653 1061 2876 47493 12805 4139 314 279 1879 6951 5255 11 24725 264 13398 7731 314 1510 87 27653 20543 369 264 11346

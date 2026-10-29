@@ -1,0 +1,804 @@
+<|im_start|>user
+BENCHMARK_CASE_r0-l16384
+Read this synthetic ledger and review its proposed cache design.
+
+Synthetic performance ledger: all values below are fictional test inputs, not measured Strata results.
+Record 0000: region=west, operation=restore, key=89196, budget=46317, cost=76028.
+说明：这是一条合成记录，编号0；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0000(queue, limit=46317):
+    selected = [x for x in queue if (x + 89196) % 17 < 9]
+    return selected[:limit], sum(selected) % 76028
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0001: region=delta, operation=admit, key=22716, budget=6459, cost=31764.
+说明：这是一条合成记录，编号1；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0001(queue, limit=6459):
+    selected = [x for x in queue if (x + 22716) % 17 < 9]
+    return selected[:limit], sum(selected) % 31764
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0002: region=alpha, operation=admit, key=483, budget=93641, cost=71769.
+说明：这是一条合成记录，编号2；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0002(queue, limit=93641):
+    selected = [x for x in queue if (x + 483) % 17 < 9]
+    return selected[:limit], sum(selected) % 71769
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0003: region=south, operation=route, key=26163, budget=25449, cost=40540.
+说明：这是一条合成记录，编号3；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0003(queue, limit=25449):
+    selected = [x for x in queue if (x + 26163) % 17 < 9]
+    return selected[:limit], sum(selected) % 40540
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0004: region=delta, operation=route, key=86301, budget=81759, cost=14072.
+说明：这是一条合成记录，编号4；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0004(queue, limit=81759):
+    selected = [x for x in queue if (x + 86301) % 17 < 9]
+    return selected[:limit], sum(selected) % 14072
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0005: region=delta, operation=evict, key=99252, budget=19798, cost=66697.
+说明：这是一条合成记录，编号5；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0005(queue, limit=19798):
+    selected = [x for x in queue if (x + 99252) % 17 < 9]
+    return selected[:limit], sum(selected) % 66697
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0006: region=alpha, operation=merge, key=77463, budget=59211, cost=767.
+说明：这是一条合成记录，编号6；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0006(queue, limit=59211):
+    selected = [x for x in queue if (x + 77463) % 17 < 9]
+    return selected[:limit], sum(selected) % 767
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0007: region=north, operation=restore, key=48276, budget=18572, cost=76755.
+说明：这是一条合成记录，编号7；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0007(queue, limit=18572):
+    selected = [x for x in queue if (x + 48276) % 17 < 9]
+    return selected[:limit], sum(selected) % 76755
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0008: region=north, operation=admit, key=7577, budget=8176, cost=19542.
+说明：这是一条合成记录，编号8；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0008(queue, limit=8176):
+    selected = [x for x in queue if (x + 7577) % 17 < 9]
+    return selected[:limit], sum(selected) % 19542
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0009: region=omega, operation=admit, key=8653, budget=14286, cost=73880.
+说明：这是一条合成记录，编号9；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0009(queue, limit=14286):
+    selected = [x for x in queue if (x + 8653) % 17 < 9]
+    return selected[:limit], sum(selected) % 73880
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0010: region=delta, operation=schedule, key=67424, budget=43853, cost=12546.
+说明：这是一条合成记录，编号10；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0010(queue, limit=43853):
+    selected = [x for x in queue if (x + 67424) % 17 < 9]
+    return selected[:limit], sum(selected) % 12546
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0011: region=alpha, operation=prefetch, key=57344, budget=80745, cost=99692.
+说明：这是一条合成记录，编号11；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0011(queue, limit=80745):
+    selected = [x for x in queue if (x + 57344) % 17 < 9]
+    return selected[:limit], sum(selected) % 99692
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0012: region=west, operation=schedule, key=55969, budget=59982, cost=93277.
+说明：这是一条合成记录，编号12；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0012(queue, limit=59982):
+    selected = [x for x in queue if (x + 55969) % 17 < 9]
+    return selected[:limit], sum(selected) % 93277
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0013: region=delta, operation=merge, key=6104, budget=16642, cost=50691.
+说明：这是一条合成记录，编号13；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0013(queue, limit=16642):
+    selected = [x for x in queue if (x + 6104) % 17 < 9]
+    return selected[:limit], sum(selected) % 50691
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0014: region=alpha, operation=restore, key=99007, budget=7683, cost=9563.
+说明：这是一条合成记录，编号14；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0014(queue, limit=7683):
+    selected = [x for x in queue if (x + 99007) % 17 < 9]
+    return selected[:limit], sum(selected) % 9563
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0015: region=alpha, operation=evict, key=39097, budget=66250, cost=25216.
+说明：这是一条合成记录，编号15；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0015(queue, limit=66250):
+    selected = [x for x in queue if (x + 39097) % 17 < 9]
+    return selected[:limit], sum(selected) % 25216
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0016: region=north, operation=merge, key=9949, budget=51174, cost=28931.
+说明：这是一条合成记录，编号16；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0016(queue, limit=51174):
+    selected = [x for x in queue if (x + 9949) % 17 < 9]
+    return selected[:limit], sum(selected) % 28931
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0017: region=omega, operation=route, key=62951, budget=82127, cost=9854.
+说明：这是一条合成记录，编号17；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0017(queue, limit=82127):
+    selected = [x for x in queue if (x + 62951) % 17 < 9]
+    return selected[:limit], sum(selected) % 9854
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0018: region=west, operation=evict, key=99577, budget=7923, cost=48024.
+说明：这是一条合成记录，编号18；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0018(queue, limit=7923):
+    selected = [x for x in queue if (x + 99577) % 17 < 9]
+    return selected[:limit], sum(selected) % 48024
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0019: region=north, operation=route, key=77841, budget=49735, cost=799.
+说明：这是一条合成记录，编号19；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0019(queue, limit=49735):
+    selected = [x for x in queue if (x + 77841) % 17 < 9]
+    return selected[:limit], sum(selected) % 799
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0020: region=south, operation=schedule, key=4850, budget=31283, cost=3837.
+说明：这是一条合成记录，编号20；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0020(queue, limit=31283):
+    selected = [x for x in queue if (x + 4850) % 17 < 9]
+    return selected[:limit], sum(selected) % 3837
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0021: region=south, operation=merge, key=21277, budget=40015, cost=67805.
+说明：这是一条合成记录，编号21；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0021(queue, limit=40015):
+    selected = [x for x in queue if (x + 21277) % 17 < 9]
+    return selected[:limit], sum(selected) % 67805
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0022: region=alpha, operation=route, key=67870, budget=87316, cost=48559.
+说明：这是一条合成记录，编号22；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0022(queue, limit=87316):
+    selected = [x for x in queue if (x + 67870) % 17 < 9]
+    return selected[:limit], sum(selected) % 48559
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0023: region=alpha, operation=schedule, key=40489, budget=61465, cost=2018.
+说明：这是一条合成记录，编号23；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0023(queue, limit=61465):
+    selected = [x for x in queue if (x + 40489) % 17 < 9]
+    return selected[:limit], sum(selected) % 2018
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0024: region=alpha, operation=merge, key=4195, budget=38464, cost=76330.
+说明：这是一条合成记录，编号24；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0024(queue, limit=38464):
+    selected = [x for x in queue if (x + 4195) % 17 < 9]
+    return selected[:limit], sum(selected) % 76330
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0025: region=alpha, operation=schedule, key=5977, budget=95797, cost=66275.
+说明：这是一条合成记录，编号25；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0025(queue, limit=95797):
+    selected = [x for x in queue if (x + 5977) % 17 < 9]
+    return selected[:limit], sum(selected) % 66275
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0026: region=alpha, operation=prefetch, key=50724, budget=67461, cost=36909.
+说明：这是一条合成记录，编号26；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0026(queue, limit=67461):
+    selected = [x for x in queue if (x + 50724) % 17 < 9]
+    return selected[:limit], sum(selected) % 36909
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0027: region=delta, operation=route, key=60408, budget=95688, cost=44581.
+说明：这是一条合成记录，编号27；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0027(queue, limit=95688):
+    selected = [x for x in queue if (x + 60408) % 17 < 9]
+    return selected[:limit], sum(selected) % 44581
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0028: region=omega, operation=merge, key=90267, budget=41552, cost=84077.
+说明：这是一条合成记录，编号28；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0028(queue, limit=41552):
+    selected = [x for x in queue if (x + 90267) % 17 < 9]
+    return selected[:limit], sum(selected) % 84077
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0029: region=omega, operation=route, key=90441, budget=87989, cost=67153.
+说明：这是一条合成记录，编号29；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0029(queue, limit=87989):
+    selected = [x for x in queue if (x + 90441) % 17 < 9]
+    return selected[:limit], sum(selected) % 67153
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0030: region=west, operation=route, key=63659, budget=36804, cost=98072.
+说明：这是一条合成记录，编号30；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0030(queue, limit=36804):
+    selected = [x for x in queue if (x + 63659) % 17 < 9]
+    return selected[:limit], sum(selected) % 98072
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0031: region=west, operation=prefetch, key=33879, budget=41466, cost=67545.
+说明：这是一条合成记录，编号31；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0031(queue, limit=41466):
+    selected = [x for x in queue if (x + 33879) % 17 < 9]
+    return selected[:limit], sum(selected) % 67545
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0032: region=south, operation=route, key=72856, budget=74738, cost=46665.
+说明：这是一条合成记录，编号32；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0032(queue, limit=74738):
+    selected = [x for x in queue if (x + 72856) % 17 < 9]
+    return selected[:limit], sum(selected) % 46665
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0033: region=delta, operation=merge, key=46976, budget=23447, cost=19887.
+说明：这是一条合成记录，编号33；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0033(queue, limit=23447):
+    selected = [x for x in queue if (x + 46976) % 17 < 9]
+    return selected[:limit], sum(selected) % 19887
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0034: region=delta, operation=prefetch, key=61157, budget=67628, cost=38361.
+说明：这是一条合成记录，编号34；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0034(queue, limit=67628):
+    selected = [x for x in queue if (x + 61157) % 17 < 9]
+    return selected[:limit], sum(selected) % 38361
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0035: region=south, operation=schedule, key=84903, budget=1189, cost=5113.
+说明：这是一条合成记录，编号35；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0035(queue, limit=1189):
+    selected = [x for x in queue if (x + 84903) % 17 < 9]
+    return selected[:limit], sum(selected) % 5113
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0036: region=south, operation=restore, key=60385, budget=90823, cost=76513.
+说明：这是一条合成记录，编号36；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0036(queue, limit=90823):
+    selected = [x for x in queue if (x + 60385) % 17 < 9]
+    return selected[:limit], sum(selected) % 76513
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0037: region=west, operation=admit, key=70666, budget=99499, cost=67107.
+说明：这是一条合成记录，编号37；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0037(queue, limit=99499):
+    selected = [x for x in queue if (x + 70666) % 17 < 9]
+    return selected[:limit], sum(selected) % 67107
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0038: region=north, operation=schedule, key=92313, budget=16254, cost=98341.
+说明：这是一条合成记录，编号38；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0038(queue, limit=16254):
+    selected = [x for x in queue if (x + 92313) % 17 < 9]
+    return selected[:limit], sum(selected) % 98341
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0039: region=delta, operation=admit, key=56708, budget=90105, cost=73694.
+说明：这是一条合成记录，编号39；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0039(queue, limit=90105):
+    selected = [x for x in queue if (x + 56708) % 17 < 9]
+    return selected[:limit], sum(selected) % 73694
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0040: region=alpha, operation=route, key=63179, budget=32305, cost=74379.
+说明：这是一条合成记录，编号40；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0040(queue, limit=32305):
+    selected = [x for x in queue if (x + 63179) % 17 < 9]
+    return selected[:limit], sum(selected) % 74379
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0041: region=east, operation=merge, key=79761, budget=56673, cost=65933.
+说明：这是一条合成记录，编号41；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0041(queue, limit=56673):
+    selected = [x for x in queue if (x + 79761) % 17 < 9]
+    return selected[:limit], sum(selected) % 65933
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0042: region=west, operation=restore, key=11806, budget=24323, cost=53100.
+说明：这是一条合成记录，编号42；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0042(queue, limit=24323):
+    selected = [x for x in queue if (x + 11806) % 17 < 9]
+    return selected[:limit], sum(selected) % 53100
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0043: region=south, operation=merge, key=7495, budget=41143, cost=14390.
+说明：这是一条合成记录，编号43；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0043(queue, limit=41143):
+    selected = [x for x in queue if (x + 7495) % 17 < 9]
+    return selected[:limit], sum(selected) % 14390
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0044: region=south, operation=restore, key=25721, budget=1634, cost=96108.
+说明：这是一条合成记录，编号44；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0044(queue, limit=1634):
+    selected = [x for x in queue if (x + 25721) % 17 < 9]
+    return selected[:limit], sum(selected) % 96108
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0045: region=north, operation=merge, key=47109, budget=49830, cost=79216.
+说明：这是一条合成记录，编号45；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0045(queue, limit=49830):
+    selected = [x for x in queue if (x + 47109) % 17 < 9]
+    return selected[:limit], sum(selected) % 79216
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0046: region=delta, operation=evict, key=8314, budget=81996, cost=79713.
+说明：这是一条合成记录，编号46；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0046(queue, limit=81996):
+    selected = [x for x in queue if (x + 8314) % 17 < 9]
+    return selected[:limit], sum(selected) % 79713
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0047: region=north, operation=admit, key=28870, budget=64388, cost=99111.
+说明：这是一条合成记录，编号47；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0047(queue, limit=64388):
+    selected = [x for x in queue if (x + 28870) % 17 < 9]
+    return selected[:limit], sum(selected) % 99111
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0048: region=delta, operation=prefetch, key=8517, budget=12999, cost=26833.
+说明：这是一条合成记录，编号48；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0048(queue, limit=12999):
+    selected = [x for x in queue if (x + 8517) % 17 < 9]
+    return selected[:limit], sum(selected) % 26833
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0049: region=delta, operation=restore, key=19449, budget=52870, cost=55679.
+说明：这是一条合成记录，编号49；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0049(queue, limit=52870):
+    selected = [x for x in queue if (x + 19449) % 17 < 9]
+    return selected[:limit], sum(selected) % 55679
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0050: region=east, operation=merge, key=97182, budget=51249, cost=43641.
+说明：这是一条合成记录，编号50；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0050(queue, limit=51249):
+    selected = [x for x in queue if (x + 97182) % 17 < 9]
+    return selected[:limit], sum(selected) % 43641
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0051: region=south, operation=route, key=6810, budget=6704, cost=12755.
+说明：这是一条合成记录，编号51；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0051(queue, limit=6704):
+    selected = [x for x in queue if (x + 6810) % 17 < 9]
+    return selected[:limit], sum(selected) % 12755
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0052: region=delta, operation=prefetch, key=59573, budget=67830, cost=29326.
+说明：这是一条合成记录，编号52；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0052(queue, limit=67830):
+    selected = [x for x in queue if (x + 59573) % 17 < 9]
+    return selected[:limit], sum(selected) % 29326
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0053: region=north, operation=route, key=7741, budget=37517, cost=23513.
+说明：这是一条合成记录，编号53；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0053(queue, limit=37517):
+    selected = [x for x in queue if (x + 7741) % 17 < 9]
+    return selected[:limit], sum(selected) % 23513
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0054: region=east, operation=prefetch, key=62737, budget=56179, cost=48042.
+说明：这是一条合成记录，编号54；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0054(queue, limit=56179):
+    selected = [x for x in queue if (x + 62737) % 17 < 9]
+    return selected[:limit], sum(selected) % 48042
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0055: region=delta, operation=merge, key=8172, budget=78285, cost=29425.
+说明：这是一条合成记录，编号55；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0055(queue, limit=78285):
+    selected = [x for x in queue if (x + 8172) % 17 < 9]
+    return selected[:limit], sum(selected) % 29425
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0056: region=omega, operation=prefetch, key=71915, budget=94437, cost=29208.
+说明：这是一条合成记录，编号56；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0056(queue, limit=94437):
+    selected = [x for x in queue if (x + 71915) % 17 < 9]
+    return selected[:limit], sum(selected) % 29208
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0057: region=omega, operation=prefetch, key=73057, budget=60368, cost=9262.
+说明：这是一条合成记录，编号57；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0057(queue, limit=60368):
+    selected = [x for x in queue if (x + 73057) % 17 < 9]
+    return selected[:limit], sum(selected) % 9262
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0058: region=delta, operation=evict, key=96514, budget=74984, cost=67780.
+说明：这是一条合成记录，编号58；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0058(queue, limit=74984):
+    selected = [x for x in queue if (x + 96514) % 17 < 9]
+    return selected[:limit], sum(selected) % 67780
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0059: region=north, operation=merge, key=12051, budget=10070, cost=88089.
+说明：这是一条合成记录，编号59；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0059(queue, limit=10070):
+    selected = [x for x in queue if (x + 12051) % 17 < 9]
+    return selected[:limit], sum(selected) % 88089
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0060: region=south, operation=merge, key=5262, budget=96355, cost=30353.
+说明：这是一条合成记录，编号60；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0060(queue, limit=96355):
+    selected = [x for x in queue if (x + 5262) % 17 < 9]
+    return selected[:limit], sum(selected) % 30353
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0061: region=omega, operation=admit, key=72549, budget=89947, cost=41019.
+说明：这是一条合成记录，编号61；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0061(queue, limit=89947):
+    selected = [x for x in queue if (x + 72549) % 17 < 9]
+    return selected[:limit], sum(selected) % 41019
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0062: region=east, operation=merge, key=44355, budget=33070, cost=23527.
+说明：这是一条合成记录，编号62；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0062(queue, limit=33070):
+    selected = [x for x in queue if (x + 44355) % 17 < 9]
+    return selected[:limit], sum(selected) % 23527
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0063: region=alpha, operation=schedule, key=84699, budget=76155, cost=45875.
+说明：这是一条合成记录，编号63；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0063(queue, limit=76155):
+    selected = [x for x in queue if (x + 84699) % 17 < 9]
+    return selected[:limit], sum(selected) % 45875
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0064: region=delta, operation=restore, key=7287, budget=72382, cost=71229.
+说明：这是一条合成记录，编号64；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0064(queue, limit=72382):
+    selected = [x for x in queue if (x + 7287) % 17 < 9]
+    return selected[:limit], sum(selected) % 71229
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0065: region=east, operation=restore, key=40178, budget=16563, cost=37423.
+说明：这是一条合成记录，编号65；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0065(queue, limit=16563):
+    selected = [x for x in queue if (x + 40178) % 17 < 9]
+    return selected[:limit], sum(selected) % 37423
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0066: region=omega, operation=route, key=86212, budget=8600, cost=17485.
+说明：这是一条合成记录，编号66；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0066(queue, limit=8600):
+    selected = [x for x in queue if (x + 86212) % 17 < 9]
+    return selected[:limit], sum(selected) % 17485
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0067: region=east, operation=admit, key=20432, budget=56179, cost=74078.
+说明：这是一条合成记录，编号67；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0067(queue, limit=56179):
+    selected = [x for x in queue if (x + 20432) % 17 < 9]
+    return selected[:limit], sum(selected) % 74078
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0068: region=delta, operation=prefetch, key=59234, budget=91688, cost=41789.
+说明：这是一条合成记录，编号68；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0068(queue, limit=91688):
+    selected = [x for x in queue if (x + 59234) % 17 < 9]
+    return selected[:limit], sum(selected) % 41789
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0069: region=south, operation=admit, key=69645, budget=26393, cost=4223.
+说明：这是一条合成记录，编号69；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0069(queue, limit=26393):
+    selected = [x for x in queue if (x + 69645) % 17 < 9]
+    return selected[:limit], sum(selected) % 4223
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0070: region=east, operation=prefetch, key=16129, budget=77223, cost=45400.
+说明：这是一条合成记录，编号70；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0070(queue, limit=77223):
+    selected = [x for x in queue if (x + 16129) % 17 < 9]
+    return selected[:limit], sum(selected) % 45400
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0071: region=delta, operation=schedule, key=63073, budget=45800, cost=90336.
+说明：这是一条合成记录，编号71；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0071(queue, limit=45800):
+    selected = [x for x in queue if (x + 63073) % 17 < 9]
+    return selected[:limit], sum(selected) % 90336
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0072: region=north, operation=restore, key=44430, budget=80027, cost=25738.
+说明：这是一条合成记录，编号72；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0072(queue, limit=80027):
+    selected = [x for x in queue if (x + 44430) % 17 < 9]
+    return selected[:limit], sum(selected) % 25738
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0073: region=east, operation=schedule, key=12328, budget=74849, cost=78493.
+说明：这是一条合成记录，编号73；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0073(queue, limit=74849):
+    selected = [x for x in queue if (x + 12328) % 17 < 9]
+    return selected[:limit], sum(selected) % 78493
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0074: region=south, operation=schedule, key=15898, budget=88730, cost=81455.
+说明：这是一条合成记录，编号74；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0074(queue, limit=88730):
+    selected = [x for x in queue if (x + 15898) % 17 < 9]
+    return selected[:limit], sum(selected) % 81455
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0075: region=east, operation=evict, key=64704, budget=98894, cost=64799.
+说明：这是一条合成记录，编号75；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0075(queue, limit=98894):
+    selected = [x for x in queue if (x + 64704) % 17 < 9]
+    return selected[:limit], sum(selected) % 64799
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0076: region=east, operation=merge, key=39002, budget=15843, cost=43755.
+说明：这是一条合成记录，编号76；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0076(queue, limit=15843):
+    selected = [x for x in queue if (x + 39002) % 17 < 9]
+    return selected[:limit], sum(selected) % 43755
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0077: region=north, operation=route, key=715, budget=57047, cost=88061.
+说明：这是一条合成记录，编号77；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0077(queue, limit=57047):
+    selected = [x for x in queue if (x + 715) % 17 < 9]
+    return selected[:limit], sum(selected) % 88061
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0078: region=delta, operation=evict, key=35368, budget=4748, cost=39217.
+说明：这是一条合成记录，编号78；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0078(queue, limit=4748):
+    selected = [x for x in queue if (x + 35368) % 17 < 9]
+    return selected[:limit], sum(selected) % 39217
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0079: region=delta, operation=merge, key=68918, budget=71482, cost=88141.
+说明：这是一条合成记录，编号79；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0079(queue, limit=71482):
+    selected = [x for x in queue if (x + 68918) % 17 < 9]
+    return selected[:limit], sum(selected) % 88141
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0080: region=east, operation=evict, key=19075, budget=12390, cost=99724.
+说明：这是一条合成记录，编号80；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0080(queue, limit=12390):
+    selected = [x for x in queue if (x + 19075) % 17 < 9]
+    return selected[:limit], sum(selected) % 99724
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0081: region=south, operation=restore, key=36532, budget=13573, cost=34088.
+说明：这是一条合成记录，编号81；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0081(queue, limit=13573):
+    selected = [x for x in queue if (x + 36532) % 17 < 9]
+    return selected[:limit], sum(selected) % 34088
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0082: region=omega, operation=admit, key=75379, budget=73506, cost=77382.
+说明：这是一条合成记录，编号82；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0082(queue, limit=73506):
+    selected = [x for x in queue if (x + 75379) % 17 < 9]
+    return selected[:limit], sum(selected) % 77382
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0083: region=east, operation=evict, key=27266, budget=51095, cost=96879.
+说明：这是一条合成记录，编号83；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0083(queue, limit=51095):
+    selected = [x for x in queue if (x + 27266) % 17 < 9]
+    return selected[:limit], sum(selected) % 96879
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0084: region=omega, operation=evict, key=14171, budget=98022, cost=46468.
+说明：这是一条合成记录，编号84；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0084(queue, limit=98022):
+    selected = [x for x in queue if (x + 14171) % 17 < 9]
+    return selected[:limit], sum(selected) % 46468
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0085: region=east, operation=admit, key=93351, budget=59644, cost=39345.
+说明：这是一条合成记录，编号85；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0085(queue, limit=59644):
+    selected = [x for x in queue if (x + 93351) % 17 < 9]
+    return selected[:limit], sum(selected) % 39345
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0086: region=east, operation=evict, key=46520, budget=49186, cost=71389.
+说明：这是一条合成记录，编号86；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0086(queue, limit=49186):
+    selected = [x for x in queue if (x + 46520) % 17 < 9]
+    return selected[:limit], sum(selected) % 71389
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0087: region=east, operation=evict, key=47528, budget=62793, cost=6670.
+说明：这是一条合成记录，编号87；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0087(queue, limit=62793):
+    selected = [x for x in queue if (x + 47528) % 17 < 9]
+    return selected[:limit], sum(selected) % 6670
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0088: region=east, operation=route, key=19429, budget=91196, cost=34076.
+说明：这是一条合成记录，编号88；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0088(queue, limit=91196):
+    selected = [x for x in queue if (x + 19429) % 17 < 9]
+    return selected[:limit], sum(selected) % 34076
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0089: region=south, operation=restore, key=47937, budget=32421, cost=86470.
+说明：这是一条合成记录，编号89；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0089(queue, limit=32421):
+    selected = [x for x in queue if (x + 47937) % 17 < 9]
+    return selected[:limit], sum(selected) % 86470
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0090: region=west, operation=merge, key=11727, budget=4938, cost=30109.
+说明：这是一条合成记录，编号90；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0090(queue, limit=4938):
+    selected = [x for x in queue if (x + 11727) % 17 < 9]
+    return selected[:limit], sum(selected) % 30109
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0091: region=west, operation=schedule, key=36483, budget=27717, cost=11409.
+说明：这是一条合成记录，编号91；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0091(queue, limit=27717):
+    selected = [x for x in queue if (x + 36483) % 17 < 9]
+    return selected[:limit], sum(selected) % 11409
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0092: region=north, operation=admit, key=40711, budget=67487, cost=7589.
+说明：这是一条合成记录，编号92；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0092(queue, limit=67487):
+    selected = [x for x in queue if (x + 40711) % 17 < 9]
+    return selected[:limit], sum(selected) % 7589
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0093: region=south, operation=schedule, key=12334, budget=8199, cost=44087.
+说明：这是一条合成记录，编号93；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0093(queue, limit=8199):
+    selected = [x for x in queue if (x + 12334) % 17 < 9]
+    return selected[:limit], sum(selected) % 44087
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0094: region=delta, operation=evict, key=21586, budget=15878, cost=96727.
+说明：这是一条合成记录，编号94；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0094(queue, limit=15878):
+    selected = [x for x in queue if (x + 21586) % 17 < 9]
+    return selected[:limit], sum(selected) % 96727
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0095: region=omega, operation=evict, key=60762, budget=54194, cost=98205.
+说明：这是一条合成记录，编号95；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0095(queue, limit=54194):
+    selected = [x for x in queue if (x + 60762) % 17 < 9]
+    return selected[:limit], sum(selected) % 98205
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0096: region=alpha, operation=route, key=87088, budget=8037, cost=83609.
+说明：这是一条合成记录，编号96；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0096(queue, limit=8037):
+    selected = [x for x in queue if (x + 87088) % 17 < 9]
+    return selected[:limit], sum(selected) % 83609
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0097: region=south, operation=restore, key=41511, budget=43791, cost=54239.
+说明：这是一条合成记录，编号97；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0097(queue, limit=43791):
+    selected = [x for x in queue if (x + 41511) % 17 < 9]
+    return selected[:limit], sum(selected) % 54239
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0098: region=east, operation=admit, key=22317, budget=36466, cost=76908.
+说明：这是一条合成记录，编号98；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0098(queue, limit=36466):
+    selected = [x for x in queue if (x + 22317) % 17 < 9]
+    return selected[:limit], sum(selected) % 76908
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0099: region=omega, operation=merge, key=58661, budget=80185, cost=79923.
+说明：这是一条合成记录，编号99；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def merge_0099(queue, limit=80185):
+    selected = [x for x in queue if (x + 58661) % 17 < 9]
+    return selected[:limit], sum(selected) % 79923
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0100: region=delta, operation=restore, key=86703, budget=53781, cost=71123.
+说明：这是一条合成记录，编号100；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0100(queue, limit=53781):
+    selected = [x for x in queue if (x + 86703) % 17 < 9]
+    return selected[:limit], sum(selected) % 71123
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0101: region=alpha, operation=prefetch, key=49678, budget=99384, cost=33653.
+说明：这是一条合成记录，编号101；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0101(queue, limit=99384):
+    selected = [x for x in queue if (x + 49678) % 17 < 9]
+    return selected[:limit], sum(selected) % 33653
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0102: region=west, operation=evict, key=97332, budget=88072, cost=15958.
+说明：这是一条合成记录，编号102；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0102(queue, limit=88072):
+    selected = [x for x in queue if (x + 97332) % 17 < 9]
+    return selected[:limit], sum(selected) % 15958
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0103: region=west, operation=restore, key=20789, budget=9091, cost=95429.
+说明：这是一条合成记录，编号103；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0103(queue, limit=9091):
+    selected = [x for x in queue if (x + 20789) % 17 < 9]
+    return selected[:limit], sum(selected) % 95429
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0104: region=north, operation=evict, key=29723, budget=15805, cost=7186.
+说明：这是一条合成记录，编号104；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0104(queue, limit=15805):
+    selected = [x for x in queue if (x + 29723) % 17 < 9]
+    return selected[:limit], sum(selected) % 7186
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0105: region=alpha, operation=restore, key=3238, budget=40778, cost=95915.
+说明：这是一条合成记录，编号105；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0105(queue, limit=40778):
+    selected = [x for x in queue if (x + 3238) % 17 < 9]
+    return selected[:limit], sum(selected) % 95915
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0106: region=east, operation=schedule, key=74841, budget=92541, cost=26203.
+说明：这是一条合成记录，编号106；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0106(queue, limit=92541):
+    selected = [x for x in queue if (x + 74841) % 17 < 9]
+    return selected[:limit], sum(selected) % 26203
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0107: region=south, operation=schedule, key=34588, budget=11775, cost=82171.
+说明：这是一条合成记录，编号107；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0107(queue, limit=11775):
+    selected = [x for x in queue if (x + 34588) % 17 < 9]
+    return selected[:limit], sum(selected) % 82171
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0108: region=north, operation=schedule, key=95310, budget=22925, cost=77264.
+说明：这是一条合成记录，编号108；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def schedule_0108(queue, limit=22925):
+    selected = [x for x in queue if (x + 95310) % 17 < 9]
+    return selected[:limit], sum(selected) % 77264
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0109: region=east, operation=prefetch, key=18843, budget=59481, cost=23481.
+说明：这是一条合成记录，编号109；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def prefetch_0109(queue, limit=59481):
+    selected = [x for x in queue if (x + 18843) % 17 < 9]
+    return selected[:limit], sum(selected) % 23481
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0110: region=delta, operation=evict, key=94670, budget=96823, cost=17965.
+说明：这是一条合成记录，编号110；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0110(queue, limit=96823):
+    selected = [x for x in queue if (x + 94670) % 17 < 9]
+    return selected[:limit], sum(selected) % 17965
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0111: region=delta, operation=route, key=74655, budget=9987, cost=20252.
+说明：这是一条合成记录，编号111；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0111(queue, limit=9987):
+    selected = [x for x in queue if (x + 74655) % 17 < 9]
+    return selected[:limit], sum(selected) % 20252
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0112: region=delta, operation=restore, key=7723, budget=51887, cost=5170.
+说明：这是一条合成记录，编号112；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0112(queue, limit=51887):
+    selected = [x for x in queue if (x + 7723) % 17 < 9]
+    return selected[:limit], sum(selected) % 5170
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0113: region=west, operation=evict, key=88538, budget=20904, cost=22109.
+
+End of excerpt. Write a detailed technical review in English, explaining algorithmic complexity, memory ownership, cancellation, fairness and correctness risks. Include pseudocode and concrete examples. Aim for at least 400 words; do not just list the record identifiers.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

@@ -1,0 +1,56 @@
+<|im_start|>user
+BENCHMARK_CASE_r0-l1024
+Read this synthetic ledger and review its proposed cache design.
+
+Synthetic performance ledger: all values below are fictional test inputs, not measured Strata results.
+Record 0000: region=west, operation=restore, key=89196, budget=46317, cost=76028.
+说明：这是一条合成记录，编号0；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def restore_0000(queue, limit=46317):
+    selected = [x for x in queue if (x + 89196) % 17 < 9]
+    return selected[:limit], sum(selected) % 76028
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0001: region=delta, operation=admit, key=22716, budget=6459, cost=31764.
+说明：这是一条合成记录，编号1；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0001(queue, limit=6459):
+    selected = [x for x in queue if (x + 22716) % 17 < 9]
+    return selected[:limit], sum(selected) % 31764
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0002: region=alpha, operation=admit, key=483, budget=93641, cost=71769.
+说明：这是一条合成记录，编号2；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def admit_0002(queue, limit=93641):
+    selected = [x for x in queue if (x + 483) % 17 < 9]
+    return selected[:limit], sum(selected) % 71769
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0003: region=south, operation=route, key=26163, budget=25449, cost=40540.
+说明：这是一条合成记录，编号3；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0003(queue, limit=25449):
+    selected = [x for x in queue if (x + 26163) % 17 < 9]
+    return selected[:limit], sum(selected) % 40540
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0004: region=delta, operation=route, key=86301, budget=81759, cost=14072.
+说明：这是一条合成记录，编号4；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def route_0004(queue, limit=81759):
+    selected = [x for x in queue if (x + 86301) % 17 < 9]
+    return selected[:limit], sum(selected) % 14072
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0005: region=delta, operation=evict, key=99252, budget=19798, cost=66697.
+说明：这是一条合成记录，编号5；需要检查预算、缓存逐出、状态恢复与请求隔离。
+def evict_0005(queue, limit=19798):
+    selected = [x for x in queue if (x + 99252) % 17 < 9]
+    return selected[:limit], sum(selected) % 66697
+Review the bounds and account for the memory cost of retained entries.
+
+Record 0006: region=alpha, operation=merge, key=77463, budget=59211, cost=767.
+说明：这是一条合成记录，编号6；需要检查预算、缓存逐出、状态恢复与请求隔离
+
+End of excerpt. Write a detailed technical review in English, explaining algorithmic complexity, memory ownership, cancellation, fairness and correctness risks. Include pseudocode and concrete examples. Aim for at least 400 words; do not just list the record identifiers.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

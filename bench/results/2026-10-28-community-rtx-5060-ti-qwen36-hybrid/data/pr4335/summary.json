@@ -1,0 +1,1632 @@
+{
+  "started": "2026-10-28T23:45:35.196815+08:00",
+  "finished": "2026-10-29T00:01:02.155730+08:00",
+  "passed": true,
+  "phase": "complete",
+  "error": null,
+  "main_revision": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+  "candidate_revision": "bdf0bce2e5520680524efd3a5cf79db984c3902c",
+  "implementation_author": "rynwang",
+  "pr": "https://github.com/Niko1221/Strata/pull/4335",
+  "plan_sha256": "550383ca54b45b2895b2415cc27fbaf8aeb7477a1ff86c357d42b0bc5f2fa762",
+  "runner_sha256": "6778dc6c639b7a1982a6f6c1746cd9bc2fe1a406e3ebd5818065440a873f518c",
+  "helper_sha256": {
+    "validate_next.py": "39522daa83ed91caa829b17e8ec64867b44d4f9a9a2a5560c45cbb745f2d1998",
+    "benchmark_fixed_history.py": "af6489035837110a75d6be08a6f205cbbd54afbbd1ff0e2518d1154588125913"
+  },
+  "binaries": {
+    "main": {
+      "sha256": "0b58c16fc2ebe5f3fbac6afd73998b8c7be1131976a3b45439ff67907b1cdc87",
+      "original_exe_unchanged": true
+    },
+    "pr": {
+      "sha256": "79e255b464ed69b178fb054043e84909ab8c7425e89106d8f005e453a28108c0",
+      "original_exe_unchanged": true
+    }
+  },
+  "build_passed": true,
+  "build_commands_exit_codes": [
+    0,
+    0,
+    0
+  ],
+  "model": {
+    "bytes": 22853663008,
+    "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+  },
+  "scope": "Windows/CUDA13.2 sm120, RTX5060Ti16GB/i7-12700/128GB DDR4, context32768/workers7/MTP0/FP32 KV/packed on/fixed residency; no PR4347.",
+  "auto_chunk": 4096,
+  "slots": {
+    "2048": 63,
+    "4096": 50
+  },
+  "fixtures": {
+    "r0-l1024": {
+      "tokens_file_sha256": "bfa443374075bc1abc65aabbfe7596fbe2c817c966372e70cbe749375445bc5e",
+      "forced_file_sha256": "f62d2872abc4ae480a1fb8b438109cb78ffdf1f215f3db7144675cee9f1a9921",
+      "prompt_tokens": 1025,
+      "forced_tokens": [
+        13962,
+        25816,
+        9988,
+        314,
+        72281,
+        18887,
+        67926,
+        321,
+        95464,
+        6765,
+        271,
+        760,
+        3766,
+        26388,
+        45366,
+        47957,
+        264,
+        6297,
+        6044,
+        1785,
+        10042,
+        1172,
+        7077,
+        7786,
+        640,
+        16484,
+        321,
+        3050,
+        75555,
+        9883,
+        13,
+        561,
+        6007,
+        11870,
+        3808,
+        660,
+        7189,
+        27718,
+        29797,
+        7561,
+        1510,
+        327,
+        1701,
+        7561,
+        1510,
+        8695,
+        7561,
+        1510,
+        4958,
+        823,
+        7561,
+        1510,
+        18479,
+        31789,
+        32530,
+        383,
+        264,
+        69892,
+        28701,
+        16456,
+        25,
+        47029,
+        87,
+        478,
+        1328,
+        8,
+        984,
+        220,
+        16,
+        22,
+        361,
+        220,
+        24,
+        27653,
+        1061,
+        2876,
+        47493,
+        12805,
+        4139,
+        314,
+        279,
+        1879,
+        6951,
+        5255,
+        11,
+        24725,
+        264,
+        13398,
+        7731,
+        314,
+        1510,
+        87,
+        27653,
+        20543,
+        369,
+        264
+      ]
+    },
+    "r0-l16384": {
+      "tokens_file_sha256": "647967352269a1aa774ca9fc08be6231b01edfea8550ced632798f9e0fe92c74",
+      "forced_file_sha256": "dd1a15a655bdeabc0f2343fcd01bd51604532da30ddb3e56113cbb78ac320cfb",
+      "prompt_tokens": 16385,
+      "forced_tokens": [
+        13962,
+        25816,
+        9988,
+        314,
+        72281,
+        67926,
+        18887,
+        6765,
+        271,
+        760,
+        3766,
+        26388,
+        45366,
+        47957,
+        264,
+        6297,
+        6044,
+        1785,
+        1332,
+        7289,
+        513,
+        25849,
+        539,
+        264,
+        69892,
+        28701,
+        16456,
+        321,
+        7077,
+        7786,
+        16484,
+        13,
+        561,
+        6007,
+        11767,
+        291,
+        5215,
+        3808,
+        660,
+        7189,
+        318,
+        15,
+        15,
+        15,
+        15,
+        4006,
+        15,
+        16,
+        16,
+        18,
+        8,
+        369,
+        264,
+        13094,
+        8307,
+        314,
+        279,
+        6951,
+        440,
+        264,
+        57844,
+        5792,
+        6381,
+        34765,
+        25,
+        47029,
+        87,
+        478,
+        1328,
+        8,
+        984,
+        220,
+        16,
+        22,
+        361,
+        220,
+        24,
+        27653,
+        1061,
+        2790,
+        17855,
+        4927,
+        14832,
+        8559,
+        11767,
+        291,
+        22373,
+        11,
+        4779,
+        6925,
+        11,
+        321,
+        19214,
+        55404,
+        13,
+        271
+      ]
+    }
+  },
+  "numeric": {
+    "r0-l1024": {
+      "explicit2048": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "explicit4096": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "auto_selected": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "cross_chunk": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 94,
+        "rows": 97,
+        "mean_kl": 0.001295495703567495,
+        "max_kl": 0.014145440437480014,
+        "max_absolute_error": 2.0792994797229767
+      }
+    },
+    "r0-l16384": {
+      "explicit2048": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "explicit4096": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "auto_selected": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "cross_chunk": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 93,
+        "rows": 97,
+        "mean_kl": 0.003946752441681059,
+        "max_kl": 0.2339833541262329,
+        "max_absolute_error": 2.648303747177124
+      }
+    }
+  },
+  "numeric_passed": true,
+  "numeric_runs": [
+    {
+      "label": "r0-l1024-main2048",
+      "source": "main",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": null,
+      "started": "2026-10-28T23:45:43.098609+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:46:09.912064+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l1024-main4096",
+      "source": "main",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": null,
+      "started": "2026-10-28T23:46:09.962046+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:46:33.685479+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l1024-pr2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": null,
+      "started": "2026-10-28T23:46:33.733979+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:46:56.847119+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l1024-pr4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": null,
+      "started": "2026-10-28T23:46:56.897004+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:47:20.382015+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l1024-prauto",
+      "source": "pr",
+      "requested_chunk": 0,
+      "case": "r0-l1024",
+      "pair": null,
+      "started": "2026-10-28T23:47:20.429751+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [
+        "strata-q36: chunk rule: free 11.64 GiB (raw 9.86, with 1.78 packed), main experts 18.29 GiB, chunk 4096"
+      ],
+      "finished": "2026-10-28T23:47:43.900384+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l16384-main2048",
+      "source": "main",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": null,
+      "started": "2026-10-28T23:47:47.194367+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:48:17.468733+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l16384-main4096",
+      "source": "main",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": null,
+      "started": "2026-10-28T23:48:17.515964+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:48:46.562164+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l16384-pr2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": null,
+      "started": "2026-10-28T23:48:46.610421+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:49:16.786484+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l16384-pr4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": null,
+      "started": "2026-10-28T23:49:16.835761+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:49:45.959081+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    },
+    {
+      "label": "r0-l16384-prauto",
+      "source": "pr",
+      "requested_chunk": 0,
+      "case": "r0-l16384",
+      "pair": null,
+      "started": "2026-10-28T23:49:46.009210+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [
+        "strata-q36: chunk rule: free 11.64 GiB (raw 9.86, with 1.78 packed), main experts 18.29 GiB, chunk 4096"
+      ],
+      "finished": "2026-10-28T23:50:15.207912+08:00",
+      "dump_bytes": 96348160,
+      "passed": true
+    }
+  ],
+  "task_passed": true,
+  "tasks": {
+    "2048": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      }
+    ],
+    "4096": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n\"code\": \"NOVA-731\"\n}<|im_end|>",
+        "reused_tokens": 0,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        }
+      }
+    ]
+  },
+  "cases": {
+    "r0-l1024": {
+      "pairs": 5,
+      "metrics": {
+        "prefill_ms": {
+          "c2048": {
+            "median": 809.1,
+            "min": 808.6,
+            "max": 809.4
+          },
+          "c4096": {
+            "median": 808.5,
+            "min": 808.1,
+            "max": 809.0
+          },
+          "paired_2048_over_4096": {
+            "median": 1.0003710575139146,
+            "min": 1.000123609394314,
+            "max": 1.001608711793095
+          },
+          "c4096_faster_pairs": 5
+        },
+        "generation_ms": {
+          "c2048": {
+            "median": 2519.2,
+            "min": 2486.4,
+            "max": 2521.1
+          },
+          "c4096": {
+            "median": 2594.6,
+            "min": 2565.2,
+            "max": 2628.8
+          },
+          "paired_2048_over_4096": {
+            "median": 0.9704750173223495,
+            "min": 0.9564440048691418,
+            "max": 0.974168600154679
+          },
+          "c4096_faster_pairs": 0
+        },
+        "request_ms": {
+          "c2048": {
+            "median": 3327.7999999999997,
+            "min": 3295.8,
+            "max": 3330.5
+          },
+          "c4096": {
+            "median": 3403.1,
+            "min": 3374.2,
+            "max": 3437.8
+          },
+          "paired_2048_over_4096": {
+            "median": 0.9778619454476056,
+            "min": 0.9667229041829076,
+            "max": 0.9803505670938282
+          },
+          "c4096_faster_pairs": 0
+        }
+      }
+    },
+    "r0-l16384": {
+      "pairs": 5,
+      "metrics": {
+        "prefill_ms": {
+          "c2048": {
+            "median": 7165.2,
+            "min": 7157.6,
+            "max": 7169.4
+          },
+          "c4096": {
+            "median": 5502.7,
+            "min": 5487.4,
+            "max": 5509.7
+          },
+          "paired_2048_over_4096": {
+            "median": 1.3028876733240045,
+            "min": 1.3004700800406557,
+            "max": 1.3044975762656268
+          },
+          "c4096_faster_pairs": 5
+        },
+        "generation_ms": {
+          "c2048": {
+            "median": 3319.7,
+            "min": 3273.3,
+            "max": 3343.9
+          },
+          "c4096": {
+            "median": 3393.0,
+            "min": 3357.8,
+            "max": 3425.2
+          },
+          "paired_2048_over_4096": {
+            "median": 0.9791335101679929,
+            "min": 0.9556522246876096,
+            "max": 0.9896708890730437
+          },
+          "c4096_faster_pairs": 0
+        },
+        "request_ms": {
+          "c2048": {
+            "median": 10478.0,
+            "min": 10442.7,
+            "max": 10501.5
+          },
+          "c4096": {
+            "median": 8898.4,
+            "min": 8845.2,
+            "max": 8927.9
+          },
+          "paired_2048_over_4096": {
+            "median": 1.1787624741526566,
+            "min": 1.1696703592110127,
+            "max": 1.1845972957084068
+          },
+          "c4096_faster_pairs": 5
+        }
+      }
+    }
+  },
+  "pairs": [
+    {
+      "case": "r0-l1024",
+      "pair": 0,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 809.1,
+      "c4096_prefill_ms": 809.0,
+      "prefill_ms_2048_over_4096": 1.000123609394314,
+      "c2048_generation_ms": 2514.3,
+      "c4096_generation_ms": 2628.8,
+      "generation_ms_2048_over_4096": 0.9564440048691418,
+      "c2048_request_ms": 3323.4,
+      "c4096_request_ms": 3437.8,
+      "request_ms_2048_over_4096": 0.9667229041829076
+    },
+    {
+      "case": "r0-l1024",
+      "pair": 1,
+      "order": "4096/2048",
+      "c2048_prefill_ms": 809.4,
+      "c4096_prefill_ms": 808.1,
+      "prefill_ms_2048_over_4096": 1.001608711793095,
+      "c2048_generation_ms": 2521.1,
+      "c4096_generation_ms": 2597.8,
+      "generation_ms_2048_over_4096": 0.9704750173223495,
+      "c2048_request_ms": 3330.5,
+      "c4096_request_ms": 3405.9,
+      "request_ms_2048_over_4096": 0.9778619454476056
+    },
+    {
+      "case": "r0-l1024",
+      "pair": 2,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 808.8,
+      "c4096_prefill_ms": 808.5,
+      "prefill_ms_2048_over_4096": 1.0003710575139146,
+      "c2048_generation_ms": 2519.5,
+      "c4096_generation_ms": 2594.6,
+      "generation_ms_2048_over_4096": 0.971055268634857,
+      "c2048_request_ms": 3328.3,
+      "c4096_request_ms": 3403.1,
+      "request_ms_2048_over_4096": 0.9780200405512621
+    },
+    {
+      "case": "r0-l1024",
+      "pair": 3,
+      "order": "4096/2048",
+      "c2048_prefill_ms": 808.6,
+      "c4096_prefill_ms": 808.5,
+      "prefill_ms_2048_over_4096": 1.0001236858379716,
+      "c2048_generation_ms": 2519.2,
+      "c4096_generation_ms": 2586.0,
+      "generation_ms_2048_over_4096": 0.974168600154679,
+      "c2048_request_ms": 3327.7999999999997,
+      "c4096_request_ms": 3394.5,
+      "request_ms_2048_over_4096": 0.9803505670938282
+    },
+    {
+      "case": "r0-l1024",
+      "pair": 4,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 809.4,
+      "c4096_prefill_ms": 809.0,
+      "prefill_ms_2048_over_4096": 1.0004944375772558,
+      "c2048_generation_ms": 2486.4,
+      "c4096_generation_ms": 2565.2,
+      "generation_ms_2048_over_4096": 0.9692811476687978,
+      "c2048_request_ms": 3295.8,
+      "c4096_request_ms": 3374.2,
+      "request_ms_2048_over_4096": 0.9767648627822892
+    },
+    {
+      "case": "r0-l16384",
+      "pair": 0,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 7169.4,
+      "c4096_prefill_ms": 5502.7,
+      "prefill_ms_2048_over_4096": 1.3028876733240045,
+      "c2048_generation_ms": 3273.3,
+      "c4096_generation_ms": 3425.2,
+      "generation_ms_2048_over_4096": 0.9556522246876096,
+      "c2048_request_ms": 10442.7,
+      "c4096_request_ms": 8927.9,
+      "request_ms_2048_over_4096": 1.1696703592110127
+    },
+    {
+      "case": "r0-l16384",
+      "pair": 1,
+      "order": "4096/2048",
+      "c2048_prefill_ms": 7158.3,
+      "c4096_prefill_ms": 5487.4,
+      "prefill_ms_2048_over_4096": 1.3044975762656268,
+      "c2048_generation_ms": 3319.7,
+      "c4096_generation_ms": 3357.8,
+      "generation_ms_2048_over_4096": 0.9886532848889152,
+      "c2048_request_ms": 10478.0,
+      "c4096_request_ms": 8845.2,
+      "request_ms_2048_over_4096": 1.1845972957084068
+    },
+    {
+      "case": "r0-l16384",
+      "pair": 2,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 7157.6,
+      "c4096_prefill_ms": 5489.4,
+      "prefill_ms_2048_over_4096": 1.3038947790286737,
+      "c2048_generation_ms": 3343.9,
+      "c4096_generation_ms": 3378.8,
+      "generation_ms_2048_over_4096": 0.9896708890730437,
+      "c2048_request_ms": 10501.5,
+      "c4096_request_ms": 8868.2,
+      "request_ms_2048_over_4096": 1.1841749171195957
+    },
+    {
+      "case": "r0-l16384",
+      "pair": 3,
+      "order": "4096/2048",
+      "c2048_prefill_ms": 7165.2,
+      "c4096_prefill_ms": 5509.7,
+      "prefill_ms_2048_over_4096": 1.3004700800406557,
+      "c2048_generation_ms": 3293.0,
+      "c4096_generation_ms": 3406.2,
+      "generation_ms_2048_over_4096": 0.9667664846456462,
+      "c2048_request_ms": 10458.2,
+      "c4096_request_ms": 8915.9,
+      "request_ms_2048_over_4096": 1.1729830976121314
+    },
+    {
+      "case": "r0-l16384",
+      "pair": 4,
+      "order": "2048/4096",
+      "c2048_prefill_ms": 7166.9,
+      "c4096_prefill_ms": 5505.4,
+      "prefill_ms_2048_over_4096": 1.301794601663821,
+      "c2048_generation_ms": 3322.2,
+      "c4096_generation_ms": 3393.0,
+      "generation_ms_2048_over_4096": 0.9791335101679929,
+      "c2048_request_ms": 10489.099999999999,
+      "c4096_request_ms": 8898.4,
+      "request_ms_2048_over_4096": 1.1787624741526566
+    }
+  ],
+  "performance_valid": true,
+  "performance_runs": [
+    {
+      "label": "pair-0-r0-l1024-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": 0,
+      "started": "2026-10-28T23:51:33.844636+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:51:56.776072+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 809.1,
+      "generated_argmax": 97,
+      "generation_ms": 2514.3,
+      "decode_steps": 96,
+      "request_ms": 3323.4,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "416d00eb5b1f9c93a4ade801d927d45d1f08de8c3aa5a6fd4a05e881d6447f4e"
+    },
+    {
+      "label": "pair-0-r0-l1024-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": 0,
+      "started": "2026-10-28T23:51:56.824196+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:52:20.121981+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 809.0,
+      "generated_argmax": 97,
+      "generation_ms": 2628.8,
+      "decode_steps": 96,
+      "request_ms": 3437.8,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "39e4051df820c3dfcf0e508ca37805704123e44c122f70c3b0bfd09f25de493a"
+    },
+    {
+      "label": "pair-0-r0-l16384-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": 0,
+      "started": "2026-10-28T23:52:20.171483+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:52:50.038767+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 7169.4,
+      "generated_argmax": 97,
+      "generation_ms": 3273.3,
+      "decode_steps": 96,
+      "request_ms": 10442.7,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "d870360f539fb3513b3d82dd1172ac870f25137d3ef6d0f34d71192c5485b5bf"
+    },
+    {
+      "label": "pair-0-r0-l16384-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": 0,
+      "started": "2026-10-28T23:52:50.092081+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:53:18.918210+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 5502.7,
+      "generated_argmax": 97,
+      "generation_ms": 3425.2,
+      "decode_steps": 96,
+      "request_ms": 8927.9,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "b6dbc5d8883bb9b50feb59ae4e661e37cadf2ca785cc4c688be46341fa3e0b7a"
+    },
+    {
+      "label": "pair-1-r0-l16384-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": 1,
+      "started": "2026-10-28T23:53:18.968580+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:53:47.729999+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 5487.4,
+      "generated_argmax": 97,
+      "generation_ms": 3357.8,
+      "decode_steps": 96,
+      "request_ms": 8845.2,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "b6dbc5d8883bb9b50feb59ae4e661e37cadf2ca785cc4c688be46341fa3e0b7a"
+    },
+    {
+      "label": "pair-1-r0-l16384-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": 1,
+      "started": "2026-10-28T23:53:47.778608+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:54:17.715598+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 7158.3,
+      "generated_argmax": 97,
+      "generation_ms": 3319.7,
+      "decode_steps": 96,
+      "request_ms": 10478.0,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "d870360f539fb3513b3d82dd1172ac870f25137d3ef6d0f34d71192c5485b5bf"
+    },
+    {
+      "label": "pair-1-r0-l1024-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": 1,
+      "started": "2026-10-28T23:54:17.767770+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:54:41.142962+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 808.1,
+      "generated_argmax": 97,
+      "generation_ms": 2597.8,
+      "decode_steps": 96,
+      "request_ms": 3405.9,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "39e4051df820c3dfcf0e508ca37805704123e44c122f70c3b0bfd09f25de493a"
+    },
+    {
+      "label": "pair-1-r0-l1024-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": 1,
+      "started": "2026-10-28T23:54:41.191586+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:55:04.180811+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 809.4,
+      "generated_argmax": 97,
+      "generation_ms": 2521.1,
+      "decode_steps": 96,
+      "request_ms": 3330.5,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "416d00eb5b1f9c93a4ade801d927d45d1f08de8c3aa5a6fd4a05e881d6447f4e"
+    },
+    {
+      "label": "pair-2-r0-l1024-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": 2,
+      "started": "2026-10-28T23:55:04.229345+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:55:27.065120+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 808.8,
+      "generated_argmax": 97,
+      "generation_ms": 2519.5,
+      "decode_steps": 96,
+      "request_ms": 3328.3,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "416d00eb5b1f9c93a4ade801d927d45d1f08de8c3aa5a6fd4a05e881d6447f4e"
+    },
+    {
+      "label": "pair-2-r0-l1024-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": 2,
+      "started": "2026-10-28T23:55:27.113949+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:55:50.661250+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 808.5,
+      "generated_argmax": 97,
+      "generation_ms": 2594.6,
+      "decode_steps": 96,
+      "request_ms": 3403.1,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "39e4051df820c3dfcf0e508ca37805704123e44c122f70c3b0bfd09f25de493a"
+    },
+    {
+      "label": "pair-2-r0-l16384-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": 2,
+      "started": "2026-10-28T23:55:50.711672+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:56:20.824825+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 7157.6,
+      "generated_argmax": 97,
+      "generation_ms": 3343.9,
+      "decode_steps": 96,
+      "request_ms": 10501.5,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "d870360f539fb3513b3d82dd1172ac870f25137d3ef6d0f34d71192c5485b5bf"
+    },
+    {
+      "label": "pair-2-r0-l16384-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": 2,
+      "started": "2026-10-28T23:56:20.874363+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:56:49.713366+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 5489.4,
+      "generated_argmax": 97,
+      "generation_ms": 3378.8,
+      "decode_steps": 96,
+      "request_ms": 8868.2,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "b6dbc5d8883bb9b50feb59ae4e661e37cadf2ca785cc4c688be46341fa3e0b7a"
+    },
+    {
+      "label": "pair-3-r0-l16384-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": 3,
+      "started": "2026-10-28T23:56:49.763273+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:57:18.578324+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 5509.7,
+      "generated_argmax": 97,
+      "generation_ms": 3406.2,
+      "decode_steps": 96,
+      "request_ms": 8915.9,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "b6dbc5d8883bb9b50feb59ae4e661e37cadf2ca785cc4c688be46341fa3e0b7a"
+    },
+    {
+      "label": "pair-3-r0-l16384-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": 3,
+      "started": "2026-10-28T23:57:18.627448+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:57:48.499388+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 7165.2,
+      "generated_argmax": 97,
+      "generation_ms": 3293.0,
+      "decode_steps": 96,
+      "request_ms": 10458.2,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "d870360f539fb3513b3d82dd1172ac870f25137d3ef6d0f34d71192c5485b5bf"
+    },
+    {
+      "label": "pair-3-r0-l1024-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": 3,
+      "started": "2026-10-28T23:57:48.548984+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:58:11.811979+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 808.5,
+      "generated_argmax": 97,
+      "generation_ms": 2586.0,
+      "decode_steps": 96,
+      "request_ms": 3394.5,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "39e4051df820c3dfcf0e508ca37805704123e44c122f70c3b0bfd09f25de493a"
+    },
+    {
+      "label": "pair-3-r0-l1024-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": 3,
+      "started": "2026-10-28T23:58:11.861611+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:58:34.582822+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 808.6,
+      "generated_argmax": 97,
+      "generation_ms": 2519.2,
+      "decode_steps": 96,
+      "request_ms": 3327.7999999999997,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "416d00eb5b1f9c93a4ade801d927d45d1f08de8c3aa5a6fd4a05e881d6447f4e"
+    },
+    {
+      "label": "pair-4-r0-l1024-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l1024",
+      "pair": 4,
+      "started": "2026-10-28T23:58:34.632999+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:58:57.497804+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 809.4,
+      "generated_argmax": 97,
+      "generation_ms": 2486.4,
+      "decode_steps": 96,
+      "request_ms": 3295.8,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "416d00eb5b1f9c93a4ade801d927d45d1f08de8c3aa5a6fd4a05e881d6447f4e"
+    },
+    {
+      "label": "pair-4-r0-l1024-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l1024",
+      "pair": 4,
+      "started": "2026-10-28T23:58:57.547475+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:59:20.839519+08:00",
+      "prompt_tokens": 1025,
+      "prefill_ms": 809.0,
+      "generated_argmax": 97,
+      "generation_ms": 2565.2,
+      "decode_steps": 96,
+      "request_ms": 3374.2,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "39e4051df820c3dfcf0e508ca37805704123e44c122f70c3b0bfd09f25de493a"
+    },
+    {
+      "label": "pair-4-r0-l16384-2048",
+      "source": "pr",
+      "requested_chunk": 2048,
+      "case": "r0-l16384",
+      "pair": 4,
+      "started": "2026-10-28T23:59:20.891021+08:00",
+      "exit_code": 0,
+      "slots": 63,
+      "chunk": 2048,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-28T23:59:50.899967+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 7166.9,
+      "generated_argmax": 97,
+      "generation_ms": 3322.2,
+      "decode_steps": 96,
+      "request_ms": 10489.099999999999,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "d870360f539fb3513b3d82dd1172ac870f25137d3ef6d0f34d71192c5485b5bf"
+    },
+    {
+      "label": "pair-4-r0-l16384-4096",
+      "source": "pr",
+      "requested_chunk": 4096,
+      "case": "r0-l16384",
+      "pair": 4,
+      "started": "2026-10-28T23:59:50.949593+08:00",
+      "exit_code": 0,
+      "slots": 50,
+      "chunk": 4096,
+      "replacement_counts": [
+        0
+      ],
+      "released": false,
+      "rule_lines": [],
+      "finished": "2026-10-29T00:00:19.757504+08:00",
+      "prompt_tokens": 16385,
+      "prefill_ms": 5505.4,
+      "generated_argmax": 97,
+      "generation_ms": 3393.0,
+      "decode_steps": 96,
+      "request_ms": 8898.4,
+      "output_matches_numeric": true,
+      "passed": true,
+      "output_sha256": "b6dbc5d8883bb9b50feb59ae4e661e37cadf2ca785cc4c688be46341fa3e0b7a"
+    }
+  ],
+  "bandwidth_before": {
+    "exit_code": 0,
+    "h2d_GBps": 24.833714
+  },
+  "bandwidth_after": {
+    "exit_code": 0,
+    "h2d_GBps": 24.855839
+  },
+  "bandwidth_relative_drift": 0.0008909259404372705,
+  "download_processes_suspended": 2,
+  "downloads_restored": true,
+  "daily_loaded_after": true,
+  "daily_config_unchanged": true,
+  "restore_errors": [],
+  "limits": [
+    "Same-chunk bitwise equality and 24 small tasks are not broad quality equivalence.",
+    "Fixed residency, synthetic ledger, 96 teacher-forced tokens and 97 argmax evaluations.",
+    "Native timing excludes load/warmup/HTTP; generation includes final ID printing.",
+    "No dynamic cache, concurrent serving, long stability, cross-backend or per-request clock/temperature trace."
+  ]
+}

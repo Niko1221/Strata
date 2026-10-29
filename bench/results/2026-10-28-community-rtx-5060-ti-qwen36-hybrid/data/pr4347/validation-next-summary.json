@@ -1,0 +1,1199 @@
+{
+  "started": "2026-10-28T20:54:25.684561+08:00",
+  "finished": "2026-10-28T21:01:30.845293+08:00",
+  "passed": true,
+  "main": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+  "candidate": "7be0a3a17aeea0a7c0bf7bc63ae56c70e53311d4",
+  "scope": "Windows CUDA sm_120, Qwen3.6 UD-Q4_K_XL, fixed residency, context32768/chunk2048/workers7/MTP0/greedy/FP32 KV",
+  "arms": {
+    "A": "candidate packed on, KEEP_PACKED=1, auto63",
+    "B": "candidate packed on, default drop, auto89",
+    "C": "main packed off, explicit63",
+    "D": "main packed off, explicit89"
+  },
+  "model_sha256_previously_verified": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1",
+  "file_adapter": {
+    "engine_sources_modified": false,
+    "arms": {
+      "main": {
+        "sha256": "0b58c16fc2ebe5f3fbac6afd73998b8c7be1131976a3b45439ff67907b1cdc87",
+        "original_exe_unchanged": true,
+        "libraries_sha256": {
+          "strata_qwen35.lib": "54d250bde7e6c708a69f4c58aa015dc2ec0025700ee845a33fd6de0de27f15e1",
+          "cudart.lib": "6e20d9f817eb834f47fd480083f74fa6df797f56d6d152bcaec0a63b6f5f09eb",
+          "strata_prefill.lib": "24d2b70561d683447023c97d58fc70e4febedb75e407e6bfb33301a2f511d259",
+          "strata_engine.lib": "ff49fe55eac240dadec624a3ce6ed0921ecf1f5ed759163468fddfa8ae10e7c4",
+          "cublas.lib": "e6a7e1cb87932e28bc000c0d364b354759c6c29c92b6db38140cca816f5acbff",
+          "cublasLt.lib": "67ab42c7a533ddb1e24fef4d246a8fe8776e5fe5fd02b9d25ca2d56f9a6d8e82",
+          "strata_mmq.lib": "13b1c993938b21aaaa8d1d3a4dccd2e7fb651205d904589907567fd8d7dd2676",
+          "strata_mmq_w4a4.lib": "6d114ff794e0128aae8450e424bd0ab84daafdc555d51ccb71e4eba36cf71074",
+          "cuda.lib": "d4f8664329712709e2ec1ac1d0b08cb7cfe7db04686e8702e1b29e71a58b2891",
+          "strata_kernels.lib": "babdf2c9c01364faac65626f80b54e636973f316b94f701da472d406bdd8b05e",
+          "strata_core.lib": "601789fae974272e9f9dd34cb5a15465db29aeeac6afecd22987ba784101366f",
+          "strata_kernels_cpu.lib": "d2facb34dfa7338c333564fe550779807daf160d46d94996190bbef76d652a2d",
+          "ggml-cpu.lib": "7688ad295540c3116690d9933e8e86fbeec78fdf7be16708d5891ad028201d9c",
+          "ggml-base.lib": "15ed672c894c179e3339815f2eeec0cb008dda955defa4d5e2c3b92750c72038"
+        }
+      },
+      "pr4347": {
+        "sha256": "d3b359fb21fa2b5a30fe442478ec8beddb3a32bdc27a7388ad5de7d5388433f1",
+        "original_exe_unchanged": true,
+        "libraries_sha256": {
+          "strata_qwen35.lib": "378b251240449c71486774e912c06cbb3ca2226f265bc6f9f9e34b8c38a95fd7",
+          "cudart.lib": "6e20d9f817eb834f47fd480083f74fa6df797f56d6d152bcaec0a63b6f5f09eb",
+          "strata_prefill.lib": "b48aefaf1819ae2170226208108d83311c04967d44e47b7813d322b1e09ae981",
+          "strata_engine.lib": "c920e13204d0670939873d0cc9685b04eaffb6da8d4cfcd34c31e9abcc84380c",
+          "cublas.lib": "e6a7e1cb87932e28bc000c0d364b354759c6c29c92b6db38140cca816f5acbff",
+          "cublasLt.lib": "67ab42c7a533ddb1e24fef4d246a8fe8776e5fe5fd02b9d25ca2d56f9a6d8e82",
+          "strata_mmq.lib": "16c66beb160f09976924a52f89c3b6a7bff7477ac8738ab3f43a2c9fa483e1c2",
+          "strata_mmq_w4a4.lib": "cd7bd4db59dd33f2a962445c9dc61d6c0f244e5a97f727a1aa66f380b17c0e88",
+          "cuda.lib": "d4f8664329712709e2ec1ac1d0b08cb7cfe7db04686e8702e1b29e71a58b2891",
+          "strata_kernels.lib": "716152779c174dd8a2c93f3dfe92a8384c634698be886c28fd6c8c1a9efd0ee7",
+          "strata_core.lib": "65fe4ac00f5137a1b1420972c9d2634818a4483a29745fbdb155f60c1642b2e3",
+          "strata_kernels_cpu.lib": "6d2e7a96d86981ff838c5680c12b8460d7826b6884b5db7ba6e87429dd4f078f",
+          "ggml-cpu.lib": "90bda26139add7203ac5e181a60cd34298460dd737b5f5b08d31ed6510ca6f5c",
+          "ggml-base.lib": "9cfb99d51531bff81c97ea64bece818a6d2553e528db5c2cf3967e28a1180eb5"
+        }
+      }
+    },
+    "archived_original_logit_check": {
+      "bitwise_identical": true,
+      "finite": true,
+      "top1_equal": 97,
+      "rows": 97,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "max_absolute_error": 0.0
+    }
+  },
+  "controls": {
+    "r0-l1024": {
+      "keep_slots": 63,
+      "drop_slots": 89
+    },
+    "r0-l16384": {
+      "keep_slots": 63,
+      "drop_slots": 89
+    }
+  },
+  "numeric": {
+    "r0-l1024": {
+      "A_C": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "B_D": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "A_B": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 96,
+        "rows": 97,
+        "mean_kl": 0.0011710852225722056,
+        "max_kl": 0.018399188532541536,
+        "max_absolute_error": 1.8908615112304688
+      },
+      "C_D": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 96,
+        "rows": 97,
+        "mean_kl": 0.0011710852225722056,
+        "max_kl": 0.018399188532541536,
+        "max_absolute_error": 1.8908615112304688
+      }
+    },
+    "r0-l16384": {
+      "A_C": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "B_D": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "A_B": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 95,
+        "rows": 97,
+        "mean_kl": 0.004449671135843752,
+        "max_kl": 0.22948456576112705,
+        "max_absolute_error": 2.4362308979034424
+      },
+      "C_D": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 95,
+        "rows": 97,
+        "mean_kl": 0.004449671135843752,
+        "max_kl": 0.22948456576112705,
+        "max_absolute_error": 2.4362308979034424
+      }
+    }
+  },
+  "numeric_runs": [
+    {
+      "label": "adapter-smoke",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-A",
+      "source": "pr4347",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": true,
+      "explicit_slots": null,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-B",
+      "source": "pr4347",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": null,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-C",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-D",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 89,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-A",
+      "source": "pr4347",
+      "case": "r0-l16384",
+      "packed": "1",
+      "keep": true,
+      "explicit_slots": null,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-B",
+      "source": "pr4347",
+      "case": "r0-l16384",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": null,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-C",
+      "source": "main",
+      "case": "r0-l16384",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-D",
+      "source": "main",
+      "case": "r0-l16384",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 89,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    }
+  ],
+  "numeric_passed": true,
+  "task_passed": true,
+  "task_manifest": [
+    {
+      "name": "arithmetic-0",
+      "text": "Calculate 8+13. Return only JSON with one key \"value\" containing the integer result.",
+      "kind": "json",
+      "expected": {
+        "value": 21
+      },
+      "cap": 64,
+      "prompt_tokens": 39,
+      "input_sha256": "39f6863e31eb81fe9f2d9ef509e1d7a73c9bd2e7f879f8d9d14f0092ce700ebf"
+    },
+    {
+      "name": "arithmetic-1",
+      "text": "Calculate 47-19. Return only JSON with one key \"value\" containing the integer result.",
+      "kind": "json",
+      "expected": {
+        "value": 28
+      },
+      "cap": 64,
+      "prompt_tokens": 40,
+      "input_sha256": "f7b69852d593337e4e86cdc7de22a1c917562fbb6f51661edd2bba487428e435"
+    },
+    {
+      "name": "arithmetic-2",
+      "text": "Calculate 3+5+8. Return only JSON with one key \"value\" containing the integer result.",
+      "kind": "json",
+      "expected": {
+        "value": 16
+      },
+      "cap": 64,
+      "prompt_tokens": 40,
+      "input_sha256": "45197c014aa719871f8ab02a162f01eb1d755d3528e6373442ca489a5ac2464b"
+    },
+    {
+      "name": "arithmetic-3",
+      "text": "Calculate 7*9. Return only JSON with one key \"value\" containing the integer result.",
+      "kind": "json",
+      "expected": {
+        "value": 63
+      },
+      "cap": 64,
+      "prompt_tokens": 38,
+      "input_sha256": "e173fafdf3b1fc0fb85ce3a2cb8e9fcce90c314a9230c92fea92f7802b1c0141"
+    },
+    {
+      "name": "chinese-literal",
+      "text": "请只输出四个汉字：缓存命中。不要标点，不要解释。",
+      "kind": "literal",
+      "expected": "缓存命中",
+      "cap": 32,
+      "prompt_tokens": 33,
+      "input_sha256": "b047d8633bc1774b6dd11ae52ac80dc41839c91c15f95fbaf29e8f31c75f16ba"
+    },
+    {
+      "name": "chinese-json",
+      "text": "只返回一个JSON对象，字段“原因”的值必须是“容量不足”，不要添加其他字段或说明。",
+      "kind": "json",
+      "expected": {
+        "原因": "容量不足"
+      },
+      "cap": 64,
+      "prompt_tokens": 40,
+      "input_sha256": "d5ce9ef5f36687557ce16e5ea1e8898716fdc765305b303da466130e533f5d0d"
+    },
+    {
+      "name": "clamp",
+      "text": "Write only one pure Python function, no imports and no explanation. solve(x, lo, hi) returns x clamped to inclusive bounds lo and hi.",
+      "kind": "code",
+      "inputs": [
+        [
+          -2,
+          0,
+          5
+        ],
+        [
+          3,
+          0,
+          5
+        ],
+        [
+          9,
+          0,
+          5
+        ]
+      ],
+      "expected": [
+        0,
+        3,
+        5
+      ],
+      "cap": 192,
+      "prompt_tokens": 47,
+      "input_sha256": "cf41195ef7f147fdf034abc726c93720b45ccb9755e9d7e21fd55275a2996511"
+    },
+    {
+      "name": "absdiff",
+      "text": "Write only one pure Python function, no imports and no explanation. solve(a, b) returns the absolute difference of a and b.",
+      "kind": "code",
+      "inputs": [
+        [
+          3,
+          8
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          -4,
+          -4
+        ]
+      ],
+      "expected": [
+        5,
+        5,
+        0
+      ],
+      "cap": 192,
+      "prompt_tokens": 43,
+      "input_sha256": "b79214e8a26231f77bcf19eda850579eb42d8c218f1ec260ff3efd9c150357b8"
+    },
+    {
+      "name": "squares",
+      "text": "Write only one pure Python function, no imports and no explanation. solve(xs) returns the sum of squares of the numbers in xs.",
+      "kind": "code",
+      "inputs": [
+        [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        [
+          []
+        ],
+        [
+          [
+            -2,
+            3
+          ]
+        ]
+      ],
+      "expected": [
+        14,
+        0,
+        13
+      ],
+      "cap": 192,
+      "prompt_tokens": 43,
+      "input_sha256": "781e283ff448d36e76a8a08e9c8daa9c3c0ea1627a530afa8382dc21c7d7061e"
+    },
+    {
+      "name": "reverse",
+      "text": "Write only one pure Python function, no imports and no explanation. solve(xs) returns a new list with the elements of xs reversed.",
+      "kind": "code",
+      "inputs": [
+        [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        [
+          []
+        ],
+        [
+          [
+            "a",
+            "b"
+          ]
+        ]
+      ],
+      "expected": [
+        [
+          3,
+          2,
+          1
+        ],
+        [],
+        [
+          "b",
+          "a"
+        ]
+      ],
+      "cap": 192,
+      "prompt_tokens": 42,
+      "input_sha256": "8cda9edb2ffbf93afd7867b116d05e6234157089ef8109369cda41e2d0efc8fe"
+    },
+    {
+      "name": "retrieval-1024",
+      "kind": "json",
+      "expected": {
+        "code": "NOVA-731"
+      },
+      "cap": 64,
+      "prompt_tokens": 1025,
+      "input_sha256": "76cb461af45493ac0d346be367a5f047b511b30375ea70b84b31cf5a0d7eb584"
+    },
+    {
+      "name": "retrieval-16384",
+      "kind": "json",
+      "expected": {
+        "code": "NOVA-731"
+      },
+      "cap": 64,
+      "prompt_tokens": 16385,
+      "input_sha256": "db9350cf7fe07953f4554a663fd8b3c49eb84debbb843e49475bb5c64cbf4eef"
+    }
+  ],
+  "tasks": {
+    "A": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "generated_tokens": 3,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "generated_tokens": 7,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "generated_tokens": 39,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "generated_tokens": 15,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "generated_tokens": 12,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      }
+    ],
+    "B": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "generated_tokens": 3,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "generated_tokens": 7,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "generated_tokens": 39,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "generated_tokens": 15,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "generated_tokens": 12,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n\"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 16,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      }
+    ],
+    "C": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "generated_tokens": 3,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "generated_tokens": 7,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "generated_tokens": 39,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "generated_tokens": 15,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "generated_tokens": 12,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      }
+    ],
+    "D": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "generated_tokens": 8,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "generated_tokens": 3,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "generated_tokens": 7,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "generated_tokens": 39,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "generated_tokens": 15,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "generated_tokens": 12,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 17,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n\"code\": \"NOVA-731\"\n}<|im_end|>",
+        "generated_tokens": 16,
+        "finish": "stop",
+        "reused_tokens": 0,
+        "judgment": {
+          "passed": true
+        }
+      }
+    ]
+  },
+  "scoring_correction": {
+    "reason": "GEN emits EOS token 248046 before reporting stop; tokenizer renders it as <|im_end|>.",
+    "method": "Remove exactly this terminal protocol marker before judging; retain all raw answers and original judgments.",
+    "answers_normalized": 48,
+    "original": "results.json"
+  },
+  "downloads_paused": false,
+  "daily_service_restored_loaded": true,
+  "performance_claim": null,
+  "limits": [
+    "12 tasks per arm is a small regression suite, not broad quality equivalence.",
+    "Fixed residency does not validate dynamic cache histories.",
+    "No new performance pairing, profiling, concurrency or other backends."
+  ],
+  "scripts_sha256": {
+    "analyze.py": "c64b9500d8069e06a051cd5eadf036ec4b29599ceafbd103e271d87b06a4f369",
+    "build_file_entry.py": "170fe01b04725d30d8633a8db53cf7cb41022ad6b3994fdffc7c04add8b8337b",
+    "build_pair.py": "71078131030a69a0812867812a1f6fb94e2c0ad34cf5b977b47801c3c5f2af99",
+    "diagnose.py": "fffff85110594d2ef0dca31fabce828b6e011ddecea7bd1cdf37506bb2b1253b",
+    "file_entry.cpp": "af32ecc53eb82c3ee93babe7d695a2540e751108a3e1012201d5d23b9d3294b9",
+    "judge_code.py": "ab5f2d3e9d8f20ec1970d2243de9ec12a626e17eac8cdd0bfeacdaad99b2d998",
+    "packed_logit_check.py": "cc9afe55c2d63616f38c7f5941d2cbc032dfd0b5ef9a4d545e239efe812a602c",
+    "rescore_tasks.py": "38e0910f7930fc297d97021e023f9ddd6489195ec1dab1fb6c9f712541e9de9a",
+    "run_experiment.py": "e3c49ba2a28ed1647d9e39382f3b5606f05d909c014725714162701c74802e82",
+    "summarize_validation.py": "f2ed1aafdb9171cf897096934d962a08f54883426f01d4f5bf5400148491c60d",
+    "validate_next.py": "39522daa83ed91caa829b17e8ec64867b44d4f9a9a2a5560c45cbb745f2d1998"
+  }
+}

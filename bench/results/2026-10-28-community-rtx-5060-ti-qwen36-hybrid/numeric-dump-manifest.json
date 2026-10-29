@@ -1,0 +1,177 @@
+{
+  "pr4335": {
+    "r0-l1024-main2048": {
+      "sha256": "f3f228ea5eebff437885f4d219d71549b781ef94989f0d201a0824a15e4d38b8",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-main4096": {
+      "sha256": "3979c5d37c9635c50d077fd5543f9f5c9b06f7233aa6c13856b2053baf689c62",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-pr2048": {
+      "sha256": "f3f228ea5eebff437885f4d219d71549b781ef94989f0d201a0824a15e4d38b8",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-pr4096": {
+      "sha256": "3979c5d37c9635c50d077fd5543f9f5c9b06f7233aa6c13856b2053baf689c62",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-prauto": {
+      "sha256": "3979c5d37c9635c50d077fd5543f9f5c9b06f7233aa6c13856b2053baf689c62",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-main2048": {
+      "sha256": "2fd2d4ee62c30bfa33c820f2bd6181ced982303a10dfc333bbc4cc6e6335fd3c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-main4096": {
+      "sha256": "03cb8fe6f381fe685b5e49757c42fc21a235dbd9a81da3ab0140972e60c36f4c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-pr2048": {
+      "sha256": "2fd2d4ee62c30bfa33c820f2bd6181ced982303a10dfc333bbc4cc6e6335fd3c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-pr4096": {
+      "sha256": "03cb8fe6f381fe685b5e49757c42fc21a235dbd9a81da3ab0140972e60c36f4c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-prauto": {
+      "sha256": "03cb8fe6f381fe685b5e49757c42fc21a235dbd9a81da3ab0140972e60c36f4c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    }
+  },
+  "pr4347": {
+    "adapter-smoke": {
+      "sha256": "f3f228ea5eebff437885f4d219d71549b781ef94989f0d201a0824a15e4d38b8",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-A": {
+      "sha256": "f3f228ea5eebff437885f4d219d71549b781ef94989f0d201a0824a15e4d38b8",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-B": {
+      "sha256": "2dcc258b0585b3fd551c0e52103ec2ba11471d988a6d872f25493d384b71fd4e",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-C": {
+      "sha256": "f3f228ea5eebff437885f4d219d71549b781ef94989f0d201a0824a15e4d38b8",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l1024-D": {
+      "sha256": "2dcc258b0585b3fd551c0e52103ec2ba11471d988a6d872f25493d384b71fd4e",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-A": {
+      "sha256": "2fd2d4ee62c30bfa33c820f2bd6181ced982303a10dfc333bbc4cc6e6335fd3c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-B": {
+      "sha256": "88285e0a0dac16c675233116eb405f63a393e8a055a9d8e281b57acbb4a14b59",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-C": {
+      "sha256": "2fd2d4ee62c30bfa33c820f2bd6181ced982303a10dfc333bbc4cc6e6335fd3c",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    },
+    "r0-l16384-D": {
+      "sha256": "88285e0a0dac16c675233116eb405f63a393e8a055a9d8e281b57acbb4a14b59",
+      "bytes": 96348160,
+      "shape": [
+        97,
+        248320
+      ],
+      "dtype": "little-endian float32"
+    }
+  }
+}

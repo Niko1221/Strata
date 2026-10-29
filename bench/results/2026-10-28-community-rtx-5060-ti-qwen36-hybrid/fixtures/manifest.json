@@ -1,0 +1,14 @@
+{
+  "r0-l1024": {
+    "tokens_file_sha256": "bfa443374075bc1abc65aabbfe7596fbe2c817c966372e70cbe749375445bc5e",
+    "forced_file_sha256": "f62d2872abc4ae480a1fb8b438109cb78ffdf1f215f3db7144675cee9f1a9921",
+    "prompt_tokens": 1025,
+    "prompt_text_sha256": "083d73edeb08908147534ad123827940f89f8a6a5bd501d8e79b94299aae19f6"
+  },
+  "r0-l16384": {
+    "tokens_file_sha256": "647967352269a1aa774ca9fc08be6231b01edfea8550ced632798f9e0fe92c74",
+    "forced_file_sha256": "dd1a15a655bdeabc0f2343fcd01bd51604532da30ddb3e56113cbb78ac320cfb",
+    "prompt_tokens": 16385,
+    "prompt_text_sha256": "1193daf6b04f4da91f64b21f831f2a31bd234d93189555eec8529e874d2b0e0f"
+  }
+}

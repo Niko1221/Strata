@@ -1,0 +1,427 @@
+{
+  "started": "2026-10-28T17:13:04.509858+08:00",
+  "finished": "2026-10-28T17:21:56.929308+08:00",
+  "phase": "failed",
+  "passed": false,
+  "error": "RuntimeError('Paired output differs; stop and diagnose')",
+  "main_revision": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+  "candidate_revision": "7be0a3a17aeea0a7c0bf7bc63ae56c70e53311d4",
+  "candidate_author": "rynwang",
+  "model": {
+    "bytes": 22853663008,
+    "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+  },
+  "binaries": {
+    "main": {
+      "strata-q36.exe": "6de0edd85797411548aa2ed405297d17c1d38dbc45ec0136a984d3a56eb48a07",
+      "strata_kq.dll": "980565e59826c409ebbcc72215c1706d9af905674acd6d7a274190f02097938e"
+    },
+    "pr4347": {
+      "strata-q36.exe": "6126354a860078bf90d98b2285cf100f225798a74c990d2b2474ea92bf427286",
+      "strata_kq.dll": "6c448f0db31c023c781235a49aac68609196b37901026dbe05a7f8110440c99d"
+    }
+  },
+  "build_passed": true,
+  "configuration": {
+    "context": 32768,
+    "prefill": 2048,
+    "workers": 7,
+    "mtp": 0,
+    "expert_budget": "automatic",
+    "sampling": "temperature=0 top_p=1 top_k=20 min_p=0 penalty_present=0 penalty_freq=0 penalty_repeat=1 penalty_last_n=0 seed=0"
+  },
+  "gate_passed": true,
+  "fixed_main_passed": true,
+  "pair_output_checks": [
+    {
+      "pair": 0,
+      "case": "r0-l1024",
+      "identical": false
+    },
+    {
+      "pair": 0,
+      "case": "r0-l16384",
+      "identical": false
+    }
+  ],
+  "cases": {
+    "r0-l1024": {
+      "complete_pairs": 1,
+      "pairs": [
+        {
+          "pair": 0,
+          "keep_tok_s": 41.86632214172404,
+          "drop_tok_s": 46.231918082820144,
+          "identical": false
+        }
+      ],
+      "keep_tok_s": {
+        "median": 41.86632214172404,
+        "min": 41.86632214172404,
+        "max": 41.86632214172404
+      },
+      "drop_tok_s": {
+        "median": 46.231918082820144,
+        "min": 46.231918082820144,
+        "max": 46.231918082820144
+      },
+      "paired_speed_ratio": null,
+      "positive_pairs": null
+    },
+    "r0-l16384": {
+      "complete_pairs": 1,
+      "pairs": [
+        {
+          "pair": 0,
+          "keep_tok_s": 29.836134355842518,
+          "drop_tok_s": 30.347574564939066,
+          "identical": false
+        }
+      ],
+      "keep_tok_s": {
+        "median": 29.836134355842518,
+        "min": 29.836134355842518,
+        "max": 29.836134355842518
+      },
+      "drop_tok_s": {
+        "median": 30.347574564939066,
+        "min": 30.347574564939066,
+        "max": 30.347574564939066
+      },
+      "paired_speed_ratio": null,
+      "positive_pairs": null
+    }
+  },
+  "bandwidth_before": {
+    "exit_code": 0,
+    "h2d_GBps": 24.847244
+  },
+  "bandwidth_after": null,
+  "service_restored": true,
+  "download_resumption": [
+    {
+      "pid": 7728,
+      "resumed": true
+    },
+    {
+      "pid": 29872,
+      "resumed": true
+    }
+  ],
+  "limits": [
+    "one synthetic ledger workload",
+    "MTP0 performance only",
+    "no profiler or kernel timing",
+    "no long soak, concurrent serving, HIP/SYCL build or hardware test"
+  ],
+  "performance_claim_allowed": false,
+  "placements": [
+    {
+      "tag": "gate-main",
+      "given_back": false,
+      "slots_per_layer": [
+        63
+      ],
+      "placement_lines": [
+        "strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free",
+        "strata-q36: hybrid experts: 63 of 256 per layer in VRAM (4.61 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 16.8 s",
+        "strata-q36: hybrid experts: 28533 of 60800 batch entries on the GPU (46.9%), 32267 on the CPU pool in 1507 ms, 2992 slot replacements"
+      ]
+    },
+    {
+      "tag": "gate-keep",
+      "given_back": false,
+      "slots_per_layer": [
+        63
+      ],
+      "placement_lines": [
+        "strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free",
+        "strata-q36: hybrid experts: 63 of 256 per layer in VRAM (4.61 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 16.5 s",
+        "strata-q36: hybrid experts: 28533 of 60800 batch entries on the GPU (46.9%), 32267 on the CPU pool in 1484 ms, 2992 slot replacements"
+      ]
+    },
+    {
+      "tag": "gate-drop",
+      "given_back": true,
+      "slots_per_layer": [
+        89
+      ],
+      "placement_lines": [
+        "strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free",
+        "strata-q36: the packed Q8_0 decode copies (1.78 GiB) given back to the expert slots: the hybrid mode's decode waits on the CPU pool (STRATA_Q36_KEEP_PACKED=1 keeps them)",
+        "strata-q36: hybrid experts: 89 of 256 per layer in VRAM (6.52 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 17.2 s",
+        "strata-q36: hybrid experts: 34539 of 60800 batch entries on the GPU (56.8%), 26261 on the CPU pool in 1231 ms, 3565 slot replacements"
+      ]
+    },
+    {
+      "tag": "pair-0-keep",
+      "given_back": false,
+      "slots_per_layer": [
+        63
+      ],
+      "placement_lines": [
+        "strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free",
+        "strata-q36: hybrid experts: 63 of 256 per layer in VRAM (4.61 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 16.6 s",
+        "strata-q36: hybrid experts: 83267 of 183680 batch entries on the GPU (45.3%), 100413 on the CPU pool in 4702 ms, 3101 slot replacements"
+      ]
+    },
+    {
+      "tag": "pair-0-drop",
+      "given_back": true,
+      "slots_per_layer": [
+        89
+      ],
+      "placement_lines": [
+        "strata-q36: context 32768 cells, prompt chunk 2048, MTP block loaded, 6.48 GiB of VRAM free",
+        "strata-q36: the packed Q8_0 decode copies (1.78 GiB) given back to the expert slots: the hybrid mode's decode waits on the CPU pool (STRATA_Q36_KEEP_PACKED=1 keeps them)",
+        "strata-q36: hybrid experts: 89 of 256 per layer in VRAM (6.52 GiB), all 18.75 GiB in pinned host memory, the rest of a batch of <= 128 rows on 8 CPU threads, bigger prompt chunks streamed (1.10 GiB staging); 16.8 s",
+        "strata-q36: hybrid experts: 100873 of 183680 batch entries on the GPU (54.9%), 82807 on the CPU pool in 3935 ms, 3677 slot replacements"
+      ]
+    }
+  ],
+  "diagnosis": {
+    "started": "2026-10-28T17:25:55.899183+08:00",
+    "finished": "2026-10-28T17:29:23.411081+08:00",
+    "passed": true,
+    "error": null,
+    "history_divergence": [
+      {
+        "case": "r0-l1024",
+        "first_different_index": 75
+      },
+      {
+        "case": "r0-l16384",
+        "first_different_index": 18
+      }
+    ],
+    "fixed_packed_identity": {
+      "r0-l1024": true,
+      "r0-l16384": true
+    },
+    "teacher_forced_metrics": {
+      "rows": 97,
+      "finite": true,
+      "top1_equal": 96,
+      "mean_kl_keep_to_drop": 0.0011710852225722056,
+      "max_kl_keep_to_drop": 0.018399188532541536,
+      "max_absolute_logit_error": 1.8908615112304688,
+      "rms_logit_error": 0.09693432606781963,
+      "top1_differing_rows": [
+        75
+      ],
+      "kl_by_row": [
+        0.0,
+        4.604700307504768e-06,
+        9.449636949639467e-05,
+        7.525442756872279e-05,
+        0.0005567672288397531,
+        4.926586723727111e-05,
+        0.0015824364308983862,
+        0.003767171833469327,
+        0.0010729942849612545,
+        0.003023492484086455,
+        2.8248638302540236e-06,
+        3.96395993401074e-05,
+        0.0003176477691566386,
+        6.920723240058838e-06,
+        2.5726832931211078e-05,
+        0.00107017206025908,
+        0.00011275614388108614,
+        0.0018076219691001536,
+        0.00012046595362378228,
+        0.00014449862604945846,
+        0.007266673454398813,
+        0.003033773745096229,
+        0.0014085176448499295,
+        0.005370937477716084,
+        0.001253333080128147,
+        0.00035866773421837275,
+        0.0012732286317891604,
+        0.0012212502429027933,
+        0.0008655268173874778,
+        0.002313462117953369,
+        2.6208441412686985e-05,
+        0.003255382995179146,
+        0.0005255432302885366,
+        0.0005263753955866968,
+        0.004376392899684217,
+        0.0013487844885224406,
+        0.0004036802778480967,
+        0.0010904207753113832,
+        3.890710182374451e-05,
+        4.6854136566513566e-05,
+        3.072398684832961e-07,
+        1.2985388753492946e-06,
+        1.3041789843926647e-06,
+        2.056027747922824e-06,
+        7.512630797956173e-07,
+        5.33617212720195e-05,
+        9.615908606083981e-05,
+        3.4205167722569034e-06,
+        1.9346242347488395e-05,
+        6.0237602608057034e-05,
+        0.00024934555131634267,
+        4.345538170063937e-05,
+        4.6145970550636474e-05,
+        1.4340435513757685e-05,
+        8.131464255032102e-05,
+        9.389107671284165e-06,
+        3.3097571880164126e-05,
+        0.0008757489137802094,
+        0.001517163528444593,
+        0.003315080585990805,
+        0.0003599003593975958,
+        0.0017340987337801,
+        0.0005472049515478087,
+        4.36570090568268e-07,
+        0.0006223834847615278,
+        1.0769988450905003e-05,
+        1.5061954168364708e-05,
+        7.444465787052401e-06,
+        6.912858988013833e-07,
+        1.2894610374543473e-06,
+        3.3241989045242695e-06,
+        3.418929208712039e-05,
+        4.31384165289423e-06,
+        0.00032140301788646135,
+        0.0006116021161334689,
+        0.018399188532541536,
+        0.00038481105258857416,
+        0.00019082969653336974,
+        0.0038500321584732725,
+        2.3289064865675165e-05,
+        1.6067608805534242e-05,
+        0.0015857699658957394,
+        0.002213039301264808,
+        0.003259512084696196,
+        0.004082916599208885,
+        0.007461062338406816,
+        0.0018978169119852784,
+        3.7796223807990195e-05,
+        7.137775744950746e-05,
+        0.00018375576384587047,
+        0.001268113531721184,
+        0.001260720610812236,
+        0.003774636980147787,
+        0.0030300652904404965,
+        2.8638158133638753e-06,
+        3.503788450624952e-07,
+        2.513423581399453e-05
+      ]
+    },
+    "forced_ids": [
+      13962,
+      25816,
+      9988,
+      314,
+      72281,
+      18887,
+      67926,
+      321,
+      95464,
+      6765,
+      271,
+      760,
+      3766,
+      26388,
+      45366,
+      47957,
+      264,
+      6297,
+      6044,
+      1785,
+      10042,
+      1172,
+      7077,
+      7786,
+      640,
+      16484,
+      321,
+      3050,
+      75555,
+      9883,
+      13,
+      561,
+      6007,
+      11870,
+      3808,
+      660,
+      7189,
+      27718,
+      29797,
+      7561,
+      1510,
+      327,
+      1701,
+      7561,
+      1510,
+      8695,
+      7561,
+      1510,
+      4958,
+      823,
+      7561,
+      1510,
+      18479,
+      31789,
+      32530,
+      383,
+      264,
+      69892,
+      28701,
+      16456,
+      25,
+      47029,
+      87,
+      478,
+      1328,
+      8,
+      984,
+      220,
+      16,
+      22,
+      361,
+      220,
+      24,
+      27653,
+      1061,
+      2876,
+      47493,
+      12805,
+      4139,
+      314,
+      279,
+      1879,
+      6951,
+      5255,
+      11,
+      24725,
+      264,
+      13398,
+      7731,
+      314,
+      1510,
+      87,
+      27653,
+      20543,
+      369,
+      264
+    ],
+    "service_restored": true
+  },
+  "packed_logits": {
+    "started": "2026-10-28T17:31:15.306107+08:00",
+    "finished": "2026-10-28T17:32:57.655720+08:00",
+    "passed": true,
+    "error": null,
+    "rows": 97,
+    "vocab": 248320,
+    "fixed_slots": 63,
+    "source": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+    "bitwise_identical": true,
+    "finite": true,
+    "max_absolute_error": 0.0,
+    "top1_equal": 97,
+    "service_restored": true
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "historical_drivers": [
+    {
+      "source": "reports/tobeo-20261028/qwen36-pr4335/run_validation.py",
+      "original_sha256": "6778dc6c639b7a1982a6f6c1746cd9bc2fe1a406e3ebd5818065440a873f518c",
+      "export": "historical-drivers/qwen36-pr4335/run_validation.py",
+      "export_sha256": "e2d3c48e0c2fafac839607cb59016cf224b91bfd3c124e02a5e378d95fc2a3d7",
+      "change": "Model path parameterized if present; archival drivers retain historical lab dependencies."
+    },
+    {
+      "source": "reports/tobeo-20261028/qwen36-pr4347/benchmark_fixed_history.py",
+      "original_sha256": "af6489035837110a75d6be08a6f205cbbd54afbbd1ff0e2518d1154588125913",
+      "export": "historical-drivers/qwen36-pr4347/benchmark_fixed_history.py",
+      "export_sha256": "62bec6f2215f9c39009c9cefdc7f495bafd609825110bca82100819df9b913bb",
+      "change": "Model path parameterized if present; archival drivers retain historical lab dependencies."
+    },
+    {
+      "source": "reports/tobeo-20261028/qwen36-pr4347/validate_next.py",
+      "original_sha256": "39522daa83ed91caa829b17e8ec64867b44d4f9a9a2a5560c45cbb745f2d1998",
+      "export": "historical-drivers/qwen36-pr4347/validate_next.py",
+      "export_sha256": "b577eceb57b411948a80822d9a9ba4a5515ab330f642d744b6d9bd27976a14f7",
+      "change": "Model path parameterized if present; archival drivers retain historical lab dependencies."
+    },
+    {
+      "source": "reports/tobeo-20261028/qwen36-pr4347/build_pair.py",
+      "original_sha256": "71078131030a69a0812867812a1f6fb94e2c0ad34cf5b977b47801c3c5f2af99",
+      "export": "historical-drivers/qwen36-pr4347/build_pair.py",
+      "export_sha256": "2648e49e053bf2d878d22ecdbee803dca561a70aae0d864e6e3db8bd0f639f53",
+      "change": "Model path parameterized if present; archival drivers retain historical lab dependencies."
+    },
+    {
+      "source": "reports/tobeo-20261022/qwen36-context-curve/run_curve.py",
+      "original_sha256": "3a41c73967b8cb21984b6863686063508e8c7168e7728a9162d0d96e7dd71cf4",
+      "export": "historical-drivers/qwen36-context-curve/run_curve.py",
+      "export_sha256": "4820972b9856058f6b32d3dc342c50417bf12d9bcea6cb60296c5747e9e2e265",
+      "change": "Model path parameterized if present; archival drivers retain historical lab dependencies."
+    }
+  ],
+  "measurement_dates": [
+    "2026-10-28",
+    "2026-10-29"
+  ],
+  "model_revision": "not recorded; exact GGUF size and SHA-256 recorded",
+  "replay_scripts": "Added after measurement; not claimed as the original executed driver."
+}

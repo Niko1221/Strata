@@ -1,0 +1,50 @@
+{
+  "main": {
+    "revision": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+    "passed": true,
+    "binaries": {
+      "strata-q36.exe": "6de0edd85797411548aa2ed405297d17c1d38dbc45ec0136a984d3a56eb48a07",
+      "strata_kq.dll": "980565e59826c409ebbcc72215c1706d9af905674acd6d7a274190f02097938e"
+    },
+    "tracked_source_changes_after_build": "",
+    "command_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "selected_tests": 16,
+    "ggml_revision": "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+  },
+  "pr4347": {
+    "revision": "7be0a3a17aeea0a7c0bf7bc63ae56c70e53311d4",
+    "passed": true,
+    "binaries": {
+      "strata-q36.exe": "6126354a860078bf90d98b2285cf100f225798a74c990d2b2474ea92bf427286",
+      "strata_kq.dll": "6c448f0db31c023c781235a49aac68609196b37901026dbe05a7f8110440c99d"
+    },
+    "tracked_source_changes_after_build": "",
+    "command_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "selected_tests": 16,
+    "ggml_revision": "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+  },
+  "pr4335": {
+    "revision": "bdf0bce2e5520680524efd3a5cf79db984c3902c",
+    "passed": true,
+    "binaries": {
+      "strata-q36.exe": "b86d5d408f956ee69e1fce6f642bd36132b0b09ed1f2e5880794ee4c9d586a78",
+      "strata_kq.dll": "48d195f92492afb610099dbc4bca210a29c396ff59d3a927863c55aad1b9cfd6"
+    },
+    "tracked_source_changes_after_build": "",
+    "command_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "selected_tests": 16,
+    "ggml_revision": "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+  }
+}

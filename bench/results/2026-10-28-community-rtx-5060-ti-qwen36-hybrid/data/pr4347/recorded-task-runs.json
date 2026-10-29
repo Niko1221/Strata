@@ -1,0 +1,1819 @@
+{
+  "started": "2026-10-28T20:54:25.684561+08:00",
+  "finished": "2026-10-28T21:01:30.845293+08:00",
+  "numeric": {
+    "r0-l1024": {
+      "A_C": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "B_D": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "A_B": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 96,
+        "rows": 97,
+        "mean_kl": 0.0011710852225722056,
+        "max_kl": 0.018399188532541536,
+        "max_absolute_error": 1.8908615112304688
+      },
+      "C_D": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 96,
+        "rows": 97,
+        "mean_kl": 0.0011710852225722056,
+        "max_kl": 0.018399188532541536,
+        "max_absolute_error": 1.8908615112304688
+      }
+    },
+    "r0-l16384": {
+      "A_C": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "B_D": {
+        "bitwise_identical": true,
+        "finite": true,
+        "top1_equal": 97,
+        "rows": 97,
+        "mean_kl": 0.0,
+        "max_kl": 0.0,
+        "max_absolute_error": 0.0
+      },
+      "A_B": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 95,
+        "rows": 97,
+        "mean_kl": 0.004449671135843752,
+        "max_kl": 0.22948456576112705,
+        "max_absolute_error": 2.4362308979034424
+      },
+      "C_D": {
+        "bitwise_identical": false,
+        "finite": true,
+        "top1_equal": 95,
+        "rows": 97,
+        "mean_kl": 0.004449671135843752,
+        "max_kl": 0.22948456576112705,
+        "max_absolute_error": 2.4362308979034424
+      }
+    }
+  },
+  "numeric_passed": true,
+  "task_passed": true,
+  "tasks": {
+    "A": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          16,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          23,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          16,
+          21,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          21,
+          18,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "output_ids": [
+          111734,
+          105426,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 3,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "output_ids": [
+          4754,
+          97494,
+          3147,
+          102005,
+          99140,
+          8934,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 7,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2007,
+          11,
+          750,
+          11,
+          15131,
+          1590,
+          198,
+          262,
+          413,
+          830,
+          361,
+          750,
+          25,
+          198,
+          285,
+          460,
+          750,
+          198,
+          262,
+          4265,
+          830,
+          835,
+          15131,
+          25,
+          198,
+          285,
+          460,
+          15131,
+          198,
+          262,
+          745,
+          25,
+          198,
+          285,
+          460,
+          830,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 39,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 7)"
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2784,
+          11,
+          292,
+          1590,
+          198,
+          262,
+          460,
+          3523,
+          2784,
+          471,
+          292,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 15,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          2542,
+          2007,
+          348,
+          830,
+          364,
+          830,
+          303,
+          11604,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          11604,
+          60059,
+          16,
+          60,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 12,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      }
+    ],
+    "B": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          16,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          23,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          16,
+          21,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          21,
+          18,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "output_ids": [
+          111734,
+          105426,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 3,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "output_ids": [
+          4754,
+          97494,
+          3147,
+          102005,
+          99140,
+          8934,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 7,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2007,
+          11,
+          750,
+          11,
+          15131,
+          1590,
+          198,
+          262,
+          413,
+          830,
+          361,
+          750,
+          25,
+          198,
+          285,
+          460,
+          750,
+          198,
+          262,
+          4265,
+          830,
+          835,
+          15131,
+          25,
+          198,
+          285,
+          460,
+          15131,
+          198,
+          262,
+          745,
+          25,
+          198,
+          285,
+          460,
+          830,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 39,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 7)"
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2784,
+          11,
+          292,
+          1590,
+          198,
+          262,
+          460,
+          3523,
+          2784,
+          471,
+          292,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 15,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          2542,
+          2007,
+          348,
+          830,
+          364,
+          830,
+          303,
+          11604,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          11604,
+          60059,
+          16,
+          60,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 12,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n\"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          1,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 16,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      }
+    ],
+    "C": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          16,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          23,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          16,
+          21,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          21,
+          18,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "output_ids": [
+          111734,
+          105426,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 3,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "output_ids": [
+          4754,
+          97494,
+          3147,
+          102005,
+          99140,
+          8934,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 7,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2007,
+          11,
+          750,
+          11,
+          15131,
+          1590,
+          198,
+          262,
+          413,
+          830,
+          361,
+          750,
+          25,
+          198,
+          285,
+          460,
+          750,
+          198,
+          262,
+          4265,
+          830,
+          835,
+          15131,
+          25,
+          198,
+          285,
+          460,
+          15131,
+          198,
+          262,
+          745,
+          25,
+          198,
+          285,
+          460,
+          830,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 39,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 7)"
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2784,
+          11,
+          292,
+          1590,
+          198,
+          262,
+          460,
+          3523,
+          2784,
+          471,
+          292,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 15,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          2542,
+          2007,
+          348,
+          830,
+          364,
+          830,
+          303,
+          11604,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          11604,
+          60059,
+          16,
+          60,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 12,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      }
+    ],
+    "D": [
+      {
+        "name": "arithmetic-0",
+        "prompt_tokens": 39,
+        "output": "{\"value\": 21}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          16,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-1",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 28}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          17,
+          23,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-2",
+        "prompt_tokens": 40,
+        "output": "{\"value\": 16}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          16,
+          21,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "arithmetic-3",
+        "prompt_tokens": 38,
+        "output": "{\"value\": 63}<|im_end|>",
+        "output_ids": [
+          4754,
+          927,
+          763,
+          220,
+          21,
+          18,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 8,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "chinese-literal",
+        "prompt_tokens": 33,
+        "output": "缓存命中<|im_end|>",
+        "output_ids": [
+          111734,
+          105426,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 3,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false
+        }
+      },
+      {
+        "name": "chinese-json",
+        "prompt_tokens": 40,
+        "output": "{\"原因\":\"容量不足\"}<|im_end|>",
+        "output_ids": [
+          4754,
+          97494,
+          3147,
+          102005,
+          99140,
+          8934,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 7,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "clamp",
+        "prompt_tokens": 47,
+        "output": "def solve(x, lo, hi):\n    if x < lo:\n        return lo\n    elif x > hi:\n        return hi\n    else:\n        return x<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2007,
+          11,
+          750,
+          11,
+          15131,
+          1590,
+          198,
+          262,
+          413,
+          830,
+          361,
+          750,
+          25,
+          198,
+          285,
+          460,
+          750,
+          198,
+          262,
+          4265,
+          830,
+          835,
+          15131,
+          25,
+          198,
+          285,
+          460,
+          15131,
+          198,
+          262,
+          745,
+          25,
+          198,
+          285,
+          460,
+          830,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 39,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            0,
+            3,
+            5
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 7)"
+        }
+      },
+      {
+        "name": "absdiff",
+        "prompt_tokens": 43,
+        "output": "def solve(a, b):\n    return abs(a - b)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          2784,
+          11,
+          292,
+          1590,
+          198,
+          262,
+          460,
+          3523,
+          2784,
+          471,
+          292,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 15,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            5,
+            5,
+            0
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "squares",
+        "prompt_tokens": 43,
+        "output": "def solve(xs):\n    return sum(x * x for x in xs)<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          2542,
+          2007,
+          348,
+          830,
+          364,
+          830,
+          303,
+          11604,
+          8,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            14,
+            0,
+            13
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "reverse",
+        "prompt_tokens": 42,
+        "output": "def solve(xs):\n    return xs[::-1]<|im_end|>",
+        "output_ids": [
+          727,
+          11290,
+          51532,
+          1590,
+          198,
+          262,
+          460,
+          11604,
+          60059,
+          16,
+          60,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 12,
+        "finish": "stop",
+        "judgment": {
+          "passed": true,
+          "actual": [
+            [
+              3,
+              2,
+              1
+            ],
+            [],
+            [
+              "b",
+              "a"
+            ]
+          ]
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "invalid syntax (<unknown>, line 2)"
+        }
+      },
+      {
+        "name": "retrieval-1024",
+        "prompt_tokens": 1025,
+        "output": "{\n  \"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          220,
+          328,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 17,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      },
+      {
+        "name": "retrieval-16384",
+        "prompt_tokens": 16385,
+        "output": "{\n\"code\": \"NOVA-731\"\n}<|im_end|>",
+        "output_ids": [
+          90,
+          198,
+          1,
+          1787,
+          763,
+          328,
+          8725,
+          12452,
+          12,
+          22,
+          18,
+          16,
+          1,
+          198,
+          92,
+          248046
+        ],
+        "reused_tokens": 0,
+        "generated_tokens": 16,
+        "finish": "stop",
+        "judgment": {
+          "passed": true
+        },
+        "original_judgment": {
+          "passed": false,
+          "error": "not one JSON object"
+        }
+      }
+    ]
+  },
+  "runs": [
+    {
+      "label": "adapter-smoke",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-A",
+      "source": "pr4347",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": true,
+      "explicit_slots": null,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-B",
+      "source": "pr4347",
+      "case": "r0-l1024",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": null,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-C",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l1024-D",
+      "source": "main",
+      "case": "r0-l1024",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 89,
+      "input_sha256": "f8c9fc3607d833a7c3d03e85bc52a11d86017e89663b2ed562b1837236cb0631",
+      "forced_sha256": "cbf27c9bbd119ca3c402ab71f8bb15fe8447481994570aa76d5a5a0a553cbccf",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-A",
+      "source": "pr4347",
+      "case": "r0-l16384",
+      "packed": "1",
+      "keep": true,
+      "explicit_slots": null,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-B",
+      "source": "pr4347",
+      "case": "r0-l16384",
+      "packed": "1",
+      "keep": false,
+      "explicit_slots": null,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-C",
+      "source": "main",
+      "case": "r0-l16384",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 63,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 63,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    },
+    {
+      "label": "r0-l16384-D",
+      "source": "main",
+      "case": "r0-l16384",
+      "packed": "0",
+      "keep": false,
+      "explicit_slots": 89,
+      "input_sha256": "27296bac175f6162cbd64c8698a32c1833a662f8a9357cd467893931ee6517e7",
+      "forced_sha256": "36082564ead42875acc68e07248110ee98ffe7d1d6911dc4264e1cfd341ea85a",
+      "rows": 97,
+      "exit_code": 0,
+      "slots": 89,
+      "bytes": 96348160,
+      "replacement_counts": [
+        0
+      ]
+    }
+  ],
+  "controls": {
+    "r0-l1024": {
+      "keep_slots": 63,
+      "drop_slots": 89
+    },
+    "r0-l16384": {
+      "keep_slots": 63,
+      "drop_slots": 89
+    }
+  },
+  "scoring_correction": {
+    "reason": "GEN emits EOS token 248046 before reporting stop; tokenizer renders it as <|im_end|>.",
+    "method": "Remove exactly this terminal protocol marker before judging; retain all raw answers and original judgments.",
+    "answers_normalized": 48,
+    "original": "results.json"
+  }
+}
