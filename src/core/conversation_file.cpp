@@ -1847,7 +1847,7 @@ struct V3Walk {
     };
     std::vector<Geom> geom;
     std::vector<bool> seen;
-    size_t layers = 0;
+    uint64_t layers = 0;  // a count, so the count() u64 binding (macOS: size_t is NOT uint64_t - metal-link CI)
     bool framing_only = false;  // the append-plan walk: frame and cross-check, seek over segment bytes, never hash
                                 // (the gate verifies the trailer's own resume state instead)
     std::vector<std::array<uint64_t, 5>> have_bytes;  // bytes accumulated per layer part (framing mode needs them;
