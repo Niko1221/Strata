@@ -102,11 +102,11 @@ test('goal wording: plain, never a code', () => {
 
 // ------------------------------------------------------------------------------------------------- real Harness
 
-async function rig(t, { slots = 4, serial = false, onGoal } = {}) {
+async function rig(t, { slots = 4, serial = false, onGoal, context = 32768 } = {}) {
   const worker = await startScriptedWorker({ serial });
   const dir = mkdtempSync(join(tmpdir(), 'strata-kids-'));
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
-  const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots }];
+  const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context, slots }];
   const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000, ...(onGoal ? { onGoal } : {}) });
   t.after(async () => { await bridge.close(); await worker.close(); cleanup(dir); });
   const run = async (chatId, message, { mode = 'bypass', answer, onFrame, goal } = {}) => {
@@ -445,6 +445,51 @@ test('a direct message sent while the helper works is queued and runs after that
   }
   await run;
   assert.equal(seen, true, 'the queued message ran after the first turn');
+});
+
+test('a helper that fills its 64K window compacts and still answers the next message', { skip }, async (t) => {
+  // A 512K local model: the helper route is 64K through the context meter. Six rounds of ~35K characters
+  // fill it; the Harness must compact at 64K and the next message must still be answered. This is the
+  // case a short read cannot show: what happens when the helper's own context is full.
+  const r = await rig(t, { context: 524288 });
+  let childId = null;
+  const run = r.run('helper-full', 'SCRIPT:spawn 1 echo start', { mode: 'bypass', onFrame: f => {
+    if (!childId && f.type === 'agent' && f.agent.status === 'working') childId = f.agent.id;
+  } });
+  for (let i = 0; i < 200 && !childId; i += 1) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(childId, 'the helper started');
+  for (let round = 0; round < 6; round += 1) {
+    await r.bridge.promptChild({ chatId: 'helper-full', childId, text: `SCRIPT:echo ${'x'.repeat(35000)} ${round}` });
+    let view = r.bridge.childView('helper-full', childId);
+    for (let i = 0; i < 400; i += 1) {
+      view = r.bridge.childView('helper-full', childId);
+      const answered = view.transcript.some(entry => entry.role === 'assistant' && entry.text.length > 30000 && entry.text.includes(` ${round}`));
+      if (answered && view.agent.status === 'completed') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  // The Harness's own pressure reading, not the scaled one: after the rounds it must be below the 64K
+  // working window, which is only possible if compaction actually ran.
+  const pressure = async () => {
+    const answer = await r.bridge._debug().rt.gw.rpc('session/projections', { request: { sessionId: childId, keys: ['contextPressure'] } });
+    const value = answer?.values?.contextPressure;
+    return (value && typeof value === 'object' && 'currentValue' in value ? value.currentValue : value) ?? null;
+  };
+  const filled = await pressure();
+  assert.ok(filled && Number(filled.pressureTokens) > 0, 'the helper reported its pressure');
+  await r.bridge.promptChild({ chatId: 'helper-full', childId, text: 'SCRIPT:echo FINAL' });
+  let view = r.bridge.childView('helper-full', childId);
+  for (let i = 0; i < 400; i += 1) {
+    view = r.bridge.childView('helper-full', childId);
+    const final = view.transcript.some(entry => entry.role === 'assistant' && /FINAL/.test(entry.text));
+    if (final && view.agent.status === 'completed') break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  await run;
+  assert.ok(view.transcript.some(entry => entry.role === 'assistant' && /FINAL/.test(entry.text)), 'the message after a full window was answered');
+  assert.equal(view.agent.status, 'completed');
+  const after = await pressure();
+  assert.ok(after && Number(after.pressureTokens) < 80_000, `the context was compacted below the 64K window (pressure ${after?.pressureTokens})`);
 });
 
 test('a Manual helper stopped before any tool does not make the next Plan helper ask', { skip }, async (t) => {
