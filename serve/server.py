@@ -5762,14 +5762,18 @@ class Service:
         rejected = []
         if parser.unread:
             named = getattr(parser, "unread_names", None)
+            info = getattr(parser, "unread_info", None) or []
             print(f"[strata] {parser.unread} <tool_call> block(s) in the answer did not read as a call of a declared "
                   "tool and went back as text (a name the request did not declare, or a form the template does "
                   "not use)" + (f"; the names the model wrote: {', '.join(named)}" if named else "")
                   + "; the response carries them as strata_rejected_tool_calls, /metrics counts them", flush=True)
             with self.status_lock:
                 self.totals["tool_calls_unread"] = self.totals.get("tool_calls_unread", 0) + parser.unread
-            # #3796: the same names for the client (a machine-readable marker next to the text, which stays as the model wrote it)
-            rejected = [{"name": nm, "reason": "undeclared"} for nm in named or []]
+            # #3796/#4071: the same names for the client (a machine-readable marker next to the text, which stays as
+            # the model wrote it); #4071 adds the reason: "undeclared", "in_code" (a fence, #1058), or "malformed".
+            rejected = [{"name": it["name"], "reason": it.get("reason", "undeclared")} for it in info]
+            if not rejected and named:                   # an engine build without per-block reasons
+                rejected = [{"name": nm, "reason": "undeclared"} for nm in named]
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
