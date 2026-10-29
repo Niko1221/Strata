@@ -132,5 +132,7 @@
   "fx131": "Strata a redémarré. Envoyez d’abord un message dans la discussion, puis réessayez ici.",
   "fx132": "{0} assistants en attente d’approbation · Voir l’aperçu",
   "fx133": "{0} assistants en attente d’approbation — afficher l’aperçu",
-  "fx134": "Un assistant attend votre approbation"
+  "fx134": "Un assistant attend votre approbation",
+  "fx135": "Afficher toute la tâche",
+  "fx136": "Afficher moins"
 }

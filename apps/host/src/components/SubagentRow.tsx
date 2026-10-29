@@ -131,10 +131,14 @@ export function SubagentRow({ agent: a, now = Date.now() }: {
         requestAnimationFrame(() => scrollToLatest(false));
     }, [scrollToLatest]);
 
-    /** Opening starts at the newest line; after that the reader's own scrolling decides. */
+    /**
+     * A live helper opens at its newest line. A finished one opens at the top: its task card and the
+     * start of the report are the context a person needs, and starting at the bottom showed the middle
+     * of a long answer with the task off-screen. After that the reader's own scrolling decides.
+     */
     useEffect(() => {
         if (!open) return;
-        pinned.current = true;
+        pinned.current = live;
         readerInput.current = Date.now();
         lastRevision.current = -1;
         lastSignature.current = '';
@@ -142,6 +146,7 @@ export function SubagentRow({ agent: a, now = Date.now() }: {
         setAway(false);
         setNewCount(0);
         setLoadError('');
+        if (!live) requestAnimationFrame(() => { const el = scroller.current; if (el) el.scrollTop = 0; });
         // Deliberately not keyed on entries: a poll must not pull the view back.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, childId]);

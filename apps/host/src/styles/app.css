@@ -2363,6 +2363,16 @@ textarea.st-input {
 .chat {
   display: flex;
   flex-direction: column;
+  /* The transcript always reserves the scrollbar's width, so the column does
+     not shift by five pixels when a short chat becomes a long one. The
+     composer mirrors the same 10px on its right edge. */
+  scrollbar-gutter: stable;
+}
+/* The transcript's own padding is the only horizontal padding the conversation
+   gets. The generic .main__body padding stacked on top of it at narrower widths
+   and made the messages 24px narrower on each side than the composer. */
+.chat.main__body {
+  padding: 0;
 }
 .chat__inner {
   width: 100%;
@@ -2371,7 +2381,7 @@ textarea.st-input {
   padding: 28px 28px 20px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 24px;
   flex: 1;
 }
 .chat__intro {
@@ -2526,7 +2536,10 @@ textarea.st-input {
   flex: none;
 }
 .composer {
-  padding: 14px 28px 18px;
+  /* 28px on the left matches the transcript's padding; 38px on the right is
+     that padding plus the 10px gutter the transcript reserves for its
+     scrollbar, so the box's edges land exactly on the answer column's edges. */
+  padding: 14px 38px 18px 28px;
   border-top: 1px solid var(--st-line);
   background: var(--st-material-tint);
   -webkit-backdrop-filter: var(--st-material-regular);
@@ -2769,6 +2782,39 @@ textarea.st-input {
 }
 .st-code pre code {
   font: inherit;
+}
+/* The code header is a caption with its actions on the right, not three items
+   spread across 864px: the language stays at the left, and every control after
+   it is pushed into one right-hand group. The controls keep the small size the
+   rest of the app uses instead of the kit's 42px default, which made the
+   caption taller than the code it describes. */
+.st-code__head {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.st-code__head > :nth-child(2) {
+  margin-left: auto;
+}
+.st-code__head .st-btn {
+  height: 34px;
+}
+.st-code__head .st-btn--sm {
+  padding: 0 10px;
+}
+.st-code__head .st-btn--icon {
+  width: 34px;
+}
+/* The code header is a dark surface in both themes, so the kit's secondary
+   button (dark ink on light surfaces) disappears on it. Give the header's
+   secondary controls the code surface's own ink and a translucent edge. */
+.st-code__head .st-btn--secondary {
+  color: var(--st-code-ink);
+  border: 1px solid color-mix(in srgb, var(--st-code-ink) 22%, transparent);
+  background: transparent;
+}
+.st-code__head .st-btn--secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--st-code-ink) 10%, transparent);
+  border-color: color-mix(in srgb, var(--st-code-ink) 32%, transparent);
 }
 
 /* =========================================================== 5. first run == */
@@ -4589,6 +4635,10 @@ textarea.st-input {
   padding: 16px;
 }
 .composer {
+  padding-inline: 16px;
+  padding-right: 26px;
+}
+.chat__inner {
   padding-inline: 16px;
 }
 .composer__hints {
@@ -7538,8 +7588,10 @@ textarea {
 .native-choice__row { align-items: start; }
 
 
-/* One column for every part of a reply: prose, code and tables share the reading measure; wide code and tables scroll inside it (U3). */
-.st-msg--assistant .st-bubble { max-width: var(--st-measure); }
+/* One column for every part of a reply. The answer block owns the full 864px
+   content width, so code, tables, pictures and file cards stop short of
+   nothing; prose keeps the 56ch reading measure inside it (U3). */
+.st-msg--assistant .st-bubble { max-width: 100%; }
 .st-msg--assistant .st-bubble pre,
 .st-msg--assistant .st-bubble table { max-width: 100%; overflow-x: auto; }
 

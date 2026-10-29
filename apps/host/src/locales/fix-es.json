@@ -132,5 +132,7 @@
   "fx131": "Strata se reinició. Envía primero un mensaje en el chat y vuelve a intentarlo aquí.",
   "fx132": "{0} ayudantes esperando aprobación · Ver resumen",
   "fx133": "{0} ayudantes esperando aprobación — mostrar resumen",
-  "fx134": "Un ayudante está esperando tu aprobación"
+  "fx134": "Un ayudante está esperando tu aprobación",
+  "fx135": "Mostrar toda la tarea",
+  "fx136": "Mostrar menos"
 }

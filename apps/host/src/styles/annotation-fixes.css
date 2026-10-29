@@ -11,6 +11,13 @@
 button:focus-visible, a:focus-visible { box-shadow: inset 0 0 0 1px var(--st-ink-muted); }
 input:focus, textarea:focus, [contenteditable]:focus { outline: none; box-shadow: none; }
 .st-input:focus, .st-composer:focus-within, .composer .st-composer:focus-within { border-color: var(--st-line); }
+/* A pointer click keeps the quiet border; a keyboard visit gets a ring that
+   can be seen. The field's caret alone did not show where Tab had landed. */
+.composer .st-composer:has(textarea:focus-visible) {
+  border-color: var(--st-ink-muted);
+  outline: 2px solid var(--st-ink-muted);
+  outline-offset: 2px;
+}
 .st-input:focus, .st-input--bare:focus, .st-input--bare:focus-visible { outline: none; box-shadow: none; }
 .st-composer textarea:focus { border: none; }
 .main__head, .main__head.main__head--plain {
@@ -215,11 +222,11 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .model-picker-spec { color: var(--st-ink-muted); }
 .model-picker-state { white-space: nowrap; flex: none; }
 .timeskip-card-arrow { transform: rotate(-90deg); }
-.st-msg--user .st-msg__meta { justify-content: flex-end; opacity: 0; transition: opacity 140ms ease; }
-.st-msg--user:hover .st-msg__meta, .st-msg--user:focus-within .st-msg__meta { opacity: 1; }
+/* The time is information, not a hover reward: it stays visible under both
+   voices. Actions stay quiet until the turn is hovered or focused, as they do
+   under an answer. */
+.st-msg--user .st-msg__meta { justify-content: flex-end; }
 .st-msg--user time { white-space: nowrap; }
-.st-msg--user .st-msg__actions { opacity: 1; }
-@media (hover: none) { .st-msg--user .st-msg__meta { opacity: 1; } }
 .serving-access-row dt { white-space: nowrap; min-width: 110px; }
 .serving-access-row dd { width: auto; flex: 1; min-width: 0; }
 .serving-access-status { justify-content: flex-start; }
@@ -874,24 +881,41 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .tsc-diff__sign { color:var(--st-ink-muted); font-family:var(--st-font-mono); text-align:center; }
 .monitor-metric__reading { min-width:0; }
 
-/* Both sides of a conversation read as bubbles: the person on the right, the assistant (and a helper)
-   on the left, each at most three quarters of the conversation column. Tool, plan and error cards keep
-   their own surfaces; only prose gets the bubble. */
-.st-msg { max-width:75%; }
-.st-msg--assistant { align-self:flex-start; }
-.st-msg--user { align-self:flex-end; }
+/* A conversation has two voices, and the two are drawn differently on purpose.
+   The person writes in a compact accent bubble on the right. The assistant
+   writes a document on the left: no card, no border, the full 864px content
+   column for code, tables, pictures and file cards, and a 56ch reading measure
+   for prose. The old bubble stopped at 648px, which left 216px of empty card
+   beside every answer and a composer 216px wider than the text above it.
+
+   Measured at the 16px reading size: 56ch is 546px, or 35.6 CJK / 74.4 Latin
+   characters a line, against 40 / 83.5 at the old 614px measure. */
+.st-msg { max-width:100%; }
+.st-msg--assistant { align-self:stretch; }
+.st-msg--user { align-self:flex-end; max-width:min(100%, 66ch); }
 .st-msg--assistant .st-bubble {
-  width:auto;
+  width:100%;
   max-width:100%;
-  padding:12px 16px;
-  border:1px solid var(--st-line);
-  border-radius:var(--st-r-lg) var(--st-r-lg) var(--st-r-lg) 6px;
-  background:var(--st-surface);
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  /* A path or URL with no spaces must wrap inside the reading measure instead
+     of being clipped by the transcript's overflow. Code keeps its own pre. */
+  overflow-wrap:anywhere;
 }
 .st-msg--assistant .st-bubble p,
-.st-msg--assistant .st-bubble .md-li { max-width:none; }
+.st-msg--assistant .st-bubble .md-li,
+.st-msg--assistant .st-bubble blockquote { max-width:var(--st-measure, 56ch); }
 .st-msg--user .st-bubble { max-width:100%; }
+/* A plan or an error is a card of its own; the answer's text wrapper must not add a second one. */
 .st-msg--assistant .st-bubble:has(.plan, .error-notice) { padding:0; border:0; background:transparent; }
+/* One rhythm for every turn: 24px between turns (the column's gap), 8px more
+   before the person speaks again, and 4px between a bubble and its own time
+   and action line. */
+.chat__inner > .st-msg { gap:4px; }
+.chat__inner > .st-msg--assistant + .st-msg--user { margin-top:8px; }
 .subagent-msg { max-width:75%; }
 .subagent-msg--assistant .subagent-bubble {
   max-width:100%;
@@ -902,7 +926,16 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 }
 .subagent-msg--user .subagent-bubble,
 .subagent-msg--parent .subagent-bubble { max-width:100%; }
+/* A report with a table or a code block needs the width: at 75% the table and code sat in a narrow
+   column with an empty strip beside them. Prose answers keep the three-quarter bubble. */
+.subagent-msg--assistant:has(table, pre) { max-width:100%; }
+.subagent-msg--assistant:has(table, pre) .subagent-bubble { max-width:100%; }
 /* The task card is a card, not a reading bubble: an 80ch cap left a wide empty strip on its right and
    wrapped the task early. It uses the card's own width. */
 .subagent-task .subagent-bubble { max-width:100%; }
+/* A long task instruction folds to a few lines; the whole text is one button away. */
+.subagent-task__body { max-height:9.5em; overflow:hidden; }
+.subagent-task__body.is-open { max-height:none; }
+.subagent-task__more { margin:6px 0 0; padding:0; border:0; background:none; color:var(--st-accent-text); font:inherit; font-size:var(--st-fs-xs); font-weight:600; cursor:pointer; }
+.subagent-task__more:hover { text-decoration:underline; }
 @media (max-width:720px){ .st-msg, .subagent-msg { max-width:100%; } }

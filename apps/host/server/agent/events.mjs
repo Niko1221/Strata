@@ -130,9 +130,15 @@ export function toolVerb(name, state) {
 export function presentTool({ callId, name, args, reason = null }) {
   const scope = toolScope(name);
   const words = WORDS[name]?.(args);
-  const preview = scope === 'shell' && !words ? args.command ?? ''
+  let preview = scope === 'shell' && !words ? args.command ?? ''
     : scope === 'write' ? args.file_path ?? args.path ?? args.filePath ?? ''
       : words ? words[1] ?? '' : name.startsWith(INSTRUCTIONS_PREFIX) || name.startsWith(COMMANDS_PREFIX) ? ownToolName(name) : /^mcp__browser__browser_(evaluate|run_code)$/.test(name) ? '' : args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.element ?? args.query ?? args.text ?? args.action ?? (Object.keys(args).length ? JSON.stringify(args) : '');
+  // Seven identical "read this file" rows told the person nothing about which part each one read.
+  if (name === 'read' && (args.offset !== undefined || args.limit !== undefined)) {
+    const from = Math.max(1, Number(args.offset) || 1);
+    const to = Number(args.limit) > 0 ? from + Number(args.limit) - 1 : from;
+    preview = `${from}${to !== from ? `–${to}` : '+'} · ${preview}`;
+  }
   const effect = reason ?? (words ? words[0] : scope === 'shell' ? (args.description ?? 'Runs a command in the workspace.')
     : scope === 'write' ? 'Changes a file in the workspace.'
       : scope === 'read' ? 'Reads from the workspace.' : 'Uses a connected tool.');

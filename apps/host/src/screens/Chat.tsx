@@ -1011,7 +1011,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
         </div>
       </div>);
     }
-    return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
+    return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined} onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
@@ -1037,6 +1037,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
+          <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
             {tr(isLast ? <>
               <IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/>

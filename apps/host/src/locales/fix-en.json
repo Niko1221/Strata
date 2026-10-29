@@ -132,5 +132,7 @@
   "fx131": "Strata was restarted. Send one message in the chat first, then try again here.",
   "fx132": "{0} helper approvals waiting · View overview",
   "fx133": "{0} helper approvals waiting — show overview",
-  "fx134": "A helper is waiting for your approval"
+  "fx134": "A helper is waiting for your approval",
+  "fx135": "Show the whole task",
+  "fx136": "Show less"
 }

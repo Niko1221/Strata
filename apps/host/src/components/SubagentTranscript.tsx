@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { tr } from '../lib/i18n';
 import { Btn, Icon } from './ui';
 import { Markdown } from './Markdown';
@@ -61,9 +61,20 @@ const timeText = (ms: number) => {
 
 function TaskCard({ entry }: { entry: ChildEntry }) {
     const text = entry.text === TASK_MISSING ? tr(entry.text) : entry.text;
+    // The main assistant can write a long instruction. Left open it filled the first screen and pushed
+    // the report itself below the fold; the text stays available behind one clear button.
+    const [open, setOpen] = useState(false);
+    const [long, setLong] = useState(false);
+    const body = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+        const el = body.current;
+        if (!el || open) return;
+        setLong(el.scrollHeight > el.clientHeight + 2);
+    }, [text, open]);
     return <section className="subagent-task" aria-label={tr('Task from the main assistant')}>
         <header className="subagent-task__head"><Icon name="experts" size={14}/><span>{tr('Task from the main assistant')}</span></header>
-        <div className="st-bubble subagent-bubble"><Markdown text={text}/></div>
+        <div ref={body} className={`st-bubble subagent-bubble subagent-task__body${open ? ' is-open' : ''}`}><Markdown text={text}/></div>
+        {long ? <button type="button" className="subagent-task__more" aria-expanded={open} onClick={() => setOpen(value => !value)}>{tr(open ? 'Show less' : 'Show the whole task')}</button> : null}
     </section>;
 }
 
