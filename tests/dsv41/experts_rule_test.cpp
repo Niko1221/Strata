@@ -10,6 +10,7 @@ using strata::ds4::experts_test_override;
 using strata::ds4::copy_all_fits;
 using strata::ds4::attn_slab_rows;
 using strata::ds4::staging_ring_mb;
+using strata::ds4::store_gpu_shares_ram;
 
 static int fails = 0;
 #define CHECK_EQ(a, b)                                                                              \
@@ -306,6 +307,19 @@ int main() {
         CHECK_EQ(dense_pfgemm_default(-1, false), 1);
         CHECK_EQ(dense_pfgemm_default(1, true), 1);
         CHECK_EQ(dense_pfgemm_default(0, false), 0);
+    }
+    // #4147: the auto store's "the GPU shares the RAM" decision.  A discrete 2 x RTX 3090 whose pinned buffers took 7.5 GB of the free RAM is NOT
+    // unified memory (the 256K store stayed 48 GB); a Strix Halo / GB10 (integrated) whose weights took RAM is, as before.
+    {
+        const uint64_t G = 1000000000ull;
+        CHECK_EQ(store_gpu_shares_ram(false, 62 * G, 54 * G), 0);          // discrete, free RAM fell 8 GB: no
+        CHECK_EQ(store_gpu_shares_ram(false, 62 * G, 20 * G), 0);          // discrete, even a 42 GB drop: no
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 54 * G), 1);           // integrated, 8 GB drop: yes (unchanged)
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 58 * G), 1);           // exactly the 4 GB threshold
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 58 * G + 1), 0);       // just under it
+        CHECK_EQ(store_gpu_shares_ram(true, 54 * G, 62 * G), 0);           // RAM grew: no
+        CHECK_EQ(store_gpu_shares_ram(true, ~uint64_t{0}, 40 * G), 0);     // the first estimate unknown
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, ~uint64_t{0}), 0);
     }
     if (fails == 0) std::printf("experts rule: all checks passed\n");
     return fails == 0 ? 0 : 1;

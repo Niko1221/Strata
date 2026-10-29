@@ -1,12 +1,25 @@
+const MEASURES=['temperatureC','utilizationPct','memoryUsedGb','powerW','powerLimitW','pcieGen','pcieGenMax','pcieWidth','pcieRxMbs'];
+/** The engine's numbers win; a number the engine leaves out comes from the host's own reading of the same card. */
+export function mergeOwnReading(engine,own) {
+  if(!own)return engine;
+  const merged={...own,...Object.fromEntries(Object.entries(engine).filter(([,v])=>v!==null&&v!==undefined))};
+  const engineGave=MEASURES.some(k=>typeof engine[k]==='number');
+  return {...merged,source:engineGave?'engine':own.source};
+}
+
 /** Translate the original Strata /metrics dashboard without inventing missing sensors. */
 export function originalDashboard(raw, hardware, fallback) {
   const live=raw.live,engine=raw.engine,hw=raw.hardware??{},history=raw.history??{},cache=raw.conversation_cache,totals=raw.totals;
   const finite=n=>typeof n==='number'&&Number.isFinite(n);
   const gb=n=>finite(n)?n/1024**3:null;
   const devices=hardware?.gpus??[];
+  // The host's own sensor readings (nvidia-smi, amdgpu sysfs, the Windows GPU counters) fill in what the engine does not report:
+  // an AMD card on Windows has no engine reader at all, and the engine never gives the fan or the clock (#3727).
+  const own=new Map((fallback?.hardware?.gpus??[]).map(r=>[r.id,r]));
   const readings=(hw.gpus??(devices.length===1?[{index:devices[0].index,util:hw.gpu_util,mem_used:hw.gpu_mem_used,temp:hw.gpu_temp,power:hw.gpu_power,power_limit:hw.gpu_power_limit,pcie_gen:hw.gpu_pcie_gen,pcie_gen_max:hw.gpu_pcie_gen_max,pcie_width:hw.gpu_pcie_width,pcie_rx_mb:hw.gpu_pcie_rx_mb}]:[])).map(g=>{
     const device=devices.find(d=>d.index===g.index);
-    return {id:device?.id??`${device?.vendor??'unknown'}:${g.index}`,source:'engine',sampledAt:new Date().toISOString(),temperatureC:g.temp??null,utilizationPct:g.util??null,memoryUsedGb:gb(g.mem_used),powerW:g.power??null,powerLimitW:g.power_limit??null,pcieGen:g.pcie_gen??null,pcieGenMax:g.pcie_gen_max??null,pcieWidth:g.pcie_width??null,pcieRxMbs:g.pcie_rx_mb??null};
+    const id=device?.id??`${device?.vendor??'unknown'}:${g.index}`;
+    return mergeOwnReading({id,source:'engine',sampledAt:new Date().toISOString(),temperatureC:g.temp??null,utilizationPct:g.util??null,memoryUsedGb:gb(g.mem_used),powerW:g.power??null,powerLimitW:g.power_limit??null,pcieGen:g.pcie_gen??null,pcieGenMax:g.pcie_gen_max??null,pcieWidth:g.pcie_width??null,pcieRxMbs:g.pcie_rx_mb??null},own.get(id));
   });
   const last=raw.requests?.[0],used=live.state!=='idle'&&live.state!=='unloaded'?(live.prompt_tokens??0)+(live.generated??0):(last?.prompt_tokens??0)+(last?.output_tokens??0);
   const maximum=engine.max_context??fallback.context.maxTokens;
@@ -20,7 +33,7 @@ export function originalDashboard(raw, hardware, fallback) {
     generation:{done:live.generated??null,total:live.max_tokens??null},
     queue:{running:live.running??(['reading','generating'].includes(live.state)?1:0),waiting:live.queued??0},context:{usedTokens:used,maxTokens:maximum,pct:maxPct(used,maximum)},
     expertCache:{used:engine.expert_slots??0,total:engine.experts??0,memoryGb:finite(engine.expert_cache_mib)?engine.expert_cache_mib/1024:null,source:finite(engine.expert_slots)?'engine':'none'},
-    hardware:{...fallback.hardware,gpus:readings.length?readings:fallback.hardware.gpus,gpuLoad:hw.gpu_util??null,vramUsedGb:gb(hw.gpu_mem_used),vramTotalGb:gb(hw.gpu_mem_total)??fallback.hardware.vramTotalGb,gpuTempC:hw.gpu_temp??null,powerW:hw.gpu_power??null,powerLimitW:hw.gpu_power_limit??null,pcieRxMbs:hw.gpu_pcie_rx_mb??null,cpuLoad:hw.cpu??fallback.hardware.cpuLoad,ramUsedGb:gb(hw.ram_used)??fallback.hardware.ramUsedGb,ramTotalGb:gb(hw.ram_total)??fallback.hardware.ramTotalGb,diskReadGbs:finite(hw.disk_read_mb)?hw.disk_read_mb/1024:null,diskWriteMbs:hw.disk_write_mb??null},
+    hardware:{...fallback.hardware,gpus:readings.length?readings:fallback.hardware.gpus,gpuLoad:hw.gpu_util??fallback.hardware?.gpuLoad??null,vramUsedGb:gb(hw.gpu_mem_used)??fallback.hardware?.vramUsedGb??null,vramTotalGb:gb(hw.gpu_mem_total)??fallback.hardware.vramTotalGb,gpuTempC:hw.gpu_temp??fallback.hardware?.gpuTempC??null,powerW:hw.gpu_power??fallback.hardware?.powerW??null,powerLimitW:hw.gpu_power_limit??fallback.hardware?.powerLimitW??null,pcieRxMbs:hw.gpu_pcie_rx_mb??fallback.hardware?.pcieRxMbs??null,cpuLoad:hw.cpu??fallback.hardware.cpuLoad,ramUsedGb:gb(hw.ram_used)??fallback.hardware.ramUsedGb,ramTotalGb:gb(hw.ram_total)??fallback.hardware.ramTotalGb,diskReadGbs:finite(hw.disk_read_mb)?hw.disk_read_mb/1024:null,diskWriteMbs:hw.disk_write_mb??null},
     history:samples.length?samples:fallback.history,requests,
     totals:totals?{...fallback.totals,requests:totals.requests??0,tokensIn:totals.prompt_tokens??0,tokensOut:totals.output_tokens??0,cachedTokens:totals.reused??0,uncachedTokens:(totals.prompt_tokens??0)-(totals.reused??0),promptMs:totals.prompt_ms,decodeMs:totals.decode_ms,since:totals.since?new Date(totals.since*1000).toISOString():fallback.totals.since}:fallback.totals,
     conversationCache:cache?{source:'engine',enabled:cache.enabled,parked:cache.parked,slots:cache.slots,memoryGb:gb(cache.bytes),budgetGb:finite(cache.budget_mib)?cache.budget_mib/1024:null,parks:cache.parks,restores:cache.restores,evictions:cache.evictions,lastEvent:cache.last_event,lastAt:cache.last_at,lastTokens:cache.last_tokens,requests:cache.requests,requestsReused:cache.requests_reused,lastPrompt:cache.last_prompt,lastReused:cache.last_reused}:fallback.conversationCache,

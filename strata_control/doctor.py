@@ -229,6 +229,9 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
     access = _device_access_issue(cfg.get("backend"))
     if access:
         report["issues"].append(access)
+    cpu_pack = _cpu_pack_issue(cfg, config_path)
+    if cpu_pack:
+        report["issues"].append(cpu_pack)
     if live:
         report["live_gpu_probe"], live_issues = _live_probe(cfg, report["backend"])
         report["issues"].extend(live_issues)
@@ -251,6 +254,41 @@ def _device_access_issue(backend: str | None, dev_root: str = "/dev") -> dict | 
     return {"code": "GPU_DEVICE_ACCESS", "severity": "warning",
             "message": f"this user cannot open {', '.join(str(n) for n in nodes)}; the {backend} engine will not see the card. "
                        "Add the user to the `render` group (and `video` for some distributions), then log in again"}
+
+
+AVX512_FULL = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"}   # what the Q2_0 pack's CPU kernel uses
+
+
+def _cpu_flags(cpuinfo: str = "/proc/cpuinfo") -> set[str] | None:
+    """The CPU feature flags on Linux; None where they cannot be read (other OS, no /proc)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        for line in Path(cpuinfo).read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("flags"):
+                return set(line.partition(":")[2].split())
+    except OSError:
+        return None
+    return None
+
+
+def _cpu_pack_issue(cfg: dict, config_path: Path, cpuinfo: str = "/proc/cpuinfo") -> dict | None:
+    """The canonical Q2_0 pack (a --pack folder with index.txt and no native_experts.txt) has an AVX-512 CPU kernel; the engine stops at
+    start on any other CPU with "this CPU cannot run the expert kernel". An i-quant, NVFP4 or Unsloth pack (native_experts.txt) runs on AVX2
+    CPUs. None when it is fine, cannot apply (a pack of another engine, a CPU whose flags cannot be read) or there is no such pack."""
+    args = cfg.get("args") or []
+    if "--pack" not in args or args.index("--pack") + 1 >= len(args):
+        return None
+    pack = _location(args[args.index("--pack") + 1], cfg, config_path)
+    if not (pack / "index.txt").is_file() or (pack / "native_experts.txt").exists() or (pack / "ds4.txt").exists():
+        return None
+    flags = _cpu_flags(cpuinfo)
+    if flags is None or AVX512_FULL <= flags:
+        return None
+    return {"code": "CPU_PACK_NEEDS_AVX512", "severity": "warning",
+            "message": f"{pack} is the pack for CPUs with AVX-512 (it has no native_experts.txt), and this CPU has no AVX-512 (Ryzen 3000-5000 and "
+                       "Intel Core 12th-14th generation do not): the engine will stop at start. Run `strata setup` again; on this CPU it builds "
+                       "the pack that runs on AVX2"}
 
 
 def _monitor_component() -> dict:
