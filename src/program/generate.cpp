@@ -129,7 +129,13 @@
 
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
-namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+namespace strata::metal_engine {   // metal/src/engine/window.cpp
+void set_model_shard(const char* shard1);
+// session files: the MTP GGUF the window loads (a model input of the fingerprint), empty without --mtp
+const std::string& mtp_gguf_path();
+// session files: the window's K/V and running-state layout (part of the config fingerprint)
+std::string window_layout_key();
+}
 #endif
 
 #include <array>
@@ -4681,7 +4687,14 @@ int main(int argc, char** argv) {
         if (pio.mode == strata::kernels::PleIo::Direct && !o.ple_io_explicit) {
             const strata::kernels::PleIoOptions direct_pio = pio;
             const char* auto_ram = std::getenv("STRATA_PLE_AUTO_RAM");
+#if defined(STRATA_GPU_METAL)
+            // (the Mac: the macOS RAM reading is there for the memory guard (parking, session files); this policy was
+            // measured on the PC, so on the Metal engine it stays off, as in a build that cannot read the RAM)
+            (void) auto_ram;
+            const bool allowed = false;
+#else
             const bool allowed = strata::core::ple_auto_ram_allowed(auto_ram, strata::qwen_defaults_026());
+#endif
             const uint64_t need = ple_table.table_bytes();
             const auto available = strata::core::available_host_bytes();
             uint64_t experts_ram = 0;   // every routed expert's blob, the arena the engine copies into RAM at start
@@ -10384,7 +10397,11 @@ int main(int argc, char** argv) {
                 in.embedding = o.embd_gguf;
                 in.ple = o.ple_gguf;
                 in.pack = o.pack;
+#if defined(STRATA_GPU_METAL)
+                in.mtp = o.mtp.empty() ? std::string() : strata::metal_engine::mtp_gguf_path();   // the window's MTP GGUF
+#else
                 in.mtp = o.mtp.empty() ? std::string() : o.mtp + "/dense.bin";
+#endif
                 if (srcp != nullptr) in.experts = srcp->model_inputs();
                 std::vector<strata::core::SessionModelFile> files = strata::core::session_model_inputs(in);
                 // the pack's other files the loader reads (weights.cpp, expert_layout.cpp)
@@ -10395,7 +10412,9 @@ int main(int argc, char** argv) {
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
                 if (!o.mtp.empty()) {
+#if !defined(STRATA_GPU_METAL)   // (Metal: the drafter is the one GGUF above)
                     for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
+#endif
                     files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
                 }
                 uint64_t fp = 0;
@@ -10410,6 +10429,10 @@ int main(int argc, char** argv) {
                 c.engine_version = STRATA_VERSION;
 #if defined(STRATA_USE_HIP)
                 c.backend = "hip";
+#elif defined(STRATA_GPU_METAL)
+                // the decode window's running state and K/V, and their layout (sizes per cell and per part): a build
+                // with another layout writes files this one refuses (the fingerprint differs)
+                c.backend = "metal-window " + strata::metal_engine::window_layout_key();
 #else
                 c.backend = "cuda";
 #endif

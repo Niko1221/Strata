@@ -46,6 +46,7 @@ Intel engines are unchanged.
 | Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that |
 | Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that |
 
+- **The engine's own memory grows with the context.** Beside the mapped file, the engine holds its buffers and the decode window's K/V for the whole `--max-context`. Measured on the M5 Max with Qwen3.8-Flash-Next IQ3_S (phys_footprint 5 s after the engine is ready): 7.68 GiB at 64K context and 10.61 GiB at 262K. Before this version the engine also kept an unused second copy of the K/V in the session buffer, resident in full: 9.27 GiB at 64K and 16.99 GiB at 262K.
 - **The n-gram table.** Each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at
   a time and does not count against the memory above.
 - **Disk.** The original Q2_0 and IQ3 packs download roughly 66 to 84 GB, plus preparation and draft data. Unsloth packs are much
@@ -223,6 +224,7 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
   be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
+- **Conversation cache and session files** (`--conversation-cache-mib`, `/slots/0?action=save|restore`) work as on the PC; their snapshots carry the Mac decode window's own K/V. Measured on the M5 Max (128 GB) with Qwen3.8-Flash-Next IQ3_S at 262K context, a 28,785-token conversation: parked as 798 MB (with its checkpoints) in 49 ms and back in 41 ms; as a session file 679 MB, saved in 0.16 s and restored in a new engine in 0.10 s. Both times the follow-up decoded the same 95 tokens as the conversation that never left. Size: about 15.4 KB per token plus 118 MB per running state (the live one and each checkpoint kept with it). A session file's fingerprint names the Mac engine and its decode window's layout (the bytes per cell of each K/V part and the sizes of the running state), so one from the PC engine does not restore on the Mac (not tried), and a Mac build whose window layout differs refuses the file instead of misreading it (checked with a file from an earlier build of this change: refused, the engine kept serving).
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming** is measured at 32 GB only.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Setup repacks

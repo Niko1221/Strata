@@ -52,7 +52,9 @@ class Engine:
         if batch:
             args += ["--batch", str(batch)]
         args += extra_args
-        env = dict(os.environ, **extra_env)
+        env = dict(os.environ)
+        env.update({str(k): str(v) for k, v in (cfg.get("env") or {}).items()})   # the config's engine settings, as serve passes them
+        env.update(extra_env)   # the test's own keys win
         env["LD_LIBRARY_PATH"] = ":".join(cfg.get("lib_dirs", []) + [env.get("LD_LIBRARY_PATH", "")])
         if os.name == "nt":
             env["PATH"] = os.pathsep.join(cfg.get("lib_dirs", []) + [env.get("PATH", "")])
