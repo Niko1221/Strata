@@ -40,7 +40,10 @@ hardware drivers. Models and updates need an internet connection to download.
 2. Download the one installer for your system. There is one per system, not one per graphics card:
    - **Windows:** run `Strata-0.2.7-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
    - **Linux:** make `Strata-0.2.7-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
-     downloaded file with `--appimage-extract-and-run`. [Linux help](TROUBLESHOOTING.md).
+     downloaded file with `--appimage-extract-and-run`. To share your models with other devices on your network from the
+     start, open a terminal and run `./Strata-0.2.7-linux-x86_64.AppImage --lan`; it prints the address for the other
+     device. Strata's own pages stay on this computer either way, and Settings > Serving can start or stop the share at
+     any time. [Linux help](TROUBLESHOOTING.md).
    - **Mac:** open `Strata-0.2.7-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
 3. On Windows and Linux the installer has no engine inside. On first start the app shows the engine for your
    graphics card with its size and one **Download** button, with progress and resume. If you already downloaded the

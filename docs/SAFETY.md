@@ -12,7 +12,9 @@ you trust can check it. Where Strata does less than you might hope, the page say
 - **There is no telemetry.** Strata sends no usage data, no crash reports and no analytics, and has no account to sign in to.
 - **Starting and running a model never downloads anything**, except that `strata launch` updates an installed DeepSeek
   engine package by itself when the signed feed has a newer one (below). Other downloads and updates are steps that you start.
-- **The server listens on your PC only.** Reaching it from another device needs an API key.
+- **The server listens on your PC only.** Reaching it from another device is something you choose to turn on (the app's
+  "Local sharing" in Settings > Serving, the Linux AppImage's `--lan`, or `strata launch --access lan`), and a key is
+  what keeps it yours alone.
 - **Once a model is downloaded, Strata runs without internet.** Starting, loading, serving and chatting need no
   connection. Only things you ask for use it: the agent's web search and web pages, an outside model service, the tunnel,
   and installs and updates (a first model install also fetches llama.cpp's preparation scripts), plus the DeepSeek engine
@@ -87,11 +89,14 @@ That is the full list found in the code. Some details:
   encrypted. (`apps/host/server/model-providers.mjs`)
 - **The server listens on `127.0.0.1`**, this PC only. The app fixes that address (`STRATA_BIND=127.0.0.1`), and the engine
   server's default is the same (`serve/server.py`, the `--host` option).
-- **Sharing needs a key.** The app's "Share with other devices" and the Cloudflare tunnel will not start without an API
-  key, and the shared port answers only `/v1/models`, `/v1/chat/completions` and `/v1/messages`
-  (`apps/host/server/local-share.mjs`, `cloudflare.mjs`). `strata launch` makes a key for you when you pick anything wider than
-  this computer. The bare engine server (`serve/server.py`) only prints a warning if you open it to your network without a key,
-  so set one yourself in that case.
+- **Sharing is your choice, and a key is the safe way.** The app's "Local sharing" answers only
+  `/v1/models`, `/v1/chat/completions` and `/v1/messages`, on a port of its own
+  (`apps/host/server/local-share.mjs`); the Linux AppImage's `--lan` (also `STRATA_LAN=1`) starts that share as Strata
+  starts, and its own page stays on this computer either way. A share without an API key is allowed and says so in plain
+  words, so any device on your network can use the model until you set a key (a Cloudflare link warns harder still, being
+  public; `cloudflare.mjs`). `strata launch` makes a key for you when you pick anything wider than this computer. The bare
+  engine server (`serve/server.py`) only prints a warning if you open it to your network without a key, so set one
+  yourself in that case.
 - **When you use an outside model**, the conversation (and the instructions of skills you switched on) go to that service.
   The app says so in its privacy notes. The service's own rules then apply.
 - **Programs you connect** (Claude Code, Codex, and so on) are separate programs with their own network behaviour. Strata
