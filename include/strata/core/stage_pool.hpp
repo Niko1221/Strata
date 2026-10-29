@@ -63,7 +63,11 @@ public:
         for (size_t k = 0; k < slots_.size(); ++k) {
             auto& slot = slots_[k];
             std::unique_lock<std::mutex> lk(slot->mu);
-            slot->cv.wait(lk, [&] { return slot->done; });
+            slot->cv.wait(lk, [&] { return slot->done || stop_.load(); });
+            if (!slot->done) {   // stop_ won the race; report it instead of reading unset fields
+                error = "stage pool: shut down while stages were pending";
+                return false;
+            }
             if (timings_ms) (*timings_ms)[k] = slot->elapsed_ms;
             if (!first_exception && slot->exception) first_exception = slot->exception;
             if (first.empty() && !slot->error.empty()) first = slot->error;
@@ -88,7 +92,15 @@ private:
     };
 
     void stop_and_join() {
-        stop_ = true;
+        // Taking run_mu_ makes destruction safe against an in-flight run(): the run
+        // completes first (this only waits out its bodies), then the workers stop.
+        std::lock_guard<std::mutex> run_lock(run_mu_);
+        // Set stop_ under every slot's mutex so a worker that checked its predicate and
+        // is about to sleep cannot miss the wakeup (notify_all alone races that window).
+        for (auto& s : slots_) {
+            std::lock_guard<std::mutex> lk(s->mu);
+            stop_ = true;
+        }
         for (auto& s : slots_) s->cv.notify_all();
         for (auto& w : workers_) if (w.joinable()) w.join();
     }
@@ -100,7 +112,14 @@ private:
             {
                 std::unique_lock<std::mutex> lk(slot.mu);
                 slot.cv.wait(lk, [&] { return stop_ || slot.ready; });
-                if (stop_) return;
+                if (stop_) {
+                    // A run() in its completion wait, or a later one, must observe this
+                    // slot as finished instead of waiting for a worker that is gone.
+                    slot.error = "stage pool: stopped before this stage ran";
+                    slot.done = true;
+                    slot.cv.notify_all();
+                    return;
+                }
                 body = std::move(slot.body);
                 slot.ready = false;
             }
