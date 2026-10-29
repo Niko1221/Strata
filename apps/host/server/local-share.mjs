@@ -5,6 +5,22 @@ import { apiPath } from './api-paths.mjs';
 import { listenProblem } from './ports.mjs';
 /** Sharing without a key is allowed (owner decision, 0.2.2): the person is told once, in plain words, and the app keeps offering to make a key. */
 export const NO_KEY_WARNING = 'No API key is set, so any device on this network can use your model. Create an API key to protect it.';
+/**
+ * Should the listener come up with Strata, without anyone opening a page first? The desktop shell sets STRATA_SHARE_ON_START=1
+ * when it was started with `--lan` or STRATA_LAN=1 (apps/desktop/src-tauri/src/supervisor.rs); a person can set it the same way.
+ * The words accepted are the shell's: 1, on, true, yes, lan. Nothing else is on by default: without the switch the model stays
+ * on this computer.
+ */
+export function shareOnStartRequested(env = process.env) {
+  return ['1', 'on', 'true', 'yes', 'lan'].includes(String(env.STRATA_SHARE_ON_START ?? '').trim().toLowerCase());
+}
+/** The one line the host prints when it shares on the network at start, so a terminal (and the app's log) shows the address and the key warning. */
+export function shareOnStartLine(state) {
+  const parts = [`[strata] sharing the model on your network at ${state.url}`];
+  if (state.warning) parts.push(`[strata] ${state.warning}`);
+  return parts.join('\n');
+}
+
 export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
   let listener = null, active = false;
   const address = () => Object.values(os.networkInterfaces()).flat().find(n => n?.family === 'IPv4' && !n.internal)?.address ?? '127.0.0.1';

@@ -12,6 +12,9 @@
 //! show one notification, and prints the same sentence on the terminal. This is "browser mode"; `--browser` or STRATA_UI=browser
 //! starts in it on purpose. In browser mode closing the tab does not stop the engine: the page has "Quit Strata", and `--quit`
 //! ends a running Strata from the command line. The host listens on 127.0.0.1 only (the shell sets STRATA_BIND itself).
+//! `--lan` or STRATA_LAN=1 adds the second, key-guarded listener that answers for other devices on your network
+//! (`--access lan` in the Terminal): the shell hands the host STRATA_SHARE_ON_START=1, and the app's own page stays on
+//! this computer only.
 //!
 //! The session file (`~/.strata/app-session.json`, mode 0600: process id, port, the secret only this user can read, the mode) is how
 //! a second start finds the first one: it focuses the window (window mode) or opens another tab (browser mode) instead of
@@ -37,14 +40,17 @@ pub struct Options {
     pub window_child: bool,
     /// `--save-logs`: collect the logs into one file in Downloads and leave.
     pub save_logs: bool,
+    /// `--lan` or STRATA_LAN=1: share the model with other devices on your network as soon as Strata starts.
+    pub lan: bool,
     pub help: bool,
 }
 
-pub fn parse_args(args: &[String], ui_env: Option<&str>) -> Options {
-    let mut o = Options { browser: matches!(ui_env.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("browser")), ..Options::default() };
+pub fn parse_args(args: &[String], ui_env: Option<&str>, lan_env: Option<&str>) -> Options {
+    let mut o = Options { browser: matches!(ui_env.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("browser")), lan: lan_on(lan_env), ..Options::default() };
     for a in args.iter().skip(1) {
         match a.as_str() {
             "--browser" => o.browser = true,
+            "--lan" => o.lan = true,
             "--quit" => o.quit = true,
             "--window-child" => o.window_child = true,
             "--save-logs" => o.save_logs = true,
@@ -55,12 +61,19 @@ pub fn parse_args(args: &[String], ui_env: Option<&str>) -> Options {
     o
 }
 
+/// The environment switch: STRATA_LAN=1 (also "on", "true", "yes", "lan"), the way STRATA_UI=browser is chosen.
+fn lan_on(v: Option<&str>) -> bool {
+    matches!(v.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("1") | Some("on") | Some("true") | Some("yes") | Some("lan"))
+}
+
 pub const HELP: &str = "Strata\n\
   (no option)  open the Strata app window\n\
   --browser    open Strata in your default browser instead of the app window (same as STRATA_UI=browser)\n\
+  --lan        serve the model to other devices on your local network as soon as Strata opens (same as STRATA_LAN=1)\n\
   --quit       stop a running Strata (its engine too) and leave\n\
   --save-logs  put the logs (including the log of an app window crash) into one file in your Downloads folder, to send to us\n\
-Closing the browser tab does not stop Strata in browser mode: use Quit Strata in the menu, or --quit.\n";
+Closing the browser tab does not stop Strata in browser mode: use Quit Strata in the menu, or --quit.\n\
+Strata's own pages and controls stay on this computer (--lan shares only the model, on its own port).\n";
 
 /// The command a person types to run this app again, for the messages ("run: Strata.AppImage --quit").
 pub fn command_name() -> String {
@@ -264,9 +277,47 @@ pub fn quit_running() -> i32 {
     1
 }
 
+/// What the host says about its network share (`sharing` in `/api/serving`'s answer): the address and, when there is no
+/// API key, the warning. Both are empty when the host did not answer with that object.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Share {
+    pub url: Option<String>,
+    pub warning: Option<String>,
+}
+
+fn share_of(answer: &str) -> Share {
+    let body = answer.rsplit("\r\n\r\n").next().unwrap_or(answer);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) else { return Share::default() };
+    Share { url: value["sharing"]["url"].as_str().map(String::from), warning: value["sharing"]["warning"].as_str().map(String::from) }
+}
+
+/// The line the shell prints for a share, in the person's words and with the address to type in the other device.
+pub fn share_line(s: &Share) -> String {
+    match &s.url {
+        Some(url) => match &s.warning {
+            Some(warning) => format!("Strata shares your model on your network at {url}. {warning}"),
+            None => format!("Strata shares your model on your network at {url} (an API key protects it)."),
+        },
+        // the host answered but did not say where: say what happened without making an address up
+        None => "Strata shares your model on your network; Settings > Serving shows the address.".into(),
+    }
+}
+
+/// `--lan` on a second start, while Strata already runs: ask that host for the network share (the same call the page makes,
+/// `/api/serving/share`). Nothing is started here; the host owns the listener.
+fn share_with_network(port: u16, token: &str) {
+    match host_post(port, token, "/api/serving/share", &serde_json::json!({ "enabled": true })) {
+        Ok(answer) => println!("{}", share_line(&share_of(&answer))),
+        Err(e) => eprintln!("[strata] could not ask Strata to share on your network ({e}). Open Strata and use Settings > Serving."),
+    }
+}
+
 /// A second start while Strata already runs: focus the window, or open another tab. Starts no second host.
-fn join_running(s: &Session, browser: bool) -> i32 {
-    if browser || s.mode == "browser" {
+fn join_running(s: &Session, opts: &Options) -> i32 {
+    if opts.lan {
+        share_with_network(s.port, &s.token);
+    }
+    if opts.browser || s.mode == "browser" {
         println!("Strata is already running. Opening it in your browser.");
         open_page_only(s.port, &s.token);
         return 0;
@@ -335,7 +386,7 @@ pub fn run(opts: &Options) -> i32 {
         return quit_running();
     }
     if let Some(s) = live_session() {
-        return join_running(&s, opts.browser);
+        return join_running(&s, opts);
     }
 
     let log = Log::open();
@@ -361,6 +412,10 @@ pub fn run(opts: &Options) -> i32 {
     cmd.env("STRATA_UI_MODE", mode).env("STRATA_APP_VERSION", env!("CARGO_PKG_VERSION"));
     if opts.browser {
         cmd.env("STRATA_UI_REASON", "chosen");
+    }
+    if opts.lan {
+        // the host brings its own network listener up with the page (index.mjs, local-share.mjs)
+        cmd.env("STRATA_SHARE_ON_START", "1");
     }
     let mut host = match spawn_logged(&mut cmd, "host", &host_ring, &log) {
         Ok(c) => c,
@@ -444,17 +499,47 @@ mod tests {
 
     #[test]
     fn the_command_line_picks_browser_quit_and_the_window_child() {
-        assert_eq!(parse_args(&args(&[]), None), Options::default());
-        assert!(parse_args(&args(&["--browser"]), None).browser);
-        assert!(parse_args(&args(&[]), Some("browser")).browser);
-        assert!(parse_args(&args(&[]), Some(" Browser ")).browser);
-        assert!(!parse_args(&args(&[]), Some("window")).browser);
-        assert!(parse_args(&args(&["--quit"]), None).quit);
-        assert!(parse_args(&args(&["--window-child"]), None).window_child);
-        assert!(parse_args(&args(&["--save-logs"]), None).save_logs);
-        assert!(parse_args(&args(&["-h"]), None).help);
+        assert_eq!(parse_args(&args(&[]), None, None), Options::default());
+        assert!(parse_args(&args(&["--browser"]), None, None).browser);
+        assert!(parse_args(&args(&[]), Some("browser"), None).browser);
+        assert!(parse_args(&args(&[]), Some(" Browser "), None).browser);
+        assert!(!parse_args(&args(&[]), Some("window"), None).browser);
+        assert!(parse_args(&args(&["--quit"]), None, None).quit);
+        assert!(parse_args(&args(&["--window-child"]), None, None).window_child);
+        assert!(parse_args(&args(&["--save-logs"]), None, None).save_logs);
+        assert!(parse_args(&args(&["-h"]), None, None).help);
         // anything else (a file the desktop hands over, an AppImage option) is ignored
-        assert_eq!(parse_args(&args(&["--appimage-extract-and-run", "x.gguf"]), None), Options::default());
+        assert_eq!(parse_args(&args(&["--appimage-extract-and-run", "x.gguf"]), None, None), Options::default());
+    }
+
+    #[test]
+    fn lan_comes_from_the_command_line_or_the_environment() {
+        assert!(!parse_args(&args(&[]), None, None).lan, "the default: this computer only");
+        assert!(parse_args(&args(&["--lan"]), None, None).lan);
+        assert!(parse_args(&args(&[]), None, Some("1")).lan);
+        assert!(parse_args(&args(&[]), None, Some(" LAN ")).lan);
+        assert!(parse_args(&args(&[]), None, Some("yes")).lan);
+        assert!(parse_args(&args(&[]), None, Some("true")).lan);
+        assert!(!parse_args(&args(&[]), None, Some("0")).lan);
+        assert!(!parse_args(&args(&[]), None, Some("browser")).lan);
+        // the two together: the page in a browser tab, the model on your network
+        let both = parse_args(&args(&["--lan", "--browser"]), None, None);
+        assert!(both.lan && both.browser);
+        // the help names the option, the environment switch and what stays on this computer
+        assert!(HELP.contains("--lan") && HELP.contains("STRATA_LAN=1") && HELP.contains("this computer"));
+    }
+
+    #[test]
+    fn the_share_line_names_the_address_the_host_answered_and_the_warning() {
+        let body = "{\"running\":true,\"sharing\":{\"active\":true,\"url\":\"http://192.168.1.20:47832/v1\",\"warning\":\"No API key is set.\"}}";
+        let share = share_of(&format!("HTTP/1.1 200 OK\r\n\r\n{body}"));
+        assert_eq!(share.url.as_deref(), Some("http://192.168.1.20:47832/v1"));
+        assert_eq!(share_line(&share), "Strata shares your model on your network at http://192.168.1.20:47832/v1. No API key is set.");
+        // a protected share says the key protects it, and adds nothing
+        let protected = share_of("HTTP/1.1 200 OK\r\n\r\n{\"sharing\":{\"active\":true,\"url\":\"http://10.0.0.9:8792/v1\",\"warning\":null}}");
+        assert_eq!(share_line(&protected), "Strata shares your model on your network at http://10.0.0.9:8792/v1 (an API key protects it).");
+        // no object in the answer: still a sentence, and no address made up
+        assert!(!share_line(&share_of("not json")).contains("http://"));
     }
 
     #[test]

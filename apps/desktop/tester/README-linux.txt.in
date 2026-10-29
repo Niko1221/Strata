@@ -43,6 +43,11 @@ A model download is big; it carries on where it stopped if it is interrupted.
 Closing the window stops Strata and the engine. (In browser mode closing the tab does not: see BROWSER MODE below.)
 To stop a running Strata from a terminal:   ./@APPIMAGE@ --quit
 
+To use your models from another device on your network (your phone, another PC), start Strata with:   ./@APPIMAGE@ --lan
+The terminal prints an address to type into the other device. Strata's own page and its settings stay on this computer; only the
+model is shared, on a port of its own. Please set an API key first (Settings > Serving > "Set key"), or any device on your network
+can use your model. "Local sharing" in the same page starts and stops it while Strata runs; --lan only says "start it now".
+
 
 @INCLUDE:common-troubleshoot.txt@
 
