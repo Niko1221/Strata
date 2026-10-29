@@ -13,7 +13,7 @@
  "elapsed_s": 148.6274378299713,
  "machine": {
   "gpu": [
-   "Radeon Instinct MI50 32GB"
+   "AMD Radeon AI PRO R9700 32GB (gfx1201)"
   ],
   "gpu_vram_mib": 32752.0,
   "gpu_driver": "7.1.3.31500000",
@@ -28,7 +28,8 @@
   "os": "Linux 7.0.0-42-generic",
   "python": "3.14.4",
   "strata_version": "0.1.53",
-  "strata_commit": "14b121b5",
+  "strata_commit": "46c152a1",
+  "correction_note": "gpu name and strata_commit corrected by hand after the run: the tool stamped the server-probe values (Radeon Instinct MI50 32GB) and its own checkout HEAD (14b121b5, a local gfx906 worktree), both wrong for this measurement on the R9700 pinned with HIP_VISIBLE_DEVICES=1; ground-truth rocm-smi captures attached to issue #4640. All timing data below is from the unmodified suite run.",
   "engine_version": "0.1.53",
   "model": "qwen3.8-flash-next-iq3_s",
   "quant": null,
