@@ -31,6 +31,13 @@ const safeId=value=>typeof value==='string'&&/^[a-z0-9](?:[a-z0-9_-]|\.(?!\.)){0
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
+/** `--resume` or STRATA_RESUME=1: the desktop shell hands the host STRATA_RESUME=1 (apps/desktop/src-tauri/src/supervisor.rs) and the
+ host starts the model that was loaded last again, with the settings it was loaded with. The words are the shell's: 1, on, true, yes,
+ resume. A start that did not ask for it loads nothing, which is the default path. */
+export function resumeRequested(env = process.env) {
+  return ['1', 'on', 'true', 'yes', 'resume'].includes(String(env.STRATA_RESUME ?? '').trim().toLowerCase());
+}
+
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
 export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine.';
 export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
@@ -332,7 +339,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   await prepareDrafter(job,args,cfg,configFile);if(job.state!=='running')return;
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
-  if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
+  if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1)){rememberLoad(args);return {summary:`${matching.label} is already ready.`,instanceId:matching.id};}
   const wasDefault=matching?.id===defaultId;
   const id=matching?.id??randomUUID();let apiModelId=matching?.apiModelId??args.model,suffix=1;while(!matching&&[...instances.values()].some(i=>i.apiModelId===apiModelId))apiModelId=`${args.model}--${++suffix}`;
   cfg.aliases=[...new Set([...(Array.isArray(cfg.aliases)?cfg.aliases:typeof cfg.aliases==='string'?cfg.aliases.split(',').map(s=>s.trim()).filter(Boolean):[]),apiModelId])];
@@ -391,7 +398,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
-   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
+   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;rememberLoad(args);return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}
@@ -490,6 +497,28 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   job.summary='Finding the fastest settings for your PC…';emit();
   const room=args.resourceProfile==='work';
   return autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}});
+ }
+ /* What the person last asked to load, kept in the host's own folder so `--resume` can start it again with the same settings.
+    A load that cannot write the record still loads; nothing else reads it. */
+ function lastLoadFile(){return join(directory,'native-last-load.json');}
+ function rememberLoad(args){try{writeFileSync(lastLoadFile(),JSON.stringify({at:new Date().toISOString(),args:{...args}},null,2),{mode:0o600});}catch{/* the record is a convenience, never a reason to refuse a load */}}
+ function lastLoad(){const saved=readJson(lastLoadFile(),null);return safeId(saved?.args?.model)?saved:null;}
+ /* The model of the last session, loaded again before any page is open. Nothing is downloaded: a model whose files are gone
+    is said in plain words, because a flag was never a request to fetch tens of gigabytes. */
+ async function resumeLastLoad(){
+  const saved=lastLoad();const model=saved?.args?.model;
+  if(!model)return {loaded:false,reason:'Strata has no record of a model you loaded on this computer, so nothing started. Load one in Models, and the next start can bring it back.'};
+  const running=[...instances.values()].find(i=>i.model===model&&i.status==='ready');
+  if(running)return {loaded:true,model,label:running.label,already:true,summary:`${running.label} is loaded already.`};
+  await refresh(true);
+  if(!snapshot.available)return {loaded:false,model,reason:snapshot.error??'Strata could not read its model files. Load the model in the app instead.'};
+  const entry=snapshot.installed?.models?.find(m=>m.model===model);
+  if(!entry)return {loaded:false,model,reason:`${model} is not set up in this Strata folder any more. Load it in Models.`};
+  if(!entry.ready)return {loaded:false,model,reason:`The files for ${entry.model_name??model} are not on this computer. Models can download them again.`};
+  const refusal=engineRefusal(snapshot.catalog,model,snapshot.engineInfo);
+  if(refusal)return {loaded:false,model,reason:refusal};
+  let job;try{job=operation('load',saved.args);}catch(error){return {loaded:false,model,reason:error.message};}
+  return {loaded:true,model,label:entry.model_name??model,jobId:job.id,summary:`Loading ${entry.model_name??model} with the settings you last used.`};
  }
  function operation(kind,args={}){if(!['install','load','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove'].includes(kind))throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&COMPONENT_KINDS.includes(kind)))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
  /* ---- The models folder card (0.2.2): what a picked folder means, and the three choices. The copying is Control's (strata models move). ---- */
@@ -591,5 +620,5 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+ return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,lastLoad,resumeLastLoad,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
 }
