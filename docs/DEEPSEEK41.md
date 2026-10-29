@@ -33,11 +33,17 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 
 | File | Size | What it is |
 | --- | ---: | --- |
-| IQ1_M shards (1.75 bpw), 4 files | 121 GB | the model, smallest set |
-| IQ2_XXS shards (2.00 bpw), 4 files | 138 GB | the model, middle set |
-| IQ2_XS shards (2.25 bpw), 4 files | 155 GB | the model, largest set |
+| IQ1_M shards (1.75 bpw), 5 files | 121 GB | the model, smallest set |
+| IQ2_XXS shards (2.00 bpw), 5 files | 138 GB | the model, middle set |
+| IQ2_XS shards (2.25 bpw), 5 files | 155 GB | the model, largest set |
 | IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
+
+Since 27 October 2026 the sets are in the llama.cpp b11870 layout: the files are named `...-0000N-of-00006.gguf`. Shards 1 to 5 are the set's own files
+(shard 1 is 5.8 MB of metadata with the chat template inside) and shard 6 is the Engram file above, shared by the three sets; setup
+downloads it once and hands it to `pack_gguf.py` as `--engram`, which counts it as the sixth shard. The earlier four-shard files (the
+first release's `model-2.00bpw-0000N-of-00004.gguf` and the 24 October names) are not the same bytes any more and are not accepted: setup
+downloads the six-shard files next to them.
 
 **On a Ryzen AI Max "Strix Halo" (Windows)** the graphics chip and the CPU share one pool of memory, so the engine counts it once: the
 128 GB box (a 64 GB BIOS carve-out plus the 64 GB Windows sees) keeps about 109 GB of the 2.00 set's experts in that pool (the dense
@@ -62,7 +68,7 @@ prompts 141 tokens/s at 1.2K and 615 at 4.6K. They saw 16 to 22 tokens/s with `-
 computer; other cards and RAM sizes can differ, and `--dspark auto` stays the default.
 
 Setup downloads with resume and SHA-256, packs the model with the plain recipe (`pack_gguf.py --model SET --shards ... --engram
-engram-IQ4_NL.gguf --engram-meta <UD shard 1> --dspark-gguf dspark-...-Q8_0.gguf`; do not add `--skip-tensors` or `--dense-override`:
+DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf --engram-meta <UD shard 1> --dspark-gguf dspark-...-Q8_0.gguf`; do not add `--skip-tensors` or `--dense-override`:
 that packs without an error and gives garbage text), copies the shipped hot-expert profile (`data/dsv41/profile-2.00.bin` or `-2.25.bin`)
 into the pack as `expert-profile.bin`, checks `strata-dsv41 --pack-info` (every file present) and answers a 16-token test question
 (`tools/dsv41/smoke.py`, the text must name Paris). The start script passes `--dspark auto` (never `off`: `off` still loads the drafter

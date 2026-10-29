@@ -7,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,16 +17,18 @@ import pack_gguf as PG  # noqa: E402
 FIXTURE = ROOT / "tests" / "fixtures" / "dsv41" / "engram-final-header.gguf"
 
 
-def tiny_gguf(path: Path, arch: str, extra: dict | None = None) -> Path:
-    """A GGUF with only metadata (string and uint32 values), no tensors."""
-    kv = {"general.architecture": arch, **(extra or {})}
-    out = bytearray(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kv)))
+def tiny_gguf(path: Path, arch: str | None, extra: dict | None = None, tensors: tuple = ()) -> Path:
+    """A GGUF with only metadata (string and uint32 values) and tensor infos (an IQ4_NL matrix each, no data); arch None leaves out general.architecture."""
+    kv = {**({} if arch is None else {"general.architecture": arch}), **(extra or {})}
+    out = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv)))
     for k, v in kv.items():
         out += struct.pack("<Q", len(k)) + k.encode()
         if isinstance(v, str):
             out += struct.pack("<I", 8) + struct.pack("<Q", len(v)) + v.encode()
         else:
             out += struct.pack("<I", 4) + struct.pack("<I", v)
+    for name in tensors:
+        out += struct.pack("<Q", len(name)) + name.encode() + struct.pack("<I", 2) + struct.pack("<2Q", 32, 4) + struct.pack("<IQ", 20, 0)
     out += b"\0" * (-len(out) % 32)
     path.write_bytes(bytes(out))
     return path
@@ -54,6 +57,79 @@ class EngramHeader(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertTrue(PG.is_engram_file(PG.Gguf(tiny_gguf(Path(d) / "e.gguf", "engram"))))
             self.assertFalse(PG.is_engram_file(PG.Gguf(tiny_gguf(Path(d) / "m.gguf", "deepseek41"))))
+
+
+CONVERTED = ROOT / "tests" / "fixtures" / "dsv41" / "engram-converted-27oct-header.gguf"
+SPLIT = {"split.count": 6, "split.no": 5}
+PLE = ("per_layer_token_embd.weight",)
+
+
+class SixShardSplit(unittest.TestCase):
+    """ISTA-DASLab's six-shard sets (llama.cpp b11870 and newer): split.count is 6, five shards are the set's own and the sixth is the Engram file,
+    handed over with --engram instead of in --shards.  CONVERTED is the real header (416 bytes) of the Engram at their 2026-10-27 revision: no
+    general.architecture, split.no 5 of 6, one tensor, per_layer_token_embd.weight."""
+
+    def model_shards(self, d: Path, n: int = 5, count: int = 6) -> list:
+        return [tiny_gguf(d / ("m-%05d-of-%05d.gguf" % (i, count)), "deepseek41", {"split.count": count, "split.no": i - 1}) for i in range(1, n + 1)]
+
+    def test_the_real_converted_header_is_what_the_check_expects(self):
+        g = PG.Gguf(CONVERTED)
+        self.assertIsNone(g.kv.get("general.architecture"))
+        self.assertFalse(PG.is_engram_file(g))                                          # why the check cannot use the architecture
+        self.assertEqual((g.kv["split.no"], g.kv["split.count"]), (5, 6))
+        self.assertEqual([t[0] for t in g.tensors], ["per_layer_token_embd.weight"])
+
+    def test_the_engram_counts_as_the_sixth_shard(self):
+        with tempfile.TemporaryDirectory() as d:
+            shards = self.model_shards(Path(d))
+            self.assertEqual(PG.engram_is_last_shard(str(CONVERTED), 6, shards), 1)
+            self.assertEqual(PG.engram_is_last_shard(None, 6, shards), 0)                # no --engram: the five are five of six
+
+    def test_it_never_counts_when_a_shard_is_missing_the_split_differs_or_the_path_is_no_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertEqual(PG.engram_is_last_shard(str(CONVERTED), 6, self.model_shards(d, 4)), 0)
+            self.assertEqual(PG.engram_is_last_shard(str(CONVERTED), 4, self.model_shards(d, 3, 4)), 0)    # another split's file
+            self.assertEqual(PG.engram_is_last_shard(str(d / "gone.gguf"), 6, self.model_shards(d)), 0)
+            self.assertEqual(PG.engram_is_last_shard(str(d), 6, self.model_shards(d)), 0)                # a folder (the earlier layouts' --engram)
+
+    def test_one_file_is_never_counted_twice(self):
+        with tempfile.TemporaryDirectory() as d:
+            four = self.model_shards(Path(d), 4)
+            self.assertEqual(PG.engram_is_last_shard(str(CONVERTED), 6, four + [CONVERTED]), 0)         # four shards + the Engram in --shards, and --engram too
+            self.assertEqual(PG.engram_is_last_shard(str(four[0]), 6, four + [four[0]]), 0)
+
+    def test_a_file_that_is_not_the_engram_never_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            shards = self.model_shards(d)
+            for name, arch, extra, tensors in (("no split keys", None, {}, PLE),
+                                               ("another number", None, {"split.count": 6, "split.no": 2}, PLE),
+                                               ("another tensor", None, SPLIT, ("blk.0.attn_norm.weight",)),
+                                               ("two tensors", None, SPLIT, PLE + ("blk.0.attn_norm.weight",)),
+                                               ("no tensor", "deepseek41", SPLIT, ())):
+                f = tiny_gguf(d / "x.gguf", arch, extra, tensors)
+                self.assertEqual(PG.engram_is_last_shard(str(f), 6, shards), 0, name)
+            self.assertEqual(PG.engram_is_last_shard(str(tiny_gguf(d / "ok.gguf", None, SPLIT, PLE)), 6, shards), 1)      # the same file as a real one
+
+    def run_main(self, d: Path, engram: Path):
+        shards = self.model_shards(d)
+        argv = ["pack_gguf.py", "--model", str(d), "--shards", *[p.name for p in shards], "--engram", str(engram), "--out", str(d / "pack")]
+        with unittest.mock.patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as cm:
+                PG.main()
+        return str(cm.exception.code)
+
+    def test_main_says_how_many_shards_are_here_when_the_sixth_is_not_the_engram(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            wrong = tiny_gguf(d / "not-the-engram.gguf", "deepseek41", SPLIT, ("blk.0.attn_norm.weight",))
+            self.assertIn("5 of the 6 shards are here", self.run_main(d, wrong))
+
+    def test_main_passes_the_split_check_with_the_real_engram_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertNotIn("shards are here", self.run_main(d, CONVERTED))          # (it stops later: the header alone has no tensor data)
 
 
 class LegacyModelMetadata(unittest.TestCase):

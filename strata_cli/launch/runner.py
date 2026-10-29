@@ -1309,7 +1309,7 @@ class Runner:
         legacy = getattr(mod, "DSV41_LEGACY_NAMES", {})
         missing = [n for n in others if not (folder / n).exists() and not (legacy.get(n) and (folder / legacy[n]).exists())]
         if missing:
-            parts = {4: "four", 9: "nine"}.get(len(others), str(len(others)))
+            parts = {4: "four", 5: "five", 9: "nine"}.get(len(others), str(len(others)))
             raise LaunchError(f"DeepSeek-V4.1-Flash {d.get('label', model)} is in {parts} parts and {len(missing)} of them are not in {folder} "
                               f"(first missing: {missing[0]}).",
                               "Put every part in the folder (or drop --model-path and let Strata download them). "

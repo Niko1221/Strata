@@ -670,7 +670,7 @@ def _dsv41_plan(path: Path, details) -> dict | None:
         messages.append(f"This is DeepSeek-V4.1-Flash, {row['label']}: all {len(row['present'])} model files are here"
                         + (", and the n-gram table." if row["engram"] else "."))
         if not row["engram"]:
-            messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put engram-IQ4_NL.gguf beside the model files.")
+            messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf beside the model files.")
         if row["legacy"]:
             messages.append("These are the file names of the first release; Strata uses them as they are.")
         messages.append("Strata checks the files once when it sets them up (about 5 minutes on a fast drive); nothing is copied or downloaded for them.")

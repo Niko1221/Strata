@@ -33,7 +33,7 @@ class DeepSeekPreview(unittest.TestCase):
 
     def test_the_tables_come_from_setup_and_cover_the_three_official_sizes(self):
         self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw"])
-        self.assertEqual(len(T["engram"]), 2)
+        self.assertEqual(list(T["engram"]), ["DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf"])
 
     def test_each_official_set_is_recognised_with_its_size_name(self):
         for model in T["sets"]:
@@ -43,7 +43,7 @@ class DeepSeekPreview(unittest.TestCase):
                 plan, folder = self.preview(files_of(model, legacy=legacy, engram="legacy" if legacy else "official"))
                 self.assertEqual(plan["file_set_status"], "plausible", (model, legacy, plan["issues"]))
                 self.assertEqual((plan["candidate_selection"]["family"], plan["candidate_selection"]["model"]), ("deepseek41", model))
-                self.assertEqual(plan["file_count"], 5)
+                self.assertEqual(plan["file_count"], 6)                 # the set's five files and the Engram, the sixth shard
                 self.assertEqual(plan["candidate_selection"]["setup_args_hint"][-2:], ["--gguf-dir", str(folder)])
                 self.assertEqual(plan["issues"], [])
                 self.assertTrue(plan["messages"])
@@ -52,7 +52,7 @@ class DeepSeekPreview(unittest.TestCase):
     def test_without_the_engram_it_is_still_the_set_and_says_what_setup_fetches(self):
         plan, _ = self.preview(files_of("IST-DAS-2.00bpw", engram=None))
         self.assertEqual(plan["file_set_status"], "plausible")
-        self.assertEqual(plan["file_count"], 4)
+        self.assertEqual(plan["file_count"], 5)
         self.assertTrue(any("n-gram table" in m and "downloads it" in m for m in plan["messages"]))
 
     def test_a_missing_or_short_shard_names_the_file(self):

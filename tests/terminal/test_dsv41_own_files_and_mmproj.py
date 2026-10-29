@@ -85,8 +85,7 @@ class OwnDeepSeekFiles(unittest.TestCase):
             d = Path(d)
             self.touch_set(d / "a", new)
             self.assertEqual(Runner.deepseek_set_in(setup, d / "a")[0], "IST-DAS-2.00bpw")
-            old = ["model-2.25bpw-%05d-of-00004.gguf" % i for i in range(1, 5)]
-            self.touch_set(d / "b" / "2.25bpw", old)
+            self.touch_set(d / "b" / "2.25bpw", fam["models"]["IST-DAS-2.25bpw"]["shards"])        # (the first release's folder name, today's file names)
             m, _entry, folder = Runner.deepseek_set_in(setup, d / "b")
             self.assertEqual((m, folder), ("IST-DAS-2.25bpw", d / "b" / "2.25bpw"))
             ud = [setup.DSV41_SHARD.format(i=i) for i in range(1, 10)]
