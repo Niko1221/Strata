@@ -531,6 +531,12 @@ class PortMode(unittest.TestCase):
         self.assertEqual(json.loads(kept.read_text()), {"top_k": 20})
         self.assertFalse((path.parent / "cfg.replica0.json").exists())
 
+    def test_split_serve_refused(self):
+        self.start(self.cfg(split_serve={"prefill_gpu": 0, "decode_gpu": 1}))
+        self.assertEqual(self.proc.wait(15), 2)
+        self.assertIn("split_serve", self.out())
+        self.assertFalse(answers(self.p0))
+
     def test_mixed_ports_refused(self):
         self.start({"replicas": [{"gpus": [0], "port": self.p0}, {"gpus": [1]}]})
         self.assertEqual(self.proc.wait(15), 2)

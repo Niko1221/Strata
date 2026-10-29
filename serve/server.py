@@ -8772,6 +8772,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     except rp.ReplicaConfigError as e:
         ap.error(str(e))
     if ports:                                           # each replica its own server: this process only supervises
+        if a.split_serve is not None or cfg.get("split_serve") not in (None, False):
+            ap.error('"split_serve" and "replicas" cannot be used together: both start engines on the cards')
         if a.ready_file or a.owner_fd is not None:
             ap.error("--ready-file and --owner-fd are for one server, not for replicas on their own ports")
         if a.gpu is not None:
