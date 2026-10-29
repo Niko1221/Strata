@@ -1,3 +1,52 @@
+<h1 align="center">Strata for DGX Spark</h1>
+<h4 align="center">
+[English](README.md) · [简体中文](README.zh-CN.md) · <bold>日本語
+</h4>
+
+>  [Niko1221/Strata](https://github.com/Niko1221/Strata) をNVIDIA DGX Spark（GB10、Arm64、128GB版）用に移植/チューニングしたフォークです。すべての機能は元のプロジェクトで実装されたものです。
+
+## NVIDIA DGX Spark 向けの Strata 移植
+
+- Arm64 対応
+- NVFP4 チューン
+- LLM: qwen3.8-flash-next-nvfp4-nvfp4
+- TUI モニター画面
+
+Claude Code に Local LLM (deepseek v4 Flash, qwen3.8 Flash Next iQ3_s)をつないでローカル環境で移植しました。
+
+### Claude Code のバックエンドで使っている時の速度
+
+
+<p align="center">
+  <img src="docs/media/Strata-DGX-Spark-CLI2026-10-28.png" width="900" alt="モデルの動作、速度、メモリ、最近のリクエストを表示する Strata ターミナルアプリ">
+  <br><sub>SSH ターミナルで動作中のモデル性能と状態を確認できます。</sub>
+</p>
+
+### インストール
+
+オリジナルと同様：CUDA Toolkit 13.0（`/usr/local/cuda`）が入った DGX Spark、`g++`、`git`、IQ3_XXS 用に約 **85 GB の空きディスク**
+（モデル、画像エンコーダ、ドラフト層）。
+```
+git clone https://github.com/YasuhiroIhara/Strata-DGX-Spark.git
+cd Strata-DGX-Spark
+./setup.sh --yes --family qwen --model IQ3_XXS --vision gpu --no-start
+```
+
+### 起動
+
+```
+./run-nvfp4-nvfp4.sh
+```
+
+### モニター
+```
+.venv/bin/python strata.py monitor --url http://127.0.0.1:8080
+```
+### 終了
+それぞれのターミナルで Ctrl+C
+
+<h2>以下、オリジナルのReadmeです</h2>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
