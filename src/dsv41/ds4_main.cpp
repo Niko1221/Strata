@@ -215,14 +215,115 @@ static unsigned long long rt_seq() {
 #endif
 }
 static double rt_now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// DS4_LOOKUP=1: a source of drafts that costs nothing to make - what follows the most recent earlier copy of the
+// tail of what the request has already said (its prompt included).  A model that reproduces a document, a list or
+// its own recent code keeps the continuation in its own history, tens of thousands of tokens beyond any drafter's
+// window, and the continuation is offered as a proposal only: the trunk's verify decides every one of them exactly
+// as it decides the drafter's (greedy equal, else the point-mass rejection the drafter's argmax drafts already
+// use), so the answers are what they were.  A match shorter than 5 tokens proposes nothing until a round that
+// kept all of its long block (a copy that runs pays for the next).  Unset: not one line of this runs.
+struct Lookup {
+    std::vector<int> h;                 // the request's tokens: the prompt, then every committed token
+    bool hot = false;                   // the last round kept a whole long block: a copy is running
+    int misses = 0;                     // rounds that proposed and kept nothing
+    mutable int mlen = 0;               // the last proposal's match length: the discriminator between a copy
+                                        // (tens of tokens) and prose that merely repeats a phrase (4-8)
+    // the tail is found by its last two tokens: head[key of the token pair] -> its most recent earlier start,
+    // nxt[i] the start before it (a chain).  The scan a round costs the few candidates of the tail's pair times
+    // the extension, not the history's length: a 200 000-token agent conversation stays a microsecond a round.
+    std::unordered_map<uint64_t, int> head;
+    std::vector<int> nxt;
+    static uint64_t pair_key(int a, int b) { return ((uint64_t) (uint32_t) a << 32) | (uint32_t) b; }
+    void seed(const std::vector<int>& ids) {
+        h = ids;
+        hot = false;
+        misses = 0;
+        head.clear();
+        head.reserve(h.size() * 2 > 64 ? h.size() : 64);
+        nxt.assign(h.size(), -1);
+        for (size_t i = 0; i + 1 < h.size(); ++i) {
+            const uint64_t k = pair_key(h[i], h[i + 1]);
+            const auto it = head.find(k);
+            nxt[i] = it != head.end() ? it->second : -1;
+            head[k] = (int) i;
+        }
+    }
+    void commit(int t) {
+        if (h.empty()) { h.push_back(t); nxt.push_back(-1); return; }
+        const size_t i = h.size() - 1;   // the new token closes the pair (the old last token, t)
+        h.push_back(t);
+        nxt.push_back(-1);
+        const uint64_t k = pair_key(h[i], h[i + 1]);
+        const auto it = head.find(k);
+        if (it != head.end()) nxt[i] = it->second;
+        head[k] = (int) i;
+    }
+    // up to maxn proposals: what followed the most recent earlier copy of the tail, the copy extended back
+    // from the tail's last pair as far as it goes (64 tokens at most)
+    int propose(int maxn, std::vector<int>& props) const {
+        props.clear();
+        mlen = 0;
+        const int n = (int) h.size();
+        const int need = hot ? 2 : (misses >= 2 ? 10 : 5);   // a fresh copy must be long before it is worth a
+                                        // window; a running one not; a streak of empty rounds raises the bar
+        if (n < 24 || maxn < need) return 0;
+        const auto it = head.find(pair_key(h[n - 2], h[n - 1]));
+        if (it == head.end()) return 0;
+        int best = -1, blen = 0;                      // the newest candidates first, but the longest copy wins
+        for (int j = it->second, tries = 0; j >= 0 && tries < 64; j = nxt[j], ++tries) {
+            if (j + 3 >= n) continue;
+            int len = 2;
+            while (len < 64 && j + 1 - len >= 0 && h[(size_t) (j + 1 - len)] == h[(size_t) (n - 1 - len)]) ++len;
+            if (len > blen && (n - len) - (j + 2) >= 1) { blen = len; best = j; }
+            if (blen >= 64) break;
+        }
+        if (best < 0) return 0;
+        mlen = blen;
+        const int avail = std::min(maxn, (n - blen) - (best + 2));
+        for (int k = 0; k < avail; ++k) props.push_back(h[(size_t) (best + 2 + k)]);
+        return (int) props.size();
+    }
+};
+static const bool g_lookup = std::getenv("DS4_LOOKUP") != nullptr && std::atoi(std::getenv("DS4_LOOKUP")) != 0;
+static long long g_lk_rounds = 0, g_lk_off = 0, g_lk_acc = 0;   // (printed with the draft stats: the lookup's share)
+static long long g_lk_probe = 0, g_lk_best = 0;                 // (DS4_LK_STATS: rounds asked, the longest match seen)
 bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, float temperature, float top_p, int top_k,
            float min_p, unsigned long long seed, unsigned long long& counter, std::vector<int>& out, int& offered,
-           int& accepted, std::string& err, float cum_min = -1.0f) {
+           int& accepted, std::string& err, float cum_min = -1.0f, Lookup* lk = nullptr) {
     out.clear();
     offered = accepted = 0;
+    // DS4_LOOKUP without a drafter (the machine DSpark's rule turned off): the context's own continuation is
+    // proposed and verified as a window.  Greedy: the verify's test is the trunk's own argmax, so the answers
+    // are what they were.  Sampled: the same point-mass rejection the drafter's argmax drafts already go
+    // through (q is a point at each proposed token, each row keeps it with its own model probability and
+    // draws the residual otherwise) - the distribution is the model's own.
+    if (lk != nullptr && g_lookup && spec && room > 1 && m.draft_block() == 0) {
+        std::vector<int> props;
+        const int np = lk->propose(std::min(room - 1, g_spec_depth), props);
+        ++g_lk_probe;
+        if ((long long) lk->mlen > g_lk_best) g_lk_best = lk->mlen;
+        const int floor = lk->hot ? 4 : (lk->misses >= 2 ? 16 : 12);   // (prose tails match 4-8 tokens: a window
+        if (np >= (lk->hot ? 2 : 5) && lk->mlen >= floor) {            //  costs 16 rows, so only a copy earns one)
+            ++g_rt.rounds;
+            ++g_lk_rounds;
+            g_lk_off += np;
+            int acc = 0, next = -1;
+            if (!m.verify(tok, props, temperature, top_p, top_k, min_p, seed, counter, acc, next, err)) return false;
+            if (acc == 0) ++lk->misses; else lk->misses = 0;
+            ++g_rt.spec_rounds;
+            counter += (unsigned long long) acc + 1;
+            for (int i = 0; i < acc; ++i) out.push_back(props[(size_t) i]);
+            out.push_back(next);
+            offered = np;
+            accepted = acc;
+            g_lk_acc += acc;
+            return true;
+        }
+    }
     if (spec && room > 1 && m.draft_block() > 0) {
         std::vector<int> drafts;
         std::vector<float> conf;
+        bool lk_used = false;   // (the round's block came from the context lookup, not the drafter)
         ++g_rt.rounds;
         static const bool tl_init = (tl_gate(false), true);
         (void) tl_init;
@@ -235,6 +336,23 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
         g_rt.draft_d += rt_seq() - rs0;
         g_round_conf = conf;
         g_round_nd = (int) drafts.size();
+        // the lookup's override: a long enough earlier copy of the tail wins its block (conf 1: the verify's own test
+        // decides every token); a shorter one only goes in when the drafter, which saw the hidden state, proposes the
+        // same first two tokens - the two sources agreeing is the cheap confidence signal (HyperQwen's
+        // _AGREE: one token agrees too often by chance, two is the cheap line)
+        if (lk != nullptr && g_lookup) {
+            std::vector<int> props;
+            const int np = lk->propose(std::min(room - 1, g_spec_depth), props);
+            const bool agree = props.size() >= 2 && drafts.size() >= 2 && props[0] == drafts[0] && props[1] == drafts[1];
+            const int floor = lk->hot ? 4 : (lk->misses >= 2 ? 16 : 12);
+            if (((lk->hot && np >= 2) || np >= 5 || (np >= 2 && agree)) && lk->mlen >= floor) {
+                drafts = props;
+                conf.assign(props.size(), 1.0f);
+                ++g_lk_rounds;
+                g_lk_off += (int) props.size();
+                lk_used = true;
+            }
+        }
         int keep = 0;
         if (cum_min < 0) cum_min = dspark_cum_default(m);
         float cum = 1.0f;
@@ -260,6 +378,10 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
             out.push_back(next);
             offered = keep;
             accepted = acc;
+            if (lk_used) {
+                g_lk_acc += acc;
+                if (acc == 0) ++lk->misses; else lk->misses = 0;
+            }
             return true;
         }
     }
@@ -909,6 +1031,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const long long limit = r.max_new > 0 ? r.max_new : m.max_context() - (long long) r.ids.size();
         long long d_off = 0, d_acc = 0;
         bool cool = false;
+        Lookup look;
+        if (g_lookup) look.seed(r.ids);
         int tok = m.sample(r.temperature, r.top_p, r.top_k, r.min_p, r.seed, counter++);
         std::vector<int> got;
         // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
@@ -950,6 +1074,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             std::printf("T %d\n", tok);
             ++produced;
+            if (g_lookup) look.commit(tok);
             if (produced % 8 == 0) stat_line();
             std::fflush(stdout);
             bool end = false;
@@ -965,16 +1090,20 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 // a round whose drafts were all below the confidence floor: the next one does without the drafter
                 // (a request's spec / dspark_conf keys over the engine's: the speed calibration measures both ways)
                 const bool try_spec = (r.spec < 0 ? spec : r.spec != 0) && !cool;
+                const long long lk0 = g_lk_rounds;   // (a lookup round that takes nothing does not cool the request:
                 if (!round(m, tok, room, try_spec, r.conf >= 0 ? r.conf : conf_min, r.temperature, r.top_p, r.top_k,
                            r.min_p, r.seed, counter, got,
-                           off, acc, err, r.cum)) {
+                           off, acc, err, r.cum, g_lookup ? &look : nullptr)) {
                     std::fprintf(stderr, "ds4: %s\n", err.c_str());
                     finish = "cancel";
                     break;
                 }
                 d_off += off;
                 d_acc += acc;
-                cool = try_spec && off == 0;
+                cool = try_spec && off == 0 && g_lk_rounds == lk0 && m.draft_block() > 0;   // (no drafter: an
+                                        // empty round is the norm - every plain step offers nothing - so only the
+                                        // drafter's rule may cool the request; the lookup's own guard handles it)
+                if (g_lookup) look.hot = (off == acc && acc >= 5);
                 std::reverse(got.begin(), got.end());
             }
             tok = got.back();
@@ -997,6 +1126,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      s.experts ? 100.0 * (double) s.cpu_experts / (double) s.experts : 0.0);
         if (d_off > 0) std::fprintf(stderr, "maya ds4 serve: drafts %lld of %lld kept; %s\n", d_acc, d_off,
                                     per_position(s_dec, s).c_str());
+        if (g_lk_rounds > 0) std::fprintf(stderr, "maya ds4 serve: lookup %lld rounds, %lld of %lld kept\n",
+                                          g_lk_rounds, g_lk_acc, g_lk_off);
+        if (std::getenv("DS4_LK_STATS") != nullptr)
+            std::fprintf(stderr, "maya ds4 serve: lookup stats: %lld probes, longest match %lld, %lld verified rounds\n",
+                         g_lk_probe, g_lk_best, g_lk_rounds);
         m.save_profile();
     }
     // the engine ends (QUIT or the end of its input): the conversation in the model is set aside, and every one in
@@ -1223,22 +1357,28 @@ int spec_eval(strata::ds4::Model& m, const std::string& ids_path, int n, int win
         }
         unsigned long long counter = 0;
         int tok = m.sample(0.0f, 1.0f, 1, 0.0f, 1, counter++);
+        Lookup look;
+        if (g_lookup) { look.seed(ids); look.commit(tok); }
         std::vector<int> got;
         int emitted = 1;
         long long rounds = 0, acc_all = 0;
         bool stop = false;
         while (emitted < n && !stop) {
             int off = 0, acc = 0;
-            if (!round(m, tok, n - emitted, spec, conf_min, 0.0f, 1.0f, 1, 0.0f, 1, counter, got, off, acc, err)) {
+            if (!round(m, tok, n - emitted, spec, conf_min, 0.0f, 1.0f, 1, 0.0f, 1, counter, got, off, acc, err, -1.0f,
+                       g_lookup ? &look : nullptr)) {
                 std::fprintf(stderr, "strata-dsv41: %s\n", err.c_str());
                 return 1;
             }
             ++rounds;
             acc_all += acc;
+            if (g_lookup) look.hot = (off == acc && acc >= 5);
             for (int t : got) {
                 ++emitted;
                 if (t == 1) stop = true;
             }
+            if (g_lookup)
+                for (int t : got) look.commit(t);
             tok = got.back();
         }
         std::fprintf(stderr, "spec-eval %zu/%zu %s: prompt %zu, %d tokens, %lld rounds, %.2f tokens a round, accepted %lld (%.0f s)\n", si + 1,
@@ -1480,9 +1620,12 @@ int main(int argc, char** argv) {
     bool cool = false;
     if (n > 0) {
         int tok = m.sample(temp, 1.0f, temp > 0 ? 64 : 1, 0.0f, cli_seed, counter++);
+        Lookup look;
+        if (g_lookup) { look.seed(ids); look.commit(tok); }
         std::vector<int> got;
         for (;;) {
             out.push_back(tok);
+            if (g_lookup) look.commit(tok);
             {
                 const double tn = now_ms();
                 tok_ms.push_back(tn - t_prev);
@@ -1502,15 +1645,19 @@ int main(int argc, char** argv) {
             if (got.empty()) {
                 int off = 0, acc = 0;
                 const bool try_spec = spec && !cool;
+                const long long lk0 = g_lk_rounds;   // (a lookup round that takes nothing does not cool the run)
                 if (!round(m, tok, n - (int) out.size(), try_spec, o.dspark_conf, temp, 1.0f, temp > 0 ? 64 : 1, 0.0f,
-                           cli_seed, counter, got, off, acc, err)) {
+                           cli_seed, counter, got, off, acc, err, -1.0f, g_lookup ? &look : nullptr)) {
                     std::fprintf(stderr, "maya-ds4: %s\n", err.c_str());
                     return 1;
                 }
                 d_off += off;
                 d_acc += acc;
                 ++rounds;
-                cool = try_spec && off == 0;
+                cool = try_spec && off == 0 && g_lk_rounds == lk0 && m.draft_block() > 0;   // (no drafter: an
+                                        // empty round is the norm - every plain step offers nothing - so only the
+                                        // drafter's rule may cool the request; the lookup's own guard handles it)
+                if (g_lookup) look.hot = (off == acc && acc >= 5);
                 std::reverse(got.begin(), got.end());
             }
             tok = got.back();
