@@ -69,11 +69,17 @@ function TaskCard({ entry }: { entry: ChildEntry }) {
     useLayoutEffect(() => {
         const el = body.current;
         if (!el || open) return;
-        setLong(el.scrollHeight > el.clientHeight + 2);
+        const check = () => setLong(el.scrollHeight > el.clientHeight + 2);
+        check();
+        // A narrower window can turn a task that fitted into a clipped one; the
+        // fold and its button must follow the width, not only the text.
+        const observer = new ResizeObserver(check);
+        observer.observe(el);
+        return () => observer.disconnect();
     }, [text, open]);
     return <section className="subagent-task" aria-label={tr('Task from the main assistant')}>
         <header className="subagent-task__head"><Icon name="experts" size={14}/><span>{tr('Task from the main assistant')}</span></header>
-        <div ref={body} className={`st-bubble subagent-bubble subagent-task__body${open ? ' is-open' : ''}`}><Markdown text={text}/></div>
+        <div ref={body} className={`st-bubble subagent-bubble subagent-task__body${open ? ' is-open' : ''}${long ? ' is-long' : ''}`}><Markdown text={text}/></div>
         {long ? <button type="button" className="subagent-task__more" aria-expanded={open} onClick={() => setOpen(value => !value)}>{tr(open ? 'Show less' : 'Show the whole task')}</button> : null}
     </section>;
 }
