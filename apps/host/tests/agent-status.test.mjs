@@ -154,7 +154,7 @@ test('real Harness: a turn that writes a file says what it is doing, in order, a
 
 test('a sentence with a name or a number also carries its catalog template and values, and every status sentence is in the catalog in every language', async () => {
   const { readFileSync } = await import('node:fs');
-  const catalog = Object.fromEntries(['en', 'de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
+  const catalog = Object.fromEntries(['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
   const idOf = text => Object.entries(catalog.en).find(([, v]) => v === text)?.[0];
   const p = new TurnProjector(); const seen = []; p.onStatus = u => seen.push(u);
   p.consume({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a', chunk: { type: 'tool-call-delta', index: 0, id: 'c', name: 'write', argumentsDelta: '{"file_path":"/w/pagoda.html","content":"' + 'x'.repeat(4000) } } });
@@ -163,7 +163,7 @@ test('a sentence with a name or a number also carries its catalog template and v
   const keys = ['Starting the assistant…', 'Starting…', 'Reading your message…', 'Working out the next step…', 'Thinking… {0} tokens', 'Writing the answer…', 'Waiting for your answer…', 'Helpers are working ({0})…', 'Working on the goal…',
     'Writing {0}…', 'Writing a file…', 'Writing {0}… ({1} KB)', 'Writing a file… ({0} KB)', 'Changing {0}…', 'Changing a file…', 'Reading {0}…', 'Reading a file…', 'Running a command…', 'Searching your files…', 'Searching the web…',
     'Opening {0}…', 'Opening a web page…', 'Using the browser…', 'Setting the goal…', 'Updating the goal…', 'Checking the goal…', 'Using a tool…', 'Reading your files…', 'Trying an improved version…', 'Checking the result…', 'Comparing the two versions…'];
-  for (const key of keys) { const id = idOf(key); assert.ok(id, `${key} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) { assert.ok(catalog[l][id]?.trim(), `${l}: ${key}`); assert.deepEqual((catalog[l][id].match(/\{\d\}/g) ?? []).sort(), (key.match(/\{\d\}/g) ?? []).sort(), `${l} keeps the slots of ${key}`); } }
+  for (const key of keys) { const id = idOf(key); assert.ok(id, `${key} is in the catalog`); for (const l of ['de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh']) { assert.ok(catalog[l][id]?.trim(), `${l}: ${key}`); assert.deepEqual((catalog[l][id].match(/\{\d\}/g) ?? []).sort(), (key.match(/\{\d\}/g) ?? []).sort(), `${l} keeps the slots of ${key}`); } }
 });
 
 test('a goal step is always sent, even right after another status (it used to be swallowed by the 300 ms gap, which made a test flaky)', () => {

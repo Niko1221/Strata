@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # runnable as tools/test_x.py from the repo root too
+
 from tools.conversation_cache_http_smoke import run
 
 
