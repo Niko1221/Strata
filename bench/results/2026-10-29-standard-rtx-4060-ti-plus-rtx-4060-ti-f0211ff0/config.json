@@ -1,0 +1,41 @@
+{
+  "engine_options": {
+    "--pack": "unsloth-ud-iq4_xs",
+    "--native": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--mtp": "rt-iten",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--remote-expert-opt": true,
+    "--pcie-frac": "0.00",
+    "--spec-min-p": "0.50",
+    "--kv-resident": "32768",
+    "--vision": true,
+    "--vram-reserve-mib": "700",
+    "--conversation-cache-mib": "8192",
+    "--conversation-cache-slots": "4",
+    "--layer-split": "auto"
+  },
+  "other_engine_options": {
+    "--pack": "unsloth-ud-iq4_xs",
+    "--native": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--max-context": "262144",
+    "--remote-expert-opt": true,
+    "--vision": true,
+    "--conversation-cache-mib": "8192",
+    "--conversation-cache-slots": "4"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "presence_penalty": 0.0,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 262144,
+  "source": "effective engine arguments of the profile"
+}
