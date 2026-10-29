@@ -802,11 +802,11 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .subagent-chat__scroll { flex:1; min-height:0; overflow:auto; padding:2px 6px 8px 2px; scrollbar-gutter:stable; overscroll-behavior:contain; }
 .subagent-chat__inner { display:flex; flex-direction:column; gap:14px; padding:2px 2px 8px; }
 .subagent-chat__entries { display:flex; flex-direction:column; gap:14px; }
-.subagent-tools { display:flex; flex-direction:column; gap:6px; margin:1px 0 2px 9px; padding-left:10px; border-left:2px solid var(--st-line-soft); }
+.subagent-tools { display:flex; flex-direction:column; gap:6px; margin:1px 0 2px; }
 .subagent-task { padding:14px 16px; border:1px solid var(--st-line); border-radius:12px; background:var(--st-surface-2); }
 .subagent-task__head { display:flex; align-items:center; gap:6px; margin-bottom:8px; font-size:11px; font-weight:700; color:var(--st-ink-muted); }
 .subagent-msg { display:flex; flex-direction:column; gap:5px; min-width:0; max-width:100%; }
-.subagent-msg--user { align-items:flex-end; }
+.subagent-msg--user { align-items:flex-end; align-self:flex-end; }
 .subagent-msg--parent, .subagent-msg--assistant { align-items:flex-start; }
 .subagent-msg__who { font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--st-ink-muted); }
 .subagent-msg--user .subagent-msg__who { text-align:right; }
