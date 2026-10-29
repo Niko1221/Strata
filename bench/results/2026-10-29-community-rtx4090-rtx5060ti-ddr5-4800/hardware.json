@@ -1,0 +1,116 @@
+{
+ "captured_at": "2026-10-29T04:19:34.8419783+03:00",
+ "memory_modules": [
+  {
+   "DeviceLocator": "DIMM 0",
+   "BankLabel": "P0 CHANNEL A",
+   "Capacity": 34359738368,
+   "Speed": 4800,
+   "ConfiguredClockSpeed": 4800,
+   "Manufacturer": "A-DATA Technology",
+   "PartNumber": "AX5U6400C3232G-DCLAWH"
+  },
+  {
+   "DeviceLocator": "DIMM 1",
+   "BankLabel": "P0 CHANNEL A",
+   "Capacity": 34359738368,
+   "Speed": 4800,
+   "ConfiguredClockSpeed": 4800,
+   "Manufacturer": "A-DATA Technology",
+   "PartNumber": "AX5U6400C3232G-DC"
+  },
+  {
+   "DeviceLocator": "DIMM 0",
+   "BankLabel": "P0 CHANNEL B",
+   "Capacity": 34359738368,
+   "Speed": 4800,
+   "ConfiguredClockSpeed": 4800,
+   "Manufacturer": "A-DATA Technology",
+   "PartNumber": "AX5U6400C3232G-DCLAWH"
+  },
+  {
+   "DeviceLocator": "DIMM 1",
+   "BankLabel": "P0 CHANNEL B",
+   "Capacity": 34359738368,
+   "Speed": 4800,
+   "ConfiguredClockSpeed": 4800,
+   "Manufacturer": "A-DATA Technology",
+   "PartNumber": "AX5U6400C3232G-DCLAWH"
+  }
+ ],
+ "baseboard": {
+  "Manufacturer": "Gigabyte Technology Co., Ltd.",
+  "Product": "X870 AORUS STEALTH ICE",
+  "Version": "x.x"
+ },
+ "bios": {
+  "SMBIOSBIOSVersion": "F10c",
+  "ReleaseDate": "2026-07-21T03:00:00+03:00"
+ },
+ "cpu": {
+  "Name": "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+  "NumberOfCores": 8,
+  "NumberOfLogicalProcessors": 16,
+  "MaxClockSpeed": 4700
+ },
+ "memory_owner_confirmation": "Owner confirmed DDR5-4800, four 32 GiB modules; 5200 was an earlier unsuccessful setting, not the benchmark setting.",
+ "gpu_pnp": [
+  {
+   "name": "NVIDIA GeForce RTX 5060 Ti",
+   "location_paths": [
+    "PCIROOT(0)#PCI(0201)#PCI(0000)#PCI(0800)#PCI(0000)",
+    "ACPI(_SB_)#ACPI(PCI0)#ACPI(GPP7)#ACPI(UP00)#ACPI(DP40)#ACPI(EP00)"
+   ],
+   "location": "PCI-шина 10, устройство 0, функция 0"
+  },
+  {
+   "name": "NVIDIA GeForce RTX 4090",
+   "location_paths": [
+    "PCIROOT(0)#PCI(0101)#PCI(0000)",
+    "ACPI(_SB_)#ACPI(PCI0)#ACPI(GPP0)#ACPI(VGA_)"
+   ],
+   "location": "PCI-шина 1, устройство 0, функция 0"
+  }
+ ],
+ "memory_summary": {
+  "installed_bytes": 137438953472,
+  "modules": 4,
+  "module_capacity_gib": 32,
+  "configured_data_rate_mt_s": 4800,
+  "source": "Win32_PhysicalMemory plus owner confirmation",
+  "dram_clock_and_timings": "not measured",
+  "memory_bandwidth": "not measured"
+ },
+ "topology_source": "https://www.gigabyte.com/Motherboard/X870-AORUS-STEALTH-ICE-rev-10/sp",
+ "topology_note": "CPU-attached primary PCIEX16 and chipset-attached PCIEX4 from board documentation, consistent with captured PnP paths; exact PCB revision not read. Gen4 x16 / Gen4 x4 observed after benchmark; idle Gen1 is power saving. nvidia-smi topo -m failed on this Windows setup; no NVLink/P2P claim is made.",
+ "standard_runner_hardware": {
+  "gpus": [
+   {
+    "device_index": 0,
+    "name": "NVIDIA GeForce RTX 4090",
+    "memory_bytes": 25757220864,
+    "memory_kind": "dedicated",
+    "power_limit_w": 550.0
+   },
+   {
+    "device_index": 1,
+    "name": "NVIDIA GeForce RTX 5060 Ti",
+    "memory_bytes": 17103323136,
+    "memory_kind": "dedicated",
+    "power_limit_w": 180.0
+   }
+  ],
+  "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+  "ram_bytes": 134810910720,
+  "storage": [
+   {
+    "kind": "ssd",
+    "model": "XPG GAMMIX S70 BLADE",
+    "bus": "nvme"
+   }
+  ],
+  "background_workloads": null
+ },
+ "long_run_gpu_before": "index, name, driver_version, memory.total [MiB], memory.used [MiB], power.limit [W], pcie.link.gen.current, pcie.link.width.current\n0, NVIDIA GeForce RTX 4090, 616.56, 24564 MiB, 22984 MiB, 550.00 W, 1, 16\n1, NVIDIA GeForce RTX 5060 Ti, 616.56, 16311 MiB, 15489 MiB, 180.00 W, 1, 4\n",
+ "long_run_gpu_after": "index, name, memory.used [MiB], pcie.link.gen.current, pcie.link.width.current\n0, NVIDIA GeForce RTX 4090, 23164 MiB, 4, 16\n1, NVIDIA GeForce RTX 5060 Ti, 15533 MiB, 4, 4\n"
+}
