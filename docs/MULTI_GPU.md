@@ -206,6 +206,33 @@ for the next model, and explains a failed start on a card that is taken. Two mod
 Both loaded (33 s and 59 s with the files cached, 114 s the first time) and answered chats at about 60 tokens/s each. Unloading
 one left the other answering. The same app code drives NVIDIA cards, but two models on two NVIDIA cards were not run.
 
+## Each card its own server (replica ports, opt-in)
+
+Instead of one split, each card (or group of cards) can run its own engine as a separate server on its own port. This
+suits two different cards (say a 24 GB and a 12 GB one) where one client wants the big card with a long context and
+another wants the second card at the same time. Give every `"replicas"` entry a `"port"`:
+
+```json
+"gpu": [0, 1],
+"replicas": [{"gpus": [0], "port": 8080},
+             {"gpus": [1], "port": 8081, "args": ["--max-context", "131072"]}],
+"replica_shared_arena": "/tmp/strata.arena"
+```
+
+- Each port is an ordinary Strata server with its own context, `/health`, `/v1/models`, API monitor and conversation
+  cache. A request on 8081 is only served by the engine on card 1; if that engine dies, the 8081 server starts it again,
+  as any single server does. Clients pick the port.
+- `"replica_shared_arena"` (or `--replica-shared-arena FILE`) keeps one copy of the experts in RAM for all of them: the
+  replicas start one after another, the first fills the file, the next ones attach. The file is deleted at stop.
+- The process you start only supervises: its own `--port` is not used. Ctrl+C or a stop signal ends every replica; if
+  it is killed, the replicas end with it (Linux).
+- Each replica's run config is written next to yours as `<name>.replica0.json`, `<name>.replica1.json` ... while it
+  runs (change your own config, not these); a replica's shared Chat settings stay in
+  `<name>.replica<i>.shared-settings.json`. Replicas on their own ports start loaded (no `--lazy`). If one replica's
+  server stops on its own, the others are stopped too.
+- Either every entry has a `"port"` or none does (then `replicas` is the routed mode, one address, unchanged). A port
+  that is already in use, or used twice, refuses the start.
+
 ## DeepSeek V4.1-Flash
 
 DeepSeek V4.1-Flash runs in the app and the Terminal and spreads its experts and its dense weights over several cards. It does not use

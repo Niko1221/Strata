@@ -8787,7 +8787,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--replicas", type=int, default=None, metavar="N",
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
-                         "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
+                         "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}]; with a \"port\" in every entry, each replica is "
+                         "its own server on its own port)")
+    ap.add_argument("--replica-shared-arena", default=None, metavar="FILE",
+                    help="replicas with ports: one copy of the experts in RAM for all of them, in FILE (deleted at "
+                         "stop; also \"replica_shared_arena\" in the config)")
     ap.add_argument("--split-serve", default=None, metavar="PREFILL,DECODE",
                     help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
                          "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
@@ -8823,6 +8827,22 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
     split_joined_args(cfg)
+    from serve import replicas as rp
+    if a.replica_shared_arena:
+        cfg["replica_shared_arena"] = a.replica_shared_arena
+    try:
+        ports = rp.port_mode({**cfg, "replicas": a.replicas} if a.replicas is not None else cfg)
+    except rp.ReplicaConfigError as e:
+        ap.error(str(e))
+    if ports:                                           # each replica its own server: this process only supervises
+        if a.split_serve is not None or cfg.get("split_serve") not in (None, False):
+            ap.error('"split_serve" and "replicas" cannot be used together: both start engines on the cards')
+        if a.ready_file or a.owner_fd is not None:
+            ap.error("--ready-file and --owner-fd are for one server, not for replicas on their own ports")
+        if a.gpu is not None:
+            cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
+        return rp.run_port_mode(cfg, launch_args, a.host or cfg.get("host") or "127.0.0.1",
+                                server_py=os.path.abspath(__file__), cfg_path=a.config)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)

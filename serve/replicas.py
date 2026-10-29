@@ -12,6 +12,11 @@ Opt-in, in the run config:
 
 or `serve/server.py --replicas 2`.  Nothing changes without it.
 
+Port mode.  When every entry has a "port" ({"gpus": [1], "port": 8081}), each replica is a separate, ordinary server
+on its own port instead (`run_port_mode`): this process only starts them one after another, pins their cores, ends
+them when it stops (and they end with it), and deletes "replica_shared_arena" (one copy of the experts for all of
+them, `--shared-expert-arena`).  Some entries with a port and some without refuse the start.
+
 Routing.  Each request goes to the replica with the lowest cost, cost = prompt tokens the replica would have to read
 again (it holds the start of a conversation in its cache) + LOAD_TOKENS for every request already running there.  A
 conversation's next turn therefore goes back to its replica, until that replica is so much busier than another that
@@ -71,6 +76,30 @@ def gpu_groups(cfg: dict) -> list[list[int]]:
     return groups
 
 
+def port_mode(cfg: dict) -> list[int] | None:
+    """Port mode (see the module doc): the replicas' ports in entry order when every entry of a "replicas" list names
+    one, None when none does.  Ports on some entries only, a repeated port, a port that is not a whole number in
+    1..65535, or "replica_shared_arena" without ports are refused (ReplicaConfigError): what to do then is not clear."""
+    spec = cfg.get("replicas")
+    entries = spec if isinstance(spec, list) else []
+    ports = [e.get("port") if isinstance(e, dict) else None for e in entries]
+    named = [p for p in ports if p is not None]
+    if not named:
+        if cfg.get("replica_shared_arena"):
+            raise ReplicaConfigError('"replica_shared_arena" needs replica ports: give every "replicas" entry a "port"')
+        return None
+    if len(named) != len(ports):
+        missing = [i for i, p in enumerate(ports) if p is None]
+        raise ReplicaConfigError(f'every replica needs a "port" once one has one (entries {missing} have none)')
+    for i, p in enumerate(ports):
+        if isinstance(p, bool) or not isinstance(p, int) or not 1 <= p <= 65535:
+            raise ReplicaConfigError(f'replica {i}: "port" must be a whole number in 1..65535, not {p!r}')
+    seen = [p for p in ports if ports.count(p) > 1]
+    if seen:
+        raise ReplicaConfigError(f"two replicas have the port {seen[0]}")
+    return ports
+
+
 def _cards(g) -> list[int]:
     if g is None or g == "":
         return []
@@ -106,6 +135,37 @@ def replica_cfg(cfg: dict, i: int, gpus: list[int]) -> dict:
     return c
 
 
+def port_child_cfg(cfg: dict, i: int, gpus: list[int], port: int) -> dict:
+    """Port mode: the run config of replica i's own server - replica_cfg's, with its port, and the shared arena (when
+    "replica_shared_arena" is set) as the engine's --shared-expert-arena."""
+    c = replica_cfg(cfg, i, gpus)
+    arena = c.pop("replica_shared_arena", None)
+    c["port"] = port
+    if arena:
+        c["args"] = list(c.get("args") or []) + ["--shared-expert-arena", str(arena)]
+    return c
+
+
+# the supervisor's own options, not passed to a replica's server (each gets its own --config and --port)
+_PARENT_ONLY = ("--config", "--port", "--replicas", "--replica-shared-arena", "--gpu", "--ready-file", "--owner-fd")
+
+
+def child_argv(launch_args: list[str], cfg_path: str, port: int) -> list[str]:
+    """Port mode: a replica server's command-line options - the supervisor's own, less those in _PARENT_ONLY (as
+    "--opt value" or "--opt=value"), with this replica's --config and --port."""
+    out, skip = [], False
+    for x in launch_args:
+        if skip:
+            skip = False
+            continue
+        name = x.split("=", 1)[0]
+        if name in _PARENT_ONLY:
+            skip = "=" not in x
+            continue
+        out.append(x)
+    return out + ["--config", cfg_path, "--port", str(port)]
+
+
 def cpu_sets(n: int, enabled: bool = True):
     """n disjoint sets of CPUs (whole physical cores, SMT siblings together), or None (off, not Linux, or the topology
     cannot be read: the engines then share the cores as they would without replicas)."""
@@ -117,6 +177,138 @@ def cpu_sets(n: int, enabled: bool = True):
     except (ValueError, OSError, ImportError) as e:
         print(f"[strata] replicas: no separate CPU cores ({e})", flush=True)
         return None
+
+
+def _loaded(host: str, port: int) -> bool:
+    import json
+    from strata_control import loopback               # never through a proxy of the environment
+    probe = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    try:
+        with loopback.urlopen(f"http://{probe}:{port}/health", timeout=2) as r:
+            return json.loads(r.read() or b"{}").get("loaded") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _port_free(host: str, port: int) -> bool:
+    import socket
+    s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    try:
+        if os.name != "nt":                           # on Windows it would let a port already serving be bound
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: str, cfg_path: str | None = None,
+                  ready_timeout_s: float = 900.0) -> int:
+    """Port mode: one ordinary server per replica, each on its own port, started one after another (the first fills a
+    shared arena, the next ones attach). This process only supervises: it forwards a stop to the servers, ends them
+    with itself (they get the parent-death signal) and deletes the shared arena when it stops. Returns the exit code.
+    With `cfg_path`, each replica's run config is written next to it as <name>.replica<i>.json (removed at stop), so
+    the replica's shared Chat settings (<name>.replica<i>.shared-settings.json) are kept there between starts."""
+    import json
+    import shutil
+    import signal
+    import subprocess
+    import sys
+    import tempfile
+    from serve import lifeline
+
+    ports = port_mode(cfg) or []
+    if "--lazy" in launch_args or cfg.get("lazy_load") is True:
+        print("[strata] replicas on their own ports start loaded: leave out --lazy / \"lazy_load\"", flush=True)
+        return 2
+    for i, port in enumerate(ports):
+        if not _port_free(host, port):
+            print(f"[strata] replica {i}: port {port} is in use", flush=True)
+            return 2
+    groups = gpu_groups(cfg)
+    cpus = cpu_sets(len(ports), cfg.get("replica_cpus") is not False)
+    ready_timeout_s = float(os.environ.get("STRATA_REPLICA_READY_S") or ready_timeout_s)
+    stop = threading.Event()
+    stopped_by: list[str] = []
+
+    def on_signal(signum, frame):
+        stopped_by.append(signal.Signals(signum).name)
+        stop.set()
+    old = {}
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None and not (name == "SIGHUP" and signal.getsignal(sig) == signal.SIG_IGN):
+            old[sig] = signal.signal(sig, on_signal)
+
+    tmp = tempfile.mkdtemp(prefix="strata-replicas-")
+    written: list[str] = []
+    children: list[subprocess.Popen] = []
+    code = 0
+    try:
+        for i, (gpus, port) in enumerate(zip(groups, ports)):
+            path = os.path.splitext(cfg_path)[0] + f".replica{i}.json" if cfg_path else os.path.join(tmp, f"replica{i}.json")
+            written.append(path)
+            if os.path.lexists(path):                # a new file, owner only: the config may hold an API key
+                os.unlink(path)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
+                json.dump(port_child_cfg(cfg, i, gpus, port), f)
+            pin = cpus[i] if cpus else None
+            child = lifeline.popen([sys.executable, server_py, *child_argv(launch_args, path, port)],
+                                   role="replica", start_new_session=True,
+                                   preexec_fn=(lambda c=pin: os.sched_setaffinity(0, c)) if pin else None)
+            children.append(child)
+            deadline, why = time.monotonic() + ready_timeout_s, None
+            while not _loaded(host, port):
+                if child.poll() is not None:
+                    why = f"exit {child.returncode}"
+                elif stop.is_set():
+                    why = "stopped"
+                elif time.monotonic() > deadline:
+                    why = f"not loaded after {ready_timeout_s:.0f} s"
+                if why:
+                    break
+                stop.wait(0.5)
+            if why:
+                print(f"[strata] replica {i} did not start: {why}", flush=True)
+                return 0 if stopped_by else 1
+            print(f"[strata] replica {i} on cards {gpus}: http://{host}:{port}/v1", flush=True)
+        print("[strata] replicas each on their own port; this process only supervises them (its own --port is "
+              "not used)", flush=True)
+        while not stop.is_set():
+            for k, c in enumerate(children):
+                if c.poll() is not None:
+                    print(f"[strata] replica {k} stopped (exit {c.returncode})", flush=True)
+                    code = code or c.returncode or 1
+                    stop.set()
+            stop.wait(1.0)
+        return 0 if stopped_by else code
+    finally:
+        for c in children:
+            if c.poll() is None:
+                c.send_signal(signal.SIGTERM)
+        for c in children:
+            try:
+                c.wait(60)
+            except subprocess.TimeoutExpired:
+                c.kill()
+                c.wait()
+        for sig, h in old.items():
+            signal.signal(sig, h)
+        arena = cfg.get("replica_shared_arena")
+        if arena:
+            try:
+                os.unlink(arena)
+            except OSError:
+                pass
+        for path in written:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 class Router:
