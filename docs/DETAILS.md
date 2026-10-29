@@ -549,6 +549,23 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `--parallel`, only a `max_tokens` 1 request gets them: it is the one a batch slot decodes through the single-token
   path, which writes an LP line. A longer reply there is a 400, since the slot's `BT` lines carry none -- entries for
   a prefix only, which a client cannot tell from the model's own answer.
+- **Canonical reads: the same logprobs for the same prompt (#4059).** A typed decision reads its answer from one
+  token's logprobs and compares them with its other reads (a label prior, a calibrated threshold), so it needs the same
+  numbers for the same prompt. By default they move a little from request to request: an expert is computed on the GPU's
+  hit path, over PCIe or on the CPU depending on what the expert cache holds - which the adaptive tier and the prompt
+  path's slot loan keep changing - and on the PCIe share and the prompt's CPU share, and a low-ranked missed expert can be
+  skipped (`STRATA_ROUTE_TAIL_SKIP`); the paths round differently. A request for logprobs whose reply is one token
+  (`max_tokens` or `max_completion_tokens` 1) is read canonically: its prompt in one batched part with every expert on
+  the GPU (no chunk shared with the CPU), its one-token window with every routed expert treated as a miss (over PCIe
+  where its blob is pinned, else on the CPU, the same path every time; none skipped), and no cached prefix reused. Its
+  logprobs then depend on the prompt alone: the same across requests, with other traffic in between and after a restart
+  (same build, GPU and settings). Every other request keeps the adaptive paths, so chat decodes as fast as before.
+  `"strata_deterministic": true` asks for a canonical read on any request, `false` turns it off; the engine gets
+  `canon=1` on the request line (an older engine skips the key). Cost: a canonical read costs what a first read of its
+  prompt does, since it reuses nothing. Measured (Qwen3.8-Flash-Next IQ3_S, launch defaults): RTX 5080, a 65-read
+  decision set identical over 4 runs with long prompts and chat between them and across a restart, a read 363 ms, chat
+  decode unchanged; GTX 1080 Ti (12 GB/s PCIe), the same, a 101-token read 1.9 s against 1.5 s for its first plain read
+  and 0.24 s for a plain read that reuses it. A layer split, a peer or remote expert GPU, and batch slots are not covered.
 - `STRATA_SPEC_PROB=1` with the default `--spec-min-p` gate: the gate tests the token the draft head drew from its distribution
   q. A draft that fails the gate still counts as a proposal. The verifier keeps q's mass on the tokens that pass the gate
   (not renormalised; call it mu), accepts an offered token D with probability min(1, p(D)/mu(D)), and draws the replacement
