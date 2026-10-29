@@ -2,7 +2,11 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_iq.cu - a GGUF's low-bit routed experts on the device (see ds4_iq.cuh).  The block layouts and grids are
 // ggml's (ggml-common.h, MIT, third_party/ggml/LICENSE); the sign and grid tricks are llama.cpp's vecdotq.cuh.
+#include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_iq.cuh"
+#if defined(STRATA_METAL)
+#include <ds4_metal_host.h>
+#endif
 #include "ds4_numerics.cuh"
 #include "ds4_experts_rule.hpp"
 
@@ -1120,7 +1124,7 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
 // its codebook loaded once; HIP keeps the full grid (one tile a block)
 template <auto Kernel>
 int resident_ctas() {   // (a static a kernel: the occupancy differs by the codebook's shared memory)
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
     return 1 << 30;
 #else
     static std::atomic<int> cache[16];
@@ -1149,17 +1153,17 @@ template <int T, int NE>
 void launch_gu(const Args& a, int groups, cudaStream_t s) {
     const int tiles = a.n_ff / (kWarps * kGuRW);
     if constexpr (kPersist<T>)
-        gate_up_kernel<T, NE><<<items_grid<T>(groups * tiles, resident_ctas<gate_up_kernel<T, NE, kGuRW>>()), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(gate_up_kernel<T, NE>, items_grid<T>(groups * tiles, resident_ctas<gate_up_kernel<T, NE, kGuRW>>()), kThreads, 0, s, a, groups);
     else
-        gate_up_kernel<T, NE><<<dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(gate_up_kernel<T, NE>, dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s, a, groups);
 }
 template <int T, int NE>
 void launch_dn(const Args& a, int groups, cudaStream_t s) {
     const int tiles = a.n_embd / (kWarps * kDnRW);
     if constexpr (kPersist<T>)
-        down_kernel<T, NE><<<items_grid<T>(groups * tiles, resident_ctas<down_kernel<T, NE, kDnRW>>()), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(down_kernel<T, NE>, items_grid<T>(groups * tiles, resident_ctas<down_kernel<T, NE, kDnRW>>()), kThreads, 0, s, a, groups);
     else
-        down_kernel<T, NE><<<dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s>>>(a, groups);
+        strata_ds4_launch(down_kernel<T, NE>, dim3((unsigned) tiles, (unsigned) groups), kThreads, 0, s, a, groups);
 }
 template <int T>
 void gu_ne(const Args& a, int groups, int ne, cudaStream_t s) {
@@ -1183,16 +1187,16 @@ void launch_set(const SetArgs& a, dim3 grid, cudaStream_t s) {
 #endif
 #if !defined(STRATA_USE_HIP)
     if (tc_ok()) {
-        set_tc_kernel<T, GU><<<grid, kThreads, 0, s>>>(a);
+        strata_ds4_launch(set_tc_kernel<T, GU>, grid, kThreads, 0, s, a);
         return;
     }
 #endif
     if (a.max_rows <= 16) {   // (a block of 64 rows would do 64 rows' FMAs for the few there are)
         grid.x = (unsigned) ((a.max_rows + 15) / 16);
-        set_kernel<T, GU, 16><<<grid, kThreads, 0, s>>>(a);
+        strata_ds4_launch(set_kernel<T, GU, 16>, grid, kThreads, 0, s, a);
         return;
     }
-    set_kernel<T, GU><<<grid, kThreads, 0, s>>>(a);
+    strata_ds4_launch(set_kernel<T, GU>, grid, kThreads, 0, s, a);
 }
 // the light sets' int8 rows, per stream (kLightMaxExp kLightRows rows of k)
 struct LightBuf {
@@ -1232,13 +1236,13 @@ void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
     if (a.max_rows <= 4) {   // few rows: work items round a persistent grid (the codebook per block is then the cost)
         if constexpr (kPersist<T>)
-            light_kernel<T, 4, GU><<<items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s>>>(a, b.q, b.d);
+            strata_ds4_launch(light_kernel<T, 4, GU>, items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s, a, b.q, b.d);
         else   // (a small codebook: the release's kernel, which is the faster there)
-            light_kernel_rows<T, 4, GU><<<dim3((unsigned) tiles, (unsigned) a.n_exp), kThreads, 0, s>>>(a, b.q, b.d);
+            strata_ds4_launch(light_kernel_rows<T, 4, GU>, dim3((unsigned) tiles, (unsigned) a.n_exp), kThreads, 0, s, a, b.q, b.d);
     } else {   // more rows: compute bound, the release's kernel and grid
         const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
-        if (a.max_rows <= 8) light_kernel_rows<T, 8, GU><<<grid, kThreads, 0, s>>>(a, b.q, b.d);
-        else light_kernel_rows<T, kLightRows, GU><<<grid, kThreads, 0, s>>>(a, b.q, b.d);
+        if (a.max_rows <= 8) strata_ds4_launch(light_kernel_rows<T, 8, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+        else strata_ds4_launch(light_kernel_rows<T, kLightRows, GU>, grid, kThreads, 0, s, a, b.q, b.d);
     }
 }
 bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
@@ -1246,7 +1250,7 @@ bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
     LightBuf* b = light_buf(s, K);
     if (b == nullptr) return false;
     const dim3 gq((unsigned) ((K / 32 + kWarps - 1) / kWarps), (unsigned) (a.n_exp * kLightRows));
-    light_q8_kernel<<<gq, kThreads, 0, s>>>(gu ? a.xf : nullptr, gu ? nullptr : a.xh, a.idx, a.ldx, K, a.bounds,
+    strata_ds4_launch(light_q8_kernel, gq, kThreads, 0, s, gu ? a.xf : nullptr, gu ? nullptr : a.xh, a.idx, a.ldx, K, a.bounds,
                                             a.row0, b->q, b->d);
     if (gu) {
         if (a.tg == kMXFP4) {
@@ -1271,9 +1275,9 @@ bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
 template <int T>
 void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     const dim3 grid((unsigned) ((max_n + kWarps - 1) / kWarps), (unsigned) nj);
-    if (max_c <= 1) mv_kernel<T, 1><<<grid, kThreads, 0, s>>>(J);
-    else if (max_c <= 4) mv_kernel<T, 4><<<grid, kThreads, 0, s>>>(J);
-    else mv_kernel<T, 16><<<grid, kThreads, 0, s>>>(J);
+    if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
+    else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
+    else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
 }
 
 
@@ -1422,9 +1426,9 @@ bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* 
     const bool old = dq_use_old_kernel();
 #define DS4_DQ(T) do {                                                                                    \
         if (old)                                                                                          \
-            dq_rows_kernel<T><<<blocks, kThreads, 0, s>>>((const uint8_t*) raw, ld, k, n, dst, bf16);      \
+            strata_ds4_launch(dq_rows_kernel<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);      \
         else                                                                                              \
-            dq_rows_kernel2<T><<<blocks, kThreads, 0, s>>>((const uint8_t*) raw, ld, k, n, dst, bf16);     \
+            strata_ds4_launch(dq_rows_kernel2<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);     \
     } while (0)
     switch (type) {
         case kIQ2_XXS: DS4_DQ(kIQ2_XXS); break;
@@ -1447,6 +1451,12 @@ bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* 
 }
 
 bool supported(int t) {
+#if defined(STRATA_METAL)
+    // The MSL kernels (metal/src/engine/msl/ds4_iq.metal) implement the 2.0-bit types plus IQ1_M; IQ1_S and IQ4_NL
+    // have CUDA kernels here but no Metal ones.  Saying so makes those layers "cpu only" (ds4_model.cu, expert_layout),
+    // so their experts stay on the CPU lane instead of stopping in "kernel launch with no Metal dispatch".
+    if (t == kIQ1_S || t == kIQ4_NL) return false;
+#endif
     // the types the kernels below are instantiated for (DS4_IQ_SWITCH + the trellis ones + the dense K-quants)
     switch (t) {
         case kIQ2_XXS: case kIQ2_XS: case kIQ2_S: case kIQ3_XXS: case kIQ3_S: case kIQ4_XS:
@@ -1513,6 +1523,12 @@ const char* name(int t) {
 }
 
 bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // gate_up_kernel on the Metal dispatch (the prompt / window path's expert GEMM); the launch below is the fallback
+    if (::strata::dsv41::metal_host::iq_gu(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups, a.tr, a.n_embd,
+                                           a.n_ff, a.limit, a.xq, a.xd, a.h, a.tg, groups))
+        return true;
+#endif
     if (is_tq(a.tg)) return tq::gate_up(a, groups, ne_max, s);
     if (a.n_embd % 256 != 0 || a.n_ff % (kWarps * kGuRW) != 0) return false;
 #define GU_(T) gu_ne<T>(a, groups, ne_max, s)
@@ -1522,6 +1538,12 @@ bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
 }
 
 bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // down_kernel on the Metal dispatch; the launch below is the fallback
+    if (::strata::dsv41::metal_host::iq_dn(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups, a.tr, a.n_embd,
+                                           a.n_ff, a.hq, a.hd, a.part, a.td, groups))
+        return true;
+#endif
     if (is_tq(a.td)) return tq::down(a, groups, ne_max, s);
     if (a.n_ff % 256 != 0 || a.n_embd % (kWarps * kDnRW) != 0) return false;
 #define DN_(T) dn_ne<T>(a, groups, ne_max, s)
@@ -1559,6 +1581,10 @@ long long hipk_launches() {
 }
 
 bool set_gate_up(const SetArgs& a, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (a.hbounds != nullptr && ::strata::dsv41::metal_host::iq_set_gu(a.wbase, a.stride, a.tr, a.hbounds, a.n_exp, a.total_rows, a.n_embd, a.n_ff, a.limit, a.xf, a.ldx, a.idx, a.h, a.ldo, a.tg, a.td))
+        return true;
+#endif
     if (is_tq(a.tg)) return tq::set_gate_up(a, s);
     if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;
     SetArgs t = a;
@@ -1574,6 +1600,10 @@ bool set_gate_up(const SetArgs& a, cudaStream_t s) {
 }
 
 bool set_down(const SetArgs& a, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (a.hbounds != nullptr && ::strata::dsv41::metal_host::iq_set_dn(a.wbase, a.stride, a.tr, a.hbounds, a.n_exp, a.total_rows, a.n_embd, a.n_ff, a.limit, a.xh, a.ldx, a.y, a.ldo, a.tg, a.td))
+        return true;
+#endif
     if (is_tq(a.td)) return tq::set_down(a, s);
     if (a.n_ff % 256 != 0 || a.n_embd % BN != 0) return false;
     SetArgs t = a;
@@ -1589,6 +1619,9 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
 }
 
 bool mv(const MvJob* jobs, int n, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (n > 0 && n <= 64 && ::strata::dsv41::metal_host::iq_mv((const void*) jobs, n)) return true;
+#endif
     {   // the trellis jobs go to their kernels, the others on
         MvJob tqj[64], oth[64];
         int nt = 0, no = 0;

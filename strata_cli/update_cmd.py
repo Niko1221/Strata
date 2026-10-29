@@ -24,7 +24,14 @@ from pathlib import Path
 #: one-line installers use). Only a feed signed with a key in update_keys.json (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
 DEFAULT_FEED = "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
 ENV_FEED = "STRATA_UPDATE_FEED"
+
 ENV_APP_VERSION = "STRATA_APP_VERSION"
+
+
+def default_feed() -> str:
+    """DEFAULT_FEED for this machine: a Linux ARM64 machine (the DGX Spark) reads strata-feed-linux-aarch64.json from the same release."""
+    from strata_control import feed as feedmod
+    return DEFAULT_FEED.rsplit("/", 1)[0] + "/" + feedmod.feed_name()
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -94,7 +101,9 @@ def _feed_source(a, root: Path) -> str:
     if os.environ.get(ENV_FEED):
         return os.environ[ENV_FEED]
     remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    return remembered if _may_be_remembered(remembered) else DEFAULT_FEED
+    if remembered == DEFAULT_FEED:                    # the common feed remembered from before: a Linux ARM64 machine reads its own file
+        return default_feed()
+    return remembered if _may_be_remembered(remembered) else default_feed()
 
 
 def _may_be_remembered(source) -> bool:

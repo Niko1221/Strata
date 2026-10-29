@@ -144,8 +144,13 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M"})
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw"})   # DeepSeek (0.2.7.1): the two sets run on a Mac
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
+            for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
+                self.assertEqual(rows[name].family, "deepseek41")
+                self.assertEqual(rows[name].verdict, "tight")
+                self.assertFalse(rows[name].images)
+                self.assertGreater(rows[name].spill_gb, 100)
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
             self.assertEqual(rows["IQ3_S"].verdict, "tight")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
@@ -831,6 +836,17 @@ class FlagsCommand(unittest.TestCase):
         p = self.plan("--model", "q2_0", "--pool-cores", "two,four")        # a list that cannot be read: a warning, never a refusal
         self.assertNotIn("--pool-cores", p["settings"]["extra"])
         self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
+
+    def test_dspark_on_a_mac_is_warned_about_and_not_refused(self):
+        # the drafter has no Metal kernels yet: --dspark on is passed on as asked, with a plain warning (recommend, never force)
+        import sys
+        from unittest import mock
+        with mock.patch.object(sys, "platform", "darwin"):
+            p = self.plan("--model", "q2_0", "--dspark", "on")
+        self.assertEqual(p["settings"]["extra"].get("--dspark"), "on")
+        self.assertTrue(any("DSpark" in w and "Mac" in w for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "q2_0", "--dspark", "auto")
+        self.assertFalse(any("DSpark" in w and "Mac" in w for w in p["warnings"]))
 
     def test_dspark_takes_a_word_and_the_word_reaches_the_engine_line(self):
         # --set dspark=on used to start strata-dsv41 with a lone "--dspark" ("--dspark needs a value", #3959)
