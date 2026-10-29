@@ -85,6 +85,71 @@ class FakeEngine:
         yield 7
 
 
+class PullScheduling(unittest.TestCase):
+    """Pull scheduling (opt-in): a request waits in the pending pool and is handed to a replica when it has a
+    free slot. An idle replica is used instead of queueing behind a busy one; among the pending, the cheapest
+    re-read goes first."""
+
+    def _enqueue(self, engine, ids):
+        req = {"ids": ids, "len": len(ids), "max_new": 1, "sampling": {}, "cancel": None,
+               "embeddings": None, "k": None, "queued_at": time.monotonic()}
+        with engine.cv:
+            engine.pending.append(req)
+            engine._dispatch()
+        return req
+
+    def test_a_free_replica_holding_the_prefix_wins(self):
+        e = ReplicaEngine([FakeEngine(0), FakeEngine(0)], pull=True)
+        ids = list(range(BLOCK * 8))
+        e.router.note(0, ids)                          # replica 0 holds the prefix
+        self.assertEqual(self._enqueue(e, ids)["k"], 0)
+
+    def test_a_busy_replica_does_not_hold_the_queue(self):
+        e = ReplicaEngine([FakeEngine(0), FakeEngine(0)], pull=True)
+        ids = list(range(BLOCK * 8))
+        first = self._enqueue(e, ids)
+        k = first["k"]
+        e.inflight[k] = 1
+        second = self._enqueue(e, ids)                 # the same prefix, but the other replica is free
+        self.assertNotEqual(second["k"], k)
+
+    def test_a_request_waits_for_a_slot_and_takes_it_when_one_is_freed(self):
+        e = ReplicaEngine([FakeEngine(0), FakeEngine(0)], pull=True)
+        ids = list(range(BLOCK * 8))
+        e.inflight = [1, 1]                            # every slot busy
+        req = self._enqueue(e, ids)
+        self.assertIsNone(req["k"])                    # it waits in the pool
+        self.assertEqual(len(e.pending), 1)
+        e.inflight[0] = 0                              # a slot frees
+        with e.cv:
+            e._dispatch()
+        self.assertIsNotNone(req["k"])                 # and the waiting request takes it
+        self.assertEqual(len(e.pending), 0)
+
+    def test_a_dead_replica_is_healed(self):
+        e = ReplicaEngine([FakeEngine(0), FakeEngine(0)], pull=True)
+        healed = []
+        e.heal = lambda: healed.append(1)
+        e.engines[0].up = False
+        self._enqueue(e, [1] * 100)
+        self.assertTrue(healed)                        # a replica that died is started again
+
+    def test_no_replica_alive_fails_the_request(self):
+        from serve.server import EngineDied
+        e = ReplicaEngine([FakeEngine(0), FakeEngine(0)], pull=True)
+        e.heal = lambda: None
+        e.engines[0].up = False
+        e.engines[1].up = False
+        with self.assertRaises(EngineDied):
+            list(e.generate([1] * 100, 4, {}, None))
+
+    def test_the_default_path_is_unchanged(self):
+        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
+        self.assertFalse(e.pull)
+        picks = [e.route([i] * 100) for i in range(4)]  # nothing cached: spread
+        self.assertEqual(sorted(picks), [0, 0, 1, 1])
+
+
 class RouteChoice(unittest.TestCase):
     def test_least_loaded_then_affinity(self):
         e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
