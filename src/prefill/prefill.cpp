@@ -307,6 +307,8 @@ inline int64_t cpu_share_max() {
 std::atomic<bool> g_cpu_pool_busy{false};
 // STRATA_PREFILL_CPU_SHARE_BATCH: a slot is decoding beside this read (Prefill::set_share_blocked): the pool is its windows'
 std::atomic<bool> g_share_blocked{false};
+// Prefill::pause_cpu_share: a canonical read is running (the share's measured state is left as it is)
+std::atomic<bool> g_cpu_share_paused{false};
 double g_pinned_share = 1.0;
 // The streamed ring: 384 slots when (nearly) every streamed expert is DMA'd from pinned RAM - measured on Q2_0,
 // 8192-token chunks: 96 slots 1153 tok/s, 384 1294 (the next layer's experts arrive during its attention half) -
@@ -2859,6 +2861,7 @@ int64_t Prefill::ring_max_slots() {
 
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 void Prefill::set_cpu_pool(kernels::cpu::ExpertPool* pool) { cpu_pool_ = pool; }
+void Prefill::pause_cpu_share(bool paused) { g_cpu_share_paused.store(paused, std::memory_order_relaxed); }
 void Prefill::arm_cpu_share(bool applies, bool by_default) {
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
@@ -3592,7 +3595,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             ~PoolHold() { if (held) g_cpu_pool_busy.store(false, std::memory_order_release); }
         } pool_hold;
         if (cpu_pool_ != nullptr && cpu_share_on() && !stream_all && !pipe_chunked &&
-            !g_share_blocked.load(std::memory_order_acquire)) {
+            !g_share_blocked.load(std::memory_order_acquire) &&
+            !g_cpu_share_paused.load(std::memory_order_relaxed)) {
             bool expect = false;
             pool_hold.held = g_cpu_pool_busy.compare_exchange_strong(expect, true, std::memory_order_acq_rel);
         }

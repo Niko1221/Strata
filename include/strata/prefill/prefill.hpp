@@ -295,6 +295,9 @@ public:
     /// STRATA_PREFILL_CPU_SHARE_BATCH=1 (batch slots beside the pool): set before each read - true while a slot decodes
     /// (its windows use the pool), so no chunk of that read takes the share; false lets the read's chunks take it.
     static void set_share_blocked(bool blocked);
+    /// A canonical read (#4059, GEN canon=1): while paused, no chunk hands experts to the CPU pool - every expert on
+    /// the GPU, as with STRATA_PREFILL_CPU_SHARE=0 - and the measured share keeps its state for the requests after it.
+    static void pause_cpu_share(bool paused);
 
     /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
     /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
