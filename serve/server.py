@@ -8489,37 +8489,72 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     return out
 
 
+def _shared_expert_arena(rcs: list) -> bool:
+    """True when every replica backs its resident arena with the same --shared-expert-arena file.  The first engine
+    fills that file and the next ones attach to it; two engines filling it at once can leave one of them without its
+    kernels ("no kernel image is available for execution on the device" on its first prompt, 0.1.48/0.1.50
+    packages), so such replicas are started one after another (#4047 asks for the same order)."""
+    paths = []
+    for rc in rcs:
+        args = engine_args(rc) if "args" in rc else []
+        try:
+            k = args.index("--shared-expert-arena")
+        except ValueError:
+            return False
+        paths.append(args[k + 1] if k + 1 < len(args) else "")
+    return len(paths) > 1 and len(set(paths)) == 1 and bool(paths[0])
+
+
 def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: list[str], lazy: bool,
                    *, offline: bool = False):
     """Opt-in data-parallel replicas (serve/replicas.py): one StrataEngine per card group, each with its own cards, log
-    and CPU cores, started together; the ReplicaEngine in front spreads the requests."""
+    and CPU cores; the ReplicaEngine in front spreads the requests.  Engines start together unless they share one
+    expert arena or one of them fails to start; then they start one after another."""
     from serve import replicas as rp
     n = len(groups)
     cpus = rp.cpu_sets(n, cfg.get("replica_cpus") is not False)
     print(f"[strata] {n} replicas on the cards {' | '.join(','.join(map(str, g)) for g in groups)}"
           f"{' (own CPU cores each)' if cpus else ''}: requests go to the least busy one, a conversation back to its own",
           flush=True)
+    rcs = [rp.replica_cfg(cfg, i, groups[i]) for i in range(n)]
     engines: list = [None] * n
     errors: list = []
 
     def one(i: int):
-        rc = rp.replica_cfg(cfg, i, groups[i])
+        rc = rcs[i]
         try:
             engines[i] = StrataEngine(exe, engine_args(rc) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
                                       env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None)
         except BaseException as e:        # noqa: BLE001
             errors.append((i, e))
-    rc0 = rp.replica_cfg(cfg, 0, groups[0])
+
+    def start_serial(reason: str) -> None:
+        print(f"[strata] {reason}; starting the replicas one after another", flush=True)
+        for e in engines:
+            if e is not None:
+                try:
+                    e.close()
+                except Exception:        # noqa: BLE001
+                    pass
+        errors.clear()
+        engines[:] = [None] * n
+        for i in range(n):
+            one(i)
+    rc0 = rcs[0]
     warn_budget_over_ram(engine_args(rc0) if "args" in rc0 else [])
     if os.environ.get("STRATA_REPLICA_START", "") == "serial":
         for i in range(n):
             one(i)
+    elif _shared_expert_arena(rcs):
+        start_serial("the replicas back one expert arena (--shared-expert-arena)")
     else:
         ts = [threading.Thread(target=one, args=(i,)) for i in range(n)]
         for t in ts:
             t.start()
         for t in ts:
             t.join()
+        if errors:
+            start_serial("the parallel start failed")
     if errors:
         for e in engines:
             if e is not None:
