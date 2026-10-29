@@ -50,6 +50,13 @@ export const DEFAULT_API_HELPERS = 8;
  * of being refused.
  */
 export const MIN_LOCAL_HELPERS = 4;
+/**
+ * The working window of a helper (subagent) on a larger local model. Helpers do short jobs: read a file, run a command,
+ * write a summary. They must not inherit a 512K window and grow a second long conversation beside the chat. A helper
+ * is started on a second route for the same local model whose advertised window is this size, so the Harness compacts
+ * and reserves output room at 64K while the main chat keeps the full model window.
+ */
+export const HELPER_CONTEXT = 65536;
 /** The preset for a chat's stored mode. Anything unknown (older values such as `auto`) gets the strictest ask-first mode. */
 export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEFAULT_MODE);
 
@@ -197,6 +204,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   const providers = {};
   const env = {};
   const routes = [];
+  /** Same local model, a 64K window, used by helpers only (see HELPER_CONTEXT). */
+  const helperRoutes = [];
   const mcpEnv = {};
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
@@ -245,6 +254,20 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     const shaped = addShaped(route, providers[route], inst.baseUrl);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
+    // A helper gets its own provider key for the same engine model, with a 64K window, so the Harness's
+    // compaction and output budget treat helpers as short jobs. The main chat keeps the full window.
+    const helperContext = Math.min(context, HELPER_CONTEXT);
+    if (helperContext < context) {
+      const helperRoute = `${route}-helper`;
+      const helperName = `${inst.label || inst.modelId} (helper, ${Math.round(helperContext / 1024)}K)`;
+      providers[helperRoute] = {
+        ...providers[route],
+        displayName: `${providers[route].displayName} (helper)`,
+        models: [{ ...providers[route].models[0], name: helperName, contextWindow: helperContext, maxTokens: localOutputBudget(helperContext) }],
+      };
+      compaction.push({ provider: helperRoute, model: inst.modelId, headroomTokens: compactionHeadroom(helperContext, localOutputBudget(helperContext)) });
+      helperRoutes.push({ provider: helperRoute, model: inst.modelId, name: helperName, connection: 'this computer', local: true, helperOf: route, helperContext });
+    }
   });
 
   connections.forEach(conn => {
@@ -310,7 +333,10 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     : [{ id: 'web', config: { searchProvider: keyed ?? DDG_PROVIDER_ID, fetchProvider: 'http' } }, { id: 'web-search-deepseek', disabled: true },
       { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY', ...(searchMock ? { mock: searchMock } : {}) } }] }];
   /** The models a helper agent may be started on: the table the model-choice plugin and the Harness's allow-list are written from. */
-  const subagentRoutes = routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' }));
+  const subagentRoutes = [
+    ...routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' })),
+    ...helperRoutes,
+  ];
   const entries = [
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },

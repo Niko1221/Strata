@@ -28,6 +28,19 @@ test('nothing named: the helper uses the chat model', () => {
   assert.equal(modelProblem(routes, {}), null);
 });
 
+test('a local helper is put on the 64K helper route; a named API model is left alone', async () => {
+  const { subagentArgs } = await import('../server/agent/plugins/strata-models.mjs');
+  const table = [...routes, {
+    provider: 'strata-local-helper', model: 'gyro-gyro-s', name: 'Local (helper, 64K)',
+    connection: 'this computer', local: true, helperOf: 'strata-local', helperContext: 65536,
+  }];
+  const parent = { provider: 'strata-local', model: 'gyro-gyro-s' };
+  assert.equal(subagentArgs(table, {}, parent).args.provider, 'strata-local-helper', 'no model named: the local helper route');
+  assert.equal(subagentArgs(table, { model: 'Local' }, parent).args.provider, 'strata-local-helper', 'the local model named: still the 64K route');
+  assert.equal(subagentArgs(table, { model: 'deepseek/deepseek-v3.2' }, parent).args.provider, 'api-aaaa', 'a named API model is not rewritten');
+  assert.equal(subagentArgs(table, {}).args.provider, undefined, 'without a parent the helper inherits the chat model');
+});
+
 test('exact route, exact id, provider/id, connection and name, in any letters', () => {
   const want = (request, id) => { const r = resolveModel(routes, request); assert.equal(r.status, 'exact', JSON.stringify(request)); assert.equal(r.route.model, id); };
   want({ provider: 'api-aaaa', model: 'deepseek/deepseek-v3.2' }, 'deepseek/deepseek-v3.2');
@@ -57,14 +70,14 @@ test('the assistant is told to use the subagent tool when asked for a subagent o
   assert.match(AGENT_PROMPT, /ask a subagent/); assert.match(AGENT_PROMPT, /Never look for a model with shell commands/);
 });
 
-async function rig(t) {
+async function rig(t, { context = 32768 } = {}) {
   const local = await startScriptedWorker();
   const remote = await startScriptedWorker({ model: 'deepseek/deepseek-v3.2' });
   const dir = mkdtempSync(join(tmpdir(), 'strata-sub-'));
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
   const bridge = createAgentBridge({
     dataDir: dir, env: process.env, startTimeoutMs: 90_000,
-    localInstances: () => [{ id: 'inst-1', label: 'Local Scripted', baseUrl: local.url, modelId: 'scripted-model', context: 32768, slots: 2 }],
+    localInstances: () => [{ id: 'inst-1', label: 'Local Scripted', baseUrl: local.url, modelId: 'scripted-model', context, slots: 2 }],
     connections: () => [{ id: 'conn-1', name: 'OpenRouter', baseUrl: remote.url, protocol: 'openai-chat', apiKey: 'k', models: [{ id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', contextMax: 32768 }] }],
   });
   t.after(async () => { await bridge.close(); await local.close(); await remote.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
@@ -109,6 +122,20 @@ test('the real Harness: naming the local model, and naming no model, both work',
   for (let i = 0; i < 40 && r.local.requests.filter(q => q.directive === 'echo').length < 2; i++) await new Promise(res => setTimeout(res, 250));
   assert.ok(r.local.requests.length > before);
   assert.equal(r.remote.requests.length, 0);
+});
+
+test('the real Harness: a local helper runs on the 64K route, not the chat 512K route', { skip }, async (t) => {
+  const r = await rig(t, { context: 524288 });
+  const { frames } = await r.call('m6', { description: 'Window', prompt: 'SCRIPT:echo hi' });
+  const id = [...new Set(frames.filter(f => f.type === 'agent').map(f => f.agent.id))][0];
+  assert.ok(id, 'the helper started');
+  const rt = r.bridge._debug().rt;
+  const answer = await rt.gw.rpc('session/projections', { request: { sessionId: id, keys: ['contextPressure', 'modelSelection'] } });
+  const value = x => (x && typeof x === 'object' && 'currentValue' in x ? x.currentValue : x);
+  const pressure = value(answer?.values?.contextPressure);
+  const selection = value(answer?.values?.modelSelection);
+  assert.equal(pressure?.contextWindow, 65536, 'the helper session measures against 64K');
+  assert.equal(selection?.lastUsed?.provider, 'strata-local-helper', 'the helper is on the 64K provider route');
 });
 
 test('the real Harness: a helper that finishes while the chat model is still answering does not end the run early ("interrupted before it finished")', { skip }, async (t) => {

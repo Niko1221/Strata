@@ -29,9 +29,26 @@ const PROVIDER_WORDS = 'Optional: the connection the model belongs to ("OpenRout
 
 const wrapped = new WeakSet();
 
-/** The two wrappers' behaviour, apart from the Harness objects (the tests call these directly). */
-export function subagentArgs(routes, args) {
-  const result = resolveModel(routes, args ?? {});
+/**
+ * The two wrappers' behaviour, apart from the Harness objects (the tests call these directly).
+ * `parent` is the delegating agent's {provider, model}: when it is the local model and a helper route
+ * exists, a helper is put on that 64K route. A helper named explicitly on the same local model is moved
+ * there too; another model the person named is left alone.
+ */
+export function subagentArgs(routes, args, parent = null) {
+  // A helper route is an internal 64K copy of the local model, not a model the assistant may pick:
+  // keep it out of name resolution so "local" does not become ambiguous, then map the local route to it.
+  const visible = routes.filter(r => !r.helperOf);
+  const result = resolveModel(visible, args ?? {});
+  const helper = parent
+    ? routes.find(r => r.helperOf && r.helperOf === parent.provider && r.model === parent.model)
+    : null;
+  if (helper) {
+    const sameLocal = result.status === 'exact' && result.route.provider === helper.helperOf && result.route.model === helper.model;
+    if (result.status === 'inherit' || sameLocal) {
+      return { ok: true, args: { ...args, provider: helper.provider, model: helper.model } };
+    }
+  }
   if (result.status !== 'exact') return { ok: result.status === 'inherit', args };
   const { provider, model } = result.route;
   return { ok: true, args: { ...args, provider, model } };
@@ -39,6 +56,7 @@ export function subagentArgs(routes, args) {
 
 export function apply(ctx, config = {}) {
   const routes = Array.isArray(config.routes) ? config.routes : [];
+  const visible = routes.filter(r => !r.helperOf);
 
   const wrapSubagent = def => {
     if (wrapped.has(def)) return;
@@ -50,9 +68,14 @@ export function apply(ctx, config = {}) {
     if (props?.provider) props.provider = { ...props.provider, description: PROVIDER_WORDS };
     def.execute = function execute(args, exec) {
       const request = args && typeof args === 'object' ? args : {};
-      const problem = modelProblem(routes, request);
+      const problem = modelProblem(visible, request);
       if (problem) throw new Error(problem);
-      const settled = subagentArgs(routes, request);
+      let parent = null;
+      try {
+        const config = exec.agent?.session?.requestHeader?.()?.config;
+        if (config?.provider && config?.model) parent = { provider: config.provider, model: config.model };
+      } catch { /* an agent without a routed model keeps the Harness's inherit behaviour */ }
+      const settled = subagentArgs(routes, request, parent);
       return original.call(this, settled.args, exec);
     };
   };
@@ -62,8 +85,8 @@ export function apply(ctx, config = {}) {
     wrapped.add(def);
     def.description = 'List the models a helper agent can be started on, by the names the person knows. Call it with no arguments, then give `model` (a name or id from the list, or "local") to the subagent tool.';
     def.execute = function execute() {
-      return routes.length
-        ? `Models a helper can use:\n${routeList(routes)}\nStart one with the subagent tool: model = its name or id.`
+      return visible.length
+        ? `Models a helper can use:\n${routeList(visible)}\nStart one with the subagent tool: model = its name or id.`
         : 'No other model is set up. A helper agent uses this chat\'s own model.';
     };
   };

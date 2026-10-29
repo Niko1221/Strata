@@ -873,3 +873,33 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .goalbar__state { flex:none; color:var(--st-ink-muted); font-size:var(--st-fs-xs); white-space:nowrap; }
 .tsc-diff__sign { color:var(--st-ink-muted); font-family:var(--st-font-mono); text-align:center; }
 .monitor-metric__reading { min-width:0; }
+
+/* Both sides of a conversation read as bubbles: the person on the right, the assistant (and a helper)
+   on the left, each at most three quarters of the conversation column. Tool, plan and error cards keep
+   their own surfaces; only prose gets the bubble. */
+.st-msg { max-width:75%; }
+.st-msg--assistant { align-self:flex-start; }
+.st-msg--user { align-self:flex-end; }
+.st-msg--assistant .st-bubble {
+  width:auto;
+  max-width:100%;
+  padding:12px 16px;
+  border:1px solid var(--st-line);
+  border-radius:var(--st-r-lg) var(--st-r-lg) var(--st-r-lg) 6px;
+  background:var(--st-surface);
+}
+.st-msg--assistant .st-bubble p,
+.st-msg--assistant .st-bubble .md-li { max-width:none; }
+.st-msg--user .st-bubble { max-width:100%; }
+.st-msg--assistant .st-bubble:has(.plan, .error-notice) { padding:0; border:0; background:transparent; }
+.subagent-msg { max-width:75%; }
+.subagent-msg--assistant .subagent-bubble {
+  max-width:100%;
+  padding:11px 14px;
+  border:1px solid var(--st-line);
+  border-radius:12px 12px 12px 6px;
+  background:var(--st-surface);
+}
+.subagent-msg--user .subagent-bubble,
+.subagent-msg--parent .subagent-bubble { max-width:100%; }
+@media (max-width:720px){ .st-msg, .subagent-msg { max-width:100%; } }

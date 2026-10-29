@@ -25,6 +25,14 @@ test('the reply keeps 30 percent of the window (at most 32K) and compaction gets
   assert.match(profile.patch, /"modelPolicies": \[\s*\{\s*"provider": "strata-local",\s*"model": "m",\s*"headroomTokens": 2867/);
 });
 
+test('a large local model gives helpers a 64K route and keeps the chat window', () => {
+  const big = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 524288 }], connections: [] });
+  assert.match(big.patch, /"name": "m \(helper, 64K\)",\s*"contextWindow": 65536/);
+  assert.ok(big.patch.includes('"provider": "strata-local-helper"'), 'the helper provider is in the profile');
+  const small = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 32768 }], connections: [] });
+  assert.doesNotMatch(small.patch, /strata-local-helper/, 'a window at or below 64K needs no second route');
+});
+
 test('a long chat on a small window compacts before it overflows, and the conversation goes on', { skip }, async (t) => {
   const worker = await startScriptedWorker({});
   const dir = mkdtempSync(join(tmpdir(), 'strata-compact-'));
