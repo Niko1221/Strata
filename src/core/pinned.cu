@@ -90,9 +90,11 @@ uint64_t free_huge_bytes() {
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
 // hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes,
+              bool& shared_existing, bool& shared_complete) {
     mapping_base = nullptr;
     mapping_bytes = 0;
+    shared_existing = shared_complete = false;
 
 #ifdef _WIN32
     if (!shared_file.empty()) {
@@ -192,6 +194,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
                 return nullptr;
             }
         } else {
+            shared_existing = true;
             if (st.st_size < 0 || (uint64_t) st.st_size != file_bytes) {
                 close(fd);
                 note = "shared arena " + shared_file + " is " +
@@ -218,6 +221,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
                 note = b;
                 return nullptr;
             }
+            shared_complete = hdr.reserved[0] == 1;   // STRATA_ARENA_REUSE: a previous start finished this arena
         }
 
         void* map = mmap(nullptr, (size_t) file_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -401,6 +405,12 @@ std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
 }
 }  // namespace
 
+void PinnedArena::mark_shared_complete() {
+    // only a shared-FILE backing has base above its header; an anonymous arena sets mapping_base == base
+    if (mapping_base == nullptr || (uint8_t*) mapping_base == (uint8_t*) base) return;
+    ((SharedArenaHeader*) mapping_base)->reserved[0] = 1;   // MAP_SHARED: the flag lands in the file
+}
+
 PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, uniform_bounds(bytes, slice)) {
     if (slice_bytes) slice_bytes = slice;   // sliced registration: record the uniform size
 }
@@ -409,7 +419,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
                          uint64_t shared_pack_hash) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                   shared_existing, shared_complete);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -528,7 +539,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
                          uint64_t shared_pack_hash) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes,
+                   shared_existing, shared_complete);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -615,7 +627,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
-    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes,
+                   shared_existing, shared_complete);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;

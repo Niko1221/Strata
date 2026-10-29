@@ -5829,6 +5829,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     }
 #endif
 
+    // STRATA_ARENA_REUSE=1: when the shared arena file (--shared-expert-arena) was fully populated by a
+    // previous start (the header's completion flag) and its pack hash matches, attach it and skip the copy.
+    static const bool arena_reuse = [] { const char* v = std::getenv("STRATA_ARENA_REUSE"); return v && v[0] == '1'; }();
+
     // #633: THE RAM BEFORE THE ALLOCATION.  On Linux the arena is an anonymous mapping that succeeds whatever the host
     // has; its pages are committed as the load writes them, so a container whose memory limit is below the arena was
     // killed by the OOM killer part-way through the load, without a message.  A hard cgroup limit below it is
@@ -5984,8 +5988,16 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
               (why.empty() ? std::string{} : ": " + why);
         return false;
     }
+    // the reuse decision: only the experts.bin path; a fresh, torn or hash-mismatched file copies as before
+    const bool reuse = arena_reuse && !from_gguf && a->shared_existing && a->shared_complete;
     // #285: unbuffered when the drive is read anyway and the file cache could not keep the experts for the next
     // start either (a 64 GB PC); otherwise the buffered readers, which a warm restart serves from the cache
+    LoadStats st;
+    if (reuse) {
+        st.bytes = want;   // ok=true by default: the checks below pass without touching the drive
+        std::fprintf(stderr, "strata generate: expert arena attached from %s (STRATA_ARENA_REUSE: no copy)\n",
+                     shared_arena_file.c_str());
+    } else {
     std::vector<std::string> files;
     if (from_gguf) {
         for (int64_t l = 0; l < n_layers; ++l)
@@ -5999,7 +6011,6 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     std::string why;
     const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
     const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
-    LoadStats st;
     std::atomic<int> ready{0};
     std::thread reg;
     if (deferred) {
@@ -6021,6 +6032,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     if (reg.joinable()) reg.join();
     std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
                  why.c_str());
+    }
     if (!st.ok) {
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
@@ -6031,6 +6043,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         err = "ArenaExpertSource: the load read " + std::to_string(st.bytes) + " B of " + std::to_string(want);
         return false;
     }
+    if (!reuse && !shared_arena_file.empty()) a->mark_shared_complete();   // the arena is now fully populated
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
         std::fprintf(stderr, "strata generate: expert arena checksum %016llx (%.2f GiB)\n",
                      (unsigned long long) fnv1a64(a->data(), want), (double) want / (1ull << 30));
@@ -6108,6 +6121,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     n_expert_ = n_expert;
     reads_ = 0;
     note_ = a->note;
+    if (reuse) note_ += " (attached: the experts were already resident, STRATA_ARENA_REUSE)";
     gib_per_s_ = st.gib_per_second();
     load_seconds_ = st.seconds;
     load_read_s_ = st.read_seconds;
