@@ -3574,6 +3574,7 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
+                "gfx1032": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",   # RX 6600 / 6600 XT / 6600M: only with STRATA_EXPERIMENTAL_GFX1032=1
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
                 "gfx1150": "https://rocm.nightlies.amd.com/v2/gfx1150/",       # Strix Point: only with STRATA_EXPERIMENTAL_GFX1150=1
                 "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
@@ -3599,8 +3600,14 @@ GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
 # build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
 # Unset: unchanged.
 GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
+# STRATA_EXPERIMENTAL_GFX1032=1 (opt-in, measured on one machine): the RX 6600 / 6600 XT / 6600M (Navi 23, gfx1032) is RDNA2
+# like the RX 6800 / 6700 (gfx1030 / gfx1031), but no ready-made engine carries its code.  On Windows build one with
+# `set STRATA_HIP_ARCHS=gfx1032` and `tools\hip\build_windows.bat`, then start setup with `--prebuilt dist\`
+# (docs/RX6600M.md).  Unset: unchanged.
+GFX1032_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1032") == "1"
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
-            + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
+            + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ()) \
+            + (("gfx1032",) if GFX1032_OPT_IN else ())
 # The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
 # STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
 # (tools/hip/gfx1103-hipblaslt-100401.txt) picks others, so it would only report that it cannot run.  A gfx1103 install
@@ -3629,6 +3636,7 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)",
              "gfx1030": "AMD Radeon RX 6800 / 6900 series (gfx1030)",
              "gfx1031": "AMD Radeon RX 6700 XT series (gfx1031)",
+             "gfx1032": "AMD Radeon RX 6600 / 6600 XT / 6600M (gfx1032)",
              "gfx1151": "AMD Radeon 8060S / 8050S / 8040S (Ryzen AI Max, Strix Halo, gfx1151)",
              # integrated Radeons of other Ryzen families: named so they are not taken for Strix Halo (not supported)
              "gfx1150": "AMD Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150)",
@@ -3636,7 +3644,8 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)"}
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
-             "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
+             "(gfx1031, #524), the RX 6600 / 6600 XT / 6600M (gfx1032: experimental, STRATA_EXPERIMENTAL_GFX1032=1, "
+             "docs/RX6600M.md), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
              "gfx1151: experimental, docs/STRIX_HALO.md)")
 
 
@@ -3728,6 +3737,17 @@ def is_strix_halo(g) -> bool:
 
 
 RDNA2_ARCHS = ("gfx1030", "gfx1031")        # RX 6800 / 6900 / 6950 series and RX 6700 XT: the cards of the ready-made RX 6000 engine package
+SELF_BUILD_ARCHS = ("gfx1032",)             # RX 6600 series (opt-in): no ready-made engine is built for it; the owner builds one
+
+
+def installed_hip_archs() -> set:
+    """The archs the Windows HIP engine installed in engine/ carries (its BUILD.json).  A card outside AMD_ARCHS is
+    usable when that engine was built for it: the RX 6600 series and the owner's gfx1032 build (docs/RX6600M.md)."""
+    try:
+        meta = json.loads((ROOT / "engine" / "BUILD.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return set(arch_names(meta.get("archs"))) if meta.get("backend") == "hip" else set()
 
 
 def is_rdna2(g) -> bool:
@@ -3746,6 +3766,23 @@ def rdna2_notes(gpu) -> list[str]:
     if not is_rdna2(gpu):
         return []
     return ["  " + RDNA2_PACKAGE_NOTE.format(arch=str(gpu.get("arch")).split(":")[0])]
+
+
+def gfx1032_notes(gpu) -> list[str]:
+    """The RX 6600 / 6600 XT / 6600M (gfx1032, opt-in): RDNA2 like the cards the RX 6000 package covers, but no
+    ready-made engine carries its code - a Windows owner builds one and starts setup with --prebuilt."""
+    if not isinstance(gpu, dict) or not gfx_arch_is(gpu.get("arch"), "gfx1032"):
+        return []
+    if WIN:
+        if "gfx1032" in installed_hip_archs():
+            return ["  RX 6600 series (RDNA2, gfx1032): the Windows engine installed here was built for this card "
+                    "(experimental, docs/RX6600M.md)."]
+        return ["  RX 6600 series (RDNA2, gfx1032): no ready-made Windows engine is built for this card. Build one with "
+                "`set STRATA_HIP_ARCHS=gfx1032` and `tools\\hip\\build_windows.bat` (it writes "
+                "dist\\strata-windows-x64-hip.zip), then start setup with `--prebuilt dist` (experimental opt-in, "
+                "STRATA_EXPERIMENTAL_GFX1032=1: docs/RX6600M.md)."]
+    return ["  RX 6600 series (RDNA2, gfx1032): the engine is compiled here for it (experimental opt-in, "
+            "STRATA_EXPERIMENTAL_GFX1032=1: docs/RX6600M.md)."]
 
 
 def is_uma_apu(g) -> bool:
@@ -4116,9 +4153,16 @@ def amd_gpus(sysfs="/sys"):
 
 
 def amd_problem(g):
-    if g["arch"] not in AMD_ARCHS:
-        return (f"not supported - Strata's AMD backend runs on {AMD_CARDS} only, this is {g['arch']}"
-                + (" (an integrated Radeon, not Strix Halo)" if g["arch"] in ("gfx1150", "gfx1152", "gfx1103") else ""))
+    if g["arch"] not in AMD_ARCHS and not (WIN and gfx_arch_is(g["arch"], "gfx1032")
+                                           and g["arch"] in installed_hip_archs()):
+        if gfx_arch_is(g["arch"], "gfx1032"):           # a card of the RDNA2 family, experimental: name the switch
+            hint = (" (RDNA2 like the RX 6800 / 6700: experimental opt-in, STRATA_EXPERIMENTAL_GFX1032=1, with an engine "
+                    "built for gfx1032 - docs/RX6600M.md)")
+        elif g["arch"] in ("gfx1150", "gfx1152", "gfx1103"):
+            hint = " (an integrated Radeon, not Strix Halo)"
+        else:
+            hint = ""
+        return (f"not supported - Strata's AMD backend runs on {AMD_CARDS} only, this is {g['arch']}" + hint)
     if g.get("cannot_run"):                            # Windows: the installed engine's own check (--list-devices)
         return g["cannot_run"]
     return None
@@ -4193,6 +4237,7 @@ _WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",        
                 0x7550: "gfx1201", 0x7551: "gfx1201",                               # RX 9070 / 9070 XT, AI PRO R9700
                 0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030",            # RX 6800 / 6800 XT / 6900 XT / 6950 XT
                 0x73DF: "gfx1031",                                                  # RX 6700 XT / 6750 XT / 6800M (#881)
+                0x73FF: "gfx1032",                                                  # RX 6600 / 6600 XT / 6650 XT / 6600M (Navi 23)
                 **AMD_IGPU_PCI}                                                     # Ryzen APUs: 0x1586 = Strix Halo (gfx1151)
 _WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),                   # Radeon 8060S / 8050S / 8040S
                  (re.compile(r"\b8[89]0M\b", re.I), "gfx1150"),                     # Radeon 890M / 880M
@@ -4203,6 +4248,7 @@ _WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),               
                  (re.compile(r"RX\s*7900|W7900|W7800", re.I), "gfx1100"),
                  (re.compile(r"RX\s*7800|RX\s*7700(?!\s*S)|W7700", re.I), "gfx1101"),
                  (re.compile(r"RX\s*7600|W7600|W7500", re.I), "gfx1102"),
+                 (re.compile(r"RX\s*66[05]0", re.I), "gfx1032"),
                  (re.compile(r"RX\s*6800(?!\s*[MS])|RX\s*6900|RX\s*6950|W6800", re.I), "gfx1030"))
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
@@ -4532,6 +4578,8 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
                 gpu["arch"] in arch_names(meta.get("archs")) and not updating:
             ok("ready-made AMD engine already installed")
             return eng
+    if gpu["arch"] in SELF_BUILD_ARCHS and url_base == PREBUILT_URL:
+        return None                                    # the release packages carry no code for it: engine_step names the build
     if not url_base:
         return None
     eng.mkdir(exist_ok=True)
@@ -7658,9 +7706,11 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
+            archs = ";".join(sorted(set(gpu.get("archs") or [gpu["arch"]])))
             fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
-                 "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
-                 "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
+                 f"compiling it on Windows: set STRATA_HIP_ARCHS={archs} and run tools\\hip\\build_windows.bat (it makes "
+                 "strata-windows-x64-hip.zip), then run START-HERE.bat --backend hip --prebuilt <its dist folder> "
+                 "(docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
     else:
@@ -9204,11 +9254,17 @@ def main() -> int:
             (warn if line.startswith("!") else say)(line.lstrip("!"))
         for line in rdna2_notes(gpu):
             say(line)
+        for line in gfx1032_notes(gpu):
+            say(line)
     else:
         if not found:
-            fail("no NVIDIA GPU found (nvidia-smi did not answer)",
-                 "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC"
-                 + (f"; AMD ({', '.join(AMD_ARCHS)}): --backend hip" if amd else ""))
+            hint = "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC"
+            if amd:
+                hint += f"; AMD ({', '.join(AMD_ARCHS)}): --backend hip"
+                if not GFX1032_OPT_IN and any(gfx_arch_is(g.get("arch"), "gfx1032") for g in amd):
+                    hint += ("; the RX 6600 series (gfx1032) listed here is an experimental opt-in: set "
+                             "STRATA_EXPERIMENTAL_GFX1032=1 and pass --backend hip --prebuilt <engine> (docs/RX6600M.md)")
+            fail("no NVIDIA GPU found (nvidia-smi did not answer)", hint)
         if len(found) > 1 or gpu_problem(found[0]) is not None:
             gpu_table(found)
         sel = choose_gpus(a, found)                    # asked when two or more cards can share the model
