@@ -5,7 +5,7 @@ import { readGpuTelemetry, gpuMemoryTotals } from './device-probes.mjs';
 import { createSystemSampler } from './system-telemetry.mjs';
 import { sensorPace, WATCH_MS } from './sensor-pace.mjs';
 import { readTemperatures } from './temperature-telemetry.mjs';
-import { addEnergy, energyWh } from './energy-meter.mjs';
+import { addEnergy, energyWh, reportedPower } from './energy-meter.mjs';
 import { state as servingState } from './serving.mjs';
 import { originalDashboard } from './monitor-dashboard.mjs';
 import { get as getStore } from './store.mjs';
@@ -93,7 +93,7 @@ function hardwareSnapshot() {
     vramTotalGb:memory.total,
     ramUsedGb:systemReading?.ramUsedGb??null,ramTotalGb:systemReading?.ramTotalGb??hw.ramTotalGb,
     gpuTempC:aggregate(readings,'temperatureC','max'),tempLimitC:hw.tempLimitC,
-    powerW:aggregate(readings,'powerW'),powerLimitW:aggregate(readings,'powerLimitW'),
+    powerW:reportedPower(readings),powerLimitW:reportedPower(readings,'powerLimitW'),
     pcieRxMbs:aggregate(readings,'pcieRxMbs'),
     cpuTempC:demo?54:temperatures.cpuTempC,ssdTempC:demo?41:temperatures.ssdTempC,energyWh:round(energyWh(),3),
     diskReadGbs:systemReading?.diskReadGbs??null,diskWriteMbs:systemReading?.diskWriteMbs??null,

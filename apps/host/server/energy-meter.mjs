@@ -4,6 +4,12 @@
  */
 const meter = { wh: 0, at: 0 };
 
+/** Sum the cards that report power. An unmetered iGPU must not hide a measured discrete GPU. */
+export function reportedPower(readings, key = 'powerW') {
+  const values = readings.map(gpu => gpu[key]).filter(value => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  return values.length ? values.reduce((total, value) => total + value, 0) : null;
+}
+
 export function addEnergy(powerW, at) {
   const dt = meter.at ? Math.min((at - meter.at) / 1000, 5) : 0;
   meter.at = at;
