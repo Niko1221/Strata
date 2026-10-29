@@ -1199,6 +1199,8 @@ export function deleteSession(id: string) {
   const sessions = state.sessions.filter((s) => s.id !== id);
   persistSessions(sessions);
   set({ sessions, activeSession: state.activeSession === id ? (sessions[0]?.id ?? null) : state.activeSession });
+  // Tell the host too: its agent keeps a Harness session per chat id, and nothing else drops it.
+  void api.post('/api/agent/chat/forget', { chatId: id }).catch(() => undefined);
 }
 
 export function renameSession(id: string, title: string) {

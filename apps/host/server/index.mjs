@@ -1887,6 +1887,14 @@ async function api(req, res, path, method, url) {
 
   // --- agent --------------------------------------------------------------
   if (path === '/api/agent/status' && method === 'GET') return json(res, 200, agent.status());
+  // A chat the person deleted in the app: drop its Harness session and the host's entry for it, so the two registries
+  // do not grow with every chat of every day (the app's memory climbed until the WebView2 renderer OOMed).
+  if (path === '/api/agent/chat/forget' && method === 'POST') {
+    const body = await readBody(req);
+    if (typeof body.chatId !== 'string' || !body.chatId) return error(res, 400, 'chatId is required');
+    agent.forget(body.chatId);
+    return json(res, 200, { ok: true });
+  }
   // The assistant's model requests, with the person's Response settings added (llm-shape.mjs). This computer only.
   const llmRoute = /^\/api\/internal\/agent-llm\/([A-Za-z0-9_.~-]+)(\/.*)$/.exec(path);
   if (llmRoute) { llmProxy(req, res, llmRoute[1], llmRoute[2] + (url.search ?? '')); return undefined; }
