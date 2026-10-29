@@ -78,6 +78,7 @@ constexpr bool T75_DEV = false;
 constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and of down (n_ff)
 
 // the formats (ggml type ids)
+constexpr int T_IQ1_M = GGML_TYPE_IQ1_M;
 constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_S = GGML_TYPE_IQ2_S,
               T_IQ3_XXS = GGML_TYPE_IQ3_XXS, T_IQ3_S = GGML_TYPE_IQ3_S, T_IQ4_XS = GGML_TYPE_IQ4_XS,
               T_IQ4_NL = GGML_TYPE_IQ4_NL, T_Q2_0 = GGML_TYPE_Q2_0,
@@ -87,7 +88,7 @@ constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_
               // the activation blocks carry sum a per 32 values in their eight spare bytes (quant_act_nat_kernel and
               // the H epilogue write it for every path; no other format reads it)
               T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0;
-static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
+static_assert(sizeof(block_iq1_m) == 56 && sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
               sizeof(block_iq3_xxs) == 98 && sizeof(block_iq3_s) == 110 && sizeof(block_iq4_xs) == 136 &&
               sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18 && sizeof(block_q4_K) == 144 &&
               sizeof(block_q5_K) == 176 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34,
@@ -95,7 +96,7 @@ static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeo
 
 // block bytes, scale per 16 values, codebook bytes in shared memory
 __host__ __device__ constexpr int block_bytes(int t) {
-    return t == T_IQ2_XXS ? 66 : t == T_IQ2_XS ? 74 : t == T_IQ2_S ? 82 : t == T_IQ3_XXS ? 98 : t == T_IQ3_S ? 110
+    return t == T_IQ1_M ? 56 : t == T_IQ2_XXS ? 66 : t == T_IQ2_XS ? 74 : t == T_IQ2_S ? 82 : t == T_IQ3_XXS ? 98 : t == T_IQ3_S ? 110
          : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34 : 18;
 }
 // the formats with a minimum (w = d q + m), and the raw words a sub-block's load stage holds
@@ -103,9 +104,9 @@ __host__ __device__ constexpr bool has_min(int t) { return t == T_Q4_K || t == T
 __host__ __device__ constexpr int raw_words(int t) {
     return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : 5;
 }
-__host__ __device__ constexpr bool per16(int t) { return t == T_IQ2_XS || t == T_IQ2_S; }
+__host__ __device__ constexpr bool per16(int t) { return t == T_IQ1_M || t == T_IQ2_XS || t == T_IQ2_S; }
 __host__ __device__ constexpr int grid_bytes(int t) {
-    return t == T_IQ2_XXS ? 256 * 8 : t == T_IQ2_XS ? 512 * 8 : t == T_IQ2_S ? 1024 * 8 : t == T_IQ3_XXS ? 256 * 4
+    return t == T_IQ1_M ? 2048 * 4 : t == T_IQ2_XXS ? 256 * 8 : t == T_IQ2_XS ? 512 * 8 : t == T_IQ2_S ? 1024 * 8 : t == T_IQ3_XXS ? 256 * 4
          : t == T_IQ3_S ? 512 * 4 : 0;
 }
 constexpr int WLDH = 144;               // F16: bytes per decoded weight row of a stage: 64 halves + 16 (ldmatrix rows apart)
@@ -311,7 +312,13 @@ __device__ __forceinline__ uint32_t ld32a(const uint8_t* p) {
 }
 template <int T, int NW> __device__ __forceinline__ void load_unit(const uint8_t* bp, int ib, uint32_t (&w)[NW]) {
     static_assert(NW >= raw_words(T), "raw words");
-    if constexpr (T == T_IQ2_XXS) {
+    if constexpr (T == T_IQ1_M) {
+        w[0] = ld32(bp + 4 * ib);
+        w[1] = ld16(bp + 32 + 2 * ib);
+        const uint32_t c0 = ld16(bp + 48), c1 = ld16(bp + 50), c2 = ld16(bp + 52), c3 = ld16(bp + 54);
+        const uint32_t h = (c0 >> 12) | ((c1 >> 8) & 0xf0) | ((c2 >> 4) & 0xf00) | (c3 & 0xf000);
+        w[2] = h | (((ld16(bp + 48 + 2 * (ib / 2)) >> (6 * (ib % 2))) & 63) << 16);
+    } else if constexpr (T == T_IQ2_XXS) {
         w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = ld16(bp);
     } else if constexpr (T == T_IQ2_XS) {
         w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = ld16(bp) | ((uint32_t) bp[66 + ib] << 16);
@@ -418,7 +425,22 @@ template <int T, class L, int NW> __device__ __forceinline__ void load_unit_l(L&
 template <int T, int NW>
 __device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* grid, const uint32_t (&kv)[4],
                                         uint32_t (&q)[8], float& s0, float& s1, const uint4* sgn = nullptr) {
-    if constexpr (T == T_Q4_K || T == T_Q5_K) {
+    if constexpr (T == T_IQ1_M) {
+        // IQ1_M: d * odd_scale * (grid[-1,0,1] +/- 1/8).
+        // Fold the offset into exact int8 codes (8*grid +/- 1), leaving one scale per 16 values.
+        const float d = half_at(w[2]) * 0.125f;
+        s0 = d * (2 * ((w[2] >> 16) & 7) + 1);
+        s1 = d * (2 * ((w[2] >> 19) & 7) + 1);
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const uint32_t hi = (w[1] >> (4 * k)) & 15;
+            const uint32_t idx = ((w[0] >> (8 * k)) & 255) | ((hi & 7) << 8);
+            const uint32_t packed = ((const uint32_t*) grid)[idx];
+            const uint32_t bias = (hi & 8) ? 0x09090909u : 0x07070707u;
+            q[2 * k] = __vsub4((packed & 0x0f0f0f0fu) << 3, bias);
+            q[2 * k + 1] = __vsub4(((packed >> 4) & 0x0f0f0f0fu) << 3, bias);
+        }
+    } else if constexpr (T == T_Q4_K || T == T_Q5_K) {
         const int ib = (int) (w[9] >> 24), sh = 4 * (ib & 1);
         uint32_t sc, mn;
         if (ib < 4) { sc = w[9] & 63; mn = (w[9] >> 8) & 63; }
@@ -535,7 +557,8 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* 
 }
 
 template <int T> __device__ __forceinline__ const void* grid_src() {
-    if constexpr (T == T_IQ2_XXS) return iq2xxs_grid;
+    if constexpr (T == T_IQ1_M) return iq1s_grid_gpu;
+    else if constexpr (T == T_IQ2_XXS) return iq2xxs_grid;
     else if constexpr (T == T_IQ2_XS) return iq2xs_grid;
     else if constexpr (T == T_IQ2_S) return iq2s_grid;
     else if constexpr (T == T_IQ3_XXS) return iq3xxs_grid;
@@ -678,8 +701,8 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
         }
         uint32_t raw[5] = {0, 0, 0, 0, 0};
         uint32_t pc[NP];   // stage s + 2's pieces in flight (load_unit_l)
-        auto issue = [&](int s) { LdIssue l{pc, 0}; uint32_t w[5]; load_unit_l<WT>(l, unit(s), sub(s), w); };
-        auto take = [&](int s) { LdTake l{pc, 0}; load_unit_l<WT>(l, unit(s), sub(s), raw); };
+        auto issue = [&](int s) { if constexpr (TWO_PASS) { LdIssue l{pc, 0}; uint32_t w[5]; load_unit_l<WT>(l, unit(s), sub(s), w); } };
+        auto take = [&](int s) { if constexpr (TWO_PASS) { LdTake l{pc, 0}; load_unit_l<WT>(l, unit(s), sub(s), raw); } };
         if (dec) load_unit<WT>(unit(0), sub(0), raw);
         if (dec && TWO_PASS && 2 < NS) issue(2);
         put(raw, 0);
@@ -1653,6 +1676,8 @@ struct DevInfo {
     bool done = false, ok = false;
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
     bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
+    bool iq1m = false;  // STRATA_PF_FUSED_IQ1_M=1: SM75 IQ1_M / Q2_0, 128-row tiles only
+    int iq1m_occ = 1;
     bool q2n = false;   // sm_80+ with STRATA_PF_FUSED_Q2N=1: the native Q2_0 pack's Q2_0 gate/up is set up as well (opt-in)
     bool s120 = false;  // compute capability 12.0 (sm120_series.hpp): the default for the formats measured there
     bool s121 = false;  // GB10 (sm_121, DGX Spark): 128-row tiles win from 65,536 routed rows a launch up (pick_ww)
@@ -1797,6 +1822,12 @@ const DevInfo& dev_info() {
         d.t75 = true;
         d.ok = setup_one<T_Q2_0, true>(occ) && setup_one<T_Q2_0, false>(occ);
         d.occ = d.ok ? occ : 1;
+        const char* iq1 = std::getenv("STRATA_PF_FUSED_IQ1_M");
+        int oi = 1 << 20;
+        if (iq1 && iq1[0] == '1' && d.ok && setup_ww<T_IQ1_M, true, 2>(oi) && setup_ww<T_Q2_0, false, 2>(oi)) {
+            d.iq1m = true;
+            d.iq1m_occ = oi;
+        }
         cudaGetLastError();
         return d;
     }
@@ -1847,6 +1878,7 @@ bool f16_d(int t) { return t == T_Q2_0 || t == T_IQ4_NL || t == T_Q8_0; }
 bool gu_covered(int t) {
     return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS
 #if !defined(__HIPCC__)
+           || (t == T_IQ1_M && dev_info().iq1m)
            || (t == T_Q2_0 && (dev_info().t75 || dev_info().q2n))   // Q2_0 gate/up: the Turing opt-in, or STRATA_PF_FUSED_Q2N=1 on sm_80+
 #endif
 #if defined(__HIPCC__)
@@ -1965,13 +1997,14 @@ bool native_supported(int gu_type, int d_type) {
         // partly in RAM) the fused kernels were 4.7% slower on 20K prompts (0/6 pairs) - it keeps MMQ unless STRATA_PF_FUSED=1
         return d.ok && d.s120 && d.sms >= 80 && !d.t75 && d_covered_on(d_type, d);
     }
+    if (gu_type == T_IQ1_M && d_type != T_Q2_0) return false;
     if (gu_type == T_Q2_0 && d_type != T_Q2_0) return false;   // the opt-in (STRATA_PF_FUSED=1 as well) takes the Q2_0 / Q2_0 pair only
 #endif
     // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && !(gu_type == T_Q2_0 && strata::core::kGfx12PromptDefaultsOn)) return false;
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
-    if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
+    if (d.t75 && ((gu_type != T_Q2_0 && !(gu_type == T_IQ1_M && d.iq1m)) || d_type != T_Q2_0)) return false;
     if (env < 0) return d.w12;
     return requested() || d.w12;
 }
@@ -2078,13 +2111,20 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         experts_native(w, g, n_expert, n, scratch, xa, src, ha, dm, stream);
         return;
     }
-    const int ww = pick_ww(n, n_expert);
+    const int ww = g.gu_type == T_IQ1_M ? 2 : pick_ww(n, n_expert);
+    const int occ = g.gu_type == T_IQ1_M ? d.iq1m_occ : d.occ;
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * d.occ);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * occ);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * occ);
     switch (g.gu_type) {
+#if !defined(__HIPCC__)
+        case T_IQ1_M:
+            native_kernel<T_IQ1_M, true, 2><<<g_gu, THREADS, smem_bytes(T_IQ1_M, 2, host_astages()), s>>>(
+                b, g, tb, (const uint8_t*) xa, src, (uint8_t*) ha, nullptr);
+            break;
+#endif
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_S: launch<T_IQ2_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;

@@ -79,7 +79,6 @@ struct Geo {
     }
 };
 
-// random blocks with a sane fp16 scale `d` at each block's start (every format here begins with it): scales chosen so
 // STRATA_PF_F16=1: the covered formats run on F16 weights (moe_f16_kq.cu, native_f16_kernel), not the int8 kernels
 bool f16_on() {
     const char* v = std::getenv("STRATA_PF_F16");
@@ -89,7 +88,7 @@ bool f16_on() {
     return (v != nullptr && v[0] == '1') || (f != nullptr && f[0] == '1') || (w != nullptr && w[0] == '1');
 }
 
-// that the weights' typical size is that of a 2-3 bit expert (a few hundredths)
+// Random blocks with sane FP16 base scales: weights of a few hundredths, like a 2-3 bit expert.
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
     const size_t bs = ggml_type_size(t), nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
@@ -100,7 +99,14 @@ void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt199
     for (size_t i = 0; i < nb * bs; ++i) m[i] = (uint8_t) byte(rng);
     for (size_t b = 0; b < nb; ++b) {
         const ggml_fp16_t h = ggml_fp32_to_fp16(sc(rng));
-        std::memcpy(m + b * bs, &h, 2);
+        if (t == GGML_TYPE_IQ1_M) {   // the base half's nibbles live in the four scale words
+            for (int j = 0; j < 4; ++j) {
+                uint16_t v;
+                std::memcpy(&v, m + b * bs + 48 + 2 * j, 2);
+                v = (v & 0x0fff) | (((h >> (4 * j)) & 15) << 12);
+                std::memcpy(m + b * bs + 48 + 2 * j, &v, 2);
+            }
+        } else std::memcpy(m + b * bs, &h, 2);
         if (t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K || t == GGML_TYPE_Q5_1) {   // the minimum's scale, either sign
             const ggml_fp16_t h2 = ggml_fp32_to_fp16(sc(rng) * ((rng() & 1) ? 1.0f : -1.0f) * (t == GGML_TYPE_Q5_1 ? 4.0f : 1.0f));
             std::memcpy(m + b * bs + 2, &h2, 2);
@@ -518,14 +524,15 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     std::sort(tf.begin(), tf.end());
     std::sort(td.begin(), td.end());
     const float t_mmq = tm[tm.size() / 2], t_f = tf[tf.size() / 2];
-    if (all_routed)
+    if (all_routed && !no_mmq)
         std::printf("  (MMQ's products alone, no gathers: %.3f ms - fused %.2fx)\n", td[td.size() / 2],
                     td[td.size() / 2] / t_f);
     std::vector<float> tf2;   // back to back
     for (int rep = 0; rep < 8; ++rep) tf2.push_back(once(fused_run));
     std::sort(tf2.begin(), tf2.end());
-    std::printf("  (fused back to back: median %.3f ms, min %.3f; alternating min %.3f; MMQ min %.3f)\n", tf2[4],
+    if (!no_mmq) std::printf("  (fused back to back: median %.3f ms, min %.3f; alternating min %.3f; MMQ min %.3f)\n", tf2[4],
                 tf2[0], tf[0], tm[0]);
+    else std::printf("  (fused back to back: median %.3f ms, min %.3f; MMQ not timed)\n", tf2[4], tf2[0]);
     const std::vector<float> y_mmq = mq ? download(mb.dm, (size_t) rows * N) : std::vector<float>((size_t) rows * N, 0.0f),
                              y_f = download(fb.dm, (size_t) rows * N);
     const std::vector<int32_t> slot = download_i(fb.slot, (size_t) rows);
@@ -537,9 +544,11 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     }
     const Err efm = mq ? compare(y_f, [&](size_t i) { return (int64_t) slot[i]; }, y_mmq,
                                  [&](size_t i) { return (int64_t) r.row_of[i]; }, (size_t) rows) : Err{};
-    std::printf("%s - timing part: %d tokens x top %d over %d experts, one layer: MMQ path %.3f ms, fused %.3f ms "
+    if (!no_mmq) std::printf("%s - timing part: %d tokens x top %d over %d experts, one layer: MMQ path %.3f ms, fused %.3f ms "
                 "(%.2fx); fused vs MMQ rel RMS %.3e worst row %.3e\n",
                 p.name, T, K, E, t_mmq, t_f, t_mmq / t_f, efm.rms, efm.worst);
+    else std::printf("%s - timing part: %d tokens x top %d over %d experts: fused %.3f ms (MMQ not timed)\n",
+                     p.name, T, K, E, t_f);
     {   // the grouping: every pair in its expert's rows (the near-identical blobs here would hide a wrong expert)
         const std::vector<int32_t> fsrc = download_i(fb.src, (size_t) rows);
         int64_t bad = 0, bad_src = 0;
@@ -631,8 +640,10 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         }
         auto id = [](size_t j) { return (int64_t) j; };
         const Err em = mq ? compare(ym, id, ref, id, pick.size()) : Err{}, ef = compare(yf, id, ref, id, pick.size());
-        std::printf("  sample of %zu pairs vs FP32 reference: MMQ rel RMS %.3e worst %.3e, fused rel RMS %.3e worst "
+        if (mq) std::printf("  sample of %zu pairs vs FP32 reference: MMQ rel RMS %.3e worst %.3e, fused rel RMS %.3e worst "
                     "%.3e\n", pick.size(), em.rms, em.worst, ef.rms, ef.worst);
+        else std::printf("  sample of %zu pairs vs FP32 reference: fused rel RMS %.3e worst %.3e (MMQ unavailable)\n",
+                         pick.size(), ef.rms, ef.worst);
         if (!mq ? (ef.rms > 0.03 || ef.worst > 0.25) : (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst))
             throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's (timing)");
     }
@@ -661,6 +672,24 @@ int main(int argc, char** argv) {
 #endif
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
+        for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--iq1-disabled") == 0) {
+                if (fused::native_supported(GGML_TYPE_IQ1_M, GGML_TYPE_Q2_0))
+                    throw std::runtime_error("IQ1_M enabled without its opt-in");
+                std::printf("IQ1_M disabled: passed\n");
+                return 0;
+            }
+            if (std::strcmp(argv[i], "--require-iq1") == 0) {
+                int major = 0, minor = 0;
+                cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
+                cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0);
+                if (major != 7 || minor != 5) { std::printf("IQ1_M requires SM75: skipped\n"); return 77; }
+                if (!fused::native_supported(GGML_TYPE_IQ1_M, GGML_TYPE_Q2_0))
+                    throw std::runtime_error("IQ1_M opt-in not available on SM75");
+                if (fused::native_supported(GGML_TYPE_IQ1_M, GGML_TYPE_IQ4_NL))
+                    throw std::runtime_error("IQ1_M incorrectly accepts IQ4_NL down");
+            }
+        }
         // gfx12: only the native kernels exist (fused::available() is the Q2_0 pack's), so they decide there
         if (!fused::available() && !fused::native_supported(GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL)) {
             std::printf("the fused kernels need sm_80 or newer (or gfx11 / gfx12 matrix cores): skipped\n");
@@ -696,7 +725,8 @@ int main(int argc, char** argv) {
             {GGML_TYPE_IQ2_S, GGML_TYPE_IQ4_NL, "IQ2_S / IQ4_NL"},   {GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_0, "IQ3_XXS / Q2_0"},
             {GGML_TYPE_IQ3_S, GGML_TYPE_Q2_0, "IQ3_S / Q2_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, "IQ4_XS / IQ4_NL"},
             // the canonical Q2_0 pack (gate/up and down Q2_0; CUDA)
-            {GGML_TYPE_Q2_0, GGML_TYPE_Q2_0, "Q2_0 / Q2_0"}};
+            {GGML_TYPE_Q2_0, GGML_TYPE_Q2_0, "Q2_0 / Q2_0"},
+            {GGML_TYPE_IQ1_M, GGML_TYPE_Q2_0, "IQ1_M / Q2_0"}};
         const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
         for (int i = 1; i < argc; ++i)
             if (std::strncmp(argv[i], "--only=", 7) == 0) only = argv[i] + 7;
@@ -724,7 +754,7 @@ int main(int argc, char** argv) {
                 const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
                 int major = 0;
                 cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-                if ((major < 8 || turing_pair) && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
+                if ((major < 8 || turing_pair || p.gu == GGML_TYPE_IQ1_M) && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
             }
             if (ref) reference_part(p, s);
