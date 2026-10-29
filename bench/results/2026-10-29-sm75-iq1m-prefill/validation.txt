@@ -1,0 +1,78 @@
+COMMAND/LOG: upstream-iq1-tests.log
+IQ1_M / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 229, experts without rows 4
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.672e-04  worst 3.095e-03
+  fused vs FP32 reference: rel RMS 1.595e-02  worst row max rel 2.752e-02
+prefill fused MoE (native formats) parity passed
+
+
+COMMAND/LOG: final-iq1-timing.log
+  (fused back to back: median 20.285 ms, min 20.113; MMQ not timed)
+  fused output bits hash bb348125e3aa97e1
+IQ1_M / Q2_0 - timing part: 4096 tokens x top 10 over 512 experts: fused 20.492 ms (MMQ not timed)
+  sample of 96 pairs vs FP32 reference: fused rel RMS 1.586e-02 worst 2.592e-02 (MMQ unavailable)
+  (fused back to back: median 38.558 ms, min 37.947; MMQ not timed)
+  fused output bits hash 6952fdf74e15075b
+IQ1_M / Q2_0 - timing part: 8192 tokens x top 10 over 512 experts: fused 38.312 ms (MMQ not timed)
+  sample of 96 pairs vs FP32 reference: fused rel RMS 1.604e-02 worst 2.585e-02 (MMQ unavailable)
+prefill fused MoE (native formats) parity passed
+
+
+COMMAND/LOG: custom-iq1-tests.log
+IQ1_M / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 229, experts without rows 4
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.672e-04  worst 3.095e-03
+  fused vs FP32 reference: rel RMS 1.595e-02  worst row max rel 2.752e-02
+prefill fused MoE (native formats) parity passed
+
+
+COMMAND/LOG: q2-bits-prod.log
+  (MMQ's products alone, no gathers: 12.881 ms - fused 1.45x)
+  (fused back to back: median 9.220 ms, min 8.824; alternating min 8.795; MMQ min 16.921)
+  fused output bits hash cd150663277d137b
+Q2_0 / Q2_0 - timing part: 2048 tokens x top 10 over 512 experts, one layer: MMQ path 17.062 ms, fused 8.914 ms (1.91x); fused vs MMQ rel RMS 2.662e-05 worst row 1.004e-02
+  sample of 96 pairs vs FP32 reference: MMQ rel RMS 1.717e-02 worst 6.363e-02, fused rel RMS 1.717e-02 worst 6.363e-02
+  (MMQ's products alone, no gathers: 20.816 ms - fused 1.25x)
+  (fused back to back: median 16.762 ms, min 16.603; alternating min 16.494; MMQ min 24.950)
+  fused output bits hash 4e773e7a29ac8f15
+Q2_0 / Q2_0 - timing part: 4096 tokens x top 10 over 512 experts, one layer: MMQ path 25.024 ms, fused 16.587 ms (1.51x); fused vs MMQ rel RMS 1.885e-05 worst row 3.774e-03
+  sample of 96 pairs vs FP32 reference: MMQ rel RMS 1.170e-02 worst 3.878e-01, fused rel RMS 1.170e-02 worst 3.878e-01
+prefill fused MoE (native formats) parity passed
+
+
+COMMAND/LOG: q2-bits-off.log
+  (MMQ's products alone, no gathers: 12.874 ms - fused 1.45x)
+  (fused back to back: median 9.161 ms, min 8.942; alternating min 8.817; MMQ min 16.967)
+  fused output bits hash cd150663277d137b
+Q2_0 / Q2_0 - timing part: 2048 tokens x top 10 over 512 experts, one layer: MMQ path 17.005 ms, fused 8.858 ms (1.92x); fused vs MMQ rel RMS 2.662e-05 worst row 1.004e-02
+  sample of 96 pairs vs FP32 reference: MMQ rel RMS 1.717e-02 worst 6.363e-02, fused rel RMS 1.717e-02 worst 6.363e-02
+  (MMQ's products alone, no gathers: 20.859 ms - fused 1.25x)
+  (fused back to back: median 16.652 ms, min 16.594; alternating min 16.574; MMQ min 25.026)
+  fused output bits hash 4e773e7a29ac8f15
+Q2_0 / Q2_0 - timing part: 4096 tokens x top 10 over 512 experts, one layer: MMQ path 25.108 ms, fused 16.625 ms (1.51x); fused vs MMQ rel RMS 1.885e-05 worst row 3.774e-03
+  sample of 96 pairs vs FP32 reference: MMQ rel RMS 1.170e-02 worst 3.878e-01, fused rel RMS 1.170e-02 worst 3.878e-01
+prefill fused MoE (native formats) parity passed
+
+
+COMMAND/LOG: final-ctest.log
+Test project $LAB/private/upstream/build
+    Start 171: prefill_fused_iq_test_iq1m
+1/2 Test #171: prefill_fused_iq_test_iq1m ............   Passed    4.38 sec
+    Start 172: prefill_fused_iq_test_iq1m_disabled
+2/2 Test #172: prefill_fused_iq_test_iq1m_disabled ...   Passed    0.24 sec
+
+100% tests passed out of 2
+
+Total Test time (real) =   4.63 sec
+
+
+COMMAND/LOG: final-disabled-overrides.log
+IQ1_M disabled: passed
+
+
+COMMAND/LOG: final-memcheck.log
+========= COMPUTE-SANITIZER
+  (fused back to back: median 433.103 ms, min 431.941; MMQ not timed)
+  fused output bits hash 5469c8324414a082
+IQ1_M / Q2_0 - timing part: 256 tokens x top 10 over 512 experts: fused 432.800 ms (MMQ not timed)
+  sample of 96 pairs vs FP32 reference: fused rel RMS 1.600e-02 worst 2.614e-02 (MMQ unavailable)
+prefill fused MoE (native formats) parity passed
+========= ERROR SUMMARY: 0 errors

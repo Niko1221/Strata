@@ -1,0 +1,6 @@
+{
+  "reason": "Requested 8192 fell back to 4096. Remaining same-configuration repeats cancelled after the first full request completed.",
+  "requested_chunk": 8192,
+  "actual_chunk": 4096,
+  "at": 1793305776.8277843
+}

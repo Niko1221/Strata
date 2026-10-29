@@ -1,0 +1,24 @@
+{
+  "upstream": "46c152a1310f77cd2f0ce2c7cd213962df14fe83",
+  "production_base": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+  "ggml": "3cf03257f",
+  "tensorfold_reviewed": "cb2ebf0540f42604e2759b2ddef497861e928248",
+  "tensorfold_sources": [
+    "src/tensorfold/cuda/kernels/qmm_prefill.cu",
+    "src/tensorfold/cuda/experts_prefill.cu"
+  ],
+  "attribution": "Investigation inspired by tiled quantized prefill and shared-memory stage sizing. Original IQ1_M adapter for existing Strata kernels; no TensorFold code copied.",
+  "patch_sha256": "0119b6ec6db01fab4cdd836210948c9c52009ebbdd00274b5dea2781f995f179",
+  "gpu": "NVIDIA GeForce RTX 2080, 615.78.08, 8192 MiB, 165.00 W",
+  "cuda": "13.4.92",
+  "host_compiler": "GCC 16.2.1",
+  "os": "Omarchy 4.0.6",
+  "model_download_checksum_sidecars": {
+    "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": "ca3b302d3d1eb6eddce3ea4acc79854e6cc5fdc0583e374a6a8b6bb67327743b",
+    "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": "e4996a6de18fd49c58d9a0040fcfd73787db6407c51973f29884bee7b14c9dbb"
+  },
+  "model_revision": "not recorded; checksum sidecars retained, not rehashed during GPU measurements",
+  "expert_layout_sha256": "ad437fa433f5ca2bc2e5058e02dafbe6535cca64421b256996343bd10b57eaeb",
+  "expert_profile_seed_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+  "kernel_commit": "38704fa2e969fd225eb4c8add17d665e49a22332"
+}
