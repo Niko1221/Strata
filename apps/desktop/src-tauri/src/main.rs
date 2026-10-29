@@ -866,7 +866,7 @@ fn main() {
     // window process (`--window-child`) only shows the page. See supervisor.rs.
     #[cfg(target_os = "linux")]
     {
-        let options = supervisor::parse_args(&args, std::env::var("STRATA_UI").ok().as_deref());
+        let options = supervisor::parse_args(&args, std::env::var("STRATA_UI").ok().as_deref(), std::env::var("STRATA_RESUME").ok().as_deref());
         if !options.window_child {
             std::process::exit(supervisor::run(&options));
         }
