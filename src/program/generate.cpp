@@ -4903,6 +4903,11 @@ int main(int argc, char** argv) {
         return o.mtp_draft_vocab.empty() ? std::filesystem::exists(std::filesystem::path(o.mtp) / "draft_vocab.bin", ec)
                                          : std::filesystem::exists(o.mtp_draft_vocab, ec);
     }();
+    // Opt-in, output only: report the chosen decode loop in this request's DONE, not a startup guess.
+    const bool decode_diagnostics = [] {
+        const char* e = std::getenv("STRATA_DECODE_DIAGNOSTICS");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
     const bool pw_auto = o.pipeline_windows < 0;
     if (pw_auto) {
         static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
@@ -4923,6 +4928,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --pipeline-windows 2 is on by default for a layer split of %zu stages "
                                  "(--pipeline-windows 0 or STRATA_PIPELINE_AUTO=0 turns it off)\n", split_devs.size() + 1);
     }
+    const int diagnostic_pipeline_windows = o.pipeline_windows;   // auto resolved, before unsupported setups disable it
+    bool diagnostic_pipeline_config_off = false;
     if (o.pipeline_windows > 0) {
         const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         const char* off = !o.serve ? "it needs --serve"
@@ -4938,6 +4945,7 @@ int main(int argc, char** argv) {
                         : nullptr;
         if (off != nullptr) {
             std::fprintf(stderr, "strata generate: --pipeline-windows %d is off: %s\n", o.pipeline_windows, off);
+            diagnostic_pipeline_config_off = true;
             o.pipeline_windows = 0;
         } else if (!pw_auto && o.pipeline_windows >= 2 && split_devs.size() == 1) {
             // #2637: the default (above) takes two stages only with the draft layer on the first card (mtp_first); asked for by
@@ -15756,7 +15764,7 @@ int main(int argc, char** argv) {
             // window's own commit inputs are intact in its parity's verifier).  Stage 1 never runs a speculative window
             // and a window row computes what it would in any other window, so every emitted token is the serial loop's
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
-            bool pl_ran = false;
+            bool pl_ran = false, serial_ran = false;
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
@@ -16407,6 +16415,7 @@ int main(int argc, char** argv) {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
+                serial_ran = true;
                 int T = 1;
                 policy.set_context(p);
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
@@ -17015,16 +17024,32 @@ int main(int argc, char** argv) {
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+            char decode_txt[192] = "";
+            if (decode_diagnostics && o.batch == 0) {   // batch admission's DONE is not the whole slot request
+                const int requested = pipe ? pl_pw : diagnostic_pipeline_windows;
+                const char* mode = pl_ran ? "pipeline" : serial_ran ? "serial" : "none";
+                const char* reason = pl_ran ? "none"
+                                     : !serial_ran ? "no_decode_loop"
+                                     : requested == 0 ? "not_requested"
+                                     : requested == 1 ? "prefill_only"
+                                     : diagnostic_pipeline_config_off ? "configuration"
+                                     : !pipe ? "pipeline_unavailable"
+                                     : !pl_snap_ok ? "snapshot_unavailable"
+                                     : hist_n > 0 ? "repetition_penalties"
+                                     : mtp.coupled() ? "coupled_draft_sampling" : "pipeline_unavailable";
+                std::snprintf(decode_txt, sizeof decode_txt, " decode_mode=%s pipeline_windows=%d decode_reason=%s",
+                              mode, requested, reason);
+            }
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
+                        "experts_streamed=%lld%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+                        (long long) (sp.chain_experts_streamed() - streamed0), decode_txt);
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
