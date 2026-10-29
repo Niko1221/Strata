@@ -6904,7 +6904,12 @@ def update_install(have: list, a) -> int:
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
-    ver = engine_version(Path(json.loads(have[0].read_text(encoding="utf-8-sig"))["exe"]))
+    _cfg = json.loads(have[0].read_text(encoding="utf-8-sig"))
+    _exe = Path(_cfg.get("exe", ""))
+    if _cfg.get("backend") == "sycl" or _exe.name == "strata-sycl.sh":            # #4544: the launcher is not the engine,
+        ver = engine_version(Path("engine-sycl") / "strata")                      # use engine-sycl/BUILD.json instead
+    else:
+        ver = engine_version(_exe)
     say()
     start = "START-HERE.bat" if WIN else "./setup.sh"
     if any(ver) and tuple(ver) < MIN_ENGINE:             # #3653: the engine step failed above; "updated" would be untrue
