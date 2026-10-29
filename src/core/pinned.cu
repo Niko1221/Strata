@@ -831,13 +831,13 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready) {
-    return load_experts_ranges(path, dst, layer_off, layer_bytes, threads, chunk, ready, nullptr);
+                              const std::atomic<int>* ready, uint64_t dst_bias) {
+    return load_experts_ranges(path, dst, layer_off, layer_bytes, threads, chunk, ready, nullptr, dst_bias);
 }
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready, const PadMap* pad) {
+                              const std::atomic<int>* ready, const PadMap* pad, uint64_t dst_bias) {
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
@@ -907,7 +907,9 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                 }
                 const auto t_copy = std::chrono::steady_clock::now();
                 if (pad == nullptr) {
-                    std::memcpy(dst + off + pos, buf.data(), (size_t) n);
+                    // dst_bias maps the file offset to the destination: 0 for the whole arena, the block's first
+                    // layer offset when the file is split across several allocations (see ArenaExpertSource).
+                    std::memcpy(dst + off - dst_bias + pos, buf.data(), (size_t) n);
                 } else {   // the padded layout: a chunk may span blobs, each lands at its own page-aligned start
                     const uint64_t B = pad->blob[(size_t) L], S = pad->stride[(size_t) L];
                     for (uint64_t q = 0; q < n;) {
