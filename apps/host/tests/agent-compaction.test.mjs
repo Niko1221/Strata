@@ -25,12 +25,23 @@ test('the reply keeps 30 percent of the window (at most 32K) and compaction gets
   assert.match(profile.patch, /"modelPolicies": \[\s*\{\s*"provider": "strata-local",\s*"model": "m",\s*"headroomTokens": 2867/);
 });
 
-test('a large local model gives helpers a 64K route and keeps the chat window', () => {
+test('a large local model gives helpers a 64K working window through the context plugin', () => {
   const big = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 524288 }], connections: [] });
-  assert.match(big.patch, /"name": "m \(helper, 64K\)",\s*"contextWindow": 65536/);
-  assert.ok(big.patch.includes('"provider": "strata-local-helper"'), 'the helper provider is in the profile');
-  const small = buildProfile({ local: [{ id: 'a', modelId: 'm', baseUrl: 'http://x', context: 32768 }], connections: [] });
-  assert.doesNotMatch(small.patch, /strata-local-helper/, 'a window at or below 64K needs no second route');
+  assert.match(big.patch, /"helperWindow": 65536/);
+  assert.match(big.patch, /"windows": \{\s*"strata-local\/m": 524288/);
+  assert.doesNotMatch(big.patch, /strata-local-helper/, 'the helper route is not needed; existing sessions reject it');
+});
+
+test('a helper measures against 64K, the chat keeps the model window', async () => {
+  const { apply } = await import('../server/agent/plugins/strata-context.mjs');
+  const meter = { measure: () => ({ totalTokens: 1000, surfaceTokens: 1000, nodes: [{ seq: 1, tokens: 1000, heuristicTokens: 1000 }] }) };
+  const child = { header: { origin: 'subagent' }, requestHeader: () => ({ config: { provider: 'strata-local', model: 'm' } }) };
+  const parent = { header: {}, requestHeader: () => ({ config: { provider: 'strata-local', model: 'm' } }) };
+  const ctx = { tokenMeter: meter, llm: { stream() {} }, sessions: { get: () => child }, on: () => {}, inject: () => {}, logger: {} };
+  apply(ctx, { helperWindow: 65536, windows: { 'strata-local/m': 524288 } });
+  assert.equal(meter.measure(child).totalTokens, 8000, '64K of 512K is an eighth: the scaled measurement reaches the threshold at 64K');
+  assert.equal(meter.measure(child).nodes[0].tokens, 8000, 'the nodes are scaled too, so the compacted range matches');
+  assert.equal(meter.measure(parent).totalTokens, 1000, 'the parent is measured as before');
 });
 
 test('a long chat on a small window compacts before it overflows, and the conversation goes on', { skip }, async (t) => {

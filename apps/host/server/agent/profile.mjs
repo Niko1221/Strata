@@ -204,8 +204,6 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   const providers = {};
   const env = {};
   const routes = [];
-  /** Same local model, a 64K window, used by helpers only (see HELPER_CONTEXT). */
-  const helperRoutes = [];
   const mcpEnv = {};
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
@@ -254,20 +252,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     const shaped = addShaped(route, providers[route], inst.baseUrl);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
-    // A helper gets its own provider key for the same engine model, with a 64K window, so the Harness's
-    // compaction and output budget treat helpers as short jobs. The main chat keeps the full window.
-    const helperContext = Math.min(context, HELPER_CONTEXT);
-    if (helperContext < context) {
-      const helperRoute = `${route}-helper`;
-      const helperName = `${inst.label || inst.modelId} (helper, ${Math.round(helperContext / 1024)}K)`;
-      providers[helperRoute] = {
-        ...providers[route],
-        displayName: `${providers[route].displayName} (helper)`,
-        models: [{ ...providers[route].models[0], name: helperName, contextWindow: helperContext, maxTokens: localOutputBudget(helperContext) }],
-      };
-      compaction.push({ provider: helperRoute, model: inst.modelId, headroomTokens: compactionHeadroom(helperContext, localOutputBudget(helperContext)) });
-      helperRoutes.push({ provider: helperRoute, model: inst.modelId, name: helperName, connection: 'this computer', local: true, helperOf: route, helperContext });
-    }
+    // Helpers use this same route. A separate 64K provider route looked cleaner, but the Harness captures
+    // the allowed model routes when a chat session is created: every chat that existed before the route
+    // rejects it ("not allowed for this Session"). The helper window is enforced in strata-context instead.
   });
 
   connections.forEach(conn => {
@@ -333,10 +320,12 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     : [{ id: 'web', config: { searchProvider: keyed ?? DDG_PROVIDER_ID, fetchProvider: 'http' } }, { id: 'web-search-deepseek', disabled: true },
       { insert: [{ id: 'strata-web-search', name: SEARCH_PLUGIN, config: { provider: keyed ?? 'duckduckgo', keyEnv: 'STRATA_SEARCH_KEY', ...(searchMock ? { mock: searchMock } : {}) } }] }];
   /** The models a helper agent may be started on: the table the model-choice plugin and the Harness's allow-list are written from. */
-  const subagentRoutes = [
-    ...routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' })),
-    ...helperRoutes,
-  ];
+  const subagentRoutes = routes.map(r => ({ provider: r.route, model: r.modelId, name: r.name, connection: r.connectionName, local: r.kind === 'local' }));
+  /** The real window of every route/model, so strata-context can cap a helper's working window without a new route. */
+  const modelWindows = {};
+  for (const [key, def] of Object.entries(providers)) {
+    for (const m of def.models ?? []) if (m?.id && Number.isFinite(m.contextWindow)) modelWindows[`${key}/${m.id}`] = m.contextWindow;
+  }
   const entries = [
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
@@ -347,7 +336,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     // Its web question names the search service the person chose (a keyed one only when its key is saved), and the person's switch skips the question.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN, config: { web: { provider: SEARCH_NAMES[keyed ?? 'builtin'], skipAsk: tools.webWithoutAsking === true } } }] }] : []),
     // Compaction decides from what the model server measured, and its summary requests always fit the window (plugins/strata-context.mjs).
-    { insert: [{ id: 'strata-context', name: CONTEXT_PLUGIN, config: {} }] },
+    { insert: [{ id: 'strata-context', name: CONTEXT_PLUGIN, config: { helperWindow: HELPER_CONTEXT, windows: modelWindows } }] },
     // Helper agents on a model the person names: every model the app can reach is allowed, and the plugin makes the choice forgiving (plugins/strata-models.mjs).
     ...(subagentRoutes.length ? [{ id: 'subagent-model-selection-settings', config: { enabled: true, allowedModels: subagentRoutes.map(r => ({ provider: r.provider, model: r.model })) } }] : []),
     ...(subagentRoutes.length ? [{ insert: [{ id: 'strata-models', name: MODELS_PLUGIN, config: { routes: subagentRoutes } }] }] : []),

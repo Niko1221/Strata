@@ -19,7 +19,7 @@
 import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK } from '../context-budget.mjs';
 
 export const name = 'strata-context';
-export const inject = ['tokenMeter', 'llm'];
+export const inject = ['tokenMeter', 'llm', 'sessions'];
 
 /** Real prompt measurements per session: { real, estimated } for the last answer the model server reported. */
 const samples = new WeakMap();
@@ -28,10 +28,28 @@ const wrapped = new WeakSet();
 /** Densities that made a summary request fail on this server, per session id (the next request starts from a more careful one). */
 const careful = new Map();
 
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
   const meter = ctx.tokenMeter;
   const llm = ctx.llm;
+  const helperWindow = Number(config.helperWindow) > 0 ? Number(config.helperWindow) : 0;
+  const windows = config.windows && typeof config.windows === 'object' ? config.windows : {};
+  const helperOutput = helperWindow > 0 ? Math.max(4096, Math.min(32768, Math.floor(helperWindow * 0.3))) : 0;
   const log = (level, text) => { try { ctx.logger?.[level]?.(`strata-context: ${text}`); } catch { /* logging never blocks */ } };
+
+  /**
+   * A helper's working window is smaller than the model's. The session's own model route is kept (a
+   * separate route fails on chats created before it), so the measurement is scaled instead: the
+   * Harness's compaction threshold is in model tokens, and reaching it at 64K real tokens makes the
+   * helper compact at 64K. The parent session is never scaled.
+   */
+  const childScale = session => {
+    if (!(helperWindow > 0) || session?.header?.origin !== 'subagent') return 1;
+    try {
+      const cfg = session.requestHeader?.()?.config;
+      const real = cfg ? Number(windows[`${cfg.provider}/${cfg.model}`]) : 0;
+      return Number.isFinite(real) && real > helperWindow ? real / helperWindow : 1;
+    } catch { return 1; }
+  };
 
   // 1. The measured size of the prompt, from the model server's own report for each answer.
   if (meter && typeof meter.measure === 'function' && !wrapped.has(meter)) {
@@ -39,13 +57,18 @@ export function apply(ctx) {
     const original = meter.measure;
     meter.measure = function measure(session, requestHeader) {
       const m = original.call(this, session, requestHeader);
+      const scale = childScale(session);
       const sample = samples.get(session);
-      if (!sample) return m;
+      if (!sample) {
+        if (scale === 1) return m;
+        return { ...m, totalTokens: Math.ceil(m.totalTokens * scale), nodes: m.nodes.map(n => ({ ...n, tokens: Math.ceil(n.tokens * scale) })) };
+      }
       const now = m.surfaceTokens + estimateTools(requestHeader ?? session.requestHeader?.());
-      const total = Math.max(m.totalTokens, pressureNow({ sample, now }));
-      if (total <= m.totalTokens) return m;
+      const total = Math.max(m.totalTokens, pressureNow({ sample, now })) * scale;
+      if (total <= m.totalTokens && scale === 1) return m;
       const density = densityOf(sample.real, sample.estimated);
-      return { ...m, totalTokens: total, nodes: m.nodes.map(n => ({ ...n, tokens: Math.ceil(n.tokens * density) })) };
+      const factor = density * scale;
+      return { ...m, totalTokens: Math.ceil(total), nodes: m.nodes.map(n => ({ ...n, tokens: Math.ceil(n.tokens * factor) })) };
     };
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'assistant/message') return;
@@ -64,13 +87,20 @@ export function apply(ctx) {
     });
   }
 
-  // 2. A summary request that fits the window.
+  // 2. A summary request that fits the window; a helper's answer is capped with its working window.
   if (llm && typeof llm.stream === 'function' && !wrapped.has(llm)) {
     wrapped.add(llm);
     const original = llm.stream;
     llm.stream = function stream(options) {
-      if (options?.purpose !== 'compaction') return original.call(this, options);
-      return summaryStream.call(this, options, original);
+      let opts = options;
+      if (opts?.sessionId && helperWindow > 0) {
+        try {
+          const session = ctx.sessions?.get?.(opts.sessionId);
+          if (childScale(session) > 1 && Number(opts.maxTokens) > helperOutput) opts = { ...opts, maxTokens: helperOutput };
+        } catch { /* keep the request as it is */ }
+      }
+      if (opts?.purpose !== 'compaction') return original.call(this, opts);
+      return summaryStream.call(this, opts, original);
     };
   }
 
