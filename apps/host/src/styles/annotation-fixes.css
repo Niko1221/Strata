@@ -902,4 +902,7 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 }
 .subagent-msg--user .subagent-bubble,
 .subagent-msg--parent .subagent-bubble { max-width:100%; }
+/* The task card is a card, not a reading bubble: an 80ch cap left a wide empty strip on its right and
+   wrapped the task early. It uses the card's own width. */
+.subagent-task .subagent-bubble { max-width:100%; }
 @media (max-width:720px){ .st-msg, .subagent-msg { max-width:100%; } }
