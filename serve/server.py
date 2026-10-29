@@ -7794,6 +7794,9 @@ def make_handler(svc: Service):
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
+            # #1917: what a client-side tool search found is declared in the conversation, where the search answered;
+            # only the parser and the response get it beside the request's own tools, so the prompt keeps its start
+            found, found_names = responses_api.searched_tools(req)
             kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
@@ -7844,6 +7847,9 @@ def make_handler(svc: Service):
             if svc.codex_compaction_cache:
                 responses_api.prompt_made(req, shown)
             _debug_req("responses", req, messages, tools, max_new, thinking, len(ids))
+            if tools is not None and found:              # tool_choice "none" hides the found tools too
+                tools = tools + [t for t in found if t["name"] not in names]
+                names = {**found_names, **names}
             include = req.get("include") if isinstance(req.get("include"), list) else []
             asm = responses_api.Assembler(req, svc.model_for(req), len(ids), names,
                                           "reasoning.encrypted_content" in include, validator is not None)
