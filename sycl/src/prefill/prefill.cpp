@@ -945,7 +945,7 @@ I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
         uint32_t s = 12345;
         auto rnd = [&] { s = s * 1664525u + 1013904223u; return s >> 8; };
         for (size_t i = 0; i < hb.size(); ++i) hb[i] = (uint8_t) rnd();
-        const int gb = f.gu_type == 21 ? 110 : f.gu_type == 18 ? 98 : 82;
+        const int gb = f.gu_type == 16 ? 66 : f.gu_type == 21 ? 110 : f.gu_type == 18 ? 98 : 82;
         for (size_t o = 0; o + 2 <= f.up_off * 2 && o < hb.size(); o += gb) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
         for (size_t o = f.down_off; o + 2 <= f.bytes; o += 18) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
         for (int i = 0; i < E; ++i) q.memcpy(blobs[i], hb.data(), f.bytes);
@@ -4229,7 +4229,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         // held group of staged experts as above
                         const int i8m = i8_mode(m.cs);
                         const bool i8on = !xmx2_only && i8m != 0 && !use_mmq && lay.native && !had_gu && !had_d &&
-                                          (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22) &&
+                                          (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22 ||
+                                           (lay.fmt[(size_t) l].gu_type == 16 && strata::prefill::i8::iq2_xxs_enabled())) &&
                                           (lay.fmt[(size_t) l].d_type == 20 || lay.fmt[(size_t) l].d_type == 42) &&
                                           lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
                                           strata::prefill::i8::available(m.cs);

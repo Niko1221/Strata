@@ -26,6 +26,18 @@ never exists and the weights are read once, compressed (2.1 MB per expert instea
   non-work-group kernels, `STRATA_I8_GRF=128` the 128-register mode, `STRATA_I8_DBG` bring-up switches (skip decode / loads / stores).
 * Default (unset): `auto` on a Battlemage GPU (bmg-g21 or bmg-g31 by the SYCL architecture id, not by name; the kernels must be in the binary and pass `available()`), the FP16 path on every other GPU. The engine prints one line at load ("int8 prompt experts are on ... STRATA_PREFILL_MMQ=0 turns them off"). If the kernels are not in the binary for the device (an AOT build for other devices) or a launch throws, the group and the rest of the process take the FP16 chain with one log line. The activations are quantized, so the bits differ from the FP16 path (see "Quality").
 
+## Experimental IQ2_XXS gate/up support
+
+`STRATA_SYCL_IQ2_XXS_I8=1` adds IQ2_XXS (type 16) gate/up to the supported
+formats. It is off when unset or set to any other value. Set it before starting
+the engine; restart after changing it. IQ2_XS (type 17) is not included.
+
+The flag keeps the existing device, shape and automatic crossover checks.
+`STRATA_PREFILL_MMQ=0` still selects FP16 everywhere. The new path uses the
+existing int8 activation grid, so it can change rounding and answer wording;
+it is not bitwise equivalent to the FP16 chain. No expanded FP16 weight buffer
+is created. Other formats and the default format set are unchanged.
+
 ## Tiles and thresholds
 
 * One hardware thread (ESIMD, sub-group 16, 256 GRF) owns 16 output rows of one expert, all of K, and `MT x 8` activation rows.
