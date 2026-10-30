@@ -41,6 +41,20 @@ int main() {
     check(!ple_resident_admit(std::numeric_limits<uint64_t>::max(), table, std::numeric_limits<uint64_t>::max(), 8 * GiB),
           "sizes cannot overflow");
     check(!ple_resident_admit(0, table, arena, 0), "zero available");
+    // #4518: after the load, does the table's lock leave the automatic conversation cache no room?  (min free 2560 MiB, cache 40% of the
+    // rest, 8192 MiB at most, 1024 MiB at least)
+    {
+        const int64_t floor_mib = 2560;
+        check(!ple_lock_blocks_cache(std::nullopt, table, floor_mib), "unknown telemetry: leave the lock");
+        check(!ple_lock_blocks_cache(40ull * GiB, 0, floor_mib), "unknown table size: leave the lock");
+        check(ple_lock_blocks_cache(4ull * GiB, table, floor_mib), "the reporter: 4 GiB left with the table locked (cache off), 30 GiB without");
+        check(ple_lock_blocks_cache(10ull * GiB, table, floor_mib), "10 GiB left: cache 1.9 GiB with the lock, 8 GiB without");
+        check(!ple_lock_blocks_cache(40ull * GiB, table, floor_mib), "40 GiB left: the cache is already at its 8 GiB cap");
+        check(!ple_lock_blocks_cache(23ull * GiB, table, floor_mib), "23 GiB: the cap is just reached with the lock");
+        check(ple_lock_blocks_cache(22ull * GiB, table, floor_mib), "22 GiB: the lock costs the cache some of its 8 GiB");
+        check(!ple_lock_blocks_cache(1ull * GiB, 1ull << 20, floor_mib), "a tiny table cannot make a cache");
+        check(!ple_lock_blocks_cache(std::numeric_limits<uint64_t>::max(), table, floor_mib), "no overflow");
+    }
     std::printf("ple_residency_test: %d checks passed\n", checks);
     return 0;
 }

@@ -365,6 +365,8 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
         loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
     except feedmod.FeedDowngrade as exc:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
+    for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
+        ctx.say("feed", line)
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})
@@ -703,15 +705,31 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         raise
 
 
+def _runs_on_dsv41_engine(config) -> bool:
+    """True for a DeepSeek run config. The test start swaps the engine for the one being updated (the Strata engine), and a DeepSeek model
+    runs on strata-dsv41, which has its own package: the Strata engine rejects its options ('unknown argument: --eos') and a good engine
+    would be refused. Unreadable configs count as not DeepSeek, so they are tried as before."""
+    try:
+        cfg = json.loads(Path(config).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    exe = cfg.get("exe")
+    return cfg.get("arch") == "deepseek41" or (isinstance(exe, str) and "strata-dsv41" in exe.replace("\\", "/").rsplit("/", 1)[-1].lower())
+
+
 def discover_run_config(environ=None) -> Path | None:
     """A saved model's run config for the test start: the one a saved profile uses if its files are all present, otherwise any
-    installed model whose files are present. None when no model is installed (the first run)."""
+    installed model whose files are present. DeepSeek models are left out (they run on strata-dsv41, not on the engine under test).
+    None when no model can be used (the first run)."""
     from strata_control import models, profiles
     try:
         listed = models.list_installed()
     except Exception:                                   # noqa: BLE001 - discovery is best effort
         return None
-    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")]
+    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")
+             and not _runs_on_dsv41_engine(m["source_config"])]
     if not ready:
         return None
     try:

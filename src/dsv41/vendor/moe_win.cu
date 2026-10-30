@@ -2,6 +2,7 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/dsv41/vendor/moe_win.cu - the window's expert grouping kernel.
 // Extracted from Project Maya's src/kernels/cuda/glm_fast.cu (MIT, see third_party/project-maya/NOTICE.md).
+#include "../ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "strata/dsv41/moe_win.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -47,7 +48,7 @@ __global__ void moe_win_group_kernel(const __grid_constant__ MoeWin w) {
 }  // namespace
 
 void moe_win_group(const MoeWin& w, cudaStream_t s) {
-    moe_win_group_kernel<<<1, 32, 0, s>>>(w);
+    strata_ds4_launch(moe_win_group_kernel, 1, 32, 0, s, w);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "dsv41: moe_win_group: %s\n", cudaGetErrorString(e));
