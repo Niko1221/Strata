@@ -8,7 +8,7 @@ RTX 2080 8 GB, i5-9600K, 64 GB RAM, Omarchy 4.0.6 (Linux), driver 615.78.08, CUD
 
 | Build / actual prefill chunk | Flag off, tok/s | Flag on, tok/s | Change | Exact-edit passes off / on |
 | --- | ---: | ---: | ---: | --- |
-| Current upstream + this patch / 1,024 | 353.4 (353.4–353.5) | 353.4 (353.4–353.5) | +0.0% | 2/2 / 1/2 |
+| Upstream `46c152a` + this patch / 1,024 | 353.4 (353.4–353.5) | 353.4 (353.4–353.5) | +0.0% | 2/2 / 1/2 |
 | Local tuned v0.2.7 integration / 4,096 | 848.1 (845.9–850.3) | 874.9 (874.3–875.5) | +3.2% | 1/2 / 1/2 |
 
 All HTTP runs used the same v0.2.7 Python server (Python 3.14.8); “upstream” identifies the C++ engine at the pinned main revision, not a different server/template. Two fresh processes per arm. Upstream order: off/on/on/off. Integration order: installed production/off/on/on/off/installed production. Rates above are total prompt tokens divided by total prompt time; parentheses are individual-run ranges. The integration build retains local prefill loans and broader SM75 native-IQ dispatch. It is a separate result, not an estimate of this patch’s gain over stock upstream. Upstream reduced the requested 4K chunk to 1K; compare only within each row. In the tuned build, covering all 48 layers also activates Strata’s existing fully fused buffer/ring layout (`fused_ring()`); the gain includes that planner response and is not a claim about standalone MMA throughput.
@@ -82,3 +82,13 @@ Restart for each run and use off/on/on/off order. `reproduce.py` checks zero reu
 The compact cold-run timings, shared token counts, quality outcomes and speed medians are in `results.json`; full usual-suite records are in [speed-off.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/speed-off.json) and [speed-on.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/speed-on.json). Model download checksum sidecars and the expert-profile seed hash are in the `provenance` section of `results.json`; the model repository revision was not recorded, and the profile itself is not included. A different profile can change timings. The local integration row requires the custom prefill-loan/cache patches and is secondary to the independently reproducible upstream comparison.
 
 The [complete audit archive](https://github.com/riccardogiorato/Strata/tree/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill) retains the original raw JSON, failed outputs and per-run configurations at the pre-cleanup commit. The current PR keeps only `results.json` and `config.example.json`, alongside the reproduction fixture/script and validation transcript. No measurement or failure was discarded.
+
+## Upstream refresh — 2026-10-30
+
+Merged main `870aedd` (Strata 0.2.8 / engine 0.1.54). The CUDA engine and
+`prefill_fused_iq_test` rebuilt successfully on SM75. Both IQ1_M CTest cases
+(enabled reference parity and disabled dispatch) passed. The 4,096- and
+8,192-token layer checks passed with the same output hashes as the original
+validation (`bb348125e3aa97e1`, `6952fdf74e15075b`). The end-to-end A/B table above
+remains evidence from the older pinned revisions; it was not rerun for this
+merge. HIP, SYCL and other GPUs remain untested; this PR stays draft.

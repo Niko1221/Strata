@@ -76,3 +76,26 @@ IQ1_M / Q2_0 - timing part: 256 tokens x top 10 over 512 experts: fused 432.800 
   sample of 96 pairs vs FP32 reference: fused rel RMS 1.600e-02 worst 2.614e-02 (MMQ unavailable)
 prefill fused MoE (native formats) parity passed
 ========= ERROR SUMMARY: 0 errors
+
+
+2026-10-30 UPDATE: main 870aedd merged; CUDA SM75 build succeeded
+COMMAND: ctest --test-dir build -R ^prefill_fused_iq_test_iq1m --output-on-failure
+COMMAND: STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_IQ1_M=1 build/prefill_fused_iq_test --only=IQ1_M --require-iq1 --no-ref --chunks=4096,8192
+Test project $SOURCE/build
+    Start 173: prefill_fused_iq_test_iq1m
+1/2 Test #173: prefill_fused_iq_test_iq1m ............   Passed    4.43 sec
+    Start 174: prefill_fused_iq_test_iq1m_disabled
+2/2 Test #174: prefill_fused_iq_test_iq1m_disabled ...   Passed    0.26 sec
+
+100% tests passed out of 2
+
+Total Test time (real) =   4.69 sec
+  (fused back to back: median 20.032 ms, min 19.750; MMQ not timed)
+  fused output bits hash bb348125e3aa97e1
+IQ1_M / Q2_0 - timing part: 4096 tokens x top 10 over 512 experts: fused 19.415 ms (MMQ not timed)
+  sample of 96 pairs vs FP32 reference: fused rel RMS 1.586e-02 worst 2.592e-02 (MMQ unavailable)
+  (fused back to back: median 36.852 ms, min 36.430; MMQ not timed)
+  fused output bits hash 6952fdf74e15075b
+IQ1_M / Q2_0 - timing part: 8192 tokens x top 10 over 512 experts: fused 36.825 ms (MMQ not timed)
+  sample of 96 pairs vs FP32 reference: fused rel RMS 1.604e-02 worst 2.585e-02 (MMQ unavailable)
+prefill fused MoE (native formats) parity passed
