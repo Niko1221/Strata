@@ -358,7 +358,9 @@ model files stay in the OS file cache, so loading again takes seconds while that
 **Session ladder** (opt-in, `"session_ladder": {...}`): a per-conversation checkpoint ledger built on the engine's own
 session-file SAVE/RESTORE. A conversation that switches away is checkpointed at its turn end; `POST /unload` checkpoints
 every dirty conversation before the engine closes; the engine start after an unload hands the checkpoint back before the
-next request, so the prompt reads from the restored prefix instead of being re-prefilled. A refused save or restore degrades
+next request, so the prompt reads from the restored prefix instead of being re-prefilled. Subagent (child) sessions earn
+their own ledger entries: OpenCode carries each request's own session id in `x-opencode-session-id` while its affinity
+headers carry the parent's, and the ladder reads the own id first. A refused save or restore degrades
 to a cold prefill with one log line and never fails the request. The block's keys are `idle_save_s` (8.0) and
 `retention_max_files` (16); the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
 without a resolvable budget refuses to start. Absent the block, everything above stays as it was.

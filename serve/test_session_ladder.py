@@ -48,17 +48,39 @@ def session(session_id, tokens, byte_count, parked=True, save_eligible=True, evi
 
 class SessionLadderDecisions(unittest.TestCase):
     def test_extract_session_id_precedence(self):
-        # pinned order: x-session-id > x-opencode-session-id > x-session-affinity > x-opencode-session
+        # pinned order: x-opencode-session-id > x-session-id > x-session-affinity > x-opencode-session
+        # (the own-id header outranks the affinity family: OpenCode 2.1.4 child sessions carry the PARENT id
+        # in the affinity family - see test_extract_session_id_opencode_child)
         headers = {"x-session-id": "sid-a", "x-opencode-session-id": "sid-b",
                    "x-session-affinity": "sid-c", "x-opencode-session": "sid-d"}
-        self.assertEqual(extract_session_id(headers), "sid-a")
-        self.assertEqual(extract_session_id({"x-session-id": "", "x-opencode-session-id": "sid-b",
-                                             "x-session-affinity": "sid-c", "x-opencode-session": "sid-d"}), "sid-b")
+        self.assertEqual(extract_session_id(headers), "sid-b")
+        self.assertEqual(extract_session_id({"x-opencode-session-id": "", "x-session-id": "sid-a",
+                                             "x-session-affinity": "sid-c", "x-opencode-session": "sid-d"}), "sid-a")
         self.assertEqual(extract_session_id({"x-session-affinity": "sid-c", "x-opencode-session": "sid-d"}), "sid-c")
         self.assertEqual(extract_session_id({"x-opencode-session": "sid-d"}), "sid-d")
         self.assertEqual(extract_session_id({"X-Session-Id": "sid-case"}), "sid-case")  # header names are case-insensitive
         self.assertIsNone(extract_session_id({}))
         self.assertIsNone(extract_session_id({"x-opencode-chat": "not-a-session-header"}))
+
+    def test_extract_session_id_opencode_child(self):
+        # OpenCode 2.1.4 child sessions (subagents): the binary stamps every request with
+        #   "x-opencode-session-id": <own id>  (+ "x-opencode-parent-session-id" when a parent exists)
+        #   "X-Session-Id" = "x-session-affinity" = "x-opencode-session" = DR(h),
+        # where DR=(H)=>H.parentID ?? H.fork?.sessionID ?? H.id (observed in .opencode-wrapped):
+        # a CHILD request's affinity headers carry the PARENT's id on purpose (provider-side cache
+        # affinity).  If the ladder reads the affinity family first, every subagent collapses into
+        # the main session: it is never tracked, never saved to disk, and its DONE figures are
+        # misattributed to the parent (live momo 2026-10-28/30: the engine log names only main
+        # session ids across days of subagent use).  The session's OWN id wins: x-opencode-session-id
+        # outranks the affinity family.
+        parent, child = "ses_parent000000000000000000", "ses_child0000000000000000000"
+        headers = {"x-opencode-session-id": child, "x-opencode-parent-session-id": parent,
+                   "x-session-affinity": parent, "X-Session-Id": parent,
+                   "x-parent-session-id": parent, "x-opencode-project": "proj",
+                   "x-opencode-session": parent, "x-opencode-client": "cli"}
+        self.assertEqual(extract_session_id(headers), child)
+        # A main (parentless) request carries the same value in every header: unchanged behavior.
+        self.assertEqual(extract_session_id({k: parent for k in headers}), parent)
 
     def test_join_event_unique(self):
         # verbatim P1 lines:
