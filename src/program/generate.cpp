@@ -10332,7 +10332,7 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(v.device());
                     if (!v.capture_all(e)) return false;
                 }
-            if (!mtp.prepare_prefill(e)) return false;
+            if (!mtp.reserve_prefill(o.spec, e)) return false;
             if (o.pipeline_windows >= 2 && pl_snap_ok && !mtp.prepare_chain(e)) return false;
             const strata::core::OnDevice on(mtp.device());
             for (cudaEvent_t& ev : pl_mtp_ev)
@@ -16274,6 +16274,12 @@ int main(int argc, char** argv) {
                 };
                 auto pl_apply = [&]() {
                     if (exch_wait) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+                        // hipHostUnregister waits for windows that still need this host to serve their flags.
+                        if (!pin_live.empty())
+                            for (int st = 0; st < n_stages; ++st)
+                                if (stage_ver_p(st, 0).in_flight() || stage_ver_p(st, 1).in_flight()) return;
+#endif
                         if (stage_passed(exch_ev)) pl_release();
                         return;
                     }
