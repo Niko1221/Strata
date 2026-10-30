@@ -346,6 +346,38 @@ class SetupArgs(unittest.TestCase):
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", **kw)
             return Runner(s, catalog=cat).setup_args()
 
+    def args_for(self, **kw):
+        values = dict(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", vision="off")
+        values.update(kw)
+        with Home():
+            return Runner(S.LaunchSettings(**values), catalog=catalog(HW_12)).setup_args()
+
+    def test_a_lower_case_tag_from_a_saved_preset_reaches_setup_as_its_key(self):
+        """#4209: a preset keeps "model": "iq3_xxs", and setup's --model choices are the table's own keys
+        ("IQ3_XXS"). Starting such a preset with any changed choice reruns setup, which then refused it."""
+        args = self.args_for(model="iq3_xxs")
+        self.assertEqual(args[args.index("--model") + 1], "IQ3_XXS")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
+        for fam, model, want in (("coder", "iq1_m", "IQ1_M"), ("gyro", "gyro-s", "Gyro-S"), ("qwen", "IQ3_S", "IQ3_S")):
+            args = self.args_for(family=fam, model=model)
+            self.assertEqual(args[args.index("--family") + 1], fam)
+            self.assertEqual(args[args.index("--model") + 1], want)
+
+    def test_an_unknown_model_is_still_setup_to_report(self):
+        args = self.args_for(model="not-a-model")
+        self.assertEqual(args[args.index("--model") + 1], "not-a-model")
+
+    def test_a_model_list_that_cannot_be_read_leaves_the_values_alone(self):
+        """The resolver is an improvement, never a new way for the launch to fail: when it cannot answer, the
+        preset's own values go to setup as they did before #4209."""
+        with Home():
+            cat = catalog(HW_12)
+            r = Runner(S.LaunchSettings(family="qwen", model="iq3_xxs", context=32768, vision="off"), catalog=cat)
+            with mock.patch.object(cat, "resolve", side_effect=RuntimeError("the model list cannot be read")):
+                args = r.setup_args()
+        self.assertEqual(args[args.index("--model") + 1], "iq3_xxs")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
+
     def test_pictures_default_on_the_cpu_reader_under_24_gb_and_the_gpu_reader_from_24_gb_on_every_make(self):
         from tests.terminal.launch_support import HW_12 as NV
         card = lambda name, gb, vendor: {**NV, "gpus": [{"index": 0, "name": name, "vram_gb": gb, "usable": True, "vendor": vendor}]}   # noqa: E731

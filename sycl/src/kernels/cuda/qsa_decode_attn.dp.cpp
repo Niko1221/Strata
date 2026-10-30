@@ -665,8 +665,21 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     const dpct::dim3 grid((unsigned)n_chunks, (unsigned)s.n_head_kv,
                           (unsigned)n_q);
     dpct::queue_ptr st = strata::q_of(stream);
-    // S25: STRATA_ATTN_LANECELL=1 - the score phase one cell per thread (bit-identical scores, no shuffle reductions)
-    static const bool lane_cell = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
+    // S25: the score phase one cell per thread (bit-identical scores, no shuffle reductions).  Prompt batches take
+    // it by default: on 2x Arc Pro B65 it reads a 4,106-token prompt 5.2% faster, 8,191 tokens 5.2% and 16,380
+    // tokens 4.8%, with the same tokens; the decode window's few queries per call are 1.4% slower with it (56.6-57.0
+    // against 55.9-56.3 tok/s), so the choice follows the query count.  It is a Battlemage (Xe2) default only: on an Arc
+    // A750 (Alchemist) the same switch reads a 4,106-token prompt 0.7% slower (three interleaved runs, 4 of 5 pairs
+    // faster with it off), so the generation comes from the device's architecture id (strata::intel_gpu_gen: the
+    // runtime's architecture enum first, the name only as a fallback), never from the name alone.
+    // STRATA_ATTN_LANECELL=1/0 forces either way on any device.
+    static const int lane_cell_env = [] {
+        const char* v = std::getenv("STRATA_ATTN_LANECELL");
+        return v != nullptr && v[0] != '\0' ? std::atoi(v) : -1;
+    }();
+    const bool lane_cell = lane_cell_env >= 0
+        ? lane_cell_env != 0
+        : (n_q >= 16 && strata::intel_gpu_gen(st->get_device()) == strata::IntelGpuGen::Battlemage);
 #define STRATA_ATTN_LC(M)                                                      \
     {                                                                          \
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \

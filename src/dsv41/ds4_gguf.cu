@@ -1563,6 +1563,7 @@ iq::SetArgs iq_set(const x3::SetArgs& sa) {   // a set as ds4_iq's arguments (th
     q.n_ff = sa.n_ff;
     q.limit = sa.limit;
     q.xf16 = sa.x16;
+    q.skip_ge = sa.skip_ge;
 #if defined(STRATA_METAL)
     q.hbounds = sa.hbounds;
     q.total_rows = sa.total_rows;

@@ -1,10 +1,12 @@
 // include/strata/core/defaults_026.hpp - STRATA_DEFAULTS=026: the master switch of the Qwen engine's 0.2.7 defaults.
 //
 // Every default the Qwen engine (`strata`) changed since v0.2.6 goes back to what v0.2.6 did when STRATA_DEFAULTS=026 is in the
-// environment (the app's "off" for its speed switches sends it): the residency-biased routing (STRATA_ROUTE_PRIOR), the wide
+// environment (the app's "off" for its speed switches sends it): the wide
 // hyper-connection up read (STRATA_GR_UP_WIDE), the stream-split hyper-connection read (STRATA_GR_V3), the int8 prompt attention
 // (STRATA_PROMPT_ATTN_IMMA), the four gfx12 decode switches of the arch table, the PLE residency policy (STRATA_PLE_AUTO_RAM), and the
 // gfx12 decode miss split of 0.15 (back to 0.55).  KVA is off by default in 0.2.7 and stays whatever STRATA_KVA says.
+// The residency-biased routing (STRATA_ROUTE_PRIOR) was in this set in 0.2.7; it is off by default again (owner, 2026-10-29), so the master switch
+// has nothing to take back there, and route_prior_default() answers 0 with the switch on or off.
 // An explicit per-feature variable (STRATA_ROUTE_PRIOR=2, STRATA_GR_V3=1, STRATA_PLE_AUTO_RAM=1, ...) or flag (--pcie-frac, --ple-io)
 // still wins over the master switch.  Each rule is a pure function that takes the answer of qwen_defaults_026() as its `v026`
 // argument, so a test can check both settings without touching the environment (src/core/arch_defaults_test.cpp,
