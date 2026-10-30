@@ -190,6 +190,12 @@ cmake -S sycl -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release ^
 ninja -C build-win strata
 ```
 
+Two things about that build, both met on the B390 PC: the configure and the build must run in the *same* window where
+`setvars.bat` ran (a link that cannot open `libircmt.lib` means it did not - run the `cmake -S sycl -B build-win` line
+again in that window and build), and the engine needs Level Zero, which is only reachable from a process that saw
+`setvars.bat`. `strata doctor` on a run config with `"backend": "sycl"` says when oneAPI cannot be reached, and the
+engine line it would otherwise print ("`No device of requested type available`") names nothing to fix.
+
 `setup --backend sycl` runs `sycl/setup_intel.py`, which on Windows finds the Intel adapter in Windows' own device
 list (there is no `/sys/class/drm`), uses `build-win\strata.exe` and writes a config that starts it directly: no
 Docker, and the oneAPI runtime folders go in the config's `lib_dirs` because a service does not inherit what
