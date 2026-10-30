@@ -5050,6 +5050,29 @@ class ModelAliases(unittest.TestCase):
             httpd.server_close()
 
 
+class NvmlPcieTraffic(unittest.TestCase):
+    def test_a_wrapped_reading_is_no_reading(self):
+        """A GP100 hands back 200 GiB/s now and then, idle: it reaches neither the tile nor a card's total."""
+        from serve import telemetry
+
+        class Lib:
+            rates = {0: 0, 1: 0}                                                     # tx, rx, in KB/s
+
+            def nvmlDeviceGetPcieThroughput(self, dev, counter, out):
+                out._obj.value = self.rates[counter.value]
+                return 0
+
+        g = telemetry._Nvml.__new__(telemetry._Nvml)
+        g.dev, g.lib = None, Lib()
+        g.lib.rates = {0: 2048, 1: 58 << 20}                                         # 2 MB/s; about PCIe 5.0 x16's top
+        r = g.read()
+        self.assertEqual((r["pcie_tx_mb"], r["pcie_rx_mb"]), (2.0, 59392.0))
+        g.lib.rates = {0: 209_708_000, 1: 2048}                                      # 7 MB/s under 2^22 KB / 20 ms
+        r = g.read()
+        self.assertIsNone(r["pcie_tx_mb"])
+        self.assertEqual(r["pcie_rx_mb"], 2.0)
+
+
 class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
