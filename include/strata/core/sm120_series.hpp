@@ -49,16 +49,22 @@ inline bool sm120_default(int major, int minor) { return is_sm120(major, minor) 
 // `total_bytes`: the card's memory (cudaDeviceProp::totalGlobalMem); `integrated`: a GPU that shares the PC's memory.
 constexpr double kSmallCardGiB = 13.0;   // "a 12 GB card": 12 GB cards report 11.6 - 12.0 GiB, 16 GB ones 15.6 - 16.0
 
-/// The residency-bias bonus a discrete CUDA card of 13 GiB or less gets when the user set nothing: THE one place the value lives.  1.5 since the
-/// owner decision of 2026-10-26 (it was 2.0 in the first 0.2.7 candidates): on the RTX 3060 12 GB with IQ3_XXS the copy and code check found real
-/// defects at 2.0 and none in 19 tasks at 1.5 or 1.0, and 1.5 keeps the speed (story +15%, code +37% against off).  A longer 61-task check of
-/// 0 / 1.5 / 2.0 is still running; if it shows defects at 1.5 this falls back to 1.0.
+/// The residency-bias bonus the user can ask for on a discrete CUDA card of 13 GiB or less (STRATA_ROUTE_PRIOR=1.5; the app's Expert-settings row
+/// "Faster answers on 12 GB NVIDIA cards" writes it): THE one place the value lives.  1.5 since the owner decision of 2026-10-26 (2.0 had real defects in
+/// the copy and code check on the RTX 3060 12 GB with IQ3_XXS; none in 19 tasks at 1.5 or 1.0).  Speed against off: story +15%, code +37%.
+/// It was the default on those cards in 0.2.7 only.  Owner decision of 2026-10-29: OFF by default again (#4402: repetition loops and weaker results in long
+/// agent sessions; our own 0.2.7 agent check passed 4.5 of 10 tasks with it on against 5.6 with it off).  It stays an opt-in.
 constexpr float kRoutePriorSmallCard = 1.5f;
 
-/// STRATA_ROUTE_PRIOR when the user set nothing: kRoutePriorSmallCard (residency-biased routing, changes which experts run; owner-approved for 12 GB
-/// cards) on a discrete CUDA card of 13 GiB or less, 0 everywhere else.  Measured on an RTX 3060 12 GB only.
-inline float route_prior_default(bool hip, bool integrated, double total_bytes, bool v026 = false) {
-    return !v026 && !hip && !integrated && total_bytes > 0.0 && total_bytes / 1073741824.0 <= kSmallCardGiB ? kRoutePriorSmallCard : 0.0f;
+/// STRATA_ROUTE_PRIOR when the user set nothing: 0 on every card (residency-biased routing changes which experts run, so it is only on when asked for:
+/// STRATA_ROUTE_PRIOR=1.5, or the Expert-settings row).  The same answer as v0.2.6 and as 0.2.7 with STRATA_ROUTE_PRIOR=0 or STRATA_DEFAULTS=026.
+/// The arguments are kept so a caller and the table test (arch_defaults_test) still ask the same question per card; none of them changes the answer.
+inline float route_prior_default(bool /*hip*/, bool /*integrated*/, double /*total_bytes*/, bool /*v026*/ = false) { return 0.0f; }
+
+/// The lambda the engine uses given the text of STRATA_ROUTE_PRIOR (nullptr = unset): any set value is the user's own and wins on every card
+/// (atof; "0" and text that reads as 0 are off; "1.5" is what the Expert-settings row writes), unset is route_prior_default (0).
+inline float route_prior_resolve(const char* env, bool hip, bool integrated, double total_bytes, bool v026 = false) {
+    return env != nullptr ? (float) std::atof(env) : route_prior_default(hip, integrated, total_bytes, v026);
 }
 
 /// STRATA_GR_V3 (the stream-split hyper-connection read, another summation order) when the user set nothing: ON for a discrete compute capability

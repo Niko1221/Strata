@@ -81,5 +81,5 @@
  "fx80": "Braucht etwa {0} GB freien Speicherplatz. Was nicht in den Speicher passt, wird von Ihrer SSD gelesen.",
  "fx81": "{0} RAM + VRAM, dazu etwa {1} GB Speicherplatz",
  "fx82": "Schnellere Antworten auf NVIDIA-Karten mit 12 GB",
- "fx83": "Bevorzugt die Teile des Modells, die schon auf der Grafikkarte liegen. Das macht Antworten auf Karten mit 12 GB deutlich schneller. Schalten Sie die Option aus, wenn die Antworten schlechter aussehen als vorher."
+ "fx83": "Bevorzugt die Teile des Modells, die schon auf der Grafikkarte liegen. Das macht Antworten auf Karten mit 12 GB schneller. Standardmäßig aus: In langen Agent-Sitzungen kann sich das Modell wiederholen und schwächere Ergebnisse liefern. Schalten Sie die Option ein, wenn Sie vor allem chatten und die Geschwindigkeit wollen."
 }

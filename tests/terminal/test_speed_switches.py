@@ -21,13 +21,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 ENV = {      # what each switch writes outside its default
     "faster_long_prompts": {"STRATA_KVA": "1"},
-    "faster_12gb_nvidia": {"STRATA_ROUTE_PRIOR": "0"},
+    "faster_12gb_nvidia": {"STRATA_ROUTE_PRIOR": "1.5"},
     "faster_radeon_9000": {"STRATA_PCIE_FRAC_DEFAULT": "old"},
     "deepseek_speedups": {"DS4_DEFAULTS": "026", "DS4_FAST_ATTN": "0", "DS4_ATTN_SLAB": "0", "DS4_COPY_PIN": "0", "DS4_COPY_HUGETLB": "0",
                           "DS4_STORE_SPARE": "0", "DS4_STORE_PUT": "0"},
     "qwen_defaults_026": {"STRATA_DEFAULTS": "026"},         # the Terminal's troubleshooting switch: not in the app
 }
-DEFAULT = {"faster_long_prompts": "off", "faster_12gb_nvidia": "on", "faster_radeon_9000": "on", "deepseek_speedups": "on", "qwen_defaults_026": "off"}
+DEFAULT = {"faster_long_prompts": "off", "faster_12gb_nvidia": "off", "faster_radeon_9000": "on", "deepseek_speedups": "on", "qwen_defaults_026": "off"}
 SIX = ("DS4_FAST_ATTN", "DS4_ATTN_SLAB", "DS4_COPY_PIN", "DS4_COPY_HUGETLB", "DS4_STORE_SPARE", "DS4_STORE_PUT")
 RTX3060 = {"name": "NVIDIA GeForce RTX 3060", "vendor": "nvidia", "arch": "86", "vram_gb": 12.0}
 RTX4070S = {"name": "NVIDIA GeForce RTX 4070 SUPER", "vendor": "nvidia", "arch": "89", "vram_gb": 12.0}
@@ -94,14 +94,24 @@ class Contract(unittest.TestCase):
         self.assertEqual(ids(QWEN, [{"name": "GeForce RTX 3060", "vram_gb": 12.0}]), ["faster_long_prompts", "faster_12gb_nvidia"], "no vendor reported: the name decides")
         self.assertEqual(ids(QWEN, [{"name": "Mystery card", "vram_gb": 12.0}]), ["faster_long_prompts"])
 
-    def test_the_12gb_switch_off_writes_route_prior_zero_and_on_removes_it(self):
+    def test_the_12gb_switch_is_off_by_default_and_on_writes_route_prior_1_5(self):
+        # 0.2.8 (owner, 2026-10-29, #4402): off by default; a default launch carries nothing, so the engine runs as 0.2.6 did
         env = {"PATH": "/bin"}
-        off = W.set_switch(env, "faster_12gb_nvidia", False)
-        self.assertEqual(off, {"PATH": "/bin", "STRATA_ROUTE_PRIOR": "0"})
-        self.assertFalse(W.is_on(off, "faster_12gb_nvidia"))
-        self.assertTrue(W.is_on({}, "faster_12gb_nvidia"))
-        self.assertEqual(W.set_switch(off, "faster_12gb_nvidia", True), env)
-        self.assertTrue(W.is_on({"STRATA_ROUTE_PRIOR": "2.0"}, "faster_12gb_nvidia"), "any other value is the user's own and reads as the default")
+        self.assertFalse(W.is_on({}, "faster_12gb_nvidia"))
+        self.assertEqual(W.set_switch(env, "faster_12gb_nvidia", False), env, "Off is the default: it writes nothing")
+        on = W.set_switch(env, "faster_12gb_nvidia", True)
+        self.assertEqual(on, {"PATH": "/bin", "STRATA_ROUTE_PRIOR": "1.5"})
+        self.assertTrue(W.is_on(on, "faster_12gb_nvidia"))
+        self.assertEqual(W.set_switch(on, "faster_12gb_nvidia", False), env, "back to Off removes the entry")
+        # the 0.2.7 Off wrote STRATA_ROUTE_PRIOR=0: that file is in the default state now, and On replaces it with 1.5
+        self.assertFalse(W.is_on({"STRATA_ROUTE_PRIOR": "0"}, "faster_12gb_nvidia"))
+        self.assertEqual(W.set_switch({"STRATA_ROUTE_PRIOR": "0"}, "faster_12gb_nvidia", True), {"STRATA_ROUTE_PRIOR": "1.5"})
+        self.assertEqual(W.set_switch({"STRATA_ROUTE_PRIOR": "0"}, "faster_12gb_nvidia", False), {})
+        sw = W.BY_ID["faster_12gb_nvidia"]
+        self.assertEqual(sw.default, "off")
+        self.assertIn("faster on 12 GB cards", sw.effect)
+        self.assertIn("Off by default", sw.effect)
+        self.assertIn("long agent sessions it can repeat itself", sw.effect)
 
     def test_deepseek_off_writes_the_master_switch_and_the_six_and_on_removes_all_seven(self):
         env = {"DS4_ASYNC_T": "4"}

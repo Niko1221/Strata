@@ -144,8 +144,13 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M"})
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw"})   # DeepSeek (0.2.7.1): the two sets run on a Mac
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
+            for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
+                self.assertEqual(rows[name].family, "deepseek41")
+                self.assertEqual(rows[name].verdict, "tight")
+                self.assertFalse(rows[name].images)
+                self.assertGreater(rows[name].spill_gb, 100)
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
             self.assertEqual(rows["IQ3_S"].verdict, "tight")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
@@ -340,6 +345,38 @@ class SetupArgs(unittest.TestCase):
             kw.setdefault("vision", "off")
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", **kw)
             return Runner(s, catalog=cat).setup_args()
+
+    def args_for(self, **kw):
+        values = dict(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", vision="off")
+        values.update(kw)
+        with Home():
+            return Runner(S.LaunchSettings(**values), catalog=catalog(HW_12)).setup_args()
+
+    def test_a_lower_case_tag_from_a_saved_preset_reaches_setup_as_its_key(self):
+        """#4209: a preset keeps "model": "iq3_xxs", and setup's --model choices are the table's own keys
+        ("IQ3_XXS"). Starting such a preset with any changed choice reruns setup, which then refused it."""
+        args = self.args_for(model="iq3_xxs")
+        self.assertEqual(args[args.index("--model") + 1], "IQ3_XXS")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
+        for fam, model, want in (("coder", "iq1_m", "IQ1_M"), ("gyro", "gyro-s", "Gyro-S"), ("qwen", "IQ3_S", "IQ3_S")):
+            args = self.args_for(family=fam, model=model)
+            self.assertEqual(args[args.index("--family") + 1], fam)
+            self.assertEqual(args[args.index("--model") + 1], want)
+
+    def test_an_unknown_model_is_still_setup_to_report(self):
+        args = self.args_for(model="not-a-model")
+        self.assertEqual(args[args.index("--model") + 1], "not-a-model")
+
+    def test_a_model_list_that_cannot_be_read_leaves_the_values_alone(self):
+        """The resolver is an improvement, never a new way for the launch to fail: when it cannot answer, the
+        preset's own values go to setup as they did before #4209."""
+        with Home():
+            cat = catalog(HW_12)
+            r = Runner(S.LaunchSettings(family="qwen", model="iq3_xxs", context=32768, vision="off"), catalog=cat)
+            with mock.patch.object(cat, "resolve", side_effect=RuntimeError("the model list cannot be read")):
+                args = r.setup_args()
+        self.assertEqual(args[args.index("--model") + 1], "iq3_xxs")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
 
     def test_pictures_default_on_the_cpu_reader_under_24_gb_and_the_gpu_reader_from_24_gb_on_every_make(self):
         from tests.terminal.launch_support import HW_12 as NV
@@ -831,6 +868,17 @@ class FlagsCommand(unittest.TestCase):
         p = self.plan("--model", "q2_0", "--pool-cores", "two,four")        # a list that cannot be read: a warning, never a refusal
         self.assertNotIn("--pool-cores", p["settings"]["extra"])
         self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
+
+    def test_dspark_on_a_mac_is_warned_about_and_not_refused(self):
+        # the drafter has no Metal kernels yet: --dspark on is passed on as asked, with a plain warning (recommend, never force)
+        import sys
+        from unittest import mock
+        with mock.patch.object(sys, "platform", "darwin"):
+            p = self.plan("--model", "q2_0", "--dspark", "on")
+        self.assertEqual(p["settings"]["extra"].get("--dspark"), "on")
+        self.assertTrue(any("DSpark" in w and "Mac" in w for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "q2_0", "--dspark", "auto")
+        self.assertFalse(any("DSpark" in w and "Mac" in w for w in p["warnings"]))
 
     def test_dspark_takes_a_word_and_the_word_reaches_the_engine_line(self):
         # --set dspark=on used to start strata-dsv41 with a lone "--dspark" ("--dspark needs a value", #3959)

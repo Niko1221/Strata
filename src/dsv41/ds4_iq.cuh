@@ -95,6 +95,11 @@ struct SetArgs {
     int ldo = 0;
     int tg = 0, td = 0;
     int skip_le = 0;   // (the tiles) the experts of at most this many rows are left out: the light kernels took them
+    int skip_ge = 0;   // (the tiles) > 0: the experts of at least this many rows are left out - the caller's GEMMs
+#if defined(STRATA_METAL)   // (only on Metal: the CUDA and HIP kernels take this struct by value, so its size is part of their ABI)
+    const int* hbounds = nullptr;   // the bounds on the host: [n_exp + 1], absolute rows
+    int total_rows = 0;             // the set's rows in all
+#endif
 };
 bool set_gate_up(const SetArgs& a, cudaStream_t s);
 bool set_down(const SetArgs& a, cudaStream_t s);
@@ -102,6 +107,16 @@ bool set_down(const SetArgs& a, cudaStream_t s);
 /// count of matrix-core launches so far (both do nothing / return -1 where there are no such tiles; hipk_force returns whether this device has them)
 bool hipk_force(int mode);
 long long hipk_launches();
+/// The busy experts' path (a prompt's experts of many rows): one expert's matrix - n rows of k values, row_bytes(k)
+/// apart - as FP16 rows (ldd apart), the values the tensor-core tiles multiply (their loader's, rounded to FP16 the same
+/// way), for the caller's GEMM: the tiles decode an expert's weights again for every 64 of its rows.
+bool f16_rows(int type, const uint8_t* w, int k, int n, uint16_t* dst, int ldd, cudaStream_t s);
+/// Whether f16_rows decodes this type (the IQ and K-quant types of the tiles; not the trellis types, not Q5_K / Q6_K).
+bool f16_rows_ok(int type);
+/// dst[r] = x[idx[r]] for r < n (FP16 rows of k values; x ldx apart, dst k apart)
+void gather_f16(const uint16_t* x, int ldx, const int* idx, int n, int k, uint16_t* dst, cudaStream_t s);
+/// h[r][c] = FP16 of the tiles' clamped SwiGLU of gu[r][c] (gate) and gu[r][ff + c] (up), F32 rows ld apart
+void swiglu_f16(const float* gu, int ld, int n, int ff, float limit, uint16_t* h, int ldh, cudaStream_t s);
 /// The light form alone (the set's experts of at most 16 rows; the others untouched), for any of these types and MXFP4
 /// (tg / td 39: ds4_gguf.cu's experts): false (nothing launched) when it is switched off - the caller's tiles take every
 /// expert then; true: they take those of more rows (skip_le 16).
