@@ -20,13 +20,22 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service
-from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, should_restore
+from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, extract_session_id, should_restore
 from serve.test_session_ladder_wiring import LadderHarness, ladder_service
 
 MID = 20000                     # a mid: above the engine's 8192-token park minimum
 MID_BYTES = 800_000_000         # its joined byte figure (the engine's snapshot scale)
 P1 = "HEAD one"
 P2 = "HEAD two"
+
+# The OpenCode 2.1.4 subagent (child session) request shape, observed in the shipped binary: the affinity
+# family (X-Session-Id / x-session-affinity / x-opencode-session) carries the PARENT id - the child's own
+# id sits only in x-opencode-session-id.  See test_session_ladder.py::test_extract_session_id_opencode_child.
+MAIN = "ses_main00000000000000000000"
+CHILD = "ses_child0000000000000000000"
+CHILD_HEADERS = {"x-opencode-session-id": CHILD, "x-opencode-parent-session-id": MAIN,
+                 "x-session-affinity": MAIN, "X-Session-Id": MAIN, "x-parent-session-id": MAIN,
+                 "x-opencode-project": "proj", "x-opencode-session": MAIN, "x-opencode-client": "cli"}
 
 
 class Lifecycle(unittest.TestCase):
@@ -90,6 +99,26 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.actions("save")), 2)         # rewritten - and nothing saved for aux
         self.ladder.on_unload(self.service)             # all clean now: no churn
         self.assertEqual(len(self.actions("save")), 2)
+
+    def test_subagent_child_is_tracked_as_its_own_session(self):
+        # OpenCode 2.1.4 subagents ride the parent's affinity headers (CHILD_HEADERS above): the ladder must
+        # resolve the CHILD's own id, or the subagent is invisible - never saved, and its turns land on the
+        # main session's ledger (live momo 2026-10-28/30: only main session ids ever reached the ladder).
+        child = extract_session_id(CHILD_HEADERS)         # the id the request path would pass on_arrival
+        self.assertEqual(child, CHILD)                    # pinned first: identity, then the switch choreography
+        self.seen(MAIN)                                   # main completed a turn: dirty, park unknown
+        self.ladder.on_arrival(self.service, MAIN, P1)    # main takes the slot (no outgoing)
+        self.ladder.on_arrival(self.service, child, P2)   # the subagent arrives: main switches away...
+        self.assertEqual(self.calls, [("save", self.path(MAIN))])
+        self.ladder.on_turn_done(child, MID, MID_BYTES, 0)          # ...the subagent completes a turn (mid-sized)
+        self.assertTrue(self.ladder.tracked[CHILD].dirty)           # dirty on ITS OWN ledger, not main's
+        self.assertFalse(self.ladder.tracked[MAIN].dirty)           # main stayed clean since its switch save
+        self.ladder.on_arrival(self.service, MAIN, P1)              # main returns: the child switches away...
+        # on_arrival's engine I/O window runs the switch save first, then the incoming restore.
+        self.assertEqual(self.calls, [("save", self.path(MAIN)), ("save", self.path(CHILD)),
+                                      ("restore", self.path(MAIN))])  # child earns its own checkpoint file;
+        self.assertEqual(self.actions("restore"), ["restore"])      # main comes back from its file (park lost)
+        self.assertTrue(Path(self.path(CHILD)).exists())
 
     def test_idle_save_then_switch_away_does_not_re_save(self):
         # F3 (final review): the switch-away save honors the dirty marker - an idle-save already wrote this
