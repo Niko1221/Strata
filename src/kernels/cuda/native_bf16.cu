@@ -232,7 +232,7 @@ __global__ void bf16_f32_mmvf_rows_kernel(const float* __restrict__ x, int64_t l
 template <int B>
 void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy, int n_in, int n_out, int n_tok,
                  cudaStream_t st, const uint16_t* w_aux = nullptr, float* y_aux = nullptr, int64_t ldy_aux = 0) {
-    constexpr int RPB = 4;
+    constexpr int RPB = 2;
     const unsigned nb = (unsigned) ((n_out + RPB - 1) / RPB);
     static const bool ts = [] { const char* v = std::getenv("STRATA_TSUM"); return v && v[0] == '1'; }();
     if (w_aux != nullptr) {   // S26 STRATA_LFUSE: + one aux row block
@@ -252,6 +252,8 @@ void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64
     else bf16_f32_mmvf_rows_kernel<B, 8, RPB><<<nb, B, 0, st>>>(x, ldx, w, y, ldy, n_in, n_out, n_tok);
 }
 
+bool mmvf_rows() { static const bool on = [] { const char* v = std::getenv("STRATA_MMVF_ROWS"); return v && v[0] == '1'; }(); return on; }
+
 int mmvf_block_size(int64_t n_in) {
     int best = 32;
     int64_t best_iterations = (n_in + 63) / 64;
@@ -270,7 +272,7 @@ int mmvf_block_size(int64_t n_in) {
 bool bf16_gemv_fp32_mmvf_multi_aux(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
                                    int64_t n_in, int64_t n_out, int n_tok, const uint16_t* w_aux, float* y_aux,
                                    int64_t ldy_aux, void* stream) {
-    static const bool rows = [] { const char* v = std::getenv("STRATA_MMVF_ROWS"); return v && v[0] == '1'; }();
+    const bool rows = mmvf_rows();
     // exactly the conditions under which both calls would take the rows / multi kernels at the same block size
     if (!rows || n_out < 64 || n_tok < 2 || n_tok > 8 || n_in <= 0 || (n_in & 1) != 0 || (ldx & 1) != 0 || x == nullptr ||
         w == nullptr || y == nullptr || w_aux == nullptr || y_aux == nullptr || (reinterpret_cast<uintptr_t>(x) & 7u) != 0)
@@ -295,12 +297,12 @@ bool bf16_gemv_fp32_mmvf_multi_aux(const float* x, int64_t ldx, const uint16_t* 
 
 void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
                                int64_t n_in, int64_t n_out, int n_tok, void* stream) {
-    if (n_tok == 1 && ldy >= n_out) { bf16_gemv_fp32_mmvf(x, w, y, n_in, n_out, stream); return; }
+    if (n_tok == 1 && ldy >= n_out && !(mmvf_rows() && n_out >= 64)) { bf16_gemv_fp32_mmvf(x, w, y, n_in, n_out, stream); return; }
     if (n_tok < 1 || n_tok > STRATA_VERIFY_MAX_T || n_in <= 0 || (n_in & 1) != 0 || n_out <= 0 || (ldx & 1) != 0 ||
         x == nullptr || w == nullptr || y == nullptr || (reinterpret_cast<uintptr_t>(x) & 7u) != 0)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: 1..8 rows (16 in a wide build), even n_in/ldx, aligned pointers");
     const cudaStream_t st = (cudaStream_t) stream;
-    static const bool rows = [] { const char* v = std::getenv("STRATA_MMVF_ROWS"); return v && v[0] == '1'; }();
+    const bool rows = mmvf_rows();
     if (rows && n_out >= 64 && n_tok <= 8) {   // (the opt-in rows kernels hold 8 columns: a wider window takes the switch below)
         const int ni = (int) n_in, no = (int) n_out;
         switch (mmvf_block_size(n_in)) {
@@ -363,6 +365,9 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         (reinterpret_cast<uintptr_t>(w) & 3u) != 0 ||
         (reinterpret_cast<uintptr_t>(y) & 3u) != 0)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf: null or misaligned pointer");
+    // STRATA_MMVF_ROWS=1: one token through the rows kernel too, bitwise the same.  gfx906: 509..512 blocks of 256
+    // threads (the router's 512 rows, a block each) never finish in under ~46 us, a dispatch stall; 128 blocks: ~11 us
+    if (mmvf_rows() && n_out >= 64) { bf16_gemv_fp32_mmvf_multi(x, n_in, w, y, n_out, n_in, n_out, 1, stream); return; }
     const cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_MMVF_CASE(N) case N: \
     bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in); break
