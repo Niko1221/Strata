@@ -628,6 +628,8 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
                                  return is_e(x) != is_e(y) ? !is_e(x) : x.cap > y.cap;
                              });
         if (!topo.is_hybrid) {
+            // lookup_linux_l3 is Linux sysfs. This branch also builds on macOS (the Metal engine).
+#if defined(__linux__)
             std::vector<X3dPhysCore> phys;
             for (const auto& cl : all_cpus) {
                 if (cl.is_sibling) continue;
@@ -643,6 +645,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
                 plan_x3d_core_order(phys, skip_first, topo.worker_cores, topo.host_core, topo.host_sibling,
                                     topo.vcache_cores, topo.std_l3_cores))
                 return topo;
+#endif
         }
         for (const auto& cl : all_cpus) {
             if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
