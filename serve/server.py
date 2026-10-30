@@ -920,14 +920,16 @@ def conversation_cache_mib(engine) -> int | None:
 def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
     enables the ladder with its values - idle_save_s, retention_max_files, retention_max_child_files and
-    child_ttl_s, absent keys keeping LadderConfig's pinned defaults - and the slot save directory the
-    service resolved.  Absent, false, or any non-dict leaves it
-    disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value today's disabled ladder carries;
-    nothing consults it while disabled).  An enabled ladder's park_budget_mib is the engine's own cache budget:
-    --conversation-cache-mib read exactly like conversation_slots() reads --conversation-cache-slots (spawn args
-    first, the INFO line after a start) - and stays None when neither names it, faithful to
-    conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to 0, because a 0 budget
-    makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the ladder exists to avoid)."""
+    child_ttl_s, and pre_save_idle_s (unload-works
+    Task 3: a number or null; an absent key or an explicit null keeps the adaptive quiet gate), absent keys
+    keeping LadderConfig's pinned defaults - and the slot save directory the service resolved.  Absent, false,
+    or any non-dict leaves it disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value
+    today's disabled ladder carries; nothing consults it while disabled).  An enabled ladder's park_budget_mib
+    is the engine's own cache budget: --conversation-cache-mib read exactly like conversation_slots() reads
+    --conversation-cache-slots (spawn args first, the INFO line after a start) - and stays None when neither
+    names it, faithful to conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to
+    0, because a 0 budget makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the
+    ladder exists to avoid)."""
     block = cfg.get("session_ladder")
     if not isinstance(block, dict):
         return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
@@ -935,9 +937,28 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     def _num(key, default, cast):
         # F6 (final review): a malformed strata.json value ("idle_save_s": "eight") must not surface as a
         # bare ValueError at startup - the conversion is wrapped and the refusal names the bad key and value.
+        # Same posture as _num_or_none's bool refusal: a JSON boolean is not a number - float(True) would
+        # silently re-tune the ladder (idle_save_s 1.0, retention_max_files 1) behind the reader's back.
         raw = block.get(key, default)
+        if isinstance(raw, bool):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
         try:
             return cast(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
+    def _num_or_none(key):
+        # The nullable variant of _num (unload-works Task 3): an absent key or an explicit `null` keeps None
+        # (the adaptive quiet gate); anything else converts like _num, same refusal naming key and value.
+        # Final review C: a JSON boolean is not a number - float(False) would silently mean 0.0 (fire on any
+        # idle moment) and float(True) 1.0 - so a bool is refused with the same wording as a non-number.
+        raw = block.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+        try:
+            return float(raw)
         except (TypeError, ValueError):
             raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
 
@@ -946,7 +967,8 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
                         idle_save_s=_num("idle_save_s", 8.0, float),
                         retention_max_files=_num("retention_max_files", 16, int),
                         retention_max_child_files=_num("retention_max_child_files", 8, int),
-                        child_ttl_s=_num("child_ttl_s", 21600.0, float))
+                        child_ttl_s=_num("child_ttl_s", 21600.0, float),
+                        pre_save_idle_s=_num_or_none("pre_save_idle_s"))
 
 
 def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
@@ -4771,6 +4793,40 @@ class Service:
         finally:
             self.fifo.release()
 
+    def pre_save_pass(self) -> bool:
+        """Task 4 (unload-works): one opportunistic pre-save pass for the idle queue - the dirty checkpoint
+        reaches disk while the queue is quiet, before any unload is ever asked for.  Both gates are
+        non-blocking: an engine not in memory (unloaded flag: True before the first start and after close(),
+        server.py:1126/1414 - getattr's default covers engines that carry no such flag; and final review A's
+        other half: a died engine keeps that flag False while loaded() is False, so `not self.loaded()`
+        covers it too) has nothing to pre-stage, and a held FIFO means a live request or unload owns the
+        engine: skip, never wait.  Final review A (Recommendation 6) puts the LADDER's gates first:
+        SessionLadder.pre_save_due - quiet gate, dirty last-active session, refused-save cooldown - answers
+        as an engine-free question, and a not-due pass returns False without touching the FIFO at all; only a
+        due pass grabs it (still non-blocking) and runs pre_save, which re-evaluates its gates inside the
+        hold (the state only moves under the ladder lock, so the earlier read is harmless).  Returns the
+        ladder's outcome (final review A, honest results): True only when a save committed - every skip and
+        every refused attempt answers False.  An EngineDied found mid-save is logged and swallowed here - the
+        thread polls forever and a dead engine is the next request's to restart, exactly as start_idle_unload's
+        loop reasons."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return False
+        if getattr(self.engine, "unloaded", False) or not self.loaded():
+            return False            # not started (or already gone): nothing in memory to pre-stage
+        idle = time.time() - (self.last_request_at or self.started_at)
+        if not ladder.pre_save_due(idle):
+            return False            # not quiet, nothing dirty, or a refused save is cooling down
+        if not self.fifo.acquire(blocking=False):
+            return False            # a live request or unload owns the engine: skip, never wait
+        try:
+            return ladder.pre_save(self, idle)
+        except EngineDied as e:
+            print(f"[strata] session pre-save: {e}", flush=True)
+            return False
+        finally:
+            self.fifo.release()
+
     def start_idle_unload(self):
         if not self.idle_unload_s or not hasattr(self.engine, "unload"):
             return
@@ -4786,6 +4842,28 @@ class Service:
                 except EngineDied as e:                 # Task 8: the ladder's save-on-unload can find
                     print(f"[strata] idle unload: {e}", flush=True)   # the engine gone mid-save; the
                     # thread lives, the next turn (or the next request's ensure_loaded) handles the dead engine
+        threading.Thread(target=loop, daemon=True).start()
+
+    def start_session_pre_save(self):
+        """Task 4's timer thread (unload-works): the opportunistic pre-save pass on a 2.0 s cadence, so a
+        dirty checkpoint reaches disk once the queue goes quiet - before the idle unload (or any /unload)
+        is ever asked for.  Enabled-ladder gate: with the ladder off this thread is never started.  Same
+        survival stance as start_idle_unload's loop: engine trouble is logged, the thread lives, the next
+        beat (or the next request) deals with it."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return
+        print("[strata] the session ladder pre-stages checkpoints once the queue goes quiet", flush=True)
+
+        def loop():
+            while True:
+                time.sleep(2.0)
+                try:
+                    self.pre_save_pass()
+                except EngineStuck as e:                # the same survival stance as start_idle_unload:
+                    print(f"[strata] session pre-save: {e}", flush=True)     # the thread lives, the pass
+                except EngineDied as e:                 # is tried again at the next 2 s beat
+                    print(f"[strata] session pre-save: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
@@ -7433,7 +7511,16 @@ def make_handler(svc: Service):
                 except EngineStuck as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                self._json(409 if r == "busy" else 200, {"status": r})
+                except EngineDied as e:                      # the engine ended mid-unload (the save before it):
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return                                   # the same 503 as EngineStuck, not a leaked traceback
+                body = {"status": r}
+                if r == "busy":                              # 409 with a message the webui can show, not a bare status
+                    # final review C: the FIFO can also be held by the ladder's background pre-staging save, so
+                    # the wording says "the model is saving" rather than calling that a request.
+                    body["error"] = {"message": "a request is running or the model is saving; "
+                                                "try again when it is quiet"}
+                self._json(409 if r == "busy" else 200, body)
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
@@ -7443,6 +7530,10 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                except (EngineDied, EngineStuck) as e:       # final review C: the engine ended (or could not
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})  # be restarted)
+                    # during the start - the same 503 shape the /unload routes answer with, not a traceback
+                    # out of _post and a dropped connection
                 return
             reserved = False
             try:
@@ -7478,7 +7569,11 @@ def make_handler(svc: Service):
                     if path == "/v1/unload":
                         wait_s = unload_wait(parse_qs(urlsplit(self.path).query).get("wait", [None])[0],
                                              svc.UNLOAD_WAIT_S)
-                        result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        try:
+                            result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        except (EngineStuck, EngineDied) as e:   # stuck or ended mid-unload (the save before it):
+                            self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                            return                                # the plain 503 shape, as /unload answers
                         if result == "busy":
                             raise ModelBusy("a request is running or queued")
                     else:
@@ -9445,6 +9540,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     httpd = serve(svc, host=a.host, port=a.port)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
+    svc.start_session_pre_save()
     svc.start_vision_idle()
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
