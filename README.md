@@ -31,6 +31,7 @@
 > - **Read result pages:** the top result pages are fetched and injected as extracted text (nav/footer/scripts stripped, `main`/`article` preferred), with Direct / Jina-fallback / Jina-for-all reader modes and an explicit warning whenever a third party could see your URLs.
 > - **Auditable answers:** every reply gets a `Sources` line (engine, exact query, clickable links, `read` badges) that rides along into the Markdown export, and a failed search leaves a named per-cause warning (missing key, unreachable engine, bot check) instead of failing silently.
 > - **Hardened:** `/search` sits behind the app's own-page guard (foreign origins rejected), http(s)-only URL checks so page reading can never become a local file reader, injected web text is framed as untrusted, and the backend (`serve/websearch.py`) is stdlib-only, no new dependencies, Windows/Linux/macOS.
+> - **New in this update:** the composer globe now cycles **Off → On → Auto** (Auto lets the model decide per message, or falls back to a keyword heuristic); an optional browser-only **message-box draft** (off by default) that survives reload and chat switch; and a **14-language UI** (de, es, fr, ja, ko, pt, ru, zh, hi, ar with RTL, tr, it, pl) from Chat Settings.
 >
 > Two things to know before you download anything:
 >

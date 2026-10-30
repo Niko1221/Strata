@@ -31,6 +31,7 @@
 > - **Leer páginas de resultados:** las mejores páginas de resultados se obtienen y se inyectan como texto extraído (nav/pie/scripts eliminados, `main`/`article` preferidos), con modos de lectura Direct / Jina de reserva / Jina para todas y una advertencia explícita siempre que un tercero pudiera ver tus URLs.
 > - **Respuestas auditables:** cada respuesta recibe una línea `Sources` (motor, consulta exacta, enlaces clicables, insignias `read`) que viaja al export Markdown, y una búsqueda fallida deja una advertencia nombrada por causa (clave ausente, motor inalcanzable, chequeo bot) en lugar de fallar en silencio.
 > - **Endurecido:** `/search` está tras la protección own-page de la app (orígenes extraños rechazados), comprobaciones de URL solo http(s) para que la lectura de páginas nunca pueda convertirse en un lector de archivos local, el texto web inyectado se marca como no confiable, y el backend (`serve/websearch.py`) es solo stdlib, sin nuevas dependencias, Windows/Linux/macOS.
+> - **Nuevo en esta actualización:** el globo del compositor ahora alterna **Off → On → Auto** (Auto deja que el modelo decida por mensaje, o recae en una heurística de palabras clave); un **borrador del cuadro de mensaje** opcional, solo navegador (apagado por defecto), que sobrevive a la recarga y al cambio de chat; y una **interfaz en 14 idiomas** (de, es, fr, ja, ko, pt, ru, zh, hi, ar con RTL, tr, it, pl) desde los ajustes del chat.
 >
 
 > Dos cosas antes de descargar:

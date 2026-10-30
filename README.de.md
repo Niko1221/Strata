@@ -31,6 +31,7 @@
 > - **Ergebnisseiten lesen:** die besten Ergebnisseiten werden geholt und als extrahierter Text injiziert (Nav/Footer/Skripte entfernt, `main`/`article` bevorzugt), mit Direct- / Jina-Fallback- / Jina-für-alle-Lesemodus und explizitem Warnhinweis, sobald ein Dritter deine URLs sehen könnte.
 > - **Nachvollziehbare Antworten:** jede Antwort bekommt eine `Sources`-Zeile (Engine, exakte Query, klickbare Links, `read`-Badges), die auch im Markdown-Export mitfährt, und eine fehlgeschlagene Suche hinterlässt eine benannte Ursache-Warnung (fehlender Key, Engine nicht erreichbar, Bot-Check) statt still zu scheitern.
 > - **Abgehärtet:** `/search` sitzt hinter dem Own-Page-Schutz der App (fremde Origins abgelehnt), http(s)-only-URL-Prüfungen, damit Seitenlesen nie ein lokaler Datei-Leser wird, injizierter Webtext wird als nicht vertrauenswürdig markiert, und das Backend (`serve/websearch.py`) ist stdlib-only, keine neuen Abhängigkeiten, Windows/Linux/macOS.
+> - **Neu in diesem Update:** das Erdball-Symbol im Composer wechselt jetzt **Aus → An → Auto** (Auto überlässt die Entscheidung pro Nachricht dem Modell oder fällt auf eine Keyword-Heuristik zurück); ein optionaler, browser-only **Message-Box-Entwurf** (standardmäßig aus), der Reload und Chatwechsel übersteht; und eine **14-sprachige Oberfläche** (de, es, fr, ja, ko, pt, ru, zh, hi, ar mit RTL, tr, it, pl) in den Chat-Einstellungen.
 >
 
 > Zwei Dinge vor dem Download:
