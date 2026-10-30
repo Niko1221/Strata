@@ -88,9 +88,78 @@ std::vector<int> g_pool_cores;   // --pool-cores: set once at start-up, before t
 void set_pool_cores(const std::vector<int>& cpus) { g_pool_cores = cpus; }
 const std::vector<int>& pool_cores_setting() { return g_pool_cores; }
 
+namespace {
+#if defined(_WIN32)
+struct WinL3Domain {
+    WORD group = 0;
+    KAFFINITY mask = 0;
+    long id = -1;
+    long kb = 0;
+};
+
+std::vector<WinL3Domain> query_win_l3_domains() {
+    std::vector<WinL3Domain> out;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &len);
+    if (len == 0) return out;
+    std::vector<char> buf(len);
+    if (!GetLogicalProcessorInformationEx(RelationCache, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len))
+        return out;
+    long next_id = 0;
+    for (const char* p = buf.data(); p < buf.data() + len; p += ((const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p)->Size) {
+        const auto* e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*) p;
+        if (e->Relationship != RelationCache || e->Cache.Level != 3) continue;
+        const long kb = (long) (e->Cache.CacheSize / 1024);
+        const WORD groups = e->Cache.GroupCount > 0 ? e->Cache.GroupCount : 1;
+        const long id = next_id++;
+        for (WORD g = 0; g < groups; ++g) {
+            const GROUP_AFFINITY& ga = e->Cache.GroupMasks[g];
+            out.push_back({ga.Group, ga.Mask, id, kb});
+        }
+    }
+    return out;
+}
+
+void lookup_win_l3(const std::vector<WinL3Domain>& doms, int cpu, long& l3_id, long& l3_kb) {
+    l3_id = -1;
+    l3_kb = 0;
+    if (cpu < 0) return;
+    const WORD grp = (WORD) (cpu / 64);
+    const int bit = cpu % 64;
+    for (const auto& d : doms)
+        if (d.group == grp && (d.mask & (KAFFINITY(1) << bit))) {
+            l3_id = d.id;
+            l3_kb = d.kb;
+            return;
+        }
+}
+#elif defined(__linux__)
+void lookup_linux_l3(int cpu, long& l3_id, long& l3_kb) {
+    l3_id = -1;
+    l3_kb = 0;
+    if (cpu < 0) return;
+    char path[128];
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/id", cpu);
+    if (std::FILE* f = std::fopen(path, "r")) {
+        if (std::fscanf(f, "%ld", &l3_id) != 1) l3_id = -1;
+        std::fclose(f);
+    }
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/size", cpu);
+    if (std::FILE* f = std::fopen(path, "r")) {
+        long val = 0;
+        char unit = 'K';
+        if (std::fscanf(f, "%ld%c", &val, &unit) >= 1 && val > 0)
+            l3_kb = (unit == 'M' || unit == 'm') ? val * 1024 : val;
+        std::fclose(f);
+    }
+}
+#endif
+}  // namespace
+
 std::vector<LogicalCpuInfo> logical_cpu_layout() {
     std::vector<LogicalCpuInfo> out;
 #if defined(_WIN32)
+    const std::vector<WinL3Domain> l3_doms = query_win_l3_domains();
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
     if (len == 0) return out;
@@ -107,8 +176,12 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
         for (WORD group = 0; group < e->Processor.GroupCount; ++group) {
             const GROUP_AFFINITY& g = e->Processor.GroupMask[group];
             for (int bit = 0; bit < 64; ++bit)
-                if ((g.Mask & (KAFFINITY(1) << bit)) && (!limited || (proc_mask & (DWORD_PTR(1) << bit))))
-                    out.push_back({(int) (g.Group * 64 + bit), core});
+                if ((g.Mask & (KAFFINITY(1) << bit)) && (!limited || (proc_mask & (DWORD_PTR(1) << bit)))) {
+                    const int cpu = (int) (g.Group * 64 + bit);
+                    long l3_id = -1, l3_kb = 0;
+                    lookup_win_l3(l3_doms, cpu, l3_id, l3_kb);
+                    out.push_back({cpu, core, l3_id, l3_kb});
+                }
         }
         ++core;
     }
@@ -128,7 +201,9 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
     };
     for (int cpu : allowed) {
         const long pkg = read(cpu, "physical_package_id"), core = read(cpu, "core_id");
-        out.push_back({cpu, pkg >= 0 && core >= 0 ? pkg * 1000000 + core : -1});
+        long l3_id = -1, l3_kb = 0;
+        lookup_linux_l3(cpu, l3_id, l3_kb);
+        out.push_back({cpu, pkg >= 0 && core >= 0 ? pkg * 1000000 + core : -1, l3_id, l3_kb});
     }
 #else
     for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) out.push_back({(int) i, -1});
@@ -244,6 +319,10 @@ PoolPlanInput pool_plan_input(const CpuTopology& topo) {
     in.logical = topo.logical > 0 ? topo.logical : (int) std::thread::hardware_concurrency();
     in.cpu_quota = topo.cpu_quota;
     if (topo.is_hybrid) { in.p_cores = topo.p_cores; in.e_cores = topo.e_cores; }
+    in.vcache_cores = topo.vcache_cores;
+    in.std_l3_cores = topo.std_l3_cores;
+    if (const char* v = std::getenv("STRATA_X3D_SINGLE_CCD"); v != nullptr && std::atoi(v) != 0)
+        in.x3d_single_ccd = true;
     if (!topo.layout_known) return in;   // cores_per_package stays empty
     // the cores per package, the host package first; the host core counts in its package
     std::vector<std::pair<int, int>> counts;   // (package, cores)
@@ -351,6 +430,24 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
             if (topo.is_hybrid)
                 std::stable_sort(descs.begin(), descs.end(),
                                  [](const CoreDesc& x, const CoreDesc& y) { return x.efficiency > y.efficiency; });
+            if (!topo.is_hybrid) {
+                const std::vector<WinL3Domain> l3_doms = query_win_l3_domains();
+                std::vector<X3dPhysCore> phys;
+                phys.reserve(descs.size());
+                for (const auto& c : descs) {
+                    long l3_id = -1, l3_kb = 0;
+                    lookup_win_l3(l3_doms, c.lps[0], l3_id, l3_kb);
+                    phys.push_back({c.lps[0], c.lps.size() > 1 ? c.lps[1] : -1, l3_kb});
+                }
+                for (const auto& c : phys) {
+                    if (c.l3_kb >= kX3dL3ThresholdKb) ++topo.vcache_cores;
+                    else if (c.l3_kb > 0) ++topo.std_l3_cores;
+                }
+                if (vcache_pool_opt_in() &&
+                    plan_x3d_core_order(phys, skip_first, topo.worker_cores, topo.host_core, topo.host_sibling,
+                                        topo.vcache_cores, topo.std_l3_cores))
+                    return topo;
+            }
             for (const auto& c : descs) topo.worker_cores.push_back(c.lps[0]);
             if (skip_first && !topo.worker_cores.empty()) {
                 topo.host_core = topo.worker_cores.front();
@@ -530,6 +627,26 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
                              [&](const CoreLinux& x, const CoreLinux& y) {
                                  return is_e(x) != is_e(y) ? !is_e(x) : x.cap > y.cap;
                              });
+        if (!topo.is_hybrid) {
+            // lookup_linux_l3 is Linux sysfs. This branch also builds on macOS (the Metal engine).
+#if defined(__linux__)
+            std::vector<X3dPhysCore> phys;
+            for (const auto& cl : all_cpus) {
+                if (cl.is_sibling) continue;
+                long l3_id = -1, l3_kb = 0;
+                lookup_linux_l3(cl.cpu, l3_id, l3_kb);
+                phys.push_back({cl.cpu, sibling_of(cl.cpu), l3_kb});
+            }
+            for (const auto& c : phys) {
+                if (c.l3_kb >= kX3dL3ThresholdKb) ++topo.vcache_cores;
+                else if (c.l3_kb > 0) ++topo.std_l3_cores;
+            }
+            if (vcache_pool_opt_in() &&
+                plan_x3d_core_order(phys, skip_first, topo.worker_cores, topo.host_core, topo.host_sibling,
+                                    topo.vcache_cores, topo.std_l3_cores))
+                return topo;
+#endif
+        }
         for (const auto& cl : all_cpus) {
             if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
         }
@@ -844,6 +961,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     }
     plan_cores_ = wplan.cores;
     plan_logical_ = plan_in.logical;
+    vcache_ = topo_.vcache_cores > 0 || cpu_has_3d_vcache();
     if (n_ < 1) n_ = 1;
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
@@ -1209,7 +1327,9 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 const NodeSync& ns = nsync_[(size_t) s];
                 R = ns.rows; T = ns.tasks; h = ns.h; row0 = ns.row0; j = ci - ns.base;
             }
-            const int64_t g0 = R * j / T, g1 = R * (j + 1) / T;
+            const bool align16 = vcache_pool_opt_in() && vcache_ && tasks_ == 0 && (h & 15) == 0 && (R >> 4) >= T;
+            const int64_t g0 = align16 ? (((R >> 4) * j) / T) << 4 : R * j / T;
+            const int64_t g1 = align16 ? (((R >> 4) * (j + 1)) / T) << 4 : R * (j + 1) / T;
             for (int64_t g = g0; g < g1;) {
                 const int e = (int) (g / h), l0 = (int) (g % h);
                 const int l1 = (int) std::min<int64_t>(h, l0 + (g1 - g));
@@ -1323,6 +1443,12 @@ int ExpertPool::phase_tasks(int64_t rows) const {
     return tasks_ == 0 ? 3 * (n_ + (host_works_ ? 1 : 0)) : (int) (std::min)(rows, (int64_t) tasks_);
 }
 
+int ExpertPool::native_phase_tasks(int mode, int nb, int64_t rows) const {
+    (void) mode;
+    (void) nb;
+    return phase_tasks(rows);
+}
+
 void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     if (n <= 0) return;
     if (n > kMaxSplitMulti || expert_oracle_q8_0_enabled()) {
@@ -1372,17 +1498,19 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         nfmt_ = &f;
         narithmetic_ = arithmetic;
         mrows_ = (int64_t) nb * f.n_ff;
-        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_ff, nb) : phase_tasks(mrows_);
+        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_ff, nb) : native_phase_tasks(5, nb, mrows_);
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        for (int e = 0; e < nb; ++e)
+        for (int e = 0; e < nb; ++e) {
+            const NativeFmt* const ef = mjobs_[e].fmt != nullptr ? mjobs_[e].fmt : &f;
             for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
-                else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+                if (q2_native_kernels(ef->d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+                else native_quant_h(*ef, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+        }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * f.n_embd;
-        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_embd, nb) : phase_tasks(mrows_);
+        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_embd, nb) : native_phase_tasks(6, nb, mrows_);
         run_phase(6, mtasks_);
         const auto d = std::chrono::steady_clock::now();
         ms_multi_gu += std::chrono::duration<double, std::milli>(b - a).count();

@@ -67,6 +67,17 @@ int iq256_gather_setting();
 /// The older Intel cores gather slowly (Haswell, Broadwell) or under the Downfall (GDS) microcode (Skylake to Tiger
 /// Lake), AMD Zen 2/3 gather slowly, and Zen 4/5 run the AVX-512 kernels.  STRATA_FORCE_ISA answers no.
 bool cpu_gather_fast();
+/// Whether 512-bit AVX-512 gathers (iq_avx512.cpp) beat scalar loads + inserts on this CPU: true on Intel CPUs where
+/// cpu_gather_fast() holds and on AMD Zen 5 and newer (Family 1Ah+, e.g. Ryzen 9800X3D / 9950X3D), false on Zen 4.
+/// Not the default. The kernels gather only when STRATA_IQ_GATHER=1, or on Intel where cpu_gather_fast() is already on.
+bool cpu_gather512_fast();
+/// STRATA_VCACHE_POOL=1. Off unless that exact value is set. Turns on the opt-in 3D V-Cache pool pieces: fused
+/// gate/up rows, the AVX-512 Hadamard rotation, 16-row task alignment, and asymmetric 2-CCD core order.
+bool vcache_pool_opt_in();
+/// AMD Zen generation on AuthenticAMD x86 CPUs (5 = Zen 5 Family 1Ah, 4 = Zen 4, 3 = Zen 3, 2 = Zen 2, 1 = Zen 1, 0 = other).
+int cpu_amd_zen_gen();
+/// Whether this CPU has an AMD 3D V-Cache L3 domain (>= 64 MiB per CCD, e.g. 96 MiB on Ryzen X3D); STRATA_X3D=0/1 overrides.
+bool cpu_has_3d_vcache();
 /// cpu_gather_fast() and the CALLING THREAD runs on a performance core: CPUID 1Ah core type 40h on a hybrid CPU (its
 /// E-cores, 20h, gather slower than they assemble).  Probed once per thread: the pool pins each worker to one core.
 bool cpu_gather_fast_here();

@@ -7,7 +7,9 @@
 //     kq_cpu_bench [--pairs q4_K/q5_1,q5_K/q8_0,q6_K/q8_0,q8_0/q8_0,iq3_s/iq4_nl] [--threads 1,8,16,32] [--nt 1,2,4]
 //                  [--mb 4096] [--reps 3] [--ram-gbs N]
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"
@@ -81,6 +83,7 @@ int main(int argc, char** argv) {
     std::vector<int> threads = {1, 8, 16, 32}, nts = {1, 2, 4};
     int mb = 4096, reps = 3;
     double ram = 0;
+    bool use_pool = false, use_hadamard = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool more = i + 1 < argc;
@@ -91,8 +94,10 @@ int main(int argc, char** argv) {
         else if (a == "--mb" && more) mb = std::atoi(argv[++i]);
         else if (a == "--reps" && more) reps = std::max(1, std::atoi(argv[++i]));
         else if (a == "--ram-gbs" && more) ram = std::atof(argv[++i]);
+        else if (a == "--pool") use_pool = true;
+        else if (a == "--hadamard") use_hadamard = true;
         else {
-            std::fprintf(stderr, "usage: kq_cpu_bench [--pairs a/b,...] [--threads 1,8] [--nt 1,2,4] [--mb 4096] [--reps 3] [--ram-gbs N]\n");
+            std::fprintf(stderr, "usage: kq_cpu_bench [--pairs a/b,...] [--threads 1,8] [--nt 1,2,4] [--mb 4096] [--reps 3] [--ram-gbs N] [--pool] [--hadamard]\n");
             return 2;
         }
     }
@@ -111,7 +116,8 @@ int main(int argc, char** argv) {
         }
         ggml_quantize_init((ggml_type) gt);   // the i-quants' quantizers need their grids first
         ggml_quantize_init((ggml_type) dt);
-        const size_t E = std::max<size_t>(64, ((size_t) mb << 20) / f.bytes);
+        const size_t E = std::max<size_t>(1, ((size_t) mb << 20) / f.bytes);
+        const size_t passes = std::max<size_t>(1, (256ull << 20) / (E * f.bytes));
         std::unique_ptr<uint8_t[]> mem(new uint8_t[E * f.bytes + 4096]);
         uint8_t* blobs = (uint8_t*) (((uintptr_t) mem.get() + 4095) & ~(uintptr_t) 4095);
         {   // 16 distinct experts, copied over the whole buffer (the bytes in DRAM are what is measured)
@@ -155,15 +161,78 @@ int main(int argc, char** argv) {
             act[t] = xa[t].data();
             hq[t] = ha[t].data();
         }
-        std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)%s%s\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6,
+        std::printf("\n%s: %zu experts of %.3f MB (%.1f MB, %zu pass%s/rep)%s%s%s%s\n", pair.c_str(), E, f.bytes / 1e6,
+                    E * (double) f.bytes / 1e6, passes, passes == 1 ? "" : "es",
+                    use_pool ? ", ExpertPool" : "", use_hadamard ? "+Hadamard" : "",
                     q2_gu ? ", Q2_0 gate/up" : "", q2_down ? ", Q2_0 down on Strata's rows (the pool's path)" : "");
+        std::vector<float> had_signs((size_t) kH, 1.0f);
+        for (size_t i = 0; i < (size_t) kH; ++i) had_signs[i] = (i & 3) == 1 ? -1.0f : 1.0f;
+        std::vector<std::vector<float>> x_raw(kMaxT, std::vector<float>((size_t) kH, 0.25f));
+        if (use_pool) {
+            const cpu::ThreadAffinity prev_aff = cpu::pin_current_thread(cpu::planned_host_core());
+            for (int T : threads) {
+                if (T < 1) continue;
+                const bool host_works = T > 1;
+                const int workers = host_works ? T - 1 : 1;
+                cpu::ExpertPool pool(workers, /*pin=*/true, host_works);
+                std::printf("  [%s]\n", pool.placement_line().c_str());
+                const size_t batch = std::min<size_t>(16, E);
+                std::vector<float> outb(batch * (size_t) kMaxT * (size_t) kH);
+                std::vector<cpu::ExpertJobMulti> jobs(batch);
+                for (int nt : nts) {
+                    auto run_one_pass = [&] {
+                        for (size_t b0 = 0; b0 < E; b0 += batch) {
+                            const size_t nb = std::min<size_t>(batch, E - b0);
+                            if (use_hadamard) {
+                                for (int t = 0; t < nt; ++t) {
+                                    std::vector<float> xr = x_raw[(size_t) t];
+                                    cpu::hadamard_rotate(xr.data(), (int) kH, 128, had_signs.data());
+                                    if (q2_gu) cpu::act_quant_any(xr.data(), (int) kH, x2[(size_t) t]);
+                                    else cpu::native_quant_act(f, xr.data(), xa[(size_t) t].data());
+                                }
+                            }
+                            for (size_t e = 0; e < nb; ++e) {
+                                jobs[e].blob = blobs + (b0 + e) * f.bytes;
+                                jobs[e].nt = nt;
+                                for (int t = 0; t < nt; ++t) {
+                                    jobs[e].nact[t] = act[t];
+                                    jobs[e].act[t] = ax[t];
+                                    jobs[e].out[t] = &outb[(e * (size_t) kMaxT + (size_t) t) * (size_t) kH];
+                                }
+                            }
+                            pool.run_split_multi_native(f, jobs.data(), (int) nb);
+                        }
+                    };
+                    run_one_pass();  // warm L3 / workers before timing
+                    pool.ms_multi_gu = pool.ms_multi_q = pool.ms_multi_down = 0;
+                    std::vector<double> gbs;
+                    for (int rep = 0; rep < reps; ++rep) {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        for (size_t p = 0; p < passes; ++p) run_one_pass();
+                        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                        gbs.push_back(passes * E * (double) f.bytes / s / 1e9);
+                    }
+                    std::sort(gbs.begin(), gbs.end());
+                    const double med = gbs[gbs.size() / 2];
+                    const double inv = 1.0 / (double) (reps * passes);
+                    std::printf("  nt %d threads %2d: %6.1f GB/s of weights (%.3f ms/expert; pool gu %.2f q %.3f down %.2f ms/pass)%s\n",
+                                nt, T, med, f.bytes / (med * 1e9) * 1e3,
+                                pool.ms_multi_gu * inv, pool.ms_multi_q * inv, pool.ms_multi_down * inv,
+                                ram > 0 ? (" = " + std::to_string((int) std::lround(100 * med / ram)) + "% of RAM").c_str() : "");
+                }
+            }
+            cpu::restore_thread_affinity(prev_aff);
+            continue;
+        }
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;
                 std::vector<double> gbs;
                 for (int rep = 0; rep < reps; ++rep) {
+                    std::atomic<int> ready{0}, go{0};
                     std::atomic<size_t> next{0};
-                    auto work = [&] {
+                    const size_t total_work = passes * E;
+                    auto work = [&](bool warm) {
                         std::vector<float> ffb((size_t) kMaxT * kFF), outb((size_t) kMaxT * kH);
                         std::vector<float> gb(q2_gu ? (size_t) kMaxT * kFF : 0), ub(q2_gu ? (size_t) kMaxT * kFF : 0);
                         float* gp[kMaxT] = {};
@@ -173,11 +242,15 @@ int main(int argc, char** argv) {
                         float* ff[kMaxT];
                         float* out[kMaxT];
                         for (int t = 0; t < kMaxT; ++t) { ff[t] = &ffb[(size_t) t * kFF]; out[t] = &outb[(size_t) t * kH]; }
-                        std::vector<std::vector<uint8_t>> hb(kMaxT, std::vector<uint8_t>(cpu::kNativeHBytes));
+                        if (!warm) {
+                            ready.fetch_add(1, std::memory_order_acq_rel);
+                            while (go.load(std::memory_order_acquire) == 0) {}
+                        }
+                        const size_t lim = warm ? E : total_work;
                         for (;;) {
-                            const size_t e = next.fetch_add(1);
-                            if (e >= E) break;
-                            const uint8_t* blob = blobs + e * f.bytes;
+                            const size_t idx = next.fetch_add(1, std::memory_order_relaxed);
+                            if (idx >= lim) break;
+                            const uint8_t* blob = blobs + (idx % E) * f.bytes;
                             if (q2_gu) {
                                 cpu::q2_rows_any(blob, f.gu_row, (int) (kH / 64), ax, nt, gp, 0, (int) kFF);
                                 cpu::q2_rows_any(blob + f.up_off, f.gu_row, (int) (kH / 64), ax, nt, up, 0, (int) kFF);
@@ -195,12 +268,21 @@ int main(int argc, char** argv) {
                         volatile float sink = outb[0] + ffb[0];
                         (void) sink;
                     };
-                    const auto t0 = std::chrono::steady_clock::now();
+                    if (rep == 0 && passes > 1) {
+                        next.store(0);
+                        std::vector<std::thread> wth;
+                        for (int k = 0; k < T; ++k) wth.emplace_back(work, true);
+                        for (auto& x : wth) x.join();
+                        next.store(0);
+                    }
                     std::vector<std::thread> th;
-                    for (int k = 0; k < T; ++k) th.emplace_back(work);
+                    for (int k = 0; k < T; ++k) th.emplace_back(work, false);
+                    while (ready.load(std::memory_order_acquire) < T) {}
+                    const auto t0 = std::chrono::steady_clock::now();
+                    go.store(1, std::memory_order_release);
                     for (auto& x : th) x.join();
                     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                    gbs.push_back(E * (double) f.bytes / s / 1e9);
+                    gbs.push_back(total_work * (double) f.bytes / s / 1e9);
                 }
                 std::sort(gbs.begin(), gbs.end());
                 const double med = gbs[gbs.size() / 2];

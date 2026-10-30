@@ -1179,6 +1179,14 @@ moves threads only and never changes a result.
 - It prints `strata aux cpus: threads that are neither pool workers nor the host go to CPUs 24 (on; N threads placed so far)`.
 - Not covered: other processes and the engine's host thread. The measurement is one machine: see [History](#history--older-measurements).
 
+### Opt-in CPU expert kernels
+
+These stay off. With nothing set, the CPU experts use the same kernels and the same core order as before. No decode tokens-per-second measurement has been made with them on.
+
+- `STRATA_IQ4NL512=1` (AVX-512): the IQ4_NL down rows use a 512-bit kernel. The first use checks it against this build's ggml dot and keeps the old kernel if they differ.
+- `STRATA_VCACHE_POOL=1`: one expert's gate and up rows share a loop, the Hadamard rotation uses 512-bit lanes, and CPU expert tasks start on a 16-row boundary. On a two-CCD X3D the workers sit on the larger L3 and the host thread on the smaller one. A one-CCD CPU keeps its usual core order.
+- `STRATA_IQ_GATHER=1`: gather the i-quant codebooks. This is already the default on Intel CPUs where gathers are fast. On Zen 5 it also sends one token of IQ3_XXS and IQ3_S through the 512-bit exact rows, unless `STRATA_NO_IQ512X1=1`.
+
 ---
 
 <a id="experimental-speed-projection"></a>

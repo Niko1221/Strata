@@ -81,6 +81,8 @@ struct CpuTopology {
     int p_cores = 0;                ///< Physical performance cores
     int p_threads = 0;              ///< Total logical threads on performance cores
     int e_cores = 0;                ///< Efficient cores
+    int vcache_cores = 0;           ///< Physical cores on 3D V-Cache L3 domains (>= 64 MiB per CCD)
+    int std_l3_cores = 0;           ///< Physical cores on standard L3 domains (< 64 MiB per CCD)
     std::vector<int> worker_cores;  ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;             ///< Logical core reserved for host thread
     int host_sibling = -1;          ///< The host core's SMT sibling (-1: none), the logical processor `Sibling` takes
@@ -226,6 +228,7 @@ public:
     bool host_works() const { return host_works_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
+    bool has_vcache() const { return vcache_; }
     /// The CPUs worker i is pinned to, in worker order (STRATA_NUMA_SPLIT reorders them: interleave_packages).
     const std::vector<int>& worker_cores() const { return topo_.worker_cores; }
     int p_cores() const { return topo_.p_cores; }
@@ -286,7 +289,9 @@ public:
 
 private:
     int phase_tasks(int64_t rows) const;
+    int native_phase_tasks(int mode, int nb, int64_t rows) const;
     int tasks_ = 0;
+    bool vcache_ = false;
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);

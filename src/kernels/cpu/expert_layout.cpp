@@ -46,6 +46,10 @@ bool cpu_avx2_ok() { return false; }
 bool cpu_avx1_ok() { return false; }
 bool cpu_sse42_ok() { return false; }
 bool cpu_gather_fast() { return false; }
+bool cpu_gather512_fast() { return false; }
+bool vcache_pool_opt_in() { return false; }
+int cpu_amd_zen_gen() { return 0; }
+bool cpu_has_3d_vcache() { return false; }
 bool cpu_gather_fast_here() { return false; }
 bool cpu_avxvnni_ok() { return false; }
 std::string cpu_name() {
@@ -272,6 +276,79 @@ bool cpu_gather_fast() {
         const unsigned family = (r[0] >> 8) & 0xf, model = ((r[0] >> 4) & 0xf) | (((r[0] >> 16) & 0xf) << 4);
         if (family == 6 && (model == 0xBE || model == 0xB6 || model == 0xAF || model == 0xDD)) return false;
         return true;
+    }();
+    return ok;
+}
+
+int cpu_amd_zen_gen() {
+    static const int gen = [] {
+        unsigned r[4];
+        cpuid_regs(0, 0, r);
+        // "AuthenticAMD": EBX = "Auth" (0x68747541), EDX = "enti" (0x69746e65), ECX = "cAMD" (0x444d4163)
+        if (!(r[1] == 0x68747541u && r[3] == 0x69746e65u && r[2] == 0x444d4163u)) return 0;
+        if (r[0] < 1) return 0;
+        cpuid_regs(1, 0, r);
+        const unsigned base_fam = (r[0] >> 8) & 0xf;
+        const unsigned ext_fam = (r[0] >> 20) & 0xff;
+        const unsigned fam = base_fam == 0xf ? base_fam + ext_fam : base_fam;
+        const unsigned model = ((r[0] >> 4) & 0xf) | (((r[0] >> 16) & 0xf) << 4);
+        if (fam >= 0x1A) return 5;   // Zen 5 (Granite Ridge 9800X3D / 9950X3D, Strix, Turin) and newer
+        if (fam == 0x19) {
+            // Family 19h covers Zen 3 (no AVX-512) and Zen 4 (AVX-512F in CPUID 7.0:EBX[16])
+            unsigned r7[4] = {};
+            cpuid_regs(0, 0, r7);
+            if (r7[0] >= 7) {
+                cpuid_regs(7, 0, r7);
+                if ((r7[1] >> 16) & 1u) return 4;
+            }
+            return 3;
+        }
+        if (fam == 0x17) return model >= 0x30 ? 2 : 1;
+        return 0;
+    }();
+    return gen;
+}
+
+bool cpu_has_3d_vcache() {
+    static const bool x3d = [] {
+        if (const char* v = std::getenv("STRATA_X3D"); v != nullptr && v[0] != '\0') return std::atoi(v) != 0;
+        if (cpu_amd_zen_gen() <= 0) return false;
+        unsigned r[4] = {};
+        cpuid_regs(0x80000000u, 0, r);
+        if (r[0] >= 0x8000001Du) {
+            for (unsigned sub = 0; sub < 8; ++sub) {
+                cpuid_regs(0x8000001Du, sub, r);
+                const unsigned ctype = r[0] & 0x1fu;
+                if (ctype == 0) break;
+                const unsigned level = (r[0] >> 5) & 0x7u;
+                if (level == 3) {
+                    const uint64_t ways = ((r[1] >> 22) & 0x3ffu) + 1;
+                    const uint64_t parts = ((r[1] >> 12) & 0x3ffu) + 1;
+                    const uint64_t line = (r[1] & 0xfffu) + 1;
+                    const uint64_t sets = (uint64_t) r[2] + 1;
+                    if (ways * parts * line * sets >= (64ull << 20)) return true;   // >= 64 MiB L3 per CCD (96 MiB on X3D)
+                }
+            }
+        }
+        // On a 2-CCD X3D (7900X3D, 7950X3D, 9900X3D, 9950X3D) the calling thread may be on the 32 MiB CCD when probed:
+        // the brand string still identifies the X3D package.
+        const std::string brand = cpu_name();
+        return brand.find("X3D") != std::string::npos || brand.find("x3d") != std::string::npos;
+    }();
+    return x3d;
+}
+
+bool vcache_pool_opt_in() {
+    const char* v = std::getenv("STRATA_VCACHE_POOL");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
+bool cpu_gather512_fast() {
+    static const bool ok = [] {
+        if (cpu_isa_cap() < 3) return false;
+        // Intel AVX-512 P-cores and AMD Zen 5. Zen 4 gathers are microcoded. This probe does not turn the kernels on:
+        // iq_avx512.cpp gathers by default only where cpu_gather_fast() is true. STRATA_IQ_GATHER=1 opts in.
+        return cpu_gather_fast() || cpu_amd_zen_gen() >= 5;
     }();
     return ok;
 }
