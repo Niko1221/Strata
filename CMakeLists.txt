@@ -1219,6 +1219,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
+    # (c): native_quantize_q8_1_il (one launch) against native_quantize_q8_1 + native_q8_1_interleave, byte for byte.
+    add_executable(quantize_il_parity src/kernels/quantize_il_parity.cpp)
+    target_include_directories(quantize_il_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(quantize_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME quantize_il_parity COMMAND quantize_il_parity)
     if(STRATA_ENABLE_HIP)
       set(_strata_il_parity_hip_l2 "${CMAKE_CURRENT_BINARY_DIR}/mmvq_il_parity_hip_l2.h")
       # mmvq_il_parity's --persist and --ab arms read NVIDIA's L2 set-aside APIs, which hip_compat does not map and HIP
