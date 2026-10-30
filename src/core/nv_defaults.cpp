@@ -50,6 +50,18 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             {"STRATA_FUSE_DECODE", "1"},         // -1.3
             {"STRATA_GR_UP75", "1"},             // -1.2
         };
+    } else if (mj == 7 && mn == 0) {
+        // Volta (V100-SXM2, sm_70).  Only what was measured on that card goes in.  b6_mmvq_bench (the model's own
+        // projection shapes, GPU time only, T = 1..5, bitwise equal): the multi-column B6 rows are 15-22% faster at
+        // the 3-5 rows a verify window reaches (gdn qkv Q6_K 0.0686 -> 0.0573 ms at 3, 0.0799 -> 0.0625 at 4; qsa q
+        // Q6_K 0.0748 -> 0.0625 at 3, 0.0881 -> 0.0676 at 4; gdn out IQ4_XS 0.0338 -> 0.0276 at 4, 0.0389 -> 0.0307
+        // at 5; head Q5_K 0.9523 -> 0.8387 at 2).  End to end on the abliterated IQ3_S pack (MTP spec 4, three
+        // interleaved arms): decode 128-token median +1.4%, 512-token +1.6% against the mean of two base arms.
+        // Bit-exact: b6_mmvq_bench compares B6 against the default layout with memcmp at every case and width.
+        if (off("STRATA_SM70_PERF")) return t;
+        t = {
+            {"STRATA_B6_MMVQ_ROWS", "1"},
+        };
     } else if (mj == 12 && mn == 1) {
         // GB10 (NVIDIA DGX Spark, 48 SMs, unified memory): only what was measured on that part goes in.  New in 0.2.7.1, so
         // STRATA_DEFAULTS=026 (the master switch of everything since 0.2.6) leaves the table out, like STRATA_SM121_PERF=0.
@@ -93,12 +105,13 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     }
     if (!set.empty()) {
         const bool sm86 = mj == 8;
+        const bool sm70 = mj == 7 && mn == 0;
         const bool sm121 = mj == 12 && mn == 1;
         // sm_86 / sm_60: bit-exact switches.  sm_121: the fused prompt path and the FP4-activation NVFP4 prompt round differently from the
         // paths they replace (24 of 24 greedy answers were identical on the Spark; no KL run), so the line does not say "exact".
         std::fprintf(stderr, "strata: %s: %zu %sspeed switches on by default (%s=0 turns them off%s; a switch you set is kept): ",
-                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : "sm_60 (Pascal)", set.size(), sm121 ? "" : "exact ",
-                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : "STRATA_SM60_PERF",
+                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : sm70 ? "sm_70 (Volta)" : "sm_60 (Pascal)", set.size(), sm121 ? "" : "exact ",
+                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : sm70 ? "STRATA_SM70_PERF" : "STRATA_SM60_PERF",
                      sm121 ? ", as does STRATA_DEFAULTS=026" : "");
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
