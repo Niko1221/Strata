@@ -1282,6 +1282,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(lm_kernels_parity PRIVATE strata_prefill )
     add_test(NAME lm_kernels_parity COMMAND lm_kernels_parity)
     set_tests_properties(lm_kernels_parity PROPERTIES SKIP_RETURN_CODE 77)
+    # hc_q8_to_bf16 on the stream it is given: the layer-major prompt walk expanded a STRATA_HC_REQ8
+    # hyper-connection projection on the default stream while its GEMMs read another.  Synthetic, no model.
+    add_executable(hc_q8_stream_test tests/cuda/hc_q8_stream_test.cu)
+    target_link_libraries(hc_q8_stream_test PRIVATE strata_prefill )
+    add_test(NAME hc_q8_stream COMMAND hc_q8_stream_test)
+    set_tests_properties(hc_q8_stream PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
