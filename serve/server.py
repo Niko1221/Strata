@@ -1364,12 +1364,13 @@ class StrataEngine:
         # The engine reports the loop it ran; never infer it from config or from generated token counts.
         extra = dict(tok.split("=", 1) for tok in f[16:] if "=" in tok)
         mode, windows, reason = (extra.get(k) for k in ("decode_mode", "pipeline_windows", "decode_reason"))
-        reasons = {"none", "no_decode_loop", "not_requested", "prefill_only", "configuration",
-                   "pipeline_unavailable", "snapshot_unavailable", "repetition_penalties", "coupled_draft_sampling"}
-        if mode in ("none", "serial", "pipeline") and windows in ("0", "1", "2") and reason in reasons:
+        serial_reasons = {"0": {"not_requested"}, "1": {"prefill_only"},
+                          "2": {"configuration", "pipeline_unavailable", "snapshot_unavailable",
+                                "repetition_penalties", "coupled_draft_sampling"}}
+        if mode in ("none", "serial", "pipeline") and windows in serial_reasons:
             consistent = ((mode == "pipeline" and windows == "2" and reason == "none") or
                           (mode == "none" and reason == "no_decode_loop") or
-                          (mode == "serial" and reason not in ("none", "no_decode_loop")))
+                          (mode == "serial" and reason in serial_reasons[windows]))
             if consistent:
                 self.last["decode_segments"] = [{"mode": mode, "pipeline_windows": int(windows), "reason": reason}]
 

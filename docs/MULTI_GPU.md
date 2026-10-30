@@ -197,7 +197,7 @@ The `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIP
 
 Set `STRATA_DECODE_DIAGNOSTICS=1` in the server config's `env` block and restart the engine to have the
 Flash-Next engine report its chosen decode loop in each request's statistics. Off by default; it changes no
-sampling, scheduling or GPU work. On the solo serve path, Chat Completions responses include, for example:
+sampling, scheduling or GPU work. With no `--batch` slots configured, Chat Completions responses include, for example:
 
 ```json
 {"timings": {"decode_segments": [{"mode": "serial", "pipeline_windows": 2, "reason": "repetition_penalties"}]}}
@@ -210,13 +210,16 @@ reported when used). `mode` is `pipeline`, `serial`, or `none`. It names the **d
 overlap: `none` means neither decode loop ran, and the prompt's tail may still have emitted tokens.
 
 `reason` is `none` for the pipeline loop; `no_decode_loop` for `none`; otherwise `not_requested`, `prefill_only`
-(one window), `configuration` (an unsupported startup setup), `pipeline_unavailable`, `snapshot_unavailable`,
+(one requested window, without decode pipelining), `configuration` (an unsupported startup setup),
+`pipeline_unavailable`, `snapshot_unavailable`,
 `repetition_penalties`, or `coupled_draft_sampling`. These identify the selected path; they do not attribute a
 percentage of time to a bottleneck.
 
-Old engines and batch slots do not report this field. It is omitted when no segment reported diagnostics;
+An engine started with `--batch` never reports this field, including requests processed on its solo path.
+Old engines, the SYCL backend (which uses a separate generator), and other model engines do not report it either.
+Unrecognized or inconsistent metadata is ignored. The field is omitted when no segment reported diagnostics;
 if a continuation has no report beside segments that do, its entry is `{"mode": "unknown"}`. Do not treat a
-missing report as serial execution. This option is for the Flash-Next engine, not the other model engines.
+missing report as serial execution.
 
 ## Two models on two cards
 

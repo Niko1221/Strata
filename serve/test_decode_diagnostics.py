@@ -28,11 +28,13 @@ def parsed(extra):
 
 class DecodeDiagnostics(unittest.TestCase):
     def test_modes_come_from_the_engine_not_the_number_of_generated_tokens(self):
-        for mode, windows, reason in [("pipeline", 2, "none"), ("none", 2, "no_decode_loop"),
+        for mode, windows, reason in [("pipeline", 2, "none"), ("none", 0, "no_decode_loop"),
+                                      ("none", 1, "no_decode_loop"), ("none", 2, "no_decode_loop"),
                                       ("serial", 0, "not_requested"), ("serial", 1, "prefill_only"),
                                       ("serial", 2, "repetition_penalties"),
                                       ("serial", 2, "coupled_draft_sampling"),
-                                      ("serial", 2, "configuration"), ("serial", 2, "snapshot_unavailable")]:
+                                      ("serial", 2, "configuration"), ("serial", 2, "pipeline_unavailable"),
+                                      ("serial", 2, "snapshot_unavailable")]:
             with self.subTest(mode=mode, reason=reason):
                 last = parsed(suffix(mode, windows, reason))
                 self.assertEqual(last["decode_segments"],
@@ -54,6 +56,18 @@ class DecodeDiagnostics(unittest.TestCase):
                       suffix("serial", 2, "none"), suffix("none", 2, "repetition_penalties")):
             with self.subTest(extra=extra):
                 self.assertEqual(parsed(extra), parsed(""))
+
+    def test_serial_reason_with_wrong_window_count_clears_previous_report(self):
+        for reason, windows in [("not_requested", 0), ("prefill_only", 1), ("configuration", 2),
+                                ("pipeline_unavailable", 2), ("snapshot_unavailable", 2),
+                                ("repetition_penalties", 2), ("coupled_draft_sampling", 2)]:
+            for wrong_windows in sorted({0, 1, 2} - {windows}):
+                with self.subTest(reason=reason, windows=wrong_windows):
+                    engine = SimpleNamespace()
+                    StrataEngine._parse_done(engine, DONE + suffix("pipeline", 2, "none"))
+                    StrataEngine._parse_done(engine, DONE + suffix(windows=wrong_windows, reason=reason))
+                    self.assertEqual(engine.last, parsed(""))
+                    self.assertNotIn("decode_segments", request_timings(12000, 5, engine.last))
 
     def test_appended_lookup_chain_fields_do_not_move_metadata(self):
         last = parsed(" 1 2 3 4 5" + suffix())
@@ -103,7 +117,7 @@ class DecodeDiagnosticsHTTP(unittest.TestCase):
 
     def test_complete_and_streamed_responses_follow_each_requests_report(self):
         for stream in (False, True):
-            for extra in (suffix("pipeline", 2, "none"), suffix(), ""):
+            for extra in (suffix("pipeline", 2, "none"), suffix(), "", suffix(reason="not_requested")):
                 with self.subTest(stream=stream, extra=extra):
                     self.engine.extra = extra
                     body = {"model": "m", "messages": [{"role": "user", "content": "hi"}],
