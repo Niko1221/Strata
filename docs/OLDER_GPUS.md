@@ -313,6 +313,7 @@ Setup does not build these. Build by hand and run `serve/server.py` with a confi
 - **gfx1012** (RX 5500 XT): the wave32 backend, `-DSTRATA_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1012`. HIP 5.7 (Ubuntu's
   packages) works: older hipBLAS is used through rocBLAS, legacy HIP names and the missing `__syncwarp` are version-gated, and
   RDNA1's missing signed dot4 uses llama.cpp's SDWA sequence (`-DSTRATA_GFX1012_PORTABLE_DOT=ON`: the portable one).
+  gfx1010 (RX 5700 / 5700 XT) takes the same SDWA sequence, and the same switch selects the portable one there.
 
 ## Reports welcome
 
