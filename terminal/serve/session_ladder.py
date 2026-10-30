@@ -35,7 +35,15 @@ PARK_COST_KIB_PER_TOKEN = 40.4
 MIN_PARK_TOKENS = 8192
 
 # Session identity headers, pinned first-wins precedence (OpenCode's native family; serve stamps them).
-SESSION_HEADERS = ("x-session-id", "x-opencode-session-id", "x-session-affinity", "x-opencode-session")
+# OpenCode 2.1.4 stamps every request with an affinity FAMILY whose value is `parentID ?? fork.source ?? own
+# id` (X-Session-Id / x-session-affinity / x-opencode-session - provider-side cache affinity) plus
+# x-opencode-session-id = the REQUESTING session's OWN id.  A subagent (child session) therefore carries the
+# PARENT's id in the affinity family: reading the affinity first collapses every subagent into the main
+# session - never tracked, never saved, DONE figures misattributed (live momo 2026-10-28/30: only main ids
+# ever reached the ladder, while days of subagent turns churned the slot).  The own-id header therefore
+# outranks the affinity family; the affinity family stays as fallback for clients that only carry it
+# (fleet_probe and the pre-child-header OpenCode builds send all four with the same value - order-agnostic).
+SESSION_HEADERS = ("x-opencode-session-id", "x-session-id", "x-session-affinity", "x-opencode-session")
 
 
 @dataclass
