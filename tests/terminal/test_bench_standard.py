@@ -1108,6 +1108,23 @@ class RealRunFindingsTests(StandardBase):
                                      engine_build={"name": "cuda", "version": "12.9"})
         self.assertEqual(block["runtime"], [{"name": "cuda", "version": "12.9"}, {"name": "cuda-driver-supports", "version": "13.0"}])
 
+    def test_a_component_reference_reads_the_installed_engines_runtime(self):
+        # setup writes "component:strata-engine" as the run config's exe (#4491): the manifest is beside the engine that
+        # reference resolves to, not beside the literal string, so the driver's CUDA ceiling must not stand in for it
+        from strata_control import engine_component
+        engine = self.root / "engine-0.1.52-cuda13"
+        engine.mkdir()
+        exe = engine / "strata"
+        exe.write_bytes(b"")
+        (engine / "engine-component.json").write_text(json.dumps({"build_id": "a7bdbfdabc9a+cuda13.0"}), encoding="utf-8")
+        with mock.patch.object(engine_component, "expand", return_value=str(exe)) as expand:
+            self.assertEqual(bench_facts.engine_build_runtime("component:strata-engine", {"backend": "cuda"}),
+                             {"name": "cuda", "version": "13.0"})
+        expand.assert_called_once_with("component:strata-engine", {"backend": "cuda"}, full=False)
+        missing = engine_component.EngineMissing("the component folder holds no engine package", self.root)
+        with mock.patch.object(engine_component, "expand", side_effect=missing):
+            self.assertIsNone(bench_facts.engine_build_runtime("component:strata-engine"))
+
     def test_the_engine_log_comes_from_the_run_configs_log_file(self):
         console = self.root / "engine.log"
         console.write_bytes(b"")
