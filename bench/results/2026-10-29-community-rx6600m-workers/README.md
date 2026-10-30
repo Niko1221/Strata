@@ -8,6 +8,9 @@ are computed by the CPU pool; the question here was whether that pool's worker c
 All runs used explicit `--pool-workers` except the two labelled automatic, which used the engine's own choice.
 Each setting ran twice, in one session, in the order listed in [timeline.txt](timeline.txt).
 
+The same card on the standard suite (chat and a fresh 4K prompt, 3 runs each, 8K context) is in
+[2026-10-30-community-rx-6600m-qwen3-8-flash-next-coder-iq1-m](../2026-10-30-community-rx-6600m-qwen3-8-flash-next-coder-iq1-m/README.md).
+
 ## Rig
 
 - AMD Radeon RX 6600M 8 GiB (gfx1032, wave32, 14 multiprocessors), 13th Gen Intel Core i5-13600 (6 performance
