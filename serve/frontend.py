@@ -734,10 +734,13 @@ class Event:
     call: ToolCall | None = None
 
 
-THINK_END = "</think>"
+THINK_START, THINK_END = "<think>", "</think>"
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 
+
+# a Markdown indented code line starts with four spaces or a tab (up to three spaces may come before the tab)
+_INDENT = ("    ", "\t", " \t", "  \t", "   \t")
 
 PARAM_END = "</parameter>"
 FUNC_START = "<function="
@@ -1142,7 +1145,7 @@ class OutputParser:
         self.after_think = False     # #4077: the reasoning ended at a bare `</think>` (a second one in the answer is a stray)
         self.stray_think = 0         # ... and the strays of that kind dropped from the answer
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
-        self.fence, self.line, self.ticks = "", "", 0
+        self._reset_code()
         # recover (on in the server since 0.2.8, off for a bare OutputParser; the config's "tool_call_recovery": false turns it off): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
@@ -1159,11 +1162,19 @@ class OutputParser:
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
-        snap = (self.fence, self.line, self.ticks)
-        self._track(self.buf[:p])
-        ok = self._opener_ok()
-        self.fence, self.line, self.ticks = snap
-        return ok
+        return self._after_text(self.buf[:p], self._opener_ok)
+
+    def _reset_code(self):
+        """Start tracking code afresh."""
+        self.fence, self.line, self.ticks, self.indented, self.quoted_think = "", "", 0, False, 0
+
+    def _after_text(self, text: str, check):
+        """check() as it would answer with `text` tracked; the tracking itself is left as it was."""
+        snap = (self.fence, self.line, self.ticks, self.indented, self.quoted_think)
+        self._track(text)
+        answer = check()
+        self.fence, self.line, self.ticks, self.indented, self.quoted_think = snap
+        return answer
 
     def _callable(self, name: str) -> bool:
         """#3075: may a call for `name` be a call?  A tool the request declared (or its Responses spelling); with
@@ -1270,15 +1281,21 @@ class OutputParser:
                 self._line_parts.clear()
                 self._line_blocks = None
                 s = line.lstrip()
+                if s.startswith(THINK_START):
+                    self.quoted_think += 1
+                elif s.startswith(THINK_END) and self.quoted_think:
+                    self.quoted_think -= 1
                 if self.fence:
-                    if s.startswith(self.fence * 3):
+                    # CommonMark: a fence closes only on a line of its own, at least as long as the one that opened it
+                    if s.startswith(self.fence) and not s.strip(self.fence[0] + " \t\r"):
                         self.fence = ""
-                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
-                    self.fence = s[0]
+                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s.lstrip(s[0]):
+                    self.fence = s[:len(s) - len(s.lstrip(s[0]))]
                 elif not s:
-                    self.ticks = 0
+                    self.ticks, self.indented = 0, True
                 else:
                     self.ticks += line.count("`")
+                    self.indented = self.indented and line.startswith(_INDENT)
             else:
                 if part:
                     self._line_parts.append(part)
@@ -1287,11 +1304,16 @@ class OutputParser:
     def _opener_ok(self) -> bool:
         """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
         inline code."""
-        return not self.fence and not self.line.strip() and self.ticks % 2 == 0
+        return not self.fence and not self.line.strip() and self.ticks % 2 == 0 and not self._in_indented()
 
     def _in_code(self) -> bool:
         """The text so far leaves the next character inside a code fence or inline code."""
-        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1 or self._in_indented()
+
+    def _in_indented(self) -> bool:
+        """The current line is in an indented code block: a blank line or another such line before it, so a call the
+        model merely indents after a line of text is still a call."""
+        return self.indented and self.line.startswith(_INDENT)
 
     def _quoted_think_end(self, i: int) -> bool | None:
         """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
@@ -1309,12 +1331,14 @@ class OutputParser:
     def _stray_think_at(self) -> int:
         """#4077: where self.buf has a `</think>` at the start of a line, in the answer of a turn whose reasoning
         already ended at one; -1 for none.  A fence or backtick is no reason to keep it: the reasoning may have left
-        one open, and the answer's own tracking of code is wrong from there on."""
+        one open, and the answer's own tracking of code is wrong from there on.  #4704: a tag that closes a `<think>`
+        line of the answer's own is a quoted thinking block."""
         k = self.buf.find(THINK_END)
         while k >= 0:
             before = self.buf[:k]
             if not (before.rsplit("\n", 1)[1] if "\n" in before else self.line + before).strip():
-                return k
+                if not self._after_text(before, lambda: self.quoted_think):
+                    return k
             k = self.buf.find(THINK_END, k + 1)
         return -1
 
@@ -1576,7 +1600,7 @@ class OutputParser:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead, self.after_think = "content", True, True
-                self.fence, self.line, self.ticks = "", "", 0     # the answer's own text starts here
+                self._reset_code()                  # the answer's own text starts here
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -1594,7 +1618,7 @@ class OutputParser:
                     if stray:
                         out.append(Event("content", self._track(self.buf[:stray])))
                     self.buf = self.buf[stray + len(THINK_END):]
-                    self.fence, self.line, self.ticks = "", "", 0
+                    self._reset_code()
                     self.lead = True
                     self.stray_think += 1
                     continue
@@ -1630,11 +1654,7 @@ class OutputParser:
                     return out
                 # #1058: an opener inside a code fence or inline code is text (a quoted example), never a call.  The
                 # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
-                snap = (self.fence, self.line, self.ticks)
-                self._track(self.buf[:i])
-                in_code = self._in_code()
-                self.fence, self.line, self.ticks = snap
-                if in_code:
+                if self._after_text(self.buf[:i], self._in_code):
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue

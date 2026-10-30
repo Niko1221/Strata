@@ -3,7 +3,7 @@ import itertools
 import random
 import unittest
 
-from serve.frontend import OutputParser
+from serve.frontend import _INDENT, THINK_END, THINK_START, OutputParser
 
 
 class ReferenceParser(OutputParser):
@@ -16,15 +16,20 @@ class ReferenceParser(OutputParser):
             if k < len(parts) - 1:
                 line, self.line = self.line + part, ""
                 s = line.lstrip()
+                if s.startswith(THINK_START):
+                    self.quoted_think += 1
+                elif s.startswith(THINK_END) and self.quoted_think:
+                    self.quoted_think -= 1
                 if self.fence:
-                    if s.startswith(self.fence * 3):
+                    if s.startswith(self.fence) and not s.strip(self.fence[0] + " \t\r"):
                         self.fence = ""
-                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
-                    self.fence = s[0]
+                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s.lstrip(s[0]):
+                    self.fence = s[:len(s) - len(s.lstrip(s[0]))]
                 elif not s:
-                    self.ticks = 0
+                    self.ticks, self.indented = 0, True
                 else:
                     self.ticks += line.count("`")
+                    self.indented = self.indented and line.startswith(_INDENT)
             else:
                 self.line += part
         return text
@@ -32,15 +37,15 @@ class ReferenceParser(OutputParser):
 
 class TrackTests(unittest.TestCase):
     def assert_state(self, actual, expected):
-        self.assertEqual((actual.line, actual.fence, actual.ticks),
-                         (expected.line, expected.fence, expected.ticks))
+        self.assertEqual((actual.line, actual.fence, actual.ticks, actual.indented, actual.quoted_think),
+                         (expected.line, expected.fence, expected.ticks, expected.indented, expected.quoted_think))
         self.assertEqual(actual._opener_ok(), expected._opener_ok())
         self.assertEqual(actual._in_code(), expected._in_code())
 
     def test_fragment_state_from_varied_initial_states(self):
         fragments = ("", "a", "é🙂", "`", "``", "```", "~~~", "\r", "\n", "\r\n",
-                     "\n\n", "  ```python\n", "```quoted```\n", "~\ntext", "\t\nrest")
-        for fence, line, ticks, text in itertools.product(("", "`", "~"),
+                     "\n\n", "  ```python\n", "```quoted```\n", "~\ntext", "\t\nrest", "````\n", "    code\n")
+        for fence, line, ticks, text in itertools.product(("", "```", "~~~", "````"),
                                                          ("", "  ", "``", "code `"),
                                                          (0, 1, 2, 3), fragments):
             actual, expected = OutputParser(), ReferenceParser()

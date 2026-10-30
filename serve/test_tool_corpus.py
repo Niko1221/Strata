@@ -105,6 +105,28 @@ add("4078-heredoc", qwen("bash", command=HEREDOC), [("bash", {"command": HEREDOC
 add("4078-call-format-in-a-file", qwen("write_file", path="DOC.md", content="Close a call with </function> and then </tool_call>.\nlike this."),
     [("write_file", {"path": "DOC.md", "content": "Close a call with </function> and then </tool_call>.\nlike this."})],
     source="#210: a file that documents the format")
+FENCED_EXAMPLE = ("Save this as docs/TOOLS.md:\n\n````markdown\n# Tool calls\n\nA call:\n\n```xml\n" + qwen("read", path="EXAMPLE.txt")
+                  + "\n```\n````\n\nThat is the file.")
+add("4702-call-in-an-inner-fence", FENCED_EXAMPLE, content=FENCED_EXAMPLE, source="#4702: ``` does not close ````")
+add("4702-call-after-a-long-fence-closes", "```\ncode\n````\n\n" + qwen("read", path="a.txt"), [("read", {"path": "a.txt"})],
+    content="```\ncode\n````", source="#4702: a longer line of the same character closes a fence")
+add("4702-tilde-does-not-close-backticks", "```\n~~~\n" + qwen("read", path="a.txt") + "\n```",
+    content="```\n~~~\n" + qwen("read", path="a.txt") + "\n```", source="#4702: the fence's own character closes it")
+add("4702-info-string-does-not-close", "```markdown\n```xml\n" + qwen("read", path="a.txt") + "\n```",
+    content="```markdown\n```xml\n" + qwen("read", path="a.txt") + "\n```", source="#4702: a closing fence has nothing after it")
+INDENTED_EXAMPLE = "    " + qwen("read", path="EXAMPLE.txt").replace("\n", "\n    ")
+INDENTED_TEXT = "The format, indented as code:\n\n" + INDENTED_EXAMPLE + "\n\nIndentation makes it a code block in Markdown."
+add("4703-call-in-an-indented-block", INDENTED_TEXT, content=INDENTED_TEXT, source="#4703")
+add("4703-call-in-an-indented-block-recover", INDENTED_TEXT, content=INDENTED_TEXT, recover=True, source="#4703, recover on")
+add("4703-indented-after-text-is-still-a-call", "I read it now.\n    " + qwen("read", path="a.txt"), [("read", {"path": "a.txt"})],
+    content="I read it now.", source="#4703: no blank line, so no code block")
+THINK_EXAMPLE = "Like this:\n\n```\n<think>\nstep one\n</think>\nThe answer.\n```\n\nThat is all."
+add("4704-quoted-thinking-block-is-kept", "Plan the answer.\n</think>\n\n" + THINK_EXAMPLE, content=THINK_EXAMPLE, thinking=True,
+    reasoning="Plan the answer.\n", source="#4704")
+THINK_CALL_EXAMPLE = ("Here is the test:\n\n```python\nSAMPLE = '''\n<think>\nplan\n</think>\n" + qwen("read", path="EXAMPLE.txt")
+                      + "\n'''\n```\n\nRun it with pytest.")
+add("4704-quoted-thinking-block-keeps-the-fence", "Plan.\n</think>\n\n" + THINK_CALL_EXAMPLE, content=THINK_CALL_EXAMPLE, thinking=True,
+    reasoning="Plan.\n", source="#4704: the call in the same example stays text")
 add("4077-stray-think-line", "The user wants a file with a literal.\n" + STRAY_VALUE + "\nSo I write it.\n</think>\n\n" +
     qwen("write_file", path="out.txt", content=STRAY_VALUE),
     [("write_file", {"path": "out.txt", "content": STRAY_VALUE})], thinking=True,
