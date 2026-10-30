@@ -10,7 +10,7 @@ Measured on 2026-10-30 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 - Model files and packs: on a KINGSTON SKC3000D2048G NVMe SSD (the list above leaves this drive out)
 - Strata: project 0.1.54, commit 870aedd9; engine 0.1.54
 - Strata release v0.2.8 (a clone of tag v0.2.8); setup installed the ready-made engine 0.1.54-windows-x86_64-hip-rdna3 from the signed update feed
-- Background workloads (added by hand): llama-swap proxy idle with a 230M llama.cpp title generator loaded on the CPU (-ngl 0); qBittorrent; ProtonVPN client; Signal; opencode; Microsoft SQL Server (sqlservr); WizTree; Windows Defender
+- Background workloads (added by hand): llama-swap proxy idle with a 230M llama.cpp title generator loaded on the CPU (-ngl 0); qBittorrent; ProtonVPN service; Signal; opencode; Microsoft SQL Server (sqlservr); WizTree; Windows Defender
 - Power limit: not measured; stock settings
 
 ## Model and configuration
@@ -40,29 +40,31 @@ Run by `python tools/strata_bench.py --long` against the HTTP API of a Strata se
 
 | Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds median and range |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
-| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 66.1 (48.4-78.3) | 0.51 (0.45-0.64) |
-| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 821.7 (501.4-822.0) | not measured | 4.93 (4.92-8.06) |
-| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 1764.5 (1130.7-1766.9) | not measured | 9.15 (9.12-14.24) |
-| 32K prompt, fresh | 32049 (32049-32049) | 0 (0-0) | 24 cap | 3 | 1766.1 (1762.6-1776.4) | not measured | 18.21 (18.08-18.24) |
-| agent session, follow-up turns | 12944 (12917-12945) at the last turn | see below | up to 64 | 3 | see below | 82.7 (59.5-112.8) | 4.72 (3.96-9.74) |
+| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 72.0 (57.2-78.3) | 0.49 (0.42-0.53) |
+| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 827.8 (822.0-833.1) | not measured | 4.88 (4.85-4.92) |
+| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 1781.1 (1773.7-1784.2) | not measured | 9.05 (9.03-9.09) |
+| 32K prompt, fresh | 32049 (32049-32049) | 0 (0-0) | 24 cap | 3 | 1777.6 (1768.0-1781.2) | not measured | 18.08 (18.05-18.20) |
+| agent session, follow-up turns | 12942 (12917-12945) at the last turn | see below | up to 64 | 3 | see below | 89.8 (62.3-102.9) | 4.37 (3.93-4.79) |
 
 Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token.
 
 ### Agent session (conversation cache)
 
-Cache hit over the follow-up turns: 68.9 % (68.9-69.4); earlier-turn tokens read again per session: 214 (3-214) (earlier turns that the cache did not hold; the 12064 (12063-12065) new tokens of the files are read once); first turn (nothing cached) first token: 3.13 s (3.10-4.15).
+Cache hit over the follow-up turns: 69.3 % (69.1-69.3); earlier-turn tokens read again per session: 73 (73-144) (earlier turns that the cache did not hold; the 12063 (12063-12065) new tokens of the files are read once); first turn (nothing cached) first token: 3.04 s (2.84-3.09).
 
 | Turn (run 1) | Prompt tokens | Reused | Read | Prompt tok/s | First token (s) | Decode tok/s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 609 | 0 | 609 | 147.5 | 4.154 | 44.8 |
-| 1 | 3350 | 620 | 2730 | 292.7 | 9.356 | 64.8 |
-| 2 | 4883 | 3414 | 1469 | 207.9 | 7.09 | 59.5 |
-| 3 | 8127 | 4947 | 3180 | 327.4 | 9.74 | 75.8 |
-| 4 | 10190 | 8185 | 2005 | 262.9 | 7.654 | 79.9 |
-| 5 | 12917 | 10234 | 2683 | 335.7 | 8.04 | 82.1 |
+| 0 | 609 | 0 | 609 | 215.9 | 2.844 | 44.2 |
+| 1 | 3350 | 623 | 2727 | 627.4 | 4.374 | 77.7 |
+| 2 | 4883 | 3414 | 1469 | 374.5 | 3.97 | 62.3 |
+| 3 | 8127 | 4876 | 3251 | 683.5 | 4.795 | 83.6 |
+| 4 | 10196 | 8190 | 2006 | 487.2 | 4.155 | 85.2 |
+| 5 | 12942 | 10259 | 2683 | 602.6 | 4.502 | 75.7 |
 
 Per-request data: `results.json`. Engine log lines from the start: `engine-log-excerpt.txt` (when this run started the server).
 
 ## Correctness and limitations
 
-Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. Total time of the suite: 246 s. The background workloads above were added by hand after the run.
+Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. Total time of the suite: 210 s. The background workloads above were added by hand after the run.
+
+Storage note (added by hand): an earlier run of this suite on the same day, with the model files NTFS-compressed (the Windows compression attribute on the model folder, ratio 1.0 to 1), measured the same fresh prompts (821.7 / 1764.5 / 1766.1 tok/s at 4K / 16K / 32K) but slower agent turns: prompt 147.5 to 335.7 tok/s in run 1 against 215.9 to 683.5 here. The engine's PLE direct-read probe then measured about 5,100 rows/s, against about 138,000 rows/s for this run. This run is after `compact /u`.
