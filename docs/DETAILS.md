@@ -473,6 +473,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `effort_position` | `"start"` | `"end"` puts a `low` or `medium` effort in a short system turn right before the answer, so a request that only changes the effort reuses the conversation cache. How well the model follows a level in that place is not measured. |
 | `anthropic_thinking` | as the template | `"on_request"` renders a `/v1/messages` request that asks for no thinking without thinking, as Anthropic does. Claude Code's short helper calls need it. |
 | `tool_call_recovery` | on (since 0.2.8; off in 0.2.7 and before) | Also reads a declared tool's call written as `<parameter=NAME>`, as JSON inside `<tool_call>`, as a `<function=NAME>` block without `<tool_call>`, or as a second call inside one `<tool_call>`. On 1,462 agent turns 98.3% read as intended with it and 92.9% without; the 49 specimens of the test corpus read the same with it on or off. Only a declared tool's call is ever recovered; anything else stays text. `"tool_call_recovery": false` turns it off. |
+| `undeclared_tool_calls` | `"text"` | `"call"` returns a well-formed call for a tool the request did not declare as a call (`finish_reason` `tool_calls`), as before 0.2.2, for harnesses that answer an unknown tool themselves and let the model retry. A request that declared no tools is not changed. |
 | `env_to_user` | off | Moves opencode's `<env>` block (working directory, date) to the first user message so the system turn is the same for every session and the disk prefix cache restores it. |
 | `return_progress` | off | Per request `"return_progress": true` adds llama.cpp's `prompt_progress` (`total`, `cache`, `processed`, `time_ms`) to the stream, one update per `--prefill` chunk. A prompt shorter than one chunk sends nothing. |
 | `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
@@ -516,7 +517,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `"strata_rejected_tool_calls": [{"name": "bash", "reason": "undeclared"}]` (at the top level of a Chat Completions reply, in
   its last streamed chunk, and in the `message_delta` event and the message of `/v1/messages`; up to five names). A client that
   wants to recover can answer the model with the tool names it does have and ask again; Strata never runs or forwards a call for a
-  tool the request did not declare. The server window prints the same names (`N <tool_call> block(s) ... went back as text`), and
+  tool the request did not declare (unless the config says `"undeclared_tool_calls": "call"`, #4622). The server window prints the same names (`N <tool_call> block(s) ... went back as text`), and
   `/metrics/prometheus` counts the blocks in `strata:tool_calls_unread_total`. A block that is malformed (not an undeclared name) is counted
   there and in the window, but has no name to list.
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema

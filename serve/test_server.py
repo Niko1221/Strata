@@ -1279,6 +1279,43 @@ class ToolCallRecoverySwitch(unittest.TestCase):
         self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [ToolCallRecovery.CALL])
 
 
+class UndeclaredToolCallSwitch(unittest.TestCase):
+    """#4622: the config's "undeclared_tool_calls": "call" returns a well-formed call for an undeclared name as a call
+    (pi's codemode declares one tool and Qwen3.8 sometimes calls a member, `tools__bash`, directly); "text" keeps #3075."""
+    SCRIPT = ("</think>\n\n<tool_call>\n<function=tools__bash>\n<parameter=command>\nls\n</parameter>\n</function>\n"
+              "</tool_call>")
+
+    def run_reply(self, on, tools=ToolCallRecovery.SCHEMA):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, self.SCRIPT, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.undeclared_tool_calls = on
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = list(svc.run(tok.encode("hi"), True, tools, 3000, {}, threading.Event(),
+                               declared_only=True))
+        evs = [x for kind, x in out if kind == "event"]
+        done = [x for kind, x in out if kind == "done"][-1]
+        calls = [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"]
+        text = "".join(e.text for e in evs if e.kind == "content")
+        return calls, text, done.get("rejected_tool_calls")
+
+    def test_off_stays_text_and_named(self):
+        calls, text, rejected = self.run_reply(False)
+        self.assertEqual(calls, [])
+        self.assertIn("<function=tools__bash>", text)
+        self.assertEqual(rejected, [{"name": "tools__bash", "reason": "undeclared"}])
+
+    def test_on_is_a_call(self):
+        calls, text, rejected = self.run_reply(True)
+        self.assertEqual(calls, [("tools__bash", {"command": "ls"})])
+        self.assertNotIn("<function=", text)
+        self.assertIsNone(rejected)
+
+    def test_on_without_declared_tools_stays_text(self):
+        calls, text, _ = self.run_reply(True, tools=None)
+        self.assertEqual(calls, [])
+        self.assertIn("<function=tools__bash>", text)
+
+
 class UnfinishedToolCall(unittest.TestCase):
     """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
     finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
