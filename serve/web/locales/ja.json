@@ -245,5 +245,9 @@
   "tool.running": "実行中",
   "tool.skipped": "未実行",
   "tool.writing": "書き込み中",
-  "undo": "元に戻す"
+  "undo": "元に戻す",
+  "sidebar.import": "保存したチャットを戻す",
+  "sidebar.imported": "チャットを戻しました",
+  "sidebar.importFailed": "戻せるものがありません",
+  "sidebar.importFailedText": "ファイルに会話がありません。保存は '## You' とモデルの応答を書き込みます。"
 }
