@@ -13811,7 +13811,8 @@ int main(int argc, char** argv) {
                         // RAM PREFLIGHT for the save (not a reservation), BEFORE anything is copied: the deepest
                         // checkpoint is chosen by reference, and the copies it will take (the list below and the one
                         // in `meta`), the copied live running state with its tokens and images, the K/V source
-                        // directory and the 16 MiB write buffer are asked for above the parking floor.  Only the
+                        // directory and the two 16 MiB write buffers (the pipelined FileSink) are asked for above
+                        // the parking floor.  Only the
                         // deepest checkpoint goes to disk (the next turn's resume point); the K/V is streamed from
                         // the authoritative pools straight into the file, without a full host capture.
                         strata::core::SessionSaveLive sl;
