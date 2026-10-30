@@ -2073,6 +2073,13 @@ if(STRATA_NATIVE_EXPERTS)
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+  # a native pack's Q2_0 rows on the pool's path (q2_native_kernels -> q2_rows_any, any rung) against ggml-cpu's
+  # vec_dot, both against the exact dot: the check that q2_avx1.cpp is right where the pool now calls it
+  add_executable(q2_native_parity src/kernels/cpu/q2_native_parity.cpp)
+  target_link_libraries(q2_native_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME q2_native_parity COMMAND q2_native_parity)
+  endif()
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
