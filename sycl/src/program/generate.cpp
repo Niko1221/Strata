@@ -25,6 +25,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/pipeline_auto.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -704,11 +705,12 @@ struct Options {
     /// result) goes through the verify windows, S tokens at a time, instead of the batched prompt path (0 = always
     /// the batched path)
     int64_t short_read = 64;
-    /// --pipeline-windows N (--serve, a layer split on exactly two GPUs; opt-in): 1 = a prompt's short reads through
+    /// --pipeline-windows N (--serve, a layer split on exactly two GPUs): 1 = a prompt's short reads through
     /// the verify windows run with the stages overlapped (stage 0 reads window K+1 while stage 1 reads window K);
     /// 2 = the decode windows too: stage 0 runs window K+1 speculatively while stage 1 verifies window K (rolled back
-    /// when K is not accepted as guessed).  0 = off (the stages take turns).
-    int pipeline_windows = 0;
+    /// when K is not accepted as guessed).  0 = off (the stages take turns).  -1 (not given) = automatic: 2 when both
+    /// GPUs of the two-stage split are Battlemage (Xe2) cards and the MTP drafter runs (spec >= 2), else 0.
+    int pipeline_windows = -1;
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
     /// edits, quoted input, tool-call JSON) by at least this many tokens, the window may be filled with what followed
     /// it there instead of the MTP's drafts, where the MTP's own first guess agrees and the draft policy expects it to
@@ -834,7 +836,8 @@ void usage() {
                  "  --batch-mtp          --batch (opt-in, one GPU, needs --mtp and --spec): each slot also verifies one MTP\n"
                  "                       proposal per window (STRATA_BATCH_MTP=1 does the same); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
-                 "  --pipeline-windows N --serve with a layer split on two GPUs (opt-in): one conversation's verify windows\n"
+                 "  --pipeline-windows N --serve with a layer split on two GPUs (default 2 on two Arc B-series cards with\n"
+                 "                       the MTP drafter, else 0): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
@@ -2152,9 +2155,23 @@ int main(int argc, char **argv) try {
         };
         split_auto = o.layer_split == "auto";
         bool ok = o.serve && (split_auto || ints(o.layer_split, split_at));
+        // SYCL port: a stage is a GPU of the PRIMARY device's backend.  Everything else that the runtime lists is
+        // not a stage: the batch slots load the OpenCL adapter as well, so on a two-card `xe` box
+        // dpct::device_count() then reports the CPU and the OpenCL view of the same two cards (5 devices), and an
+        // automatic split tried to put a stage on the CPU ("layer split, CUDA2 weights: the weight arena does not
+        // fit ... 0 MiB of 160876 MiB free on that card") instead of working.
+        const auto stage_dev = [](int d) -> bool {
+            try {
+                const sycl::device dev = dpct::get_device(d);
+                return dev.is_gpu() && dev.get_backend() == dpct::get_device(0).get_backend();
+            } catch (...) {
+                return false;
+            }
+        };
         if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
         else if (ok)
-            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
+            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d)
+                if (!split_auto || stage_dev(d)) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
         split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto;
         if (split_same && o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0) {
@@ -2730,8 +2747,26 @@ int main(int argc, char **argv) try {
         }
     }
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
-    else if (!strata::kernels::cpu::cpu_avx512_ok())
+    if (!native_pack) {
+        // #2347 (the CUDA engine has this too): a --pack folder without native_experts.txt is read as the canonical Q2_0 pack, whose CPU
+        // kernel needs AVX-512; on an AVX2 CPU (Ryzen 5000, Intel 12th-14th gen) that reads as "this CPU is too old" when the folder is
+        // simply not the native pack (a half-built pack, the wrong folder).  Say so before the refusal.
+        if (!strata::kernels::cpu::cpu_features().usable()) {
+            std::error_code ec;
+            const std::filesystem::path pk(o.pack);
+            std::fprintf(stderr, "strata generate: %s has no native_experts.txt, so it is read as the canonical Q2_0 "
+                                 "pack, whose CPU kernel needs AVX-512.\n"
+                                 "        An NVFP4, i-quant or Unsloth pack has that file in the folder given as --pack "
+                                 "and runs on an AVX2 CPU as well;\n",
+                         o.pack.c_str());
+            if (std::filesystem::exists(pk / "pack" / "native_experts.txt", ec))
+                std::fprintf(stderr, "        it is in %s: use that folder as --pack.\n", (pk / "pack").generic_string().c_str());
+            else
+                std::fprintf(stderr, "        if this is one of those packs, the folder is incomplete or the wrong one "
+                                     "(build it again with tools/iq_pack.py, or run setup again).\n");
+        }
+        strata::kernels::cpu::cpu_require_expert_support();
+    } else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok() ? "ggml-cpu vec_dot (no AVX2: the older-CPU build)"
@@ -3373,9 +3408,39 @@ int main(int argc, char **argv) try {
         }
     }
     strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
-    // --pipeline-windows (opt-in): one conversation's windows with the two stages of a layer split overlapped.  Decided
+    // --pipeline-windows: one conversation's windows with the two stages of a layer split overlapped.  Decided
     // here, before any stage sizes its expert cache (the second verifier per stage and the snapshots are allocated
     // after the caches, so their room is kept out of them).  What it does not support turns it off, said once.
+    // Not given: on by default (2) for a split of exactly two Battlemage (Xe2) cards, found from the devices'
+    // architecture ids (strata::intel_gpu_gen), with --serve and the MTP drafter; a single card, an Arc A-series card or
+    // anything the pipeline does not support stays serial, said nothing.  STRATA_PIPELINE_AUTO=0 or
+    // --pipeline-windows 0 turns it off.
+    if (o.pipeline_windows < 0) {
+        static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
+        const auto battlemage = [](int d) -> bool {
+            try {
+                return strata::intel_gpu_gen(dpct::get_device(d)) == strata::IntelGpuGen::Battlemage;
+            } catch (...) {
+                return false;
+            }
+        };
+        strata::PipelineAutoInputs in;
+        in.serve = o.serve; in.multi_gpu = multi_gpu; in.split_same = split_same;
+        in.later_stages = (unsigned) split_devs.size();
+        in.auto_off = ae != nullptr && std::atoi(ae) == 0;
+        in.has_mtp = !o.mtp.empty(); in.spec = o.spec; in.batch = o.batch;
+        in.peer_device = o.peer_device >= 1;     // the same test as the validation below
+        in.helper_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        if (split_devs.size() == 1) {            // the devices are looked at only for a split the pipeline could take
+            in.first_is_battlemage = battlemage(0);
+            in.later_is_battlemage = battlemage(split_devs[0]);
+        }
+        const bool on = strata::pipeline_auto_on(in);
+        o.pipeline_windows = on ? 2 : 0;
+        if (on)
+            std::fprintf(stderr, "strata generate: --pipeline-windows 2 is on by default for a layer split across two Arc "
+                                 "B-series cards (--pipeline-windows 0 or STRATA_PIPELINE_AUTO=0 turns it off)\n");
+    }
     if (o.pipeline_windows > 0) {
         const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         const char* off = !o.serve ? "it needs --serve"
@@ -7265,10 +7330,14 @@ int main(int argc, char **argv) try {
             for (strata::core::Verifier* v : {&ver, &ver_b}) {
                 v->set_stream(pl_stream[0]);
                 v->set_always_publish(true);
+                v->set_self_commit_off(true);   // a pipelined window may run speculatively: never let it
+                // advance the state itself, the commit graph always does
             }
             for (strata::core::Verifier* v : {&stages[0]->ver, &stages[0]->ver_b}) {
                 v->set_stream(pl_stream[1]);
                 v->set_always_publish(true);
+                v->set_self_commit_off(true);   // a pipelined window may run speculatively: never let it
+                // advance the state itself, the commit graph always does
             }
         }
         if (n_stages > 1) {
@@ -7388,10 +7457,15 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
             }
-            if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
-                std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
-                                     "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
-                return 1;
+            {
+                // Verifier::init takes the CURRENT device, so the first card's second verifier is made while card 0
+                // (stage 0 always runs on the default device in this port) is current: the block above ended its scope.
+                const strata::core::OnDevice on_first(0);
+                if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
+                    std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
+                                         "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
+                    return 1;
+                }
             }
             ver_b.set_next(&gs.ver_b, &split_drive_b);   // the setters reach it; the pipeline never chains run/commit
         }
@@ -10404,10 +10478,19 @@ int main(int argc, char **argv) try {
                         for (int t = 0; t < w.T; ++t) w1[(size_t) t] = (int32_t) cur[(size_t) (w.q + t)];
                         strata::core::Verifier& v = *PV[1][l1 & 1];
                         if (pl_mtp_live[l1 & 1]) {   // the drafter has read this parity's previous rows first
-                            const strata::core::OnDevice on(mtp.device());
-                            (v.stream())
-                                ->ext_oneapi_submit_barrier(
-                                    {*pl_mtp_ev[l1 & 1]});
+                            // SYCL keeps an event in its context, so another card's queue cannot take it as a
+                            // dependency ("Cannot submit to a queue with a dependency from a graph that is
+                            // associated with a different context", the first pipelined window on a split).  The
+                            // drafter's rows must be in memory before stage 1 reads them, so on two cards the
+                            // host waits for the drafter here and the window is launched without the barrier.
+                            if (mtp.device() == v.device()) {
+                                const strata::core::OnDevice on(mtp.device());
+                                (v.stream())
+                                    ->ext_oneapi_submit_barrier(
+                                        {*pl_mtp_ev[l1 & 1]});
+                            } else if (DPCT_CHECK_ERROR(pl_mtp_ev[l1 & 1]->wait()) != 0) {
+                                return fail("the drafter's rows did not land before the window");
+                            }
                         }
                         if (!v.pl_launch(w.T, w1.data(), w.q, e) || !v.pl_commit_async(w.T, e)) return fail(e);
                         ++l1;
@@ -11512,6 +11595,47 @@ int main(int argc, char **argv) try {
                                      B.launched ? "launched" : B.ready ? "ready" : "none", on ? " ON" : "");
                     x = outp[(size_t) a];
                     p = A.p + a + 1;
+                    // STRATA_PIPELINE_DUMP=<file>: after every window, append a hash and the sum of the first stage's
+                    // sequence state (its GDN rows: the recurrence state plus the conv history).  Two arms that ran
+                    // the same tokens must agree here; the first position where they do not is the state that
+                    // escapes.  Debug only: it waits for the stage's stream, so it distorts the timing.
+                    static const char* pl_dump = std::getenv("STRATA_PIPELINE_DUMP");   // read once
+                    if (pl_dump != nullptr) {
+                        const int64_t gdn_floats = g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                                   g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        const size_t n = (size_t) ss.gdn_alloc * (size_t) gdn_floats;
+                        std::vector<float> h(n);
+                        (void) DPCT_CHECK_ERROR(s0->memcpy(h.data(), ss.gdn_state, n * sizeof(float)).wait());
+                        // the recurrence state and the conv history hashed apart: a wrong row shows which half it is
+                        const size_t n_rec = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const size_t n_cnv = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        double rec_sum = 0.0, cnv_sum = 0.0;
+                        uint64_t rec_hash = 1469598103934665603ull, cnv_hash = 1469598103934665603ull;
+                        for (int64_t l = 0; l < ss.gdn_alloc; ++l) {
+                            const size_t base = (size_t) l * (size_t) gdn_floats;
+                            uint64_t rh = 1469598103934665603ull, ch = 1469598103934665603ull;
+                            for (size_t i = 0; i < n_rec; ++i) {
+                                uint64_t b = 0;
+                                std::memcpy(&b, &h[base + i], sizeof(float));
+                                rh = (rh ^ b) * 1099511628211ull;
+                                rec_sum += (double) h[base + i];
+                            }
+                            for (size_t i = 0; i < n_cnv; ++i) {
+                                uint64_t b = 0;
+                                std::memcpy(&b, &h[base + n_rec + i], sizeof(float));
+                                ch = (ch ^ b) * 1099511628211ull;
+                                cnv_sum += (double) h[base + n_rec + i];
+                            }
+                            rec_hash = (rec_hash ^ rh) * 1099511628211ull;
+                            cnv_hash = (cnv_hash ^ ch) * 1099511628211ull;
+                        }
+                        if (std::FILE* df = std::fopen(pl_dump, "a")) {
+                            std::fprintf(df, "pos %lld windows %lld rec %.9g %016llx cnv %.9g %016llx\n", (long long) p,
+                                         (long long) dec_windows, rec_sum, (unsigned long long) rec_hash, cnv_sum,
+                                         (unsigned long long) cnv_hash);
+                            std::fclose(df);
+                        }
+                    }
                     if (!last && !pl_adapt()) return die("an adaptive refill failed");
                     if (on && !last) {
                         ++pl_on;
@@ -11718,6 +11842,46 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
+                // STRATA_PIPELINE_DUMP=<file>: the serial half of the pipelined window's state diff (see the same block
+                // in the pipelined loop): the first stage's GDN state after every committed window.
+                {
+                    static const char* sd = std::getenv("STRATA_PIPELINE_DUMP");
+                    if (sd != nullptr) {
+                        const int64_t gf = g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                           g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        const size_t n = (size_t) ss.gdn_alloc * (size_t) gf;
+                        std::vector<float> h(n);
+                        (void) DPCT_CHECK_ERROR(ver.stream()->memcpy(h.data(), ss.gdn_state, n * sizeof(float)).wait());
+                        const size_t n_rec = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const size_t n_cnv = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        double rec_sum = 0.0, cnv_sum = 0.0;
+                        uint64_t rec_hash = 1469598103934665603ull, cnv_hash = 1469598103934665603ull;
+                        for (int64_t l = 0; l < ss.gdn_alloc; ++l) {
+                            const size_t base = (size_t) l * (size_t) gf;
+                            uint64_t rh = 1469598103934665603ull, ch = 1469598103934665603ull;
+                            for (size_t i = 0; i < n_rec; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + i], sizeof(float));
+                                rh = (rh ^ bb) * 1099511628211ull;
+                                rec_sum += (double) h[base + i];
+                            }
+                            for (size_t i = 0; i < n_cnv; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + n_rec + i], sizeof(float));
+                                ch = (ch ^ bb) * 1099511628211ull;
+                                cnv_sum += (double) h[base + n_rec + i];
+                            }
+                            rec_hash = (rec_hash ^ rh) * 1099511628211ull;
+                            cnv_hash = (cnv_hash ^ ch) * 1099511628211ull;
+                        }
+                        if (std::FILE* df = std::fopen(sd, "a")) {
+                            std::fprintf(df, "pos %lld serial rec %.9g %016llx cnv %.9g %016llx\n", (long long) (p + a + 1),
+                                         rec_sum, (unsigned long long) rec_hash, cnv_sum,
+                                         (unsigned long long) cnv_hash);
+                            std::fclose(df);
+                        }
+                    }
+                }
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
                 draft_accepted += a;

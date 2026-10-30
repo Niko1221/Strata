@@ -145,6 +145,7 @@ public:
         const uint8_t* mem = nullptr;   // non-null: a copy of len bytes from memory to dst instead of a read
         const void* map = nullptr;      // the range in the file's mapping: all in the page cache, it is read buffered
         uint8_t* keep = nullptr;        // non-null (a read): the len bytes read copied here as well
+        bool exact = false;             // the len bytes land exactly at dst (a ring slot: no staging slack around them)
         std::atomic<bool>* cancel = nullptr;   // set before the job starts: it is dropped unread (bad is set, left counted down)
     };
     explicit IoQueue(int n) {
@@ -204,6 +205,21 @@ private:
             if (j.mem != nullptr) {
                 std::memcpy(j.dst, j.mem, (size_t) j.len);
                 ok = true;
+            } else if (j.exact) {
+                // unbuffered through a bounce buffer (the disk reads aligned spans), then the bytes to where they belong
+                thread_local std::vector<uint8_t> bounce;
+                const uint64_t span = os::direct_span(j.off, j.len);
+                if (bounce.size() < span + os::kDirectAlign) bounce.resize((size_t) span + 2 * os::kDirectAlign);
+                uint8_t* bp = (uint8_t*) (((uintptr_t) bounce.data() + os::kDirectAlign - 1) & ~(uintptr_t) (os::kDirectAlign - 1));
+                if (j.dfd != os::kBadFd && !(j.map != nullptr && os::resident(j.map, (size_t) j.len)) &&
+                    os::pread_direct(j.dfd, bp, j.len, j.off)) {
+                    std::memcpy(j.dst, bp + lead, (size_t) j.len);
+                    ok = true;
+                    direct_.fetch_add(j.len, std::memory_order_relaxed);
+                } else if (os::pread_par(j.fd, j.dst, j.len, j.off)) {
+                    ok = true;
+                    buffered_.fetch_add(j.len, std::memory_order_relaxed);
+                }
             } else if (j.dfd != os::kBadFd && !(j.map != nullptr && os::resident(j.map, (size_t) j.len)) &&
                        os::pread_direct(j.dfd, j.dst, j.len, j.off)) {   // (the page cache's ones: buffered, below)
                 ok = true;
@@ -212,7 +228,7 @@ private:
                 ok = true;
                 buffered_.fetch_add(j.len, std::memory_order_relaxed);
             }
-            if (ok && j.keep != nullptr && j.mem == nullptr) std::memmove(j.keep, j.dst + lead, (size_t) j.len);   // (keep may overlap dst: the store reads in place and moves up)
+            if (ok && j.keep != nullptr && j.mem == nullptr) std::memmove(j.keep, j.exact ? j.dst : j.dst + lead, (size_t) j.len);   // (keep may overlap dst: the store reads in place and moves up)
             busy_us_.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(
                                    std::chrono::steady_clock::now() - t0).count(),
                                std::memory_order_relaxed);

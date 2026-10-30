@@ -1655,6 +1655,7 @@ struct DevInfo {
     bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
     bool q2n = false;   // sm_80+ with STRATA_PF_FUSED_Q2N=1: the native Q2_0 pack's Q2_0 gate/up is set up as well (opt-in)
     bool s120 = false;  // compute capability 12.0 (sm120_series.hpp): the default for the formats measured there
+    bool s121 = false;  // GB10 (sm_121, DGX Spark): 128-row tiles win from 65,536 routed rows a launch up (pick_ww)
     int sms = 0, occ = 1;
     int occ_nt = 0;     // blocks per multiprocessor of the NT = 256 kernels (0: not set up)
     bool ws = false;    // STRATA_PF_FUSED_WS: the warp-specialized kernels are set up
@@ -1784,6 +1785,7 @@ const DevInfo& dev_info() {
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
     d.s120 = strata::sm120_default(major, minor);   // (takes the raw attributes, as is_sm120 does)
+    d.s121 = major == 12 && minor == 1;             // GB10 (DGX Spark): its own tile threshold, see pick_ww
     major = strata::cc_major_of(major);   // STRATA_EMULATE_CC counts (tests)
     minor = strata::cc_minor_of(minor);
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
@@ -1914,6 +1916,19 @@ int pick_ww(int64_t n, int n_expert) {
     }();
     if (forced) return forced;
     const double avg = (double) n / std::max(n_expert, 1);
+    // GB10 (sm_121, 48 SMs): the launch's average is above 112 rows an expert for every prompt size here, so the 5070's
+    // 56-112 band never fires and the 64-row tile would be chosen everywhere.  Forcing 128 rows measured +3.7% [1.030, 1.079]
+    // and +3.4% [1.030, 1.038] at 16K in two independent order-balanced block pairs (12 samples a cell) and +4.3% at 32K
+    // in the second pair, with 4K neutral-to-slightly-worse (0.989x, 0.962x, intervals spanning 1.0).  So on this part the
+    // 128-row tile is taken from 65,536 routed rows a launch (about an 11K-token prompt at six experts) up; 4K keeps 64.
+    // STRATA_PF_TILE_DEBUG=1 prints the choice of every launch.
+    if (dev_info().s121) {
+        static const bool dbg = [] { const char* v = std::getenv("STRATA_PF_TILE_DEBUG"); return v != nullptr && v[0] == '1'; }();
+        const int ww = n >= 65536 ? 2 : 4;
+        if (dbg) std::fprintf(stderr, "strata: fused tile: rows %lld experts %d avg %.1f s121 yes -> ww %d\n",
+                              (long long) n, n_expert, avg, ww);
+        return ww;
+    }
     return avg > 56.0 && avg <= 112.0 ? 2 : 4;
 }
 

@@ -759,7 +759,8 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro"], "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro", "deepseek41"],
+                         "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes, DeepSeek (0.2.7.1) last")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
         gy = {x["model"]: x for x in fams[1]["sizes"]}
@@ -772,9 +773,29 @@ class MacCatalog(unittest.TestCase):
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"fits"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"fits"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"does not fit"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
+        self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
+
+    def test_deepseek_on_a_mac_offers_the_two_sets_that_were_run_with_the_mac_words(self):
+        s, hw = self.hw(128)
+        ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
+        by = {x["model"]: x for x in ds["sizes"]}
+        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw"], "the 1.75 bpw set was never run on a Mac")
+        for x in by.values():
+            self.assertTrue(x["multi_file"] and not x["images"])
+            self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
+            self.assertIn("read from the SSD", x["on_this_pc"])
+            self.assertGreater(x["disk_gb"], x["download_gb"])
+        s, hw = self.hw(32)
+        ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
+        for x in ds["sizes"]:                           # a small Mac: said plainly, never refused
+            self.assertTrue(x["on_this_pc"].startswith("slow here"), x["on_this_pc"])
+            self.assertIn("can still be installed", x["on_this_pc"])
+        from strata_cli.launch import catalog as C
+        self.assertEqual(C.verdict(by["IST-DAS-2.00bpw"]["on_this_pc"])[0], C.FITS)
+        self.assertEqual(C.verdict(ds["sizes"][0]["on_this_pc"])[0], C.TIGHT)
 
     def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
         s, hw = self.hw(32)
@@ -794,6 +815,22 @@ class MacCatalog(unittest.TestCase):
             s2, hw2 = self.hw(8)
             s2.hardware = lambda fresh=False: hw2
             M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
+    def test_the_install_plan_for_deepseek_on_a_mac_is_text_only_at_8k(self):
+        s, hw = self.hw(128)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as own:
+            plan, args = M.Tools(s).install_plan("deepseek41", "IST-DAS-2.00bpw", None, None, None, None, None, None, None, None, None, None)
+        self.assertEqual(args[:9], ["--yes", "--no-start", "--family", "deepseek41", "--model", "IST-DAS-2.00bpw", "--context", "8192", "--vision"])
+        self.assertEqual(args[args.index("--vision") + 1], "no", "the Metal engine has not run DeepSeek's picture tower")
+        for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
+            self.assertNotIn(flag, args)
+        self.assertTrue(plan["ram"].startswith("runs on this Mac's memory"))
+        with self.assertRaises(M.ToolError):            # UD-Q8_K_XL (508 GB) and the 1.75 set were never run on a Mac
+            M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None, None)
+        with self.assertRaises(M.ToolError):
+            M.Tools(s).install_plan("deepseek41", "IST-DAS-2.25bpw", None, "yes", None, None, None, None, None, None, None, None)
 
     def test_a_pc_is_unchanged(self):
         s = M.Strata(HERE.parent)
