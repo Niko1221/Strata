@@ -245,5 +245,9 @@
   "tool.running": "Läuft",
   "tool.skipped": "Nicht ausgeführt",
   "tool.writing": "Schreibt",
-  "undo": "Rückgängig"
+  "undo": "Rückgängig",
+  "sidebar.import": "Gespeicherten Chat zurückholen",
+  "sidebar.imported": "Chat zurückgeholt",
+  "sidebar.importFailed": "Nichts zurückzuholen",
+  "sidebar.importFailedText": "Keine Unterhaltungen in der Datei. Das Speichern schreibt '## You' und die Antworten des Modells."
 }
