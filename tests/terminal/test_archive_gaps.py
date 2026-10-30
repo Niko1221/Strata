@@ -140,6 +140,30 @@ class DeviceAccess(unittest.TestCase):
             self.assertIsNone(doctor._device_access_issue("hip", tempfile.gettempdir() + "/none"))
 
 
+class WindowsSyclEnv(unittest.TestCase):
+    """The Windows half of the same dead end: an Intel run whose process cannot reach Intel oneAPI finds no Level
+    Zero device, and the engine's own line ("No device of requested type available") names nothing to fix. Measured
+    on an Arc B390, 2026-10-30 (docs/INTEL_ARC.md, "Windows")."""
+
+    def test_a_sycl_run_without_oneapi_says_where_to_start_strata(self):
+        from strata_control import doctor, engine_component as ec
+        with mock.patch.object(doctor.sys, "platform", "win32"),                 mock.patch.object(ec, "level_zero_device_answers", return_value=False):
+            issue = doctor._windows_sycl_env_issue("sycl")
+        self.assertEqual(issue["code"], "ONEAPI_NOT_REACHABLE")
+        self.assertEqual(issue["severity"], "warning")
+        self.assertIn("setvars.bat", issue["message"])
+
+    def test_a_run_that_can_reach_level_zero_and_every_other_make_say_nothing(self):
+        from strata_control import doctor, engine_component as ec
+        with mock.patch.object(doctor.sys, "platform", "win32"),                 mock.patch.object(ec, "level_zero_device_answers", return_value=True):
+            self.assertIsNone(doctor._windows_sycl_env_issue("sycl"))
+        with mock.patch.object(doctor.sys, "platform", "win32"):
+            self.assertIsNone(doctor._windows_sycl_env_issue("cuda"))
+            self.assertIsNone(doctor._windows_sycl_env_issue(None))
+        with mock.patch.object(doctor.sys, "platform", "linux"):
+            self.assertIsNone(doctor._windows_sycl_env_issue("sycl"))
+
+
 class ArchiveContents(unittest.TestCase):
     def test_the_fingerprint_table_models_import_reads_is_in_the_payload(self):
         sys.path.insert(0, str(ROOT / "packaging"))

@@ -229,21 +229,10 @@ def oneapi_runtime_dirs() -> list:
 
 
 def level_zero_answers() -> bool:
-    """Does a Level Zero GPU answer in this environment?  Windows lists the same chip twice, and Level Zero is the one
-    that reports the memory this process may still take and completes the verify graphs; when the oneAPI loader is not
-    reachable for the process that starts the engine, only the OpenCL device answers (docs/INTEL_ARC.md, an Arc B390
-    measured 2026-10-30)."""
-    import shutil
-    tool = shutil.which("sycl-ls")
-    if tool is None:
-        return False
-    try:
-        done = subprocess.run([tool], capture_output=True, text=True, timeout=25, check=False,
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except (OSError, subprocess.SubprocessError):
-        return False
-    low = (done.stdout or "").lower()
-    return "level_zero" in low and "gpu" in low
+    """Does a Level Zero GPU answer for the process that will start the engine?  One answer, owned by
+    strata_control.engine_component, which is where every other tool probe lives (see the B390 note there)."""
+    from strata_control import engine_component as ec
+    return ec.level_zero_device_answers()
 
 
 def oneapi_environment() -> dict:
