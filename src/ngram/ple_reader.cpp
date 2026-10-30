@@ -86,6 +86,15 @@ struct Job {
     bool keepalive = false;// no rows and no ticket: it only keeps the SSD awake (`set_keepalive`)
 };
 
+struct Miss {
+    uint64_t first;
+    uint32_t length;
+    uint32_t row;
+    uint32_t in_page;
+    uint32_t order;
+    uint8_t* dst;
+};
+
 struct TicketState {
     uint32_t pending = 0;  // jobs not yet completed
 };
@@ -108,6 +117,7 @@ struct PleReader::Impl {
     std::vector<Completion> delayed;      // completed but held back by fault injection
     std::deque<Job> queue;                // not yet submitted
     std::unordered_map<uint32_t, TicketState> tickets;
+    std::vector<Miss> miss_scratch;       // reused across large (>64 row) issue() calls
     uint32_t next_ticket = 1;
     RowCache cache;
     ReaderStats stats;
@@ -436,10 +446,15 @@ PleReader::Ticket PleReader::issue(const uint32_t* rows, size_t n, uint8_t* out_
         ts.pending = 0;
         return Ticket{id};
     }
-    std::unordered_map<uint64_t, size_t> by_page;     // aligned offset -> index in `jobs`
-    std::vector<Job> jobs;
+    Miss stack_misses[64];
+    Miss* misses = stack_misses;
+    if (n > 64) {
+        if (m.miss_scratch.size() < n) m.miss_scratch.resize(n);
+        misses = m.miss_scratch.data();
+    }
+    size_t n_miss = 0;
+    const uint32_t rb = m.row_bytes;
     for (size_t i = 0; i < n; ++i) {
-        const uint32_t rb = m.row_bytes;
         uint8_t* dst = out_raw + i * rb;
         ++m.stats.requests;
         if (rows[i] >= m.n_rows) {
@@ -454,27 +469,37 @@ PleReader::Ticket PleReader::issue(const uint32_t* rows, size_t n, uint8_t* out_
         const uint64_t at = m.table_offset + (uint64_t) rows[i] * rb;
         const uint64_t first = at / PAGE * PAGE;
         const uint32_t length = (uint32_t) ((at + rb - 1) / PAGE * PAGE - first + PAGE);
-        auto f = by_page.find(first);
-        if (f != by_page.end()) {
-            Job& j = jobs[f->second];
-            j.length = std::max(j.length, length);
-            j.uses.push_back(Use{rows[i], (uint32_t) (at - first), dst});
+        misses[n_miss++] = Miss{first, length, rows[i], (uint32_t) (at - first), (uint32_t) i, dst};
+    }
+    // Sorted by offset: prefill chunks then read the SSD in near-sequential order, and equal pages sit adjacent.
+    if (n_miss > 1) {
+        std::sort(misses, misses + n_miss, [](const Miss& a, const Miss& b) {
+            return a.first != b.first ? a.first < b.first : a.order < b.order;
+        });
+    }
+    uint32_t n_jobs = 0;
+    for (size_t k = 0; k < n_miss;) {
+        const uint64_t first = misses[k].first;
+        size_t end = k + 1;
+        uint32_t length = misses[k].length;
+        while (end < n_miss && misses[end].first == first) {
+            length = std::max(length, misses[end].length);
             ++m.stats.dedup_rows;
-            continue;
+            ++end;
         }
-        by_page.emplace(first, jobs.size());
         Job j;
         j.offset = first;
         j.length = length;
         j.ticket = id;
-        j.uses.push_back(Use{rows[i], (uint32_t) (at - first), dst});
-        jobs.push_back(std::move(j));
+        j.uses.reserve(end - k);
+        for (; k < end; ++k) {
+            j.uses.push_back(Use{misses[k].row, misses[k].in_page, misses[k].dst});
+        }
+        m.queue.push_back(std::move(j));
+        ++n_jobs;
     }
-    // Sorted by offset: prefill chunks then read the SSD in near-sequential order.
-    std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) { return a.offset < b.offset; });
-    ts.pending = (uint32_t) jobs.size();
+    ts.pending = n_jobs;
     const bool has_jobs = ts.pending > 0;
-    for (Job& j : jobs) m.queue.push_back(std::move(j));
     if (m.threaded) {
         lk.unlock();
         if (has_jobs) {
