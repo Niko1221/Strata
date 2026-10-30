@@ -1,0 +1,10 @@
+# candidate
+strata generate: expert cache auto: 9.97 GiB free, 1024 MiB reserved (+183 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3936 slots
+strata generate: expert cache 5272 slots, 8.54 GiB of VRAM; policy is
+strata generate: pre-filled 5272 of 5272 slots from the profile in 9.8 s (934 MB/s); slot 0 verified
+strata generate: resident RAM mode: 21.00 GiB of experts in RAM (page-locked), 5272 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+# integrated
+strata generate: expert cache auto: 9.97 GiB free, 1024 MiB reserved (+183 MiB for the draft head) -> 4051 slots
+strata generate: expert cache 5425 slots, 8.79 GiB of VRAM; policy is
+strata generate: pre-filled 5425 of 5425 slots from the profile in 9.6 s (981 MB/s); slot 0 verified
+strata generate: resident RAM mode: 21.00 GiB of experts in RAM (page-locked), 5425 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)

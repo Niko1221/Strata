@@ -20,6 +20,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-30: RTX 5060 Ti 16 GB, Core i7-13700, 32 GB RAM, Linux/NTFS3](../bench/results/2026-10-30-community-rtx5060ti-32gb-local-io/README.md):
+  modified 0.1.52 and 0.1.54 engines with Huihui Flash-Next IQ3_XXS at 128K;
+  four custom single-run configurations, including a mixed engine/server setup.
+  Raw responses, configs and timing logs distinguish first-use and reused prompts;
+  no stock-engine control or isolated optimization speedup claim.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

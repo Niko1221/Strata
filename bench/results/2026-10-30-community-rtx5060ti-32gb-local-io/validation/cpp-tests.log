@@ -1,0 +1,17 @@
+Test project <SOURCE_0154>/build
+    Start   1: conversation_cache_test
+1/6 Test   #1: conversation_cache_test ..........   Passed    0.08 sec
+    Start 120: ple_residency_test
+2/6 Test #120: ple_residency_test ...............   Passed    0.00 sec
+    Start 121: auto_cache_test
+3/6 Test #121: auto_cache_test ..................   Passed    0.00 sec
+    Start 124: arch_defaults_test
+4/6 Test #124: arch_defaults_test ...............   Passed    0.00 sec
+    Start 125: nv_defaults_test
+5/6 Test #125: nv_defaults_test .................   Passed    0.00 sec
+    Start 137: window_limits_test
+6/6 Test #137: window_limits_test ...............   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   0.09 sec

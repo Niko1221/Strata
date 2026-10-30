@@ -1,0 +1,3 @@
+strata registered I/O: 6 MiB fixed buffer, io_uring enabled on the read worker
+strata registered I/O: unavailable (Cannot allocate memory); using Linux AIO
+PASS: fixed read bytes, reuse, short reads, bad fd, completion identity, memlock failure and in-flight detach

@@ -1,0 +1,53 @@
+strata cold worker: CPU 1 selected
+strata direct completion: per-expert Linux AIO publication enabled
+strata direct completion polling: at most 2000 us per decode read batch
+FileExpertSource: direct destination reads: tested alignment 512 bytes (0: scratch only)
+strata cold worker: CPU 1 selected
+FileExpertSource: direct read-ahead enabled: 2 workers, 4 MiB/window; at most 64 MiB of unconsumed predictions in the stage pool
+FileExpertSource: direct read-ahead enabled: 2 workers, 32 MiB/window; at most 64 MiB of unconsumed predictions in the stage pool
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; page-locked and mapped
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; page-locked and mapped
+FileExpertSource: exchange buffer rotation enabled: 2 buffers in 1 block sizes (largest 1382400 bytes, 0.00 GiB page-locked); no host commit memcpy
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: pageable resident cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s
+FileExpertSource: exchange rotation unavailable; retaining copy path: requires a fully mapped/pinned RAM complement
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; page-locked and mapped
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; page-locked and mapped
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; page-locked and mapped
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: pageable resident cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s
+cold worker affinity survives request sweeps and restores: PASS
+cold worker affinity survives request sweeps and restores: PASS
+direct destination: alignment 512, bytes 12441600: PASS
+io prefetch: 0 read ahead, 0 used, 300 skipped, pread 0 B: bytes PASS
+direct read-ahead: 31 read ahead, 2 used, 0 skipped, pread 0 B: bytes PASS
+direct startup: 256 reusable buffers: PASS
+rotation integration: rotate=0 pinned=1 exchanges=64 commit_ms=5.28175 exact_bytes=PASS
+rotation integration: rotate=1 pinned=1 exchanges=64 commit_ms=0.003075 exact_bytes=PASS
+rotation integration: rotate=1 pinned=0 exchanges=64 commit_ms=2.52372 exact_bytes=PASS
+foresight exchange (commit_exchanges): dropped 1, foresight swap: 2 experts served from the swap space, 2 copies (0 from the router look-ahead), 2 not landed yet, 1 no free slot, 0 over budget, 1 dropped by exchanges, verified 2 ok / 0 BAD: PASS
+foresight exchange (commit_copies + commit_flip): dropped 1, foresight swap: 2 experts served from the swap space, 2 copies (0 from the router look-ahead), 2 not landed yet, 0 no free slot, 0 over budget, 1 dropped by exchanges, verified 2 ok / 0 BAD: PASS
+replace_resident_staged: pinned=1 exact_bytes=PASS
+replace_resident: pinned=1 exact_bytes=PASS
+replace_resident_staged: pinned=0 exact_bytes=PASS
+replace_resident: pinned=0 exact_bytes=PASS
+file_expert_source_test: PASS
