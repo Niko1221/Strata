@@ -255,7 +255,7 @@ class Parser(unittest.TestCase):
 
     def test_the_plain_parser_is_unchanged(self):
         p = OutputParser(thinking=False, tools=self.TOOLS)
-        evs = p.feed("<tool_call>\n<function=lookup>\n<parameter=id>\n5\n</parameter>\n</function>\n</tool_call>")
+        evs = p.feed("<tool_call>\n<function=lookup>\n<parameter=id>\n5\n</parameter>\n</function>\n</tool_call>") + p.finish("stop")
         self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [{"id": 5}])
         self.assertTrue(p.clean)
 

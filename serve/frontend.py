@@ -748,6 +748,18 @@ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
+# what may follow a call's closing tags: the next call, or the end of the reasoning it was written in
+_AFTER_CALL = (CALL_START, FUNC_START, "<parameter=", THINK_END)
+
+
+def _after_close(text: str) -> str:
+    """`text` starts at a call's closing tags: what comes after them."""
+    for tag in (FUNC_END, CALL_END):
+        if text.startswith(tag):
+            text = text[len(tag):].lstrip()
+    return text
+
+
 # a quoted call's opener in a value: `<function=NAME>` and its first parameter or close; a bare FUNC_START is text
 _QUOTED_OPEN = re.compile(r"<function=[^<>\s]+>\s*(?:<parameter=|</function>)")
 
@@ -757,9 +769,11 @@ def param_end(text: str, final: bool = False, name: str | None = None) -> int:
     PARAM_START or FUNC_END, or by the wrapper's CALL_END when the call's `</function>` was left out (#4427) - the
     same text inside a value (a file that documents the call format, #210) is
     part of the value.  #4078: a close inside a call the value itself quotes (more _QUOTED_OPEN than FUNC_END before
-    it), or one followed by the same parameter `name` again, is part of the value too.  `text` starts at the value.
-    -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+    it), or one followed by the same parameter `name` again, is part of the value too.  #4701: so is a closing
+    sequence with text after it when a later close ends the output; with none, it was the end after all.  `text` starts
+    at the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at = text.find(PARAM_END)
+    closed = -1
     while at >= 0:
         if len(_QUOTED_OPEN.findall(text, 0, at)) <= text.count(FUNC_END, 0, at):
             after = text[at + len(PARAM_END):].lstrip()
@@ -770,14 +784,19 @@ def param_end(text: str, final: bool = False, name: str | None = None) -> int:
                 if name is None or after[len(PARAM_START):gt].strip() != name:
                     return at
             elif after.startswith((FUNC_END, CALL_END)):          # #4427: the model left out its `</function>`
-                return at
+                tail = _after_close(after)
+                if tail.startswith(_AFTER_CALL) or CALL_START in tail:
+                    return at
+                if not tail or CALL_END.startswith(tail) or any(tag.startswith(tail) for tag in _AFTER_CALL):
+                    return at if final else -2
+                closed = at if closed < 0 else closed
             elif not after or PARAM_START.startswith(after) or FUNC_END.startswith(after) or CALL_END.startswith(after):
                 return at if final else -2
         at = text.find(PARAM_END, at + 1)
-    return -1
+    return -1 if closed < 0 else closed if final else -2
 
 
-def call_end(text: str) -> int:
+def call_end(text: str, final: bool = False) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
     its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
     the call format ends at the first `</tool_call>`, as before."""
@@ -797,7 +816,7 @@ def call_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
+            end = param_end(text[gt + 1:], final, text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -860,7 +879,7 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 PARAM_START = "<parameter="
 
 
-def function_end(text: str) -> int:
+def function_end(text: str, final: bool = False) -> int:
     """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
     parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
     s = text.lstrip()
@@ -879,7 +898,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
+            end = param_end(text[gt + 1:], final, text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -1143,6 +1162,7 @@ class OutputParser:
         self.stray_think = 0         # ... and the strays of that kind dropped from the answer
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
+        self.ending = False          # finish() has begun: no more text will come
         # recover (on in the server since 0.2.8, off for a bare OutputParser; the config's "tool_call_recovery": false turns it off): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
@@ -1356,7 +1376,7 @@ class OutputParser:
                 self._call_end_checked = len(self.buf)
                 return -1
             self._call_end_checked = -1
-        return call_end(self.buf)
+        return call_end(self.buf, self.ending)
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1416,7 +1436,7 @@ class OutputParser:
                     self.sval_started = True
                     self.svstart = self.sp
                 # the walk starts at the value (a quoted call's opener counts); only a close in the new text can end it
-                end = param_end(self.buf[self.svstart:], name=self.spname) if PARAM_END in rest else -1
+                end = param_end(self.buf[self.svstart:], self.ending, self.spname) if PARAM_END in rest else -1
                 end = end - (self.sp - self.svstart) if end >= 0 else end
                 if end >= 0:
                     value = rest[:end]
@@ -1435,7 +1455,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = param_end(rest, name=self.spname)
+                end = param_end(rest, self.ending, self.spname)
                 if end < 0:
                     return out
                 value = rest[:end]
@@ -1491,9 +1511,9 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = call_end(body, self.ending), body.find(THINK_END)
                 drop = len(CALL_END)
-                f = function_end(body)               # #4427: as in the answer, a following call opener confirms an omitted closer
+                f = function_end(body, self.ending)  # #4427: as in the answer, a following call opener confirms an omitted closer
                 if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
                     end, drop = f, 0
                 if end >= 0 and (think < 0 or think >= end):
@@ -1731,7 +1751,7 @@ class OutputParser:
             else:
                 drop = None
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
-                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    i = function_end(self.buf, self.ending)      # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
                         after = self.buf[i:].lstrip()
                         if after.startswith(CALL_END):
@@ -1743,7 +1763,7 @@ class OutputParser:
                     if i >= 0:
                         drop = len(CALL_END)
                     # Only a following call opener confirms an omitted wrapper closer.
-                    f = function_end(self.buf)
+                    f = function_end(self.buf, self.ending)
                     nxt = self.buf[f:].lstrip() if f >= 0 else ""
                     if re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", nxt):
                         i, drop = f, 0
@@ -1757,9 +1777,10 @@ class OutputParser:
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
+                        ending, self.ending = self.ending, True
                         out += self._scan()
                         out += self._close_scan()
-                        self.buf = whole
+                        self.buf, self.ending = whole, ending
                     else:
                         out += self._scan()
                 if i < 0 or drop is None:
@@ -1776,12 +1797,13 @@ class OutputParser:
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
-        out = []
+        self.ending = True                      # nothing follows: a call waiting on what comes after its close is whole
+        out = self.feed("") if self.state in ("call", "rcall") else []
         if self.state == "rcall" and reason in (None, "stop"):
             # #4427: a call in the reasoning whose `</function>` is the end of the output (the `</tool_call>` left out)
             # is as whole as one in the answer: it waits for the turn's end like the others
             body = self.buf[len(CALL_START):]
-            f = function_end(body)
+            f = function_end(body, True)
             name = body.lstrip()[len(FUNC_START):].split(">", 1)[0].strip() if f >= 0 else ""
             name = self.aliases.get(name, name)
             if f >= 0 and not body[f:].strip() and name in self.schemas:
@@ -1794,8 +1816,8 @@ class OutputParser:
                     pass
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
-        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
-            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+        if self.state == "call" and self.bare and function_end(self.buf, True) >= 0:
+            i = function_end(self.buf, True)    # recover: a bare call is whole at its </function>
             body, rest = self.buf[:i], self.buf[i:].strip()
             self.buf = ""
             out += self._finish_call(body)

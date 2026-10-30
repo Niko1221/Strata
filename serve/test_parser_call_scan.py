@@ -9,7 +9,7 @@ from serve import frontend
 
 class ReferenceParser(frontend.OutputParser):
     def _wrapped_call_end(self):
-        return frontend.call_end(self.buf)
+        return frontend.call_end(self.buf, self.ending)
 
 
 def events_without_ids(events):
@@ -53,7 +53,9 @@ class CallScanTests(unittest.TestCase):
                 self.assertEqual(walk.call_count, before)
                 for char in "</parameter></function></tool_call>":
                     parser.feed(char)
-                self.assertEqual(walk.call_count, before + 1)
+                parser.feed(" ")                                # what follows the call settles it (#4701)
+                self.assertEqual(walk.call_count, before + 2)
+                parser.feed("<tool_call>")
                 self.assertEqual(parser._call_end_checked, 0)
 
 
