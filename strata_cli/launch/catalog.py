@@ -230,14 +230,24 @@ def intel_arc_cards_windows(adapters: list[dict] | None = None) -> list[dict]:
         from strata_control import engine_component as ec
         adapters = ec.windows_display_adapters()
     cards: list[dict] = []
+    seen_integrated: set[str] = set()
     for adapter in adapters:
         if str(adapter.get("vendor")) != "8086":
             continue
         did = "0x%04x" % int(adapter.get("device") or 0)
+        integrated = did in INTEL_INTEGRATED_IDS
+        # A PC's driver store can name the same built-in chip several times (this B390 appears three times in the
+        # display-class key).  One chip must stay one card, or the plan shows cards that are not there and offers to
+        # split a model across them.  Two identical discrete Arcs are two real cards, so only the integrated ids are
+        # folded.
+        if integrated:
+            if did in seen_integrated:
+                continue
+            seen_integrated.add(did)
         name, gb = INTEL_ARC.get(did, (str(adapter.get("name") or f"Intel GPU {did}"), float(adapter.get("vram_gb") or 0.0)))
         card = {"vendor": "intel", "name": name if name.startswith("Intel") else "Intel " + name,
                 "vram_gb": gb, "usable": True, "index": len(cards)}
-        if did in INTEL_INTEGRATED_IDS:
+        if integrated:
             card["integrated"] = True
             # Windows names the pool the chip may take (28 GiB of this PC's 31.5 GB on the B390) as its memory, and
             # that pool IS the RAM: a dedicated carve-out is not reported.  gpu_fit counts only `dedicated_gb`

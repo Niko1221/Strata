@@ -137,6 +137,15 @@ class WindowsArc(unittest.TestCase):
         self.assertNotIn("integrated", discrete[0])
         self.assertEqual(gpu_fit.own_memory_gb(discrete[0]), 12.0)
 
+    def test_the_same_built_in_chip_named_three_times_is_one_card(self):
+        # this B390 appears three times under the display-class registry key; two identical discrete Arcs are two
+        # real cards and stay two (a layer split).
+        from strata_cli.launch.catalog import intel_arc_cards_windows
+        cards = intel_arc_cards_windows([self.B390] * 3)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual([c["index"] for c in cards], [0])
+        self.assertEqual(len(intel_arc_cards_windows([self.B580] * 2)), 2)
+
     def test_an_integrated_chip_beside_a_real_card_stays_out_of_the_way(self):
         from strata_cli.launch.catalog import intel_arc_cards_windows
         from strata_control import gpu_fit
