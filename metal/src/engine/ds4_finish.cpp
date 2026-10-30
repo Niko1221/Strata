@@ -1267,6 +1267,11 @@ bool sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
     dsp.tg[0] = 256;
     dsp.tg[1] = dsp.tg[2] = 1;
     g_cx->run({dsp});
+    // the stand-ins for absent inputs are fresh Metal buffers (16 KB of address space each): give them back
+    if (hw == nullptr) g_cx->free(bw);
+    if (hc == nullptr) g_cx->free(bc);
+    if (hs == nullptr) g_cx->free(bs);
+    if (hk == nullptr) g_cx->free(bk);
     if (use_mx && attn_mode == 2) {   // debugging: the scalar kernel on the same inputs, then the difference
         mtl::Pipeline ps;
         try { ps = g_cx->pipeline(g_lib, "ds4_sparse_attn_g8"); } catch (...) { return true; }
@@ -1347,6 +1352,7 @@ bool route(const float* logits, const float* bias, int n, int k, int T, float ro
     dsp.tg[1] = dsp.tg[2] = 1;
     g_cx->run({dsp});
     g_cx->free(bbv);
+    if (hv == nullptr) g_cx->free(bv);
     return true;
 }
 
@@ -1439,6 +1445,8 @@ bool combine(const float* ed, const float* cpu, const float* sh, const void* c, 
     dsp.grid[2] = 1;
     dsp.tg[0] = 256; dsp.tg[1] = dsp.tg[2] = 1;
     g_cx->run({dsp});
+    if (hc == nullptr) g_cx->free(bc);
+    if (hs == nullptr) g_cx->free(bs);
     return true;
 }
 
@@ -2701,6 +2709,9 @@ extern "C" bool ds4_ctx_fill(void* dst, int value, size_t n) {
 extern "C" void* ds4_ctx_mark() {
     if (!g_cx) return nullptr;
     return g_cx->mark();
+}
+extern "C" void ds4_ctx_drop(void* token) {
+    if (g_cx && token) g_cx->drop_mark(token);
 }
 extern "C" void ds4_ctx_wait(void* token) {
     static const bool no_wait_split = std::getenv("DS4_NO_WAIT_SPLIT") != nullptr;

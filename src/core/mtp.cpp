@@ -277,7 +277,8 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     if (ple_ss_ == nullptr) ple_ss_ = &ss;
     max_t_ = max_t;
     rt_dir_ = rt_dir;
-    if (max_t < 1 || max_t > strata::kernels::kVerifyMaxT) { err = "mtp: max_t out of range"; return false; }
+    // (the draft layer's kernels - the resident grouping, the grouped experts, the fused reads - are built for the narrow window)
+    if (max_t < 1 || max_t > strata::kernels::kVerifyNarrowT) { err = "mtp: max_t out of range"; return false; }
     if (shared != nullptr) {
         if (shared->device_ != device_ || shared->g_ != &g || shared->dense_ == nullptr ||
             shared->experts_ == nullptr || shared->rt_dir_ != rt_dir) {

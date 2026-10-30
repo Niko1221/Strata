@@ -109,7 +109,7 @@ file(GLOB STRATA_METAL_ENGINE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_D
 add_library(strata_metal_host STATIC ${STRATA_METAL_HOST_SOURCES})
 target_include_directories(strata_metal_host PUBLIC ${STRATA_ROOT}/include ${S}/core ${STRATA_ROOT}/third_party/ggml
                            ${STRATA_GGML_DIR}/ggml/include ${STRATA_GGML_DIR}/ggml/src ${STRATA_GGML_DIR}/ggml/src/ggml-cpu)
-target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_VERSION="0.1.52-metal")
+target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_VERSION="0.1.54-metal")
 target_compile_options(strata_metal_host PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations)
 target_link_libraries(strata_metal_host PUBLIC strata_gpu_metal ggml-cpu ggml-base)
 
@@ -176,7 +176,7 @@ if(NOT STRATA_BUILD_ID)
   set(STRATA_BUILD_ID unknown)
 endif()
 set_source_files_properties(${DS4}/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
-# -DSTRATA_DS4_VERSION=0.1.53-metal: the version this DeepSeek engine reports, when its package is released apart from the Qwen engine's
+# -DSTRATA_DS4_VERSION=0.1.54-metal: the version this DeepSeek engine reports, when its package is released apart from the Qwen engine's
 if(STRATA_DS4_VERSION)
   set_source_files_properties(${DS4}/ds4_main.cpp PROPERTIES COMPILE_OPTIONS "-USTRATA_VERSION;-DSTRATA_VERSION=\"${STRATA_DS4_VERSION}\"")
 endif()

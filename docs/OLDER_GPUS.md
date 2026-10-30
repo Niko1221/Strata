@@ -87,9 +87,11 @@ The choice is kept in the model's config (`"cuda": 12`). Starts and `UPDATE.bat`
 Setting the model up again chooses again (add `--cuda 12` to keep a forced choice). A Pascal or Volta card added to a model at a
 start (`--gpus`) moves that model to the CUDA 12 engine.
 
-`--cuda 12` is also the way to run Strata with an NVIDIA driver older than 580. The CUDA 12 engine needs driver 528 or newer on
-Windows and 525 on Linux (`CUDA12_MIN_DRIVER` in `setup.py`); setup's "driver too old" stop says so. The Docker `cuda12` image
-asks for 575 ([DOCKER.md](DOCKER.md)). Drivers that old were not tested here.
+`--cuda 12` is also the way to run Strata with an NVIDIA driver older than 580. The oldest driver the CUDA 12 engine runs on is the
+`min_driver` of its package (575.51 or newer at the moment, as in the Docker `cuda12` image, [DOCKER.md](DOCKER.md)). Setup reads it from
+the installed package or the signed update feed and says it in the "driver too old" stop; `strata update` enforces the same number. NVIDIA's
+own table lets CUDA 12 programs start on older drivers (525 on Linux, 527 on Windows), but the packages are built with CUDA 12.9 and were
+not tested on such drivers, so Strata does not promise that range.
 
 ### Mixed cards
 

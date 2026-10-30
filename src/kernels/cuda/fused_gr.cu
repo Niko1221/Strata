@@ -2330,8 +2330,10 @@ static bool gr_v3_default_on(int dev) {
 #endif
 }
 
-bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
-                         int stamp_i0) {
+// One read of at most kFusedGrMaxT tokens: the kernels below are built for that many (the instantiations, the shared
+// memory, the by-value launch argument), whatever the window is.
+static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
+                                      unsigned long long* stamp_buf, int stamp_i0) {
     if (n_tok < 1 || n_tok > kFusedGrMaxT || xn_scratch == nullptr) {
         std::fprintf(stderr, "fused_gr_read_multi: invalid arguments\n");
         std::exit(1);
@@ -2462,6 +2464,30 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     if (e != cudaSuccess) {
         std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
         std::exit(1);
+    }
+    return q8;
+}
+
+// The multi read for a window of up to kFusedGrWideT tokens.  Up to kFusedGrMaxT tokens it is the read above untouched
+// (the same kernels, the same bits).  A wider window (9..16 rows: the batch groups of a four-card split) is read in
+// slices of at most kFusedGrMaxT tokens, in order on the stream.  Every token's outputs are strictly its own (no value
+// crosses tokens), so the slices are bitwise the one wide read; the cost is the hyper-connection weights read once per
+// slice.  The STRATA_QFUSE counters belong to token 0: each slice's first token carries them (the kernels zero them
+// again for the next launch); the profile stamps are the first slice's.
+bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
+                         int stamp_i0) {
+    if (n_tok <= kFusedGrMaxT) return fused_gr_read_multi_slice(a, n_tok, xn_scratch, stream, stamp_buf, stamp_i0);
+    if (n_tok > kFusedGrWideT || a == nullptr || xn_scratch == nullptr) {
+        std::fprintf(stderr, "fused_gr_read_multi: invalid arguments (%d tokens)\n", n_tok);
+        std::exit(1);
+    }
+    bool q8 = false;
+    for (int c0 = 0; c0 < n_tok; c0 += kFusedGrMaxT) {
+        const int ct = n_tok - c0 < kFusedGrMaxT ? n_tok - c0 : kFusedGrMaxT;
+        FusedGrArgs s[kFusedGrMaxT];
+        for (int k = 0; k < ct; ++k) s[k] = a[c0 + k];
+        s[0].q8_cnt = a[0].q8_cnt;
+        q8 = fused_gr_read_multi_slice(s, ct, xn_scratch + (size_t) c0 * D, stream, c0 == 0 ? stamp_buf : nullptr, stamp_i0);
     }
     return q8;
 }

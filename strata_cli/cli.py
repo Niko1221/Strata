@@ -2214,6 +2214,21 @@ class _QuietCapture:
         return self.text
 
 
+def _install_argv(argv: list[str]) -> list[str]:
+    """`strata install` hands everything after it to setup.py (`strata install --family qwen --model IQ3_XXS --yes`). argparse cannot do that
+    by itself: an option it does not know ahead of the first plain word (--source, --family) was refused as "unrecognized arguments", or
+    split from its value (#4188). So the options of setup.py go behind a `--`, and only `--update` and --help stay strata's own."""
+    if not argv or argv[0] != "install":
+        return argv
+    rest = list(argv[1:])
+    if rest and rest[0] in ("-h", "--help"):
+        return argv
+    update = "--update" in rest
+    if update:
+        rest.remove("--update")
+    return ["install", *(["--update"] if update else []), "--", *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         from strata_control import private_files
@@ -2221,8 +2236,9 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:                          # a thin bundle ships without strata_control
         pass
     ap = parser()
-    a, extras = ap.parse_known_args(argv)
-    a.raw_argv = list(sys.argv[1:] if argv is None else argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    a, extras = ap.parse_known_args(_install_argv(raw))
+    a.raw_argv = raw
     if extras:
         if getattr(a, "command", None) in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd

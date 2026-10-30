@@ -7,6 +7,8 @@ reads that file and fails when the two disagree, so the Terminal and the app can
 
 - "Faster long prompts" (Qwen KVA) is OFF by default (owner decision, 26 October): ``STRATA_KVA=1`` turns it on.  A file that holds ``STRATA_KVA=0`` (the
   off switch of an earlier 0.2.7 test build) reads as off, which is what it is now.
+- "Faster answers on 12 GB NVIDIA cards" (residency-biased routing) is OFF by default since 0.2.8 (owner decision, 29 October; #4402: it can repeat itself
+  and give weaker results in long agent sessions): ``STRATA_ROUTE_PRIOR=1.5`` turns it on.  The ``STRATA_ROUTE_PRIOR=0`` that 0.2.7's Off wrote is the default state now.
 - "Faster answers on Radeon RX 9000 / AI PRO R9700" and "DeepSeek speed-ups" are ON by default; turning them off writes their entries.
 
 The Terminal shows the switches as rows of its Advanced table (strata_cli/launch/params.py), only where they apply: ``strata launch --set STRATA_KVA=1``
@@ -37,8 +39,8 @@ SWITCHES: tuple[Switch, ...] = (
            "Reads very long prompts faster by approximating part of the work. Off by default: answers about long documents can miss or mix up details.",
            (("STRATA_KVA", "1"),), "qwen-gpu", default="off"),
     Switch("faster_12gb_nvidia", "Faster answers on 12 GB NVIDIA cards",
-           "Prefers the parts of the model already on the graphics card, which makes answers much faster on 12 GB cards. Turn off if answers look worse than before.",
-           (("STRATA_ROUTE_PRIOR", "0"),), "qwen-cuda-12gb"),
+           "Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed.",
+           (("STRATA_ROUTE_PRIOR", "1.5"),), "qwen-cuda-12gb", default="off"),
     Switch("faster_radeon_9000", "Faster answers on Radeon RX 9000 / AI PRO R9700",
            "Shares the work between the graphics card and the processor in a way that makes answers faster on these cards. "
            "Turn off to go back to the previous setting, which is slower.",
