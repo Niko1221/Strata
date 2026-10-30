@@ -11,6 +11,7 @@ config must keep all three hooks inert.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -119,6 +120,151 @@ class Lifecycle(unittest.TestCase):
                                       ("restore", self.path(MAIN))])  # child earns its own checkpoint file;
         self.assertEqual(self.actions("restore"), ["restore"])      # main comes back from its file (park lost)
         self.assertTrue(Path(self.path(CHILD)).exists())
+
+    def test_child_files_retire_before_older_main_files(self):
+        # A (retirement order): an over-cap save retires a CHILD file, never an older MAIN one.  A
+        # subagent fleet may consume ledger slots - what it may not do is evict the expensive file: a
+        # child re-prefills a subagent conversation, a main its whole multi-GB context.
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           retention_max_files=3)
+        ladder = SessionLadder(cfg)
+        other = "ses_other00000000000000000000"
+        c1, c2 = "ses_c100000000000000000000", "ses_c20000000000000000000"
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, other, P2)                 # MAIN away: save MAIN   [ledger 1]
+        ladder.on_turn_done(other, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, c1, P1, parent_id=MAIN)    # other away: save other [ledger 2]
+        ladder.on_turn_done(c1, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, c2, P1, parent_id=MAIN)    # c1 away: save c1       [ledger 3 = cap]
+        ladder.on_turn_done(c2, MID, MID_BYTES, 0)
+        self.assertEqual(ladder.saved_files, [self.path(MAIN), self.path(other), self.path(c1)])
+        ladder.on_arrival(self.service, "ses_third0000000000000000000", P2)   # c2 away: save c2 -> over cap
+        self.assertEqual(ladder.saved_files, [self.path(MAIN), self.path(other), self.path(c2)])  # c1 retired, not MAIN
+        self.assertIsNone(ladder.track(c1))                         # the retired file's state retires with it
+        self.assertFalse(Path(self.path(c1)).exists())              # ...and it leaves the disk
+        self.assertTrue(Path(self.path(MAIN)).exists())             # the OLDER main file stands untouched
+
+    def test_child_cap_bounds_children_below_the_file_cap(self):
+        # A (separate cap): retention_max_child_files caps CHILD files on top of the global cap - a
+        # fleet cannot occupy the whole ledger while retention_max_files still has room.
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           retention_max_child_files=2)
+        ladder = SessionLadder(cfg)
+        c1, c2, c3 = ("ses_c100000000000000000000", "ses_c2000000000000000000",
+                      "ses_c30000000000000000000")
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, c1, P1, parent_id=MAIN)    # MAIN away: save MAIN (main file)
+        ladder.on_turn_done(c1, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, c2, P1, parent_id=MAIN)    # c1 away: child 1
+        ladder.on_turn_done(c2, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, c3, P1, parent_id=MAIN)    # c2 away: child 2 = the cap
+        ladder.on_turn_done(c3, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, "ses_main2000000000000000000", P2)   # c3 away: child 3 > cap 2
+        self.assertEqual(ladder.saved_files, [self.path(MAIN), self.path(c2), self.path(c3)])  # c1 (oldest child) retired
+        self.assertFalse(Path(self.path(c1)).exists())
+        self.assertTrue(Path(self.path(MAIN)).exists())
+
+    def test_child_ttl_sweep_retires_dead_children_keeps_everything_else(self):
+        # B (the TTL): a finished OpenCode subagent never speaks to the engine again - silence is the
+        # only completion signal there is.  A clean CHILD file untouched past child_ttl_s is dead
+        # weight and the sweep retires it: file, ledger entry, tracked state, index entry.  It never
+        # touches a MAIN file, a dirty child (its save is still owed), or the current session.
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           child_ttl_s=1000.0)
+        ladder = SessionLadder(cfg)
+        dead = "ses_dead00000000000000000000"
+        dirt = "ses_dirt00000000000000000000"
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, dead, P1, parent_id=MAIN)  # MAIN away: save MAIN
+        ladder.on_turn_done(dead, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, dirt, P1, parent_id=MAIN)  # dead away: save dead (clean child file)
+        ladder.on_turn_done(dirt, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, MAIN, P2)                  # dirt away: save dirt (clean file)
+        ladder.on_turn_done(dirt, MID, MID_BYTES, 0)               # dirt dirties again: save owed
+        for sid in (MAIN, dead, dirt):                             # age everything past the TTL
+            ladder.tracked[sid].last_active -= 3600.0
+            ladder.tracked[sid].last_save -= 3600.0
+        retired = ladder.sweep_child_ttl()
+        self.assertEqual(retired, 1)                               # only `dead` qualified
+        self.assertFalse(Path(self.path(dead)).exists())           # file off disk...
+        self.assertNotIn(self.path(dead), ladder.saved_files)      # ...ledger entry gone...
+        self.assertIsNone(ladder.track(dead))                      # ...tracked state gone...
+        data = json.loads((Path(self.dir.name) / "ladder-index.json").read_text())
+        self.assertNotIn(self.path(dead), data["files"])           # ...and the sidecar agrees
+        self.assertTrue(Path(self.path(MAIN)).exists())            # the main survives (no parent mark)
+        self.assertTrue(Path(self.path(dirt)).exists())            # the dirty child survives (save owed)
+
+    def test_child_ttl_sweep_leaves_the_current_session_alone(self):
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           child_ttl_s=1000.0)
+        ladder = SessionLadder(cfg)
+        dead = "ses_dead00000000000000000000"
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, dead, P1, parent_id=MAIN)  # MAIN away: save MAIN
+        ladder.on_turn_done(dead, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, MAIN, P2)                  # dead away: save dead (clean child file)
+        ladder.tracked[MAIN].last_active -= 3600.0                 # age everything past the TTL...
+        ladder.tracked[MAIN].last_save -= 3600.0
+        ladder.tracked[dead].last_active -= 3600.0
+        ladder.tracked[dead].last_save -= 3600.0
+        ladder.on_arrival(self.service, dead, "P9 unrelated text")  # dead becomes the CURRENT session
+        # (its saved prefix no longer matches this arrival, so prefix_fidelity refuses the restore -
+        # the file stays and the slot is what the sweep must not strip of its safety net)
+        self.assertEqual(ladder.sweep_child_ttl(), 0)              # current: swept around
+        self.assertTrue(Path(self.path(dead)).exists())
+        self.assertIn(self.path(dead), ladder.saved_files)
+
+    def test_child_ttl_zero_disables_the_sweep(self):
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           child_ttl_s=0.0)
+        ladder = SessionLadder(cfg)
+        dead = "ses_dead00000000000000000000"
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, dead, P1, parent_id=MAIN)
+        ladder.on_turn_done(dead, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, MAIN, P2)                  # save dead's checkpoint
+        for sid in (MAIN, dead):
+            ladder.tracked[sid].last_active -= 3600.0
+            ladder.tracked[sid].last_save -= 3600.0
+        self.assertEqual(ladder.sweep_child_ttl(), 0)              # 0 = off: nothing retires
+        self.assertTrue(Path(self.path(dead)).exists())
+
+    def test_parent_identity_survives_the_index_round_trip(self):
+        # The child mark rides the sidecar: a restarted ladder still retires the ADOPTED child file
+        # before the older main file (without the adopted parent, the plain-LRU victim would be MAIN).
+        cfg = LadderConfig(enabled=True, slot_save_path=self.dir.name, park_budget_mib=4096,
+                           retention_max_files=2)
+        ladder = SessionLadder(cfg)
+        other = "ses_other00000000000000000000"
+        self.calls.clear()
+        ladder.on_arrival(self.service, MAIN, P1)
+        ladder.on_turn_done(MAIN, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, CHILD, P1, parent_id=MAIN)  # MAIN away: save MAIN    [ledger 1]
+        ladder.on_turn_done(CHILD, MID, MID_BYTES, 0)
+        ladder.on_arrival(self.service, other, P2)                  # CHILD away: save CHILD  [ledger 2 = cap]
+        self.assertEqual(ladder.saved_files, [self.path(MAIN), self.path(CHILD)])
+        fresh = SessionLadder(cfg)                                   # restart: adopt from the sidecar
+        self.assertEqual(fresh.parent_of.get(CHILD), MAIN)           # the child mark survived
+        self.assertEqual(fresh.last_active, CHILD)                   # (the last-saved file's owner)
+        main2 = "ses_main20000000000000000000"
+        fresh.on_turn_done(CHILD, MID, MID_BYTES, 0)                 # dirties the adopted child
+        fresh.on_arrival(self.service, main2, P1)                    # CHILD away: re-save CHILD (moves to recent end)
+        self.assertEqual(fresh.saved_files, [self.path(MAIN), self.path(CHILD)])
+        fresh.on_turn_done(main2, MID, MID_BYTES, 0)
+        fresh.on_arrival(self.service, "ses_third0000000000000000000", P2)   # main2 away: save -> over cap 2
+        self.assertEqual(fresh.saved_files, [self.path(MAIN), self.path(main2)])  # CHILD retired, not the older MAIN
+        self.assertFalse(Path(self.path(CHILD)).exists())
+        self.assertTrue(Path(self.path(MAIN)).exists())
 
     def test_idle_save_then_switch_away_does_not_re_save(self):
         # F3 (final review): the switch-away save honors the dirty marker - an idle-save already wrote this
