@@ -1454,7 +1454,7 @@ class StrataEngine:
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
-            for k in ("pcie_frac", "spec_min_p"):
+            for k in ("pcie_frac", "spec_min_p", "spec_p_cum", "spec_p_cum_deep"):   # spec_p_cum*: STRATA_SPEC_PCUM's rule
                 v = tune.get(k)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
                     keys += f" {k}={float(v)!r}"
