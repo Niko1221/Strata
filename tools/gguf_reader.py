@@ -10,6 +10,7 @@ no ggml dependency)"). It parses the header only; tensor data is never read.
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import struct
 from typing import Any
@@ -27,6 +28,8 @@ GGML_TYPES: dict[int, str] = {
     39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0",
     # Agention's llama.cpp fork (agentionai/llama.cpp): the APR trellis expert types (128-value blocks)
     143: "PTQ1_0", 144: "TQ2_T", 145: "TQK6", 146: "TQK7",
+    # pair-trellis family added for Gyro-L (agentionai llama.cpp release/gyro-l)
+    147: "TQP5", 148: "TQP6", 149: "TQP7",
 }
 
 # GGUF metadata value type ids
@@ -49,6 +52,8 @@ BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "IQ1_M": (256, 56), "Q2_0": (64, 18), "MXFP4": (32, 17), "NVFP4": (64, 36),
     # fp16 scale + trellis stream (32 steps x 8 / 6 / 7 bits); PTQ1_0: 26 B of trits + fp16 scale
     "TQ2_T": (128, 34), "TQK6": (128, 26), "TQK7": (128, 30), "PTQ1_0": (128, 28),
+    # TQP5/6/7: fp16 scale + 8*K bytes of a 64-step x K-bit circular stream (K = 5/6/7)
+    "TQP5": (128, 42), "TQP6": (128, 50), "TQP7": (128, 58),
 }
 
 
@@ -77,6 +82,10 @@ class TensorInfo:
         return self.elements // block_elems * block_bytes
 
 
+_META_FMT = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
+             "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}
+
+
 class GGUFFile:
     def __init__(self, path: pathlib.Path):
         self.path = pathlib.Path(path)
@@ -85,55 +94,82 @@ class GGUFFile:
         self.version = 0
         self.alignment = 32
         with self.path.open("rb") as fh:
-            self._parse(fh)
+            self._size = os.fstat(fh.fileno()).st_size
+            self._pos = 0
+            try:
+                self._parse(fh)
+            except ValueError as e:
+                raise ValueError(f"{self.path.name}: {e}") from None
         self.data_start = self._data_start
 
     # ------------------------------------------------------------------ internals
+    def _read(self, fh, n: int) -> bytes:
+        left = self._size - self._pos
+        if n < 0 or n > left:
+            raise ValueError(f"header ends early: {n:,} bytes needed at offset {self._pos:,}, {left:,} left")
+        raw = fh.read(n)
+        self._pos += len(raw)
+        if len(raw) != n:
+            raise ValueError(f"header ends early at offset {self._pos:,}")
+        return raw
+
+    def _unpack(self, fh, fmt: str) -> tuple:
+        return struct.unpack(fmt, self._read(fh, struct.calcsize(fmt)))
+
+    def _count(self, fh, count: int, min_bytes: int, what: str) -> int:
+        if count * min_bytes > self._size - self._pos:
+            raise ValueError(f"{count:,} {what} cannot fit in the {self._size - self._pos:,} bytes left")
+        return count
+
     def _parse(self, fh) -> None:
-        magic = struct.unpack("<I", fh.read(4))[0]
+        (magic,) = self._unpack(fh, "<I")
         if magic != GGUF_MAGIC:
-            raise ValueError(f"{self.path.name}: not a GGUF file (magic {magic:#x})")
-        self.version, n_tensors, n_kv = struct.unpack("<IQQ", fh.read(20))
+            raise ValueError(f"not a GGUF file (magic {magic:#x})")
+        self.version, n_tensors, n_kv = self._unpack(fh, "<IQQ")
         if self.version != 3:
-            raise ValueError(f"{self.path.name}: GGUF v{self.version}, this reader handles v3")
-        for _ in range(n_kv):
+            raise ValueError(f"GGUF v{self.version}, this reader handles v3")
+        for _ in range(self._count(fh, n_kv, 12, "metadata entries")):      # key length (8) + value type (4)
             key = self._str(fh)
             self.metadata[key] = self._value(fh)
-        for _ in range(n_tensors):
+        for _ in range(self._count(fh, n_tensors, 24, "tensors")):           # name length, n_dims, type, offset
             name = self._str(fh)
-            (n_dims,) = struct.unpack("<I", fh.read(4))
-            shape = list(struct.unpack(f"<{n_dims}Q", fh.read(8 * n_dims)))
-            type_id, offset = struct.unpack("<IQ", fh.read(12))
+            (n_dims,) = self._unpack(fh, "<I")
+            shape = list(self._unpack(fh, f"<{self._count(fh, n_dims, 8, 'dimensions')}Q"))
+            type_id, offset = self._unpack(fh, "<IQ")
             self.tensors.append(TensorInfo(name, shape, type_id,
                                            GGML_TYPES.get(type_id, f"type{type_id}"), offset))
         align = self.metadata.get("general.alignment")
-        if isinstance(align, int) and align:
+        if align is not None:
+            if type(align) is not int or align <= 0 or align % 8:
+                raise ValueError("general.alignment must be a positive multiple of 8")
             self.alignment = align
-        pos = fh.tell()
+        pos = self._pos
         self._data_start = (pos + self.alignment - 1) // self.alignment * self.alignment
 
     def _str(self, fh) -> str:
-        (n,) = struct.unpack("<Q", fh.read(8))
-        return fh.read(n).decode("utf-8", "replace")
+        (n,) = self._unpack(fh, "<Q")
+        return self._read(fh, n).decode("utf-8", "replace")
+
+    def _meta_type(self, t: int) -> tuple[str, int | None]:
+        if t not in GGUF_META:
+            raise ValueError(f"unknown metadata value type {t}")
+        return GGUF_META[t]
 
     def _value(self, fh):
-        (t,) = struct.unpack("<I", fh.read(4))
-        name, size = GGUF_META[t]
+        (t,) = self._unpack(fh, "<I")
+        name, size = self._meta_type(t)
         if name == "string":
             return self._str(fh)
         if name == "array":
-            (et,) = struct.unpack("<I", fh.read(4))
-            (count,) = struct.unpack("<Q", fh.read(8))
-            ename, esize = GGUF_META[et]
+            et, count = self._unpack(fh, "<IQ")
+            ename, esize = self._meta_type(et)
+            if ename == "array":
+                raise ValueError("nested metadata arrays are not supported")
             if ename == "string":
-                return [self._str(fh) for _ in range(count)]
-            fmt = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
-                   "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}[ename]
-            raw = fh.read(esize * count)
-            return list(struct.unpack(f"<{count}{fmt}", raw))
-        fmt = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
-               "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}[name]
-        return struct.unpack(f"<{fmt}", fh.read(size))[0]
+                return [self._str(fh) for _ in range(self._count(fh, count, 8, "array strings"))]
+            self._count(fh, count, esize, "array elements")
+            return list(self._unpack(fh, f"<{count}{_META_FMT[ename]}"))
+        return self._unpack(fh, f"<{_META_FMT[name]}")[0]
 
     # ------------------------------------------------------------------ helpers
     def by_type(self) -> dict[str, int]:

@@ -202,12 +202,12 @@ test('the Control command lines for status, resume and leave', async () => {
   assert.deepEqual(seen[2], ['models', 'move', '--leave', '--from', '/o', '--install-dir', '/i', '--output', 'json']);
 });
 
-test('the models folder strings exist in all 8 languages with the same placeholders', () => {
+test('the models folder strings exist in all 9 languages with the same placeholders', () => {
   const read = lang => JSON.parse(readFileSync(new URL(`../src/locales/${lang}.json`, import.meta.url), 'utf8'));
   const en = read('en');
   const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8339 && Number(k.slice(1)) <= 8422);
   assert.equal(ours.length, 84);
-  for (const lang of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) {
+  for (const lang of ['de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh']) {
     const text = read(lang);
     for (const key of ours) {
       assert.ok(text[key], `${lang} ${key}`);

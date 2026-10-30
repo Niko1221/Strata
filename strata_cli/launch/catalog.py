@@ -316,6 +316,26 @@ class Catalog:
     def contexts(self) -> list[int]:
         return [int(c) for c in self.tables()[2]]
 
+    def contexts_for(self, family: str | None, model: str | None = None) -> list[int]:
+        """The context sizes to offer for this model: DeepSeek-V4.1-Flash goes up to 1M (its installed pack's own limit when it has one), the
+        others keep the shared list."""
+        if family and self.strata.multi_family(family):
+            from strata_control import dsv41_context
+            return dsv41_context.choices(self.pack_limit(family, model))
+        return self.contexts()
+
+    def pack_limit(self, family: str | None, model: str | None) -> int | None:
+        """The installed DeepSeek pack's own context limit (ds4.txt), None when it is not installed or the file does not say."""
+        if not (family and model and self.strata.multi_family(family)):
+            return None
+        try:
+            from strata_control import dsv41_context
+            from strata_cli.launch.runner import read_config
+            path = self.installed_config(self.tag_of(family, model))
+            return dsv41_context.limit_of_config(read_config(path)) if path else None
+        except Exception:                                  # noqa: BLE001 - no file, no limit: the choices stay as they are
+            return None
+
     def recommendation(self, hw: dict | None = None) -> dict:
         return self.strata.recommend(hw or self.hardware())
 
@@ -376,6 +396,25 @@ class Catalog:
     def tag_of(self, family: str, model: str) -> str:
         _m, families, _c, _s = self.tables()
         return (families[family].get("tag", "") + model).lower()
+
+    def model_folder(self, base: Path, family: str, model: str) -> Path:
+        """The folder a model's files are in under `base/models`. setup.py names it with the case kept (`models/IQ3_S`), the run-config tag is
+        lower case (`iq3_s`): on a case-sensitive disk the two are different folders, so the one that exists wins, and a folder that differs
+        only in case is found (#3996). When none exists yet it is setup's own name, because that is where the download will go."""
+        _m, families, _c, _s = self.tables()
+        models = Path(base) / "models"
+        own = models / (families[family].get("tag", "") + model)
+        lower = models / self.tag_of(family, model)
+        for candidate in (own, lower):
+            if candidate.is_dir():
+                return candidate
+        try:
+            for entry in models.iterdir():
+                if entry.name.lower() == lower.name and entry.is_dir():
+                    return entry
+        except OSError:
+            pass
+        return own
 
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Strata Terminal: one-line installer for Linux and macOS.
+# Strata Terminal: one-line installer for Linux (x86_64, and ARM64 on the NVIDIA DGX Spark) and macOS (Apple silicon).
 #
 #     curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 #
@@ -55,9 +55,9 @@ main() {
   case "$os-$arch" in
     Linux-x86_64|Linux-amd64) platform=linux-x86_64 ;;
     Darwin-arm64|Darwin-aarch64) platform=macos-arm64 ;;
-    Linux-aarch64|Linux-arm64) die "this computer ($os $arch) has an ARM processor. Strata needs an NVIDIA or AMD graphics card and has no engine for ARM Linux, so it could not run a model here. Use a Linux PC with an Intel or AMD processor (x86_64) and one of those cards." ;;
+    Linux-aarch64|Linux-arm64) platform=linux-aarch64 ;;      # the NVIDIA DGX Spark (GB10); the note below says so for any other ARM computer
     Darwin-x86_64) die "this Mac has an Intel processor. Strata for Mac needs Apple silicon (M1 or newer), so it could not run a model here." ;;
-    *) die "this computer ($os $arch) has no Strata Terminal. Supported: Linux x86_64 with an NVIDIA or AMD card, macOS on Apple silicon (Windows: use install.ps1)." ;;
+    *) die "this computer ($os $arch) has no Strata Terminal. Supported: Linux x86_64 with an NVIDIA or AMD card, Linux ARM64 on an NVIDIA DGX Spark, macOS on Apple silicon (Windows: use install.ps1)." ;;
   esac
   gpu=""
   if command -v nvidia-smi >/dev/null 2>&1; then
@@ -72,6 +72,12 @@ main() {
   fi
   say "Strata Terminal installer"
   say "  This computer: $os $arch ($platform)${gpu:+, graphics: $gpu}"
+  if [ "$platform" = linux-aarch64 ]; then      # recommend, never force: the Terminal installs on any ARM Linux, its engine is for one machine
+    case "$gpu" in
+      *GB10*) ;;
+      *) say "  Note: Strata's engine for ARM Linux is built and tested on the NVIDIA DGX Spark (GB10) only. This computer reports ${gpu:-no NVIDIA graphics}: the Terminal installs, but 'strata launch' may find no engine for it." ;;
+    esac
+  fi
   say "  Release folder: $FEED"
 
   # ---- 2. download and check

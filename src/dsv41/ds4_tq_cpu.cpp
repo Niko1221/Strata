@@ -53,8 +53,10 @@ void dots(int type, const uint8_t* w, size_t rb, int n, const void* const* act, 
     const int kb = kc::tq_kbits(type);
     const int16_t* tab = kc::tq_state_table_for(type);
     switch (kc::tq_isa()) {
+#if defined(__x86_64__) || defined(_M_X64)   // the AVX units exist on x86-64 builds only (arm64: the scalar rows)
         case kc::TqIsa::avx512: kc::tq_detail::tq_rows_avx512(kb, tab, w, rb, n, ap, nt, out, r0, r1); break;
         case kc::TqIsa::avx2: kc::tq_detail::tq_rows_avx2(kb, tab, w, rb, n, ap, nt, out, r0, r1); break;
+#endif
         default: kc::tq_detail::tq_rows_scalar(kb, tab, w, rb, n, ap, nt, out, r0, r1); break;
     }
 }

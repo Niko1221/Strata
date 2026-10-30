@@ -269,9 +269,10 @@ def create(result: dict[str, Any], *, choices: dict[str, Any], identity: dict[st
            mode: str = "quick", activate: bool = True, base_args: dict[str, Any] | None = None) -> dict[str, Any]:
     """Save a tune result as a named preset (active at once unless ``activate`` is False)."""
     settings = result.get("settings") or {"args": {}, "env": {}, "per_request": {}}
-    problems = tune_knobs.check_setting(settings.get("args") or {}, settings.get("env") or {},
-                                        tune_knobs.Context(context_tokens=choices.get("context") or 32768,
-                                                           family=choices.get("family") or "flash-next"))
+    # (a value only outside the tuner's tested range is kept, #3844; the never list still refuses)
+    problems, _outside = tune_knobs.check_setting_parts(settings.get("args") or {}, settings.get("env") or {},
+                                                        tune_knobs.Context(context_tokens=choices.get("context") or 32768,
+                                                                           family=choices.get("family") or "flash-next"))
     if problems:
         raise PresetError("these settings are outside the safe rules and cannot be saved: " + "; ".join(problems))
     base = result.get("base") or {}
@@ -396,8 +397,10 @@ def export_preset(ref: str) -> dict[str, Any]:
 def import_preset(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise PresetError("that file is not a Strata preset")
-    problems = tune_knobs.check_setting((data.get("settings") or {}).get("args") or {}, (data.get("settings") or {}).get("env") or {},
-                                        tune_knobs.Context(context_tokens=(data.get("choices") or {}).get("context") or 32768))
+    # (a value only outside the tuner's tested range is kept, #3844; the never list still refuses)
+    problems, _outside = tune_knobs.check_setting_parts((data.get("settings") or {}).get("args") or {},
+                                                        (data.get("settings") or {}).get("env") or {},
+                                                        tune_knobs.Context(context_tokens=(data.get("choices") or {}).get("context") or 32768))
     if problems:
         raise PresetError("the preset has settings outside the safe rules: " + "; ".join(problems))
     data = dict(data)
@@ -442,7 +445,8 @@ def overlay(cfg: dict[str, Any], *, now: dict[str, Any] | None = None, use: str 
     """The run configuration with the active preset for its choices put on top, and what was done.
 
     No measurement happens here. A preset whose identity changed in a *hard* way is not applied (it says why); a *soft* change
-    applies it and marks it for a re-check. A setting that is outside the safe rules is left out, never applied. Never raises:
+    applies it and marks it for a re-check. A setting on the never list (measured harmful) is left out, never applied; one
+    that is only outside the range the tuner tries is kept and listed in ``info["warnings"]``. Never raises:
     a store that cannot be read means "no preset", and the engine starts with the configuration as it is."""
     info: dict[str, Any] = {"applied": False}
     try:
@@ -462,10 +466,12 @@ def overlay(cfg: dict[str, Any], *, now: dict[str, Any] | None = None, use: str 
             return cfg, info
         s = preset.get("settings") or {}
         ctx = tune_knobs.Context(context_tokens=choices.get("context") or 32768, family=choices.get("family") or "flash-next")
-        problems = tune_knobs.check_setting(s.get("args") or {}, s.get("env") or {}, ctx)
+        problems, outside = tune_knobs.check_setting_parts(s.get("args") or {}, s.get("env") or {}, ctx)
         if problems:
             info["why_not"] = "not applied: " + "; ".join(problems)
             return cfg, info
+        if outside:   # #3844: a value outside the range the tuner tries was chosen by the user: kept, with a warning
+            info["warnings"] = tune_knobs.keep_warnings(outside)
         out = json.loads(json.dumps(cfg))
         out["args"] = tune_knobs.apply_to_argv([str(a) for a in out.get("args") or []], s.get("args") or {})
         if s.get("env"):

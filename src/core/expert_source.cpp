@@ -1,11 +1,13 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/window_limits.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -101,6 +103,24 @@ uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t c
 
 bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve) {
     return bytes > 0 && free_now < bytes + reserve;
+}
+
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available) {
+    waited = 0.0;
+    if (!sample(available)) return false;
+    double next_note = 0.0;
+    while (available < need && waited < max_wait_s) {
+        if (progress && waited >= next_note) {
+            progress(waited, available);
+            next_note = waited + note_s;
+        }
+        sleep(step_s);
+        waited += step_s;
+        if (!sample(available)) return false;
+    }
+    return available >= need;
 }
 
 bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve) {
@@ -3184,6 +3204,10 @@ void RouterLookahead::run() {
         // one (kq_avx1.cpp) or, without AVX, the same sums in plain C++.  From the Strata_Dirigo fork (rwkeyes): an
         // AVX-only Xeon E5-2687W died here (vpmovzxwd) on its first request.  An estimate only (which experts to
         // prefetch); the order of the additions differs between the three, the output does not depend on it.
+#if defined(__aarch64__) && !defined(STRATA_GPU_METAL)   // Metal (Apple silicon) keeps the plain loop below: its bf16_rows_dot_multi is a stub
+        strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
+                                                  x_.data(), (int) nt, logits.data());
+#else
         if (strata::kernels::cpu::cpu_avx2_ok()) {
             strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
                                                       x_.data(), (int) nt, logits.data());
@@ -3209,6 +3233,7 @@ void RouterLookahead::run() {
                 }
             }
         }
+#endif
         const int kmax = stats_on_ ? (int) std::min<int64_t>(k_ + 10, n_expert_) : k_;
         const int ks[3] = {k_, (int) std::min<int64_t>(k_ + 4, n_expert_), kmax};
         std::vector<uint64_t> sm;
@@ -4341,6 +4366,33 @@ bool FileExpertSource::replace_resident(int64_t layer, int64_t in, int64_t out) 
     return install_resident(layer, in, out, ram_adapt_buf_.data());
 }
 
+bool FileExpertSource::replace_resident_staged(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() || !staged_.empty() ||
+        layer < 0 || layer >= n_layers_ || in < 0 || out < 0 || in >= n_expert_ || out >= n_expert_ || in == out)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (i_in >= complement_offsets_.size() || i_out >= complement_offsets_.size()) return false;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    const uint64_t at = complement_offsets_[i_out], bytes = layer_blob_bytes_[(size_t) layer];
+    if (at == kNoComplement || complement_offsets_[i_in] != kNoComplement || at > complement_bytes_ ||
+        bytes > complement_bytes_ - at || bytes > stage_blob_) return false;
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    bool moved = false;
+    {
+        // held across the copy: claim_stage cannot hand the buffer to another blob meanwhile
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const auto it = stage_of_.find((int64_t) i_in);
+        if (it == stage_of_.end() || stage_busy_[it->second] || stage_key_[it->second] != (int64_t) i_in) return false;
+        if (fs != nullptr) fs->hold(layer, (int32_t) out);
+        std::memcpy((uint8_t*) complement_host_ + (size_t) at, stage_buf_[it->second].get(), (size_t) bytes);
+        moved = detail::exchange_cache_complement(complement_offsets_, i_out, i_in);
+        if (fs != nullptr) fs->unhold(layer, (int32_t) out);
+    }
+    if (moved) { ++ram_adapts_; ++ram_staged_; }
+    return moved;
+}
+
 // `in`'s bytes (src) into `out`'s place of the compact copy, and the two offsets swapped - the checks again, as the caller
 // may have read `src` a while ago (149-prefetch: ram_install)
 bool FileExpertSource::install_resident(int64_t layer, int64_t in, int64_t out, const uint8_t* src) {
@@ -4753,10 +4805,10 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
 namespace {
 // the verify window's per-entry tables in `expert_pool_dispatch_multi` (`kind`, `distinct`, `first_of`)
-// are fixed arrays of this many entries: MAXT tokens of the model's 10 routed experts must fit, and a larger k is
-// refused at run time rather than written past them.
-constexpr int64_t kMaxWindowEntries = 128;
-static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
+// are fixed arrays of this many entries: a window's rows (kWindowMaxT) of the model's 10 routed experts must fit, and a
+// larger k is refused at run time rather than written past them.  128 for the 8-row window (as it was), 256 for 16.
+constexpr int64_t kMaxWindowEntries = strata::kernels::kWindowMaxT <= 8 ? 128 : 256;
+static_assert(strata::kernels::kWindowMaxT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
 }  // namespace
 
 namespace {
@@ -4777,10 +4829,10 @@ int tail_skip_rank() {
 void set_tail_skip_rank(int r) { g_tail_skip_rank.store(r > 0 && r < 10 ? r : 0, std::memory_order_relaxed); }
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out) {
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic) {
     using namespace strata::kernels::cpu;
     if (d.failed) return;
-    if (n_tok < 1 || n_tok > MAXT) {
+    if (n_tok < 1 || n_tok > strata::kernels::kWindowMaxT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
         d.fail_layer = d.layers;
@@ -4799,12 +4851,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         d.fail_layer = d.layers;
         return;
     }
-    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) MAXT);
+    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) strata::kernels::kWindowMaxT);
     const ExpertLayout& lay = expert_layout();
     const bool native = lay.native;
-    if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
+    if (native && d.nact_multi.size() < (size_t) strata::kernels::kWindowMaxT * kNativeActBytes)
+        d.nact_multi.resize((size_t) strata::kernels::kWindowMaxT * kNativeActBytes);
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
-    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
+    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (strata::kernels::kWindowMaxT * k));
     static const bool ptrace = std::getenv("STRATA_POOL_TRACE") != nullptr;
     auto pt = [&](const char* what, long long a = -1) {
         if (ptrace) { std::fprintf(stderr, "pool trace: layer %lld %s %lld\n", (long long) d.layers, what, a); std::fflush(stderr); }
@@ -5118,6 +5171,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++d.cold_zc;
                 }
             }
+            if (d.jobs_multi[(size_t) jo].nt == MAXT) {
+                // a window of 9..16 rows routes more than MAXT tokens to this expert: the kernels and the pool's scratch
+                // take MAXT tokens a job, so the rest are a further job over the same blob (each token's rows are its own,
+                // so the split changes no value; the blob is read once more)
+                const int16_t prev = jo;
+                jo = (int16_t) njobs++;
+                ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
+                nj.blob = d.jobs_multi[(size_t) prev].blob;
+                nj.fmt = d.jobs_multi[(size_t) prev].fmt;
+                nj.nt = 0;
+            }
             ExpertJobMulti& jb = d.jobs_multi[(size_t) jo];
             jb.act[jb.nt] = &d.act_multi[(size_t) t];
             jb.nact[jb.nt] = native ? d.nact_multi.data() + (size_t) t * kNativeActBytes : nullptr;
@@ -5130,7 +5194,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     {
         const auto b0 = std::chrono::steady_clock::now();
         if (njobs > 0) {
-            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
             else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
             ++d.cold_batches;
         }
@@ -5175,7 +5239,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0 && npend == 0) {
-        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
     if (d.remote_count > 0) {
@@ -5221,6 +5285,14 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
         d.hit_pending = false;
         if (!d.hits_ready() || ids == nullptr || k <= 0) return;
         if ((int64_t) d.is_hit.size() < k) d.is_hit.resize((size_t) k);
+        // STRATA_EXPERT_NIBBLE=1: this split computes a resident expert with the GGUF-block kernels and admits + fills
+        // a missed one with its GGUF blob - neither may meet a layer whose slots hold 4-bit codes (a native pack's
+        // experts run in the verify windows, so this is the backstop, never the path)
+#if STRATA_EXPERT_NIBBLE_BUILT   // compiled out of every other build: nothing is added to the hit split there
+        if (strata::core::nibble::layer(d.layers).on)
+            strata::core::nibble::fatal(d.layers, "the expert source's hit split (expert_hit_run)",
+                                        "it computes resident experts as GGUF blocks and fills slots with GGUF blobs");
+#endif
 
         // ================================ THE DECISION, ONCE, ON THIS LAYER'S IDS ================================
         //
@@ -5779,12 +5851,47 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             return false;
         }
         if (hm.available < need) {
-            std::snprintf(buf, sizeof buf,
-                          "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short): the load "
-                          "may swap or be stopped by the OS. Close other programs (or wait for an engine that is "
-                          "still exiting), or run with less RAM: --mmap-experts with --resident-budget-gib N",
-                          (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib);
-            ram_warning_ = buf;
+            // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
+            // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
+            // seconds (0 loads at once, as before this wait).  The load then goes on either way - it only warns.
+            double wait_s = 20.0;
+            if (const char* w = std::getenv("STRATA_ARENA_RAM_WAIT_S"); w != nullptr && w[0] != '\0') {
+                char* end = nullptr;
+                const double v = std::strtod(w, &end);
+                if (end != w && *end == '\0' && v >= 0.0 && v <= 3600.0) wait_s = v;
+            }
+            double waited = 0.0;
+            uint64_t avail = hm.available;
+            if (wait_s > 0.0) {
+                const bool came = detail::wait_for_ram(
+                    need, wait_s, 0.25, 5.0,
+                    [](uint64_t& a) { detail::HostMemory h; if (!detail::host_available_memory(h)) return false; a = h.available; return true; },
+                    [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); },
+                    [&](double w, uint64_t a) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB is "
+                                             "available; waiting up to %.0f s for it (another engine still exiting?) - "
+                                             "%.0f s so far (STRATA_ARENA_RAM_WAIT_S changes this)\n",
+                                     (double) need / gib, (double) a / gib, wait_s, w);
+                    },
+                    waited, avail);
+                if (came)
+                    std::fprintf(stderr, "strata generate: %.2f GiB of RAM is available now (after %.1f s): loading the "
+                                         "expert arena\n", (double) avail / gib, waited);
+                hm.available = avail;
+            }
+            if (hm.available < need) {
+                std::snprintf(buf, sizeof buf,
+                              "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s): the "
+                              "load may swap or be stopped by the OS%s. Close other programs, or run with less RAM: "
+                              "--mmap-experts with --resident-budget-gib N",
+                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "",
+                              hm.available < need / 2 ? " - with this little room the whole machine can stall in "
+                                                        "memory reclaim until it is restarted (#4051); on Linux a "
+                                                        "systemd MemoryHigh= below the RAM keeps one program from "
+                                                        "taking all of it" : "");
+                ram_warning_ = buf;
+            }
         }
     }
 

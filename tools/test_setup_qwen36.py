@@ -151,6 +151,25 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(Path(self.cfg["exe"]).parent, self.root / "engine")
         self.assertIn(("config", "strata-qwen36-ud-q4_k_xl.json"), self.calls)
 
+    def test_gguf_dir_takes_the_persons_own_files_that_have_no_finish_mark(self):
+        folder = self.root / "own"
+        folder.mkdir()
+        for name in ("Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", "mmproj-F16.gguf"):
+            (folder / name).write_text("x")                      # no <name>.done: verify_sha256 checks the file and marks it
+        with mock.patch.object(setup, "free_gb", lambda p: 1.0):    # nothing to download: no disk needed
+            rc, out = self.install(model="UD-Q4_K_XL", vision="cpu", gguf_dir=str(folder))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c for c in self.calls if c[0] == "get"], [])
+        self.assertIn(("sha", "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"), self.calls)
+        self.assertIn(("sha", "mmproj-F16.gguf"), self.calls)
+
+    def test_gguf_dir_without_the_file_still_says_it_is_missing(self):
+        folder = self.root / "empty"
+        folder.mkdir()
+        rc, out = self.install(model="UD-Q4_K_XL", vision="no", gguf_dir=str(folder))
+        self.assertEqual(rc, 1)
+        self.assertIn("is missing", out)
+
     def test_default_size_follows_the_ram(self):
         rc, out = self.install(ram=64.0)
         self.assertEqual(rc, 0, out)

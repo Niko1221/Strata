@@ -635,12 +635,13 @@ template <> struct W8<T_IQ2_XXS> {
         device const uchar* bl = row + (k >> 8) * 66;
         const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
         const uint a0 = rd32(bl + 2 + 8 * ib), a1 = rd32(bl + 2 + 8 * ib + 4);
-        threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 512);
         const float sc = rdh(bl) * (0.5f + float(a1 >> 28)) * 0.25f;
         const uint i0 = (a0 >> (8 * l)) & 255, i1 = (a0 >> (8 * (l + 2))) & 255;
-        const uint s0 = ks[(a1 >> (7 * l)) & 127], s1 = ks[(a1 >> (7 * (l + 2))) & 127];
-        a = w4_signed(tab[2 * i0 + hh], hh ? s0 >> 4 : s0, sc);
-        b = w4_signed(tab[2 * i1 + hh], hh ? s1 >> 4 : s1, sc);
+        // through the accessors, so QUANT_CTAB (the constant grids, no threadgroup copy) gives the same values: the
+        // direct tab[] reads below skipped the ctab branch and read an unfilled table
+        const uint s0 = ksg(tab, 512, (a1 >> (7 * l)) & 127), s1 = ksg(tab, 512, (a1 >> (7 * (l + 2))) & 127);
+        a = w4_signed(g_iq2xxs(tab, i0, hh), hh ? s0 >> 4 : s0, sc);
+        b = w4_signed(g_iq2xxs(tab, i1, hh), hh ? s1 >> 4 : s1, sc);
     }
 };
 template <> struct W8<T_IQ2_XS> {
@@ -649,14 +650,14 @@ template <> struct W8<T_IQ2_XS> {
         const int ib = (k & 255) >> 5, l = (k & 31) >> 3, hh = (k & 7) >> 2;
         device const ushort* q = (device const ushort*)(bl + 2) + 4 * ib;
         const uint v0 = q[l], v1 = q[l + 2];
-        threadgroup const uchar* ks = (threadgroup const uchar*)(tab + 1024);
         const uint scb = bl[66 + ib];
         const float d = rdh(bl);
         const float sc0 = d * (0.5f + float((scb >> (4 * (l >> 1))) & 15)) * 0.25f;
         const float sc1 = d * (0.5f + float((scb >> (4 * ((l + 2) >> 1))) & 15)) * 0.25f;
-        const uint s0 = ks[v0 >> 9], s1 = ks[v1 >> 9];
-        a = w4_signed(tab[2 * (v0 & 511) + hh], hh ? s0 >> 4 : s0, sc0);
-        b = w4_signed(tab[2 * (v1 & 511) + hh], hh ? s1 >> 4 : s1, sc1);
+        // through the accessors: the direct tab[]/ks[] reads ignored QUANT_CTAB, whose tables are then never filled
+        const uint s0 = ksg(tab, 1024, v0 >> 9), s1 = ksg(tab, 1024, v1 >> 9);
+        a = w4_signed(g_iq2xs(tab, v0 & 511, hh), hh ? s0 >> 4 : s0, sc0);
+        b = w4_signed(g_iq2xs(tab, v1 & 511, hh), hh ? s1 >> 4 : s1, sc1);
     }
 };
 template <> struct W8<T_IQ2_S> {
@@ -675,6 +676,42 @@ template <> struct W8<T_IQ2_S> {
         b = w4_signed(g_iq2s(tab, i1, hh), hh ? s1 >> 4 : s1, sc1);
     }
 };
+
+// IQ1_M (the 2.00 bpw pack's 1.75-bit type), ggml's dequantize_row_iq1_m: the block's F16 scale sits in the top
+// nibbles of its four u16 scales; a 32-value sub-block has two 3-bit scales (groups 0-1 and 2-3, eight values each),
+// and each eight-value group carries a +-0.125 delta picked by a bit of its qh byte.  The tile's two halves are the
+// four values at k and the four at k + 16, each decoded on its own (k + 16 crosses into the next sub-block at l >= 2).
+template <typename P>
+static inline half4 iq1m_w4(P row, int k) {
+    const P bl = row + (k >> 8) * 56;
+    const int ib = (k & 255) >> 5, g = (k & 31) >> 3, hh = (k & 7) >> 2;
+    const uint s0 = uint(bl[48]) | (uint(bl[49]) << 8), s1 = uint(bl[50]) | (uint(bl[51]) << 8);
+    const uint s2 = uint(bl[52]) | (uint(bl[53]) << 8), s3 = uint(bl[54]) | (uint(bl[55]) << 8);
+    const float d = float(as_type<half>(ushort((s0 >> 12) | ((s1 >> 8) & 0x00f0u) | ((s2 >> 4) & 0x0f00u) | (s3 & 0xf000u))));
+    const uint sc = uint(((const device ushort*) (bl + 48))[ib >> 1]);
+    const float dl = d * float(2u * ((sc >> (6u * uint(ib & 1) + (g < 2 ? 0u : 3u))) & 7u) + 1u);
+    const uint qh = (g < 2) ? uint(bl[32 + 2 * ib]) : uint(bl[33 + 2 * ib]);
+    const uint idx = uint(bl[4 * ib + g]) | (((g & 1) != 0) ? ((qh << 4u) & 0x700u) : ((qh << 8u) & 0x700u));
+    const bool neg = ((g & 1) != 0) ? ((qh & 0x80u) != 0u) : ((qh & 0x08u) != 0u);
+    const ulong gr = iq1s_grid[idx];
+    const float delta = neg ? -0.125f : 0.125f;
+    float v[4];
+    for (int j = 0; j < 4; ++j) {
+        const uint by = uint((gr >> (8u * uint(4 * hh + j))) & 0xffu);
+        const int c = (by & 0x80u) != 0u ? int(by) - 256 : int(by);
+        v[j] = dl * (float(c) + delta);
+    }
+    return half4(v[0], v[1], v[2], v[3]);
+}
+template <> struct W8<T_IQ1_M> {
+    template <typename P>
+    static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        (void) tab;
+        a = iq1m_w4(row, k);
+        b = iq1m_w4(row, k + 16);
+    }
+};
+
 template <> struct W8<T_IQ3_S> {
     template <typename P>
     static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {

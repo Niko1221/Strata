@@ -7,22 +7,24 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpa
 import { join, resolve, dirname, basename, sep, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
-import { NATIVE_FIELDS, APP_OWNED_FIELDS, withoutDraftLayer, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv } from './native-settings.mjs';
+import { NATIVE_FIELDS, APP_OWNED_FIELDS, withoutDraftLayer, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv, speedSwitchRows } from './native-settings.mjs';
 import { resourceSettings, saferStart, reserveChoice } from './native-resources.mjs';
 import { USER_KEY, capture as captureUserArgs, merge as mergeUserArgs, setFlag as setUserFlag, stamped as stampedUserArgs } from './native-user-args.mjs';
 import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
 import { runtimeVision } from './native-vision.mjs';
-import { componentsDirectory, installerEnvironment, controlEnvironment } from './control-runtime.mjs';
+import { dsEngineArgs, dsUserArgs, dsArgsNote, withoutVisionFlag } from './native-ds-args.mjs';
+import { componentsDirectory, installerEnvironment, controlEnvironment, sourceServerEnvironment } from './control-runtime.mjs';
 import { createEngineStep } from './engine-step.mjs';
 import { dataFolderFromPick, isDriveRoot, makeFolder, rememberDataFolder, syncDataFolder, terminalSettingsFile } from './model-folder.mjs';
 import { createAutoTune, writeTuneConfig } from './native-autotune.mjs';
 import { plainError, PHASE_TEXT } from './update-messages.mjs';
-import { checkRunConfig, describeIssues } from './run-config-check.mjs';
+import { checkAndParseRunConfig, checkRunConfig, describeIssues } from './run-config-check.mjs';
 import { openTextFile } from './open-text-file.mjs';
 import { markEngine, engineRefusal } from './engine-version.mjs';
 import { friendlyModelName } from './model-names.mjs';
 import { parseSaved as parseRoles, mirror as mirrorRoles } from './gpu-roles.mjs';
+import { configContextLimit } from './dsv41-context.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const safeId=value=>typeof value==='string'&&/^[a-z0-9](?:[a-z0-9_-]|\.(?!\.)){0,79}$/i.test(value);   /* a dot inside the name: deepseek-v4.1-flash-ist-das-2.00bpw */
@@ -86,7 +88,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   for(const name of names){const path=join(dir,name),config=readJson(path,null);if(!config||typeof config!=='object')continue;
    const next={...config,...(config.cwd!==undefined?{cwd:fix(config.cwd)}:{}),...(Array.isArray(config.args)?{args:config.args.map(fix)}:{})};
    if(JSON.stringify(next)!==JSON.stringify(config)){try{writeModelConfig(path,next);}catch{/* read-only folder: the load reports it */}}}}
- function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_.-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;/* A model the person pointed at their own GGUF folder (not <data>/models/<tag>): remembered, so a later load runs setup with that folder again instead of downloading the files (#3199). */const ownGgufDir=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))!=='models'&&existsSync(nativeFile)?dirname(nativeFile):undefined;return {...entry,ownGgufDir,diskGb:entry.diskGb??entry.disk_gb,diskBytes:entry.diskBytes??entry.disk_bytes,sharedBytes:entry.sharedBytes??entry.shared_bytes,removableGb:entry.removableGb??entry.removable_gb,dataFolder,visionPrepared:!!cfg.vision,/* The picture files are prepared when the run config has a vision section: the Models screen then loads straight away instead of running setup again (it used to read 'off' for every model, which sent every load of a picture-capable model through "Apply settings and load", and setup writes the arguments, the draft layer and the reader back each time). */images:cfg.vision?'yes':'off',draftLayer:cfg.mtp!==false,drafting:cfg.drafting??'auto',/* Picture reading is ON unless the person turned it off: no saved choice and not loaded is undefined, not false (owner rule: pictures on by default). */visionEnabled:cfg.ui_vision_enabled??(()=>{const running=[...instances.values()].find(i=>i.model===entry.model&&i.status==='ready');return running?!!running.vision:undefined;})(),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
+ function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_.-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;/* A model the person pointed at their own GGUF folder (not <data>/models/<tag>): remembered, so a later load runs setup with that folder again instead of downloading the files (#3199). */const ownGgufDir=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))!=='models'&&existsSync(nativeFile)?dirname(nativeFile):undefined;return {...entry,ownGgufDir,contextMax:configContextLimit(cfg)??undefined,diskGb:entry.diskGb??entry.disk_gb,diskBytes:entry.diskBytes??entry.disk_bytes,sharedBytes:entry.sharedBytes??entry.shared_bytes,removableGb:entry.removableGb??entry.removable_gb,dataFolder,visionPrepared:!!cfg.vision,/* The picture files are prepared when the run config has a vision section: the Models screen then loads straight away instead of running setup again (it used to read 'off' for every model, which sent every load of a picture-capable model through "Apply settings and load", and setup writes the arguments, the draft layer and the reader back each time). */images:cfg.vision?'yes':'off',draftLayer:cfg.mtp!==false,drafting:cfg.drafting??'auto',/* Picture reading is ON unless the person turned it off: no saved choice and not loaded is undefined, not false (owner rule: pictures on by default). */visionEnabled:cfg.ui_vision_enabled??(()=>{const running=[...instances.values()].find(i=>i.model===entry.model&&i.status==='ready');return running?!!running.vision:undefined;})(),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
  function installRoot(){const found=[preferences.installDir].find(d=>d&&existsSync(d));if(found)return realpathSync(found);mkdirSync(defaultInstall(),{recursive:true});return realpathSync(defaultInstall());}
  /* The settings file Strata Control and the installer read (control-runtime.mjs sets STRATA_SETTINGS_FILE to it): the app's data folder is written there. */
  function controlSettingsFile(){return process.env.STRATA_SETTINGS_FILE||join(dirname(componentsDirectory()),'app-settings.json');}
@@ -149,8 +151,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  function settingsFile(model){const {path}=recordFile(model);return {model,path,name:basename(path),...checkRunConfig(readFileSync(path,'utf8')),note:'Changes you make in the file apply the next time the model starts.'};}
  async function openSettingsFile(model,options={}){const info=settingsFile(model);await openTextFile(info.path,options);return info;}
  /* A mistake in the file holds the start back with the line, instead of an engine that dies on it. Warnings (an unknown key) never do. */
- function assertSettingsFile(path){const check=checkRunConfig(readFileSync(path,'utf8'));if(!check.ok)throw new Error(`The settings file for this model has a mistake, so the model was not started. ${describeIssues(check.issues,'error').join(' ')}`);}
- function settings(model){const {config}=record(model);const values=Object.fromEntries(NATIVE_FIELDS.map(f=>[f.id,config[f.id]??null]));if(typeof values.aliases==='string')values.aliases=values.aliases.split(',').map(v=>v.trim()).filter(Boolean);values.sampling=config.sampling??{};values.args=config.args??[];values.env=publicNativeEnv(config.env??{});return {model,values,mcp:publicMcpServers(config.mcp_servers??config.mcpServers??{}),restartNeeded:true,capabilities:{dsExperts:ownEngine(config)&&dsExpertsSupported(config)}};}
+ function checkedSettingsConfig(text){const check=checkAndParseRunConfig(text);if(!check.ok)throw new Error(`The settings file for this model has a mistake, so the model was not started. ${describeIssues(check.issues,'error').join(' ')}`);return check.config;}
+ function settings(model){const {entry,config}=record(model);const values=Object.fromEntries(NATIVE_FIELDS.map(f=>[f.id,config[f.id]??null]));if(typeof values.aliases==='string')values.aliases=values.aliases.split(',').map(v=>v.trim()).filter(Boolean);values.sampling=config.sampling??{};values.args=config.args??[];values.env=publicNativeEnv(config.env??{});return {model,values,mcp:publicMcpServers(config.mcp_servers??config.mcpServers??{}),restartNeeded:true,capabilities:{dsExperts:ownEngine(config)&&dsExpertsSupported(config)},speedSwitches:speedSwitchRows(config.env??{},{deepseek:ownEngine(config),arch:config.arch??null,backend:config.backend??entry?.backend??snapshot.installed?.engine?.backend??null,gpus:snapshot.hardware?.gpus??[]})};}
  function save(model,{values,mcp}){if([...jobs.values()].some(j=>j.state==='running'))throw new Error('Finish the current operation before saving native settings.');const {path,config}=record(model);if(busy(requests().filter(r=>instances.get(r.instanceId)?.model===model)))throw new Error('Finish this model’s requests before saving its settings.');const patch=validateNativeSettings(values??{}),next={...config};if(patch.ds_experts!=null&&!dsExpertsSupported(config))throw new Error('The Speed choice needs the newer DeepSeek engine. Update the engine in Settings, then choose it.');for(const field of nativeFields())if(field.supported===false&&patch[field.id]!=null&&JSON.stringify(patch[field.id])!==JSON.stringify(config[field.id]))throw new Error(`${field.label} needs a newer native Strata installation. Update it in Settings → About.`);for(const [key,value] of Object.entries(patch)){if(key==='env')next.env=restoreNativeEnv(value,config.env??{});else if(value===null)delete next[key];else next[key]=value;}if('vram_reserve_mib' in patch){const base=captureUserArgs(next);const mine=setUserFlag(base,'--vram-reserve-mib',patch.vram_reserve_mib);if(mine.length)next[USER_KEY]=mine;else delete next[USER_KEY];next.args=mine.length&&patch.vram_reserve_mib!==null?mergeUserArgs(next.args??[],mine):setUserFlag(next.args??[],'--vram-reserve-mib',null);delete next.ui_reserve_applied;if(Array.isArray(next.args_written))next.args_written=[...next.args];}if(mcp!==undefined){next.mcp_servers=validateMcpServers(mcp,config.mcp_servers??config.mcpServers??{});delete next.mcpServers;}copyFileSync(path,path+'.bak');chmodSync(path+'.bak',0o600);const temp=path+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,path);return settings(model);}
  function previousEngine(){if(packaged)return !!snapshot.engine?.previous;try{const data=snapshot.installed?.data_dir??snapshot.installed?.data_folder;return [join(preferences.repo,'engine/.previous'),data&&join(data,'engine/.previous')].filter(Boolean).some(existsSync)&&readFileSync(join(preferences.repo,'setup.py'),'utf8').includes('--rollback-engine');}catch{return false;}}
  async function plan(args){await refresh();if(!snapshot.available)throw new Error(snapshot.error);const result=await tool('strata_install',installArgs(args,false));
@@ -222,6 +224,49 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  const DS_EXPERTS_MIN=[0,1,50];
  function dsEngineVersion(config){const m=/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String(config?.exe??''))||/engine-dsv41[\\/](\d+(?:\.\d+)+)-/.exec(String((config?.lib_dirs??[])[0]??''));return m?m[1].split('.').map(Number):null;}
  function dsExpertsSupported(config){const v=dsEngineVersion(config);if(!v)return false;for(let i=0;i<DS_EXPERTS_MIN.length;i++){const a=v[i]??0,b=DS_EXPERTS_MIN[i];if(a!==b)return a>b;}return true;}
+ /* Control's ceiling for one start wait, read from the Control this app actually found rather than guessed from its version. The
+    app starts a model with `strata runtime start --wait`, and that wait is checked three times before the engine is reached: by
+    management.runtime_action, by the operation record written before the start (journal), and by runtime.start itself. 27cbbfe6
+    raised only the runtime's, so a longer wait died with `start wait must be finite seconds in 0..600` and then with
+    `direct runtime intent has an invalid timeout`. The app therefore asks for the longer wait only when a Control's own sources
+    say all three agree, and keeps today's 600 s whenever one of them still names a ceiling of its own. Reading the installed
+    Control to learn what it supports is what the field list and the /v1/responses capability already do. */
+ const START_WAIT_CEILING=600;
+ let ceilingCache={dir:'',time:0,value:START_WAIT_CEILING};
+ function followsRuntimeCeiling(text,marker){
+  /* The marker picks the one line that bounds the wait (`"wait_s": (` in the record's range table, `"start wait"` in the CLI
+     validator), because both files name those keys elsewhere. A line that still spells out 600 is a ceiling of its own. */
+  const line=(String(text).split(/\r?\n/).find(l=>l.includes(marker))??'');
+  return /runtime\.MAX_START_WAIT|start_wait_max/.test(line)&&!/\b600\b/.test(line);
+ }
+ function startWaitCeiling(){
+  const dir=control?.control?.dir??'';if(!dir)return START_WAIT_CEILING;
+  const files=['management.py','journal.py','runtime.py'].map(name=>join(dir,'strata_control',name));
+  let time=0;
+  try{time=Math.max(...files.map(f=>statSync(f).mtimeMs));}catch{return START_WAIT_CEILING;}
+  if(ceilingCache.dir===dir&&ceilingCache.time===time)return ceilingCache.value;
+  let value=START_WAIT_CEILING;
+  try{
+   const [management,journal]=files.slice(0,2).map(f=>readFileSync(f,'utf8'));
+   // both gates must hand the ceiling to the runtime, or the wait would be refused on the way to it
+   if(followsRuntimeCeiling(management,'"start wait"')&&followsRuntimeCeiling(journal,'"wait_s": (')){
+    const declared=Number(readFileSync(files[2],'utf8').match(/^MAX_START_WAIT\s*=\s*(\d+)/m)?.[1]);
+    if(Number.isFinite(declared)&&declared>value)value=declared;
+   }
+  }catch{value=START_WAIT_CEILING;}
+  ceilingCache={dir,time,value};return value;
+ }
+ /* How long a start waits for this model, in the same shape as `strata launch`'s figure (#3949 #3459 #4191): ten minutes, about eight
+    more seconds per GB above 40 GB, never more than this Control accepts. A model nobody can size keeps the 300 s it always had.
+    The run config's engine_ready_s is the floor, not the ceiling: the server reads that number and ends the engine when it runs out,
+    so the start must never give up before the server does (setup writes 3600 for DeepSeek V4.1-Flash). */
+ function startWaitFor(config,entry,model){
+  const ceiling=startWaitCeiling(),ready=Number(config?.engine_ready_s)||0;
+  const known=Number(entry?.diskGb),fromDisk=Number.isFinite(known)&&known>0?known:0;
+  const gb=fromDisk||Number((snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===model)?.download_gb)||0;
+  const sized=gb>40?Math.max(300,600+(gb-40)*8):300;
+  return Math.trunc(Math.max(300,Math.min(ceiling,Math.max(ready,sized))));
+ }
  function buildConfig(args,config){
   const vision=runtimeVision(config,args.vision);
   const visionPreferences=args.vision!==undefined?{ui_vision_enabled:args.vision!=='no',ui_vision_device:args.vision==='no'?config.ui_vision_device??'yes':args.vision}:{};
@@ -242,18 +287,22 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(cfg.vision){if(cfg.vision_tokens!=null)cfg.vision={...cfg.vision,max_tokens:cfg.vision_tokens};if(cfg.vision_min_tokens!=null)cfg.vision={...cfg.vision,min_tokens:cfg.vision_min_tokens};}cfg.mcp={...(cfg.mcp??{}),...(cfg.mcp_timeout_s!=null?{timeout_s:cfg.mcp_timeout_s}:{}),...(cfg.mcp_max_rounds!=null?{max_rounds:cfg.mcp_max_rounds}:{}),...(cfg.mcp_max_result_chars!=null?{max_result_chars:cfg.mcp_max_result_chars}:{})};
   /* The model's own choices win over what setup wrote into the arguments: "Draft layer (MTP)" off leaves --mtp out of every start, and a picture reading that is off leaves --vision out (setup writes both again whenever it runs; the saved settings are applied here, on every load). */
   if((cfg.mtp===false||cfg.drafting==='off')&&Array.isArray(cfg.args))cfg.args=withoutDraftLayer(cfg.args);
-  if(!cfg.vision&&Array.isArray(cfg.args))cfg.args=cfg.args.filter(a=>a!=='--vision');
+  /* The Qwen engine's --vision stands alone, so it goes (with a picture word after it, if an older file has one). The DeepSeek engine's is a pair, `--vision on|off`, that setup wrote and the engine reads: it stays whole (taking out only the name left `off` behind: `--eos 1 off`, "unknown option off", #4358 #4359 #4505 #4507). */
+  if(!cfg.vision&&!ownEngine(config)&&Array.isArray(cfg.args))cfg.args=withoutVisionFlag(cfg.args);
   for(const arg of cfg.args??[])if(arg.endsWith('.gguf')&&!existsSync(resolve(repo(),arg)))throw new Error('An engine argument names a missing GGUF. Restore the saved arguments or repair the files.');
   /* The app's own choice of request slots (4, fewer where the card has no room) is part of the configuration, so a tune measures the engine a load will start: slots take VRAM from the expert cache. */
   const parallelChoice=packaged&&!ownEngine(config)?chooseParallel({config:cfg,values:args.values??{},hardware:snapshot.hardware?.gpus?.length?snapshot.hardware:{gpus:hardwareProbe()??[]}}):null;
-  let parallelNote=null;
+  let parallelNote=null,dsNote='';
   /* The agent asks for long answers (a thinking model can use most of the window): let the engine clamp the output to what is left of the context instead of refusing the request. */
   if(packaged&&!ownEngine(config)&&cfg.fit_max_tokens===undefined)cfg.fit_max_tokens=true;
   if(parallelChoice){const applied=applyParallel(cfg,parallelChoice);for(const k of Object.keys(cfg))if(!(k in applied.cfg))delete cfg[k];Object.assign(cfg,applied.cfg);parallelNote=applied.note;}
   /* DeepSeek's Speed choice: the engine decides by itself (--experts auto: 5 when the cards total 16 GB or less, else 6), so nothing is passed unless the person chose 5 or 6. */
-  if(ownEngine(config)){const list=[];const old=Array.isArray(cfg.args)?cfg.args:[];for(let i=0;i<old.length;i++){if(old[i]==='--experts'){i++;continue;}list.push(old[i]);}if(dsExpertsSupported(config)&&(cfg.ds_experts==='5'||cfg.ds_experts==='6'))list.push('--experts',cfg.ds_experts);else if(!dsExpertsSupported(config)&&old.includes('--experts'))list.splice(0,list.length,...old);cfg.args=list;delete cfg.ds_experts;}
+  if(ownEngine(config)){const list=[];const old=Array.isArray(cfg.args)?cfg.args:[];for(let i=0;i<old.length;i++){if(old[i]==='--experts'){i++;continue;}list.push(old[i]);}if(dsExpertsSupported(config)&&(cfg.ds_experts==='5'||cfg.ds_experts==='6'))list.push('--experts',cfg.ds_experts);else if(!dsExpertsSupported(config)&&old.includes('--experts'))list.splice(0,list.length,...old);cfg.args=list;delete cfg.ds_experts;
+   /* Only the options strata-dsv41 takes go to it (#4504): --vram-reserve-mib is its --reserve-mib, and --pool-workers and the other Qwen-engine names are left out, in the arguments and in the person's saved options. */
+   const built=dsEngineArgs(cfg.args);cfg.args=built.args;dsNote=dsArgsNote(built);
+   if(Array.isArray(cfg[USER_KEY])){const kept=dsUserArgs(cfg[USER_KEY]);if(kept.length)cfg[USER_KEY]=kept;else delete cfg[USER_KEY];}}
   else delete cfg.ds_experts;
-  return {cfg,resources,visionPreferences,parallelChoice,parallelNote};
+  return {cfg,resources,visionPreferences,parallelChoice,parallelNote,dsNote};
  }
  /* The DFlash2 drafter, before a load that uses it: Control says whether the choice needs it (and the file is not here), downloads it pinned and checked, and packs it, with plain progress in the job.
     Never stops the load: a drafter that cannot be had leaves the MTP running, and the job says so. The choice itself is remembered in the model's settings file. */
@@ -275,10 +324,10 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /* Which drafter runs, when it is not the one that was asked for (the engine's own words, "Drafting: MTP (DFlash2 didn't fit)"): under Details of the load. */
  async function noteDrafting(job,instance,key){let note='';try{const r=await fetcher(`http://127.0.0.1:${instance.port}/metrics`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(r.ok)note=String((await r.json())?.engine?.drafting_note??'');}catch{/* a convenience */}const lines=[job.drafterNote,note].filter(Boolean);if(lines.length)job.details=[job.details,...lines].filter(Boolean).join('\n');}
  async function loadEngine(job,args){
-  await refresh(true);if(job.state!=='running')return;const {config,entry,path:configFile}=record(args.model);assertSettingsFile(configFile);if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
+  await refresh(true);if(job.state!=='running')return;const {entry,path:configFile}=recordFile(args.model);const config=checkedSettingsConfig(readFileSync(configFile,'utf8'));if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
   if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
   if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
-  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote}=buildConfig(args,config);
+  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,dsNote}=buildConfig(args,config);
   let parallelNote=chosenNote;
   await prepareDrafter(job,args,cfg,configFile);if(job.state!=='running')return;
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
@@ -299,12 +348,19 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
-  let proc=null,started=null,retried=null;
+  let proc=null,started=null,retried=null,startWait=null;
   if(packaged){
+   /* How long this start waits, and the server's own engine wait kept above it. The server ends the engine when its engine wait runs
+      out (900 s, or the config's engine_ready_s), so a start that waits longer than that can never win: as in `strata launch`, the
+      server gets a wait above the start's. It is only ever raised, never lowered, so a config that already names a longer one
+      (setup's 3600 for DeepSeek V4.1-Flash) is left alone. */
+   startWait=startWaitFor(config,entry,args.model);
+   if(startWait+60>Math.max(900,Number(cfg.engine_ready_s)||0))cfg.engine_ready_s=startWait+60;
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
-   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:ownEngine(config)?Math.min(600,Math.max(300,Number(config.engine_ready_s)||300)):300}));};
+   if(dsNote)append(id,dsNote);
+   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWait}));};
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;
@@ -328,7 +384,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
     catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}
   } else {
-  proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,PYTHONUNBUFFERED:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',STRATA_API_KEY:''}});
+  proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:sourceServerEnvironment()});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
   for(const stream of [proc.stdout,proc.stderr])stream.on('data',chunk=>{const lines=chunk.toString().split('\n').filter(Boolean);lines.forEach(line=>append(id,line.replaceAll(key,'[redacted]')));job.summary=lines.at(-1)??job.summary;emit();});
   proc.on('error',error=>{instance.status='error';instance.error=error.message;emit();});proc.on('exit',code=>{if(instances.has(id)&&instance.status!=='unloading'){instance.status='error';instance.error=`Engine stopped${code===null?'':` (exit ${code})`}. Open diagnostics or reload.`;emit();}});emit();
@@ -396,16 +452,19 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  function writeModelConfig(path,next){const mine=mergeUserArgs(captureUserArgs(readJson(path)),next[USER_KEY]??[]);next=stampedUserArgs(next,mine);copyFileSync(path,path+'.bak');chmodSync(path+'.bak',0o600);const temp=path+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,path);}
  async function tune(job,args){
   await refresh(true);if(job.state!=='running')return;
-  const chosen=record(args.model);resourceSettings(chosen.config,snapshot.hardware,args.profile,modelArena(args.model));
+  const chosen=record(args.model);
+  /* The resource preference writes the Qwen engine's options (--pool-workers, --vram-reserve-mib); the DeepSeek engine takes neither (#4504), so its settings file is left as it is. */
+  const resourceFor=config=>ownEngine(config)?{}:resourceSettings(config,snapshot.hardware,args.profile,modelArena(args.model));
+  resourceFor(chosen.config);
   if(!chosen.entry.ready)throw new Error('Prepare the model before tuning.');
   if(externalRunning().length)throw new Error('Stop the native server outside this UI before tuning.');
   if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish requests before tuning.');
   for(const id of [...instances.keys()])await unload(id);
   if(job.state!=='running')return;
-  const initialValues=resourceSettings(chosen.config,snapshot.hardware,args.profile,modelArena(args.model));writeModelConfig(chosen.path,{...chosen.config,...initialValues,ui_resource_profile:args.profile});
+  const initialValues=resourceFor(chosen.config);writeModelConfig(chosen.path,{...chosen.config,...initialValues,ui_resource_profile:args.profile});
   if(args.calibrate!==false&&state().capabilities.calibration){job.summary='Measuring the best engine settings for this computer…';emit();await program(job,args);}
   if(job.state!=='running')return;
-  const current=record(args.model),values=resourceSettings(current.config,snapshot.hardware,args.profile,modelArena(args.model));
+  const current=record(args.model),values=resourceFor(current.config);
   const next={...current.config,...values,ui_resource_profile:args.profile};
   writeModelConfig(current.path,next);
   job.summary='Applying your resource preference and loading the model…';emit();

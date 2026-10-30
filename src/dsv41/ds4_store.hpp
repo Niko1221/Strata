@@ -48,7 +48,7 @@ public:
     enum Policy { kLru = 0, kLfu = 1 };
     struct Stats {
         std::atomic<int64_t> hits{0}, misses{0}, prefetched{0}, prefetch_used{0}, prefetch_wasted{0}, evictions{0}, fails{0};
-        std::atomic<int64_t> bytes_read{0}, wait_ns{0}, no_slot{0}, cancelled{0};
+        std::atomic<int64_t> bytes_read{0}, wait_ns{0}, no_slot{0}, cancelled{0}, put{0};
     };
     struct Vis {                 // a slot the GPU may read from now on (dev != 0), or no longer (dev == 0)
         int layer = 0, e = 0;
@@ -254,6 +254,52 @@ public:
             io_->wait_any(5000);
         }
         return n;
+    }
+    /// A slot for (layer, e) that the caller fills with the expert's blob itself (an expert the VRAM cache gives back to the CPU lane: its bytes
+    /// are in memory already, so no read from the SSD while the lane waits).  Returns the blob's address, or nullptr (it is here already, or
+    /// no slot can be had).  The slot is pinned and not findable until put_done().
+    uint8_t* put_begin(int layer, int e) {
+        if (layer < 0 || layer >= (int) geo_.size() || e < 0 || e >= geo_[(size_t) layer].n_exp) return nullptr;
+        std::lock_guard<std::mutex> lk(mu_);
+        if (where_[(size_t) layer][(size_t) e] >= 0) return nullptr;
+        const int s = take_slot(false);
+        if (s < 0) return nullptr;
+        Slot& sp = slots_[(size_t) s];
+        if (sp.layer >= 0 && sp.expert >= 0) {
+            where_[(size_t) sp.layer][(size_t) sp.expert] = -1;
+            if (sp.prefetch) st_.prefetch_wasted.fetch_add(1, std::memory_order_relaxed);
+            st_.evictions.fetch_add(1, std::memory_order_relaxed);
+        }
+        sp.layer = layer;
+        sp.expert = e;
+        sp.pin = 1;
+        sp.prefetch = false;
+        sp.visible = false;
+        sp.tick = ++clock_;
+        sp.bad.store(false);
+        sp.cancel.store(false);
+        sp.left.store(1, std::memory_order_release);
+        sp.state.store(kLoading, std::memory_order_release);
+        where_[(size_t) layer][(size_t) e] = s;
+        st_.put.fetch_add(1, std::memory_order_relaxed);
+        return sp.base;
+    }
+    void put_done(int layer, int e, bool ok) {
+        std::lock_guard<std::mutex> lk(mu_);
+        const int s = where_[(size_t) layer][(size_t) e];
+        if (s < 0) return;
+        Slot& sp = slots_[(size_t) s];
+        if (sp.pin > 0) sp.pin--;
+        if (ok) {
+            sp.left.store(0, std::memory_order_release);
+            sp.state.store(kReady, std::memory_order_release);
+        } else {
+            where_[(size_t) layer][(size_t) e] = -1;
+            sp.layer = sp.expert = -1;
+            sp.left.store(0, std::memory_order_release);
+            sp.state.store(kFree, std::memory_order_release);
+            free_hint_ = std::min<size_t>(free_hint_, (size_t) s);
+        }
     }
     /// Guesses still waiting in the queue for a layer the token is past: dropped unread (their slots free once the queue has gone by)
     void cancel_stale(int layer_now) {

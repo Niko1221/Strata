@@ -72,7 +72,8 @@ class Ctx:
         s = self.settings
         out = [n.line() for n in S.check_access(s)]
         out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
-        out += [n.line() for n in S.check_context(s)]
+        deepseek = bool(s.family and self.catalog.strata.multi_family(s.family))
+        out += [n.line() for n in S.check_context(s, deepseek=deepseek, pack_limit=self.catalog.pack_limit(s.family, s.model) if deepseek else None)]
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":
             out.append(f"{r.title}: {r.words}.")
@@ -166,7 +167,10 @@ class Ctx:
                                "The engine's own list could not be read here; names are not checked."
         if not cfg and not s.extra:
             self.engine_note = self.engine_note or "The model is not installed yet; the defaults and tuned values appear after it is."
-        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra)
+        from strata_control import speed_switches
+        gpus = list(getattr(self.computer, "gpus", None) or [])
+        switches = P.switch_params(speed_switches.applicable(cfg, gpus, self.catalog.installed_backend()))
+        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra, switches)
         return self._adv
 
     def command_text(self) -> str:

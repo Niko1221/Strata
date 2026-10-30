@@ -372,7 +372,8 @@ def _effective(a: argparse.Namespace, machine: bool) -> int:
         if was != now:
             changed.append({"flag": flag, "was": was, "now": now})
     payload = {"applied": bool(info.get("applied")), "preset": info.get("preset"), "state": info.get("state"), "reasons": info.get("reasons", []),
-               "why_not": info.get("why_not"), "notice": info.get("notice"), "args": merged.get("args"), "env": merged.get("env") or {},
+               "why_not": info.get("why_not"), "warnings": info.get("warnings") or [], "notice": info.get("notice"),
+               "args": merged.get("args"), "env": merged.get("env") or {},
                "sampling": merged.get("sampling") or {}, "changed": changed, "per_request": info.get("per_request") or {}}
     human = (f"Using your tuning '{info['preset']['name']}'" if info.get("applied") else "No saved tuning is applied; the standard settings run.")
     return _print(payload, machine, human)

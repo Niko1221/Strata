@@ -75,6 +75,12 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16 = 0);
+/// KVA (CUDA/HIP only): the same recurrence kernels as gdn_recurrence, bit for bit, without the output
+/// normalization: state, h, gate, beta and the scratch `y` only.  The output projection and the gated residual
+/// write have no consumer when only the state advances, and their input (z, the gate projection) is not needed
+/// either.  Declared here for the CUDA build; the SYCL tree keeps its own recurrence and does not reference it.
+void gdn_recurrence_state_only(float* state, const float* h, const float* gate, const float* beta, float* y,
+                               int64_t T, void* stream);
 
 // ---- MoE
 /// softmax over 512, top-10 (ties to the lower id), weights renormalised over the ten (the native router).
@@ -98,6 +104,14 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream, const float* row_sd = nullptr);
+/// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): acc[t, :] = shared[t, :] * sigmoid(sg[t]) - the shared expert's
+/// part of moe_combine, written before the routed experts are known.
+void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream);
+/// Layer-major prefill: one expert group's rows added into the super-chunk's accumulator, per token in a fixed order
+/// (deterministic, no atomics): for each u < n_u, acc[u_tok[u], :] += sum_{j in [u_off[u], u_off[u+1])} u_w[j] *
+/// Dm[u_rows[j], :].  The sum runs in the group's row order, not moe_combine's k order (FP32 rounding only).
+void moe_scatter_add(const float* Dm, const int32_t* u_tok, const int32_t* u_off, const int32_t* u_rows,
+                     const float* u_w, int64_t n_u, float* acc, void* stream);
 /// --peer-device's prompt share as sums: bo[t, :] = (sum over the k with slot[t, k] < rows_local of w[t, k] *
 /// D[slot[t, k], :], in k order) + peer[t, :] + shared[t, :] * sigmoid(sg[t]).  `peer` (the peer's per-token sums)
 /// may be mapped host memory.

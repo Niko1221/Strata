@@ -35,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
-from strata_control import vram_fit  # noqa: E402
+from strata_control import intel_spec, vram_fit  # noqa: E402
 
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
@@ -510,6 +510,12 @@ def install(argv) -> None:
                       f"{sum(cards):.0f} GB of VRAM: the config sets STRATA_VERIFY_NO_HOST=0, so the CPU computes the "
                       "experts the later card does not hold instead of the start being refused (#1980). Set it to 1 "
                       "in the config's env if your cards hold everything; a smaller model fits fully (docs/INTEL_ARC.md)")
+            # exactly two Battlemage cards: --spec 2 (the engine pipelines the two cards' windows by default there and then answers
+            # as a 2-token window whatever --spec says; strata_control/intel_spec.py).  The person's own --spec always wins.
+            cards_used = [intel[i] for i in gsel if isinstance(i, int) and 0 <= i < len(intel)]
+            spec_note = intel_spec.apply_to_config(cfg, cards_used)
+            if spec_note:
+                S.say("  " + spec_note)
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:

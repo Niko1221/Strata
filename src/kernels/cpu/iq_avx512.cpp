@@ -173,10 +173,19 @@ template <> struct Fmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
     }
 };
 
-template <int TY, int NT>
+template <bool Singleton> struct RowAccumulator;
+template <> struct RowAccumulator<false> { using Type = __m512; };
+template <> struct RowAccumulator<true> { using Type = __m256; };
+
+template <int TY, int NT, bool Singleton = false>
 inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
-    __m512 accf[NT];
-    for (int t = 0; t < NT; ++t) accf[t] = _mm512_setzero_ps();
+    // Decode weights once for the group; select the accumulation order at compile time.
+    using Acc = typename RowAccumulator<Singleton>::Type;
+    Acc accf[NT];
+    for (int t = 0; t < NT; ++t) {
+        if constexpr (Singleton) accf[t] = _mm256_setzero_ps();
+        else accf[t] = _mm512_setzero_ps();
+    }
     const __m512i zero = _mm512_setzero_si512();
     for (int i = 0; i < nblocks; ++i) {
         const uint8_t* blk = row + (size_t) i * Fmt<TY>::bytes;
@@ -199,14 +208,35 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
                 acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g, ys), sc));
             }
         }
-        const float dx = h2f(u16(blk)) * Fmt<TY>::K;
-        for (int t = 0; t < NT; ++t)
-            accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+        if constexpr (Singleton) {
+            const float dx = h2f(u16(blk));
+            for (int t = 0; t < NT; ++t) {
+                // Preserve ggml AVX2's eight integer lanes BEFORE floating conversion.
+                const __m256i folded = _mm256_add_epi32(_mm512_castsi512_si256(acci[t]),
+                                                       _mm512_extracti64x4_epi64(acci[t], 1));
+                accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d),
+                                         _mm256_cvtepi32_ps(folded), accf[t]);
+            }
+        } else {
+            const float dx = h2f(u16(blk)) * Fmt<TY>::K;
+            for (int t = 0; t < NT; ++t)
+                accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+        }
     }
-    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]);
+    if constexpr (Singleton) {
+        for (int t = 0; t < NT; ++t) {
+            __m128 sum = _mm256_extractf128_ps(accf[t], 1);
+            sum = _mm_add_ps(sum, _mm256_castps256_ps128(accf[t]));
+            sum = _mm_add_ps(sum, _mm_movehl_ps(sum, sum));
+            sum = _mm_add_ss(sum, _mm_movehdup_ps(sum));
+            res[t] = Fmt<TY>::K * _mm_cvtss_f32(sum);
+        }
+    } else {
+        for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]);
+    }
 }
 
-template <int TY, int NT>
+template <int TY, int NT, bool Singleton = false>
 void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff,
              int r0, int r1) {
     const block_q8_K* y[NT];
@@ -214,8 +244,8 @@ void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const voi
     const int nb = n / QK_K;
     float g[NT], u[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
-        row_dot<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        row_dot<TY, NT, Singleton>(blob + (size_t) r * gu_row, nb, y, g);
+        row_dot<TY, NT, Singleton>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
     }
 }
@@ -231,18 +261,18 @@ void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act,
     }
 }
 
-template <int TY>
+template <int TY, bool Singleton = false>
 void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                 float* const* ff, int r0, int r1) {
     switch (nt) {
-        case 1: gu_rows<TY, 1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 2: gu_rows<TY, 2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 3: gu_rows<TY, 3>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 4: gu_rows<TY, 4>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 5: gu_rows<TY, 5>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 6: gu_rows<TY, 6>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 7: gu_rows<TY, 7>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        default: gu_rows<TY, 8>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 1: gu_rows<TY, 1, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 2: gu_rows<TY, 2, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 3: gu_rows<TY, 3, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 4: gu_rows<TY, 4, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 5: gu_rows<TY, 5, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 6: gu_rows<TY, 6, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 7: gu_rows<TY, 7, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        default: gu_rows<TY, 8, Singleton>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
     }
 }
 
@@ -568,6 +598,16 @@ void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
         case 21: gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 22: gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         default: break;
+    }
+}
+
+// The linked ggml AVX2 singleton order, for the formats validated against its production dot.
+void iq512_reference_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                             const void* const* act, int nt, float* const* ff, int r0, int r1) {
+    switch (type) {
+        case 18: gu_rows_nt<18, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 21: gu_rows_nt<21, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 22: gu_rows_nt<22, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
     }
 }
 

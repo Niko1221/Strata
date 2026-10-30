@@ -58,7 +58,7 @@ export async function countTokens({ baseUrl, key = '', model = '', text, fetchIm
   } catch { return null; }
 }
 
-/** The plain sentences (also in the interface catalog in all eight languages). `{0}` slots are filled by the page. */
+/** The plain sentences (also in the interface catalog in all nine languages). `{0}` slots are filled by the page. */
 export const FIT_TEXT = Object.freeze({
   tooLarge: 'This message is about {0} tokens long, and this model can read about {1} at a time. It is too large to send as it is.',
   tooLargeNext: 'Attach it as a file for the assistant to read in parts, or send a shortened preview.',

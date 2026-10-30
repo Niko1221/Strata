@@ -2,10 +2,16 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_kernels.cu - DeepSeek-V4.1's device kernels (see ds4_kernels.cuh).  No fast math here: the rotary
 // angles, the softmaxes and the roundings follow the reference's F32 arithmetic.  A window's token is blockIdx.y.
+#include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_kernels.cuh"
+#if defined(STRATA_METAL)
+#include <ds4_metal_host.h>
+#endif
 #include "ds4_numerics.cuh"
 #include "ds4_q6k.cuh"
 #include "ds4_attn_split.cuh"
+#include "ds4_wmma.cuh"
+#include "ds4_experts_rule.hpp"
 
 #include <cuda_fp16.h>
 
@@ -13,6 +19,7 @@
 #include <atomic>
 #include <cfloat>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <cstdio>
@@ -1128,6 +1135,164 @@ __global__ void __launch_bounds__(kThreads) sparse_attn_packed_kernel(const floa
     }
 }
 
+// DS4_FAST_ATTN=1: the chunked prompt's packed-KV attention on the matrix cores (gfx11/gfx12 WMMA; the R9700's gfx12).
+// The matrix's rows are 16 heads of ONE query, so a block stages a 16-key tile once for all of them: Q (16 heads x 512
+// dims) is the A operand of the scores' product, the key tile is B, and the same tile is B of the values' product (the
+// heads' softmaxes and their 512-dim outputs are its rows).  The QK and PV sums are the matrix cores' order, not
+// sparse_attn_packed_kernel's scalar lanes' - hence opt-in (DS4_FAST_ATTN).
+// (HIP only: the CUDA build keeps the scalar kernels, so this and the dispatch below compile out there.)
+#if defined(STRATA_USE_HIP)
+constexpr int kFaHeads = 16;   // heads a tile (the matrix's rows)
+constexpr int kFaKeys = 16;    // keys a tile
+constexpr int kFaD = 512;      // the head dim
+constexpr int kFaLd = 520;     // halves a tile row (512 + 8: the pad keeps the 16 rows off one bank)
+__global__ void __launch_bounds__(kThreads) sparse_attn_wmma_kernel(const float* __restrict__ q,
+                                                                    const uint16_t* __restrict__ win,
+                                                                    const uint8_t* __restrict__ ckv,
+                                                                    const int* __restrict__ sel, int sel_stride,
+                                                                    AttnRows ar, const float* __restrict__ sink,
+                                                                    int heads, float scale, float* __restrict__ out) {
+    __shared__ __align__(16) uint16_t qs[kFaHeads * kFaLd];
+    __shared__ __align__(16) uint16_t ks[kFaKeys * kFaLd];
+    __shared__ float sc[kFaHeads][kFaKeys];
+    __shared__ float part[8][kFaHeads][kFaKeys];   // (the 8 warps' 64-dim slices of the scores)
+    __shared__ uint16_t ps[kFaHeads][kFaKeys];
+    __shared__ const uint8_t* rows[kFaKeys];
+    __shared__ float m_run[kFaHeads], den[kFaHeads], ts[kFaHeads];
+    const int tid = (int) threadIdx.x, wp = tid >> 5, lane = tid & 31, l16 = lane & 15, hi = lane >> 4;
+    const int t = blockIdx.y, hb = blockIdx.x * kFaHeads;
+    int n_win, n_sel, w0;
+    if (ar.gen) {
+        const long long ta = ar.t0 + t, pa = ar.p0 + ta;
+        const long long first = max((long long) ar.win - ar.p0, ta + 1);
+        w0 = (int) first;
+        n_win = (int) (ar.win + ta - first + 1);
+        n_sel = ar.R > 0 ? (int) min((long long) ar.kcap, (pa + 1) / ar.R) : 0;
+    } else {
+        n_win = ar.nwin[t], n_sel = ar.nsel[t], w0 = ar.win0[t];
+    }
+    const uint16_t* wbase = win + (size_t) w0 * kFaD;
+    const int* sl = sel + (size_t) t * sel_stride;
+    const size_t crow = kv_row_bytes(kKvFp4, kFaD);
+    // the block's 16 heads' queries as FP16 (the matrix's A operand), and their running softmax state
+    for (int i = tid; i < kFaHeads * kFaD; i += kThreads) {
+        const int h = i / kFaD, c = i % kFaD;
+        qs[h * kFaLd + c] = __builtin_bit_cast(uint16_t, (_Float16) q[((size_t) t * heads + hb + h) * kFaD + c]);
+    }
+    if (tid < kFaHeads) {
+        m_run[tid] = -1e30f;
+        den[tid] = 0.0f;
+    }
+    f8v o[4];
+#pragma unroll
+    for (int f = 0; f < 4; ++f)
+#pragma unroll
+        for (int i = 0; i < 8; ++i) o[f][i] = 0.0f;
+    __syncthreads();
+    auto stage = [&](int t0, int n) {   // the tile's n rows into ks (BF16 rows -> FP16)
+        const int sr = tid >> 4, part = tid & 15;
+        if (sr >= n) return;
+        const uint8_t* row = rows[sr];
+        uint16_t tmp[32];
+        if (t0 + sr < n_win) {
+            const uint4* src = (const uint4*) (row + part * 64);
+            const uint4 a = src[0], b = src[1], c = src[2], d = src[3];
+            ((uint4*) tmp)[0] = a;
+            ((uint4*) tmp)[1] = b;
+            ((uint4*) tmp)[2] = c;
+            ((uint4*) tmp)[3] = d;
+        } else {
+            unpack32(row, part, (uint4*) tmp);
+        }
+        uint16_t* dst = ks + sr * kFaLd + part * 32;
+#pragma unroll
+        for (int i = 0; i < 32; ++i) dst[i] = __builtin_bit_cast(uint16_t, (_Float16) bf16f(tmp[i]));
+    };
+    const int total = n_win + n_sel;
+    for (int t0 = 0; t0 < total; t0 += kFaKeys) {
+        const int nt = min(kFaKeys, total - t0);
+        if (tid < nt) {
+            const int j = t0 + tid;
+            rows[tid] = j < n_win ? (const uint8_t*) (wbase + (size_t) j * kFaD) : ckv + (size_t) sl[j - n_win] * crow;
+        }
+        __syncthreads();
+        stage(t0, nt);
+        __syncthreads();
+        {   // the scores in 8 slices of 64 dims, a warp a slice, summed in shared
+            f8v acc = {0, 0, 0, 0, 0, 0, 0, 0};
+            const int k0 = wp * 64;
+            for (int kk = k0; kk < k0 + 64; kk += 16) {
+                h16v a, b;
+                const uint32_t* qa = (const uint32_t*) (qs + l16 * kFaLd + kk);
+                const uint32_t* kb = (const uint32_t*) (ks + l16 * kFaLd + kk);
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {   // (two halves a load)
+                    a[2 * i] = __builtin_bit_cast(_Float16, (uint16_t) (qa[i] & 0xffffu));
+                    a[2 * i + 1] = __builtin_bit_cast(_Float16, (uint16_t) (qa[i] >> 16));
+                    b[2 * i] = __builtin_bit_cast(_Float16, (uint16_t) (kb[i] & 0xffffu));
+                    b[2 * i + 1] = __builtin_bit_cast(_Float16, (uint16_t) (kb[i] >> 16));
+                }
+                acc = set_wmma(a, b, acc);
+            }
+#pragma unroll
+            for (int i = 0; i < 8; ++i) part[wp][set_wmma_row(i, hi)][l16] = acc[i];
+            __syncthreads();
+            const int h = tid >> 4, k = tid & 15;
+            float a = 0.0f;
+#pragma unroll
+            for (int w = 0; w < 8; ++w) a += part[w][h][k];
+            sc[h][k] = t0 + k < total ? a * scale : -INFINITY;
+        }
+        __syncthreads();
+        {   // the online softmax: a warp per 2 heads, a lane a key (16 lanes a head)
+            const int h = 2 * wp + (lane >> 4), k = lane & 15;
+            float m = sc[h][k];
+#pragma unroll
+            for (int o = 8; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+            const float mo = m_run[h], mn = fmaxf(mo, m);
+            const float p = expf(sc[h][k] - mn);
+            ps[h][k] = __builtin_bit_cast(uint16_t, (_Float16) p);
+            float s = p;
+#pragma unroll
+            for (int o = 8; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+            if (k == 0) {
+                ts[h] = expf(mo - mn);
+                den[h] = den[h] * ts[h] + s;
+                m_run[h] = mn;
+            }
+        }
+        __syncthreads();
+        const int dim0 = wp * 64;
+#pragma unroll
+        for (int f = 0; f < 4; ++f)
+#pragma unroll
+            for (int i = 0; i < 8; ++i) o[f][i] *= ts[set_wmma_row(i, hi)];
+#pragma unroll
+        for (int f = 0; f < 4; ++f) {   // the values: P (16 heads x 16 keys) x V (16 keys x 64 dims this warp)
+            h16v a, b;
+            const uint32_t* pp = (const uint32_t*) ps[l16];
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                a[2 * i] = __builtin_bit_cast(_Float16, (uint16_t) (pp[i] & 0xffffu));
+                a[2 * i + 1] = __builtin_bit_cast(_Float16, (uint16_t) (pp[i] >> 16));
+                b[2 * i] = __builtin_bit_cast(_Float16, ks[(2 * i) * kFaLd + dim0 + f * 16 + l16]);
+                b[2 * i + 1] = __builtin_bit_cast(_Float16, ks[(2 * i + 1) * kFaLd + dim0 + f * 16 + l16]);
+            }
+            o[f] = set_wmma(a, b, o[f]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int f = 0; f < 4; ++f)
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int h = set_wmma_row(i, hi), dm = wp * 64 + f * 16 + l16;
+            const float dv = den[h] + expf(sink[hb + h] - m_run[h]);
+            out[((size_t) t * heads + hb + h) * kFaD + dm] = o[f][i] / dv;
+        }
+}
+#endif   // STRATA_USE_HIP
+
 // the ring's rows are kKvFp8: E4M3 codes, a UE8M0 scale per 32 (decoded: exactly the BF16 values they were made from)
 __global__ void ring_to_ext_kernel(const uint8_t* __restrict__ ring, uint16_t* __restrict__ ext, long long p0, int n,
                                    int d) {
@@ -1218,7 +1383,34 @@ __global__ void __launch_bounds__(kThreads) markov_kernel(float* __restrict__ lo
     if (lane == 0) logits[v] += a;
 }
 
-// ---------------------------------------------------------------- the markov bias over a head group (markov_share)
+// the same bias with the head quantised to Q8_0 blocks of 32 (34 B: an F16 d and 32 int8): half the bytes read for the same sums.
+// A lane's 8 values sit inside one block (8 divides 32), so a lane reads one d and 8 codes; the sums are the same terms, in the
+// block's own order, with the quantisation's error the only difference.
+__global__ void __launch_bounds__(kThreads) markov_kernel_q8(float* __restrict__ logits, const uint16_t* __restrict__ E,
+                                                            const uint8_t* __restrict__ Hq, const int* __restrict__ tok,
+                                                            int V, int R) {
+    extern __shared__ float er[];
+    const uint16_t* erow = E + (size_t) (*tok) * R;
+    for (int i = threadIdx.x; i < R; i += blockDim.x) er[i] = bf16f(erow[i]);
+    __syncthreads();
+    const int lane = threadIdx.x & 31;
+    const int v = blockIdx.x * (kThreads / 32) + (threadIdx.x >> 5);
+    if (v >= V) return;
+    const uint8_t* hr = Hq + (size_t) v * (size_t) (R / 32) * 34;
+    float a = 0.0f;
+    for (int c = lane * 8; c < R; c += 32 * 8) {
+        const uint8_t* blk = hr + (size_t) (c >> 5) * 34;
+        const float d = __half2float(*(const __half*) blk);
+        const int8_t* q = (const int8_t*) (blk + 2 + (c & 31));
+        float t = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) t += (float) q[i] * er[c + i];
+        a += d * t;
+    }
+    a = warp_sum(a);
+    if (lane == 0) logits[v] += a;
+}
+
 // a member's rows [v0, v0 + vn) of the bias (markov_kernel's sums, the prev token's E row already on the device, BF16)
 __global__ void __launch_bounds__(kThreads) markov_share_kernel(float* __restrict__ logits,
                                                                 const uint16_t* __restrict__ H,
@@ -1839,6 +2031,42 @@ bool split_enabled() {
     }();
     return on;
 }
+// DS4_FAST_ATTN: the chunked prompt's packed-KV attention on the matrix cores (sparse_attn_wmma_kernel).  The
+// QK/PV sums are the matrix cores' order, so the outputs differ from the scalar kernel's in the last places (the owner
+// approved the trade for the prefill; the decode path stays on the scalar kernels).
+// 0.2.7: ON by default on gfx1200 / gfx1201 (RDNA4: the R9700, RX 9000), where it was measured and gated (KL 0.0003 against the
+// 0.006 gate, ids identical); gfx11 and gfx1151 (Strix Halo) are untested and keep the scalar kernels.  DS4_FAST_ATTN=0 is the
+// off switch (exactly the 0.2.6 arithmetic), DS4_FAST_ATTN=1 turns it on elsewhere.  Decided per device (the first call there).
+// The Marlin stream measured it ON on 4x R9700 (gfx1201), 2.25 bpw, 8K code prompts: 1180 -> 1354 ppts (+14.7%), the same ids,
+// KL 0.10833 against 0.10925 for the scalar path.  It stays gfx12-only until Strix Halo (gfx1151) is tested.
+#if defined(STRATA_USE_HIP)
+bool device_is_gfx12() {
+    static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    int c = cache[dev].load();
+    if (c == 0) {
+        cudaDeviceProp prop{};
+        const bool yes = cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+                         (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0);
+        c = yes ? 2 : 1;
+        cache[dev].store(c);
+    }
+    return c == 2;
+}
+#endif
+bool fast_attn_enabled() {
+    static const int env = [] {
+        const char* e = std::getenv("DS4_FAST_ATTN");
+        return e == nullptr ? -1 : (std::atoi(e) != 0 ? 1 : 0);
+    }();
+#if defined(STRATA_USE_HIP)
+    return strata::ds4::fast_attn_default(env, device_is_gfx12(), strata::ds4::defaults_026());
+#else
+    return strata::ds4::fast_attn_default(env, false, strata::ds4::defaults_026());
+#endif
+}
 attnsplit::AttnSplitScratch split_scratch(cudaStream_t s, int heads) {
     static std::mutex mu;
     static std::map<std::pair<int, cudaStream_t>, attnsplit::AttnSplitScratch> m;
@@ -1866,15 +2094,36 @@ void route_publish(const float* logits, const float* bias, int n, int k, int T, 
                    const unsigned long long* vram, const float* x, int dim, int* idx, float* w,
                    unsigned long long* plan_ptr, Req* req, unsigned seq, cudaStream_t s, const float* bias_vl,
                    unsigned vl, int na0, int na1) {
-    route_publish_kernel<<<T, 512, 0, s>>>(logits, bias, n, k, route_scale, vram, x, dim, idx, w, plan_ptr, req,
+#if defined(STRATA_METAL)
+    // selection only: the prefetch schedule (req) is published by the CUDA kernel, and is turned on separately here
+    if (strata::dsv41::metal_host::route_publish(logits, bias, n, k, T, route_scale, vram, idx, w, plan_ptr,
+            vl != 0 ? bias_vl : nullptr, vl)) {
+        // no prefetcher on the Mac path, so publish_kernel has no consumer: the selection is the whole job here
+        (void) req; (void) seq; (void) na0; (void) na1; (void) x; (void) dim;
+        return;
+    }
+#endif
+    strata_ds4_launch(route_publish_kernel, T, 512, 0, s, logits, bias, n, k, route_scale, vram, x, dim, idx, w, plan_ptr, req,
                                            vl != 0 ? bias_vl : nullptr, vl);
-    if (req != nullptr) publish_kernel<<<1, 1, 0, s>>>(req, T, seq, na0, na1);
+    if (req != nullptr) strata_ds4_launch(publish_kernel, 1, 1, 0, s, req, T, seq, na0, na1);
 }
 void route_ahead(const float* logits, const float* bias, int n, int m, int T, Req* req, int off, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // no prefetch schedule on the Mac path yet: the router publishes no requests, so there is nothing to look ahead for
+    (void) logits; (void) bias; (void) n; (void) m; (void) T; (void) req; (void) off; (void) s;
+    return;
+#endif
     if (req != nullptr && m > 0 && T > 0 && n <= 1024 && off + m <= kAhead)
-        route_ahead_kernel<<<T, 512, 0, s>>>(logits, bias, n, m, req, off);
+        strata_ds4_launch(route_ahead_kernel, T, 512, 0, s, logits, bias, n, m, req, off);
 }
-void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s) { wait_seq_kernel<<<1, 32, 0, s>>>(seq_ptr, seq); }
+void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // nothing is published, so nothing is waited for: the CUDA path spins until the host's prefetcher acknowledges
+    (void) seq_ptr; (void) seq; (void) s;
+    return;
+#endif
+    strata_ds4_launch(wait_seq_kernel, 1, 32, 0, s, seq_ptr, seq);
+}
 
 // the RAM store's experts for the device (a decode token, window of one): a pick the VRAM table left at 0 whose expert the store holds
 // (zc_tab[expert] = the slot's device address over PCIe, 0: not) is copied to staging slot i with wide coalesced loads (the PCIe
@@ -1898,14 +2147,28 @@ __global__ void zc_fix_kernel(unsigned long long* __restrict__ plan, const int* 
 }
 void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, uint8_t* stage, size_t stride, size_t bytes,
               cudaStream_t s) {
-    zc_copy_kernel<<<dim3(64, k), 256, 0, s>>>(plan, idx, zc_tab, stage, stride, bytes);
-    zc_fix_kernel<<<1, 32, 0, s>>>(plan, idx, zc_tab, k, stage, stride);
+    strata_ds4_launch(zc_copy_kernel, dim3(64, k), 256, 0, s, plan, idx, zc_tab, stage, stride, bytes);
+    strata_ds4_launch(zc_fix_kernel, 1, 32, 0, s, plan, idx, zc_tab, k, stage, stride);
 }
 
-void init_pre(float* pre, int T, cudaStream_t s) { init_pre_kernel<<<cdiv(T * 8, 128), 128, 0, s>>>(pre, T); }
+void init_pre(float* pre, int T, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    if (ds4_dbg("DS4_SKIP_INITPRE")) return;
+#endif
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::init_pre(pre, T, s)) return;   // the ported MSL kernel
+#endif
+    strata_ds4_launch(init_pre_kernel, cdiv(T * 8, 128), 128, 0, s, pre, T);
+}
 
 void embed(const uint16_t* rows, int T, float* h, int dim, int hc, cudaStream_t s) {
-    embed_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(rows, h, dim, hc);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::embed_addr(rows, T, h, dim, hc)) return;
+#endif
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::embed(rows, T, h, dim, hc, s)) return;
+#endif
+    strata_ds4_launch(embed_kernel, dim3(cdiv(dim, kThreads), T), kThreads, 0, s, rows, h, dim, hc);
 }
 
 void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cudaStream_t s) {
@@ -1919,82 +2182,153 @@ void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cud
             std::fprintf(stderr, "ds4 finish: packed rows of quant %d, %d values not covered\n", f.quant, len);
             return;
         }
-        finish_kernel<true><<<n_vec, kThreads, 0, s>>>(x, len, stride, f);
-    } else
-        finish_kernel<false><<<n_vec, kThreads, 0, s>>>(x, len, stride, f);
+#if defined(STRATA_METAL)
+        const auto& mp = *reinterpret_cast<const strata::dsv41::metal_host::FinishIn*>(&f);
+        if (strata::dsv41::metal_host::finish(x, n_vec, len, stride, mp)) return;   // finish_kernel<true> (the KV pack)
+#endif
+        strata_ds4_launch(finish_kernel<true>, n_vec, kThreads, 0, s, x, len, stride, f);
+    } else {
+#if defined(STRATA_METAL)
+        const auto& mf = *reinterpret_cast<const strata::dsv41::metal_host::FinishIn*>(&f);
+        if (strata::dsv41::metal_host::finish(x, n_vec, len, stride, mf)) return;   // the ported MSL kernel
+#endif
+        strata_ds4_launch(finish_kernel<false>, n_vec, kThreads, 0, s, x, len, stride, f);
+    }
 }
 
 void hc_mix(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, cudaStream_t s) {
-    hc_mix_kernel<<<dim3(n_mix, T), kThreads, 0, s>>>(h, fn, hcdim, eps, mixes);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_mix(h, fn, hcdim, n_mix, T, eps, mixes)) return;
+#endif
+    strata_ds4_launch(hc_mix_kernel, dim3(n_mix, T), kThreads, 0, s, h, fn, hcdim, eps, mixes);
 }
 void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, unsigned* cnt,
                   const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre, float* post,
                   float* comb, cudaStream_t s) {
-    hc_mix_split_kernel<<<dim3(n_mix, T), kThreads, 0, s>>>(h, fn, hcdim, eps, mixes, cnt, scale, base, hc, iters, hc_eps, pre,
+    strata_ds4_launch(hc_mix_split_kernel, dim3(n_mix, T), kThreads, 0, s, h, fn, hcdim, eps, mixes, cnt, scale, base, hc, iters, hc_eps, pre,
                                                             post, comb);
 }
 void hc_split(const float* mixes, const float* scale, const float* base, int hc, int iters, float hc_eps, int T,
               float* pre, float* post, float* comb, cudaStream_t s) {
-    hc_split_kernel<<<T, 32, 0, s>>>(mixes, scale, base, hc, iters, hc_eps, pre, post, comb);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_split(mixes, scale, base, hc, iters, hc_eps, T, pre, post, comb)) return;
+#endif
+    strata_ds4_launch(hc_split_kernel, T, 32, 0, s, mixes, scale, base, hc, iters, hc_eps, pre, post, comb);
 }
+void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes,
+                  const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre, float* post,
+                  float* comb, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // one dispatch: the mix and the sinkhorn split of its result (bit-identical to the two, see ds4_init.metal)
+    if (strata::dsv41::metal_host::hc_mix_split(h, fn, hcdim, n_mix, T, eps, mixes, scale, base, hc, iters, hc_eps,
+                                                pre, post, comb))
+        return;
+#endif
+    hc_mix(h, fn, hcdim, n_mix, T, eps, mixes, s);
+    hc_split(mixes, scale, base, hc, iters, hc_eps, T, pre, post, comb, s);
+}
+
 void hc_pre_norm(const float* h, const float* mix, const float* w, int dim, int hc, int T, float eps, float* x,
                  cudaStream_t s) {
-    hc_pre_norm_kernel<<<T, 1024, 0, s>>>(h, mix, w, dim, hc, eps, x);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_pre_norm(h, mix, w, dim, hc, T, eps, x)) return;
+#endif
+    strata_ds4_launch(hc_pre_norm_kernel, T, 1024, 0, s, h, mix, w, dim, hc, eps, x);
 }
 void hc_post(const float* y, const float* res, const float* post, const float* comb, int dim, int hc, int T,
              float* out, cudaStream_t s) {
-    hc_post_kernel<<<dim3(cdiv(dim * hc, kThreads), T), kThreads, 0, s>>>(y, res, post, comb, dim, hc, out);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_post_v(y, res, post, comb, dim, hc, T, out)) return;
+#endif
+    strata_ds4_launch(hc_post_kernel, dim3(cdiv(dim * hc, kThreads), T), kThreads, 0, s, y, res, post, comb, dim, hc, out);
 }
 
 void hc_post_inplace(const float* y, float* h, const float* post, const float* comb, int dim, int hc, int T,
                      cudaStream_t s) {
-    hc_post_inplace_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(y, h, post, comb, dim, hc);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_post(y, h, post, comb, dim, hc, T)) return;
+#endif
+    strata_ds4_launch(hc_post_inplace_kernel, dim3(cdiv(dim, kThreads), T), kThreads, 0, s, y, h, post, comb, dim, hc);
 }
 void hc_mix_scale(const float* h, int hcdim, int n_mix, int T, float eps, float* mixes, cudaStream_t s) {
-    hc_mix_scale_kernel<<<T, kThreads, 0, s>>>(h, hcdim, n_mix, eps, mixes);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::hc_mix_scale(h, hcdim, n_mix, T, eps, mixes)) return;
+#endif
+    strata_ds4_launch(hc_mix_scale_kernel, T, kThreads, 0, s, h, hcdim, n_mix, eps, mixes);
 }
 void engram_dequant_tok(const uint8_t* src, size_t per, int cols, int T, int hd, float* out, cudaStream_t s, int fmt) {
-    if (T > 0) engram_dequant_tok_kernel<<<T * cols, kThreads, 0, s>>>(src, per, cols, hd, out, fmt);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::engram_dequant_tok(src, per, cols, T, hd, out, fmt)) return;
+#endif
+    if (T > 0) strata_ds4_launch(engram_dequant_tok_kernel, T * cols, kThreads, 0, s, src, per, cols, hd, out, fmt);
 }
 void moe_sort(const int* idx, int T, int k, const int* vs, int n_vs, int* bounds, int* row_tok, int* pos,
               cudaStream_t s) {
-    moe_sort_kernel<false><<<n_vs, kThreads, 0, s>>>(idx, T, k, vs, bounds, row_tok, pos);
-    bounds_scan_kernel<<<1, 32, 0, s>>>(bounds, n_vs);
-    moe_sort_kernel<true><<<n_vs, kThreads, 0, s>>>(idx, T, k, vs, bounds, row_tok, pos);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::moe_sort(idx, T, k, vs, n_vs, bounds, row_tok, pos)) return;
+#endif
+    strata_ds4_launch(moe_sort_kernel<false>, n_vs, kThreads, 0, s, idx, T, k, vs, bounds, row_tok, pos);
+    strata_ds4_launch(bounds_scan_kernel, 1, 32, 0, s, bounds, n_vs);
+    strata_ds4_launch(moe_sort_kernel<true>, n_vs, kThreads, 0, s, idx, T, k, vs, bounds, row_tok, pos);
 }
 void moe_combine(float* acc, const float* y, const int* pos, const float* w, int T, int k, int r0, int r1, int dim,
                  cudaStream_t s) {
-    if (r1 > r0 && T > 0) moe_combine_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(acc, y, pos, w, k, r0, r1, dim);
+    if (r1 > r0 && T > 0) {
+#if defined(STRATA_METAL)
+        if (strata::dsv41::metal_host::moe_combine(acc, y, pos, w, T, k, r0, r1, dim)) return;
+#endif
+        strata_ds4_launch(moe_combine_kernel, dim3(cdiv(dim, kThreads), T), kThreads, 0, s, acc, y, pos, w, k, r0, r1, dim);
+    }
 }
 
 void gemv_f16(const uint16_t* W, const float* x, int n, int k, int T, float alpha, float* y, cudaStream_t s) {
-    gemv_f16_kernel<<<dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s>>>(W, x, n, k, alpha, y);
+    strata_ds4_launch(gemv_f16_kernel, dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s, W, x, n, k, alpha, y);
 }
 void gemv_f16_rows(const uint16_t* W, const float* x, size_t ldx, int n, int k, int T, float alpha, float* y, size_t ldy,
                    cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // gemv_f16_rows_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::gemv_f16_rows(W, x, ldx, n, k, T, alpha, y, ldy)) return;
+#endif
     if (T > 0)
-        gemv_f16_rows_kernel<<<dim3(cdiv(n, kThreads / 32), cdiv(T, kRowsT)), kThreads, 0, s>>>(W, x, ldx, n, k, T, alpha,
+        strata_ds4_launch(gemv_f16_rows_kernel, dim3(cdiv(n, kThreads / 32), cdiv(T, kRowsT)), kThreads, 0, s, W, x, ldx, n, k, T, alpha,
                                                                                                y, ldy);
 }
 
 void gemv_f32(const float* W, const float* x, int n, int k, int T, float* y, int ldy, cudaStream_t s) {
-    if (T > 0) gemv_f32_kernel<<<dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s>>>(W, x, n, k, y, ldy);
+#if defined(STRATA_METAL)
+    if (T > 0 && ::strata::dsv41::metal_host::gemv_f32(W, x, n, k, T, y, ldy)) return;
+#endif
+    if (T > 0) strata_ds4_launch(gemv_f32_kernel, dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s, W, x, n, k, y, ldy);
 }
 
 void route(const float* logits, const float* bias, int n, int k, int T, float route_scale, int* idx, float* w,
            cudaStream_t s, const float* bias_vl, const VlBits* vl) {
     static const VlBits none = {};
-    route_kernel<<<T, 512, 0, s>>>(logits, bias, n, k, route_scale, idx, w, vl != nullptr ? bias_vl : nullptr,
+#if defined(STRATA_METAL)
+    // route_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::route(logits, bias, n, k, T, route_scale, idx, w, bias_vl, vl)) return;
+#endif
+    strata_ds4_launch(route_kernel, T, 512, 0, s, logits, bias, n, k, route_scale, idx, w, vl != nullptr ? bias_vl : nullptr,
                                    vl != nullptr ? *vl : none);
 }
 
 void swiglu(const float* g, const float* u, int n, float lim, float* h, cudaStream_t s) {
-    if (n > 0) swiglu_kernel<<<cdiv(n, kThreads), kThreads, 0, s>>>(g, u, n, lim, h);
+#if defined(STRATA_METAL)
+    // declared here rather than in the header: the header carries the other entry points, this one is only used here
+    namespace mh = strata::dsv41::metal_host;
+    if (n > 0 && mh::swiglu(g, u, n, lim, h)) return;
+#endif
+    if (n > 0) strata_ds4_launch(swiglu_kernel, cdiv(n, kThreads), kThreads, 0, s, g, u, n, lim, h);
 }
 
 void compress_win(const float* kv, const float* score, float* kv_state, float* score_state, int ratio, int p0, int T,
                   int d, const float* w, float eps, float* latent, cudaStream_t s) {
-    compress_kernel<<<1, 512, 0, s>>>(kv, score, kv_state, score_state, ratio, p0, T, d, w, eps, latent);
+#if defined(STRATA_METAL)
+    // compress_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::compress_win(kv, score, kv_state, score_state, ratio, p0, T, d, w, eps, latent)) return;
+#endif
+    strata_ds4_launch(compress_kernel, 1, 512, 0, s, kv, score, kv_state, score_state, ratio, p0, T, d, w, eps, latent);
 }
 
 void index_score(const float* q, const float* w, const void* k, int heads, int hd, int T, int n, const int* cand,
@@ -2005,19 +2339,29 @@ void index_score(const float* q, const float* w, const void* k, int heads, int h
         return;
     }
     if (n <= 0) return;
+#if defined(STRATA_METAL)
+    // index_score_kernel<128, kfmt> on the Metal dispatch; the launches below are the fallback
+    if (strata::dsv41::metal_host::index_score(q, w, (const uint8_t*) k, heads, hd, T, n, cand, cand_stride, blk, &lim,
+                                               out, out_stride, kfmt))
+        return;
+#endif
     const size_t smem = (size_t) (heads * hd + heads) * sizeof(float);
     const dim3 grid(cdiv(n, kThreads), T);
     if (kfmt == kKvFp4p)
-        index_score_kernel<128, kKvFp4p><<<grid, kThreads, smem, s>>>(q, w, (const uint8_t*) k, heads, n, cand,
+        strata_ds4_launch(index_score_kernel<128, kKvFp4p>, grid, kThreads, smem, s, q, w, (const uint8_t*) k, heads, n, cand,
                                                                        cand_stride, blk, lim, out, out_stride);
     else
-        index_score_kernel<128, kKvBf16><<<grid, kThreads, smem, s>>>(q, w, (const uint8_t*) k, heads, n, cand,
+        strata_ds4_launch(index_score_kernel<128, kKvBf16>, grid, kThreads, smem, s, q, w, (const uint8_t*) k, heads, n, cand,
                                                                        cand_stride, blk, lim, out, out_stride);
 }
 
 void topk(const float* vals, long long stride, int T, const Rows& r, const int* cand, int cand_stride, int blk,
           int* out, int out_stride, cudaStream_t s) {
-    topk_kernel<<<T, 1024, 0, s>>>(vals, stride, r, cand, cand_stride, blk, out, out_stride);
+#if defined(STRATA_METAL)
+    // topk_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::topk(vals, stride, T, &r, cand, cand_stride, blk, out, out_stride)) return;
+#endif
+    strata_ds4_launch(topk_kernel, T, 1024, 0, s, vals, stride, r, cand, cand_stride, blk, out, out_stride);
 }
 
 void cand_blocks(const float* score, long long stride, int T, const Rows& r, int blk, float* bm, long long bm_stride,
@@ -2034,7 +2378,12 @@ void cand_blocks(const float* score, long long stride, int T, const Rows& r, int
             rb.k[t] = r.k[t];
             nb_max = rb.n[t] > nb_max ? rb.n[t] : nb_max;
         }
-    block_max_kernel<<<dim3(cdiv(nb_max, kThreads), T), kThreads, 0, s>>>(score, stride, r, blk, bm, bm_stride);
+#if defined(STRATA_METAL)
+    // block_max_kernel on the Metal dispatch; the launch below is the fallback.  The selection of the best blocks (topk) follows either way:
+    // returning here skipped it, the candidate list stayed unwritten and every context past 16K tokens (4,096 compressed rows) read garbage.
+    if (!strata::dsv41::metal_host::block_max(score, stride, T, &r, blk, bm, bm_stride, nb_max))
+#endif
+    strata_ds4_launch(block_max_kernel, dim3(cdiv(nb_max, kThreads), T), kThreads, 0, s, score, stride, r, blk, bm, bm_stride);
     topk(bm, bm_stride, T, rb, nullptr, 0, 1, out, out_stride, s);
 }
 
@@ -2058,8 +2407,13 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
         std::fprintf(stderr, "ds4 sparse_attn: head dim %d (rows %d) not covered\n", d, ckv_fmt);
         return;
     }
+#if defined(STRATA_METAL)
+    // sparse_attn_packed_kernel<G> / sparse_attn_kernel<false> on the Metal dispatch; the launches below are the fallback
+    if (strata::dsv41::metal_host::sparse_attn(q, win, ckv, sel, sel_stride, &a, sink, heads, d, T, scale, out, ckv_fmt))
+        return;
+#endif
     if (ckv_fmt == kKvBf16) {
-        sparse_attn_kernel<false><<<dim3(heads, T), kThreads, 0, s>>>(q, win, (const uint16_t*) ckv, sel, sel_stride, a,
+        strata_ds4_launch(sparse_attn_kernel<false>, dim3(heads, T), kThreads, 0, s, q, win, (const uint16_t*) ckv, sel, sel_stride, a,
                                                                        sink, heads, d, scale, out);
         return;
     }
@@ -2082,96 +2436,170 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
     // the BF16 rows' kernel itself (heads_per_block -1: this way at any T)
     const bool few = heads_per_block == -1 || (heads_per_block == 0 && T <= kAttnScratchT);
     if (few && scr != nullptr && scr->rows != nullptr && T <= scr->max_t && sel_stride <= scr->cap) {
-        unpack_sel_kernel<<<dim3(cdiv(sel_stride, kStage), T), kThreads, 0, s>>>((const uint8_t*) ckv, sel, sel_stride, a,
+#if defined(STRATA_METAL)
+        if (strata::dsv41::metal_host::unpack_sel(ckv, sel, sel_stride, a.gen, a.p0, a.t0, a.R, a.kcap, a.nsel,
+                scr->cap, scr->rows, T, a.gen ? 1 : (T < kWin ? T : kWin), kv_row_bytes(kKvFp4, 512))) return;
+#endif
+        strata_ds4_launch(unpack_sel_kernel, dim3(cdiv(sel_stride, kStage), T), kThreads, 0, s, (const uint8_t*) ckv, sel, sel_stride, a,
                                                                                scr->cap, scr->rows);
 #if !defined(STRATA_USE_HIP)
         if (T == 1)   // (V100: the loads ahead pay for the decode's kernel at one query, not at more)
-            sparse_attn_kernel<true, 8><<<dim3(heads, T), kThreads, 0, s>>>(q, win, scr->rows, nullptr, scr->cap, a, sink,
+            strata_ds4_launch(sparse_attn_kernel<true, 8>, dim3(heads, T), kThreads, 0, s, q, win, scr->rows, nullptr, scr->cap, a, sink,
                                                                              heads, d, scale, out);
         else
 #endif
-            sparse_attn_kernel<true, 0><<<dim3(heads, T), kThreads, 0, s>>>(q, win, scr->rows, nullptr, scr->cap, a, sink,
+            strata_ds4_launch(sparse_attn_kernel<true, 0>, dim3(heads, T), kThreads, 0, s, q, win, scr->rows, nullptr, scr->cap, a, sink,
                                                                              heads, d, scale, out);
         return;
     }
+    // DS4_FAST_ATTN=1: the chunked prompt's matrix-core path (16 heads a block, a 16-key tile).  The decode and the
+    // verify windows keep the scalar kernels: one query's heads are not the matrix's rows there.
+#if defined(STRATA_USE_HIP)
+    if (fast_attn_enabled() && a.gen != 0 && T >= kFaKeys && heads % kFaHeads == 0) {
+        strata_ds4_launch(sparse_attn_wmma_kernel, dim3(heads / kFaHeads, T), kThreads, 0, s, q, win, (const uint8_t*) ckv, sel, sel_stride,
+                                                                              a, sink, heads, scale, out);
+        return;
+    }
+#endif
     // packed rows: as many heads a block as still leaves two blocks a multiprocessor (a decoded row serves them all)
-    int G = heads_per_block;
-    if (G != 1 && G != 2 && G != 4 && G != 8) {
+    int G = heads_per_block;    if (G != 1 && G != 2 && G != 4 && G != 8) {
         G = 8;
         while (G > 1 && (heads % G != 0 || (heads / G) * T < 2 * sm_count())) G /= 2;
     }
     if (heads % G != 0) G = 1;
     const dim3 grid(heads / G, T);
     const uint8_t* c = (const uint8_t*) ckv;
-    if (G == 8) sparse_attn_packed_kernel<8><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
-    else if (G == 4) sparse_attn_packed_kernel<4><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
-    else if (G == 2) sparse_attn_packed_kernel<2><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
-    else sparse_attn_packed_kernel<1><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
+    if (G == 8) strata_ds4_launch(sparse_attn_packed_kernel<8>, grid, kThreads, 0, s, q, win, c, sel, sel_stride, a, sink, heads, scale, out);
+    else if (G == 4) strata_ds4_launch(sparse_attn_packed_kernel<4>, grid, kThreads, 0, s, q, win, c, sel, sel_stride, a, sink, heads, scale, out);
+    else if (G == 2) strata_ds4_launch(sparse_attn_packed_kernel<2>, grid, kThreads, 0, s, q, win, c, sel, sel_stride, a, sink, heads, scale, out);
+    else strata_ds4_launch(sparse_attn_packed_kernel<1>, grid, kThreads, 0, s, q, win, c, sel, sel_stride, a, sink, heads, scale, out);
 }
 
 void ring_to_ext(const uint8_t* ring, uint16_t* ext, int64_t p0, int n, int d, cudaStream_t s) {
-    ring_to_ext_kernel<<<n, kThreads, 0, s>>>(ring, ext, (long long) p0, n, d);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::ring_to_ext(ring, ext, (long long) p0, n, d, kv_row_bytes(kKvFp8, d))) return;
+#endif
+    strata_ds4_launch(ring_to_ext_kernel, n, kThreads, 0, s, ring, ext, (long long) p0, n, d);
 }
 void ext_to_ring(const uint16_t* ext, uint8_t* ring, int64_t p0, int n, int T, int d, cudaStream_t s, uint8_t* backup) {
     if (d % 32 != 0) {
         std::fprintf(stderr, "ds4 ext_to_ring: row of %d not covered\n", d);
         return;
     }
-    ext_to_ring_kernel<<<T, kThreads, 0, s>>>(ext, ring, (long long) p0, n, T, d, backup);
+#if defined(STRATA_METAL)
+    if (strata::dsv41::metal_host::ext_to_ring(ext, ring, (long long) p0, n, T, d, kv_row_bytes(kKvFp8, d), backup)) return;
+#endif
+    strata_ds4_launch(ext_to_ring_kernel, T, kThreads, 0, s, ext, ring, (long long) p0, n, T, d, backup);
 }
 void ring_restore(uint8_t* ring, const uint8_t* backup, int64_t p0, int n, int keep, int T, int d, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    {   // (row copies on the context queue: the drafter's rollback is a few rows)
+        const size_t rb = kv_row_bytes(kKvFp8, d);
+        for (int t = keep; t < T; ++t) cudaMemcpyAsync(ring + (size_t) ((p0 + t) % n) * rb, backup + (size_t) t * rb, rb, cudaMemcpyDeviceToDevice, s);
+        return;
+    }
+#endif
     if (T > keep)
-        ring_restore_kernel<<<T - keep, kThreads, 0, s>>>(ring, backup, (long long) p0, n, keep, kv_row_bytes(kKvFp8, d));
+        strata_ds4_launch(ring_restore_kernel, T - keep, kThreads, 0, s, ring, backup, (long long) p0, n, keep, kv_row_bytes(kKvFp8, d));
 }
 void ring_restore_batch(const RingBatch& b, int64_t p0, int n, int keep, int T, int d, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    {
+        const size_t rb = kv_row_bytes(kKvFp8, d);
+        for (int li = 0; li < b.n; ++li)
+            for (int t = keep; t < T; ++t)
+                cudaMemcpyAsync(b.ring[li] + (size_t) ((p0 + t) % n) * rb, b.bak[li] + (size_t) t * rb, rb, cudaMemcpyDeviceToDevice, s);
+        return;
+    }
+#endif
     if (T > keep && b.n > 0)
-        ring_restore_batch_kernel<<<dim3(T - keep, b.n), kThreads, 0, s>>>(b, (long long) p0, n, keep,
+        strata_ds4_launch(ring_restore_batch_kernel, dim3(T - keep, b.n), kThreads, 0, s, b, (long long) p0, n, keep,
                                                                              kv_row_bytes(kKvFp8, d));
 }
 void hc_mean(const float* h, int T, int hc, int dim, float* out, long long out_stride, cudaStream_t s) {
-    hc_mean_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(h, hc, dim, out, out_stride);
+#if defined(STRATA_METAL)
+    if (ds4_dbg("DS4_SKIP_HCMEAN")) return;
+#endif
+#if defined(STRATA_METAL)
+    // hc_mean_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::hc_mean(h, T, hc, dim, out, out_stride)) return;
+#endif
+    strata_ds4_launch(hc_mean_kernel, dim3(cdiv(dim, kThreads), T), kThreads, 0, s, h, hc, dim, out, out_stride);
 }
-void iota_rows(int* out, int T, int n, int stride, cudaStream_t s) { iota_rows_kernel<<<T, 64, 0, s>>>(out, n, stride); }
+void iota_rows(int* out, int T, int n, int stride, cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // iota_rows_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::iota_rows(out, T, n, stride)) return;
+#endif
+    strata_ds4_launch(iota_rows_kernel, T, 64, 0, s, out, n, stride);
+}
 void markov_add(float* logits, const uint16_t* E, const uint16_t* H, const int* tok, int V, int R, cudaStream_t s) {
-    markov_kernel<<<cdiv(V, kThreads / 32), kThreads, (size_t) R * sizeof(float), s>>>(logits, E, H, tok, V, R);
+#if defined(STRATA_METAL)
+    // markov_kernel on the Metal dispatch (the drafter's Markov bias); the launch below is the fallback
+    if (strata::dsv41::metal_host::markov_add(logits, E, H, tok, V, R)) return;
+#endif
+    strata_ds4_launch(markov_kernel, cdiv(V, kThreads / 32), kThreads, (size_t) R * sizeof(float), s, logits, E, H, tok, V, R);
+}
+void markov_add_q8(float* logits, const uint16_t* E, const uint8_t* Hq, const int* tok, int V, int R, cudaStream_t s) {
+    strata_ds4_launch(markov_kernel_q8, cdiv(V, kThreads / 32), kThreads, (size_t) R * sizeof(float), s, logits, E, Hq, tok, V, R);
 }
 void markov_share(float* logits, const uint16_t* H, const uint16_t* erow, int vn, int R, cudaStream_t s) {
-    markov_share_kernel<<<cdiv(vn, kThreads / 32), kThreads, (size_t) R * sizeof(float), s>>>(logits, H, erow, vn, R);
+    strata_ds4_launch(markov_share_kernel, cdiv(vn, kThreads / 32), kThreads, (size_t) R * sizeof(float), s, logits, H, erow, vn, R);
 }
 void argmax_share(const float* row, int vn, int v0, unsigned* slot, unsigned seq, cudaStream_t s) {
-    argmax_share_kernel<<<1, 1024, 0, s>>>(row, vn, v0, slot, seq);
+    strata_ds4_launch(argmax_share_kernel, 1, 1024, 0, s, row, vn, v0, slot, seq);
 }
 void markov_pick(const unsigned* slots, int nm, unsigned seq, int* tok, const uint16_t* E, uint16_t* erow, int R,
                  cudaStream_t s) {
-    markov_pick_kernel<<<1, 256, 0, s>>>(slots, nm, seq, tok, E, erow, R);
+    strata_ds4_launch(markov_pick_kernel, 1, 256, 0, s, slots, nm, seq, tok, E, erow, R);
 }
 void confidence(const float* x, const uint16_t* E, const int* tok, const float* w, int T, int dim, int R, float* out,
                 cudaStream_t s) {
-    confidence_kernel<<<T, 1024, 0, s>>>(x, E, tok, w, dim, R, out);
+#if defined(STRATA_METAL)
+    // confidence_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::confidence(x, E, tok, w, T, dim, R, out)) return;
+#endif
+    strata_ds4_launch(confidence_kernel, T, 1024, 0, s, x, E, tok, w, dim, R, out);
 }
 
 void engram_dequant(const uint8_t* rows, const uint8_t* scales, int n, int hd, float* out, cudaStream_t s, int fmt) {
-    engram_dequant_kernel<<<n, kThreads, 0, s>>>(rows, scales, hd, out, fmt);
+#if defined(STRATA_METAL)
+    // engram_dequant_kernel on the Metal dispatch (fmt 2, this model's IQ4_NL tables); the launch below is the fallback
+    if (strata::dsv41::metal_host::engram_dequant(rows, scales, n, hd, out, fmt)) return;
+#endif
+    strata_ds4_launch(engram_dequant_kernel, n, kThreads, 0, s, rows, scales, hd, out, fmt);
 }
 
 void engram_gate(float* h, const float* kv, const float* w, int hc, int dim, int T, float eps, cudaStream_t s) {
-    engram_gate_kernel<<<dim3(hc, T), 1024, 0, s>>>(h, kv, w, hc, dim, eps);
+#if defined(STRATA_METAL)
+    // engram_gate_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::engram_gate(h, kv, w, hc, dim, T, eps)) return;
+#endif
+    strata_ds4_launch(engram_gate_kernel, dim3(hc, T), 1024, 0, s, h, kv, w, hc, dim, eps);
 }
 
 void gather_rows(const float* x, const Gather& g, int n, int cols, float* out, cudaStream_t s) {
-    if (n > 0) gather_kernel<<<dim3(cdiv(cols, kThreads), n), kThreads, 0, s>>>(x, g, cols, out);
+#if defined(STRATA_METAL)
+    // gather_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::gather_rows(x, &g, n, cols, out)) return;
+#endif
+    if (n > 0) strata_ds4_launch(gather_kernel, dim3(cdiv(cols, kThreads), n), kThreads, 0, s, x, g, cols, out);
 }
 
 void combine(const float* ed, const float* cpu, const float* sh, const Combine& c, int T, int dim, float* out,
              cudaStream_t s) {
-    combine_kernel<<<dim3(cdiv(dim, kThreads), T), kThreads, 0, s>>>(ed, cpu, sh, c, dim, out);
+#if defined(STRATA_METAL)
+    // combine_kernel on the Metal dispatch; the launch below is the fallback
+    if (strata::dsv41::metal_host::combine(ed, cpu, sh, &c, T, dim, out)) return;
+#endif
+    strata_ds4_launch(combine_kernel, dim3(cdiv(dim, kThreads), T), kThreads, 0, s, ed, cpu, sh, c, dim, out);
 }
 
 void xfer_put(const Xfer& x, unsigned* flag, unsigned seq, unsigned* cnt, cudaStream_t s) {
     size_t total = 0;
     for (int i = 0; i < x.n; ++i) total += x.bytes[i] / 16;
     const int blocks = (int) std::max<size_t>(1, std::min<size_t>(64, (total + kThreads - 1) / kThreads));
-    xfer_put_kernel<<<blocks, kThreads, 0, s>>>(x, flag, seq, cnt);
+    strata_ds4_launch(xfer_put_kernel, blocks, kThreads, 0, s, x, flag, seq, cnt);
     // (another GPU, or the host, waits for this flag: on Windows the put must not sit in the queue - #303: two RTX 3080s
     //  hung at the first hand-off, the receiver spinning on a flag whose writer had never been submitted)
     win_submit(s);
@@ -2194,13 +2622,13 @@ void xfer_get(const Xfer& x, const unsigned* flag, unsigned seq, cudaStream_t s)
     size_t total = 0;
     for (int i = 0; i < x.n; ++i) total += x.bytes[i] / 16;
     const int blocks = (int) std::max<size_t>(1, std::min<size_t>(64, (total + kThreads - 1) / kThreads));
-    xfer_get_kernel<<<blocks, kThreads, 0, s>>>(x, flag, seq);
+    strata_ds4_launch(xfer_get_kernel, blocks, kThreads, 0, s, x, flag, seq);
 }
 void wait_flags(const unsigned* flags, int n, int stride, unsigned seq, cudaStream_t s) {
-    if (n > 0) wait_flags_kernel<<<1, 32, 0, s>>>(flags, n, stride, seq);
+    if (n > 0) strata_ds4_launch(wait_flags_kernel, 1, 32, 0, s, flags, n, stride, seq);
 }
 void set_flag(unsigned* flag, unsigned v, cudaStream_t s) {
-    set_flag_kernel<<<1, 1, 0, s>>>(flag, v);
+    strata_ds4_launch(set_flag_kernel, 1, 1, 0, s, flag, v);
     win_submit(s);   // (the writer on another GPU waits for this acknowledgement before its next put - #384)
 }
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s) {
@@ -2213,9 +2641,9 @@ void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned
         const int n4 = n / 4;
         const int blocks = std::max(1, std::min(kArBlocks, cdiv(n4, kThreads)));
         if (f16)
-            ar_rs16_kernel<<<blocks, kThreads, 0, s>>>(x, n4, a.data, a.sums, a.stride, a.bflags, a.nm, mi, slot, a.slots, seq);
+            strata_ds4_launch(ar_rs16_kernel, blocks, kThreads, 0, s, x, n4, a.data, a.sums, a.stride, a.bflags, a.nm, mi, slot, a.slots, seq);
         else
-            ar_rs_kernel<<<blocks, kThreads, 0, s>>>(x, n4, a.data, a.sums, a.stride, a.bflags, a.nm, mi, slot, a.slots, seq);
+            strata_ds4_launch(ar_rs_kernel, blocks, kThreads, 0, s, x, n4, a.data, a.sums, a.stride, a.bflags, a.nm, mi, slot, a.slots, seq);
         return;
     }
     Xfer xp;
@@ -2226,7 +2654,7 @@ void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned
     xfer_put(xp, a.flags + ((size_t) mi * a.slots + slot) * 32, seq, cnt, s);
     const int n4 = n / 4;
     const int blocks = std::max(1, std::min(64, cdiv(n4, kThreads)));
-    ar_sum_kernel<<<blocks, kThreads, 0, s>>>(x, n4, a.data, a.stride, a.flags, a.nm, mi, slot, a.slots, seq);
+    strata_ds4_launch(ar_sum_kernel, blocks, kThreads, 0, s, x, n4, a.data, a.stride, a.flags, a.nm, mi, slot, a.slots, seq);
 }
 
 }  // namespace strata::ds4

@@ -238,7 +238,7 @@ class WhatTheEngineSaid(unittest.TestCase):
 class WordsMatchTheApp(unittest.TestCase):
     def test_every_line_the_engine_start_can_say_is_in_the_apps_catalog_in_all_eight_languages(self):
         folder = ROOT / "apps" / "host" / "src" / "locales"
-        catalogs = {l: json.loads((folder / f"{l}.json").read_text(encoding="utf-8")) for l in ("en", "de", "es", "ja", "ko", "pt", "ru", "zh")}
+        catalogs = {l: json.loads((folder / f"{l}.json").read_text(encoding="utf-8")) for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
         self.assertEqual(len(drafting.REASONS), 4)
         for reason in drafting.REASONS:

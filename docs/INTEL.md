@@ -127,9 +127,13 @@ the oneAPI runtime image with the serve pipes attached. Paths in the config's `a
  "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.05}}
 ```
 
-With `--stream-experts` any expert left out of VRAM is read from the SSD and computed on the CPU when routed, so the reserve
-matters: on the B70 with Coder IQ1_M a 1,536 MiB reserve left the cache 128 experts short and decode fell to 5-10 tok/s, while
-1,024 MiB fits all 12,288 with 2 GB of VRAM free.
+A native (IQ) pack takes `--spec` 2 at the smallest: the engine refuses `--spec 0` and `--spec 1` on one (it needs `--native SHARD1`, `--spec T`
+with T >= 2 and `--prefill CHUNK`), so speculative decoding cannot be turned off for these packs.
+
+With `--stream-experts` under `STRATA_VERIFY_NO_HOST=1` (the `strata-sycl.sh` default) there is no SSD expert tier: every expert
+must be in VRAM or in the pinned RAM mirror (`STRATA_MIRROR_MIB`), and the engine refuses to start when the two do not cover the model
+("REFUSED: N experts are neither in VRAM nor mirrored"). Raise the mirror or lower `--max-context`. So the reserve matters: on the B70
+with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 
 ## Things that matter on this GPU
 

@@ -205,6 +205,11 @@ public:
     /// expert evicted on the host (the pool then computes it on the CPU) before the device table follows.  Also turns
     /// the device-planned layers (E-6) off.  Before `init`.
     void set_always_publish(bool on) { always_publish_ = on; }
+    /// The pipelined windows never let a one-token window advance the state itself: its graph may run *speculatively*
+    /// (ahead of the previous window's verdict), so a self-commit would land before the state it must build on is
+    /// final.  With this set, record_window does not self-commit and pl_commit_async always queues the commit graph -
+    /// the configuration that measures token-identical to the serial path.  Before `capture_all`.
+    void set_self_commit_off(bool on) { self_commit_off_ = on; }
     dpct::queue_ptr stream() const { return cs_; }
     int device() const { return device_; }
     /// Capture every window size and the commit graph now (a capture syncs the stream: never with a window in flight).
@@ -267,6 +272,7 @@ private:
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
+    bool self_commit_off_ = false;         ///< set_self_commit_off: the pipelined windows commit through the graph
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)

@@ -468,6 +468,32 @@ class DeleteModelTests(unittest.TestCase):
         self.assertFalse(pack.exists())
         self.assertTrue(mine.is_file(), "a file the person brought stays")
 
+    def test_every_part_of_a_multi_part_model_goes_with_it_and_a_part_another_model_uses_stays(self):
+        # The run config names only the first part; the others used to stay on disk (#3716).
+        folder = self.data / "models" / "IQ3_XXS"
+        parts = [self.make(folder / f"Big-0000{i}-of-00003.gguf", 5000) for i in (1, 2, 3)]
+        for part in parts:
+            self.make(part.with_name(part.name + ".done"), 1)
+        (self.root / "strata-iq3xxs.json").write_text(json.dumps({"exe": "component:strata-engine", "args": [
+            "--native", str(parts[0]), "--max-context", "32768"]}), encoding="utf-8")
+        plan = self.tools.strata_remove(model="iq3xxs")["plan"]
+        removed = {Path(x["path"]).name for x in plan["remove"]}
+        self.assertTrue({p.name for p in parts} <= removed, removed)
+        result = self.tools.strata_remove(model="iq3xxs", confirm=True)
+        self.assertEqual(result["failed"], [])
+        self.assertEqual([p.exists() for p in parts], [False, False, False])
+        self.assertFalse(folder.exists())
+
+    def test_a_part_that_another_model_names_is_kept_when_a_multi_part_model_is_deleted(self):
+        folder = self.data / "models" / "IQ3_XXS"
+        parts = [self.make(folder / f"Big-0000{i}-of-00002.gguf", 5000) for i in (1, 2)]
+        for part in parts:
+            self.make(part.with_name(part.name + ".done"), 1)
+        (self.root / "strata-iq3xxs.json").write_text(json.dumps({"exe": "component:strata-engine", "args": ["--native", str(parts[0])]}), encoding="utf-8")
+        (self.root / "strata-twin.json").write_text(json.dumps({"exe": "component:strata-engine", "args": ["--native", str(parts[0])]}), encoding="utf-8")
+        self.tools.strata_remove(model="iq3xxs", confirm=True)
+        self.assertTrue(all(p.is_file() for p in parts), "the twin config still uses every part")
+
 
 class LocalGgufInstallTests(unittest.TestCase):
     def test_a_plan_from_a_local_folder_adopts_the_files_and_needs_no_download_space(self):

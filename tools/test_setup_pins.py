@@ -215,6 +215,9 @@ class HuggingFacePins(unittest.TestCase):
         self.assertIn("Downloading from https://hf-mirror.com (HF_ENDPOINT)", text)
 
 
+@unittest.skipIf(setup.is_arm64() and sys.platform.startswith("linux"),
+                 "arm64 Linux takes its ready-made engine from the signed feed, not from the flat x86 zips these tests build "
+                 "(tests/terminal/test_linux_aarch64.py covers that path)")
 class Engine(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

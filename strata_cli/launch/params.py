@@ -67,6 +67,7 @@ class Param:
     help_default: str | None = None
     experimental: bool = False
     values: list[str] = field(default_factory=list)
+    full: str = ""                  # a sentence that is shown whole (the speed switches); empty: the first sentence of the description
 
     @property
     def short(self) -> str:
@@ -125,6 +126,14 @@ def env_params() -> list[Param]:
     return list(out.values())
 
 
+def switch_params(applicable: list[Any]) -> list[Param]:
+    """The rows of the speed switches that apply to this launch (strata_control/speed_switches.py): the environment each one writes outside its default,
+    shown as the default ("off" for Faster long prompts, "on" for the others) until the person types the value. The same features as the app's Expert settings."""
+    from strata_control import speed_switches as sw
+    return [Param(name=name, kind="env", description=sw.env_words(name), help_default=switch.default, full=sw.env_words(name))
+            for switch in applicable for name, _ in switch.env]
+
+
 def argv_to_dict(argv: list[Any]) -> dict[str, str]:
     """`["--kv", "int8", "--kv-grow"]` -> {"--kv": "int8", "--kv-grow": ""}."""
     out: dict[str, str] = {}
@@ -160,12 +169,15 @@ class Row:
 
 
 def build_rows(engine_help: str | None, base_args: list[Any], tuned_args: list[Any] | None, base_env: dict | None,
-               tuned_env: dict | None, extra: dict[str, str]) -> list[Row]:
+               tuned_env: dict | None, extra: dict[str, str], switches: list[Param] | None = None) -> list[Row]:
     """The table. Settings the run config or the tuner use come first (what this launch really runs), then the rest."""
     base, tuned = argv_to_dict(base_args), argv_to_dict(tuned_args if tuned_args is not None else base_args)
     params = {p.name: p for p in (parse_help(engine_help) if engine_help else [])}
     for p in env_params():
         params.setdefault(p.name, p)
+    for p in switches or []:
+        params[p.name] = p
+    switch_order = {p.name: i for i, p in enumerate(switches or [])}
     names = list(dict.fromkeys([*base, *tuned, *(base_env or {}), *(tuned_env or {}), *extra, *params]))
     rows: list[Row] = []
     for name in names:
@@ -182,10 +194,10 @@ def build_rows(engine_help: str | None, base_args: list[Any], tuned_args: list[A
         shown = lambda v: "on" if v == "" and not is_env and name in (base if v is d else tuned) else v     # noqa: E731
         y = extra.get(name, "")
         rows.append(Row(name=name, default=str(d) if d else "", tuned=str(t) if t else "", yours=str(y),
-                        description=(p.short if p else "(not in this engine's list: newer flag or a typing mistake)"),
+                        description=((p.full or p.short) if p else "(not in this engine's list: newer flag or a typing mistake)"),
                         experimental=bool(p and p.experimental), known=bool(p) or not params))
     in_use = lambda r: (r.name in base or r.name in tuned or r.name in extra or r.name in (base_env or {}) or r.name in (tuned_env or {}))     # noqa: E731
-    rows.sort(key=lambda r: (not in_use(r), r.name))
+    rows.sort(key=lambda r: (not in_use(r), switch_order.get(r.name, len(switch_order)), r.name))
     return rows
 
 

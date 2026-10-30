@@ -10,6 +10,7 @@
 // block scale d is the lane's own.  Lane l = r + 16 kg owns row r and the 16 steps 16 kg .. 16 kg + 15 of every block, whose
 // 15-bit states are one 128-bit window of the stream (the tile code of tools/dsv41_lab/wmma_emu.hpp, checked there against a
 // double reference and on the card by tests/dsv41/tqw_hip_test.cpp).  Elsewhere the same lane mapping in plain FMAs.
+#include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_iq.cuh"
 
 #include <cuda_fp16.h>
@@ -486,7 +487,7 @@ bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
     (void) ne_max;
     if (a.n_embd % 128 != 0 || a.n_ff % (kWaves * kTileRows) != 0) return bad("gate_up: geometry not covered");
     const dim3 grid((unsigned) (a.n_ff / (kWaves * kTileRows)), (unsigned) groups);
-#define GU_(K, C) { if (w) gate_up_kernel<K, C, true><<<grid, kThreads, 0, s>>>(a); else gate_up_kernel<K, C, false><<<grid, kThreads, 0, s>>>(a); }
+#define GU_(K, C) { if (w) strata_ds4_launch(gate_up_kernel<K, C, true>, grid, kThreads, 0, s, a); else strata_ds4_launch(gate_up_kernel<K, C, false>, grid, kThreads, 0, s, a); }
     DS4_TQ_SWITCH(a.tg, GU_)
 #undef GU_
     return true;
@@ -497,7 +498,7 @@ bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
     (void) ne_max;
     if (a.n_ff % 128 != 0 || a.n_embd % (kWaves * kTileRows) != 0) return bad("down: geometry not covered");
     const dim3 grid((unsigned) (a.n_embd / (kWaves * kTileRows)), (unsigned) groups);
-#define DN_(K, C) { if (w) down_kernel<K, C, true><<<grid, kThreads, 0, s>>>(a); else down_kernel<K, C, false><<<grid, kThreads, 0, s>>>(a); }
+#define DN_(K, C) { if (w) strata_ds4_launch(down_kernel<K, C, true>, grid, kThreads, 0, s, a); else strata_ds4_launch(down_kernel<K, C, false>, grid, kThreads, 0, s, a); }
     DS4_TQ_SWITCH(a.td, DN_)
 #undef DN_
     return true;
@@ -507,7 +508,7 @@ bool set_gate_up(const SetArgs& a, cudaStream_t s) {
     const bool w = use_words();
     if (a.n_embd % 128 != 0 || a.n_ff % (kWaves * kTileRows) != 0) return bad("set_gate_up: geometry not covered");
     const dim3 grid((unsigned) (a.n_ff / (kWaves * kTileRows)), (unsigned) ((a.max_rows + kMaxEnt - 1) / kMaxEnt), (unsigned) a.n_exp);
-#define SG_(K, C) { if (w) set_kernel<K, C, true, true><<<grid, kThreads, 0, s>>>(a); else set_kernel<K, C, true, false><<<grid, kThreads, 0, s>>>(a); }
+#define SG_(K, C) { if (w) strata_ds4_launch(set_kernel<K, C, true, true>, grid, kThreads, 0, s, a); else strata_ds4_launch(set_kernel<K, C, true, false>, grid, kThreads, 0, s, a); }
     DS4_TQ_SWITCH(a.tg, SG_)
 #undef SG_
     return true;
@@ -517,7 +518,7 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
     const bool w = use_words();
     if (a.n_ff % 128 != 0 || a.n_embd % (kWaves * kTileRows) != 0) return bad("set_down: geometry not covered");
     const dim3 grid((unsigned) (a.n_embd / (kWaves * kTileRows)), (unsigned) ((a.max_rows + kMaxEnt - 1) / kMaxEnt), (unsigned) a.n_exp);
-#define SD_(K, C) { if (w) set_kernel<K, C, false, true><<<grid, kThreads, 0, s>>>(a); else set_kernel<K, C, false, false><<<grid, kThreads, 0, s>>>(a); }
+#define SD_(K, C) { if (w) strata_ds4_launch(set_kernel<K, C, false, true>, grid, kThreads, 0, s, a); else strata_ds4_launch(set_kernel<K, C, false, false>, grid, kThreads, 0, s, a); }
     DS4_TQ_SWITCH(a.td, SD_)
 #undef SD_
     return true;
@@ -529,7 +530,7 @@ bool mv(const MvJob* jobs, int n, cudaStream_t s) {
         const bool w = use_words();
         if (j.k % 128 != 0 || j.n % kTileRows != 0 || j.ncol < 1 || j.ncol > kMaxEnt) return bad("mv: geometry not covered");
         const dim3 grid((unsigned) ((j.n + kWaves * kTileRows - 1) / (kWaves * kTileRows)));
-#define MV_(K, C) { if (w) mv_kernel<K, C, true><<<grid, kThreads, 0, s>>>(j); else mv_kernel<K, C, false><<<grid, kThreads, 0, s>>>(j); }
+#define MV_(K, C) { if (w) strata_ds4_launch(mv_kernel<K, C, true>, grid, kThreads, 0, s, j); else strata_ds4_launch(mv_kernel<K, C, false>, grid, kThreads, 0, s, j); }
         DS4_TQ_SWITCH(j.type, MV_)
 #undef MV_
     }

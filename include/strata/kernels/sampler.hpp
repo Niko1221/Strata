@@ -83,6 +83,13 @@ void spec_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const in
 bool sample_tokens_spec(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                         const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
                         void* stream);
+// Explicit gated measure: rows<n_q use mu; n_q==n_tokens means a NULL tail.
+// n_q == 0 permits null qbuf: point-only rows, or plain sampling for T1.
+// Same device-buffer layout as sample_tokens_spec. False is a hard failure:
+// work may have been queued; synchronize before releasing buffers. No plain-p fallback.
+bool sample_tokens_proposal(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                        const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
+                        void* stream);
 
 // The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.

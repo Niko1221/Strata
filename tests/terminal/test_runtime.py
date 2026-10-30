@@ -1309,6 +1309,18 @@ class RuntimeTests(unittest.TestCase):
 
 
 class StartWaitLimit(unittest.TestCase):
+    def setUp(self):
+        # A start writes an operation record before the engine runs, so these tests keep their records (and any profile
+        # lookup) in a scratch folder rather than in the person's own state.
+        temp = tempfile.TemporaryDirectory(prefix="strata-start-wait-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / "profiles").mkdir()
+        env = mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": str(root / "profiles"),
+                                           "STRATA_RUNTIME_DIR": str(root / "runtime")})
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_a_start_may_wait_up_to_thirty_minutes_for_a_big_model(self):                    # #3949
         from strata_control import runtime as rt, profiles as pr
         self.assertEqual(rt.MAX_START_WAIT, 1800)
@@ -1317,6 +1329,57 @@ class StartWaitLimit(unittest.TestCase):
         with mock.patch.object(rt, "_name", side_effect=pr.ProfileError("reached")):
             with self.assertRaisesRegex(pr.ProfileError, "reached"):
                 rt.start("x", wait=1800)
+
+    def test_a_long_start_wait_reaches_the_runtime_through_the_cli(self):                     # #3459 #4191
+        # The desktop app starts models through `strata runtime start --wait`, and that wait is checked three times before
+        # the engine is reached: by management, by the operation record, and by the runtime itself. When only the runtime's
+        # ceiling was raised (#3949), a long start died at each of the first two with
+        # "start wait must be finite seconds in 0..600" / "direct runtime intent has an invalid timeout". So this walks the
+        # whole way with only the engine itself faked: any layer that still carries the old 600 s shows up here.
+        from strata_control import journal as jn, management as mg, profiles as pr, runtime as rt
+        revision = "0123456789abcdef"
+        for wait in (300, 600, 601, rt.MAX_START_WAIT):
+            reached = {}
+            with mock.patch.object(rt, "_name", lambda name: name), \
+                    mock.patch.object(mg.profiles, "load", lambda name: ("src", revision)), \
+                    mock.patch.object(rt, "start", lambda name, **kw: (reached.update(kw),
+                            {"ok": True, "state": "ready", "profile": name})[1]):
+                result = mg.runtime_action("start", "demo", wait=wait, shutdown_timeout=15)
+                self.assertEqual(result["state"], "ready")
+                self.assertEqual(reached["wait"], float(wait),
+                                 f"a start asked for {wait} s did not reach runtime.start with it")
+
+    def test_a_start_wait_above_the_runtime_ceiling_is_named_by_the_runtime(self):             # #3459 #4191
+        from strata_control import management as mg, profiles as pr, runtime as rt
+        revision = "0123456789abcdef"
+        with mock.patch.object(rt, "_name", lambda name: name), \
+                mock.patch.object(mg.profiles, "load", lambda name: ("src", revision)):
+            with self.assertRaisesRegex(pr.ProfileError, f"start wait must be finite seconds in 0..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("start", "demo", wait=rt.MAX_START_WAIT + 1, shutdown_timeout=15)
+            with self.assertRaisesRegex(pr.ProfileError, f"startup wait must be finite seconds in 1..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("restart", "demo", startup_wait=rt.MAX_START_WAIT + 1,
+                                  if_owner_id="0" * 32, if_instance_id="0" * 32)
+
+    def test_the_operation_record_takes_the_runtimes_own_start_ceiling(self):
+        # The record is written before the start runs, so a ceiling kept here would stop a long wait no matter what the
+        # two validators above allow. Waits that are not a start or a restart keep their own 600 s.
+        from strata_control import journal as jn, profiles as pr, runtime as rt
+        for kind, intent, allowed in (
+                ("runtime.start", {"wait_s": rt.MAX_START_WAIT, "shutdown_timeout_s": 15}, True),
+                ("runtime.start", {"wait_s": rt.MAX_START_WAIT + 1, "shutdown_timeout_s": 15}, False),
+                ("runtime.restart", {"wait_s": 1000, "startup_wait_s": rt.MAX_START_WAIT,
+                                     "expected_profile_revision": "0" * 16,
+                                     "expected_owner_id": "0" * 32, "expected_instance_id": "0" * 32,
+                                     "allow_source_switch": False, "allow_source_migration": False,
+                                     "expected_source_sha256": "0" * 64}, True),
+                ("runtime.stop", {"wait_s": rt.MAX_START_WAIT}, False),
+                ("runtime.verify", {"wait_s": rt.MAX_START_WAIT, "load": False}, False)):
+            with self.subTest(kind=kind, wait=intent["wait_s"]):
+                if allowed:
+                    jn._validate_direct_intent(kind, dict(intent))
+                else:
+                    with self.assertRaisesRegex(pr.ProfileError, "invalid timeout"):
+                        jn._validate_direct_intent(kind, dict(intent))
 
 
 if __name__ == "__main__":

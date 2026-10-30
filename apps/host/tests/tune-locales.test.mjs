@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 
-const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
 const catalogs = Object.fromEntries(await Promise.all(languages.map(async l => [l, JSON.parse(await readFile(`src/locales/tune-${l}.json`, 'utf8'))])));
 const main = JSON.parse(await readFile('src/locales/en.json', 'utf8'));
 const slots = text => [...text.matchAll(/\{\d+\}/g)].map(m => m[0]).sort();

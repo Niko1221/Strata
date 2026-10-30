@@ -199,5 +199,50 @@ class ManualPackage(Dsv41Engine):
         self.assertEqual([p.name for p in dsv41_engine.pending(dest)], [archive.name])
 
 
+class HipPackageLibraryPath(unittest.TestCase):
+    """A Windows HIP DeepSeek package keeps the ROCm DLLs in rocm/bin (hipBLAS / rocBLAS), exactly like the Qwen rdna3 engine package,
+    so the engine's folder list must carry it or a clean PC starts with 0xC0000135 (found on strix, 2026-10-25)."""
+
+    def package(self, build_json=None) -> Path:
+        tmp = tempfile.TemporaryDirectory(prefix="strata-dsv41-hip-")
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / "0.1.51-windows-x86_64-hip-rdna3"
+        (folder / "rocm" / "bin").mkdir(parents=True)
+        (folder / "rocm" / "bin" / "rocblas.dll").write_bytes(b"x")
+        (folder / EXE).write_bytes(b"stub")
+        if build_json is not None:
+            (folder / "BUILD.json").write_text(json.dumps(build_json), encoding="utf-8")
+        return folder
+
+    def test_rocm_bin_comes_after_the_package_folder(self):
+        folder = self.package({"lib_dirs": ["rocm/bin"]})
+        self.assertEqual(dsv41_engine.lib_dirs(folder / EXE), [str(folder), str(folder / "rocm" / "bin")])
+        env = dsv41_engine.start_env(folder / EXE, {"PATH": "C:\\Windows"})
+        first = env["PATH"].split(os.pathsep)[:2]
+        self.assertEqual(first, [str(folder), str(folder / "rocm" / "bin")])
+
+    def test_a_cuda_package_needs_only_its_folder(self):
+        folder = self.package(None)
+        self.assertEqual(dsv41_engine.lib_dirs(folder / EXE), [str(folder)])
+
+    def test_a_package_folder_missing_from_disk_is_skipped(self):
+        folder = self.package({"lib_dirs": ["rocm/bin", "nope"]})
+        self.assertEqual(dsv41_engine.lib_dirs(folder / EXE), [str(folder), str(folder / "rocm" / "bin")])
+
+    def test_the_feed_offers_a_windows_hip_package_to_strix_halo_only(self):
+        from strata_control import feed as feedmod
+        p = {"version": "0.1.51", "platform": "windows-x86_64", "backend": "hip", "variant": "rdna3", "archs": ["gfx1151"],
+             "min_driver": {}, "min_runtime": None, "build_id": "dsv41-hip", "format": "tar.gz", "url": "strata-dsv41-0.1.51-windows-x86_64-hip-rdna3.tar.gz",
+             "size": 1, "sha256": "a" * 64, "manifest_sha256": "b" * 64, "installed_bytes": 2, "notes": ""}
+        packages = [feedmod._engine_package(p)]
+        halo = {"platform": "windows-x86_64", "backend": "hip", "runtime": None, "nvidia_driver": None, "cuda_archs": [], "gfx": ["gfx1151"]}
+        best, _why = feedmod.select_engine(packages, halo)
+        self.assertIsNotNone(best)
+        self.assertEqual((best.platform, best.backend, best.variant), ("windows-x86_64", "hip", "rdna3"))
+        for gfx in ("gfx1100", "gfx1201", "gfx1030"):
+            other = {**halo, "gfx": [gfx]}
+            self.assertIsNone(feedmod.select_engine(packages, other)[0], gfx)
+
+
 if __name__ == "__main__":
     unittest.main()
