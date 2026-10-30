@@ -1,9 +1,0 @@
-{
-  "old_functions": 46,
-  "new_functions": 47,
-  "matched_functions": 46,
-  "changed_existing": [],
-  "new_only": [
-    "_ZN6strata7prefill5fused48_GLOBAL__N__NORMALIZEDnative_kernelILi29ELb1ELi2ELi512ELb0EEEvNSt11conditionalIXeqT2_Li512EENS1_5BatchENS1_9WideBatchEE4typeENS1_10NativeGeomENS2_6TablesEPKhPKiPhPf"
-  ]
-}

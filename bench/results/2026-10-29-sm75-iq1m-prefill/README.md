@@ -21,7 +21,7 @@ Usual speed suite on the integration build (`tools/strata_bench.py --runs 3 --lo
 | 16K | 865.5 | 907.9 |
 | 32K | 881.7 | 919.7 |
 
-Both speed suites completed without request failures or skips. This suite measures speed, not answer correctness. The 4K case was slightly slower with the flag; this is not a claim that every prompt gets faster. Conversation-cache hit medians were 69.420% off and 69.433% on. Decode expert-cache hit rates and raw counts are in `expert-cache.json`; these are separate from conversation-prefix hits. No decode-kernel change or general decode speedup is claimed.
+Both speed suites completed without request failures or skips. This suite measures speed, not answer correctness. The 4K case was slightly slower with the flag; this is not a claim that every prompt gets faster. Conversation-cache hit medians were 69.420% off and 69.433% on. Decode expert-cache hit rates and raw counts are in [expert-cache.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/expert-cache.json); these are separate from conversation-prefix hits. No decode-kernel change or general decode speedup is claimed.
 
 ## Automatic chunk sizing (separate configuration)
 
@@ -34,16 +34,16 @@ The enabled exploratory probe selected 4,608 tokens, measured 886.6 tok/s and pa
 | Off | 4,352 | 842.2 (842.0–842.4) | 1/2 |
 | On | 4,608 | 883.1 (882.9–883.3) | 2/2 |
 
-Matched off/on/on/off, two runs each: +4.9%. This includes the different selected chunks and buffer layout, not just kernel throughput. The enabled auto result is +0.9% versus enabled fixed-4K runs from the earlier campaign; that cross-campaign comparison was not interleaved. All outcomes and chunk-selection logs are retained in `auto-summary.json`.
+Matched off/on/on/off, two runs each: +4.9%. This includes the different selected chunks and buffer layout, not just kernel throughput. The enabled auto result is +0.9% versus enabled fixed-4K runs from the earlier campaign; that cross-campaign comparison was not interleaved. All outcomes and chunk-selection logs are retained in [auto-summary.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/auto-summary.json).
 
 ## Correctness and limits
 
 - CUDA reference tests passed on the clean upstream and integration builds, including skewed routing, unused experts, zero inputs, unrelated weight addresses and 2-byte alignment. Relative RMS error was 0.000167 against the independent model of the int8 arithmetic and 0.01595 against the FP32 reference. Activations and intermediate values are quantized to int8; this is not FP16-equivalent arithmetic.
 - CUDA memcheck on the routed-layer test reported zero errors. 4K/8K routed-layer tests passed separately. These are not whole-model memcheck runs.
 - Existing Q2 output hashes matched the original binary at 2K and 4K. All 46 existing device functions in the modified translation unit had unchanged disassembly after normalizing the compiler’s anonymous-namespace identifier; one new IQ1_M function was added.
-- In the integration comparison, one off run and one on run missed the same two literal replacements. Both failures are retained in `edit-outputs.json`; installed production passed 2/2. The six follow-up novel-code tasks passed executable tests. This does not establish general coding-quality equivalence, and the full agentic coding harness was not rerun.
+- In the integration comparison, one off run and one on run missed the same two literal replacements. Both failures are retained in [edit-outputs.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/edit-outputs.json); installed production passed 2/2. The six follow-up novel-code tasks passed executable tests. This does not establish general coding-quality equivalence, and the full agentic coding harness was not rerun.
 - Clean upstream exact-edit checks passed 2/2 with the flag off and 1/2 with it on. That failed answer is also retained. These small samples do not rule out a quality regression.
-- First-token full-vocabulary KL is recorded in `summary.json`. Even repeated installed-production runs differed (KL 0.00394); adaptive routing/speculation were enabled. Warm follow-up KL includes differing adaptive-cache histories and is not an isolated kernel error measurement.
+- First-token full-vocabulary KL is recorded in [summary.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/summary.json). Even repeated installed-production runs differed (KL 0.00394); adaptive routing/speculation were enabled. Warm follow-up KL includes differing adaptive-cache histories and is not an isolated kernel error measurement.
 - Requesting an 8K chunk on the tuned integration build still fell back to 4K. The completed diagnostic is retained; redundant repeats were cancelled after it finished. No 8K full-model speedup is claimed.
 - Not run: HIP compilation/hardware, Windows, other GPU architectures and a broad quality evaluation. The PR remains draft pending the shared CUDA/HIP source check; help with a HIP build and hardware regression check is requested. Production was not changed.
 
@@ -71,12 +71,14 @@ STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_IQ1_M=1 \
   build/prefill_fused_iq_test --only=IQ1_M --require-iq1 --no-ref --chunks=256
 ```
 
-Use the same binary and fresh server for each arm. Adapt `upstream-1-off.config.json` to local model/pack/profile paths; toggle only `STRATA_PF_FUSED_IQ1_M=0` / `1`. Keep `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1` in both. From a v0.2.7 checkout with server dependencies installed, start `python -m serve.server --engine strata --config /path/to/config.json --host 127.0.0.1 --port 8080`, then:
+Use the same binary and fresh server for each arm. Adapt `config.example.json` to local model/pack/profile paths; toggle only `STRATA_PF_FUSED_IQ1_M=0` / `1`. Keep `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1` in both. From a v0.2.7 checkout with server dependencies installed, start `python -m serve.server --engine strata --config /path/to/config.json --host 127.0.0.1 --port 8080`, then:
 
 ```sh
 python reproduce.py --url http://127.0.0.1:8080 --arm off --out runs.jsonl
 ```
 
-Restart for each run and use off/on/on/off order. `reproduce.py` checks zero reused tokens, the 122,451-token fixture and exact AST equivalence. It records a failed answer before exiting with an error. Set `STRATA_API_KEY` in the environment if the local server requires authentication. The config files use `$HOME`/`$LAB` placeholders; replace those paths rather than passing them literally.
+Restart for each run and use off/on/on/off order. `reproduce.py` checks zero reused tokens, the 122,451-token fixture and exact AST equivalence. It records a failed answer before exiting with an error. Set `STRATA_API_KEY` in the environment if the local server requires authentication. Replace the absolute-path placeholders in `config.example.json`. It omits the optional first-logit dump; the exact tested configs remain in the raw evidence archive.
 
-Raw per-request timings, token counts and quality outcomes are in `measurements.json`; full usual-suite records are in `speed-off.json` and `speed-on.json`. Model download checksum sidecars and the expert-profile seed hash are in `provenance.json`; the model repository revision was not recorded, and the profile itself is not included. A different profile can change timings. The local integration row requires the custom prefill-loan/cache patches and is secondary to the independently reproducible upstream comparison.
+The compact cold-run timings, shared token counts, quality outcomes and speed medians are in `results.json`; full usual-suite records are in [speed-off.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/speed-off.json) and [speed-on.json](https://github.com/riccardogiorato/Strata/blob/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill/speed-on.json). Model download checksum sidecars and the expert-profile seed hash are in the `provenance` section of `results.json`; the model repository revision was not recorded, and the profile itself is not included. A different profile can change timings. The local integration row requires the custom prefill-loan/cache patches and is secondary to the independently reproducible upstream comparison.
+
+The [complete audit archive](https://github.com/riccardogiorato/Strata/tree/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill) retains the original raw JSON, failed outputs and per-run configurations at the pre-cleanup commit. The current PR keeps only `results.json` and `config.example.json`, alongside the reproduction fixture/script and validation transcript. No measurement or failure was discarded.

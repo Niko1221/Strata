@@ -1,16 +1,16 @@
 {
-  "exe": "$LAB/private/upstream/build/strata",
+  "exe": "/absolute/path/to/build/strata",
   "args": [
     "--pack",
-    "packs/swift15-iq2xs-gsq",
+    "/absolute/path/to/pack",
     "--native",
-    "$HOME/models/swift15-flashnext-iq2xs/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "/absolute/path/to/model.gguf",
     "--ple-gguf",
-    "$HOME/models/swift15-flashnext-iq2xs/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "/absolute/path/to/model.gguf",
     "--ple-io",
     "mmap",
     "--expert-profile",
-    "$LAB/private/upstream-2-on.expert-profile.bin",
+    "/absolute/path/to/expert-profile.bin",
     "--spec",
     "4",
     "--spec-min-p",
@@ -18,7 +18,7 @@
     "--kv",
     "int8",
     "--mtp",
-    "mtp/rt",
+    "/absolute/path/to/mtp",
     "--max-context",
     "131072",
     "--kv-resident",
@@ -45,8 +45,8 @@
     "--conversation-cache-park-gain",
     "1024"
   ],
-  "cwd": "$HOME/Desktop/github/strata-port",
-  "tokenizer": "$HOME/Desktop/github/strata-port/packs/swift15-iq2xs-gsq/tokenizer",
+  "cwd": "/absolute/path/to/model-data",
+  "tokenizer": "/absolute/path/to/pack/tokenizer",
   "model_name": "local-model",
   "fit_max_tokens": true,
   "env": {
@@ -57,8 +57,7 @@
     "STRATA_PF_FUSED_SM75": "1",
     "STRATA_ROUTE_PRIOR": "1.5",
     "STRATA_KVA": "0",
-    "STRATA_PF_FUSED_IQ1_M": "1",
-    "STRATA_DUMP_FIRST_LOGITS": "$LAB/private/upstream-2-on.logits"
+    "STRATA_PF_FUSED_IQ1_M": "0"
   },
   "plain_prompt": false
 }

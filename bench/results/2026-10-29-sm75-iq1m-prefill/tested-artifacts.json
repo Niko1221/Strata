@@ -1,8 +1,0 @@
-{
-  "src/prefill/moe_fused_iq.cu": "faef150d919f84ffad1b2be44ddda66b23b1c446816747b0a91bc99481eeffc5",
-  "include/strata/prefill/moe_fused_iq.hpp": "e32149a8d8c3b2b4ece51921cd111f8d2667e219e2a1e1b7e95702d2a0394ea5",
-  "CMakeLists.txt": "7e6066d75b6de04f486028bb4fae7afbf85fcd5f9752bc7e5d0fbb8943b41b68",
-  "tests/cuda/prefill_fused_iq_test.cpp": "9978544881f632a3be71e5ec3bba27001912381ec110383deb7821f799254f40",
-  "build/strata": "991a29096bc56e12ebd633a2d7a269397635abb923d94a0ada4c0a87c239e310",
-  "build/prefill_fused_iq_test": "2b64223e409c4e266bd763243bc7d99914311073d812eac10de28aa55c1c4b15"
-}
