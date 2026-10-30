@@ -4,6 +4,8 @@ python -m unittest serve.test_solo_priority -v
 """
 import concurrent.futures
 import json
+import io
+import queue
 import sys
 import tempfile
 import threading
@@ -11,6 +13,7 @@ import time
 import unittest
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
 
 from serve.server import ByteTokenizer, Service, StrataEngine
 from serve.frontend import ChatTemplate
@@ -33,6 +36,10 @@ while True:
     if line == 'QUIT': break
     if not line.startswith('GEN '): continue
     f = line.split(); limit = int(f[1]); ids = list(map(int, f[-1].split(',')))
+    def emit(token):
+        print(f'T {token}', flush=True)
+        if any(x.startswith('logprobs=') for x in f):
+            print(f'LP -0.1 {token}:-0.1', flush=True)
     stop.clear()
     if ids[0] == 3:
         print('ERR injected engine failure', flush=True)
@@ -57,12 +64,12 @@ while True:
     if not stop.is_set():
         for token in reply[used:used+limit]:
             time.sleep(.001)
-            print(f'T {token}', flush=True); n += 1
+            emit(token); n += 1
             if token == 257: finish = 'stop'; break
             if stop.is_set():
                 # Real speculative windows can leave accepted tokens after STOP.
                 for extra in reply[used+n:used+n+2]:
-                    print(f'T {extra}', flush=True); n += 1
+                    emit(extra); n += 1
                 break
         else: finish = 'length'
     cache.append((ids + reply[used:used+n])[:-1] if n else ids[:read])
@@ -85,6 +92,20 @@ class Scheduling(unittest.TestCase):
         for cfg in ({'solo_priority': 'yes'}, {'solo_priority': True}):
             with self.assertRaises(ValueError): enable(svc, cfg)
 
+    def test_split_serving_is_rejected_even_when_it_forwards_engine_attributes(self):
+        from serve.split import SplitEngine
+        engine = SimpleNamespace(batch=0, _generate_single=lambda: None)
+        split = SplitEngine.__new__(SplitEngine)
+        split.__dict__["decode"] = engine
+        svc = SimpleNamespace(engine=split, fifo=threading.Lock())
+        original = svc.fifo
+        with self.assertRaisesRegex(ValueError, "split_serve"):
+            enable(svc, {"solo_priority": True,
+                         "split_serve": {"prefill_gpu": 0, "decode_gpu": 1},
+                         "args": ["--conversation-cache-mib", "32768"]})
+        self.assertIs(svc.fifo, original)
+        self.assertFalse(hasattr(svc, "solo_scheduler"))
+
     def test_waiting_age_and_minimum_run_time(self):
         s = SoloScheduler(quantum_s=0, age_s=30)
         with s.request([1], 10000, {}, threading.Event()):
@@ -105,6 +126,39 @@ class Scheduling(unittest.TestCase):
             short.queued_at -= 31             # a low-priority request cannot wait forever either
             self.assertTrue(s.should_pause())
             s.requests.remove(short); s.waiters.remove(short)
+
+
+class PrefillOnly(unittest.TestCase):
+    def engine(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
+        engine.lines = queue.Queue()
+        engine.can_stop, engine.max_context, engine.silence_s = False, 262144, 0
+        engine.lines.put("DONE 0 3 1 0 length 0 0 0")
+        return engine
+
+    def test_default_path_preserves_prefill_only_protocol(self):
+        engine = self.engine()
+        self.assertEqual(list(engine.generate([1, 2, 3], 0, {}, threading.Event(),
+                                              prefill_only=True)), [])
+        self.assertEqual(engine.proc.stdin.getvalue(), "GEN 0 prefill=1 1,2,3\n")
+        self.assertTrue(engine.lines.empty())
+
+    def test_invalid_prefill_only_request_never_writes_to_engine(self):
+        for limit, embeddings in ((1, None), (0, "image.bin")):
+            with self.subTest(limit=limit, embeddings=embeddings):
+                engine = self.engine()
+                with self.assertRaisesRegex(ValueError, "prefill_only"):
+                    list(engine.generate([1], limit, {}, threading.Event(), embeddings,
+                                         prefill_only=True))
+                self.assertEqual(engine.proc.stdin.getvalue(), "")
+
+    def test_priority_prefill_only_fails_instead_of_silently_skipping_prompt(self):
+        engine = self.engine()
+        engine.solo_scheduler = SoloScheduler()
+        with self.assertRaisesRegex(ValueError, "split serving"):
+            list(engine.generate([1], 0, {}, threading.Event(), prefill_only=True))
+        self.assertEqual(engine.proc.stdin.getvalue(), "")
 
 
 class Streaming(unittest.TestCase):
@@ -240,6 +294,37 @@ class Streaming(unittest.TestCase):
         self.assertFalse(self.svc.status['busy'])
         self.assertFalse(self.sched.locked())
         self.assertEqual(len(self.svc.history), 3)
+
+    def test_logprob_lines_stay_with_tokens_across_preemption(self):
+        started = threading.Event()
+        def collect(marker, priority):
+            ids, cancel = [marker, 999], threading.Event()
+            sampling = {"priority": priority, "logprobs": True}
+            seen = []
+            with self.sched.request(ids, 2000, sampling, cancel):
+                self.sched.acquire()
+                try:
+                    for token in self.eng.generate(ids, 2000, sampling, cancel):
+                        if token is not None:
+                            self.assertIs(self.eng.lp_lines.owner, cancel)
+                            seen.append((token, self.eng.lp_lines.popleft()))
+                            if marker == 1:
+                                started.set()
+                finally:
+                    self.sched.release()
+            return seen
+        baseline = collect(1, 0)
+        started.clear()
+        long = self.pool.submit(collect, 1, 0)
+        self.assertTrue(started.wait(8))
+        short = self.pool.submit(collect, 2, 5).result(8)
+        self.assertFalse(long.done())
+        self.assertEqual(long.result(8), baseline)
+        self.assertEqual([t for t, _ in short], list(b"short OK") + [257])
+        for token, (lp_token, line) in baseline + short:
+            self.assertEqual(lp_token, token)
+            self.assertEqual(line.strip(), f"LP -0.1 {token}:-0.1")
+        self.assertEqual(self.sched.preemptions, 1)
 
     def test_cancel_while_paused_does_not_stop_the_other_request(self):
         cancel = threading.Event()

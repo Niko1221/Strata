@@ -256,9 +256,10 @@ def enable(service, config):
     def option(name, default=0):
         return int(args[args.index(name) + 1]) if name in args else default
     if (getattr(engine, "batch", 0) or config.get("parallel") or config.get("replicas") or
+            config.get("split_serve") or
             "--batch" in args or "--slots" in args or
             not hasattr(engine, "_generate_single")):
-        raise ValueError('"solo_priority" needs a single Strata engine without parallel/replicas')
+        raise ValueError('"solo_priority" needs a single Strata engine without parallel/replicas/split_serve')
     if option("--conversation-cache-mib") <= 0 or option("--conversation-cache-slots", 4) < 2:
         raise ValueError('"solo_priority" needs a conversation cache with at least two slots')
     if option("--prompt-cache", 1) <= 0:

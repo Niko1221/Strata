@@ -2252,12 +2252,16 @@ class StrataEngine:
             return
         scheduler = getattr(self, "solo_scheduler", None)
         if scheduler is not None:
+            if prefill_only:
+                raise ValueError("solo_priority does not support prefill_only / split serving")
             yield from scheduler.generate(self, ids, max_new, sampling, cancel, embeddings,
                                           engine_died=EngineDied, request_stats=request_stats)
         else:
-            yield from self._generate_single(ids, max_new, sampling, cancel, embeddings)
+            yield from self._generate_single(ids, max_new, sampling, cancel, embeddings,
+                                            prefill_only=prefill_only)
 
-    def _generate_single(self, ids, max_new, sampling, cancel, embeddings=None, *, pause=None):
+    def _generate_single(self, ids, max_new, sampling, cancel, embeddings=None, *, pause=None,
+                         prefill_only=False):
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same

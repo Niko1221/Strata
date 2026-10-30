@@ -22,7 +22,7 @@ cache enabled, with at least two slots. For example, on a machine with enough fr
 
 These are additions to an existing config, not a complete config. Memory requirements
 depend on the model, context and other applications. `parallel`, `--batch`, `--slots`
-and replicas cannot be combined with this option. Remove the option to restore the
+replicas and `split_serve` cannot be combined with this option. Remove the option to restore the
 original scheduler; no model, engine, cache format or tokenizer changes are needed.
 
 ## Requests
