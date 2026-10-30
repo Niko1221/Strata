@@ -213,7 +213,7 @@ __global__ void __launch_bounds__(64) router_top10_wave_kernel(const float* __re
         mx = fmaxf(mx, lv[j]);
     }
 #pragma unroll
-    for (int off = 32; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor(mx, off, 64));
+    for (int off = 32; off > 0; off >>= 1) mx = fmaxf(mx, strata_shfl_xor(mx, off, 64));
 #pragma unroll
     for (int j = 0; j < RW_PER; ++j) {
         const int e = lane + 64 * j;
@@ -245,8 +245,8 @@ __global__ void __launch_bounds__(64) router_top10_wave_kernel(const float* __re
         }
 #pragma unroll
         for (int off = 32; off > 0; off >>= 1) {
-            const float ov = __shfl_xor(bv, off, 64);
-            const int oi = __shfl_xor(bi, off, 64);
+            const float ov = strata_shfl_xor(bv, off, 64);
+            const int oi = strata_shfl_xor(bi, off, 64);
             if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
         }
         if (bi >= n_expert) break;
