@@ -897,6 +897,51 @@ class CommandLineTests(StandardBase):
         self.assertIn("already running", errors)
         self.assertFalse(bs.load(self.root / "run")["extensions"]["started_engine"])
 
+    def test_a_running_profile_keeps_its_engine_log_from_the_newest_start(self):
+        # #4492: a run against a server that is already running attaches the run config's log from the running engine's
+        # start line (serve/server.py writes it) to the end, not an earlier engine's lines and not nothing
+        run_log = self.root / "engine-running.log"
+        run_log.write_bytes(b"[strata] 2026-10-29 09:00:00 engine started: /x/strata --serve\n"
+                            b"strata generate: an earlier engine's line\n"
+                            b"[strata] 2026-10-30 11:42:06 engine started: /x/strata --serve\n"
+                            b"strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 25)\n")
+        plan = {"effective": {"host": "127.0.0.1", "port": int(self.server.url.rsplit(":", 1)[1])}, "engine_argv": []}
+        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {"log": str(run_log)})), \
+                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+                mock.patch.object(bs, "start_engine") as start, mock.patch.object(bs, "stop_engine"):
+            code, _, errors = self.invoke("--profile", "p.json", "--out", str(self.root / "kept"), "--no-start")
+        self.assertEqual(code, 0, errors)
+        start.assert_not_called()
+        kept = (self.root / "kept" / "engine.log").read_text(encoding="utf-8")
+        self.assertTrue(kept.startswith("[strata] 2026-10-30 11:42:06 engine started:"), kept)
+        self.assertIn("layer split across 2 GPUs", kept)
+        self.assertNotIn("an earlier engine's line", kept)
+        self.assertIn("engine_log", [a["kind"] for a in bs.load(self.root / "kept")["artifacts"]])
+
+    def test_a_running_profile_without_a_start_line_attaches_no_log(self):
+        run_log = self.root / "no-start.log"
+        run_log.write_bytes(b"strata serve: a line with no start line before it\n")
+        plan = {"effective": {"host": "127.0.0.1", "port": int(self.server.url.rsplit(":", 1)[1])}, "engine_argv": []}
+        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {"log": str(run_log)})), \
+                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+                mock.patch.object(bs, "start_engine"), mock.patch.object(bs, "stop_engine"):
+            code, _, errors = self.invoke("--profile", "p.json", "--out", str(self.root / "none"), "--no-start")
+        self.assertEqual(code, 0, errors)
+        self.assertFalse((self.root / "none" / "engine.log").exists())
+
+    def test_the_newest_start_line_is_found_past_the_scan_window(self):
+        run_log = self.root / "long.log"
+        run_log.write_bytes(b"[strata] 2026-10-29 09:00:00 engine started: /x/strata --serve\n" + b"x" * 300 + b"\n"
+                            b"[strata] 2026-10-30 11:42:06 engine started: /x/strata --serve\nlast\n")
+        newest = run_log.read_bytes().rindex(b"[strata] 2026-10-30")
+        self.assertEqual(bs.engine_start_offset(run_log), newest)
+        with mock.patch.object(bs, "ENGINE_START_SCAN", 120):
+            self.assertEqual(bs.engine_start_offset(run_log), newest)
+        with mock.patch.object(bs, "ENGINE_START_SCAN", 10):
+            self.assertIsNone(bs.engine_start_offset(run_log))
+        self.assertIsNone(bs.engine_start_offset(self.root / "missing.log"))
+        self.assertIsNone(bs.engine_start_offset(None))
+
     def test_no_start_refuses_to_launch(self):
         self.server.close()
         plan = {"effective": {"host": "127.0.0.1", "port": int(self.server.url.rsplit(":", 1)[1])}, "engine_argv": []}

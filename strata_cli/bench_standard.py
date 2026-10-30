@@ -695,8 +695,38 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
     return proc
 
 
+#: The line serve/server.py writes to the run config's log each time it starts the engine.
+ENGINE_STARTED = re.compile(rb"^\[strata\] \d{4}-\d\d-\d\d \d\d:\d\d:\d\d engine started: ", re.MULTILINE)
+#: How far back from the end of that log the newest start line is looked for.
+ENGINE_START_SCAN = 64 * 1024 * 1024
+
+
+def engine_start_offset(run_log: Path | None) -> int | None:
+    """The byte offset of the newest "engine started" line in the run config's log, i.e. where the running engine's own
+    lines begin (#4492): a run against a server that is already running keeps that engine's log from its start to the end
+    of the run. None when there is no such file or no start line in its last ENGINE_START_SCAN bytes: then which lines
+    belong to the running engine is unknown, and nothing is attached rather than an earlier engine's lines."""
+    try:
+        if run_log is None or not run_log.is_file():
+            return None
+        size = run_log.stat().st_size
+        base = max(0, size - ENGINE_START_SCAN)
+        with run_log.open("rb") as stream:
+            stream.seek(base)
+            data = stream.read()
+    except OSError:
+        return None
+    if base:                                      # the window starts mid-line: begin at the next whole line
+        cut = data.find(b"\n") + 1
+        base, data = base + cut, data[cut:]
+    found = None
+    for found in ENGINE_STARTED.finditer(data):
+        pass
+    return None if found is None else base + found.start()
+
+
 def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Path:
-    """The log to keep with a result when the runner started the engine. `strata serve --quiet` prints nothing, so the
+    """The log to keep with a result. When the runner started the engine, `strata serve --quiet` prints nothing, so the
     console capture is empty; the engine's own lines are in the run config's `log` file, from `offset` (its size before
     the start). Falls back to the console capture when there is no such file or nothing new in it."""
     try:
