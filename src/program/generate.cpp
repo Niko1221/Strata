@@ -12300,6 +12300,46 @@ int main(int argc, char** argv) {
                 chain_rows = chain_st.best_rows;
                 return k;
             });
+        // STRATA_SPEC_PCUM=base[,deep[,d0,d1]] (opt-in, the serial loop): the MTP window also ends where the product of
+        // the drafted tokens' top-1 probabilities falls below a threshold - the draft's own estimate that the whole
+        // window is accepted.  The threshold follows the depth: `base` up to position d0, `deep` from d1 (16384 and
+        // 49152 by default), a straight line between; deep in the context every verify token costs another pass of
+        // attention, and on a CPU-bound box every token also adds CPU expert rows.  The drafter stops at the same
+        // place, so it drafts no token the window would drop.  Only the window's length changes: every token is still
+        // verified, so the greedy text is the one --spec-min-p alone gives (up to the CPU-vs-GPU expert rounding any
+        // other window length shows).  Per request: spec_p_cum=<p> (base and deep) and spec_p_cum_deep=<p>.  Unset:
+        // no rule and no chain callback, the default path byte-identical.
+        struct PcumRule {
+            double base = 0.0, deep = 0.0;
+            int64_t d0 = 16384, d1 = 49152;
+            double at(int64_t pos) const {
+                if (deep == base || d1 <= d0) return pos >= d1 ? deep : base;
+                const double t = std::clamp((double) (pos - d0) / (double) (d1 - d0), 0.0, 1.0);
+                return base + (deep - base) * t;
+            }
+        };
+        const char* pcum_env = std::getenv("STRATA_SPEC_PCUM");
+        const bool pcum_on = use_mtp && !spec_cost && pcum_env != nullptr;
+        PcumRule pcum_start;   // the environment's rule; a request's keys change a copy of it (pcum_cur)
+        if (pcum_on) {
+            double v[4] = {0.0, -1.0, (double) pcum_start.d0, (double) pcum_start.d1};
+            const int got = std::sscanf(pcum_env, "%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3]);
+            pcum_start.base = std::clamp(got >= 1 ? v[0] : 0.0, 0.0, 1.0);
+            pcum_start.deep = std::clamp(got >= 2 && v[1] >= 0.0 ? v[1] : pcum_start.base, 0.0, 1.0);
+            if (got >= 4) { pcum_start.d0 = (int64_t) v[2]; pcum_start.d1 = (int64_t) v[3]; }
+            std::fprintf(stderr, "strata serve: STRATA_SPEC_PCUM: the MTP window ends where its drafts' probability product "
+                                 "falls below %.3g (to position %lld) .. %.3g (from %lld)\n", pcum_start.base,
+                         (long long) pcum_start.d0, pcum_start.deep, (long long) pcum_start.d1);
+        }
+        PcumRule pcum_cur = pcum_start;
+        float pcum_min_p = (float) o.spec_min_p;   // the window being drafted: its draft floor, threshold and running product
+        double pcum_thr = 0.0, pcum_prod = 1.0;
+        if (pcum_on)
+            mtp.set_chain_rule([&](int idx, float pj) {
+                if (idx == 0) pcum_prod = 1.0;
+                pcum_prod *= (double) pj;
+                return pj >= pcum_min_p && pcum_prod >= pcum_thr;   // the window rule below, operation for operation
+            });
         // The vision path (--vision): GENI <max_new> <embeddings file> <id,id,...> carries images.  The file is one
         // or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd floats) in prompt order;
         // each image's rows go to its run of <|image_pad|> tokens, whose M-RoPE positions are mtmd's: t = p,
@@ -13782,6 +13822,7 @@ int main(int argc, char** argv) {
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
+            PcumRule req_pcum = pcum_start;   // STRATA_SPEC_PCUM's rule; spec_p_cum / spec_p_cum_deep change it for this request
             double req_pipe = -1.0;   // --prefill-pipe for this request (setup's calibration of a layer split)
             int req_aux_cpus = -1;   // aux_cpus=0|1: --aux-cpus for this request (-1 = the start-up value)
             // #2228: img_keys=<hex>,<hex>,... (GENI): each picture's key from the server (its normalized bytes' hash),
@@ -13829,6 +13870,8 @@ int main(int argc, char** argv) {
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "spec_p_cum") { req_pcum.base = req_pcum.deep = std::clamp((double) fv, 0.0, 1.0); }
+                    else if (key == "spec_p_cum_deep") req_pcum.deep = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
                     else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;
                     else if (key == "img_keys") {
@@ -16503,7 +16546,15 @@ int main(int argc, char** argv) {
                         T = std::clamp(chain_rows, 1, S_mtp);
                     } else if (use_mtp && req_spec_min_p > 0.0) {
                         T = 1;
-                        while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
+                        if (pcum_on) {   // STRATA_SPEC_PCUM: also the drafts' probability product (the chain rule's arithmetic)
+                            const double thr = req_pcum.at(p);
+                            double prod = 1.0;
+                            while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p &&
+                                   (prod *= (double) dprob[(size_t) T - 1]) >= thr)
+                                ++T;
+                        } else {
+                            while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
+                        }
                     }
                     if (first_window) T = merge_T > 0 ? merge_T : 1;
                     // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
@@ -16810,6 +16861,10 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 generation = {};   // a skipped or failed production must not expose an older q view
                 const GatedDraftLimit draft_limit(mtp, gated_proposal, S_mtp, p + a + 1, o.max_context);
+                if (pcum_on) {   // the chain rule's window: the one the next round's window rule computes at p + a + 1
+                    pcum_min_p = (float) req_spec_min_p;
+                    pcum_thr = req_pcum.at(p + a + 1);
+                }
                 const bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p,
                                                nullptr, gated_proposal ? &generation : nullptr);
