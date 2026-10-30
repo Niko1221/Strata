@@ -4592,6 +4592,7 @@ class Service:
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = True                    # default on (0.2.8): tool calls in forms next to the template's; config "tool_call_recovery": false turns it off
+        self.undeclared_tool_calls = False                # opt-in (#4622): a call for an undeclared name comes back as a call
         self.images = None                                # serve/images.py's ImageGen when the config has "images"
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
         self.stop_ids = end_token_ids(tokenizer)
@@ -5917,7 +5918,7 @@ class Service:
                 budget = max(1, max_new - reserve)
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
-                                 deferred=deferred)
+                                 deferred=deferred, undeclared_calls=self.undeclared_tool_calls)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -9949,6 +9950,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
     svc.anthropic_think_unasked = mode == "model"
     svc.tool_call_recovery = tool_call_recovery_setting(cfg)
+    undeclared = cfg.get("undeclared_tool_calls", "text")   # #4622: see OutputParser's undeclared_calls
+    if undeclared not in ("text", "call"):
+        raise SystemExit(f"[strata] config \"undeclared_tool_calls\" must be \"text\" or \"call\", not {undeclared!r}")
+    svc.undeclared_tool_calls = undeclared == "call"
     etu = cfg.get("env_to_user", False)                # opt-in: see frontend._env_to_user
     if not isinstance(etu, bool):
         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
