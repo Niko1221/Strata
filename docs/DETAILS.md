@@ -298,6 +298,13 @@ files, read time; `routing prefetch`: how many file reads had been warmed). The 
 so a restart does not lose them (`--totals-file none` counts one start only); `--totals-reset` closes that
 window so one session's cost can be read on its own - the counts start from zero and the window that ended
 is kept beside them as `<the run config's name>.totals.prev.json`.
+The Monitor tab's state card shows the cost first and the counts behind it - the input the model was given,
+what the cache already held of it, and the output it returned - in a line short enough for a phone, while the
+sentence under the request table gives the same in full. The dollar figure is what an API would have charged for
+the same work, since this machine charges nothing of its own. `cost_input_per_million` is the plain prompt price
+and `cost_output_per_million` the reply price; the page's Settings view edits both and `--cost-in` and `--cost-out`
+override them for one start. `/metrics` totals carry the prices and `cost_usd`, what they come to, and with no
+price set no dollar figure is printed. A price is read when the server starts, so a change works from the next one on.
 `hit_rate` is the VRAM share of the experts looked up; experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share` is their
 share of all routed experts. The Monitor tab shows both. The request list in the Monitor tab also shows the prompt's own speed: what the cache already held is not read

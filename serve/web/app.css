@@ -126,6 +126,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
 .req-totals { margin: 0; font-size: var(--st-fs-sm); }
 .req-totals:empty { display: none; }
+.state-tokens { margin: var(--st-s-3) 0 0; font-size: var(--st-fs-md); }
+.state-tokens:empty { display: none; }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
