@@ -65,6 +65,11 @@ async function openChats(fromScreen) {
   chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || H.newChat();
   if (!chats.includes(chat)) chats.push(chat);
   chatId = chat.id;
+  store.set("chatId", chatId);                          // persist the resolved id: draftKey() must target this chat, not draft:default
+  if (store.get("draft:" + chatId, null) == null) {     // migrate a stray draft:default into this chat when it has none yet
+    const def = store.get("draft:default", null);
+    if (def) { store.set("draft:" + chatId, def); store.remove("draft:default"); }
+  }
   setMessages(chat.messages);
 }
 async function setChatList(on, fromScreen) {
@@ -118,10 +123,12 @@ function renderSidebar() {
 
 function showChat(c) {
   clearUndo();
+  if (window.flushComposerDraft) window.flushComposerDraft();   // save the outgoing chat's draft under its own id first
   chat = c; chatId = c.id; messages = c.messages;
   store.set("chatId", chatId);
   chatStore.put(H.cleanChat(chat));       // renderChat renders the list, so the write here does not render it again
   renderChat();
+  if (window.loadComposerDraft) window.loadComposerDraft();   // restore that chat's draft (and clear the box when it has none)
 }
 function openChat(id) {
   if (busy) { stillWriting(); return; }
@@ -156,6 +163,7 @@ function deleteChat(c) {
     if (!chats.includes(next)) chats.push(next);
     showChat(next);
   } else renderSidebar();
+  if (window.purgeDraft) window.purgeDraft(c.id);   // drop the deleted chat's draft (after any flush done in showChat above)
   toast("info", tr("chat.deleted", "Chat deleted"), H.chatTitle(c, untitled()), 6000, {label: tr("undo", "Undo"), run: () => {
     if (chats.includes(c)) return;                  // already put back
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters

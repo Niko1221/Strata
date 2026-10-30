@@ -70,7 +70,7 @@
           <div class="attachments" id="attachments" hidden></div>
           <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message" data-i18n-placeholder="composer.placeholder" data-i18n-label="composer.message"></textarea>
           <div class="st-composer__bar">
-            <button type="button" class="st-btn st-btn--icon" id="websearch-btn" title="Web search: look the question up before answering" aria-label="Web search" aria-pressed="false">
+            <button type="button" class="st-btn st-btn--icon" id="websearch-btn" title="Web search: look the question up before answering" data-i18n-title="ws.globeTitle" aria-label="Web search" data-i18n-label="ws.globe" aria-pressed="false">
               <svg class="st-icon"><use href="web/sprite.svg#i-globe"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file" data-i18n-label="composer.attachLabel">
               <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
@@ -204,32 +204,31 @@
         <dl class="facts" id="facts-hw"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">Connect your tools</span>
-        <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
+        <span class="card-title" data-i18n="tools.title">Connect your tools</span>
+        <p class="muted" data-i18n="tools.note">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">Settings</span>
+        <span class="card-title" data-i18n="settings.title">Settings</span>
         <div class="st-field">
-          <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
-          <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+          <label class="st-label" for="api-key"><span data-i18n="settings.apiKey">API key</span> <output data-i18n="settings.apiKeyNote">only if the server was started with one</output></label>
+          <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed" data-i18n-placeholder="settings.apiKeyPh">
         </div>
         <div class="st-field">
           <label class="st-label" for="lang"><span data-i18n="settings.language">Language</span></label>
           <select class="st-input" id="lang"></select>
           <span class="muted small" data-i18n="settings.languageNote">Chat, its settings and the buttons above are translated. The Monitor, Images and About views are still in English.</span>
         </div>
-        <div class="toggle-row"><span>Dark theme</span>
-          <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
-        <p class="muted small">Chats, settings and the key are kept in this browser only.
-          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+        <div class="toggle-row"><span data-i18n="settings.darkTheme">Dark theme</span>
+          <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme" data-i18n-label="settings.darkTheme"></button></div>
+        <p class="muted small"><span data-i18n="settings.privacyNote">Chats, settings and the key are kept in this browser only.</span>
+          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer" data-i18n="settings.github">Strata on GitHub</a></p>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
-        <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
-        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
-          take effect the next time the model starts (close Strata's window and start it again).</p>
+        <div class="req-head"><span class="card-title" data-i18n="model.title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
+        <p class="muted small" data-i18n="model.note">Kept in the model's run config for every client. An empty field is the default. They take effect the next time the model starts (close Strata's window and start it again).</p>
         <form class="cfg-form" id="cfg-form"></form>
-        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button" data-i18n="model.save">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
     </div>
@@ -242,11 +241,11 @@
     <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close" data-i18n-label="close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="drawer-actions st-drawer__actions">
-    <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
-    <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>
+    <button class="st-btn st-btn--secondary" id="s-reset" type="button" data-i18n="drawer.reset">Reset</button>
+    <button class="st-btn st-btn--primary" id="s-apply" type="button" data-i18n="drawer.apply">Apply</button>
   </div>
   <div class="st-drawer__body">
-    <div class="drawer-section">Sampling</div>
+    <div class="drawer-section" data-i18n="drawer.sampling">Sampling</div>
     <div class="st-field">
       <label class="st-label" for="s-thinking"><span data-i18n="drawer.thinking">Thinking</span> <output id="o-thinking"></output></label>
       <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking" data-i18n-label="drawer.thinking">
@@ -290,54 +289,66 @@
       these settings for anything they do not set themselves</span></span>
       <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too" data-i18n-label="drawer.share"></button></div>
 
-    <div class="drawer-section">Web search</div>
-    <div class="toggle-row"><span>Web search<br><span class="muted small">look the question up before answering; the composer's globe switches it too</span></span>
-      <button class="st-toggle" id="s-ws" role="switch" aria-checked="false" aria-label="Web search"></button></div>
-    <div class="toggle-row" id="ws-opt-row"><span>Optimize search query<br><span class="muted small" id="ws-opt-note">Refines your question into a focused search query before searching (uses the local model)</span></span>
-      <button class="st-toggle" id="s-ws-opt" role="switch" aria-checked="true" aria-label="Optimize search query"></button></div>
+    <div class="drawer-section" data-i18n="ws.search">Web search</div>
+    <div class="toggle-row"><span><span data-i18n="ws.searchTitle">Web search</span><br><span class="muted small" data-i18n="ws.searchNote">look the question up before answering; the composer's globe switches it too</span></span></div>
+    <div class="seg seg--3" id="s-ws" role="radiogroup" aria-label="Web search mode">
+      <button type="button" role="radio" data-wmode="off"><span data-i18n="ws.modeOff">Off</span></button>
+      <button type="button" role="radio" data-wmode="on"><span data-i18n="ws.modeOn">On</span></button>
+      <button type="button" role="radio" data-wmode="auto"><span data-i18n="ws.modeAuto">Auto</span></button>
+    </div>
+    <div class="st-field" id="s-ws-method" style="display:none">
+      <label class="muted small" data-i18n="ws.methodTitle">Auto mode decides how</label>
+      <div class="seg seg--2" role="radiogroup" aria-label="Auto search method">
+        <button type="button" role="radio" data-awm="model"><span data-i18n="ws.methodModel">Model decides</span></button>
+        <button type="button" role="radio" data-awm="heuristic"><span data-i18n="ws.methodHeuristic">Simple check</span></button>
+      </div>
+      <p class="muted small" data-i18n="ws.methodNote">Model decides: the model calls a web search when it helps (recommended). Simple check: a fixed keyword test, for models that cannot call tools reliably.</p>
+    </div>
+    <div class="toggle-row" id="ws-opt-row"><span><span data-i18n="ws.optTitle">Optimize search query</span><br><span class="muted small" id="ws-opt-note" data-i18n="ws.optNote">Refines your question into a focused search query before searching (uses the local model)</span></span>
+      <button class="st-toggle" id="s-ws-opt" role="switch" aria-checked="true" aria-label="Optimize search query" data-i18n-label="ws.optTitle"></button></div>
     <div class="st-field" id="ws-engine-row">
-      <label class="st-label" for="s-ws-engine">Search engine</label>
+      <label class="st-label" for="s-ws-engine" data-i18n="ws.engine">Search engine</label>
       <select class="st-input" id="s-ws-engine">
-        <option value="duckduckgo">DuckDuckGo (anonymous &ndash; no key needed)</option>
-        <option value="searxng">SearXNG (self-hosted)</option>
-        <option value="brave">Brave Search (API key)</option>
-        <option value="tavily">Tavily (API key)</option>
-        <option value="serper">Serper / Google (API key)</option>
-        <option value="exa">Exa (API key)</option>
-        <option value="perplexity">Perplexity (API key)</option>
+        <option value="duckduckgo" data-i18n="ws.engineDdg">DuckDuckGo (anonymous &ndash; no key needed)</option>
+        <option value="searxng" data-i18n="ws.engineSearxng">SearXNG (self-hosted)</option>
+        <option value="brave" data-i18n="ws.engineBrave">Brave Search (API key)</option>
+        <option value="tavily" data-i18n="ws.engineTavily">Tavily (API key)</option>
+        <option value="serper" data-i18n="ws.engineSerper">Serper / Google (API key)</option>
+        <option value="exa" data-i18n="ws.engineExa">Exa (API key)</option>
+        <option value="perplexity" data-i18n="ws.enginePerplexity">Perplexity (API key)</option>
       </select>
     </div>
     <div class="st-field" id="ws-url-row">
-      <label class="st-label" for="s-ws-url">SearXNG URL</label>
+      <label class="st-label" for="s-ws-url" data-i18n="ws.searxngUrl">SearXNG URL</label>
       <input class="st-input" id="s-ws-url" type="text" placeholder="http://127.0.0.1:8888">
     </div>
     <div class="st-field" id="ws-key-row" hidden>
-      <label class="st-label" for="s-ws-key">API key <output>kept in this browser only</output></label>
-      <input class="st-input" id="s-ws-key" type="password" placeholder="the engine's API key">
+      <label class="st-label" for="s-ws-key"><span data-i18n="ws.apiKey">API key</span> <output data-i18n="ws.apiKeyNote">kept in this browser only</output></label>
+      <input class="st-input" id="s-ws-key" type="password" placeholder="the engine's API key" data-i18n-placeholder="ws.apiKeyPh">
     </div>
     <div class="st-field" id="ws-max-row">
-      <label class="st-label" for="s-ws-max">Max results <output id="o-ws-max"></output></label>
+      <label class="st-label" for="s-ws-max"><span data-i18n="ws.max">Max results</span> <output id="o-ws-max"></output></label>
       <input class="st-input" id="s-ws-max" type="number" min="1" max="20" step="1">
     </div>
-    <div class="toggle-row" id="ws-read-row"><span>Read result pages<br><span class="muted small">fetches the top pages in full, not just the snippets</span></span>
-      <button class="st-toggle" id="s-ws-read" role="switch" aria-checked="true" aria-label="Read result pages"></button></div>
+    <div class="toggle-row" id="ws-read-row"><span><span data-i18n="ws.readTitle">Read result pages</span><br><span class="muted small" data-i18n="ws.readNote">fetches the top pages in full, not just the snippets</span></span>
+      <button class="st-toggle" id="s-ws-read" role="switch" aria-checked="true" aria-label="Read result pages" data-i18n-label="ws.readTitle"></button></div>
     <div class="st-field" id="ws-readmax-row">
-      <label class="st-label" for="s-ws-readmax">Pages to read <output id="o-ws-readmax"></output></label>
+      <label class="st-label" for="s-ws-readmax"><span data-i18n="ws.readmax">Pages to read</span> <output id="o-ws-readmax"></output></label>
       <input class="st-input" id="s-ws-readmax" type="number" min="1" max="5" step="1">
           </div>
           <div class="st-field" id="ws-reader-row">
-            <label class="st-label" for="s-ws-reader">Page reader <output id="o-ws-jina"></output></label>
+            <label class="st-label" for="s-ws-reader"><span data-i18n="ws.reader">Page reader</span> <output id="o-ws-jina"></output></label>
             <select class="st-input" id="s-ws-reader">
-              <option value="off">Direct only (default - pages are read on this PC)</option>
-              <option value="fallback">Jina fallback (r.jina.ai reads a page only when direct reading fails)</option>
-              <option value="always">Jina always (best readability on JavaScript-heavy pages)</option>
+              <option value="off" data-i18n="ws.readerOff">Direct only (default - pages are read on this PC)</option>
+              <option value="fallback" data-i18n="ws.readerFallback">Jina fallback (r.jina.ai reads a page only when direct reading fails)</option>
+              <option value="always" data-i18n="ws.readerAlways">Jina always (best readability on JavaScript-heavy pages)</option>
             </select>
           </div>
-          <p class="muted small" id="ws-jina-note" hidden>Privacy: with the Jina reader the page URLs go through r.jina.ai - a third party sees which pages are read.</p>
-    <div class="toggle-row" id="ws-page-limit-row"><span>Limit page text<br><span class="muted small">off = whole pages go in; the server still caps the total at the model's context</span></span>
-      <button class="st-toggle" id="s-ws-plim" role="switch" aria-checked="true" aria-label="Limit page text"></button></div>
+          <p class="muted small" id="ws-jina-note" hidden data-i18n="ws.jinaNote">Privacy: with the Jina reader the page URLs go through r.jina.ai - a third party sees which pages are read.</p>
+    <div class="toggle-row" id="ws-page-limit-row"><span><span data-i18n="ws.limTitle">Limit page text</span><br><span class="muted small" data-i18n="ws.limNote">off = whole pages go in; the server still caps the total at the model's context</span></span>
+      <button class="st-toggle" id="s-ws-plim" role="switch" aria-checked="true" aria-label="Limit page text" data-i18n-label="ws.limTitle"></button></div>
     <div class="st-field" id="ws-plim-row">
-      <label class="st-label" for="s-ws-plim-chars">Max characters per page <output id="o-ws-plim"></output></label>
+      <label class="st-label" for="s-ws-plim-chars"><span data-i18n="ws.plim">Max characters per page</span> <output id="o-ws-plim"></output></label>
       <input class="st-input" id="s-ws-plim-chars" type="number" min="1000" max="100000" step="500">
     </div>
 
@@ -349,6 +360,9 @@
       <div class="toggle-row"><span><span data-i18n="drawer.edit">Edit and rewind messages</span><br><span class="muted small"
         data-i18n="drawer.editNote">edit an answer, ask for a new one, or go back to an earlier message (with an Undo)</span></span>
         <button class="st-toggle" id="s-edit" role="switch" aria-checked="false" aria-label="Edit and rewind messages" data-i18n-label="drawer.edit"></button></div>
+      <div class="toggle-row"><span><span data-i18n="draft.title">Save what you type</span><br><span class="muted small"
+        data-i18n="draft.note">keeps the draft of the message box in this browser, separately for each chat. Off: nothing is kept</span></span>
+        <button class="st-toggle" id="s-draft" role="switch" aria-checked="false" aria-label="Save what you type" data-i18n-label="draft.title"></button></div>
       <div class="st-field">
         <label class="st-label" for="s-busy"><span data-i18n="drawer.busy">When you send while it is answering</span></label>
         <div class="seg seg--3" id="s-busy" role="radiogroup" aria-label="When you send while it is answering" data-i18n-label="drawer.busy">
@@ -357,7 +371,6 @@
         </div>
         <span class="muted small" id="o-busy"></span>
       </div>
-    </div>
     </div>
   </div>
 </aside>

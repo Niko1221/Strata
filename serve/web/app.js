@@ -15,13 +15,14 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  remove(k) { try { localStorage.removeItem("strata." + k); } catch (e) { /* ignore */ } },
 };
 
 // ------------------------------------------------------------------ toasts
-function toast(kind, title, text = "", ms = 3500, action = null) {
+function toast(kind, title, text = "", ms = 3500, action = null, cls = "") {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
   const el = document.createElement("div");
-  el.className = `st-toast st-toast--${kind}`;
+  el.className = `st-toast st-toast--${kind}` + (cls ? " " + cls : "");
   el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
   el.querySelector(".st-toast__title").textContent = title;
   el.querySelector(".t-text").textContent = text;
@@ -37,6 +38,7 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
+function clearToasts() { const c = $("toasts"); if (c) [...c.querySelectorAll(".st-toast--ws")].forEach((x) => x.remove()); }
 
 async function copyText(text, btn) {
   try {
@@ -100,8 +102,8 @@ function saveApiKey(notify = false) {
   apiKey = $("api-key").value.trim();                // usable even when browser storage is blocked or full
   const saved = store.set("apikey", apiKey);
   if (notify) {
-    if (saved) toast("success", "API key saved", "Kept in this browser only.");
-    else toast("warn", "API key used for this page only", "Browser storage is unavailable. Enter it again after reloading.");
+    if (saved) toast("success", tr("toast.apiKeySaved", "API key saved"), tr("toast.apiKeyKept", "Kept in this browser only."));
+    else toast("warn", tr("toast.apiKeyPageOnly", "API key used for this page only"), tr("toast.apiKeyNoStorage", "Browser storage is unavailable. Enter it again after reloading."));
   }
 }
 $("api-key").oninput = () => saveApiKey();
@@ -113,7 +115,7 @@ function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
                                         : tr("composer.attach", "Attach a text file (or drop it here)");
   const emptyText = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
-  $("chat-empty-sub").innerHTML = `${esc(emptyText)}${ws.on ? "" : "<br>Web search is off by default &ndash; when on, only the search query goes out."}`;
+  $("chat-empty-sub").innerHTML = `${esc(emptyText)}${ws.on ? "" : "<br>" + tr("ws.offByDefault", "Web search is off by default – when on, only the search query goes out.")}`;
 }
 async function loadHealth() {
   try {
@@ -239,12 +241,13 @@ function setSearchPhase(kind, engine) {
 }
 function paintSearchPill() {
   if (!searchPhase) return;
-  const hint = liveQueued > 0 ? ` · ${liveQueued} queued` : "";   // the engine serving someone else while we search is real info
-  if (searchPhase.kind === "framing") return setPill("searching", `Framing query${hint}`);
-  if (searchPhase.kind === "failed") return setPill("error", "Search failed");
+  const hint = liveQueued > 0 ? ` · ${liveQueued} ${tr("ws.queuedH", "queued")}` : "";   // the engine serving someone else while we search is real info
+  if (searchPhase.kind === "framing") return setPill("searching", tr("ws.framing", "Framing query") + hint);
+  if (searchPhase.kind === "failed") return setPill("error", tr("ws.searchFailed", "Search failed"));
   const eng = ENGINE_NAMES[searchPhase.engine] || searchPhase.engine || "web";
   const secs = ((performance.now() - searchPhase.t0) / 1000).toFixed(1);
-  setPill("searching", `${ws.read !== false ? "Searching web + reading pages" : "Searching web"} · ${eng} · ${secs} s${hint}`);
+  const mode = ws.read !== false ? tr("ws.searchingRead", "Searching web + reading pages") : tr("ws.searching", "Searching web");
+  setPill("searching", `${mode} · ${eng} · ${secs} s${hint}`);
 }
 function endSearchPhase() {
   if (searchPhase) clearInterval(searchPhase.timer);
@@ -258,18 +261,25 @@ function endSearchPhase() {
 // phase (the engine label during framing would only be this feature's own optimizer call speaking),
 // then engine state, then a bare queue count, then idle. A queue count is always appended as a hint.
 function paintPill() {
-  const qhint = liveQueued > 0 ? ` · ${liveQueued} queued` : "";
+  const qhint = liveQueued > 0 ? ` · ${liveQueued} ${tr("ws.queuedH", "queued")}` : "";
   if (searchPhase) return paintSearchPill();
   const live = lastLive || {};
-  if (live.state === "reading") {
+  const localLoad = live.state === "unloaded" && (busy != null || imageBusy);
+  if (modelOp === "load") setPill("idle", tr("model.loading", "Loading…"));
+  else if (modelOp === "unload") setPill("idle", tr("model.unloading", "Unloading…"));
+  else if (localLoad) setPill("idle", tr("model.loading", "Loading…"));
+  else if (imageLive(live)) setPill("reading", tr("pill.image", "Generating image…"));
+  else if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", (pct != null ? `Reading prompt · ${pct}%` : "Reading prompt") + qhint);
+    setPill("reading", (pct != null ? tr("pill.readingPct", "Reading prompt · {pct}%", {pct}) : tr("pill.reading", "Reading prompt")) + qhint);
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s` + qhint);
+    setPill("generating", tr("pill.generating", "Generating · {rate} Tok/s", {rate: fmt(live.tok_s, 1)}) + qhint);
+  } else if (live.state === "unloaded") {
+    setPill("idle", tr("pill.unloaded", "Unloaded"));
   } else if (liveQueued > 0) {
-    setPill("queued", `${liveQueued} queued`);   // engine busy for work this window did not start (agents, other tabs)
+    setPill("queued", tr("pill.queued", "{n} queued", {n: liveQueued}));   // engine busy for work this window did not start (agents, other tabs)
   } else {
-    setPill("idle", "Idle");
+    setPill("idle", tr("pill.idle", "Idle"));
   }
 }
 function setSearchBubble(el, text) {   // the line sits exactly where "Thinking…" sits - globe instead of thought icon
@@ -743,17 +753,18 @@ $("cfg-save").addEventListener("click", async () => {
     const old = Array.isArray(k.value) ? k.value.join(", ") : k.value;
     if (JSON.stringify(v) !== JSON.stringify(old ?? null)) set[k.key] = v;
   });
-  if (!Object.keys(set).length) { $("cfg-msg").textContent = "Nothing changed."; return; }
+  if (!Object.keys(set).length) { $("cfg-msg").textContent = tr("model.nothingChanged", "Nothing changed."); return; }
   try {
     const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+      ? tr("model.saved", "Saved ({keys}); the earlier file is {file}.bak. Start the model again to use it.", {keys: b.changed.join(", "), file: b.file})
+      : tr("model.nothingChanged", "Nothing changed.");
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";
-    toast("error", "Not saved", String(e.message || e), 6000);
+    toast("error", tr("model.notSaved", "Not saved"), String(e.message || e), 6000);
   }
 });
 
@@ -855,7 +866,7 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
-                  chatList: false, chatEdit: false, whileBusy: "wait"};
+                  chatList: false, chatEdit: false, whileBusy: "wait", draft: false};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
@@ -867,8 +878,24 @@ let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
-const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false, optimize: true};
+const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false, auto: false, autoMethod: "model", optimize: true};
 const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper", exa: "Exa", perplexity: "Perplexity"};
+const AUTO_CUR = {   // per-language "needs current data" keywords for Weg B (lowercase; CJK substring, other scripts whole-word)
+  en: ["today","yesterday","tonight","tomorrow","now","latest","current","news","update","price","cost","stock","share","weather","forecast","breaking","result","results","score","election","release","launch","this week","this month","right now","just now","how much","exchange rate","temperature"],
+  de: ["heute","gestern","morgen","jetzt","eben","aktuell","aktuelle","aktueller","neueste","wetter","vorhersage","temperatur","kurs","kurse","preis","preise","kosten","kostet","aktie","aktien","nachrichten","meldung","ergebnis","ergebnisse","wahl","wahlergebnis","gewonnen","spielstand","wert","stand","veröffentlicht","erscheint","demnächst","wechselkurs","wie viel","dollar","euro"],
+  es: ["hoy","ayer","mañana","ahora","actual","actuales","último","última","últimas","noticias","precio","precios","coste","cuesta","cuanto cuesta","cuánto cuesta","bolsa","acción","acciones","tiempo","clima","pronóstico","resultado","resultados","elección","lanzamiento","temperatura"],
+  fr: ["aujourd'hui","hier","demain","maintenant","actuel","actuelle","actuels","actuelles","dernier","dernière","dernières","info","infos","actualité","prix","cours","bourse","action","actions","météo","temps","prévisions","prévision","résultat","résultats","élection","sortie","lancement","température","coûte","combien"],
+  ja: ["今日","昨日","明日","今","現在","最新","最新の","ニュース","天気","天気予報","気温","価格","株価","レート","為替","結果","選挙","発売","リリース","速報","予報"],
+  ko: ["오늘","어제","내일","지금","현재","최신","뉴스","날씨","일기예보","기온","가격","주가","환율","결과","선거","출시","발표","속보","예보","온도"],
+  pt: ["hoje","ontem","amanhã","agora","atual","atuais","último","última","últimas","notícias","preço","preços","cotação","ação","tempo","clima","previsão","resultado","resultados","eleição","lançamento","temperatura"],
+  ru: ["сегодня","вчера","завтра","сейчас","текущий","текущая","текущие","последний","последняя","новости","цена","цены","курс","акции","погода","прогноз","результат","результаты","выборы","релиз","температура"],
+  zh: ["今天","昨天","明天","现在","当前","最新","新闻","天气","天气预报","气温","价格","股价","汇率","结果","选举","发布","出炉","温度"],
+  hi: ["आज","कल","अभी","वर्तमान","मौजूदा","ताज़ा","नवीनतम","समाचार","खबर","मौसम","पूर्वानुमान","तापमान","कीमत","दाम","दर","शेयर","बाज़ार","विनिमय","परिणाम","चुनाव","जीत","मैच","स्कोर","लॉन्च","रिलीज़","जारी"],
+  ar: ["اليوم","الآن","أمس","غدا","غداً","الحالي","الحالية","أحدث","أخبار","الأخبار","الطقس","حرارة","درجة الحرارة","السعر","الأسعار","سعر","سهم","أسهم","البورصة","صرف","النتيجة","النتائج","الانتخابات","مباراة","إطلاق"],
+  tr: ["bugün","dün","yarın","şimdi","şu an","güncel","en son","haber","haberler","hava","hava durumu","sıcaklık","fiyat","fiyatı","kaç para","hisse","borsa","kur","kuru","döviz","döviz kuru","sonuç","sonuçları","seçim","maç","skor","açıklandı","yayınlandı","çıktı"],
+  it: ["oggi","ieri","domani","ora","adesso","attuale","attuali","ultimo","ultima","ultime","notizie","prezzo","prezzi","costo","titolo","azioni","tempo","meteo","previsioni","risultato","risultati","elezione","lancio","temperatura","quanto costa","cambio","oggi pomeriggio"],
+  pl: ["dzisiaj","dzis","dziś","wczoraj","jutro","teraz","obecny","obecna","bieżący","bieżąca","najnowszy","najnowsza","wiadomości","aktualności","cena","ceny","koszt","akcje","giełda","pogoda","prognoza","temperatura","wynik","wyniki","wybory","premiera","kurs","waluty","ile kosztuje"]
+};
 let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
 // "Optimize search query": pull the actual search question out of the message first (local model,
 // reasoning off, greedy, one short call). Any error -> the original text: search never breaks on this.
@@ -887,10 +914,6 @@ async function optimizeQuery(text, signal) {
   } catch (e) { return text; }   // abort, network or model hiccup: the raw wording is always a valid fallback
 }
 
-function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
-}
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
@@ -1060,9 +1083,9 @@ function updateAssistant(el, m, streaming) {
     if (m.sources && m.sources.length) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
-      src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}${m.refined ? esc(` \u00b7 searched: "${m.refined}"`) : ""}:</span>` +
+      src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}${tr("ws.sources", "Sources")}${esc(ename)}${m.refined ? esc(` · ${tr("ws.searched", "searched:")} "${m.refined}"`) : ""}:</span>` +
         m.sources.map((s, k) => {
-          const badge = s.read_via === "jina" ? ' <span class="st-source__read">read via Jina</span>' : s.content ? ' <span class="st-source__read">read</span>' : "";
+          const badge = s.read_via === "jina" ? ' <span class="st-source__read">' + tr("ws.readViaJina", "read via Jina") + '</span>' : s.content ? ' <span class="st-source__read">' + tr("ws.readBadge", "read") + '</span>' : "";
           const inner = `[${k + 1}] ${esc(s.title || s.url)}${badge}`;
           // a poisoned result (javascript:, data:) is shown as text, never as a clickable link
           return /^https?:\/\//i.test(s.url)
@@ -1073,7 +1096,7 @@ function updateAssistant(el, m, streaming) {
     } else if (m.sourcesNote) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
-      src.innerHTML = `<span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}Sources${esc(ename)}${m.refined ? esc(` \u00b7 searched: "${m.refined}"`) : ""}: ${esc(m.sourcesNote)}</span>`;
+      src.innerHTML = `<span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}${tr("ws.sources", "Sources")}${esc(ename)}${m.refined ? esc(` · ${tr("ws.searched", "searched:")} "${m.refined}"`) : ""}: ${esc(m.sourcesNote)}</span>`;
     } else { src.hidden = true; src.innerHTML = ""; }
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
@@ -1237,7 +1260,7 @@ function park(p, own) {
   if (!parksWhileBusy()) return;
   if (pending) { toast("warn", tr("pending.one", "A message is already waiting"), tr("pending.oneText", "Take it back or wait until it is sent.")); return; }
   pending = {...p, mode: settings.whileBusy};
-  if (own) { attachments = []; renderAttachments(); $("input").value = ""; autosize(); }
+  if (own) { attachments = []; renderAttachments(); $("input").value = ""; autosize(); consumeComposerDraft(); }
   if (pending.mode === "interject") requestCut();
   setBusy(!!busy);
 }
@@ -1288,6 +1311,7 @@ function releasePending() {
   else $("input").value = `${p.text}\n\n${$("input").value}`;
   attachments = [...p.images, ...p.files, ...attachments];
   renderAttachments(); autosize();
+  scheduleDraftSave();   // the restored text did not fire an input event: persist it again so a reload does not lose it
   setBusy(!!busy);
 }
 // after an answer: an interrupted one sends an interjection, a finished one sends a queued message
@@ -1316,11 +1340,13 @@ async function send(payload) {
     renderAttachments();
     $("input").value = "";
     autosize();
+    consumeComposerDraft();
   }
-  return generateReply();
+  return generateReply(p.text);
 }
 // an answer for the messages as they are: the last one is a user turn
-async function generateReply() {
+async function generateReply(text) {
+  text = text ?? ((messages.filter((m) => m.role === "user").pop() || {}).text || "");   // regenerate/edit resend without text: fall back to the last user prompt so web search still runs
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
@@ -1331,16 +1357,18 @@ async function generateReply() {
   paintLive();
 
   let sources = null, sourceEngine = "", sourcesNote = "";
-  if (ws.on && text) {
-    let q = text;
+
+  async function runSearch(orig, controller) {   // shared pipeline: distill the query + fetch /search
+    let q = orig;
     if (ws.optimize !== false) {         // pill + status line while the local model distills the question
       setSearchPhase("framing");
-      setSearchBubble(el, "Framing your query…");
-      q = await optimizeQuery(text, controller.signal);
+      setSearchBubble(el, tr("ws.framingBubble", "Framing your query…"));
+      q = await optimizeQuery(orig, controller.signal);
     }
-    if (q !== text) m.refined = q;   // transparency: the Sources line will show what was actually searched
+    if (q !== orig) m.refined = q;   // transparency: the Sources line will show what was actually searched
     setSearchPhase("search", ws.engine);
-    setSearchBubble(el, `Searching web · ${ENGINE_NAMES[ws.engine] || ws.engine}${ws.read !== false ? " · reading pages" : ""}`);
+    setSearchBubble(el, `${tr("ws.searching", "Searching web")} · ${ENGINE_NAMES[ws.engine] || ws.engine}${ws.read !== false ? " · " + tr("ws.readingPages", "reading pages") : ""}`);
+    let s = null, sEng = "", sNote = "";
     try {
       const sr = await fetch("search", {method: "POST", headers: headers(true), signal: controller.signal,
                                        body: JSON.stringify({query: q, engine: ws.engine, url: ws.url,
@@ -1350,16 +1378,72 @@ async function generateReply() {
                                                             reader: ws.reader || "off"})});
       const sj = await sr.json().catch(() => ({}));
       if (sr.ok && sj.results && sj.results.length) {
-        sources = sj.results; sourceEngine = ws.engine;
+        s = sj.results; sEng = ws.engine;
         const unread = sj.results.filter(r => r.read_error);
-        if (unread.length) sourcesNote = `${unread.length} page(s) could not be read: ${unread[0].read_error}`;
+        if (unread.length) sNote = tr("ws.readFailed", "{n} page(s) could not be read: {err}", {n: unread.length, err: unread[0].read_error});
       }
-      else { sourcesNote = (sj.error && sj.error.message) || "no results"; toast("warn", "Web search found nothing", sourcesNote, 6000); }
+      else { sNote = (sj.error && sj.error.message) || tr("ws.noResults", "no results"); toast("warn", tr("ws.foundNothing", "Web search found nothing"), sNote, 6000); }
     } catch (e) {
-      if (e.name !== "AbortError") { sourcesNote = e.message || String(e); toast("error", "Web search failed", sourcesNote, 6000); setSearchPhase("failed"); }
+      if (e.name !== "AbortError") { sNote = e.message || String(e); toast("error", tr("ws.searchFailedToast", "Web search failed"), sNote, 6000); setSearchPhase("failed"); }
     }
     if (searchPhase && searchPhase.kind !== "failed") endSearchPhase();
     else clearSearchBubble(true);
+    return {sources: s, sourceEngine: sEng, sourcesNote: sNote};
+  }
+
+  async function decideSearchTool(orig, controller) {   // Weg A: let the model say whether (and what) to search
+    setSearchPhase("framing");
+    setSearchBubble(el, tr("ws.autoDecide", "Checking whether a web search helps…"));
+    const body = {model: health.model,
+                  messages: [{role: "system", content: "You have a web_search tool. For questions needing current, fresh or fact-checkable information (prices, weather, news, results, anything dated today or recently), always call web_search with a short query. Answer from memory only for timeless knowledge."}, ...apiMessages()],
+                  stream: false, max_tokens: 512,
+                  reasoning_effort: settings.thinking,
+                  tools: [{type: "function", function: {
+                    name: "web_search",
+                    description: "Search the web for up-to-date facts, news, prices, weather or anything newer than your training data. Call it when a current, fact-checkable answer would beat your own knowledge.",
+                    parameters: {type: "object", properties: {query: {type: "string", description: "the search query"}}, required: ["query"]}}}]};
+    try {
+      const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body), signal: controller.signal});
+      if (!r.ok) return autoWantsSearch(orig) ? orig : null;   // decision failed: fall back to the heuristic, never raw-search
+      const j = await r.json();
+      const tc = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.tool_calls;
+      if (tc && tc.length) {
+        const fn = tc.find(c => c.function && c.function.name === "web_search");
+        if (fn) { let a = {}; try { a = JSON.parse(fn.function.arguments || "{}"); } catch (e) {} return (a.query || orig).trim(); }
+      }
+      return null;   // the model chose to answer from its own knowledge
+    } catch (e) {
+      if (e.name === "AbortError") return null;   // stop pressed: let the main request abort and mark the message stopped
+      return autoWantsSearch(orig) ? orig : null; // decision hiccup: fall back to the heuristic, never raw-search
+    } finally {
+      if (searchPhase) { endSearchPhase(); clearSearchBubble(true); }
+    }
+  }
+
+  function autoWantsSearch(text) {   // Weg B: multilingual (14 UI languages) + language-agnostic heuristic, no tool-calling needed
+    const t = text.toLowerCase();
+    // language-agnostic signals: recent years, calendar dates, currency amounts -> current-data need baked in
+    const ym = t.match(/\b(20(2\d|3\d))\b/);
+    if (ym && Math.abs(+ym[1] - new Date().getFullYear()) <= 1) return true;
+    if (/(?<!\d)\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}(?!\d)/.test(t)) return true;   // 4-digit year side, not a longer digit run like 1.2.20234
+    if (/(?:\d\s*[$€£¥₩₹₽]|[$€£¥₩₹₽]\s*\d)/.test(t)) return true;
+    // per-language keywords: whole-word Unicode-aware boundaries for delimited scripts (Latin/Cyrillic/Greek),
+    // plain substring for CJK (ja/ko/zh have no word separators: 今 must still match 今日 / 今日の天気)
+    const cjkRe = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const all = Object.values(AUTO_CUR).flat();
+    for (const w of all) if (cjkRe.test(w) && t.includes(w)) return true;
+    const latin = all.filter((w) => !cjkRe.test(w)).map(esc);
+    return new RegExp("(?<![\\p{L}\\p{N}])(" + latin.join("|") + ")(?![\\p{L}\\p{N}])", "iu").test(t);
+  }
+
+  const wsActive = ws.auto || ws.on;
+  if (wsActive && text) {
+    let q = null;
+    if (ws.auto && ws.autoMethod !== "heuristic") q = await decideSearchTool(text, controller);   // Weg A
+    else if (ws.auto) q = autoWantsSearch(text) ? text : null;                                     // Weg B
+    else q = text;                                                                                 // on: always
+    if (q) { const r = await runSearch(q, controller); sources = r.sources; sourceEngine = r.sourceEngine; sourcesNote = r.sourcesNote; }
   }
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
@@ -1390,7 +1474,7 @@ async function generateReply() {
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   // stickiness is decided BEFORE the paint: a frame that grows the content (the thinking panel opening adds
   // up to 420px at once) must not be what decides whether we keep following the bottom
-  const paint = () => { frame = 0; const stick = nearBottom(); updateAssistant(el, m, true); if (stick) scrollDown(true); };
+  const paint = () => { frame = 0; const stick = stickToBottom; updateAssistant(el, m, true); if (stick) scrollDown(true); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -1450,7 +1534,7 @@ async function generateReply() {
   const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
-    m.meta = tr("chat.tokens", "{n} tokens", {n: fmt(n)}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
+    m.meta = tr("chat.tokens", {one: "{n} token", other: "{n} tokens"}, {n: fmt(n)}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
              (projectionLoaded() ? (settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
   } else if (m.stopped) {
     m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
@@ -1502,7 +1586,11 @@ $("export-btn").onclick = () => {
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
   const srcs = (m) => (m.sources && m.sources.length)
     ? `\n\nSources (${(ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search") + (m.refined ? `, searched: "${m.refined.replace(/[\u0000-\u001f"`]/g, " ")}"` : "")}):\n\n` +
-      m.sources.map((s, k) => `[${k + 1}] [${s.title || s.url}](${s.url})`).join(" | ") + (m.sourcesNote ? `\n\nWarning: ${m.sourcesNote}` : "")
+      m.sources.map((s, k) => {
+        const label = (s.title || s.url).replace(/[\]()]/g, " ");   // never let a poisoned title/url corrupt the link syntax
+        const url = /^https?:\/\//i.test(s.url) ? s.url.replace(/[\s()]/g, "") : "";
+        return url ? `[${k + 1}] [${label}](${url})` : `[${k + 1}] ${label}`;
+      }).join(" | ") + (m.sourcesNote ? `\n\nWarning: ${m.sourcesNote}` : "")
     : (m.sourcesNote ? `\n\nSources (${(ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search") + (m.refined ? `, searched: "${m.refined.replace(/[\u0000-\u001f"`]/g, " ")}"` : "")}): ${m.sourcesNote}` : "");
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
     `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}${srcs(m)}\n`).join("\n");
@@ -1569,6 +1657,7 @@ function renderAttachments() {
     c.appendChild(x);
     box.appendChild(c);
   });
+  scheduleDraftSave();
 }
 $("attach-btn").onclick = () => $("file").click();
 // drop files on the chat or the message box
@@ -1595,6 +1684,63 @@ $("input").addEventListener("paste", (e) => {
   if (files.length) { e.preventDefault(); addFiles(files); }
 });
 
+// ------------------------------------------------------------------ browser draft (message box persistence)
+// Remembers what you typed (text + attachments) in THIS browser, per chat. A settings toggle, off by default.
+const DRAFT_DEBOUNCE = 600;
+let draftTimer = null;
+function draftKey() {
+  const id = (store.get("chatId", "") + "").trim();
+  return "draft:" + (id || "default");
+}
+function consumeComposerDraft() {
+  if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+  store.remove(draftKey());
+}
+function saveDraftNow() {
+  if (!settings.draft) return;
+  const text = $("input").value, has = !!text.trim() || !!attachments.length;
+  const slim = (a) => ({kind: a.kind, name: a.name, url: a.url && a.url.length < 200000 ? a.url : null, text: a.text && a.text.length < 200000 ? a.text : null});
+  let ok = false;
+  try { ok = store.set(draftKey(), has ? {text, attachments: attachments.map(slim)} : null); } catch (e) { ok = false; }   // store.set never throws: it returns false
+  if (ok) return;
+  if (text.trim()) { try { store.set(draftKey(), {text, attachments: []}); } catch (e) { /* optional */ } }   // quota: retry once, text only
+  else { try { store.remove(draftKey()); } catch (e) {} }
+}
+function scheduleDraftSave() {
+  if (!settings.draft) return;
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraftNow, DRAFT_DEBOUNCE);
+}
+function loadComposerDraft() {
+  if (!settings.draft) return;
+  if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }   // a pending save must not mutate the NEXT chat's draft
+  const d = store.get(draftKey(), null);
+  const valid = d && ((d.text || "").trim() || (d.attachments || []).length);
+  if (!valid) {
+    // chat switch to a chat without a draft: never keep the previous chat's text/attachments in the box
+    if ($("input").value.trim() || attachments.length) { attachments = []; $("input").value = ""; autosize(); renderAttachments(); }
+    return;
+  }
+  $("input").value = d.text || ""; autosize();
+  attachments = (d.attachments || []).map((a) => ({kind: a.kind, name: a.name, url: a.url || undefined, text: a.text || undefined}));
+  renderAttachments();
+}
+function flushComposerDraft() {   // save the current chat's draft under its OWN key; chats-ui calls this BEFORE switching chatId
+  if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+  if (!settings.draft) return;
+  const text = $("input").value, has = !!text.trim() || !!attachments.length;
+  const slim = (a) => ({kind: a.kind, name: a.name, url: a.url && a.url.length < 200000 ? a.url : null, text: a.text && a.text.length < 200000 ? a.text : null});
+  let ok = false;
+  try { ok = store.set(draftKey(), has ? {text, attachments: attachments.map(slim)} : null); } catch (e) { ok = false; }
+  if (!ok && text.trim()) { try { store.set(draftKey(), {text, attachments: []}); } catch (e) {} }
+}
+function purgeDraft(id) { store.remove("draft:" + (id || "default")); }
+$("input").addEventListener("input", scheduleDraftSave);
+window.loadComposerDraft = loadComposerDraft;   // chats-ui.js calls this after a chat switch (saved-chats list)
+window.flushComposerDraft = flushComposerDraft;  // chats-ui.js calls this BEFORE switching the active chat id
+window.purgeDraft = purgeDraft;                   // chats-ui.js calls this when a chat is deleted
+loadComposerDraft();                            // restore the open chat's draft on page load
+
 // ------------------------------------------------------------------ the chat settings drawer
 function openDrawer(open) {
   $("drawer").dataset.open = String(open);
@@ -1614,7 +1760,7 @@ function loadDrawer(s = settings) {
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
-  $("s-ws").setAttribute("aria-checked", String(ws.on));
+  paintWsMode();
   $("s-ws-opt").setAttribute("aria-checked", String(ws.optimize !== false));
   $("s-ws-engine").value = ws.engine;
   $("s-ws-url").value = ws.url;
@@ -1627,6 +1773,7 @@ function loadDrawer(s = settings) {
   $("s-ws-reader").value = ws.reader || "off";
   paintWsRows();
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
+  $("s-draft").setAttribute("aria-checked", String(!!s.draft));
   $("s-edit").setAttribute("aria-checked", String(!!s.chatEdit));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
   outputs();
@@ -1685,35 +1832,44 @@ $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
-$("s-ws").onclick = () => {$("s-ws").setAttribute("aria-checked", String($("s-ws").getAttribute("aria-checked") !== "true")); paintWsRows();};
-for (const id of ["s-math", "s-list", "s-edit"]) {
+for (const bt of $("s-ws").children) bt.onclick = () => {
+  clearToasts();                                     // toggling a search setting dismisses lingering toasts
+  for (const b of $("s-ws").children) b.setAttribute("aria-checked", String(b === bt));
+  paintWsMethodBox();
+  paintWsRows();
+};
+for (const mb of document.querySelectorAll("#s-ws-method [data-awm]")) mb.onclick = () => {
+  clearToasts();
+  for (const x of document.querySelectorAll("#s-ws-method [data-awm]")) x.setAttribute("aria-checked", String(x === mb));
+};
+for (const id of ["s-math", "s-list", "s-edit", "s-draft"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
 function paintWsRows() {
   const e = $("s-ws-engine").value;
   // every search-specific control hangs on the search switch itself: search off = the whole section collapses
-  const on = $("s-ws").getAttribute("aria-checked") === "true";
+  const on = selMode() !== "off";
   const optOn = $("s-ws-opt").getAttribute("aria-checked") === "true";
   $("ws-opt-row").hidden = !on;
   $("ws-opt-note").textContent = optOn
-    ? "Refines your question into a focused search query before searching (uses the local model)"
-    : "Searches the exact wording as typed";
+    ? tr("ws.optNote", "Refines your question into a focused search query before searching (uses the local model)")
+    : tr("ws.optNoteOff", "Searches the exact wording as typed");
   $("ws-engine-row").hidden = !on;
   $("ws-url-row").hidden = !on || e !== "searxng";
   $("ws-key-row").hidden = !on || e === "searxng" || e === "duckduckgo";
   $("ws-max-row").hidden = !on;
-  $("o-ws-max").textContent = `${$("s-ws-max").value || 6} pages go to the model`;
+  $("o-ws-max").textContent = tr("ws.pagesGo", "{n} pages go to the model", {n: $("s-ws-max").value || 6});
   const readOn = $("s-ws-read").getAttribute("aria-checked") === "true";
   $("ws-read-row").hidden = !on;
   $("ws-readmax-row").hidden = !on || !readOn;
-  $("o-ws-readmax").textContent = readOn ? `${$("s-ws-readmax").value || 2} fetched in full` : "snippets only";
+  $("o-ws-readmax").textContent = readOn ? tr("ws.fetchedFull", "{n} fetched in full", {n: $("s-ws-readmax").value || 2}) : tr("ws.snippetsOnly", "snippets only");
   const limOn = $("s-ws-plim").getAttribute("aria-checked") === "true";
   $("ws-page-limit-row").hidden = !on;
   $("ws-plim-row").hidden = !on || !limOn;
-  $("o-ws-plim").textContent = limOn ? `${$("s-ws-plim-chars").value || 5000} per page` : "whole pages, capped by model context";
+  $("o-ws-plim").textContent = limOn ? tr("ws.perPage", "{n} per page", {n: $("s-ws-plim-chars").value || 5000}) : tr("ws.wholePages", "whole pages, capped by model context");
   $("ws-reader-row").hidden = !on || !readOn;
   const rd = $("s-ws-reader").value || "off";
-  $("o-ws-jina").textContent = rd === "off" ? "no third party" : rd === "fallback" ? "Jina only on failure" : "Jina for every page";
+  $("o-ws-jina").textContent = rd === "off" ? tr("ws.jinaOff", "no third party") : rd === "fallback" ? tr("ws.jinaFallback", "Jina only on failure") : tr("ws.jinaAlways", "Jina for every page");
   $("ws-jina-note").hidden = !on || rd === "off" || !readOn;
 }
 $("s-ws-engine").onchange = paintWsRows;
@@ -1725,6 +1881,7 @@ $("s-ws-plim").onclick = () => {$("s-ws-plim").setAttribute("aria-checked", Stri
 $("s-ws-plim-chars").oninput = paintWsRows;
 $("s-ws-reader").onchange = paintWsRows;
 $("s-reset").onclick = () => {
+  clearToasts();                                                    // drop any lingering "Web search on / Auto-Search on" notice
   ws = {...WS_DEFAULTS}; store.set("ws", ws); paintWebsearch();   // reset also the web search: DuckDuckGo, no key, off
   loadDrawer(DEFAULTS);                                           // loadDrawer fills the ws fields from ws
 };
@@ -1738,8 +1895,14 @@ $("s-apply").onclick = async () => {
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
+              draft: checked("s-draft"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
+  if (settings.draft) { if (!prev.draft) { flushComposerDraft(); loadComposerDraft(); } }
+  else {
+    consumeComposerDraft();
+    try { Object.keys(localStorage).filter((k) => k.startsWith("strata.draft:")).forEach((k) => localStorage.removeItem(k)); } catch (e) {}   // off: drop every chat's saved draft
+  }
   ws = {engine: $("s-ws-engine").value, url: $("s-ws-url").value.trim() || WS_DEFAULTS.url,
         key: $("s-ws-key").value.trim(), max: Math.max(1, Math.min(20, +$("s-ws-max").value || 6)),
         read: $("s-ws-read").getAttribute("aria-checked") === "true",
@@ -1747,11 +1910,13 @@ $("s-apply").onclick = async () => {
         plim: $("s-ws-plim").getAttribute("aria-checked") === "true",
         plimchars: Math.max(1000, Math.min(100000, +$("s-ws-plim-chars").value || 5000)),
         reader: $("s-ws-reader").value || "off",
-        on: $("s-ws").getAttribute("aria-checked") === "true",
+        on: selMode() !== "off", auto: selMode() === "auto",
+        autoMethod: (($("s-ws-method").querySelector('[data-awm][aria-checked="true"]') || {}).dataset || {}).awm === "heuristic" ? "heuristic" : "model",
         optimize: $("s-ws-opt").getAttribute("aria-checked") === "true"};
   store.set("ws", ws);
   paintWebsearch();
-  if (ws.on && !wasOn) announceWsOn();   // only on the off->on flip, not on every save
+  if (ws.auto && !wasOn) announceWsAuto();
+  else if (ws.on && !wasOn) announceWsOn();   // only on the off->on flip, not on every save
   StrataMath.reset();                                  // math on or off: every answer is drawn again
   if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
   if (settings.chatEdit !== !!prev.chatEdit) { clearUndo(); syncActions(); }
@@ -1776,24 +1941,61 @@ $("s-apply").onclick = async () => {
   toast("success", tr("drawer.saved", "Chat settings saved"), settings.temperature === 0 ? tr("drawer.savedGreedy", "Greedy: the same question gives the same answer.") : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
+function wsWarningTail() {
+  let t = "";
+  if (ws.read !== false && ws.reader === "fallback")
+    t += tr("ws.onJinaFallback", " Pages that fail to read directly go through r.jina.ai - a third party sees those URLs.");
+  else if (ws.read !== false && ws.reader === "always")
+    t += tr("ws.onJinaAlways", " Every page is read through r.jina.ai - a third party sees those URLs.");
+  if (health && health.lan_bound)      // same warning family as the server's startup notice
+    t += tr("ws.onLanCaution", " Caution: this server is reachable beyond this PC (bound to 0.0.0.0 or a LAN address) - queries and engine API keys cross your network in plain HTTP, and without an api_key any device on it can use this search.");
+  return t;
+}
 function announceWsOn() {   // privacy notice exactly when search starts sending queries out
   const en = ENGINE_NAMES[ws.engine] || ws.engine;
-  let text = `Search queries now go to ${en}. Chats still stay on this PC.`;
-  if (ws.read !== false && ws.reader === "fallback")
-    text += " Pages that fail to read directly go through r.jina.ai - a third party sees those URLs.";
-  else if (ws.read !== false && ws.reader === "always")
-    text += " Every page is read through r.jina.ai - a third party sees those URLs.";
-  if (health && health.lan_bound)      // same warning family as the server's startup notice
-    text += " Caution: this server is reachable beyond this PC (bound to 0.0.0.0 or a LAN address) - queries and engine API keys cross your network in plain HTTP, and without an api_key any device on it can use this search.";
-  toast("warn", "Web search on", text, text.length > 90 ? 9000 : 6000);
+  const text = tr("ws.onText", "Search queries now go to {engine}. Chats still stay on this PC.", {engine: en}) + wsWarningTail();
+  toast("warn", tr("ws.onTitle", "Web search on"), text, text.length > 90 ? 9000 : 6000, null, "st-toast--ws");
+}
+function announceWsAuto() {   // auto-search mode: the model decides, but queries may still go out
+  const text = tr("ws.autoText", "I'll decide when a web search helps. Chats stay on this PC; queries may go out.") + wsWarningTail();
+  toast("warn", tr("ws.autoTitle", "Auto-Search on"), text, text.length > 90 ? 9000 : 6000, null, "st-toast--ws");
+}
+function wsMode() { return ws.auto ? "auto" : ws.on ? "on" : "off"; }
+function selMode() {
+  const hit = [...$("s-ws").children].find((b) => b.getAttribute("aria-checked") === "true");
+  return hit ? hit.dataset.wmode : "off";
+}
+function paintWsMethodBox() {   // follows the drawer's current (temp) mode selection
+  const mm = $("s-ws-method"); if (!mm) return;
+  mm.style.display = selMode() === "auto" ? "" : "none";
+  const am = ws.autoMethod !== "heuristic" ? "model" : "heuristic";
+  for (const b of mm.querySelectorAll("[data-awm]")) b.setAttribute("aria-checked", String(b.dataset.awm === am));
+}
+function paintWsMode() {
+  const mode = wsMode();
+  for (const bt of $("s-ws").children) bt.setAttribute("aria-checked", String(bt.dataset.wmode === mode));
+  paintWsMethodBox();
 }
 function paintWebsearch() {
   const b = $("websearch-btn");
   b.classList.toggle("st-btn--on", ws.on);
+  b.classList.toggle("st-btn--auto", !!ws.auto);
   b.setAttribute("aria-pressed", ws.on ? "true" : "false");
-  $("s-ws").setAttribute("aria-checked", String(ws.on));
+  b.setAttribute("data-wmode", wsMode());
+  paintWsMode();
 }
-$("websearch-btn").onclick = () => { ws.on = !ws.on; store.set("ws", ws); paintWebsearch(); if (ws.on) announceWsOn(); };
+function cycleWsMode() {
+  clearToasts();                                     // switching search mode dismisses the old notice at once
+  const prev = wsMode();
+  if (ws.auto) ws.on = ws.auto = false;
+  else if (ws.on) ws.auto = true;
+  else ws.on = true;
+  store.set("ws", ws); paintWebsearch();
+  const now = wsMode();
+  if (now === "auto") announceWsAuto();
+  else if (now === "on" && prev === "off") announceWsOn();
+}
+$("websearch-btn").onclick = cycleWsMode;
 paintWebsearch();
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
@@ -1865,7 +2067,7 @@ $("img-form").onsubmit = async (ev) => {
     $("img-hint").textContent = "Done. Right-click an image to save it.";
   } catch (e) {
     $("img-hint").textContent = "";
-    toast("error", "No image", String(e.message || e), 8000);
+    toast("error", tr("toast.noImage", "No image"), String(e.message || e), 8000);
   } finally {
     imageBusy = false;
     $("img-go").disabled = false;
