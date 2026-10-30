@@ -223,6 +223,25 @@ memory rule uses). As on a Strix Halo, the machine's free RAM is the real limit:
 cache and the OS to fit in what is left after the desktop, and the engine's own figures come from the adapter's
 per-process budget, which Windows moves around under it.
 
+Two measurements from the first served requests on this card, both now handled in the engine:
+
+- **the cache never takes RAM the computer cannot give.** The adapter's budget is what Windows lets *this process*
+  aim at (26.7 GiB of 31.5 GiB), but the model, the KV, the draft layer and the desktop live in the same RAM. Sized
+  from the budget alone the cache took 17.68 GiB, the first request ran with 318 MiB of RAM left on the whole
+  machine, and the engine died (`0xC0000005`). The sizing now takes the smaller of the adapter's budget and what the
+  OS can hand out, minus the headroom: 10.60 GiB free here, 2,861 expert slots, and the session answers.
+- **an integrated Arc waits for the CPU like an Arc A-series does.** The experts that do not fit the cache are
+  computed on the CPU, and the GPU's window waits have to *complete* rather than expire; with the B-series bound of
+  20,000 reads the GPU went on with the experts' outputs missing - the engine's own note for the A750 describes
+  exactly this (an answer of token 0, or a crash in the CPU pool) - and the served request died. The engine now takes
+  the long bound when it recognises an Intel adapter that shares the machine's memory. `STRATA_SPIN_MAX` still
+  overrides it.
+
+Served on this PC with those in place (no engine environment overrides): `128 + 256?` answered **384**, "Name three
+colors" answered **red, blue, green**; 48 tokens in 45.8 s and 57 in 30.1 s with the cache holding 2,861 of 12,288
+experts (58-67% hit). That is the honest speed of this card at 31.5 GB of shared RAM with IQ1_M: a PC with more free
+RAM keeps more experts resident and decodes faster (the one-shot run with 9,552 experts resident decoded at 10.5 tok/s).
+
 Because the SYCL runtime names no adapter by LUID on Windows, the Intel adapter is matched by its PCI device id and,
 when that id answers nothing (the OpenCL device reports the CPU's), as the Intel adapter with the largest pool - exact
 on the one-Intel-GPU PCs this port runs on.

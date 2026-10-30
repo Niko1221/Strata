@@ -223,6 +223,12 @@ uint64_t total_physical_memory() {
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullTotalPhys : 0;
 }
 
+uint64_t available_physical_memory() {
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof ms;
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
+}
+
 bool read_ahead_enabled() { return false; }
 void advise_willneed(const void*, uint64_t) {}
 void advise_willneed(int, uint64_t, uint64_t) {}
@@ -270,6 +276,22 @@ bool gpu_shared_memory_budget_intel(uint32_t, uint64_t& budget, uint64_t& usage,
 uint64_t total_physical_memory() {
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     return pages > 0 && page > 0 ? (uint64_t) pages * (uint64_t) page : 0;
+}
+
+uint64_t available_physical_memory() {
+#if defined(__linux__)
+    if (FILE* m = std::fopen("/proc/meminfo", "r")) {
+        char line[256];
+        unsigned long long kb = 0;
+        while (std::fgets(line, sizeof line, m))
+            if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) break;
+        std::fclose(m);
+        return kb << 10;
+    }
+    return 0;
+#else
+    return 0;   // macOS has no single "available" figure; the caller keeps the driver's number
+#endif
 }
 
 namespace {

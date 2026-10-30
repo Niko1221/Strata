@@ -47,6 +47,11 @@ bool gpu_shared_memory_budget_intel(uint32_t device_id, uint64_t& budget, uint64
 /// The machine's physical RAM in bytes (0 when unknown).
 uint64_t total_physical_memory();
 
+/// The RAM the OS could hand out right now, in bytes (0 when unknown).  On a Windows PC this is
+/// GlobalMemoryStatusEx's ullAvailPhys, which already counts what the desktop and other programs hold - the number a
+/// graphics chip that shares the system memory has to size against, because its own budget says nothing about them.
+uint64_t available_physical_memory();
+
 /// #357/#577: whether the OS file cache could keep the `read_bytes` the expert files are read for, beside
 /// `arena_bytes` of RAM held by the engine's own copy of the experts and `margin` for everything else, with `avail`
 /// bytes of RAM available.  The file tier passes only the expert bytes it really reads from the files (the experts

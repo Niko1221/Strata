@@ -5,6 +5,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/platform/memory.hpp"
 
@@ -132,6 +133,9 @@ size_t device_free_bytes() try {
         bool integrated = false;
         std::string why;
         if (strata::platform::gpu_shared_memory_budget_intel(did, budget, usage, integrated, why) && integrated) {
+            // its experts that do not fit are computed on the CPU and waited for at every layer: the window waits
+            // must complete (strata/sycl_doorbell.hpp; measured on a B390, 2026-10-30)
+            strata::spin_waits_must_complete(true);
             const unsigned long long head = uma_headroom_bytes();
             if (budget > usage + head && budget - usage - head > free_b) {
                 static std::atomic<bool> said{false};
@@ -141,6 +145,21 @@ size_t device_free_bytes() try {
                                  (double) budget / 1073741824.0, (double) usage / 1073741824.0,
                                  (double) head / 1073741824.0);
                 free_b = (size_t) (budget - usage - head);
+            }
+            // and never more RAM than the computer can still hand out.  The adapter's budget is what Windows lets
+            // THIS process aim at; the whole machine has to hold the model, the KV, the draft layer and everything
+            // else running beside the cache.  Measured on a 31.5 GiB B390 PC: the driver reported 21.19 GiB free, the
+            // cache took 17.68 GiB of it, and the first verify window ran with 318 MiB of RAM left on the computer -
+            // the request stalled for 74 s and the engine died (0xC0000005).  The available figure is what keeps a
+            // shared-memory card honest (2026-10-30).
+            const unsigned long long avail = strata::platform::available_physical_memory();
+            if (avail > head && avail - head < free_b) {
+                static std::atomic<bool> told{false};
+                if (!told.exchange(true))
+                    std::fprintf(stderr, "strata: integrated Arc: this computer has %.1f GiB of RAM to give "
+                                         "(minus %.1f GiB headroom): sizing the cache from that\n",
+                                 (double) avail / 1073741824.0, (double) head / 1073741824.0);
+                free_b = (size_t) (avail - head);
             }
         }
     }
