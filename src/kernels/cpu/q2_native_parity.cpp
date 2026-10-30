@@ -8,9 +8,14 @@
 // and four tokens, and the rows cut into ranges as the pool's workers cut them (each range must be bitwise the rows
 // of the whole call).  The case that motivated it: before q2_native_kernels() admitted the AVX1 rung, a Sandy / Ivy
 // Bridge CPU never ran q2_rows_any inside the pool, so nothing checked it there against ggml.
+//
+// With the table-lookup rung on (STRATA_Q2_LUT=1 on Sandy / Ivy Bridge, =force on any AVX CPU: q2_lut.hpp) the
+// same checks run on q2_lut_rows as well, plus one: each token's rows alone (a window of 1) must be bitwise the
+// same as in the window of 4 (#152: a token's operations do not depend on the window width).
 // Synthetic data, CPU only; skipped (pass) on a CPU where q2_native_kernels(42) is false.
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/q2_lut.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"
@@ -30,8 +35,8 @@ namespace {
 constexpr int kQ2 = 42;   // GGML_TYPE_Q2_0 in Strata's ggml
 
 struct Result {
-    double rel_strata = 0, rel_ggml = 0;
-    bool ranges_exact = true;
+    double rel_strata = 0, rel_ggml = 0, rel_lut = -1;   // rel_lut < 0: the table-lookup rung is off
+    bool ranges_exact = true, lut_taken = true, lut_ranges_exact = true, lut_width_exact = true;
 };
 
 Result check(int rows, int k, int nt, std::mt19937& rng) {
@@ -100,6 +105,32 @@ Result check(int rows, int k, int nt, std::mt19937& rng) {
     res.rel_strata = es / amax;
     res.rel_ggml = eg / amax;
     res.ranges_exact = std::memcmp(out.data(), cut.data(), out.size() * sizeof(float)) == 0;
+
+    if (c::q2_lut_enabled()) {   // the table-lookup rung: the weights are registered, so it must take them
+        c::q2_lut_register_stable(w.data(), w.size());
+        std::vector<float> lut((size_t) nt * rows), lcut((size_t) nt * rows), lone((size_t) nt * rows);
+        float* lp[8];
+        float* lc[8];
+        float* l1[8];
+        for (int tk = 0; tk < nt; ++tk) {
+            lp[tk] = lut.data() + (size_t) tk * rows;
+            lc[tk] = lcut.data() + (size_t) tk * rows;
+            l1[tk] = lone.data() + (size_t) tk * rows;
+        }
+        res.lut_taken = c::q2_lut_rows(w.data(), rb, k / 64, rows, ap, nt, lp, 0, rows);
+        double el = 0;
+        for (size_t i = 0; i < lut.size(); ++i) el = std::max(el, std::fabs(lut[i] - exact[i]));
+        res.rel_lut = el / amax;
+        for (int r0 = 0; r0 < rows;) {
+            const int r1 = std::min(rows, r0 + 1 + (int) (rng() % 97));
+            res.lut_taken &= c::q2_lut_rows(w.data(), rb, k / 64, rows, ap, nt, lc, r0, r1);
+            r0 = r1;
+        }
+        for (int tk = 0; tk < nt; ++tk) res.lut_taken &= c::q2_lut_rows(w.data(), rb, k / 64, rows, ap + tk, 1, l1 + tk, 0, rows);
+        res.lut_ranges_exact = std::memcmp(lut.data(), lcut.data(), lut.size() * sizeof(float)) == 0;
+        res.lut_width_exact = std::memcmp(lut.data(), lone.data(), lut.size() * sizeof(float)) == 0;
+        c::q2_lut_unregister_stable(w.data());
+    }
     return res;
 }
 
@@ -111,8 +142,9 @@ int main() {
         return 0;
     }
     ggml_cpu_init();
-    std::printf("q2_native_parity: q2_rows_any on %s\n",
-                c::cpu_avx512_ok() ? "AVX-512" : c::cpu_avx2_ok() ? "AVX2" : "AVX1");
+    std::printf("q2_native_parity: q2_rows_any on %s; table-lookup rung %s\n",
+                c::cpu_avx512_ok() ? "AVX-512" : c::cpu_avx2_ok() ? "AVX2" : "AVX1",
+                c::q2_lut_enabled() ? "on (STRATA_Q2_LUT)" : "off");
     std::mt19937 rng(20261030);
     int failures = 0;
     struct Shape { const char* name; int rows, k; };
@@ -120,10 +152,17 @@ int main() {
     for (const Shape& s : shapes)
         for (int nt : {1, 4}) {
             const Result r = check(s.rows, s.k, nt, rng);
-            const bool ok = r.rel_strata <= 2 * r.rel_ggml + 1e-4 && r.rel_strata < 2e-2 && r.ranges_exact;
+            bool ok = r.rel_strata <= 2 * r.rel_ggml + 1e-4 && r.rel_strata < 2e-2 && r.ranges_exact;
+            std::printf("  %-7s %4d x %4d, %d token(s): Strata rel %.2e, ggml rel %.2e, ranges %s", s.name, s.rows,
+                        s.k, nt, r.rel_strata, r.rel_ggml, r.ranges_exact ? "bitwise" : "DIFFER");
+            if (r.rel_lut >= 0) {
+                ok = ok && r.lut_taken && r.rel_lut <= 2 * r.rel_ggml + 1e-4 && r.lut_ranges_exact && r.lut_width_exact;
+                std::printf(" | table-lookup rel %.2e, ranges %s, alone %s%s", r.rel_lut,
+                            r.lut_ranges_exact ? "bitwise" : "DIFFER", r.lut_width_exact ? "bitwise" : "DIFFER",
+                            r.lut_taken ? "" : ", NOT TAKEN");
+            }
             failures += !ok;
-            std::printf("  %-7s %4d x %4d, %d token(s): Strata rel %.2e, ggml rel %.2e, ranges %s  %s\n", s.name, s.rows,
-                        s.k, nt, r.rel_strata, r.rel_ggml, r.ranges_exact ? "bitwise" : "DIFFER", ok ? "ok" : "FAIL");
+            std::printf("  %s\n", ok ? "ok" : "FAIL");
         }
     std::printf("q2_native_parity: %d failure(s)\n", failures);
     return failures != 0;

@@ -8,6 +8,7 @@
 //                  [--mb 4096] [--reps 3] [--ram-gbs N]
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/kernels/cpu/q2_lut.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"
@@ -120,6 +121,12 @@ int main(int argc, char** argv) {
             for (size_t e = 0; e < U; ++e) make_blob(f, blobs + e * f.bytes, rng);
             for (size_t e = U; e < E; ++e) std::memcpy(blobs + e * f.bytes, blobs + (e % U) * f.bytes, f.bytes);
         }
+        // STRATA_Q2_LUT=1: the blobs stay put for the run, so the table-lookup rows may mirror them; the first pass
+        // over each expert makes its mirror, so a warm pass below runs before the timed ones
+        cpu::q2_lut_register_stable(blobs, E * f.bytes);
+        auto q2_rows = [](const uint8_t* w, size_t rb, int nb, int rows, const cpu::ActQ* const* a, int nt, float* const* o) {
+            if (!cpu::q2_lut_rows(w, rb, nb, rows, a, nt, o, 0, rows)) cpu::q2_rows_any(w, rb, nb, a, nt, o, 0, rows);
+        };
         // activations: kMaxT tokens of x (n_embd) and h (n_ff), quantized the way the pool quantizes them
         std::mt19937 rng(77);
         std::normal_distribution<float> nd(0.f, 1.f);
@@ -157,6 +164,29 @@ int main(int argc, char** argv) {
         }
         std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)%s%s\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6,
                     q2_gu ? ", Q2_0 gate/up" : "", q2_down ? ", Q2_0 down on Strata's rows (the pool's path)" : "");
+        if (cpu::q2_lut_enabled() && (q2_gu || q2_down)) {   // the mirrors, once, before any timed pass
+            const auto w0 = std::chrono::steady_clock::now();
+            std::atomic<size_t> nx{0};
+            std::vector<std::thread> th;
+            for (unsigned k = 0; k < std::max(1u, std::thread::hardware_concurrency()); ++k)
+                th.emplace_back([&] {
+                    std::vector<float> o((size_t) kMaxT * kH);
+                    float* op[kMaxT];
+                    for (int t = 0; t < kMaxT; ++t) op[t] = &o[(size_t) t * kH];
+                    for (size_t e; (e = nx.fetch_add(1)) < E;) {
+                        const uint8_t* blob = blobs + e * f.bytes;
+                        if (q2_gu) {
+                            q2_rows(blob, f.gu_row, (int) (kH / 64), (int) kFF, ax, 1, op);
+                            q2_rows(blob + f.up_off, f.gu_row, (int) (kH / 64), (int) kFF, ax, 1, op);
+                        }
+                        if (q2_down) q2_rows(blob + f.down_off, f.d_row, (int) (f.n_ff / 64), (int) kH, a2, 1, op);
+                    }
+                });
+            for (auto& x : th) x.join();
+            std::printf("  table-lookup rows (STRATA_Q2_LUT): %.0f MB of mirrors made in %.2f s\n",
+                        cpu::q2_lut_mirror_bytes() / 1e6,
+                        std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count());
+        }
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;
@@ -179,8 +209,8 @@ int main(int argc, char** argv) {
                             if (e >= E) break;
                             const uint8_t* blob = blobs + e * f.bytes;
                             if (q2_gu) {
-                                cpu::q2_rows_any(blob, f.gu_row, (int) (kH / 64), ax, nt, gp, 0, (int) kFF);
-                                cpu::q2_rows_any(blob + f.up_off, f.gu_row, (int) (kH / 64), ax, nt, up, 0, (int) kFF);
+                                q2_rows(blob, f.gu_row, (int) (kH / 64), (int) kFF, ax, nt, gp);
+                                q2_rows(blob + f.up_off, f.gu_row, (int) (kH / 64), (int) kFF, ax, nt, up);
                                 for (int t = 0; t < nt; ++t)
                                     for (int64_t r = 0; r < kFF; ++r)
                                         ff[t][r] = (gp[t][r] / (1.f + std::exp(-gp[t][r]))) * up[t][r];
@@ -188,7 +218,7 @@ int main(int argc, char** argv) {
                                 cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
                             }
                             if (q2_down)
-                                cpu::q2_rows_any(blob + f.down_off, f.d_row, (int) (f.n_ff / 64), a2, nt, out, 0, (int) kH);
+                                q2_rows(blob + f.down_off, f.d_row, (int) (f.n_ff / 64), (int) kH, a2, nt, out);
                             else
                                 cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
                         }
@@ -209,6 +239,7 @@ int main(int argc, char** argv) {
                             ram > 0 ? (" = " + std::to_string((int) std::lround(100 * med / ram)) + "% of RAM").c_str() : "");
             }
         }
+        cpu::q2_lut_unregister_stable(blobs);   // before mem is freed: the next format's blobs may reuse these addresses
     }
     return 0;
 }

@@ -7,6 +7,7 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/q2_lut.hpp"
 #include "strata/kernels/window_limits.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 
@@ -5849,6 +5850,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             gib_per_s_ = 0.0;
             load_seconds_ = load_read_s_ = load_copy_s_ = 0.0;
             record_inputs(path, gguf_, lay, from_gguf);   // session files: the mapped experts.bin is a model input
+            strata::kernels::cpu::q2_lut_register_stable(base_, map_bytes_);   // fixed while mapped (q2_lut.hpp)
             return true;
         }
     }
@@ -6183,10 +6185,13 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     load_read_s_ = st.read_seconds;
     load_copy_s_ = st.copy_seconds;
     record_inputs(path, gguf_, lay, from_gguf);
+    // every blob stays at its arena offset until close(): the table-lookup Q2_0 rows may mirror them (q2_lut.hpp)
+    strata::kernels::cpu::q2_lut_register_stable(base_, arena_bytes + (uint64_t) blob);
     return true;
 }
 
 void ArenaExpertSource::close() {
+    if (base_ != nullptr) strata::kernels::cpu::q2_lut_unregister_stable(base_);
 #if !defined(_WIN32)
     if (map_ != nullptr) munmap(map_, (size_t) map_bytes_);
 #endif

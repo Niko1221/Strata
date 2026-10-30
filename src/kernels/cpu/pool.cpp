@@ -4,6 +4,7 @@
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/numa_pool.hpp"
+#include "strata/kernels/cpu/q2_lut.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1223,8 +1224,14 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     float* up[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
                     const int nbk = (int) (nfmt->n_embd / 64);
-                    q2_rows_any(mjobs_[e].blob, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
-                    q2_rows_any(mjobs_[e].blob + nfmt->up_off, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                    // STRATA_Q2_LUT=1 (Sandy / Ivy Bridge): the table-lookup rows when the blob is in a stable range
+                    const int nff = (int) nfmt->n_ff;
+                    const uint8_t* gw = mjobs_[e].blob;
+                    const uint8_t* uw = mjobs_[e].blob + nfmt->up_off;
+                    if (!q2_lut_rows(gw, nfmt->gu_row, nbk, nff, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1))
+                        q2_rows_any(gw, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
+                    if (!q2_lut_rows(uw, nfmt->gu_row, nbk, nff, mjobs_[e].act, mjobs_[e].nt, up, r0, r1))
+                        q2_rows_any(uw, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
                     for (int t = 0; t < mjobs_[e].nt; ++t)
                         for (int r = r0; r < r1; ++r)
                             sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
@@ -1239,8 +1246,10 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     // Q2_0 down (most IQ layers): the AVX-512 kernel, ggml-cpu has only a scalar one on x86
                     const ActQ* a2[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
-                    q2_rows_any(mjobs_[e].blob + nfmt->down_off, nfmt->d_row, (int) (nfmt->n_ff / 64), a2,
-                                mjobs_[e].nt, mjobs_[e].out, r0, r1);
+                    const uint8_t* dw = mjobs_[e].blob + nfmt->down_off;
+                    const int dnb = (int) (nfmt->n_ff / 64);
+                    if (!q2_lut_rows(dw, nfmt->d_row, dnb, (int) nfmt->n_embd, a2, mjobs_[e].nt, mjobs_[e].out, r0, r1))
+                        q2_rows_any(dw, nfmt->d_row, dnb, a2, mjobs_[e].nt, mjobs_[e].out, r0, r1);
                 } else {
                     const void* hq[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
