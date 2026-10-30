@@ -989,7 +989,7 @@ void usage() {
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
-                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
+                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE or RESTORE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -13764,7 +13764,11 @@ int main(int argc, char** argv) {
                 strata::core::conversation_checkpoint_join(nullptr);
                 strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V)
                 if (path.empty()) { refuse("missing path"); continue; }
-                if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
+                // Design 2026-10-24: a layer split IS a session-file host now.  The file records its
+                // stage table, and every stage's running state and K/V group are captured, validated
+                // and restored per stage (conversation_snapshot_sources_split et al.); a file from a
+                // different split (or a no-split runtime) is refused by the stage-table comparison,
+                // exactly as the single-session form refuses foreign geometry.
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
@@ -13785,6 +13789,20 @@ int main(int argc, char** argv) {
                     refuse(std::string("session identity: ") + e.what(), strata::core::SessionError::io);
                     continue;
                 }
+                // The carves a save/restore addresses: the main session, then every later stage's own
+                // session in park's order (the shape park's per-stage capture and restore use), and each carve's
+                // own device (main is the engine's primary device: 0 unless STRATA_PRIMARY_DEVICE
+                // moved it, which only a no-split engine can do; the batch-slot restore's convention).  The draft layer follows park's own
+                // rule (park_current_body's draft0/draft_of): an engine without --mtp has no draft group, and with
+                // one it sits in stage 0's group when there is no split or the drafter sits on the first card,
+                // else in the last stage's.
+                std::vector<strata::core::SessionState*> sessions{&ss};
+                for (const auto& st : stages) sessions.push_back(&st->ss);
+                std::vector<int> devices{strata::core::primary_device()};
+                for (const auto& st : stages) devices.push_back(st->dev);
+                std::vector<bool> draft_of(sessions.size(), false);
+                if (use_mtp) draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
+                std::vector<const strata::core::SessionState*> carves(sessions.begin(), sessions.end());
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
@@ -13798,18 +13816,30 @@ int main(int argc, char** argv) {
                         // the authoritative pools straight into the file, without a full host capture.
                         strata::core::SessionSaveLive sl;
                         {
-                            strata::core::ConversationStateSizes z;
+                            std::vector<strata::core::ConversationStateSizes> zs;
                             std::string why;
                             uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
-                            if (strata::core::conversation_session_sizes(g, ss, z, why)) {
-                                const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
-                                const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                            uint64_t layers = 0;
+                            if (strata::core::conversation_session_sizes_split(g, carves, zs, why)) {
+                                for (size_t k = 0; k < zs.size(); ++k)
+                                    layers += (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0) + (draft_of[k] ? 1 : 0);
+                                uint64_t total = 0;
+                                bool closed = true;
+                                for (size_t k = 0; closed && k < zs.size(); ++k) {
+                                    const auto& z = zs[k];
+                                    const uint64_t q = (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0);
+                                    const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
+                                    if (q != 0 && per > (UINT64_MAX - z.gdn - z.ple) / q) { closed = false; break; }
+                                    const uint64_t stage = z.gdn + z.ple + q * per;   // the same per-carve sum today's
+                                    if (total > UINT64_MAX - stage) closed = false;   // single session computes, added
+                                    else total += stage;                              // stage by stage
+                                }
+                                if (closed) state = total;
                             }
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = layers;
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
@@ -13847,8 +13877,8 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
-                                                                         err)) {
+                        if (!strata::core::conversation_snapshot_sources_split(meta, sources, view, carves, draft_of,
+                                                                               devices, mtp.kv_state(), g, err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
@@ -13883,17 +13913,37 @@ int main(int argc, char** argv) {
                         strata::core::SessionReadLimits limits;
                         limits.progress = moving;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
-                        limits.admit = [floor, &o](uint64_t need, std::string& why) {
+                        limits.admit = [floor, &o, &conversations, &checks, &tail_ckpt_len](uint64_t need,
+                                                                                             std::string& why) {
                             const auto mem = strata::core::sample_host_memory();
                             const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
                             if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            // The save side's opt-in ladder, here: free the reconstructible host caches (retained K/V
+                            // reuse, the oldest unpinned parked conversations, the chain's own checkpoints from the
+                            // back - never the live device state) and probe the RAM again.
+                            if (o.session_save_reclaim) {
+                                const auto freed = strata::core::session_read_reclaim(conversations, checks, need,
+                                                                                      floor, strata::core::available_host_bytes);
+                                if (freed.bytes || freed.checkpoints || freed.parked) {
+                                    // A removed tail must not mark a later checkpoint at this length as a tail.
+                                    if (tail_ckpt_len >= 0 && std::none_of(checks.begin(), checks.end(), [&](const auto& c) {
+                                            return int64_t(c.ids.size()) == tail_ckpt_len;
+                                        })) tail_ckpt_len = -1;
+                                    std::fprintf(stderr, "strata serve: restore reclaimed %zu checkpoints, %zu parked, "
+                                                 "%zu host bytes; checking RAM again\n",
+                                                 freed.checkpoints, freed.parked, freed.bytes);
+                                    if (strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
+                                                                                need, floor))
+                                        return true;
+                                }
+                            }
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
                                   std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " +
                                   ram_note(mem) + ")";
                             return false;
                         };
-                        if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                        if (!strata::core::conversation_session_read_limits_split(
+                                limits, carves, g, draft_of, mtp.kv_state(), (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -13910,7 +13960,8 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate_split(image, sessions, draft_of,
+                                                                            use_mtp ? &mtp.kv_state() : nullptr, g, err)) {
                         refuse(err);
                         continue;
                     }
@@ -13923,7 +13974,8 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore_split(image, sessions, draft_of, devices,
+                                                                         use_mtp ? &mtp.kv_state() : nullptr, g, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
