@@ -122,6 +122,17 @@ inline cudaError_t emb_upload(void* dst, const void* src, size_t n, cudaStream_t
 
 size_t align256(size_t n) { return (n + 255) & ~(size_t) 255; }
 
+// A run of chunks' device-side waits for another group (xfer_get, wait_flags: flag >= seq) are queued only once the
+// host sees the flag up, so the kernel finds it up and never spins.  A wait kernel spinning on a device while its
+// thread goes on queueing the layer stalled that thread's first cuBLAS call behind it, and with it the other
+// devices' (two H100s, the IQ2_XS pack on a layer split: both threads stopped in cublasSgemm, hc_mix_chunk).
+void host_wait_at_least(const unsigned* flag, unsigned seq) {
+    for (int spin = 0; (int) (*(volatile const unsigned*) flag - seq) < 0; ++spin) {
+        if (spin < 1000) std::this_thread::yield();
+        else std::this_thread::sleep_for(std::chrono::microseconds(20));
+    }
+}
+
 // part p of np of `whole` (a multiple of 128) in 128-blocks, as even as they go (whole / 128 % np parts a block more:
 // those from part rot on, cyclically - so a group's layers, each its own rot, even out what each member holds):
 // tensor parallel's columns of an FFN or of the head - an even split is what whole / np gave before
@@ -612,6 +623,12 @@ struct Chunk {
     size_t stage_stride = 0;
     std::unique_ptr<Pool> readers;
     cublasHandle_t blas = nullptr;
+    // the busy experts' path (run_set, DS4_FAT_ROWS): one expert's weights as FP16 (gate and up, then down), the rows
+    // gathered for its GEMM, the GEMM's gate | up output - fat_r rows a piece; allocated at the first use
+    uint16_t *fat_w = nullptr, *fat_x = nullptr;
+    float* fat_gu = nullptr;
+    int fat_r = 0;
+    bool fat_off = false;
     // host-mapped: a chunk's hand-off to the next group (h | pre | topk | cand), two in flight (slot = chunk % 2), each
     // with its flag, and the next group's members' acknowledgements [slot][member] (32 apart)
     uint8_t* hand[2] = {nullptr, nullptr};
@@ -3379,6 +3396,81 @@ struct Model::Impl {
         }
         return true;
     }
+    // ---- the busy experts (run_set): an expert of many rows as FP16 GEMMs.  The tiles decode its weights again for
+    // every 64 of its rows (a prompt's chunk gives a popular expert hundreds); decoded once, to the FP16 values the tiles
+    // multiply (iq::f16_rows), the library's GEMM takes them at its own speed.  DS4_FAT_ROWS=N (default 0, off; N:
+    // the experts of N rows or more) takes the experts of N rows or more; the same products, only the sums' order differ
+    // (3x V100, Maya-XS: 64 rows +6-8% on 8K / 32K prompts; KL vs the reference 0.276, the stock path 0.285 - the same;
+    //  RTX 5090, IST-DAS 2.25 bpw: a 13K-token prompt 1,400 -> 1,625 tok/s at 64 rows, decode unchanged)
+    static int fat_rows() {
+        static const int n = [] {
+            const int v = std::getenv("DS4_FAT_ROWS") ? std::max(0, std::atoi(std::getenv("DS4_FAT_ROWS"))) : 0;
+            return v > 0 ? std::max(v, 17) : 0;   // (the light kernels take the experts of 16 rows or fewer)
+        }();
+        return n;
+    }
+    bool fat_ready(Dev& d, Chunk& c, int D, int FF) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)   // (CUDA only: the Mac has no dispatch for these kernels, HIP is unmeasured)
+        (void) d, (void) c, (void) D, (void) FF;
+        return false;
+#else
+        if (fat_rows() <= 0 || c.fat_off) return false;
+        if (c.fat_w != nullptr) return true;
+        static const int R = std::getenv("DS4_FAT_PIECE") ? std::max(64, std::atoi(std::getenv("DS4_FAT_PIECE"))) : 1024;
+        if (cudaSetDevice(d.id) != cudaSuccess || cudaMalloc(&c.fat_w, (size_t) 2 * FF * D * 2) != cudaSuccess ||
+            cudaMalloc(&c.fat_x, (size_t) R * D * 2) != cudaSuccess ||
+            cudaMalloc(&c.fat_gu, (size_t) R * 2 * FF * 4) != cudaSuccess) {
+            cudaGetLastError();
+            std::fprintf(stderr, "ds4: CUDA%d: no VRAM for the busy experts' path (%.0f MB): the tiles take them\n", d.id,
+                         ((double) 2 * FF * D * 2 + (double) R * D * 2 + (double) R * 2 * FF * 4) / 1e6);
+            c.fat_off = true;
+            return false;
+        }
+        c.fat_r = R;
+        std::fprintf(stderr, "ds4: CUDA%d busy experts (%d rows or more) as FP16 GEMMs, %d rows a piece (%.0f MB)\n", d.id,
+                     fat_rows(), R, ((double) 2 * FF * D * 2 + (double) R * D * 2 + (double) R * 2 * FF * 4) / 1e6);
+        return true;
+#endif
+    }
+    // h16[lr0 + r] = FP16 clamped SwiGLU of the expert's gate and up over x16[row_tok[row + r]], r < n
+    bool fat_gate_up(Chunk& c, const x3::SetArgs& sa, const uint8_t* blob, int row, int n, int a, int D, int FF,
+                     cudaStream_t s, std::string& err) {
+        const int tg = gg::expert_type(sa.lay, 0);
+        if (!gg::iq::f16_rows(tg, blob + sa.lay.trellis[0], D, FF, c.fat_w, D, s) ||
+            !gg::iq::f16_rows(tg, blob + sa.lay.trellis[1], D, FF, c.fat_w + (size_t) FF * D, D, s)) {
+            err = "the busy experts' path: gate / up not decoded";
+            return false;
+        }
+        const float one = 1.0f, zero = 0.0f;
+        for (int p0 = 0; p0 < n; p0 += c.fat_r) {
+            const int np = std::min(c.fat_r, n - p0);
+            gg::iq::gather_f16(c.x16, D, c.row_tok + row + p0, np, D, c.fat_x, s);
+            if (cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * FF, np, D, &one, c.fat_w, CUDA_R_16F, D, c.fat_x,
+                             CUDA_R_16F, D, &zero, c.fat_gu, CUDA_R_32F, 2 * FF, CUBLAS_COMPUTE_32F,
+                             CUBLAS_GEMM_DEFAULT_TENSOR_OP) != CUBLAS_STATUS_SUCCESS) {
+                err = "the busy experts' path: cublasGemmEx (gate / up) failed";
+                return false;
+            }
+            gg::iq::swiglu_f16(c.fat_gu, 2 * FF, np, FF, sa.limit, c.h16 + (size_t) (row - a + p0) * FF, FF, s);
+        }
+        return true;
+    }
+    // y[lr0 + r] = down(h16[lr0 + r]), r < n
+    bool fat_down(Chunk& c, const x3::SetArgs& sa, const uint8_t* blob, int lr0, int n, int D, int FF, cudaStream_t s,
+                  std::string& err) {
+        if (!gg::iq::f16_rows(gg::expert_type(sa.lay, 2), blob + sa.lay.trellis[2], FF, D, c.fat_w, FF, s)) {
+            err = "the busy experts' path: down not decoded";
+            return false;
+        }
+        const float one = 1.0f, zero = 0.0f;
+        if (cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, D, n, FF, &one, c.fat_w, CUDA_R_16F, FF,
+                         c.h16 + (size_t) lr0 * FF, CUDA_R_16F, FF, &zero, c.y + (size_t) lr0 * D, CUDA_R_32F, D,
+                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP) != CUBLAS_STATUS_SUCCESS) {
+            err = "the busy experts' path: cublasGemmEx (down) failed";
+            return false;
+        }
+        return true;
+    }
     // y[r][c] = alpha x16[r] . W[c] for F16 weights W [n][k] (the indexer's weights_proj)
     bool gemm_f16w(Chunk& c, const uint16_t* W, int n, int k, const uint16_t* x16, int ldx, int rows, float alpha,
                    float* y, int ldy, std::string& err) {
@@ -4045,6 +4137,24 @@ struct Model::Impl {
                 // gate / up read the layer's F16 copy of the activations (the same rounding the tiles make for their
                 // shared tile): with 18-36 column blocks an expert the F32 rows were read that many times
                 sa.x16 = strata::ds4::gate_up_x16_default(defaults_026()) ? c.x16 : nullptr;
+                // the busy experts (DS4_FAT_ROWS=N: those of N rows or more): their weights decoded to FP16 once and
+                // multiplied by the library's GEMM - the tiles decode an expert's weights again for every 64 of its rows
+                std::vector<int> fat;
+                if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && D % 256 == 0 && FF % 256 == 0 &&
+                    gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
+                    gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 0)) && gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 2)) &&
+                    fat_ready(d, c, D, FF)) {
+                    int rest = 0;
+                    for (int i = i0; i < j; ++i) {
+                        const int r = b[i + 1] - b[i];
+                        if (r >= fat_rows()) fat.push_back(i);
+                        else rest = std::max(rest, r);
+                    }
+                    if (!fat.empty()) {
+                        sa.skip_ge = fat_rows();
+                        sa.max_rows = rest;
+                    }
+                }
                 EkMark ek{};
                 const bool ekp = prof_chunk;
                 if (ekp) {
@@ -4063,8 +4173,16 @@ struct Model::Impl {
                 }
                 if (sa.lay.fmt == gg::kFmtMXFP4) {
                     gg::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
+                    for (const int i : fat)
+                        if (!fat_gate_up(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i], b[i + 1] - b[i], a, D, FF,
+                                         d.st, err))
+                            return false;
                     if (ekp) cudaEventRecord(ek.e1, d.st);
                     gg::set_down(sa, c.h16, FF, c.y, D, d.st);
+                    for (const int i : fat)
+                        if (!fat_down(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i] - a, b[i + 1] - b[i], D, FF,
+                                      d.st, err))
+                            return false;
                 } else {
                     x3::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
                     if (ekp) cudaEventRecord(ek.e1, d.st);
@@ -5205,7 +5323,13 @@ struct Model::Impl {
         if (avail == ~uint64_t{0}) return gb;
         // (the prompt buffers and the context's caches are touched after this point and, on such a machine, take RAM too: measured on
         // Strix Halo about 0.11 MB a token of context beyond 16384, a 40960 context ending 2.5 GB lower than a 16384 one)
-        const bool uma = avail0_ != ~uint64_t{0} && avail0_ > avail && (double) (avail0_ - avail) / 1e9 >= 4.0;
+        bool any_integrated = false;   // (only a device the driver calls integrated can share the RAM: a discrete card's pinned buffers also lower the free RAM, #4147)
+        for (const Dev& d : devs) {
+            int v = 0;
+            if (cudaDeviceGetAttribute(&v, cudaDevAttrIntegrated, d.id) == cudaSuccess) any_integrated = any_integrated || v != 0;
+            else (void) cudaGetLastError();
+        }
+        const bool uma = strata::ds4::store_gpu_shares_ram(any_integrated, avail0_, avail);
         const double ctx_gb = uma ? 1.1e-4 * std::max(0.0, (double) o.max_context - 16384.0) : 0.0;
         const double room = (double) avail / 1e9 - 12.0 - ctx_gb;
         const double now = room >= 4.0 ? std::min(store_cap_gb(), room) : 0.0;
@@ -5786,6 +5910,7 @@ struct Model::Impl {
             wrote = true;
             for (int m = 0; m < l.nm; ++m) {
                 Layer& lm = member(l, m);
+                cudaSetDevice(devs[(size_t) lm.dev].id);   // (a tensor-parallel group's members sit on different GPUs: #4350)
                 if (cudaMemcpy(lm.win, data + off, (size_t) wb, cudaMemcpyHostToDevice) != cudaSuccess) {
                     err = l.name + "window ring: " + cudaGetErrorString(cudaGetLastError());
                     return false;
@@ -5806,6 +5931,7 @@ struct Model::Impl {
                 }
                 for (int m = 0; m < l.nm; ++m) {
                     Layer& lm = member(l, m);
+                    cudaSetDevice(devs[(size_t) lm.dev].id);
                     if (cudaMemcpy(lm.c_kv, data + off, cb, cudaMemcpyHostToDevice) != cudaSuccess ||
                         cudaMemcpy(lm.c_score, data + off + cb, cb, cudaMemcpyHostToDevice) != cudaSuccess) {
                         err = l.name + "compressor's group: " + cudaGetErrorString(cudaGetLastError());
@@ -7999,7 +8125,10 @@ struct Model::Impl {
                 if (mi == 0 && sr.remote) {   // the new rows for the other groups' readers (slot k % 2, once
                     const int slot = wp.k % 2;  // they took the chunk before last's)
                     if (wp.k >= 2)
-                        for (int r : sr.readers) wait_flags(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, 1, 32, wp.win - 2, s);
+                        for (int r : sr.readers) {
+                            host_wait_at_least(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, wp.win - 2);
+                            wait_flags(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, 1, 32, wp.win - 2, s);
+                        }
                     Xfer x;
                     x.src[0] = fc.pdst;
                     x.dst[0] = sr.stage(slot);
@@ -8538,6 +8667,7 @@ struct Model::Impl {
                         init_pre(c.pre, T, s);
                     } else {
                         Chunk& a = *chunks[(size_t) L[(size_t) il - 1].dev];
+                        host_wait_at_least(a.hand_flag[slot], wp.win);
                         xfer_get(chunk_xfer(a.hand[slot], c, T, false), a.hand_flag[slot], wp.win, s);
                         set_flag(a.hand_ack + ((size_t) slot * 8 + mi) * 32, wp.win, s);
                     }
@@ -8560,7 +8690,10 @@ struct Model::Impl {
                         x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
                         x.bytes[x.n++] = (size_t) ng * ik_rb();
                     }
-                    if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, s);
+                    if (x.n > 0) {
+                        host_wait_at_least(sr.flag(slot), wp.win);
+                        xfer_get(x, sr.flag(slot), wp.win, s);
+                    }
                     set_flag(sr.x_ack + ((size_t) slot * devs.size() + di) * 32, wp.win, s);   // (taken, or none)
                 }
                 if (last_k && mi == 0 && g.n_mtp > 0) {   // the drafter's taps: the last chunk's last rows
@@ -8579,7 +8712,11 @@ struct Model::Impl {
                 const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
                 if (last && mi == 0 && il + 1 < g.nl) {   // the hand-off, once the next group took the chunk before last
                     const int nnext = L[(size_t) il + 1].nm;
-                    if (k >= 2) wait_flags(c.hand_ack + (size_t) slot * 8 * 32, nnext, 32, wp.win - 2, s);
+                    if (k >= 2) {
+                        for (int m = 0; m < nnext; ++m)
+                            host_wait_at_least(c.hand_ack + ((size_t) slot * 8 + m) * 32, wp.win - 2);
+                        wait_flags(c.hand_ack + (size_t) slot * 8 * 32, nnext, 32, wp.win - 2, s);
+                    }
                     xfer_put(chunk_xfer(c.hand[slot], c, T, true), c.hand_flag[slot], wp.win, d.xcnt, s);
                 }
             }

@@ -534,6 +534,9 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         draft_layer.apply(cfg)
     elif s.mtp == "on":
         cfg["mtp"] = True
+    if cfg.get("backend") == "sycl":                         # exactly two Arc B-series cards: --spec 2 (strata_control/intel_spec.py); the person's
+        from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
+        intel_spec.apply_for_launch(cfg)
     if s.extra:
         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
@@ -880,6 +883,10 @@ class Runner:
     def setup_args(self) -> list[str]:
         cat, s = self.catalog, self.s
         fam, model = s.family, s.model
+        try:                     # a saved preset or choices file keeps the lower-case tag ("iq3_xxs", #4209), while setup's
+            fam, model = cat.resolve(str(model), None if fam is None else str(fam))    # --model takes the table's own key
+        except Exception:        # noqa: BLE001  a name the list does not hold, or a list that cannot be read here, is setup's
+            pass                 # to report: passing the values on unchanged keeps the launch behaving as it did before
         args = ["--yes", "--no-start", "--family", str(fam), "--model", str(model)]
         ctx = s.context
         if ctx:
@@ -1409,6 +1416,7 @@ class Runner:
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
                             log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
+        self.apply_four_card(cfg)
         self.use_own_dsv41_engine(cfg)
         apply_experts(cfg, self.experts_flag(cfg.get("exe")))   # after the engine is settled: only a 0.1.50+ engine is given --experts
         wait = self.start_wait()
@@ -1419,10 +1427,29 @@ class Runner:
         self.config_path = out
         return out
 
+    def apply_four_card(self, cfg: dict) -> None:
+        """Four Radeon AI PRO R9700 cards and Qwen3.8-Flash-Next IQ3_S: the measured serving profile (strata_control/amd_four_card.py), filled
+        in where the person chose nothing. Never stops a launch."""
+        self.four_card_parallel = None
+        try:
+            from strata_control import amd_four_card
+            picked = cfg.get("gpu")
+            if not (isinstance(picked, list) and len(picked) == amd_four_card.CARDS):
+                return
+            want = {int(i) for i in picked}
+            cards = [c for c in self.catalog.computer().usable_gpus if int(c.get("index", -1)) in want]
+            before = cfg.get("parallel")
+            notes = amd_four_card.apply(cards, cfg, parallel_given=bool(self.s.parallel))
+            if notes:
+                self.four_card_parallel = cfg.get("parallel") if before is None and cfg.get("parallel") else None   # (only a number the profile set)
+                self.emit("model", "Four " + str(cards[0].get("name", "AMD")).replace("AMD Radeon ", "") + " cards: " + "; ".join(notes) + ".", None)
+        except Exception:                                    # noqa: BLE001 - a profile is never a reason to stop a launch
+            self.four_card_parallel = None
+
     def ensure_profile(self, config: Path) -> None:
         from strata_control import profiles
         name = self.profile
-        parallel = self.s.parallel if self.s.parallel else self.catalog_parallel()
+        parallel = self.s.parallel if self.s.parallel else (getattr(self, "four_card_parallel", None) or self.catalog_parallel())
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
@@ -1771,7 +1798,7 @@ class Runner:
             self.emit("start", f"Loading the model… {int(time.monotonic() - t0)} s", None)
         if "e" in box:
             self.end_failed_start()
-            raise LaunchError(f"The server could not start: {box['e']}", _log_hint(self.config_path), 6)
+            raise LaunchError(f"The server could not start: {box['e']}", _log_hint(self.config_path, box["e"]), 6)
         r = box["r"]
         if not r.get("ok"):
             text, nxt = explain_engine_exit(r, self.config_path, marks=self._marks, server_log=self.server_log_path())
@@ -2296,6 +2323,9 @@ HSA_START = re.compile(r"hsa_exception|HSA_STATUS_ERROR", re.I)
 HSA_START_NEXT = ("The graphics card was not ready yet; wait a few seconds and run it again. If it keeps happening, restart the PC "
                   "and report the log.")
 KNOWN_CAUSES = (
+    (re.compile(r"cannot run the expert kernel|needs AVX-?512", re.I),
+     "This model folder holds the pack for CPUs with AVX-512, and this PC's CPU does not have it. Run `strata setup` again: on a CPU "
+     "without AVX-512 it builds the pack that runs on AVX2 CPUs (Ryzen 3000-5000, Intel Core 12th-14th generation)."),
     (re.compile(r"no device of requested type|device not found|no (gpu|sycl|level.zero) device|permission denied.*(dri|render)", re.I),
      "The engine could not open the graphics card. On Linux the account must be allowed to use it: add it to the render group "
      "(`sudo usermod -aG render $USER`), log in again and start it again."),
@@ -2386,14 +2416,35 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
     if not text.endswith((".", "!")):
         text += "."
     step = HSA_START_NEXT if hsa else next((words for pattern, words in KNOWN_CAUSES if pattern.search(" ".join([cause, str(why or "")]))), "Run it again; if it repeats, report the log.")
-    return text, step + (f" The engine's log: {log}" if log else " The engine's log has the reason (strata logs, or the log named in the run config).")
+    return text, step + _log_sentence(log)
 
 
-def _log_hint(config: Path | None) -> str:
+def _log_sentence(log: str | None) -> str:
+    """The sentence that points at the engine's log. A log that does not exist is not pointed at: a start that stopped before the engine
+    existed (a profile whose runtime is still live, a missing engine package) never wrote one (#3714)."""
+    if log and os.path.isfile(log):
+        return f" The engine's log: {log}"
+    if log:
+        return " The engine did not get as far as writing its log, so the reason is in the lines above (`strata logs` has the server's own)."
+    return " The engine's log has the reason (strata logs, or the log named in the run config)."
+
+
+#: what the runtime says when another host still owns the profile: the start never began, so there is no engine log to read.
+PROFILE_BUSY = re.compile(r"already has a live managed runtime", re.I)
+
+
+def _log_hint(config: Path | None, error: object = None) -> str:
+    if PROFILE_BUSY.search(str(error or "")):
+        return ("Another Strata server for this preset is still running or starting, so this start never began and there is no engine log for it. "
+                "Run the command again; if it repeats, `strata launch --stop` ends the other server first.")
     log = None
     if config:
         try:
             log = read_config(config).get("log")
         except (OSError, ValueError):
             log = None
-    return f"The engine's log has the reason: {log}" if log else "The engine's log has the reason (strata logs, or the log named in the run config)."
+    if log and os.path.isfile(log):
+        return f"The engine's log has the reason: {log}"
+    if log:
+        return "The engine did not get as far as writing its log, so the reason is the message above (`strata logs` has the server's own)."
+    return "The engine's log has the reason (strata logs, or the log named in the run config)."
