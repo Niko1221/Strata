@@ -480,7 +480,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |
-| `parallel` | `1` | Up to N requests decoded together in batch slots ([BATCHING.md](BATCHING.md)). |
+| `parallel` | `1` | Up to N requests decoded together in batch slots on supported models ([BATCHING.md](BATCHING.md)). [DeepSeek-V4.1-Flash](DEEPSEEK41.md) still serves one request at a time. |
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |
 | `slot_save_path` | none | Enables session files. |
@@ -590,7 +590,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   left in the context.
 - The `model` field is not matched against the loaded model, because one server serves one model and OpenAI clients often
   send names of their own. Only `GET /v1/models` says what is loaded.
-- One request at a time unless `"parallel": N` is set. Images only when set up with them. No video.
+- One request at a time unless the model supports batch slots and `"parallel": N` is set.
+  [DeepSeek-V4.1-Flash](DEEPSEEK41.md) still serves one request at a time. Images only when set up with them. No video.
 
 ### Context beyond 262K (rope scaling, experimental, off unless you pick it)
 
