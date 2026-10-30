@@ -465,6 +465,33 @@ public:
         superseded_ += dropped;
         return dropped;
     }
+    // A batch slot's chain holds one checkpoint (the one its admission copied in), while the main session's parked copy of the same
+    // conversation keeps the whole chain - the root checkpoint at the end of an agent's system prompt and tools among them, the one its
+    // next conversations borrow (borrows()).  Parking the slot (#2526) would drop that copy as superseded (#342: the slot's chain holds its
+    // deepest checkpoint) and the root with it: every sibling then reads the shared prefix again (#4420, 0.2.6 -> 0.2.7: 323 ms -> 4130 ms
+    // for a 5 K-token prefix).  True when drop_superseded(ids, images, checkpoints, cvec) would drop an entry that has a checkpoint the
+    // given chain does not hold.  Nothing is changed.
+    bool supersedes_richer(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
+        auto held = [&](const ConversationCheckpoint& c) {
+            if (c.ids == ids && c.imgs == images) return true;
+            for (const auto& k : checkpoints)
+                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+            return false;
+        };
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            const auto& e = entries_[i];
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            if (e.cvec != cvec || !deepest || deepest->ids.empty() || !held(*deepest) ||
+                (guarded_ != 0 && serials_[i] == guarded_))
+                continue;
+            for (const auto& c : e.checkpoints)
+                if (!held(c)) return true;
+        }
+        return false;
+    }
     size_t superseded() const { return superseded_; }
     /// --conversation-cache-park-gain N: the longest parked entry this conversation's outgoing state supersedes, in
     /// tokens, 0 when it has none.  It is the entry drop_superseded() would remove, so the caller can tell whether a

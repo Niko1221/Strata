@@ -742,6 +742,7 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
     const int lo = a.bounds[e] - a.row0, hi = a.bounds[e + 1] - a.row0;
     const int r0 = lo + blockIdx.x * RM;
     if (r0 >= hi || hi - lo <= a.skip_le) return;   // (uniform; skip_le: the light kernels' experts)
+    if (a.skip_ge > 0 && hi - lo >= a.skip_ge) return;   // (the caller's FP16 GEMMs')
     load_tab<T>(tab);
     const int nr = min(RM, hi - r0);
     const int c0 = blockIdx.y * BN;
@@ -833,6 +834,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
     const int lo = a.bounds[e] - a.row0, hi = a.bounds[e + 1] - a.row0;
     const int r0 = lo + blockIdx.x * BM;
     if (r0 >= hi || hi - lo <= a.skip_le) return;   // (uniform; skip_le: the light kernels' experts)
+    if (a.skip_ge > 0 && hi - lo >= a.skip_ge) return;   // (the caller's FP16 GEMMs')
     load_tab<T>(tab);
     const int nr = min(BM, hi - r0);
     const int c0 = blockIdx.y * BN;
@@ -1616,6 +1618,77 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
     DS4_IQ_SWITCH(a.td, SD_)
 #undef SD_
     return true;
+}
+
+// ---------------------------------------------------------------- the busy experts' FP16 weights (f16_rows)
+// 8 values a thread: row r's sub-block kb, piece p - deq8's values rounded as the tensor-core tiles round them
+template <int T>
+__global__ void __launch_bounds__(kThreads) f16_rows_kernel(const uint8_t* __restrict__ w, int k, int n,
+                                                             uint16_t* __restrict__ dst, int ldd) {
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    load_tab<T>(tab);
+    __syncthreads();
+    const int nq = k / 8;
+    const size_t rb = row_bytes_t<T>(k);
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < (long long) n * nq;
+         i += (long long) gridDim.x * blockDim.x) {
+        const int r = (int) (i / nq), q = (int) (i % nq);
+        float w8[8];
+        deq8<T>(w + (size_t) r * rb, q >> 2, q & 3, tab, w8);
+        union {
+            uint4 v;
+            uint16_t h[8];
+        } u;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) u.h[j] = __half_as_ushort(__float2half_rn(w8[j]));
+        *reinterpret_cast<uint4*>(dst + (size_t) r * ldd + (size_t) q * 8) = u.v;
+    }
+}
+__global__ void __launch_bounds__(kThreads) gather_f16_kernel(const uint16_t* __restrict__ x, int ldx,
+                                                               const int* __restrict__ idx, int n, int k,
+                                                               uint16_t* __restrict__ dst) {
+    const int nq = k / 8;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < (long long) n * nq;
+         i += (long long) gridDim.x * blockDim.x) {
+        const int r = (int) (i / nq), q = (int) (i % nq);
+        *reinterpret_cast<uint4*>(dst + (size_t) r * k + (size_t) q * 8) =
+            *reinterpret_cast<const uint4*>(x + (size_t) idx[r] * ldx + (size_t) q * 8);
+    }
+}
+__global__ void __launch_bounds__(kThreads) swiglu_f16_kernel(const float* __restrict__ gu, int ld, int n, int ff,
+                                                               float limit, uint16_t* __restrict__ h, int ldh) {
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < (long long) n * ff;
+         i += (long long) gridDim.x * blockDim.x) {
+        const int r = (int) (i / ff), c = (int) (i % ff);
+        const float* g = gu + (size_t) r * ld;
+        h[(size_t) r * ldh + c] = __half_as_ushort(__float2half_rn(swiglu(g[c], g[ff + c], limit)));
+    }
+}
+static unsigned grid_for(long long items) {
+    return (unsigned) std::max<long long>(1, std::min<long long>(4096, (items + kThreads - 1) / kThreads));
+}
+bool f16_rows_ok(int type) {   // (the DS4_IQ_SWITCH list)
+    switch (type) {
+        case kIQ2_XXS: case kIQ2_XS: case kIQ2_S: case kIQ3_XXS: case kIQ3_S: case kIQ4_XS: case kIQ1_S: case kIQ1_M:
+        case kIQ4_NL: case kQ4_K: case kQ2_K: case kQ3_K:
+            return true;
+        default:
+            return false;
+    }
+}
+bool f16_rows(int type, const uint8_t* w, int k, int n, uint16_t* dst, int ldd, cudaStream_t s) {
+    if (k % 256 != 0 || n < 1 || ldd % 8 != 0 || ((uintptr_t) dst & 15) != 0) return false;
+    const unsigned blocks = grid_for((long long) n * (k / 8));
+#define FR_(T) strata_ds4_launch(f16_rows_kernel<T>, blocks, kThreads, 0, s, w, k, n, dst, ldd)
+    DS4_IQ_SWITCH(type, FR_)
+#undef FR_
+    return cudaGetLastError() == cudaSuccess;
+}
+void gather_f16(const uint16_t* x, int ldx, const int* idx, int n, int k, uint16_t* dst, cudaStream_t s) {
+    strata_ds4_launch(gather_f16_kernel, grid_for((long long) n * (k / 8)), kThreads, 0, s, x, ldx, idx, n, k, dst);
+}
+void swiglu_f16(const float* gu, int ld, int n, int ff, float limit, uint16_t* h, int ldh, cudaStream_t s) {
+    strata_ds4_launch(swiglu_f16_kernel, grid_for((long long) n * ff), kThreads, 0, s, gu, ld, n, ff, limit, h, ldh);
 }
 
 bool mv(const MvJob* jobs, int n, cudaStream_t s) {
