@@ -552,8 +552,13 @@ __device__ __forceinline__ float q4_q8_dot_impl(
         const int v1i = (v[1] >> (4 * i)) & 0x0f0f0f0f;
         const int dot1 = STRATA_DP4A(v1i, u[2 * i + 1], STRATA_DP4A(v0i, u[2 * i], 0));
         const int dot2 = STRATA_DP4A(0x01010101, u[2 * i + 1], STRATA_DP4A(0x01010101, u[2 * i], 0));
+#if defined(__HIPCC__)   // gfx906: v_mul_lo_u32 is quarter rate; |dot| < 2^14 and scales < 64, so the 24-bit product is exact
+        sumf_d += d8[i] * __mul24(dot1, sc[i]);
+        sumf_m += d8[i] * __mul24(dot2, m[i]);
+#else
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
+#endif
     }
     const float2 dm4f = __half22float2(dm4);
     return dm4f.x * sumf_d - dm4f.y * sumf_m;
@@ -648,7 +653,11 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
         const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
         const int vi = __vsubss4(vil | vih, 0x20202020);
+#if defined(__HIPCC__)   // gfx906: quarter-rate v_mul_lo_u32; |dp| <= 16384 and |sc| < 128, so the 24-bit product is exact
+        sumf += d8[i] * __mul24(STRATA_DP4A(vi, u[i], 0), sc);
+#else
         sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+#endif
     }
     return d * sumf;
 }
@@ -2346,17 +2355,27 @@ void launch_check() {
 // 2 KB row spent most of its time being launched and joined.  The SAME kernel serves every column count 1..8, so a
 // column's sums do not depend on how many columns (verify tokens) ride along.  STRATA_MMVQ_WAVE=0: the CUDA layout.
 bool g_wave_off = std::getenv("STRATA_MMVQ_WAVE") && std::string(std::getenv("STRATA_MMVQ_WAVE")) == "0";
-template<typename F, int NCOLS, int R>
-__launch_bounds__(256)
-__global__ void native_mmvq_wave_kernel(const typename F::Block* __restrict__ w, const Q81Block* __restrict__ x,
+// XL: the NCOLS activation rows copied into shared memory first (launched with NCOLS * n_in / 32 * 36 bytes): every
+// vector-memory instruction costs the CU's address unit >= 16 cycles whatever its width, and a column added six per lane
+// and chunk (Q4_K); the same values, so the same sums.  A block is blockDim.x / 64 wavefronts.
+template<typename F, int NCOLS, int R, bool XL = false>
+__launch_bounds__(512)
+__global__ void native_mmvq_wave_kernel(const typename F::Block* __restrict__ w, const Q81Block* __restrict__ xg,
                                         float* __restrict__ y, int n_in, int n_out) {
     constexpr int BPIW = 64 / F::T;
     static_assert(64 % F::T == 0, "a block's threads must tile the wavefront");
+    extern __shared__ int4 s_x4[];
+    const int x_stride = n_in / Q8K;
+    if constexpr (XL) {
+        const int4* src = reinterpret_cast<const int4*>(xg);
+        for (int i = int(threadIdx.x), n4 = NCOLS * x_stride * 9 / 4; i < n4; i += int(blockDim.x)) s_x4[i] = src[i];
+        __syncthreads();
+    }
+    const Q81Block* __restrict__ x = XL ? reinterpret_cast<const Q81Block*>(s_x4) : xg;
     const int lane = int(threadIdx.x) & 63;
-    const int row0 = (int(blockIdx.x) * 4 + (int(threadIdx.x) >> 6)) * R;
+    const int row0 = (int(blockIdx.x) * int(blockDim.x >> 6) + (int(threadIdx.x) >> 6)) * R;
     if (row0 >= n_out) return;
     const int blocks_per_row = n_in / F::DIV;
-    const int x_stride = n_in / Q8K;
     const int kqs = F::kqs(lane);
     float tmp[NCOLS][R] = {};
     for (int kbx = lane / F::T; kbx < blocks_per_row; kbx += BPIW) {
@@ -2376,17 +2395,150 @@ __global__ void native_mmvq_wave_kernel(const typename F::Block* __restrict__ w,
         for (int i = 0; i < R; ++i) {
             float v = tmp[j][i];
 #pragma unroll
-            for (int off = 32; off > 0; off >>= 1) v += __shfl_xor(v, off, 64);
+            for (int off = 32; off > 0; off >>= 1) v += strata_shfl_xor(v, off, 64);
             if (lane == 0 && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = v;
         }
+}
+// Q6_K (the output head): four of native_mmvq_wave_kernel<Q6KTraits>'s lanes in one, so a lane reads the 16 bytes of ql,
+// qh and each activation block those four read 4 bytes at a time (the wave layout spends ~5 address-unit instructions
+// per lane and block on 8 weight bytes).  Lane j of a 16-lane row group plays lanes 4j..4j+3 (same block, scales, bq8
+// offset and qh shift; consecutive ints), keeps their four sums apart, and replays the 64-lane butterfly: steps 32..4 are
+// xor 8..1 here, per sum, then 2 and 1 are (p0 + p2) + (p1 + p3).  Bitwise the wave kernel's results.
+template<int NCOLS, bool XL>
+__launch_bounds__(512)
+__global__ void q6k_wave4_kernel(const Q6KBlock* __restrict__ w, const Q81Block* __restrict__ xg, float* __restrict__ y,
+                                 int n_in, int n_out) {
+    extern __shared__ int4 s_x4[];
+    const int x_stride = n_in / Q8K;
+    if constexpr (XL) {
+        const int4* src = reinterpret_cast<const int4*>(xg);
+        for (int i = int(threadIdx.x), n4 = NCOLS * x_stride * 9 / 4; i < n4; i += int(blockDim.x)) s_x4[i] = src[i];
+        __syncthreads();
+    }
+    const Q81Block* __restrict__ x = XL ? reinterpret_cast<const Q81Block*>(s_x4) : xg;
+    const int lane = int(threadIdx.x) & 63, j = lane & 15;
+    const int row = (int(blockIdx.x) * int(blockDim.x >> 6) + (int(threadIdx.x) >> 6)) * 4 + (lane >> 4);
+    if (row >= n_out) return;   // (a whole 16-lane group: the shuffles below stay inside it)
+    const int bpr = n_in / 256;
+    const int iqs0 = 4 * (j & 7);
+    const int bq8_offset = 4 * (iqs0 / 16) + (iqs0 % 16) / 8;
+    const int scale_offset = 8 * (iqs0 / 16) + (iqs0 % 16) / 4;
+    const int vh_shift = 2 * ((iqs0 % 16) / 8);
+    float p[NCOLS][4] = {};
+    for (int kbx = j >> 3; kbx < bpr; kbx += 2) {
+        const Q6KBlock* b = w + std::size_t(row) * bpr + kbx;
+        int vl[4], vh[4];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            vl[k] = load_int_b2(b->ql, iqs0 + k);
+            vh[k] = load_int_b2(b->qh, 8 * (iqs0 / 16) + iqs0 % 8 + k) >> vh_shift;
+        }
+        const float d = b->d;
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const Q81Block* xb = x + std::size_t(c) * x_stride + kbx * 8 + bq8_offset;
+            const float d8[2] = {__low2float(xb[0].ds), __low2float(xb[2].ds)};
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                const int u[2] = {reinterpret_cast<const int*>(xb[0].qs)[iqs0 % 8 + k],
+                                  reinterpret_cast<const int*>(xb[2].qs)[iqs0 % 8 + k]};
+                p[c][k] += q6_q8_dot_impl(vl[k], vh[k], u, b->scales + scale_offset, d, d8);
+            }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k)
+#pragma unroll
+            for (int off = 8; off > 0; off >>= 1) p[c][k] += strata_shfl_xor(p[c][k], off, 64);
+        if (j == 0) y[std::size_t(c) * n_out + row] = (p[c][0] + p[c][2]) + (p[c][1] + p[c][3]);
+    }
+}
+// Q4_K (attn_qkv, attn_output): the same four-lanes-in-one as q6k_wave4_kernel.  The wave layout's lanes 4j..4j+3 share
+// block, bq8 offset, scales and dm and read consecutive ints of qs (two 16-byte runs) and of each activation block.
+template<int NCOLS, bool XL>
+__launch_bounds__(512)
+__global__ void q4k_wave4_kernel(const Q4KBlock* __restrict__ w, const Q81Block* __restrict__ xg, float* __restrict__ y,
+                                 int n_in, int n_out) {
+    extern __shared__ int4 s_x4[];
+    const int x_stride = n_in / Q8K;
+    if constexpr (XL) {
+        const int4* src = reinterpret_cast<const int4*>(xg);
+        for (int i = int(threadIdx.x), n4 = NCOLS * x_stride * 9 / 4; i < n4; i += int(blockDim.x)) s_x4[i] = src[i];
+        __syncthreads();
+    }
+    const Q81Block* __restrict__ x = XL ? reinterpret_cast<const Q81Block*>(s_x4) : xg;
+    const int lane = int(threadIdx.x) & 63, j = lane & 15;
+    const int row = (int(blockIdx.x) * int(blockDim.x >> 6) + (int(threadIdx.x) >> 6)) * 4 + (lane >> 4);
+    if (row >= n_out) return;   // (a whole 16-lane group: the shuffles below stay inside it)
+    const int bpr = n_in / 256;
+    const int bq8_offset = 2 * (j & 3);
+    float p[NCOLS][4] = {};
+    for (int kbx = j >> 2; kbx < bpr; kbx += 4) {
+        const Q4KBlock* b = w + std::size_t(row) * bpr + kbx;
+        const Q4KTraits::W wv = Q4KTraits::load(b, 8 * (j & 3));   // scales and dm: the four lanes' (k only moves qs)
+        const int* ql = reinterpret_cast<const int*>(b->qs + 16 * bq8_offset);
+        int v[4][2];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) v[k][0] = ql[k], v[k][1] = ql[k + 4];
+        const uint8_t* sc = reinterpret_cast<const uint8_t*>(wv.aux);
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const Q81Block* xb = x + std::size_t(c) * x_stride + kbx * 8 + bq8_offset;
+            const float d8[2] = {__low2float(xb[0].ds), __low2float(xb[1].ds)};
+            const int* q0 = reinterpret_cast<const int*>(xb[0].qs);
+            const int* q1 = reinterpret_cast<const int*>(xb[1].qs);
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                const int u[4] = {q0[k], q0[k + 4], q1[k], q1[k + 4]};
+                p[c][k] += q4_q8_dot_impl(v[k], u, sc, sc + 2, wv.dm, d8);
+            }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k)
+#pragma unroll
+            for (int off = 8; off > 0; off >>= 1) p[c][k] += strata_shfl_xor(p[c][k], off, 64);
+        if (j == 0) y[std::size_t(c) * n_out + row] = (p[c][0] + p[c][2]) + (p[c][1] + p[c][3]);
+    }
 }
 template<typename F, int NCOLS>
 void wave_launch_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    constexpr int R = 1;
-    const unsigned blocks = unsigned((std::size_t(n_out) + 4 * R - 1) / (4 * R));
-    native_mmvq_wave_kernel<F, NCOLS, R><<<blocks, 256, 0, s>>>(w, x, y, n_in, n_out);
+    // test knobs, a row's sums the same under all of them: STRATA_MMVQ_WAVE_R rows per wavefront (the x loads shared by
+    // the R rows), STRATA_MMVQ_WPB wavefronts per block (4 / 8), STRATA_MMVQ_XLDS=1 the activations through shared memory
+    static const int r = std::getenv("STRATA_MMVQ_WAVE_R") ? std::atoi(std::getenv("STRATA_MMVQ_WAVE_R")) : 1;
+    static const int wpb = std::getenv("STRATA_MMVQ_WPB") && std::atoi(std::getenv("STRATA_MMVQ_WPB")) == 8 ? 8 : 4;
+    static const bool xl = std::getenv("STRATA_MMVQ_XLDS") && std::getenv("STRATA_MMVQ_XLDS")[0] == '1';
+    const std::size_t sm = std::size_t(NCOLS) * (n_in / Q8K) * sizeof(Q81Block);
+    const bool use_xl = xl && (reinterpret_cast<std::uintptr_t>(x) & 15) == 0 && (n_in / Q8K * 9) % 4 == 0 && sm <= 32768;
+    const auto launch = [&](auto rc, auto xc) {
+        constexpr int R = decltype(rc)::value;
+        constexpr bool XL = decltype(xc)::value;
+        const unsigned blocks = unsigned((std::size_t(n_out) + wpb * R - 1) / (wpb * R));
+        native_mmvq_wave_kernel<F, NCOLS, R, XL><<<blocks, 64 * wpb, XL ? sm : 0, s>>>(w, x, y, n_in, n_out);
+    };
+    const auto pick = [&](auto rc) {
+        if (use_xl) launch(rc, std::true_type{});
+        else launch(rc, std::false_type{});
+    };
+    // test knobs STRATA_MMVQ_Q6X4=1 / STRATA_MMVQ_Q4X4=1: Q6_K / Q4_K through the four-lanes-in-one kernels (4 rows a
+    // wavefront), only with the activations in shared memory (without, mmvq_bench: slower from T 5)
+    static const bool q6x4 = std::getenv("STRATA_MMVQ_Q6X4") && std::getenv("STRATA_MMVQ_Q6X4")[0] == '1';
+    static const bool q4x4 = std::getenv("STRATA_MMVQ_Q4X4") && std::getenv("STRATA_MMVQ_Q4X4")[0] == '1';
+    const unsigned blocks4 = unsigned((std::size_t(n_out) + 4 * wpb - 1) / (4 * wpb));
+    if constexpr (std::is_same_v<F, Q6KTraits>) {
+        if (q6x4 && use_xl) return void(q6k_wave4_kernel<NCOLS, true><<<blocks4, 64 * wpb, sm, s>>>(w, x, y, n_in, n_out));
+    }
+    if constexpr (std::is_same_v<F, Q4KTraits>) {
+        if (q4x4 && use_xl) return void(q4k_wave4_kernel<NCOLS, true><<<blocks4, 64 * wpb, sm, s>>>(w, x, y, n_in, n_out));
+    }
+    if (r == 2) pick(std::integral_constant<int, 2>{});
+    else pick(std::integral_constant<int, 1>{});
 }
 template<typename F>
 void wave_launch(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
