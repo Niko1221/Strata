@@ -476,13 +476,15 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
             continue
         try:
             done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True,
+                                  encoding="utf-8", errors="replace",
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError):
             continue
-        if done.returncode == 0 and done.stdout.strip():
-            if backend == "hip" and "gfx" not in done.stdout:
+        output = done.stdout or ""
+        if done.returncode == 0 and output.strip():
+            if backend == "hip" and "gfx" not in output:
                 continue
-            if backend == "sycl" and "level_zero" not in done.stdout.lower() and "gpu" not in done.stdout.lower():
+            if backend == "sycl" and "level_zero" not in output.lower() and "gpu" not in output.lower():
                 continue
             return backend, command[0]
     found = _drm_vendor_backend() if os.name != "nt" else _windows_vendor_backend()
@@ -631,12 +633,13 @@ def _windows_adapters_cim() -> list[dict]:
     try:
         done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
                                "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
-                              capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+                              stdin=subprocess.DEVNULL,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
     found = []
-    for line in done.stdout.splitlines():
+    for line in (done.stdout or "").splitlines():
         match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", line, re.I)
         if not match:
             continue
@@ -773,10 +776,11 @@ def _smi_query(field_name: str) -> list[str]:
         return []
     try:
         done = subprocess.run([tool, f"--query-gpu={field_name}", "--format=csv,noheader"], capture_output=True,
-                              timeout=8, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                              timeout=8, text=True, encoding="utf-8", errors="replace",
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
-    return [line.strip() for line in done.stdout.splitlines() if line.strip()] if done.returncode == 0 else []
+    return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()] if done.returncode == 0 else []
 
 
 def nvidia_driver_version() -> str | None:

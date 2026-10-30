@@ -935,7 +935,7 @@ def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
 
 def out(cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60).stdout or ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -4211,7 +4211,7 @@ def _win_display_adapters() -> list[dict]:
     """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
     ps = ("Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
           "$_.AdapterRAM }")
-    text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
+    text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]) or ""
     found = []
     for line in text.splitlines():
         parts = line.strip().split("|")
@@ -4285,7 +4285,9 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
             if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
                 continue
-            if r.get("DriverDesc") and ad.get("name") and r["DriverDesc"].strip() != ad["name"].strip():
+            adapter_name = str(ad.get("name") or "")
+            if (r.get("DriverDesc") and adapter_name and "\ufffd" not in adapter_name
+                    and r["DriverDesc"].strip() != adapter_name.strip()):
                 continue
             used.add(k)
             mem = r.get("HardwareInformation.qwMemorySize")

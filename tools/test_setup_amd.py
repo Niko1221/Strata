@@ -284,6 +284,12 @@ class WindowsDetection(unittest.TestCase):
         self.assertEqual(g[0]["driver"], "32.0.21013.1000")
         self.assertEqual([setup.amd_problem(x) is None for x in g], [True, False, True])
 
+    def test_replaced_adapter_name_still_matches_registry_by_pci_id(self):
+        adapter = {"name": "Microsoft \ufffd� display adapter",
+                   "pnp": r"PCI\VEN_1002&DEV_7550&SUBSYS_0E3B1002&REV_C0\6&2", "ram": 4293918720}
+        gpus = setup.amd_gpus_windows([adapter], self.REGISTRY)
+        self.assertAlmostEqual(gpus[0]["vram_gb"], 16.0)  # use the 64-bit registry value, not WMI's 32-bit cap
+
     def test_rx_6800m_is_gfx1031(self):
         """#881: PCI 73DF (RX 6700 XT / 6750 XT / 6800M) is gfx1031, not an unknown id."""
         self.assertEqual(setup.win_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")
@@ -360,6 +366,13 @@ class WindowsDetection(unittest.TestCase):
                 mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: ["hip"]), \
                 mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: ["display"]):
             self.assertEqual(setup.amd_gpus(), ["hip"])
+
+    def test_out_uses_replacement_decoding(self):
+        completed = setup.subprocess.CompletedProcess(["powershell"], 0, stdout="")
+        with mock.patch.object(setup.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(setup.out(["powershell"]), "")
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
     def test_probe_in_the_component_folder(self):
         """#3418: the app keeps the engine in the component folder, not in control/engine; the cards must be numbered by the
