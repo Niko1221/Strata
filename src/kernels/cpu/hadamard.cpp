@@ -92,7 +92,7 @@ bool hadamard_parse(const std::string& path, int64_t n_layers, HadamardSpec& h, 
 }
 
 void hadamard_rotate(float* x, int n, int block, const float* signs) {
-#if defined(STRATA_NATIVE_EXPERTS)
+#if defined(STRATA_NATIVE_EXPERTS) && (defined(__x86_64__) || defined(_M_X64))
     static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr && vcache_pool_opt_in();
     if (avx512 && block >= 16 && (n & 15) == 0) {
         hadamard_rotate_avx512(x, n, block, signs);
