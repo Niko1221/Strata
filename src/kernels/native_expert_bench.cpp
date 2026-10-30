@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
         cudaMalloc(&dx, x.size() * 4);
         cudaMalloc(&dxq, (size_t) NTOK * H / 32 * 36);
         cudaMalloc(&dscr, K::native_expert_scratch_bytes(CAPE, FF));
+        cudaMemset(dscr, 0, K::native_expert_scratch_bytes(CAPE, FF));   // the scratch hash below covers gate/up before quantization
         cudaMalloc((void**) &dout, (size_t) NE * H * 4);
         cudaMalloc((void**) &dptr, (size_t) G * 8);
         cudaMalloc((void**) &dstart, (size_t) (G + 1) * 4);
@@ -172,7 +173,19 @@ int main(int argc, char** argv) {
                 for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
         uint64_t fnv = 1469598103934665603ull;   // FNV-1a of the output bytes: equal hashes across two builds = bitwise equal outputs
         for (size_t i = 0; i < got.size() * 4; ++i) fnv = (fnv ^ reinterpret_cast<const uint8_t*>(got.data())[i]) * 1099511628211ull;
-        std::printf("hash %016llx\n", (unsigned long long) fnv);
+        {
+            std::vector<uint8_t> scr(K::native_expert_scratch_bytes(CAPE, FF));
+            cudaMemsetAsync(dscr, 0, scr.size(), s);
+            run(mode, 0);
+            cudaMemcpyAsync(scr.data(), dscr, scr.size(), cudaMemcpyDeviceToHost, s);
+            cudaStreamSynchronize(s);
+            uint64_t h = 1469598103934665603ull, hh = h;
+            for (uint8_t c : scr) h = (h ^ c) * 1099511628211ull;
+            // hq (the q8_1 image of h, the down input) alone: scratch = gate | up | h | hq, each 256-aligned
+            const size_t fa = ((size_t) CAPE * FF * 4 + 255) & ~(size_t) 255;
+            for (size_t i = 3 * fa; i < 3 * fa + (size_t) NE * (FF / 32) * 36; ++i) hh = (hh ^ scr[i]) * 1099511628211ull;
+            std::printf("hash %016llx scratch %016llx hq %016llx\n", (unsigned long long) fnv, (unsigned long long) h, (unsigned long long) hh);
+        }
         std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
                     " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
                     l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,
