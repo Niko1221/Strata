@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
     int failures = 0;
+    std::vector<float> prev[2][2];   // the outputs at T - 1: a token's outputs must not depend on how many share the read
     for (int T = t_lo; T <= t_hi; ++T)
         for (int apply = 0; apply < 2; ++apply)
             for (int inject = 0; inject < 2; ++inject) {
@@ -133,6 +134,17 @@ int main(int argc, char** argv) {
                     cudaMemcpy(p, dmix, (size_t) TM * N * 4, cudaMemcpyDeviceToHost);
                 }
                 const bool same = std::memcmp(out[0].data(), out[1].data(), out[0].size() * 4) == 0;
+                bool t_inv = true;
+                if (!prev[apply][inject].empty()) {
+                    const size_t off[6] = {0, (size_t) TM * D, (size_t) TM * (D + LR), (size_t) TM * (D + LR + HC),
+                                           (size_t) TM * (D + LR + HC + HC), (size_t) TM * (D + LR + HC + HC + N)};
+                    for (int sec = 0; sec < 5; ++sec) {
+                        const size_t w = (off[sec + 1] - off[sec]) / TM;   // R, lo, rs, inject, mixed: tokens 0..T-2
+                        t_inv = t_inv && std::memcmp(out[0].data() + off[sec], prev[apply][inject].data() + off[sec], (size_t) (T - 1) * w * 4) == 0;
+                    }
+                }
+                prev[apply][inject] = out[0];
+                if (!t_inv) ++failures;
                 double us[2] = {1e30, 1e30};
                 for (int round = 0; round < 3; ++round)
                     for (int f = 0; f < 2; ++f) {
@@ -148,8 +160,8 @@ int main(int argc, char** argv) {
                     }
                 unsigned long long h = 1469598103934665603ull;   // FNV-1a of the outputs: compare across runs (env switches)
                 for (size_t b = 0; b < out[0].size() * 4; ++b) h = (h ^ ((const unsigned char*) out[0].data())[b]) * 1099511628211ull;
-                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s | hash %016llx\n", T, apply, inject,
-                            us[0], us[1], same ? "bitwise equal" : "DIFFERS", h);
+                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s%s | hash %016llx\n", T, apply, inject,
+                            us[0], us[1], same ? "bitwise equal" : "DIFFERS", t_inv ? "" : ", T-VARIANT", h);
                 if (!same) ++failures;
             }
     {   // the Q8_0 read against the bf16 read: relative RMS error of lo / mixed / R / inject, and the q8_1 image against mixed
