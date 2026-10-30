@@ -118,14 +118,17 @@ class TestStartFailed(UpdateError):
                     else "Run `strata update` again.")
         return f"{head} {cause} {hint}"
 
-    def __init__(self, label: str, reason: str, *, busy: bool | None = None, hint: str | None = None):
+    def __init__(self, label: str, reason: str, *, busy: bool | None = None, hint: str | None = None, log: Path | None = None):
         # busy: True/False says outright whether the card or memory was busy (the wait-expired reasons carry the engine's log tail, which
         # mentions VRAM on every healthy start and must not be read as a busy card, #3683); None reads it from the words of the reason
         self.busy = bool(self.BUSY.search(reason)) if busy is None else busy
         if hint is None and self.busy:
             hint = ("The graphics card or memory looks busy: close programs that use the card (games, video, other models) "
                     "and run `strata update` again.")
-        super().__init__(self.plain(label, reason, self.busy, hint), 6)
+        message = self.plain(label, reason, self.busy, hint)
+        if log is not None:
+            message += f" The engine's log from this test is in {log}."
+        super().__init__(message, 6)
         self.label = label
         self.reason = reason
 
@@ -791,7 +794,8 @@ def _log_tail(sandbox: Path, component: ec.EngineComponent) -> str:
         lines = log.read_text(errors="replace").splitlines()[-3:]
     except OSError:
         return ""
-    return " | " + " ".join(lines)[:300] if lines else ""
+    # Keep the end: startup diagnostics and long model paths can otherwise push the actual error out of the retained reason.
+    return " | " + " ".join(lines)[-1000:] if lines else ""
 
 
 def _keep_log(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> None:
@@ -908,7 +912,7 @@ def _test_start_failure(component: ec.EngineComponent, started: dict, ctx: Conte
         return TestStartFailed(component.version, f"it was still loading the model after {minutes} minutes", busy=True,
                                hint="Nothing was changed. A slow disk or a card that other programs are using can do this: close them and run "
                                     "`strata update` again." + kept)
-    return TestStartFailed(component.version, f"it did not answer a one-token probe ({error or started.get('state')}){tail}")
+    return TestStartFailed(component.version, f"it did not answer a one-token probe ({error or started.get('state')}){tail}", log=log)
 
 
 TEST_CONTEXT = 4096
