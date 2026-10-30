@@ -1,10 +1,12 @@
-# Strata on two or more GPUs (layer split)
+# Strata on two or more GPUs (layer split, or one copy of the model per card)
 
 This page is for people with two or more graphics cards of the same make in one PC. A layer split puts one model on
-several cards. NVIDIA is described here; AMD limits and measurements are in [AMD_HIP.md](AMD_HIP.md).
+several cards, so one chat is answered faster. The server can also run one copy of the model on each card, so several
+chats are answered at once. NVIDIA is described here; AMD limits and measurements are in [AMD_HIP.md](AMD_HIP.md).
 
 > **On this page:** [Using it](#using-it) · [Main, Helper, Off](#main-helper-off) · [How the split works](#how-the-split-works) ·
 > [Tuning options](#tuning-options) · [Pipeline windows](#pipeline-windows) · [Two models on two cards](#two-models-on-two-cards) ·
+> [One copy of the model per card](#one-copy-of-the-model-per-card) ·
 > [DeepSeek](#deepseek-v41-flash) · [Limits](#limits) · [History](#history--older-measurements)
 
 ## Using it
@@ -205,6 +207,41 @@ for the next model, and explains a failed start on a card that is taken. Two mod
 **Measured on:** a PC with two of four Radeon AI PRO R9700 cards, Linux, AMD build, Q2_0 on one card and IQ3_XXS on the other.
 Both loaded (33 s and 59 s with the files cached, 114 s the first time) and answered chats at about 60 tokens/s each. Unloading
 one left the other answering. The same app code drives NVIDIA cards, but two models on two NVIDIA cards were not run.
+
+## One copy of the model per card
+
+A layer split answers one chat with both cards. The server can instead run **one copy of the model on each card** and
+give each copy its own chats. That is for several clients at once: two chats run at the same time, one on each card.
+It is opt-in, in the model's config:
+
+    "replicas": 2, "gpu": [0, 1]
+
+Each card holds a full copy of the model, so each has its own KV cache and its own conversation cache. A request goes
+to the card that would have to read the fewest prompt tokens again, and a conversation goes back to the card that
+holds it.
+
+### The idle card
+
+By default a request is given a card as soon as it arrives, even when that card is busy: it waits there while the
+other card may sit idle. With `"replica_pull": true` a request waits for a free card and takes the first one that
+frees up, so an idle card is always used. Among the waiting requests the one that would read the fewest tokens again
+goes first; a request that has waited more than `"replica_starve_s"` seconds (60 by default) goes first whatever it
+costs.
+
+**Measured on 2x RTX 4090** (Linux, WSL2, 128 threads), Qwen3.8-Flash-Next UD-Q4_K_XL, 262,144-token context,
+`"replicas": 2`, `"parallel": 1`, two client sessions that send the same ~19,500-token system prompt:
+
+| | one card at a time | `"replica_pull": true` |
+| --- | --- | --- |
+| cards busy | one at 96%, the other at 0-1% | **both at 97-99%** |
+| the second of two equal requests | waits for the first: first token after 60 s | takes the other card: first token after 1.5 s |
+| output tokens per second, both cards | 60 | **90-130** |
+
+The first request on a card is slower: its experts are not in that card's VRAM yet and have to be fetched over PCIe.
+That is a one-off cost per card.
+
+With `"parallel": N` every card answers N conversations at once, so two cards answer 2N at once
+([BATCHING.md](BATCHING.md)).
 
 ## DeepSeek V4.1-Flash
 

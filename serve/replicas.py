@@ -176,7 +176,8 @@ class ReplicaEngine:
     NOT_HERE = {"session_file", "vram", "ctl", "slot_cv"}       # not offered: one conversation file / VRAM resize / control line
     PROPAGATE = {"silence_s", "gpu_busy"}
 
-    def __init__(self, engines: list, load_tokens: int = LOAD_TOKENS):
+    def __init__(self, engines: list, load_tokens: int = LOAD_TOKENS, pull: bool = False,
+                 starve_s: float = 60.0, log_pull: bool = True):
         if len(engines) < 2:
             raise ValueError("ReplicaEngine needs two or more engines")
         d = self.__dict__
@@ -191,6 +192,15 @@ class ReplicaEngine:
         d["heal_at"] = [0.0] * len(engines)
         d["routed"] = [0] * len(engines)
         d["gen_seen"] = [getattr(e, "gen", 0) for e in engines]
+        # Pull scheduling (opt-in, "replica_pull"): the requests wait in one pending pool and are handed to a
+        # replica when it has a free slot, instead of being assigned on arrival and waiting on that replica's
+        # lock. An idle replica is then always used, and the re-read cost decides the order among the pending.
+        d["pull"] = pull
+        d["starve_s"] = starve_s
+        d["pending"] = []
+        d["cv"] = threading.Condition()
+        d["capacity"] = [max(1, int(getattr(e, "batch", 0) or 0)) for e in engines]   # slots per replica
+        d["log_pull"] = bool(log_pull)
 
     # ---- attribute plumbing
     @property
@@ -380,9 +390,119 @@ class ReplicaEngine:
                     self.healing[k] = False
             threading.Thread(target=run, daemon=True).start()
 
+    # ---- pull scheduling (opt-in)
+    def _pick(self, free: list, now: float):
+        """The (replica, pending request) pair with the cheapest re-read. The caller holds self.cv."""
+        best = None
+        got = {}
+        for k in free:
+            for i, req in enumerate(self.pending):
+                if i not in got:                      # what each replica holds, read now, not at arrival
+                    got[i] = self.router.matched(req["ids"])
+                waited = now - req["queued_at"]
+                starved = waited > self.starve_s      # a request that waited too long goes first
+                key = (0 if starved else 1, max(0, req["len"] - got[i][k]), -waited, i)
+                if best is None or key < best[0]:
+                    best = (key, k, i)
+        return best
+
+    def _dispatch(self):
+        """Hand the pending requests to the free replica slots, cheapest re-read first. The caller holds
+        self.cv. Returns the (callback, replica) pairs to run outside the lock."""
+        alive = [k for k, e in enumerate(self.engines) if e.alive()]
+        if len(alive) < len(self.engines):
+            self.heal()                              # a replica that died is started again, as in route()
+        fired = []
+        while self.pending:
+            free = [k for k in alive if self.inflight[k] < self.capacity[k]]
+            if not free:
+                break
+            best = self._pick(free, time.monotonic())
+            if best is None:
+                break
+            _, k, i = best
+            req = self.pending.pop(i)
+            req["k"] = k
+            self.inflight[k] += 1
+            self.routed[k] += 1
+            req["replica"] = k
+            selected = getattr(req.get("cancel"), "_strata_replica_selected", None)
+            if selected is not None:
+                fired.append((selected, k))          # the callback runs outside the lock
+            if self.log_pull:
+                reread = max(0, req["len"] - self.router.matched(req["ids"])[k])
+                try:
+                    print(f"[strata] replica pull: request -> replica {k} (re-read {reread} of {req['len']} tokens,"
+                          f" waited {time.monotonic() - req['queued_at']:.1f}s, pending now {len(self.pending)})",
+                          flush=True)
+                except Exception:                   # noqa: BLE001 - a closed stdout must not break the dispatch
+                    pass
+        self.cv.notify_all()                        # a request that was waiting for a slot is up
+        return fired
+
+    def _generate_pull(self, ids, max_new, sampling, cancel, embeddings=None):
+        from serve.server import EngineDied, EngineNonFinite
+        req = {"ids": ids, "len": len(ids),
+               "max_new": max_new, "sampling": sampling, "cancel": cancel,
+               "embeddings": embeddings, "k": None, "queued_at": time.monotonic()}
+        with self.cv:
+            self.pending.append(req)
+            fired = self._dispatch()
+        for cb, k in fired:
+            try:
+                cb(k)
+            except Exception:                       # noqa: BLE001
+                pass
+        with self.cv:
+            while req["k"] is None:
+                if cancel is not None and cancel.is_set():
+                    if req in self.pending:
+                        self.pending.remove(req)    # the client left while queued: give its place up
+                    self.cv.notify_all()
+                    return
+                if not any(e.alive() for e in self.engines) and not self.healing:
+                    raise EngineDied("no replica is running; this request was not sent")
+                self.cv.wait(timeout=0.25)
+            k = req["k"]
+        e = self.engines[k]
+        self.tl.cur = e
+        produced: list[int] = []
+        nonfinite = False
+        try:
+            self.router.note(k, ids)
+            if embeddings is not None:
+                gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings)
+            else:
+                gen = e.generate(ids, max_new, sampling, cancel)
+            for t in gen:
+                if t is not None:
+                    produced.append(t)
+                yield t
+        except EngineNonFinite:
+            nonfinite = True
+            raise
+        finally:
+            with self.cv:
+                self.inflight[k] = max(0, self.inflight[k] - 1)
+                fired = self._dispatch()             # the slot is free: the next pending request takes it
+            for cb, kk in fired:
+                try:
+                    cb(kk)
+                except Exception:                   # noqa: BLE001
+                    pass
+            with self.cv:
+                self.cv.notify_all()
+            if nonfinite:                       # #879: the engine dropped every cached conversation
+                self.router.forget(k)
+            elif produced:
+                self.router.note(k, list(ids) + produced)
+
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         # imported here: serve.server imports this module
         from serve.server import EngineDied, EngineNonFinite
+        if self.pull:
+            yield from self._generate_pull(ids, max_new, sampling, cancel, embeddings)
+            return
         k = self.route(ids)
         if k < 0:
             raise EngineDied("no replica is running; this request was not sent")

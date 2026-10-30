@@ -481,6 +481,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |
 | `parallel` | `1` | Up to N requests decoded together in batch slots ([BATCHING.md](BATCHING.md)). |
+| `replica_pull` | off | With `"replicas"`, a request waits for a free card instead of being given one as soon as it arrives. The card that is idle is then always used, and among the waiting requests the one that would read the fewest prompt tokens again goes first. A request that waits longer than `"replica_starve_s"` goes first whatever it costs. Off by default: a request is given a card on arrival, as before. |
+| `replica_starve_s` | `60` | Seconds a request may wait for a card before it goes first, whatever the re-read costs. Keeps a request whose prompt is cached on no card from waiting forever. |
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |
 | `slot_save_path` | none | Enables session files. |

@@ -4802,6 +4802,7 @@ class Service:
                 live["state"] = "generating"
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
+            live["replica_pending"] = len(getattr(self.engine, "pending", []) or [])
         if hasattr(self.engine, "split_view"):          # opt-in split serving: the hand-overs so far (serve/split.py)
             live["split_serve"] = self.engine.split_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
@@ -8530,7 +8531,11 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
         i, e = errors[0]
         raise SystemExit(f"[strata] replica {i} did not start: {e}")
     load = int(cfg.get("replica_load_tokens") or rp.LOAD_TOKENS)
-    return rp.ReplicaEngine(engines, load_tokens=load)
+    pull = bool(cfg.get("replica_pull"))          # opt-in: wait for a free slot instead of assigning on arrival
+    starve = float(cfg.get("replica_starve_s") or 60.0)
+    print(f"[strata] replica scheduling: {'pull (a request waits for a free slot)' if pull else 'assign on arrival'}"
+          + (f", queue cap {cfg.get('max_queue')}" if cfg.get("max_queue") else ""), flush=True)
+    return rp.ReplicaEngine(engines, load_tokens=load, pull=pull, starve_s=starve)
 
 
 def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bool, *, offline: bool = False):
