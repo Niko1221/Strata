@@ -413,6 +413,25 @@ class WiringHTTP(unittest.TestCase):
         self.assertTrue(self.svc.session_ladder.tracked["ses-a"])      # tracked state survives...
         self.assertEqual(self.svc.session_ladder.last_active, "ses-b")  # ...and identity resumes with the header
 
+    def test_wiring_child_headers_reach_the_ladder_as_their_own_session_with_a_parent(self):
+        # The live request path with the OpenCode 2.1.4 SUBAGENT header shape: the affinity family names
+        # the PARENT, the child's own id rides x-opencode-session-id.  Identity must resolve to the child
+        # (extract_session_id's own-id-first order), and x-opencode-parent-session-id / x-parent-session-id
+        # must land in the ladder's parent_of - the mark that drives child-first retirement and the TTL.
+        own, par = "ses-ownchild", "ses-parentmain"
+        self.post(par, LONG + " parent turn")                          # a main conversation
+        headers = {"Content-Type": "application/json", "x-opencode-session-id": own,
+                   "x-opencode-parent-session-id": par, "x-session-affinity": par,
+                   "X-Session-Id": par, "x-parent-session-id": par, "x-opencode-session": par}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", headers=headers,
+                                     data=json.dumps(big_request(LONG + " child turn")).encode())
+        with urllib.request.urlopen(req, timeout=15) as r:
+            self.assertEqual(r.status, 200)
+        ladder = self.svc.session_ladder
+        self.assertEqual(ladder.last_active, own)                      # identity: the child is its own session
+        self.assertEqual(ladder.parent_of.get(own), par)               # ...marked with its parent
+        self.assertIsNone(ladder.parent_of.get(par))                   # a main earns no parent mark
+
     def test_wiring_batch_refuses_the_ladder(self):
         self.engine.batch = 2                    # parallel mode: the FIFO is not held, save/restore refused
         self.post("ses-a", LONG + " first")

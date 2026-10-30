@@ -361,8 +361,13 @@ every dirty conversation before the engine closes; the engine start after an unl
 next request, so the prompt reads from the restored prefix instead of being re-prefilled. Subagent (child) sessions earn
 their own ledger entries: OpenCode carries each request's own session id in `x-opencode-session-id` while its affinity
 headers carry the parent's, and the ladder reads the own id first. A refused save or restore degrades
-to a cold prefill with one log line and never fails the request. The block's keys are `idle_save_s` (8.0) and
-`retention_max_files` (16); the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
+to a cold prefill with one log line and never fails the request. Subagent checkpoints are retained on
+their own terms: an over-cap save retires a child file before an older main file, `retention_max_child_files`
+caps children so a fleet never fills the whole ledger, and a clean child checkpoint no request has touched
+for `child_ttl_s` is retired on the idle beat - a finished subagent never returns to the engine, and silence
+is the only completion signal the wire carries. The block's keys are `idle_save_s` (8.0),
+`retention_max_files` (16), `retention_max_child_files` (8) and `child_ttl_s` (21600, 0 disables the sweep);
+the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
 without a resolvable budget refuses to start. Absent the block, everything above stays as it was.
 
 **Lazy start.** `serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true`) starts the HTTP

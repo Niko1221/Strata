@@ -65,7 +65,8 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.session_ladder import (LadderConfig, PARK_COST_KIB_PER_TOKEN, ConvEvent, SessionLadder,  # noqa: E402
-                                  extract_session_id, register_refused_class)  # the session ladder: event intake (drain_events) + request-path hooks
+                                  extract_parent_id, extract_session_id,
+                                  register_refused_class)  # the session ladder: event intake (drain_events) + request-path hooks
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -918,8 +919,9 @@ def conversation_cache_mib(engine) -> int | None:
 
 def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
-    enables the ladder with its values - idle_save_s and retention_max_files, absent keys keeping LadderConfig's
-    pinned defaults - and the slot save directory the service resolved.  Absent, false, or any non-dict leaves it
+    enables the ladder with its values - idle_save_s, retention_max_files, retention_max_child_files and
+    child_ttl_s, absent keys keeping LadderConfig's pinned defaults - and the slot save directory the
+    service resolved.  Absent, false, or any non-dict leaves it
     disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value today's disabled ladder carries;
     nothing consults it while disabled).  An enabled ladder's park_budget_mib is the engine's own cache budget:
     --conversation-cache-mib read exactly like conversation_slots() reads --conversation-cache-slots (spawn args
@@ -942,7 +944,9 @@ def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
     return LadderConfig(enabled=True, slot_save_path=slot_save_path,
                         park_budget_mib=conversation_cache_mib(engine),
                         idle_save_s=_num("idle_save_s", 8.0, float),
-                        retention_max_files=_num("retention_max_files", 16, int))
+                        retention_max_files=_num("retention_max_files", 16, int),
+                        retention_max_child_files=_num("retention_max_child_files", 8, int),
+                        child_ttl_s=_num("child_ttl_s", 21600.0, float))
 
 
 def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
@@ -4746,6 +4750,10 @@ class Service:
                 # human-latency head start (cfg.idle_save_s) saves the last-active session before an idle
                 # unload can drop its park; a manual /unload inside the window earns the same check.
                 ladder.on_idle(self, time.time() - (self.last_request_at or self.started_at))
+                # the child TTL sweep rides the same quiet beat: clean subagent checkpoints a finished
+                # OpenCode subagent will never continue age out before they churn the ledger
+                # (cfg.child_ttl_s 0 disables it; mains and dirty/current sessions are never swept).
+                ladder.sweep_child_ttl()
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
             if ladder is not None and ladder.cfg.enabled:
@@ -5623,7 +5631,8 @@ class Service:
                         self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
                         for ev in self.conv_log.drain_events():
                             self.session_ladder.on_conv_event(ev)
-                        self.session_ladder.on_arrival(self, session_id, ladder_prompt or "")
+                        self.session_ladder.on_arrival(self, session_id, ladder_prompt or "",
+                                                       parent_id=getattr(self.request_trace, "parent_id", None))
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -7507,6 +7516,10 @@ def make_handler(svc: Service):
                         # clears the previous request's id; behind cfg.enabled so the disabled path writes nothing
                         # at all.
                         svc.request_trace.session_id = extract_session_id(self.headers)
+                        # ...and the child mark: a subagent request names its PARENT in x-opencode-parent-
+                        # session-id / x-parent-session-id (2.1.4); the ladder records it on arrival for
+                        # child-first retirement and the TTL sweep.  A main request names none -> None.
+                        svc.request_trace.parent_id = extract_parent_id(self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
