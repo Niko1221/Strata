@@ -13,3 +13,12 @@ Changes made while porting into Strata are listed in the git history of the `src
 Later changes taken from Project Maya releases v1.1.18 to v1.1.26 (the same approach re-written onto Strata's engine,
 for example the long-prompt layer skip, the thinking budget, conversation slots) are covered by the same copyright
 and permission notice, in `LICENSE` beside this file.
+
+Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch f-041-maya-a), staged against Maya v1.1.42
+(MIT, same copyright and permission notice as above):
+- A0, restore points (`ds4_marks.hpp`, `Model::mark`, marks in `restore()` and in the conversation slots, the `marks=` /
+  `shared=` / `tail=` GEN keys): Project Maya #639 (needmorevram, 50a3313; `ds4_marks.hpp` also holds #668's tail-cost
+  logic by mw00, 8721412 and 66fb17b, taken whole and not wired in yet). Test: `tests/dsv41/marks_test.cpp`, from
+  Maya's `tests/ds4_marks_test.cpp`.
+- A1, the server side (`deepseek_restore_points`, `restore_point_settings`, `StrataEngine.restore_keys`,
+  `serve/test_ds4_restore_points.py`): Project Maya #639 (needmorevram) and v1.1.37 / v1.1.39 (mw00).

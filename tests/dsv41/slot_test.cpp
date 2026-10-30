@@ -82,8 +82,14 @@ static void meta_tests(const fs::path& dir) {
     CHECK(!sm::read(path, id, 1000, t, bytes, c));
     CHECK(sm::write(path, id, toks, 9, {4, 3, 2, 1}));
     CHECK(sm::read(path, id, 1000, t, bytes, c) && c.size() == 4);
-    CHECK(sm::write(path, id, toks, 9, {1, 2, 3, 4, 5}));
-    CHECK(!sm::read(path, id, 1000, t, bytes, c));
+    CHECK(sm::write(path, id, toks, 9, {1, 2, 3, 4, 5, 6, 7}));   // (the three and up to kMarksMax marks)
+    CHECK(sm::read(path, id, 1000, t, bytes, c) && c.size() == 7);
+    {
+        std::vector<int64_t> too_many;
+        for (int64_t i = 1; i <= 20; ++i) too_many.push_back(i);
+        CHECK(sm::write(path, id, toks, 9, too_many));
+        CHECK(!sm::read(path, id, 1000, t, bytes, c));
+    }
     // no tokens at all
     CHECK(sm::write(path, id, {}, 9, {}));
     CHECK(!sm::read(path, id, 1000, t, bytes, c));
