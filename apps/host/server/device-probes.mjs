@@ -62,6 +62,18 @@ export function parsePcieThroughput(raw) {
 }
 async function read(path) { try {return (await readFile(path,'utf8')).trim();} catch {return '';} }
 async function list(path) {try{return await readdir(path);}catch{return [];}}
+/** A server's remote-console chip (ASPEED), a virtual display or a framebuffer is not a graphics card: no maker we know and no memory of its own. */
+export function isComputeAdapter(vendor,vramBytes) { return vendor!=='unknown'||vramBytes>0; }
+/**
+ * The temperature of an amdgpu card from its hwmon inputs [{label, milli}]: the edge sensor (what nvtop and rocm-smi show), else the
+ * junction, else the first one that has a plausible value. Cards such as the Instinct line have no edge sensor. 0 is no reading.
+ */
+export function pickGpuTemperature(inputs) {
+  const ok=inputs.filter(i=>i.milli!==null&&i.milli>0&&i.milli<=150000);
+  const first=re=>ok.find(i=>re.test(i.label??''));
+  const chosen=first(/edge|^gpu/i)??ok.find(i=>!i.label)??first(/junction|hotspot/i)??ok.find(i=>!/mem/i.test(i.label??''));
+  return chosen?chosen.milli/1000:null;
+}
 export async function detectDrmGpus() {
   const result=[];
   for(const card of (await list('/sys/class/drm')).filter(n=>/^card\d+$/.test(n))) {
@@ -71,6 +83,7 @@ export async function detectDrmGpus() {
     const vendor={'0x1002':'amd','0x8086':'intel','0x10de':'nvidia'}[vendorId]??'unknown';
     const name=await probe('lspci',['-s',busId]);
     const bytes=number(await read(`${device}/mem_info_vram_total`));
+    if(!isComputeAdapter(vendor,bytes))continue;
     result.push({id:`drm:${busId}`,index:result.length,busId,vendor,name:name.replace(/^[^ ]+\s+[^:]+:\s*/,'')||`${vendor.toUpperCase()} GPU`,vramGb:bytes===null?0:round(bytes/1024**3,1),unified:vendor==='intel'&&!(bytes>0),backend:'vulkan',sensorPath:device});
   }
   return result;
@@ -89,7 +102,7 @@ export async function readGpuTelemetry(gpus, { transfer: wantTransfer = true, ru
     if(gpu.vendor==='nvidia')reading={...reading,pcieRxMbs:transfer.get(gpu.sensorIndex??gpu.index)??null};
     if(gpu.luid&&!nvidia.has(gpu.id)) {
       const counters=windowsGpuReading(gpu.luid);
-      if(counters)reading={...reading,utilizationPct:counters.utilizationPct,memoryUsedGb:round(counters.memoryUsedGb,2)};
+      if(counters)reading={...reading,utilizationPct:counters.utilizationPct,memoryUsedGb:round(counters.memoryUsedGb,2),temperatureC:counters.temperatureC??null};
     }
     if(gpu.sensorPath&&!nvidia.has(gpu.id)) {
       let temperature=null,power=null,powerLimit=null,fanPwm=null,clockHz=null;
@@ -99,12 +112,9 @@ export async function readGpuTelemetry(gpus, { transfer: wantTransfer = true, ru
         powerLimit ??= number(await read(`${folder}/power1_cap`));
         fanPwm ??= number(await read(`${folder}/pwm1`));          // 0-255, the fan's duty as the amdgpu driver reports it
         clockHz ??= number(await read(`${folder}/freq1_input`));  // the graphics clock in Hz
-        for(const input of inputs) {
-          const label=await read(`${folder}/${input.replace('_input','_label')}`);
-          if(label&&!/edge|gpu/i.test(label))continue;
-          const milli=number(await read(`${folder}/${input}`));
-          if(milli!==null&&milli>=0&&milli<=150000){temperature=milli/1000;break;}
-        }
+        const sensors=[];
+        for(const input of inputs)sensors.push({label:await read(`${folder}/${input.replace('_input','_label')}`),milli:number(await read(`${folder}/${input}`))});
+        temperature=pickGpuTemperature(sensors);
         if(temperature!==null)break;
       }
       const utilization=number(await read(`${gpu.sensorPath}/gpu_busy_percent`)),bytes=number(await read(`${gpu.sensorPath}/mem_info_vram_used`));

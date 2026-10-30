@@ -89,6 +89,16 @@ inline bool copy_all_fits(double lane_bytes, uint64_t ram_avail, double ram_marg
     return lane_bytes + ram_margin <= (double) ram_avail && lane_bytes <= commit_room;
 }
 
+// Whether the GPU's allocations come out of the same RAM the auto store would use (Strix Halo, DGX Spark's GB10): only a device the driver reports as
+// integrated, AND the free RAM fell by `uma_drop_gb` or more between the first store estimate (before the weights went to the GPU) and now.
+// A discrete card (2 x RTX 3090, 2 x A6000) never counts, however much RAM the pinned staging buffers, the page cache and the other programs took
+// meanwhile: v0.2.5..0.2.7 read every drop of 4 GB as unified memory and shrank a 256K context's store by 27 GB (issue #4147, 48 -> 17.8 GB).
+// avail_before / avail_now: free RAM in bytes (~0: unknown -> no).
+inline bool store_gpu_shares_ram(bool any_integrated_device, uint64_t avail_before, uint64_t avail_now, double uma_drop_gb = 4.0) {
+    if (!any_integrated_device || avail_before == ~uint64_t{0} || avail_now == ~uint64_t{0}) return false;
+    return avail_before > avail_now && (double) (avail_before - avail_now) / 1e9 >= uma_drop_gb;
+}
+
 // The chunked prompt's attention slab (rows a pass: the dense projections q_b / wo_a / wo_b are dequantized and multiplied once a slab, so
 // a 256-row slab dequantizes them 32 times for an 8K prompt).  `base`: the 0.2.6 rule (8 MB of rows / heads width, 256 on this model).
 // DS4_ATTN_SLAB=N (`env` >= 0): 0 gives the 0.2.6 rule back, N > 0 asks for that many rows (64..chunk, a multiple of 64).  Unset (`env` < 0):

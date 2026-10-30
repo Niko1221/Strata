@@ -244,9 +244,11 @@ MIN_DRIVER = 580                       # CUDA 13.0
 CUDA13_MIN_ARCH = 75                   # the oldest compute capability CUDA 13 compiles for (sm_75, RTX 20)
 CUDA12_ASSET = "strata-windows-x64-cuda12.zip" if WIN else "strata-linux-x64-cuda12.zip"
 CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9.79"]
-# CUDA 12.x minor-version compatibility (NVIDIA's table: Linux 525.60.13, Windows 527.41); the wheels match the 12.9.1
-# toolkit the CUDA 12 zip is built with (cuBLAS 12.9.1.4, runtime 12.9.79).  Not tested on such an old driver here.
-CUDA12_MIN_DRIVER = 528 if WIN else 525
+# The wheels match the 12.9.1 toolkit the CUDA 12 engine is built with (cuBLAS 12.9.1.4, runtime 12.9.79).
+# CUDA12_COMPAT_DRIVER is NVIDIA's minor-version-compatibility line (Linux 525.60.13, Windows 527.41): under it no CUDA 12 program starts, so
+# setup stops there.  It is NOT what setup promises: the ready-made packages are built with CUDA 12.9 and carry their own `min_driver`
+# (575.51 / 576.02), which `strata update` enforces.  cuda12_min_driver() reads that from the package or the feed (#4247 #4188).
+CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
@@ -744,6 +746,7 @@ DSV41_SHARED = {
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_LEGACY_FILES}
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
 DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
+DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
 MULTI_FILE_FAMILIES = {
     "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by IST-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
                    "about": "a big model that runs on a PC with a 12 GB card and 64 GB of RAM (the two official 2-bit versions: 257 or "
@@ -1348,7 +1351,10 @@ def cpu_info():
             txt = open("/proc/cpuinfo").read()
             mflags = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)
             if mflags is None:
-                # aarch64 lists Features, not the x86 flags line. The normal engine is the native one.
+                # aarch64 lists Features, not the x86 flags line, and no "model name": lscpu names the cores (a DGX Spark:
+                # Cortex-X925 + Cortex-A725). No AVX of any kind; the arm64 engine needs none.
+                cores = re.findall(r"^\s*Model name:\s*(.+)$", out(["lscpu"]), re.M)
+                name = " + ".join(dict.fromkeys(c.strip() for c in cores)) or (platform.processor() or "arm64 CPU")
                 return name, False, False
             flags = set(mflags.group(1).split())
             avx2 = "avx2" in flags
@@ -1384,6 +1390,12 @@ def _cpuid_floor() -> str:
 def is_arm64() -> bool:
     """An ARM64 CPU (DGX Spark / GB10, Grace): there is no AVX here, and no ready-made engine for it."""
     return platform.machine().lower() in ("aarch64", "arm64")
+
+
+def is_gb10(g) -> bool:
+    """A DGX Spark's GPU: the GB10 (compute capability 12.1), on arm64 Linux, with the CPU's memory as its own. The part the Spark settings
+    below were measured on (docs/DGX_SPARK_LINUX.md); any other unified-memory NVIDIA GPU gets the ordinary settings."""
+    return isinstance(g, dict) and bool(g.get("uma")) and str(g.get("arch")) == "121" and is_arm64() and sys.platform.startswith("linux")
 
 
 def cpu_floor(avx2: bool) -> str:
@@ -1484,15 +1496,13 @@ def gpus():
             except ValueError:
                 if not is_arm64():
                     raise   # as before on x86: a card whose memory nvidia-smi does not report is not listed
-                # GB10 unified memory: memory.total is [N/A]. The pool is the machine RAM.
-                mem_gb = 0.0
-                try:
-                    for info in open("/proc/meminfo"):
-                        if info.startswith("MemTotal:"):
-                            mem_gb = int(info.split()[1]) / 1024.0 / 1024.0
-                            break
-                except OSError:
-                    pass
+                # a DGX Spark (GB10): one memory for the CPU and the GPU, and nvidia-smi gives memory.total as [N/A]. Counted as
+                # Strix Halo's is (amd_apply_uma): the GPU may use all of the RAM but the OS's share, and none of it is extra room
+                # beside the RAM (dedicated_gb 0), so the low-RAM rules do not count it twice
+                shared = max(0.0, ram_gb() - UMA_OS_LEFT_GB)
+                found.append({"index": int(idx), "name": name, "vram_gb": shared, "arch": cc.replace(".", ""),
+                              "driver": drv, "uma": True, "dedicated_gb": 0.0, "shared_gb": shared})
+                continue
             found.append({"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
                           "driver": drv})
         except ValueError:
@@ -1637,6 +1647,35 @@ def named_gpus(gpu, gpus) -> list:
         return []
 
 
+_CUDA12_FLOORS: dict = {}
+
+
+def cuda12_min_driver(feed: bool = False) -> tuple[int, str, str]:
+    """(driver major, the package's figure such as "576.02", where it came from): the oldest NVIDIA driver the CUDA 12 engine runs on, read
+    from the engine package (installed, else - with `feed` - the signed feed, else the figure the packages carry) and not from a constant
+    of setup's own.  Remembered for the run.  Only a setup run asks the feed (a few seconds at most, once); a plain call reads the disk."""
+    got = _CUDA12_FLOORS.get(True) or _CUDA12_FLOORS.get(feed)
+    if got:
+        return got
+    from strata_control import driver_floor
+    roots = [engine_component.components_dir(), home() / "engine-feed"]
+    source = None
+    if feed and not acquisition.is_forbidden():
+        try:
+            from strata_cli import update_cmd
+            source = update_cmd._feed_source(argparse.Namespace(feed=None), home())
+        except Exception:                                  # noqa: BLE001 - no feed address: the built-in figure
+            source = None
+    try:
+        from strata_control import targets
+        platform_name = targets.host_platform()
+    except Exception:                                      # noqa: BLE001
+        platform_name = ""
+    figure, where = driver_floor.cuda12_floor(platform_name, roots=roots, feed_source=source)
+    _CUDA12_FLOORS[feed] = got = (driver_floor.major(figure), figure, where)
+    return got
+
+
 def cuda_choice(archs, cuda=None, driver=None):
     """The CUDA toolkit of one model's engine: (12 or 13, why).  13 (the ready-made engine) unless a card is older
     than CUDA 13 supports (Pascal / Volta: CUDA 13 cannot compile for them) - one engine runs per model, so its oldest
@@ -1652,10 +1691,22 @@ def cuda_choice(archs, cuda=None, driver=None):
     if old:
         return 12, (f"sm_{old[0]} is older than CUDA 13 supports (it dropped Pascal and Volta): this model runs the "
                     "experimental CUDA 12 engine")
-    if driver and CUDA12_MIN_DRIVER <= int(driver) < MIN_DRIVER:      # #3843: a driver too old for CUDA 13 still runs the CUDA 12 engine
+    if driver and CUDA12_COMPAT_DRIVER <= int(driver) < MIN_DRIVER:      # #3843: a driver too old for CUDA 13 still runs the CUDA 12 engine
         return 12, (f"the NVIDIA driver {driver} is older than CUDA 13 needs ({MIN_DRIVER}): this model runs the CUDA 12 engine "
-                    f"(it works with driver {CUDA12_MIN_DRIVER} or newer; a newer driver from https://www.nvidia.com/drivers gives the CUDA 13 engine)")
+                    f"(a newer driver from https://www.nvidia.com/drivers gives the CUDA 13 engine)")
     return 13, None
+
+
+def cuda12_driver_warning(driver) -> str | None:
+    """A plain warning when the NVIDIA driver is older than the ready-made CUDA 12 engine package needs, or None.  The number is the package's
+    own (cuda12_min_driver), the same one `strata update` enforces, so setup no longer says "works" where the update says "no engine" (#4247 #4188).
+    Recommend, never force: setup goes on (an engine compiled here, or one the person brings, may still run)."""
+    floor, figure, where = cuda12_min_driver()
+    if not driver or int(driver) >= floor:
+        return None
+    return (f"the NVIDIA driver {driver} is older than the ready-made CUDA 12 engine package needs ({figure}, {where}): `strata update` will not "
+            "install that package on this PC. Update the driver from https://www.nvidia.com/drivers"
+            + ("; setup compiles the engine here instead, which can run on an older driver" if not WIN else ""))
 
 
 def engine_dir(toolkit=13) -> Path:
@@ -5152,7 +5203,10 @@ def prebuilt_bases(url_base) -> list[str]:
     base = url_base if url_base.endswith(("/", "\\")) else url_base + "/"
     if base != PREBUILT_URL:
         return [base]
-    return [PREBUILT_TAG_URL.format(version=source_version()), base]
+    version = source_version()
+    if version == "0":                                  # no source tree to name a release by (the packaged Terminal): the latest release
+        return [base]
+    return [PREBUILT_TAG_URL.format(version=version), base]
 
 
 PREVIOUS_ENGINE = ".previous"
@@ -5257,6 +5311,13 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             return eng
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
         info.replace(eng / "BUILD.json.prev")   # kept for the .previous copy
+    if is_arm64() and sys.platform.startswith("linux"):
+        # a DGX Spark: the release has no flat engine zip for it (and the CUDA 12 engine is x86). The signed feed has the linux-aarch64
+        # package when the release carries one; without it the caller compiles (spark/build_engine.sh does the same by hand)
+        got = engine_from_feed(eng, updating) if int(toolkit) != 12 else None
+        if got is None:
+            warn(f"no ready-made engine for {platform.machine()} in the update feed" + ("" if updating else ": compiling it here, once"))
+        return got
     if not url_base:
         return None
     eng.mkdir(exist_ok=True)
@@ -5585,8 +5646,9 @@ def install_build_tools(gpu, yes):
                 fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
             deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
-                     deb, "CUDA repository key")
+            # NVIDIA's arm64 server repository is "sbsa" (a DGX Spark; DGX OS normally has the toolkit already)
+            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/"
+                     f"{'sbsa' if is_arm64() else 'x86_64'}/cuda-keyring_1.1-1_all.deb", deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
             if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
@@ -6661,8 +6723,13 @@ def installed_configs():
 
 
 def source_version() -> str:
-    """The engine version the source tree builds (CMakeLists.txt's project version)."""
-    m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
+    """The engine version the source tree builds (CMakeLists.txt's project version).  "0" when there is none to read: the packaged
+    Terminal carries no CMakeLists.txt (it ships VERSION and BUNDLE.json), and a missing file was a FileNotFoundError out of
+    prebuilt_bases() that ended the whole setup (#4188)."""
+    try:
+        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return "0"
     return m.group(1) if m else "0"
 
 
@@ -6680,8 +6747,8 @@ def stale_binary(exe) -> bool:
     """#2054: the engine binary is of another version than this source tree builds.  A BUILD.json that carries the
     source's hash and version cannot be trusted alone: a build that stopped (a host compiler the toolkit rejects) can
     leave the old binary beside a stamp of the new source, and nothing would ever compile it again."""
-    v = binary_engine_version(exe)
-    return v is not None and v != source_version()
+    v, source = binary_engine_version(exe), source_version()
+    return v is not None and source != "0" and v != source      # "0": no source tree to compare with (the packaged Terminal)
 
 
 def engine_version(exe: Path) -> tuple:
@@ -8213,6 +8280,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     pinned shards (or your own, --gguf-dir), the engine's pack folder, the tokenizer and chat template from the GGUF, the config.  The
     engine places the experts itself (as many as the cards hold in graphics memory, the rest computed on the CPU from the files)."""
     from strata_control import dsv41_fit
+    mac = sys.platform == "darwin"                          # an Apple Silicon Mac (0.2.7.1): the Metal build of the DeepSeek engine, one pool of memory
     fam = MULTI_FILE_FAMILIES[family]
     say()
     say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
@@ -8250,7 +8318,9 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     shared_dir = dsv41_shared_dir(a, fam)
     # Pictures are on by default (owner rule): the engine reads them with its own vision tower, which the pack carries when the tower's weights
     # (mmproj-BF16.gguf, a shared file) were there when it was made.  --vision no leaves the file out and the pack text-only.
-    ds_vision = "off" if a.vision in ("no", "off") else "on"
+    ds_vision = "off" if a.vision in ("no", "off") or (mac and not DSV41_MAC_VISION) else "on"
+    if mac and not DSV41_MAC_VISION and a.vision not in ("no", "off"):
+        warn("pictures are off for DeepSeek on a Mac: its picture reader has not been run on the Metal engine yet, so it reads text only")
     shared_names = list(md.get("shared", [])) + ([DSV41_MMPROJ] if ds_vision == "on" else [])
     shared = [dsv41_find_shared(a, n, folder, shared_dir) for n in shared_names]
     mmproj_file = shared[len(md.get("shared", []))] if ds_vision == "on" else None
@@ -8283,7 +8353,14 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         if "free disk space" in w:
             continue                                                      # the disk is a hard limit, said below
         warn(w)
-    if plan["verdict"] == "spills":
+    if plan["verdict"] == "spills" and mac:
+        confirm_risk(f"this Mac's memory holds about {plan['vram_experts_gb']:.0f} GB of {model}'s {plan['experts_gb']:.0f} GB of experts and the "
+                     f"other {plan['streamed_gb']:.0f} GB are read from the SSD for every word: much slower than on a Mac with 128 GB (a Mac this "
+                     "small was not measured)", bool(a.model), a.yes,
+                     f"{model} is slow on a Mac with {ram:.0f} GB", f"a Mac with 64 GB or more suits it; --model {model} --yes "
+                     "installs it anyway", "  Install it anyway?")
+        warn(f"installing {model} with {ram:.0f} GB of memory, as you chose")
+    elif plan["verdict"] == "spills":
         confirm_risk(f"{model} runs best with about {plan['ram_needed_gb']:.0f} GB of RAM beside this PC's graphics memory and this PC has "
                      f"{ram:.0f} GB: most of its experts are read from the SSD while it answers (slow)", bool(a.model), a.yes,
                      f"{model} needs about {plan['ram_needed_gb']:.0f} GB of RAM", f"more RAM or cards fix it; --model {model} --yes "
@@ -8331,8 +8408,11 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             say("  Details for developers: build it with cmake -DSTRATA_BUILD_DSV41=ON -DCMAKE_CUDA_ARCHITECTURES=<your card: 86 RTX 30, 89 RTX 40, 120 RTX 50> "
                 "and point STRATA_DSV41_EXE at it (docs/DEEPSEEK41.md, \"Building the engine for your card\").")
         fail("DeepSeek's engine is not available for this computer yet",
-             "Supported graphics cards: NVIDIA RTX 30, 40 and 50 series, the Radeon AI PRO R9700, and a Ryzen AI Max (Strix Halo) on "
-             "Windows with the AMD DeepSeek engine package. " + dsv41_manual_steps(eng)
+             ("It runs on an Apple Silicon Mac with the Metal DeepSeek engine package from the Strata update feed. " if mac else
+              "Supported graphics cards: NVIDIA RTX 30, 40 and 50 series, the Radeon AI PRO R9700, and a Ryzen AI Max (Strix Halo) on "
+              "Windows with the AMD DeepSeek engine package. "
+              + ("The DGX Spark (GB10) builds its own: spark/build_engine.sh puts strata-dsv41 beside the engine (docs/DGX_SPARK_LINUX.md). "
+                 if is_arm64() else "")) + dsv41_manual_steps(eng)
              + " Or update Strata later (a newer version may add your card), pick another model, or build the engine for your card yourself "
              "(docs/DEEPSEEK41.md, \"Building the engine for your card\"). Nothing has been downloaded.")
     ok(f"engine: {exe}")
@@ -8417,8 +8497,10 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     # --dspark-conf 0.65: the drafts' confidence floor (H100 replay, DSPARK-DEFAULTS.md: within 0.01-0.02 of the per-class best,
     # never below 0.3).  The engine has no flag for the draft block (3 in the same table): it reads the block size from the pack,
     # so only the floor is written.
-    args = ["--pack", str(pack), "--max-context", str(ctx), "--eos", "1", "--vision", ds_vision, "--dspark", "auto",
-            *(["--dspark-conf", "0.65"] if md.get("recipe") == "ista" else []), *dsv41_prefill_chunk_args(cards, ram),
+    # A Mac (0.2.7.1): the drafter is not loaded at all (--dspark none). It was exact there but not faster (15.1 and 11.0 tokens/s against 15.3
+    # without it on the M5 Max), and the engine's "auto" would load it on a 128 GB Mac: its 7 GB of experts take memory the trunk's experts need.
+    args = ["--pack", str(pack), "--max-context", str(ctx), "--eos", "1", "--vision", ds_vision, "--dspark", "none" if mac else "auto",
+            *(["--dspark-conf", "0.65"] if md.get("recipe") == "ista" and not mac else []), *dsv41_prefill_chunk_args(cards, ram),
             *plan["args"]]
     env = dsv41_config_env(cards)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
@@ -8429,6 +8511,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         cfg["cuda"] = 12
     if hip:
         cfg["backend"] = "hip"
+    if mac:
+        cfg["backend"] = "metal"
     idx = [c["index"] for c in cards]
     if len(idx) > 1 or a.gpu is not None or a.gpus:
         cfg["gpu"] = idx if len(idx) > 1 else idx[0]
@@ -8708,6 +8792,30 @@ def mac_control_setup(a) -> int:
     return 0
 
 
+def mac_dsv41_setup(a) -> int:
+    """DeepSeek-V4.1-Flash on an Apple Silicon Mac (the app and `strata launch`, Control mode; 0.2.7.1): the model files and the DeepSeek
+    engine package (macOS arm64, Metal) from the signed feed.  The steps are install_dsv41's; this only checks the Mac and hands over its
+    one pool of unified memory as the "card" the fit plan reads (strata_control/dsv41_fit.py, mac_plan)."""
+    from strata_control import mac_fit as MF
+    step(1, "checking your Mac")
+    info = MF.mac_info()
+    ram = float(info["ram_gb"] or ram_gb())
+    ok(f"{info['chip']}, {ram:.0f} GB unified memory, macOS {info['macos'] or '?'}")
+    problems = MF.mac_problems(info, need_compiler=False)       # the app compiles nothing: no Command Line Tools needed
+    for p in problems:
+        warn(p)
+    data, _elsewhere = data_folder_for(a)
+    if not a.models_dir:
+        a.models_dir = str(data / "models")
+    ok(f"free disk: {free_gb(data if data.exists() else home()):.0f} GB at {data}")
+    if a.check:
+        return 1 if problems else 0
+    if problems:
+        fail(problems[0])
+    gpu = {"index": 0, "name": info["chip"], "vendor": "apple", "vram_gb": 0.0, "unified_gb": ram, "usable": True}
+    return install_dsv41(a, a.family, gpu, False, False, 0, False, a.port or 8080, ram, None, [gpu])
+
+
 def main() -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
@@ -8862,6 +8970,8 @@ def main() -> int:
     if a.inspect:                                      # headers only: nothing is installed
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if sys.platform == "darwin" and CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
+        if a.family in MULTI_FILE_FAMILIES:            # DeepSeek-V4.1-Flash: its own engine package, the generic DeepSeek install
+            return mac_dsv41_setup(a)
         return mac_control_setup(a)
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
         return sycl_setup(sys.argv[1:])
@@ -9110,14 +9220,20 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        ok(f"GPU: {gpu['name']}, " + (f"unified memory ({gpu['vram_gb']:.0f} GB usable by the GPU)" if gpu.get("uma") else f"{gpu['vram_gb']:.1f} GB VRAM")
+           + f", compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda, driver_major(gpu))   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
-        min_driver = CUDA12_MIN_DRIVER if cuda_tk == 12 else MIN_DRIVER
+        min_driver = CUDA12_COMPAT_DRIVER if cuda_tk == 12 else MIN_DRIVER
         if driver_major(gpu) < min_driver:
-            fail(f"the NVIDIA driver is too old ({gpu['driver']}; {min_driver} or newer is needed)",
+            fail(f"the NVIDIA driver is too old ({gpu['driver']}; {min_driver} or newer is needed)"
+                 + ("" if cuda_tk == 12 else f" (the CUDA 12 engine package needs {cuda12_min_driver()[1]} or newer, {cuda12_min_driver()[2]})"),
                  "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again")
+        if cuda_tk == 12:
+            cuda12_min_driver(feed=True)                   # the CUDA 12 package's driver floor: the installed package, else the signed feed (#4247)
+            if note := cuda12_driver_warning(driver_major(gpu)):
+                warn(note)
     if gpu["vram_gb"] < 11:
         warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
              + ": Strata will run, but most experts stay on the CPU and it will be slow")
@@ -9144,7 +9260,8 @@ def main() -> int:
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
     ok(f"CPU: {cpu} ({'ARM64' if is_arm64() else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
-    link = None if hip else pcie_link(int(gpu.get("index", 0)))
+    # (a unified-memory GPU - a DGX Spark's GB10 - is on the CPU's own link, not PCIe: nvidia-smi's "1.0 x1" there means nothing)
+    link = None if hip or gpu.get("uma") else pcie_link(int(gpu.get("index", 0)))
     if link is not None:
         line, problem = pcie_lines(link)
         ok(line)
@@ -9154,11 +9271,11 @@ def main() -> int:
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
     if is_arm64():
-        # DGX Spark / GB10 (#3622): no ready-made ARM64 engine; setup compiles it here. A warning, not a stop.
-        warn("ARM64 CPU: setup compiles the engine on this PC (once). The CPU's share of the experts runs on ggml-cpu's "
-             "NEON kernels. Tested: GGUF packs with i-quant experts (IQ3_S). The Q2_0 and Gyro packs need the x86 "
-             "kernels and do not run on this CPU. This port is new and has not been measured against an x86 PC")
-        a.build = True
+        # DGX Spark / GB10 (#3622): the engine is the linux-aarch64 package of the signed feed when the release has one, else compiled here
+        # (spark/build_engine.sh). A warning, not a stop.
+        warn("ARM64 CPU (a DGX Spark): the CPU's share of the experts runs on ggml-cpu's NEON kernels. Tested: Qwen3.8-Flash-Next IQ3_S and "
+             "the NVFP4 pack, and DeepSeek-V4.1 2.00 bpw, on one DGX Spark (GB10). The Q2_0 and Gyro packs need the x86 kernels and do not "
+             "run on this CPU")
     elif not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
@@ -9752,6 +9869,26 @@ def main() -> int:
            "experts.bin on the SSD as needed")
     elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
+    elif is_gb10(gpu):
+        # a DGX Spark: the RAM copy of the experts and the GPU's cache are the same memory. Mapped, every expert fits in the cache (NVFP4
+        # on a 128 GB GB10: 24576 of 24576 slots, not 13702; chat decode 44.4 against 40.6 tok/s, 16K prompt 1471 against 1397)
+        args += ["--mmap-experts"]
+        ok("unified memory: the experts are read from the model files in place (--mmap-experts), so the GPU's cache holds them "
+           "instead of a second copy in RAM")
+        # the measured settings of this part (docs/DGX_SPARK_LINUX.md): the 32,768-token prompt chunk (auto's 8,192 measured 2-6% slower
+        # here); the draft layer as 4-bit copies (+3.5% decode, 3 paired rounds, answers identical: the drafter's proposals are verified
+        # by the target); one norm per hyper-connection stream in the draft layer (llama.cpp's graph: acceptance 0.60 -> 0.63, decode +4.3%
+        # [1.009, 1.078], 5 of 5 greedy answers identical)
+        if "--prefill" in args:
+            args[args.index("--prefill") + 1] = "auto:32768"
+        if "--mtp" in args:
+            args += ["--mtp-q4", "all", "--mtp-hnorm", "stream"]
+            ok("prompt chunk 32,768 (--prefill auto:32768), the draft layer as 4-bit copies (--mtp-q4 all) and one norm per "
+               "hyper-connection stream in it (--mtp-hnorm stream): measured faster on this part, the answers are unchanged")
+        # the language is the user's choice: the default subset keeps Chinese, Japanese and Korean drafts, the English one measured +3.1%
+        # decode on English prompts here (16 samples a cell, 90% interval [1.018, 1.049])
+        say("  Tip: for English or code only, --draft-vocab en measured +3.1% decode on this part (the default keeps Chinese, Japanese "
+            "and Korean drafts).")
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
         tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
@@ -9958,6 +10095,14 @@ def main() -> int:
             cfg["gpu_order"] = "as_given"
         ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
         recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
+        if hip and a.layer_split in (None, "auto"):    # four Radeon AI PRO R9700 cards and Qwen3.8 IQ3_S: the measured serving profile
+            try:                                       # (strata_control/amd_four_card.py); what the person chose always wins
+                from strata_control import amd_four_card
+                for line in amd_four_card.apply([{"name": c.get("name"), "vram_gb": c.get("vram_gb"), "vendor": "amd"} for c in chosen],
+                                                cfg, parallel_given=a.parallel is not None):
+                    ok(line)
+            except Exception as e:                     # noqa: BLE001 - a profile is never a reason to stop setup
+                say(f"  (the four-card profile was not applied: {e})")
     if getattr(a, "_roles", None):                     # the roles themselves (strata_control/gpu_roles.py); "gpu" above is their mirror
         final = cfg["gpu"] if isinstance(cfg.get("gpu"), list) else [cfg["gpu"]]      # what the checks above left (a model that cannot share keeps one card)
         main = final[-1]
