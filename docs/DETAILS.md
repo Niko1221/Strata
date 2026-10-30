@@ -294,7 +294,11 @@ and on Windows. `STRATA_PREFILL_HOST_PLAN=0` turns it off; `STRATA_SSD_GBPS` ove
 With `--stats` the engine prints the tiers of the decode (`expert tiers`: blobs from the RAM copy, blobs and MB from the
 files, read time; `routing prefetch`: how many file reads had been warmed). The server log has the same per request, and
 `GET /metrics` lists `ram_blobs`, `file_blobs`, `file_mb`, `drafts_offered` and `drafts_accepted` per recent request, with
-`totals` since the start. `hit_rate` is the VRAM share of the experts looked up; experts the GPU reads over PCIe
+`totals` since the start. The same counts are kept next to the run config as `<the run config's name>.totals.json`,
+so a restart does not lose them (`--totals-file none` counts one start only); `--totals-reset` closes that
+window so one session's cost can be read on its own - the counts start from zero and the window that ended
+is kept beside them as `<the run config's name>.totals.prev.json`.
+`hit_rate` is the VRAM share of the experts looked up; experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share` is their
 share of all routed experts. The Monitor tab shows both. The request list in the Monitor tab also shows the prompt's own speed: what the cache already held is not read
 again, so it is the fresh tokens (`prompt_tokens` minus `reused`) over the prompt time (`prompt_ms`), and a request that read no

@@ -77,6 +77,7 @@ from strata_control import draft_layer  # noqa: E402
 from strata_control import drafting  # noqa: E402
 from strata_control import user_args  # noqa: E402
 from strata_control import gpu_roles  # noqa: E402
+from strata_control import atomic as _atomic  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -3976,6 +3977,72 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+# ------------------------------------------------------------------------------------ lifetime token counters
+# The web page's Monitor tab prints Service.totals: "Since <day> <time>: N requests · X prompt tokens read at
+# Y tok/s (Z reused) · W written at V tok/s". Left alone that window is one start of the server, so every restart
+# loses it (#35). Kept in a small file next to the run config the way the shared Chat settings are kept
+# (Service.shared_path), the counters cover every start since that file was made: the file is written when a
+# request ends, so a restart or a crash loses only a request that never ended. The prompt and decode times are
+# kept with the counts so the printed speeds stay averages of the whole window, not of this start only.
+TOTALS_KEYS = ("requests", "prompt_tokens", "reused", "output_tokens", "prompt_ms", "decode_ms",
+               "drafts_offered", "drafts_accepted")
+# The parser's own counts (tool_calls_from_reasoning, stray_think_closers, tool_args_repaired, tool_calls_unread)
+# are not kept: they are diagnostics about a reply's shape, not a use to be billed.
+
+
+def totals_path_of(given, config):
+    """Where the lifetime counters live: --totals-file, else "<the run config's name>.totals.json" next to it,
+    else nowhere. "none" or "off" turns the file off, which leaves the counters at one start as they were."""
+    asked = (given or "").strip()
+    if asked.lower() in ("none", "off"):
+        return None
+    if asked:
+        return asked
+    return str(Path(config).with_suffix("")) + ".totals.json" if config else None
+
+
+def totals_load_file(path):
+    """What an earlier start wrote ({} when there is no file, or it cannot be read: a first start, or a bad disk)."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def totals_add_saved(totals: dict, saved) -> dict:
+    """Add an earlier start's counts to `totals` and move its window back to the first start the file remembers.
+    Only numbers count: a key the file has never heard of, or a value it got wrong, changes nothing."""
+    if isinstance(saved, dict):
+        for key in TOTALS_KEYS:
+            value = saved.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+        since = saved.get("since")
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and since and since < totals["since"]:
+            totals["since"] = since
+    return totals
+
+
+def totals_write_file(path, totals: dict) -> None:
+    """The counters on their own, through a neighbouring temporary file so a reader never sees half of them."""
+    saved = {key: totals.get(key, 0) for key in TOTALS_KEYS}
+    saved["since"] = totals.get("since")
+    _atomic.write_text(path, json.dumps(saved), encoding="utf-8")
+
+
+def totals_reset_file(path):
+    """A costing window closed, so one session's cost can be read on its own: the kept counts move aside to
+    `<the same name>.prev.json` and this start begins from zero instead of adding itself to them.  The window that
+    just ended stays readable rather than deleted.  No file (a first start, or `--totals-file none`) is nothing to
+    move and answers None; an older `.prev.json` is overwritten, because the window before this one is the useful one."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    was = p.with_name(p.stem + ".prev.json")
+    os.replace(p, was)
+    return was
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4003,6 +4070,7 @@ class Service:
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
+        self.totals_path = None            # the counters between starts, next to the run config (None: this start)
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
@@ -5730,6 +5798,12 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            if self.totals_path:                    # keep them for the next start. Written when a request
+                                try:                                # ends, so a crash loses no more than the last one did;
+                                    totals_write_file(self.totals_path, self.totals)
+                                except OSError as e:                # a full or read-only disk must not cost an answer,
+                                    print(f"[strata] could not save the token counters: {e}", flush=True)
+                                    self.totals_path = None         # nor every answer after it: try no more
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
@@ -8772,6 +8846,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--totals-file", default="", metavar="PATH",
+                    help="keep the token counts the Monitor tab prints in this file between starts, so a restart "
+                         "does not lose them (default: \"<the run config's name>.totals.json\" next to --config; "
+                         "\"none\": count this start only)")
+    ap.add_argument("--totals-reset", action="store_true",
+                    help="close the costing window: the counts the Monitor prints start from zero at this start, and "
+                         "the window that just ended is kept beside the file as \"<name>.totals.prev.json\"")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -9211,6 +9292,14 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+    svc.totals_path = totals_path_of(a.totals_file, a.config)   # the counters between starts (the Monitor tab)
+    if svc.totals_path and a.totals_reset:
+        was = totals_reset_file(svc.totals_path)      # a costing window closed, so one session's cost reads alone
+        if was:
+            print(f"[strata] the Monitor's counts start from zero at this start; the window before it is "
+                  f"{was.name}", flush=True)
+    if svc.totals_path:
+        totals_add_saved(svc.totals, totals_load_file(svc.totals_path))
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
