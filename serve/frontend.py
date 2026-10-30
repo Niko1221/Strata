@@ -1095,7 +1095,7 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False):
+                 recover: bool = False, declared_only: bool = False, undeclared_calls: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -1106,6 +1106,12 @@ class OutputParser:
         # the client has no tool to run).  The Responses route leaves it off: a Codex compaction request keeps its
         # conversation's tools in the prompt only, and its calls come back as before.
         self.declared_only = declared_only
+        # #4622 (opt-in, the config's "undeclared_tool_calls": "call"): with tools declared, a well-formed call for a name
+        # the request did not declare comes back as a call, as before 0.2.2, so a harness with its own unknown-tool
+        # answer can tell the model and let it retry.  Off, it stays text (#3075).  Only the template's own
+        # `<function=NAME>` form: a drifted opener (#3441) still needs a declared name.  A request that declared no tools
+        # is not changed.
+        self.undeclared_calls = undeclared_calls
         # A declared namespace.member tool is also accepted as namespace__member (PR #3556),
         # namespace=member (Qwen writes the <function= tag's equals sign into the name),
         # namespace_member (one underscore dropped), and the bare member when exactly one
@@ -1704,7 +1710,8 @@ class OutputParser:
                             out.append(Event("content", self._track(self.buf[:j])))
                             self.buf = self.buf[j:]
                         return out
-                    if gt >= 0 and (nl < 0 or gt < nl) and not self._callable(after[len(FUNC_START):gt].strip()):
+                    if (gt >= 0 and (nl < 0 or gt < nl) and not (self.undeclared_calls and self.schemas)
+                            and not self._callable(after[len(FUNC_START):gt].strip())):
                         self.unread += 1                 # logged by the server: otherwise "the model ignored my tool" is the only clue
                         if len(self.unread_names) < 5:
                             self.unread_names.append(after[len(FUNC_START):gt].strip()[:80])
