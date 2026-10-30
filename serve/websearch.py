@@ -18,9 +18,11 @@ search(query, cfg) -> [{"title", "url", "snippet"}]; SearchError carries a reada
 from __future__ import annotations
 
 import html as _html
-import os
+import ipaddress
 import json
+import os
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,8 +38,11 @@ class SearchError(Exception):
     pass
 
 
-def _get(url, headers=None, timeout=TIMEOUT_S):
+def _get(url, headers=None, timeout=TIMEOUT_S, check=None):
+    """GET; with redirect-check set, a 3xx hop is re-validated so an engine base cannot bounce the
+    fetch onto an internal host (M3 TOCTOU redirect arm, via the installed validating opener)."""
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
+    setattr(req, "strata_check", check)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
 
@@ -62,6 +67,88 @@ def _http_url(url, what):
     return u
 
 
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")     # shared/CGNAT space (RFC 6598)
+
+
+def _is_internal_ip(ip):
+    """Blocked for page fetches: loopback, private LAN, link-local (cloud metadata 169.254.169.254
+    and its fe80::/10 peer), CGNAT, multicast, reserved and unspecified addresses. IPv4-mapped IPv6
+    is classified by its embedded IPv4, so the rule does not depend on the Python version's
+    is_private behaviour for mapped addresses (Review M3 harden)."""
+    if (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast
+            or ip.is_reserved or ip.is_unspecified):
+        return True
+    if ip.version == 4:
+        return ip in _CGNAT
+    mapped = ip.ipv4_mapped
+    return mapped is not None and _is_internal_ip(mapped)
+
+
+def _resolved_ips(host, what):
+    if not host:
+        raise SearchError(f"{what} has no host")
+    try:
+        return [str(a[4][0]) for a in socket.getaddrinfo(host, None)]
+    except OSError as e:
+        raise SearchError(f"{what} host cannot be resolved ({host!r})") from e
+
+
+def _public_target(url, what):
+    """A page URL the server fetches must reach a public address: loopback/private/link-local
+    targets are refused, so a hostile query or engine response cannot turn this server into a
+    reader of internal services (SSRF, Review M3).
+
+    Known residual: the check and the later urlopen are decoupled (TOCTOU). A public page that
+    redirects (3xx) onto an internal host is followed by urllib without re-validation, and a page
+    whose DNS rebinds between check and connect can also point at an internal address. Closing
+    that needs connection-time IP pinning and is out of scope for this small hardening patch."""
+    u = _http_url(url, what)
+    for ipstr in _resolved_ips(urllib.parse.urlparse(u).hostname, what):
+        if _is_internal_ip(ipaddress.ip_address(ipstr.split("%")[0])):
+            raise SearchError(f"{what} is not a public address (refused {ipstr})")
+    return u
+
+
+def _base_url(url, what):
+    """A config base (SearXNG) may be loopback or a LAN host, but never link-local/multicast/
+    reserved: 169.254/16 is the cloud-metadata probe space and fe80::/10 its IPv6 peer (Review M3)."""
+    u = _http_url(url, what)
+    for ipstr in _resolved_ips(urllib.parse.urlparse(u).hostname, what):
+        ip = ipaddress.ip_address(ipstr.split("%")[0])
+        if (ip.is_link_local or ip.is_multicast or ip.is_unspecified
+                or (ip.is_reserved and not ip.is_loopback)):
+            # the IPv6 loopback ::1 is flagged reserved by ipaddress, but a config base may be loopback
+            raise SearchError(f"{what} may not be a link-local or multicast address (got {ipstr})")
+    return u
+
+
+class _ValidatingRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib follows 3xx redirects by default; this re-validates each hop so a public page (or
+    engine base) cannot redirect the server onto an internal/metadata host. The hop rule lives on
+    the request (req.strata_check); requests without it are left unrestricted so unrelated fetches
+    are unaffected. Closes the redirect arm of the M3 TOCTOU."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check = getattr(req, "strata_check", None)
+        if check is not None:
+            # resolve relative and protocol-relative Locations against the current URL first, then
+            # validate the absolute target (the raw Location is often a path like "/x"; checking it
+            # unresolsed would false-refuse legitimate same-host redirects, and checking it resolved
+            # also catches protocol-relative "//internal/..." hops)
+            target = urllib.parse.urljoin(req.full_url, newurl)
+            check(target, "a redirect target")            # raises SearchError on internal targets
+            newurl = target
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if check is not None and new_req is not None:
+            setattr(new_req, "strata_check", check)       # keep validating on every hop
+        return new_req
+
+
+# production urlopen must carry the validating redirect handler so 3xx hops are re-checked; tests
+# replace w.urllib.request.urlopen with a fake and are unaffected by this global default opener.
+urllib.request.install_opener(urllib.request.build_opener(_ValidatingRedirect()))
+
+
 SNIPPET_CAP = 2000   # one hostile or oversized page must not eat the search-injection budget
 
 
@@ -80,10 +167,10 @@ def _result_rows(data, key, name):
 
 
 def _searxng(query, cfg, n):
-    base = _http_url((cfg.get("url") or DEFAULT_SEARCH_URL).rstrip("/"), "the SearXNG base")
+    base = _base_url((cfg.get("url") or DEFAULT_SEARCH_URL).rstrip("/"), "the SearXNG base")
     q = urllib.parse.urlencode({"q": query, "format": "json"})
     try:
-        data = json.loads(_get(f"{base}/search?{q}"))
+        data = json.loads(_get(f"{base}/search?{q}", check=_base_url))
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"SearXNG at {base} is not reachable ({e}); start it or pick another engine") from e
     out = []
@@ -342,6 +429,7 @@ def _read_page(result: dict, budget: int) -> tuple[str, bool]:
     """Fetch one result page -> (readable text, ok). On failure the text is a short readable reason."""
     try:
         req = urllib.request.Request(result["url"], headers={"User-Agent": UA, "Accept": "text/html"})
+        setattr(req, "strata_check", _public_target)
         with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
             if "html" not in ctype:
@@ -361,6 +449,7 @@ def _read_page_jina(result: dict, budget: int) -> tuple[str, bool]:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/plain",
                                                    "X-Return-Format": "text"})
+        setattr(req, "strata_check", _base_url)
         with urllib.request.urlopen(req, timeout=JINA_TIMEOUT_S) as r:
             text = r.read(PAGE_MAX_BYTES).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
@@ -399,6 +488,11 @@ def _read_with_reader(result: dict, budget: int, reader: str) -> tuple[str, str 
     if not url.lower().startswith(("http://", "https://")):
         # a poisoned result (file://, data:, javascript:) must not turn page reading into a local file reader
         return "(refused: the result URL is not an http(s) page)", None, False
+    try:
+        _public_target(url, "the result page")
+    except SearchError as e:
+        # loopback/private/link-local result pages would make this server read internal services (Review M3)
+        return "(" + str(e) + ")", None, False
     if reader == "always":
         jina, jok = _read_page_jina(result, budget)
         if jok:
@@ -447,6 +541,8 @@ def search(query: str, cfg: dict | None = None) -> list[dict]:
             budget_total = int(n_ctx * (0.10 if limit else 0.25) * 3)
         else:
             budget_total = PAGE_CHARS * k
+        # the 1500-char floor is intentional: it keeps a read of a near-empty page from being cut to
+        # a useless sliver on small windows; the model fleet (64K+) never reaches it (Review M1)
         if limit:
             try:
                 per_page = max(500, min(100_000, int(cfg.get("page_chars") or PAGE_CHARS)))

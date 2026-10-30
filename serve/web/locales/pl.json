@@ -323,6 +323,7 @@
   "ws.modeOn": "Wł.",
   "ws.noResults": "brak wyników",
   "ws.offByDefault": "Wyszukiwanie w sieci jest domyślnie wyłączone; gdy włączone, wychodzi tylko zapytanie.",
+  "ws.onEmpty": "Wyszukiwanie w sieci jest włączone – tylko zapytanie trafia do {engine}.",
   "ws.onJinaAlways": "  Każda strona jest czytana przez r.jina.ai - strona trzecia widzi te adresy URL.",
   "ws.onJinaFallback": "  Strony, których nie da się przeczytać bezpośrednio, przechodzą przez r.jina.ai - strona trzecia widzi te adresy URL.",
   "ws.onLanCaution": "  Uwaga: ten serwer jest osiągalny poza tym komputerem (nasłuchuje na 0.0.0.0 lub adresie LAN) - zapytania i klucze API wyszukiwarek przechodzą przez twoją sieć w czystym HTTP, a bez klucza api_key każde urządzenie może użyć tego wyszukiwania.",

@@ -323,6 +323,7 @@
   "ws.modeOn": "An",
   "ws.noResults": "keine Ergebnisse",
   "ws.offByDefault": "Websuche ist standardmäßig aus – ist sie an, geht nur die Suchanfrage nach draußen.",
+  "ws.onEmpty": "Websuche ist an – nur die Suchanfrage geht an {engine} nach draußen.",
   "ws.onJinaAlways": " Jede Seite wird über r.jina.ai gelesen – ein Dritter sieht diese URLs.",
   "ws.onJinaFallback": " Seiten, die sich nicht direkt lesen lassen, laufen über r.jina.ai – ein Dritter sieht diese URLs.",
   "ws.onLanCaution": " Achtung: Dieser Server ist über diesen PC hinaus erreichbar (an 0.0.0.0 oder eine LAN-Adresse gebunden) – Suchanfragen und Engine-API-Schlüssel laufen im Klartext über dein Netzwerk, und ohne api_key kann jedes Gerät darin diese Suche nutzen.",

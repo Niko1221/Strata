@@ -318,6 +318,7 @@
   "ws.modeOn": "开启",
   "ws.noResults": "无结果",
   "ws.offByDefault": "网页搜索默认关闭；开启后，只有搜索查询会发出。",
+  "ws.onEmpty": "网络搜索已开启 – 只有搜索查询会发送到 {engine}。",
   "ws.onJinaAlways": " 所有页面都通过 r.jina.ai 读取，这些网址第三方可以看到。",
   "ws.onJinaFallback": " 无法直接读取的页面会通过 r.jina.ai，这些网址第三方可以看到。",
   "ws.onLanCaution": " 注意：此服务器可从本电脑之外访问（绑定到 0.0.0.0 或局域网地址）。搜索查询和引擎 API 密钥会以明文 HTTP 在网络中传输；没有 api_key 时，该网络中的任何设备均可使用此搜索。",

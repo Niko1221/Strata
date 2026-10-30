@@ -323,6 +323,7 @@
   "ws.modeOn": "Acceso",
   "ws.noResults": "nessun risultato",
   "ws.offByDefault": "La ricerca web è disattivata di default; quando è attiva, esce solo la query di ricerca.",
+  "ws.onEmpty": "La ricerca web è attiva: solo la query va verso {engine}.",
   "ws.onJinaAlways": "  Ogni pagina è letta tramite r.jina.ai - un terzo vede quegli URL.",
   "ws.onJinaFallback": "  Le pagine che non si riescono a leggere direttamente passano da r.jina.ai - un terzo vede quegli URL.",
   "ws.onLanCaution": "  Attenzione: questo server è raggiungibile oltre questo PC (in ascolto su 0.0.0.0 o un indirizzo LAN) - le query e le chiavi API dei motori attraversano la tua rete in HTTP puro, e senza api_key qualsiasi dispositivo può usare questa ricerca.",

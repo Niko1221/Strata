@@ -318,6 +318,7 @@
   "ws.modeOn": "켜짐",
   "ws.noResults": "결과 없음",
   "ws.offByDefault": "웹 검색은 기본적으로 꺼져 있으며, 켜면 검색어만 외부로 나갑니다.",
+  "ws.onEmpty": "웹 검색이 켜져 있습니다. {engine}로는 검색어만 전송됩니다.",
   "ws.onJinaAlways": " 모든 페이지가 r.jina.ai를 통해 읽힙니다(이 URL은 제3자가 봅니다).",
   "ws.onJinaFallback": " 직접 읽지 못하는 페이지는 r.jina.ai를 거칩니다(이 URL은 제3자가 봅니다).",
   "ws.onLanCaution": " 주의: 이 서버는 이 PC 밖에서도 접근 가능합니다(0.0.0.0 또는 LAN 주소에 바인딩). 검색어와 엔진 API 키가 평문 HTTP로 네트워크를 통과하며, api_key가 없으면 해당 네트워크의 모든 기기가 이 검색을 사용할 수 있습니다.",

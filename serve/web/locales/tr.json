@@ -323,6 +323,7 @@
   "ws.modeOn": "Açık",
   "ws.noResults": "sonuç yok",
   "ws.offByDefault": "Web araması varsayılan olarak kapalıdır; açıkken yalnızca arama sorgusu dışarı çıkar.",
+  "ws.onEmpty": "Web araması açık – yalnızca arama sorgusu {engine} adresine gider.",
   "ws.onJinaAlways": "  Her sayfa r.jina.ai üzerinden okunur - üçüncü bir taraf bu URL'leri görür.",
   "ws.onJinaFallback": "  Doğrudan okunamayan sayfalar r.jina.ai üzerinden geçer - üçüncü bir taraf bu URL'leri görür.",
   "ws.onLanCaution": "  Dikkat: bu sunucu bu bilgisayarın ötesinden erişilebilir (0.0.0.0 veya bir LAN adresine bağlı) - sorgular ve motor API anahtarları ağını düz HTTP ile geçer ve api_key olmadan ağdaki her cihaz bu aramayı kullanabilir.",

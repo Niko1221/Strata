@@ -14,7 +14,10 @@ and its combined both-paths-fail reason are pinned here too. Offline by design: 
 """
 from __future__ import annotations
 
+import http.client
+import io
 import json
+import socket
 import unittest
 import urllib.error
 import urllib.request
@@ -67,15 +70,31 @@ class WebSearchBase(unittest.TestCase):
     def setUp(self):
         self._urlopen = w.urllib.request.urlopen
         self._engines = dict(w.ENGINES)
+        self._getaddrinfo = w.socket.getaddrinfo
+        self.patch_dns()      # every host resolves to a public IP unless a test maps it
 
     def tearDown(self):
         w.urllib.request.urlopen = self._urlopen
+        w.socket.getaddrinfo = self._getaddrinfo
         w.ENGINES.clear()
         w.ENGINES.update(self._engines)
 
     def patch_routes(self, routes):
         fu, calls = fake_urlopen(routes)
         w.urllib.request.urlopen = fu
+        return calls
+
+    def patch_dns(self, mapping=None):
+        """Route host -> ip(s) for _public_target/_base_url; unmapped hosts get a public placeholder."""
+        mapping = mapping or {}
+        calls = []
+        def _resolve(host, *a, **k):
+            calls.append(host)
+            ips = mapping.get(host, "93.184.216.34")      # example.com, public
+            ips = [ips] if not isinstance(ips, (list, tuple)) else list(ips)
+            return [(socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                     socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips]
+        w.socket.getaddrinfo = _resolve
         return calls
 
 
@@ -89,6 +108,131 @@ class SchemeGuardTests(WebSearchBase):
     def test_http_and_https_accepted(self):
         self.assertIsNotNone(w._http_url("http://a.example/x", "url"))
         self.assertIsNotNone(w._http_url("https://a.example/x", "url"))
+
+
+class SsrGuardTests(WebSearchBase):
+    """Review M3: the server must never fetch loopback/private/link-local targets (SSRF)."""
+
+    def test_read_rejects_loopback_page(self):
+        self.patch_dns({"127.0.0.1": "127.0.0.1"})
+        text, via, ok = w._read_with_reader({"url": "http://127.0.0.1/admin"}, 5000, "off")
+        self.assertFalse(ok)
+        self.assertIn("not a public address", text)
+        self.assertIsNone(via)
+
+    def test_read_rejects_private_lan_page(self):
+        self.patch_dns({"10.0.0.5": "10.0.0.5"})
+        _, _, ok = w._read_with_reader({"url": "http://10.0.0.5/main"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_read_rejects_cloud_metadata(self):
+        self.patch_dns({"metadata.local": "169.254.169.254"})
+        _, _, ok = w._read_with_reader({"url": "http://metadata.local/latest/meta-data/"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_read_accepts_public_page(self):
+        self.patch_dns({"evil.example": "93.184.216.34"})
+        self.patch_routes([("evil.example", "<html><body><p>" + LONG + "</p></body></html>", None)])
+        text, via, ok = w._read_with_reader({"url": "https://evil.example/x"}, 5000, "off")
+        self.assertTrue(ok)
+        self.assertIsNone(via)
+
+    def test_public_target_rejects_loopback_before_fetch(self):
+        self.patch_dns({"192.168.1.5": "192.168.1.5"})
+        with self.assertRaises(w.SearchError):
+            w._public_target("http://192.168.1.5/int", "the result page")
+
+    def test_searxng_base_rejects_link_local(self):
+        self.patch_dns({"metadata.local": "169.254.169.254"})
+        with self.assertRaises(w.SearchError):
+            w._base_url("http://metadata.local:8888/", "the SearXNG base")
+
+    def test_searxng_base_allows_loopback(self):
+        self.patch_dns({"127.0.0.1": "127.0.0.1"})
+        self.assertIsNotNone(w._base_url("http://127.0.0.1:8888/", "the SearXNG base"))
+
+    def test_read_rejects_ipv6_loopback_literal(self):
+        self.patch_dns({"::1": "::1"})
+        _, _, ok = w._read_with_reader({"url": "http://[::1]/x"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_read_rejects_ipv4_mapped_loopback(self):
+        self.patch_dns({"::ffff:127.0.0.1": "::ffff:127.0.0.1"})
+        _, _, ok = w._read_with_reader({"url": "http://[::ffff:127.0.0.1]/x"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_read_rejects_if_any_record_internal(self):
+        # dual-stack host with one public and one private A/AAAA record must be refused
+        self.patch_dns({"dual.example": ["93.184.216.34", "10.0.0.5"]})
+        _, _, ok = w._read_with_reader({"url": "https://dual.example/x"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_read_rejects_cgnat_page(self):
+        self.patch_dns({"cgnat.local": "100.64.0.1"})
+        _, _, ok = w._read_with_reader({"url": "http://cgnat.local/x"}, 5000, "off")
+        self.assertFalse(ok)
+
+    def test_searxng_base_allows_ipv6_loopback(self):
+        self.patch_dns({"::1": "::1"})
+        self.assertIsNotNone(w._base_url("http://[::1]:8888/", "the SearXNG base"))
+
+    def test_read_rejects_internal_in_every_reader_tier(self):
+        # reader "always"/"fallback" must refuse an internal page before ever contacting r.jina.ai
+        self.patch_dns({"10.0.0.9": "10.0.0.9"})
+        for tier in ("always", "fallback"):
+            with self.subTest(tier=tier):
+                text, via, ok = w._read_with_reader({"url": "http://10.0.0.9/x"}, 5000, tier)
+                self.assertFalse(ok)
+                self.assertIn("not a public address", text)
+                self.assertIsNone(via)   # never reached jina
+
+    def test_read_rejects_odd_hostname_that_resolves_loopback(self):
+        # numeric-literal form 127.1: the guard keys on the resolved IP, so a hostname that looks
+        # harmless but resolves to loopback is still refused
+        self.patch_dns({"127.1": "127.0.0.1"})
+        text, _, ok = w._read_with_reader({"url": "http://127.1/admin"}, 5000, "off")
+        self.assertFalse(ok)
+        self.assertIn("not a public address", text)
+
+    def test_searxng_base_rejects_ipv6_link_local(self):
+        self.patch_dns({"fe80::1": "fe80::1"})
+        with self.assertRaises(w.SearchError):
+            w._base_url("http://[fe80::1]:8888/", "the SearXNG base")
+
+    def test_redirect_to_internal_is_rejected_even_if_page_looked_public(self):
+        # M3 TOCTOU redirect arm: a 3xx onto an internal host raises before urllib follows it
+        self.patch_dns({"127.0.0.1": "127.0.0.1"})
+        h = w._ValidatingRedirect()
+        fp = io.BytesIO(b"")
+        msg = http.client.HTTPMessage()
+        req = urllib.request.Request("http://example.com/")
+        setattr(req, "strata_check", w._public_target)
+        with self.assertRaises(w.SearchError):
+            h.redirect_request(req, fp, 302, "Found", msg, "http://127.0.0.1/admin")
+
+    def test_redirect_protocol_relative_to_internal_is_rejected(self):
+        # //internal by itself has no scheme; resolving must still refuse it once joined
+        self.patch_dns({"127.0.0.1": "127.0.0.1"})
+        h = w._ValidatingRedirect()
+        fp = io.BytesIO(b"")
+        msg = http.client.HTTPMessage()
+        req = urllib.request.Request("http://example.com/")
+        setattr(req, "strata_check", w._public_target)
+        with self.assertRaises(w.SearchError):
+            h.redirect_request(req, fp, 302, "Found", msg, "//127.0.0.1/admin")
+
+    def test_redirect_relative_location_is_resolved_and_not_false_refused(self):
+        # a same-host relative Location (/foo) must not be refused by the unresolved-path check
+        self.patch_dns({"safe.example": "93.184.216.34"})
+        h = w._ValidatingRedirect()
+        fp = io.BytesIO(b"")
+        msg = http.client.HTTPMessage()
+        req = urllib.request.Request("http://safe.example/page")
+        setattr(req, "strata_check", w._public_target)
+        new_req = h.redirect_request(req, fp, 302, "Found", msg, "/new")
+        self.assertIsNotNone(new_req)
+        if new_req is not None:
+            self.assertEqual(new_req.full_url, "http://safe.example/new")
 
 
 class EngineWhitelistTests(WebSearchBase):

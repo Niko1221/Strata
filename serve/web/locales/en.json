@@ -323,6 +323,7 @@
   "ws.modeOn": "On",
   "ws.noResults": "no results",
   "ws.offByDefault": "Web search is off by default – when on, only the search query goes out.",
+  "ws.onEmpty": "Web search is on – only the search query goes out to {engine}.",
   "ws.onJinaAlways": " Every page is read through r.jina.ai - a third party sees those URLs.",
   "ws.onJinaFallback": " Pages that fail to read directly go through r.jina.ai - a third party sees those URLs.",
   "ws.onLanCaution": " Caution: this server is reachable beyond this PC (bound to 0.0.0.0 or a LAN address) - queries and engine API keys cross your network in plain HTTP, and without an api_key any device on it can use this search.",

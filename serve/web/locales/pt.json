@@ -323,6 +323,7 @@
   "ws.modeOn": "Ligado",
   "ws.noResults": "sem resultados",
   "ws.offByDefault": "A pesquisa na web está desativada por padrão – quando ativada, só a consulta de pesquisa sai.",
+  "ws.onEmpty": "A pesquisa na web está ativa – apenas a consulta sai para {engine}.",
   "ws.onJinaAlways": " Cada página é lida através de r.jina.ai – um terceiro vê esses URLs.",
   "ws.onJinaFallback": " As páginas que não podem ser lidas diretamente passam por r.jina.ai – um terceiro vê esses URLs.",
   "ws.onLanCaution": " Atenção: este servidor é acessível para além deste PC (vinculado a 0.0.0.0 ou a um endereço LAN) – as consultas e as chaves de API do motor atravessam a rede em HTTP sem encriptação e, sem api_key, qualquer dispositivo nela pode usar esta pesquisa.",
