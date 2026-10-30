@@ -73,6 +73,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-30: RX 7900 XTX 24 GB (gfx1100, Windows 10), Ryzen 9 5900X, 64 GB RAM: Swift 1.5](../bench/results/2026-10-30-community-rx-7900-xtx-swift-1-5-iq3-xxs/README.md):
+  Strata 0.2.8 (engine 0.1.54, update-feed binary), Swift 1.5 IQ3_XXS at 131,072-token context with five prompt-path switches and `--prefill 16384`; prompt 822/1765/1766 tok/s at 4K/16K/32K, decode 66.1 short chat and 82.7 agent turns, agent cache hit 68.9%. No 0xC0000409 crash with the 16384 prefill chunk. Speed suite only.
+- [2026-10-30: RX 7900 XTX 24 GB (gfx1100, Windows 10), Ryzen 9 5900X, 64 GB RAM: DeepSeek-V4.1-Flash](../bench/results/2026-10-30-community-rx-7900-xtx-deepseek-v4-1-flash/README.md):
+  strata-dsv41 0.1.54 built locally for gfx1100 (ROCm 10.2 wheels, no source changes), IST-DAS 2.25 bpw at 131,072-token context, 1415 of 15360 experts in VRAM; prompt 69/138/163 tok/s at 4K/16K/32K, decode 1.4 short chat and 1.9 agent turns, first token 38 s on a short chat. One needle at 110,147 tokens: found, 1490 s.
 
 ## Run the standard benchmark
 
