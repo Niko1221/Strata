@@ -1,0 +1,48 @@
+{
+  "engine_options": {
+    "--pack": "iq2_xs",
+    "--native": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--mtp": "rt",
+    "--max-context": "128000",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--vision": true,
+    "--control-vector-scaled": "Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0",
+    "--control-vector-layer-range": "4",
+    "--cvec-mode": "project",
+    "--cvec-dir": "per-layer",
+    "--conversation-cache-mib": "8192",
+    "--conversation-cache-slots": "4",
+    "--conversation-cache-min-tokens": "<redacted>",
+    "--vram-reserve-mib": "1200"
+  },
+  "other_engine_options": {
+    "--pack": "iq2_xs",
+    "--native": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "--max-context": "128000",
+    "--vision": true,
+    "--control-vector-scaled": "Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0",
+    "--control-vector-layer-range": "4",
+    "--cvec-mode": "project",
+    "--cvec-dir": "per-layer",
+    "--conversation-cache-mib": "8192",
+    "--conversation-cache-slots": "4",
+    "--conversation-cache-min-tokens": "<redacted>"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 128000,
+  "source": "effective engine arguments of the profile"
+}
