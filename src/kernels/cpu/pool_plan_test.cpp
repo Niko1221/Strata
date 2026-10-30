@@ -268,6 +268,54 @@ int main() {
         expect(c.cpus.empty() && c.warnings.size() == 1, "check: nothing usable");
         c = cpu::check_pool_cores({2, 3}, {{2, -1}, {3, -1}}, 0);
         expect(c.cpus.size() == 2 && c.warnings.empty(), "check: an unknown layout cannot tell siblings: no warning");
+
+        // X3D / 3D V-Cache topologies: 1-CCD (Ryzen 7 9800X3D, 8c/16t, 96 MiB L3) and asymmetric 2-CCD (Ryzen 9 9950X3D,
+        // CCD0 8c 96 MiB 3D V-Cache + CCD1 8c 32 MiB L3; Ryzen 9 9900X3D, CCD0 6c 96 MiB + CCD1 6c 32 MiB)
+        {
+            std::vector<cpu::X3dPhysCore> x9800;
+            std::vector<cpu::LogicalCpuInfo> lay9800;
+            for (int c = 0; c < 8; ++c) {
+                x9800.push_back({2 * c, 2 * c + 1, 96 * 1024});
+                lay9800.push_back({2 * c, c, 0, 96 * 1024});
+                lay9800.push_back({2 * c + 1, c, 0, 96 * 1024});
+            }
+            std::vector<int> wc;
+            int hc = -1, hs = -1, vc = 0, sc = 0;
+            expect(!cpu::plan_x3d_core_order(x9800, true, wc, hc, hs, vc, sc) && vc == 8 && sc == 0,
+                   "9800X3D (1-CCD 96 MB): symmetric, keeps default core order with vcache_cores=8");
+            const std::string l9800 = cpu::describe_worker_placement({2, 4, 6, 8, 10, 12, 14}, 0, lay9800, false);
+            std::printf("  %s\n", l9800.c_str());
+            expect(l9800.find("96 MB 3D V-Cache") != std::string::npos, "9800X3D placement line notes 96 MB 3D V-Cache");
+
+            std::vector<cpu::X3dPhysCore> x9950;
+            std::vector<cpu::LogicalCpuInfo> lay9950;
+            for (int c = 0; c < 16; ++c) {
+                const long kb = c < 8 ? 96 * 1024 : 32 * 1024;
+                x9950.push_back({2 * c, 2 * c + 1, kb});
+                lay9950.push_back({2 * c, c, c < 8 ? 0 : 1, kb});
+                lay9950.push_back({2 * c + 1, c, c < 8 ? 0 : 1, kb});
+            }
+            expect(cpu::plan_x3d_core_order(x9950, true, wc, hc, hs, vc, sc) && vc == 8 && sc == 8,
+                   "9950X3D (2-CCD 96+32 MB): asymmetric X3D order active");
+            expect(hc == 16 && hs == 17, "9950X3D: host core placed on first CCD1 core (16), sparing all 8 V-Cache cores");
+            expect(wc.size() == 15 && wc[0] == 0 && wc[7] == 14 && wc[8] == 18 && wc[14] == 30,
+                   "9950X3D: all 8 3D V-Cache cores (0..14) come first in worker_cores, then CCD1 cores (18..30)");
+            const std::string l9950_all = cpu::describe_worker_placement(wc, hc, lay9950, false);
+            std::printf("  %s\n", l9950_all.c_str());
+            expect(l9950_all.find("8 on 96 MB 3D V-Cache + 7 on 32 MB L3") != std::string::npos,
+                   "9950X3D 15-worker line names both CCDs");
+            const std::vector<int> wc8(wc.begin(), wc.begin() + 8);
+            const std::string l9950_8 = cpu::describe_worker_placement(wc8, hc, lay9950, false);
+            expect(l9950_8.find("96 MB 3D V-Cache") != std::string::npos && l9950_8.find("32 MB L3") == std::string::npos,
+                   "9950X3D 8-worker line runs 100% on 96 MB 3D V-Cache");
+
+            auto p9950 = cpu_of(32, {16});
+            p9950.vcache_cores = 8;
+            p9950.std_l3_cores = 8;
+            expect(cpu::plan_pool_workers(p9950).workers == 15, "9950X3D default: 15 workers across both CCDs");
+            p9950.x3d_single_ccd = true;
+            expect(cpu::plan_pool_workers(p9950).workers == 8, "9950X3D STRATA_X3D_SINGLE_CCD=1: 8 V-Cache workers");
+        }
     }
 
     if (g_fail) {

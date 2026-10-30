@@ -1,5 +1,7 @@
 // src/kernels/cpu/hadamard.cpp - see include/strata/kernels/cpu/hadamard.hpp.
 #include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/iq_avx512.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -90,6 +92,13 @@ bool hadamard_parse(const std::string& path, int64_t n_layers, HadamardSpec& h, 
 }
 
 void hadamard_rotate(float* x, int n, int block, const float* signs) {
+#if defined(STRATA_NATIVE_EXPERTS)
+    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr && vcache_pool_opt_in();
+    if (avx512 && block >= 16 && (n & 15) == 0) {
+        hadamard_rotate_avx512(x, n, block, signs);
+        return;
+    }
+#endif
     if (signs)
         for (int i = 0; i < n; ++i) x[i] *= signs[i];
     const float scale = 1.0f / std::sqrt((float) block);
