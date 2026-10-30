@@ -418,11 +418,19 @@ function abbr(n) {
 // read as a model that works for free.
 const usd = (n) => `$${fmt(n, 2)}`;
 const price = (v) => `$${fmt(v || 0, v % 1 ? 2 : 0)}`;
-const hasCost = (t) => !!(t && (t.cost_input_per_million || t.cost_output_per_million));
+const hasCost = (t) => !!(t && (t.cost_input_per_million || t.cost_output_per_million
+  || t.cost_cache_write_per_million || t.cost_cache_hit_per_million));
+// An API prices a prompt in parts, and the server sends the rate of each part - the plain input rate for a cache
+// price that was never set - so the sentence names the parts only when they are priced apart from plain input.
+const pricedApart = (t) => t.cost_cache_write_per_million !== t.cost_input_per_million
+  || t.cost_cache_hit_per_million !== t.cost_input_per_million;
 const costFirst = (t) => hasCost(t) ? `≈ ${usd(t.cost_usd)} · ` : "";
 const costPrices = (t) => !hasCost(t) ? ""
-  : ` · about ${usd(t.cost_usd)} at ${price(t.cost_input_per_million)} per million in, ` +
-    `${price(t.cost_output_per_million)} per million out`;
+  : pricedApart(t)
+    ? ` · about ${usd(t.cost_usd)} at ${price(t.cost_cache_write_per_million)} per million written to the cache, ` +
+      `${price(t.cost_cache_hit_per_million)} per million re-read, ${price(t.cost_output_per_million)} per million out`
+    : ` · about ${usd(t.cost_usd)} at ${price(t.cost_input_per_million)} per million in, ` +
+      `${price(t.cost_output_per_million)} per million out`;
 function tokenLine(t) {
   if (!t || !t.requests) return "";
   const since = t.since ? ` · since ${new Date(t.since * 1000).toLocaleDateString([], {day: "numeric", month: "short"})}` : "";

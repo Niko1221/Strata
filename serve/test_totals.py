@@ -1,9 +1,11 @@
-"""The token counts the Monitor tab prints, kept between starts, and the prices that turn them into the dollar
-figure printed beside them (serve/server.py's totals_* helpers, and the price keys of serve/runconfig.py).
+"""The token counts the Monitor tab prints, kept between starts, and the prices that turn them into the dollar figure
+printed beside them: the plain input and output prices, and the two cache rates that price a prompt's parts the way
+an API does (serve/server.py's totals_* helpers, and the price keys of serve/runconfig.py).
 No GPU and no model pack: these only read and write one small JSON file.
 
     python -m unittest serve.test_totals -v
 """
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,8 @@ from pathlib import Path
 from serve import runconfig
 from serve.server import (TOTALS_KEYS, totals_add_saved, totals_cost, totals_load_file, totals_path_of,
                           totals_reset_file, totals_with_cost, totals_write_file)
+
+
 def fresh(since=1000.0):
     """The totals of a server that has just started, as Service.__init__ makes them."""
     return {"since": since, "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
@@ -109,6 +113,38 @@ class Cost(unittest.TestCase):
         t.update({"prompt_tokens": 2_000_000, "output_tokens": 100_000})
         self.assertEqual(totals_cost(t, 5, 25), 12.5)
 
+    def test_a_read_the_cache_held_is_paid_for_as_input(self):
+        """Without a cache price the tokens the cache held are priced as plain input, which is what an API without
+        prompt caching charges - and exactly what this figure did before the cache rates existed."""
+        self.assertEqual(totals_cost({"prompt_tokens": 1_000_000, "reused": 999_000, "output_tokens": 0}, 5, 25), 5.0)
+
+    def test_a_re_read_is_paid_at_the_cache_price(self):
+        """An API prices a token the cache already held far below a new one: of this 1,000,000-token prompt
+        990,000 were re-read at $0.50 and 10,000 were new at $6.25, so the prompt costs $0.5575 - where pricing
+        every prompt token as plain input would have said $5."""
+        self.assertEqual(totals_cost({"prompt_tokens": 1_000_000, "reused": 990_000, "output_tokens": 0},
+                                     5, 25, 6.25, 0.5), 0.5575)
+
+    def test_an_added_token_is_paid_at_the_write_price(self):
+        """With nothing cached every prompt token is one an API would have had to write to its cache, so
+        1,000,000 of them cost 1,000,000 x $6.25 rather than the $5 an uncached prompt costs."""
+        self.assertEqual(totals_cost({"prompt_tokens": 1_000_000, "reused": 0, "output_tokens": 0},
+                                     5, 25, 6.25, 0.5), 6.25)
+
+    def test_the_prices_of_a_real_price_list_on_a_day_of_agent_turns(self):
+        """$5, $25, $6.25 written and $0.50 read over 2,000,000 prompt tokens of which the cache held 1,900,000,
+        plus 100,000 written: 0.1 x $6.25 + 1.9 x $0.50 + 0.1 x $25 = $4.075, where the two plain prices alone
+        say $12.50 because they price a re-read as if it were a new token."""
+        self.assertEqual(totals_cost({"prompt_tokens": 2_000_000, "reused": 1_900_000, "output_tokens": 100_000},
+                                     5, 25, 6.25, 0.5), 4.075)
+
+    def test_a_free_cache_read_is_a_price_and_not_a_missing_one(self):
+        """An explicit 0 on the cache read says those tokens cost nothing, while leaving the rate out falls back to
+        the input price - the two must not mean the same thing."""
+        held = {"prompt_tokens": 1_000_000, "reused": 900_000, "output_tokens": 0}
+        self.assertEqual(totals_cost(held, 5, 25, 6.25, 0), 0.625)      # 100,000 new at $6.25, the rest for nothing
+        self.assertEqual(totals_cost(held, 5, 25, 6.25, None), 5.125)   # the 900,000 fall back to the $5 input price
+
     def test_the_response_carries_the_prices_and_the_cost(self):
         """GET /metrics' totals: the cost without the reader having to multiply, and the prices beside it, so a
         page can show which prices a figure came from. The counts stay where they were."""
@@ -118,6 +154,12 @@ class Cost(unittest.TestCase):
         self.assertEqual(out["cost_usd"], 13.75)            # 1.5 million at $5 = $7.50, 250,000 at $25 = $6.25
         self.assertEqual((out["cost_input_per_million"], out["cost_output_per_million"]), (5, 25))
         self.assertEqual(out["prompt_tokens"], 1_500_000)
+
+    def test_the_page_is_told_the_rate_each_kind_of_token_is_paid_at(self):
+        """A page should not have to know the fallback rule: what comes back is the rate the tokens are actually
+        paid at, so a cache price that was never set reads back as the plain input price it fell back to."""
+        t = totals_with_cost(fresh(), 5, 25, 6.25, None)
+        self.assertEqual((t["cost_cache_write_per_million"], t["cost_cache_hit_per_million"]), (6.25, 5))
 
     def test_the_cost_covers_every_start_the_file_remembers(self):
         """The cost outlives a restart with the counts, because it is worked out of them and never kept beside
@@ -151,6 +193,7 @@ class TotalsWindow(unittest.TestCase):
         """A first start, or a server counting one start only, has no window to close."""
         self.assertIsNone(totals_reset_file(Path(tempfile.gettempdir()) / "strata-surely-not-here-again.json"))
 
+
 class PriceSettings(unittest.TestCase):
     """The prices are run config keys, so the page's own Settings view reads and changes them (#564)."""
 
@@ -183,6 +226,56 @@ class PriceSettings(unittest.TestCase):
         self.assertEqual(changed, ["cost_input_per_million"])
         self.assertEqual({k: v for k, v in cfg.items() if k != "cost_input_per_million"},
                          {k: v for k, v in was.items() if k != "cost_input_per_million"})
+
+    def test_the_cache_prices_are_editable_from_the_page_too(self):
+        """Four prices, four fields: the Settings view is built from the same list, so the two cache rates are in
+        it beside the plain ones rather than only in the file."""
+        listed = [k["key"] for k in runconfig.view({}, "strata-m.json")["keys"]]
+        self.assertIn("cost_cache_write_per_million", listed)
+        self.assertIn("cost_cache_hit_per_million", listed)
+
+    def test_a_cache_price_is_dollars_and_cents(self):
+        """A real price list reads $6.25 and $0.50, so a price is a number of dollars and cents, not whole
+        dollars rounded."""
+        cfg, changed = runconfig.apply({}, {"cost_cache_write_per_million": 6.25,
+                                            "cost_cache_hit_per_million": 0.5})
+        self.assertEqual((cfg["cost_cache_write_per_million"], cfg["cost_cache_hit_per_million"]), (6.25, 0.5))
+        self.assertEqual(sorted(changed), ["cost_cache_hit_per_million", "cost_cache_write_per_million"])
+
+    def test_a_cache_price_of_nothing_is_a_price_of_nothing(self):
+        """0 is a price here as it is on the other two, where it means those tokens cost nothing rather than
+        "no price was set"."""
+        cfg, changed = runconfig.apply({}, {"cost_cache_hit_per_million": 0})
+        self.assertEqual((cfg["cost_cache_hit_per_million"], changed), (0, ["cost_cache_hit_per_million"]))
+
+
+class WhatTheSettingsCardLooksLike(unittest.TestCase):
+    """The page's Model settings card is a grid of a help line and a field (#564).  The help is the server's own
+    words and may be long, so the card must give way in its label and never in its field: sizing the label column to
+    max-content once let one long help line squeeze every field of the card, the four prices among them, down to the
+    width of its own spinner arrows.  Neither the style nor the words may bring that back.
+    """
+
+    LONGEST = 140      # the longest help line the card was laid out beside before it broke (mtp: 137)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = (Path(__file__).resolve().parent / "web" / "app.css").read_text(encoding="utf-8")
+
+    def test_the_field_column_keeps_a_floor_of_its_own(self):
+        rule = re.search(r"\n\.cfg-form \{[^}]*grid-template-columns:([^;]+);", self.css)
+        self.assertIsNotNone(rule, "the card's grid rule is gone")
+        cols = rule.group(1)
+        self.assertNotIn("max-content", cols,               # the label wraps rather than pushing the field out
+                         f"the label column is sized to its content again: {cols}")
+        self.assertRegex(cols, r"1fr\)\s*minmax\(\s*[\d.]+",  # and the field keeps a width whatever the label says
+                         f"the field column has no floor: {cols}")
+
+    def test_no_help_line_is_a_wall_of_text(self):
+        """A help line is both the field's label and its tooltip, so it stays short enough to read in one row."""
+        for key, _, help_text in runconfig.EDITABLE:
+            self.assertLessEqual(len(help_text), self.LONGEST,
+                                 f"{key}'s help is {len(help_text)} characters, over the {self.LONGEST} the card fits")
 
 
 if __name__ == "__main__":
