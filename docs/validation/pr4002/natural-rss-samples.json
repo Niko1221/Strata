@@ -1,0 +1,1515 @@
+{
+  "collection": "2026-10-30 passive natural traffic; no generated workload",
+  "source_revision": "71ec4933135cba950e3da36f7e8a178ea888bce5",
+  "state": "ABORTED_LOCAL_RECORDER_DISK_FULL",
+  "planned_seconds": 1800,
+  "valid_samples": 29,
+  "samples": [
+    {
+      "at_utc": "2026-10-30T03:04:02.024111+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 39335693968,
+        "parked": 29,
+        "parks": 44,
+        "restores": 12,
+        "evictions": 0
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 184484503552,
+        "RssAnon": 92828520448,
+        "RssFile": 29296414720,
+        "RssShmem": 62359568384,
+        "VmData": 94845095936,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 181407236096,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 93585174528,
+          "file": 87286648832,
+          "kernel": 534335488,
+          "sock": 0,
+          "pagetables": 369057792,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "smaps_bytes": {
+        "Rss": 184171696128,
+        "Pss": 184130322432,
+        "Private_Clean": 74040598528,
+        "Private_Dirty": 110050525184,
+        "Anonymous": 92828520448,
+        "Swap": 0,
+        "Locked": 28800139264
+      },
+      "api_seconds": 0.025866799987852573,
+      "sample_seconds": 1.205693188123405
+    },
+    {
+      "at_utc": "2026-10-30T03:05:01.774289+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 39776741632,
+        "parked": 30,
+        "parks": 46,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 185021911040,
+        "RssAnon": 93365927936,
+        "RssFile": 29296414720,
+        "RssShmem": 62359568384,
+        "VmData": 95423627264,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 181950185472,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 94125473792,
+          "file": 87286652928,
+          "kernel": 535535616,
+          "sock": 0,
+          "pagetables": 370225152,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.031557708978652954,
+      "sample_seconds": 0.1732120830565691
+    },
+    {
+      "at_utc": "2026-10-30T03:06:02.048275+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 42486428816,
+        "parked": 31,
+        "parks": 47,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "reading",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 187860094976,
+        "RssAnon": 96204111872,
+        "RssFile": 29296414720,
+        "RssShmem": 62359568384,
+        "VmData": 98261549056,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 184799252480,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 96967749632,
+          "file": 87286661120,
+          "kernel": 541257728,
+          "sock": 0,
+          "pagetables": 375885824,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.024080576142296195,
+      "sample_seconds": 0.15557555994018912
+    },
+    {
+      "at_utc": "2026-10-30T03:07:01.770468+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 42486428816,
+        "parked": 31,
+        "parks": 47,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 187860094976,
+        "RssAnon": 96204111872,
+        "RssFile": 29296414720,
+        "RssShmem": 62359568384,
+        "VmData": 98261549056,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 184798531584,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 96969490432,
+          "file": 87286669312,
+          "kernel": 541216768,
+          "sock": 0,
+          "pagetables": 375889920,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.024415496038272977,
+      "sample_seconds": 0.1550199908670038
+    },
+    {
+      "at_utc": "2026-10-30T03:08:02.498326+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 42486428816,
+        "parked": 31,
+        "parks": 47,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 187860094976,
+        "RssAnon": 96204111872,
+        "RssFile": 29296414720,
+        "RssShmem": 62359568384,
+        "VmData": 98261549056,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 184802877440,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 96974241792,
+          "file": 87286677504,
+          "kernel": 541147136,
+          "sock": 0,
+          "pagetables": 375898112,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.024536966113373637,
+      "sample_seconds": 0.16362110013142228
+    },
+    {
+      "at_utc": "2026-10-30T03:09:01.785195+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 44894786832,
+        "parked": 32,
+        "parks": 48,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 190016892928,
+        "RssAnon": 98361303040,
+        "RssFile": 29296021504,
+        "RssShmem": 62359568384,
+        "VmData": 100418740224,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 186574168064,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 99134545920,
+          "file": 86893629440,
+          "kernel": 545357824,
+          "sock": 0,
+          "pagetables": 380190720,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.032132380874827504,
+      "sample_seconds": 0.18690234096720815
+    },
+    {
+      "at_utc": "2026-10-30T03:10:02.129372+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 52387861472,
+        "parked": 35,
+        "parks": 51,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 197627342848,
+        "RssAnon": 105971449856,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 108029018112,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 192011223040,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 106746626048,
+          "file": 84703277056,
+          "kernel": 560607232,
+          "sock": 0,
+          "pagetables": 395350016,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.03821499296464026,
+      "sample_seconds": 0.17751340800896287
+    },
+    {
+      "at_utc": "2026-10-30T03:11:01.811408+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 54984190416,
+        "parked": 36,
+        "parks": 52,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 200106205184,
+        "RssAnon": 108450312192,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 110507749376,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 191871885312,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 109225660416,
+          "file": 82079481856,
+          "kernel": 565551104,
+          "sock": 0,
+          "pagetables": 400265216,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.038749373983591795,
+      "sample_seconds": 0.1872997540049255
+    },
+    {
+      "at_utc": "2026-10-30T03:12:02.118061+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 57630381264,
+        "parked": 37,
+        "parks": 53,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 202869985280,
+        "RssAnon": 111214092288,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 113271660544,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 191673860096,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 111989874688,
+          "file": 79112536064,
+          "kernel": 571072512,
+          "sock": 0,
+          "pagetables": 405757952,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.03434068593196571,
+      "sample_seconds": 0.1751902608666569
+    },
+    {
+      "at_utc": "2026-10-30T03:13:01.786117+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 57630381264,
+        "parked": 37,
+        "parks": 53,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 202869985280,
+        "RssAnon": 111214092288,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 113271660544,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 191674179584,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 111989874688,
+          "file": 79112536064,
+          "kernel": 571056128,
+          "sock": 0,
+          "pagetables": 405757952,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.033516846131533384,
+      "sample_seconds": 0.17574123805388808
+    },
+    {
+      "at_utc": "2026-10-30T03:14:02.187373+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 62936997344,
+        "parked": 39,
+        "parks": 55,
+        "restores": 13,
+        "evictions": 0
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 208176701440,
+        "RssAnon": 116520808448,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 118578372608,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 191918206976,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 117296922624,
+          "file": 74039001088,
+          "kernel": 581693440,
+          "sock": 0,
+          "pagetables": 416272384,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.03881222498603165,
+      "sample_seconds": 0.1810842170380056
+    },
+    {
+      "at_utc": "2026-10-30T03:15:02.615333+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 2721116128,
+        "parked": 1,
+        "parks": 58,
+        "restores": 13,
+        "evictions": 41
+      },
+      "live": {
+        "state": "reading",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207154466816,
+        "RssAnon": 115498573824,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185554186240,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116274081792,
+          "file": 68697300992,
+          "kernel": 579776512,
+          "sock": 0,
+          "pagetables": 414183424,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.02674754010513425,
+      "sample_seconds": 0.16015229607000947
+    },
+    {
+      "at_utc": "2026-10-30T03:15:13.846982+00:00",
+      "kind": "eviction_1_plus_10s",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 2721116128,
+        "parked": 1,
+        "parks": 58,
+        "restores": 13,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207154466816,
+        "RssAnon": 115498573824,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185552392192,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116274081792,
+          "file": 68697300992,
+          "kernel": 579653632,
+          "sock": 0,
+          "pagetables": 414183424,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "smaps_bytes": {
+        "Rss": 206841659392,
+        "Pss": 206800312320,
+        "Private_Clean": 71584583680,
+        "Private_Dirty": 135176556544,
+        "Anonymous": 115498573824,
+        "Swap": 0,
+        "Locked": 28800139264
+      },
+      "api_seconds": 0.03352199704386294,
+      "sample_seconds": 1.2960238370578736
+    },
+    {
+      "at_utc": "2026-10-30T03:15:33.808962+00:00",
+      "kind": "eviction_1_plus_30s",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 4245007504,
+        "parked": 2,
+        "parks": 59,
+        "restores": 13,
+        "evictions": 41
+      },
+      "live": {
+        "state": "reading",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207155810304,
+        "RssAnon": 115499917312,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185554038784,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116275392512,
+          "file": 68697300992,
+          "kernel": 579657728,
+          "sock": 0,
+          "pagetables": 414183424,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "smaps_bytes": {
+        "Rss": 206843002880,
+        "Pss": 206801655808,
+        "Private_Clean": 71565676544,
+        "Private_Dirty": 135196807168,
+        "Anonymous": 115499917312,
+        "Swap": 0,
+        "Locked": 28800139264
+      },
+      "api_seconds": 0.03335610497742891,
+      "sample_seconds": 1.2992066240403801
+    },
+    {
+      "at_utc": "2026-10-30T03:16:02.266939+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 9615030688,
+        "parked": 5,
+        "parks": 62,
+        "restores": 13,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207155810304,
+        "RssAnon": 115499917312,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185553973248,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116275748864,
+          "file": 68697309184,
+          "kernel": 579706880,
+          "sock": 0,
+          "pagetables": 414183424,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.02531527797691524,
+      "sample_seconds": 0.1618997019249946
+    },
+    {
+      "at_utc": "2026-10-30T03:16:04.161399+00:00",
+      "kind": "eviction_1_plus_60s",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 9615030688,
+        "parked": 5,
+        "parks": 62,
+        "restores": 13,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207155810304,
+        "RssAnon": 115499917312,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185553580032,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116275748864,
+          "file": 68697309184,
+          "kernel": 579645440,
+          "sock": 0,
+          "pagetables": 414183424,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.029354159021750093,
+      "sample_seconds": 0.17091814894229174
+    },
+    {
+      "at_utc": "2026-10-30T03:17:02.287365+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 12281910304,
+        "parked": 7,
+        "parks": 66,
+        "restores": 14,
+        "evictions": 41
+      },
+      "live": {
+        "state": "reading",
+        "running": 2,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207210946560,
+        "RssAnon": 115555053568,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 68
+      },
+      "cgroup": {
+        "memory.current": 185610059776,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116331659264,
+          "file": 68697313280,
+          "kernel": 579874816,
+          "sock": 4096,
+          "pagetables": 414232576,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.027808689046651125,
+      "sample_seconds": 0.1638556078542024
+    },
+    {
+      "at_utc": "2026-10-30T03:18:02.569555+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 17941910416,
+        "parked": 9,
+        "parks": 69,
+        "restores": 14,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207219384320,
+        "RssAnon": 115563491328,
+        "RssFile": 29296324608,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185621065728,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116343320576,
+          "file": 68697321472,
+          "kernel": 579624960,
+          "sock": 0,
+          "pagetables": 414240768,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.0285021448507905,
+      "sample_seconds": 0.1617723668459803
+    },
+    {
+      "at_utc": "2026-10-30T03:19:02.228694+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 25108395984,
+        "parked": 11,
+        "parks": 72,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207240916992,
+        "RssAnon": 115585019904,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185645371392,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116366098432,
+          "file": 68697456640,
+          "kernel": 579764224,
+          "sock": 0,
+          "pagetables": 414277632,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.024885393911972642,
+      "sample_seconds": 0.1618345428723842
+    },
+    {
+      "at_utc": "2026-10-30T03:20:02.499879+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 25108395984,
+        "parked": 11,
+        "parks": 72,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207240916992,
+        "RssAnon": 115585019904,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185643827200,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116366053376,
+          "file": 68697456640,
+          "kernel": 579670016,
+          "sock": 0,
+          "pagetables": 414277632,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.02876294800080359,
+      "sample_seconds": 0.1692230540793389
+    },
+    {
+      "at_utc": "2026-10-30T03:21:02.233468+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 25108395984,
+        "parked": 11,
+        "parks": 72,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207240916992,
+        "RssAnon": 115585019904,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185643982848,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116366053376,
+          "file": 68697456640,
+          "kernel": 579649536,
+          "sock": 0,
+          "pagetables": 414277632,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.024362545926123857,
+      "sample_seconds": 0.15971286897547543
+    },
+    {
+      "at_utc": "2026-10-30T03:22:02.530625+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 27464570400,
+        "parked": 12,
+        "parks": 73,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 1,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 1
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207240916992,
+        "RssAnon": 115585019904,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185645379584,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116366254080,
+          "file": 68697456640,
+          "kernel": 579731456,
+          "sock": 0,
+          "pagetables": 414277632,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.030515176011249423,
+      "sample_seconds": 0.16426036693155766
+    },
+    {
+      "at_utc": "2026-10-30T03:23:02.286113+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 49897315136,
+        "parked": 21,
+        "parks": 82,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207264595968,
+        "RssAnon": 115608698880,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117516128256,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 185670148096,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116391751680,
+          "file": 68697464832,
+          "kernel": 579698688,
+          "sock": 0,
+          "pagetables": 414314496,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.03517957217991352,
+      "sample_seconds": 0.16619039210490882
+    },
+    {
+      "at_utc": "2026-10-30T03:24:02.563118+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 52431405328,
+        "parked": 22,
+        "parks": 83,
+        "restores": 15,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 207600291840,
+        "RssAnon": 115944394752,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 117851701248,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 186008502272,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 116730114048,
+          "file": 68697464832,
+          "kernel": 580382720,
+          "sock": 0,
+          "pagetables": 415006720,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.03289689705707133,
+      "sample_seconds": 0.1679885210469365
+    },
+    {
+      "at_utc": "2026-10-30T03:25:01.810659+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 57245096352,
+        "parked": 28,
+        "parks": 93,
+        "restores": 17,
+        "evictions": 41
+      },
+      "live": {
+        "state": "generating",
+        "running": 2,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 208541179904,
+        "RssAnon": 116885282816,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 118791983104,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 186952822784,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 117670760448,
+          "file": 68697473024,
+          "kernel": 582443008,
+          "sock": 0,
+          "pagetables": 416915456,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.035057232016697526,
+      "sample_seconds": 0.17038708413019776
+    },
+    {
+      "at_utc": "2026-10-30T03:26:02.101452+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 59132080608,
+        "parked": 30,
+        "parks": 97,
+        "restores": 17,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 208828600320,
+        "RssAnon": 117172703232,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 119073214464,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 187239436288,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 117958287360,
+          "file": 68697481216,
+          "kernel": 582889472,
+          "sock": 0,
+          "pagetables": 417488896,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.033539710100740194,
+      "sample_seconds": 0.17739466996863484
+    },
+    {
+      "at_utc": "2026-10-30T03:27:02.620903+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 61385442624,
+        "parked": 32,
+        "parks": 99,
+        "restores": 17,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 209691082752,
+        "RssAnon": 118035185664,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 119932575744,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 188105183232,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 118821101568,
+          "file": 68697481216,
+          "kernel": 584626176,
+          "sock": 0,
+          "pagetables": 419221504,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.0343138980679214,
+      "sample_seconds": 0.16678171115927398
+    },
+    {
+      "at_utc": "2026-10-30T03:28:02.359597+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 61385442624,
+        "parked": 32,
+        "parks": 99,
+        "restores": 17,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 209691082752,
+        "RssAnon": 118035185664,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 119932575744,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 188103811072,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 118821101568,
+          "file": 68697481216,
+          "kernel": 584626176,
+          "sock": 0,
+          "pagetables": 419221504,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.023991506081074476,
+      "sample_seconds": 0.15461941505782306
+    },
+    {
+      "at_utc": "2026-10-30T03:29:02.646895+00:00",
+      "kind": "minute",
+      "cache": {
+        "budget_mib": 98304,
+        "bytes": 63293531696,
+        "parked": 35,
+        "parks": 103,
+        "restores": 17,
+        "evictions": 41
+      },
+      "live": {
+        "state": "idle",
+        "running": 0,
+        "queued": 0,
+        "waiting": 0,
+        "admitting": 0,
+        "outside_slots": 0
+      },
+      "engine_memory_bytes": {
+        "VmLck": 28800139264,
+        "VmRSS": 211084808192,
+        "RssAnon": 119428911104,
+        "RssFile": 29296328704,
+        "RssShmem": 62359568384,
+        "VmData": 121314783232,
+        "VmSwap": 0,
+        "Threads": 66
+      },
+      "cgroup": {
+        "memory.current": 189500911616,
+        "memory.swap.current": 0,
+        "memory.stat": {
+          "anon": 120214839296,
+          "file": 68697485312,
+          "kernel": 587460608,
+          "sock": 0,
+          "pagetables": 422014976,
+          "shmem": 62057250816
+        },
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      },
+      "api_seconds": 0.031780843855813146,
+      "sample_seconds": 0.17071725009009242
+    }
+  ]
+}

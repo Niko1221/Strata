@@ -1,0 +1,3 @@
+mode=0 tracked_before=5242880 tracked_after=0 free_calls=5 PASS
+mode=1 tracked_before=5242880 tracked_after=0 free_calls=5 PASS
+mode=2 tracked_before=5242880 tracked_after=0 free_calls=5 PASS
