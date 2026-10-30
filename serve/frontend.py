@@ -913,7 +913,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip(), hold=False)   # a bare or unwrapped call: the old rule
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
