@@ -5888,14 +5888,24 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
-        // v4: the depth-adaptive ring (opt-in).  Set BEFORE the session arena is sized and the graphs are
-        // captured: the arena's K/V pool depends on the ring (qsa_state_bytes sizes the pool by slots).
-        if (std::getenv("STRATA_KV_RING_ADAPT") != nullptr && o.kv_resident > 0) {
-            const int64_t adapt = strata::core::qsa_kv_ring_adapt(g, (int64_t) o.tokens.size() + o.max_new,
-                                                                  o.kv_resident);
+        // v4: the depth-adaptive ring (opt-in: STRATA_KV_RING_ADAPT is read once, unset or 0 keeps it off, any
+        // other non-zero value turns it on).  Set BEFORE the session arena is sized and the graphs are captured:
+        // the arena's K/V pool depends on the ring (qsa_state_bytes sizes the pool by slots).  The depth to size
+        // from is this run's prompt plus what it may generate; a --serve process has no CLI prompt and its
+        // sessions live for the whole process, so there the depth is the configured context (--context).
+        const char* ring_adapt_env = std::getenv("STRATA_KV_RING_ADAPT");
+        if (ring_adapt_env != nullptr && std::atoi(ring_adapt_env) != 0 && o.kv_resident > 0) {
+            const int64_t depth = o.serve ? o.max_context : (int64_t) o.tokens.size() + o.max_new;
+            const int64_t adapt = strata::core::qsa_kv_ring_adapt(g, depth, o.kv_resident);
             if (adapt != o.kv_resident) {
-                std::fprintf(stderr, "strata generate: KV ring adaptive: %lld -> %lld cells (prompt %zu + %lld new)\n",
-                             (long long) o.kv_resident, (long long) adapt, o.tokens.size(), (long long) o.max_new);
+                char depth_desc[64];
+                if (o.serve)
+                    std::snprintf(depth_desc, sizeof depth_desc, "serve context %lld", (long long) o.max_context);
+                else
+                    std::snprintf(depth_desc, sizeof depth_desc, "prompt %zu + %lld new", o.tokens.size(),
+                                  (long long) o.max_new);
+                std::fprintf(stderr, "strata generate: KV ring adaptive: %lld -> %lld cells (%s)\n",
+                             (long long) o.kv_resident, (long long) adapt, depth_desc);
                 strata::core::qsa_set_kv_resident(adapt);
             }
         }
