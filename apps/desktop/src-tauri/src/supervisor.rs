@@ -12,6 +12,8 @@
 //! show one notification, and prints the same sentence on the terminal. This is "browser mode"; `--browser` or STRATA_UI=browser
 //! starts in it on purpose. In browser mode closing the tab does not stop the engine: the page has "Quit Strata", and `--quit`
 //! ends a running Strata from the command line. The host listens on 127.0.0.1 only (the shell sets STRATA_BIND itself).
+//! `--resume` or STRATA_RESUME=1 asks the host to load the model you used last as Strata opens (`STRATA_RESUME=1` in the host's
+//! environment; the host keeps its own record of the last load in `~/.strata/data/native-last-load.json`).
 //!
 //! The session file (`~/.strata/app-session.json`, mode 0600: process id, port, the secret only this user can read, the mode) is how
 //! a second start finds the first one: it focuses the window (window mode) or opens another tab (browser mode) instead of
@@ -37,14 +39,17 @@ pub struct Options {
     pub window_child: bool,
     /// `--save-logs`: collect the logs into one file in Downloads and leave.
     pub save_logs: bool,
+    /// `--resume` or STRATA_RESUME=1: load the model you used last as Strata starts.
+    pub resume: bool,
     pub help: bool,
 }
 
-pub fn parse_args(args: &[String], ui_env: Option<&str>) -> Options {
-    let mut o = Options { browser: matches!(ui_env.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("browser")), ..Options::default() };
+pub fn parse_args(args: &[String], ui_env: Option<&str>, resume_env: Option<&str>) -> Options {
+    let mut o = Options { browser: matches!(ui_env.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("browser")), resume: resume_on(resume_env), ..Options::default() };
     for a in args.iter().skip(1) {
         match a.as_str() {
             "--browser" => o.browser = true,
+            "--resume" => o.resume = true,
             "--quit" => o.quit = true,
             "--window-child" => o.window_child = true,
             "--save-logs" => o.save_logs = true,
@@ -55,9 +60,15 @@ pub fn parse_args(args: &[String], ui_env: Option<&str>) -> Options {
     o
 }
 
+/// The environment switch: STRATA_RESUME=1 (also "on", "true", "yes", "resume"), the way STRATA_UI=browser is chosen.
+fn resume_on(v: Option<&str>) -> bool {
+    matches!(v.map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("1") | Some("on") | Some("true") | Some("yes") | Some("resume"))
+}
+
 pub const HELP: &str = "Strata\n\
   (no option)  open the Strata app window\n\
   --browser    open Strata in your default browser instead of the app window (same as STRATA_UI=browser)\n\
+  --resume     load the model you were using last, as soon as Strata opens (same as STRATA_RESUME=1)\n\
   --quit       stop a running Strata (its engine too) and leave\n\
   --save-logs  put the logs (including the log of an app window crash) into one file in your Downloads folder, to send to us\n\
 Closing the browser tab does not stop Strata in browser mode: use Quit Strata in the menu, or --quit.\n";
@@ -200,6 +211,46 @@ fn open_page_only(port: u16, token: &str) {
     }
 }
 
+/// What the host says about loading the last model (`loaded`, `model`, `already`, `reason` in `/api/native/resume`'s answer).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Resume {
+    pub loaded: bool,
+    pub model: Option<String>,
+    pub already: bool,
+    pub reason: Option<String>,
+}
+
+fn resume_of(answer: &str) -> Resume {
+    let body = answer.rsplit("\r\n\r\n").next().unwrap_or(answer);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) else { return Resume::default() };
+    Resume {
+        loaded: value["loaded"].as_bool().unwrap_or(false),
+        model: value["model"].as_str().map(String::from),
+        already: value["already"].as_bool().unwrap_or(false),
+        reason: value["reason"].as_str().map(String::from),
+    }
+}
+
+/// The line for a second start with `--resume`, in the person's words; an answer without the object still says something.
+pub fn resume_line(r: &Resume) -> String {
+    let name = r.model.clone().unwrap_or_else(|| "the model you used last".into());
+    if r.loaded {
+        return if r.already { format!("Strata has {name} loaded already.") } else { format!("Strata is loading {name}, the model you used last.") };
+    }
+    match &r.reason {
+        Some(reason) => format!("Strata could not load {name}: {reason}"),
+        None => format!("Strata could not load {name}. Open Models and load it."),
+    }
+}
+
+/// `--resume` while Strata already runs: ask that host for the last model (the host makes the same call at its own start).
+fn resume_last_model(port: u16, token: &str) {
+    match host_post(port, token, "/api/native/resume", &serde_json::json!({})) {
+        Ok(answer) => println!("{}", resume_line(&resume_of(&answer))),
+        Err(e) => eprintln!("[strata] could not ask Strata to load your last model ({e}). Open Strata and use Models."),
+    }
+}
+
 pub fn describe_exit(status: &ExitStatus) -> String {
     #[cfg(unix)]
     {
@@ -265,8 +316,11 @@ pub fn quit_running() -> i32 {
 }
 
 /// A second start while Strata already runs: focus the window, or open another tab. Starts no second host.
-fn join_running(s: &Session, browser: bool) -> i32 {
-    if browser || s.mode == "browser" {
+fn join_running(s: &Session, opts: &Options) -> i32 {
+    if opts.resume {
+        resume_last_model(s.port, &s.token);
+    }
+    if opts.browser || s.mode == "browser" {
         println!("Strata is already running. Opening it in your browser.");
         open_page_only(s.port, &s.token);
         return 0;
@@ -335,7 +389,7 @@ pub fn run(opts: &Options) -> i32 {
         return quit_running();
     }
     if let Some(s) = live_session() {
-        return join_running(&s, opts.browser);
+        return join_running(&s, opts);
     }
 
     let log = Log::open();
@@ -361,6 +415,10 @@ pub fn run(opts: &Options) -> i32 {
     cmd.env("STRATA_UI_MODE", mode).env("STRATA_APP_VERSION", env!("CARGO_PKG_VERSION"));
     if opts.browser {
         cmd.env("STRATA_UI_REASON", "chosen");
+    }
+    if opts.resume {
+        // the host loads the model of the last session with it (index.mjs, native-control.mjs)
+        cmd.env("STRATA_RESUME", "1");
     }
     let mut host = match spawn_logged(&mut cmd, "host", &host_ring, &log) {
         Ok(c) => c,
@@ -444,17 +502,50 @@ mod tests {
 
     #[test]
     fn the_command_line_picks_browser_quit_and_the_window_child() {
-        assert_eq!(parse_args(&args(&[]), None), Options::default());
-        assert!(parse_args(&args(&["--browser"]), None).browser);
-        assert!(parse_args(&args(&[]), Some("browser")).browser);
-        assert!(parse_args(&args(&[]), Some(" Browser ")).browser);
-        assert!(!parse_args(&args(&[]), Some("window")).browser);
-        assert!(parse_args(&args(&["--quit"]), None).quit);
-        assert!(parse_args(&args(&["--window-child"]), None).window_child);
-        assert!(parse_args(&args(&["--save-logs"]), None).save_logs);
-        assert!(parse_args(&args(&["-h"]), None).help);
+        assert_eq!(parse_args(&args(&[]), None, None), Options::default());
+        assert!(parse_args(&args(&["--browser"]), None, None).browser);
+        assert!(parse_args(&args(&[]), Some("browser"), None).browser);
+        assert!(parse_args(&args(&[]), Some(" Browser "), None).browser);
+        assert!(!parse_args(&args(&[]), Some("window"), None).browser);
+        assert!(parse_args(&args(&["--quit"]), None, None).quit);
+        assert!(parse_args(&args(&["--window-child"]), None, None).window_child);
+        assert!(parse_args(&args(&["--save-logs"]), None, None).save_logs);
+        assert!(parse_args(&args(&["-h"]), None, None).help);
         // anything else (a file the desktop hands over, an AppImage option) is ignored
-        assert_eq!(parse_args(&args(&["--appimage-extract-and-run", "x.gguf"]), None), Options::default());
+        assert_eq!(parse_args(&args(&["--appimage-extract-and-run", "x.gguf"]), None, None), Options::default());
+    }
+
+    #[test]
+    fn resume_comes_from_the_command_line_or_the_environment() {
+        assert!(!parse_args(&args(&[]), None, None).resume, "the default: nothing is loaded at start");
+        assert!(parse_args(&args(&["--resume"]), None, None).resume);
+        assert!(parse_args(&args(&[]), None, Some("1")).resume);
+        assert!(parse_args(&args(&[]), None, Some(" RESUME ")).resume);
+        assert!(parse_args(&args(&[]), None, Some("yes")).resume);
+        assert!(parse_args(&args(&[]), None, Some("true")).resume);
+        assert!(!parse_args(&args(&[]), None, Some("0")).resume);
+        assert!(!parse_args(&args(&[]), None, Some("browser")).resume);
+        // the two together: the page in a browser tab, your model loaded with it
+        let both = parse_args(&args(&["--resume", "--browser"]), None, None);
+        assert!(both.resume && both.browser);
+        // the help names the option and the environment switch
+        assert!(HELP.contains("--resume") && HELP.contains("STRATA_RESUME=1"));
+    }
+
+    #[test]
+    fn the_resume_line_says_what_the_host_answered() {
+        let body = "{\"loaded\":true,\"model\":\"q2_0\",\"label\":\"Qwen q2_0\",\"jobId\":\"a1\",\"summary\":\"Loading q2_0\"}";
+        let started = resume_of(&format!("HTTP/1.1 202 Accepted\r\n\r\n{body}"));
+        assert_eq!(started, Resume { loaded: true, model: Some("q2_0".into()), already: false, reason: None });
+        assert_eq!(resume_line(&started), "Strata is loading q2_0, the model you used last.");
+        // already loaded: a sentence of its own, no second load
+        let already = resume_of("HTTP/1.1 202 Accepted\r\n\r\n{\"loaded\":true,\"model\":\"q2_0\",\"already\":true}");
+        assert_eq!(resume_line(&already), "Strata has q2_0 loaded already.");
+        // the host said why: the words are the host's, not made up here
+        let refused = resume_of("HTTP/1.1 202 Accepted\r\n\r\n{\"loaded\":false,\"model\":\"q2_0\",\"reason\":\"The files for q2_0 are not on this computer.\"}");
+        assert!(resume_line(&refused).starts_with("Strata could not load q2_0: ") && resume_line(&refused).contains("not on this computer"));
+        // no object in the answer: still a sentence, and no model name made up
+        assert_eq!(resume_line(&resume_of("not json")), "Strata could not load the model you used last. Open Models and load it.");
     }
 
     #[test]
