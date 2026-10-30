@@ -110,6 +110,8 @@ class _Nvml:
 
     def _pcie_mb(self, counter):
         kb = self._uint("nvmlDeviceGetPcieThroughput", ctypes.c_uint(counter))           # KB/s
+        if kb is not None and kb > PCIE_KB_S_MAX:                                        # wrapped: the next read is good
+            kb = self._uint("nvmlDeviceGetPcieThroughput", ctypes.c_uint(counter))
         return kb / 1024.0 if kb is not None and kb <= PCIE_KB_S_MAX else None
 
 

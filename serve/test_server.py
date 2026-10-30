@@ -5051,26 +5051,32 @@ class ModelAliases(unittest.TestCase):
 
 
 class NvmlPcieTraffic(unittest.TestCase):
-    def test_a_wrapped_reading_is_no_reading(self):
-        """A GP100 hands back 200 GiB/s now and then, idle: it reaches neither the tile nor a card's total."""
+    """A GP100 hands back 200 GiB/s now and then, idle: it reaches neither the tile nor a card's total."""
+    WRAPPED = 209_708_000                                                            # 7 MB/s under 2^22 KB / 20 ms
+
+    def reads(self, *kb_s):
+        """What one reading gives from these driver answers, and how many answers were left unread."""
         from serve import telemetry
 
         class Lib:
-            rates = {0: 0, 1: 0}                                                     # tx, rx, in KB/s
+            left = list(kb_s)
 
             def nvmlDeviceGetPcieThroughput(self, dev, counter, out):
-                out._obj.value = self.rates[counter.value]
+                out._obj.value = self.left.pop(0)
                 return 0
 
         g = telemetry._Nvml.__new__(telemetry._Nvml)
         g.dev, g.lib = None, Lib()
-        g.lib.rates = {0: 2048, 1: 58 << 20}                                         # 2 MB/s; about PCIe 5.0 x16's top
-        r = g.read()
-        self.assertEqual((r["pcie_tx_mb"], r["pcie_rx_mb"]), (2.0, 59392.0))
-        g.lib.rates = {0: 209_708_000, 1: 2048}                                      # 7 MB/s under 2^22 KB / 20 ms
-        r = g.read()
-        self.assertIsNone(r["pcie_tx_mb"])
-        self.assertEqual(r["pcie_rx_mb"], 2.0)
+        return g._pcie_mb(1), len(g.lib.left)
+
+    def test_a_real_reading_is_kept(self):
+        self.assertEqual(self.reads(58 << 20, 0), (59392.0, 1))                      # about PCIe 5.0 x16's top
+
+    def test_a_wrapped_reading_is_read_again(self):
+        self.assertEqual(self.reads(self.WRAPPED, 2048), (2.0, 0))
+
+    def test_it_is_read_again_once(self):
+        self.assertEqual(self.reads(self.WRAPPED, self.WRAPPED, 2048), (None, 1))
 
 
 class AmdTelemetry(unittest.TestCase):
