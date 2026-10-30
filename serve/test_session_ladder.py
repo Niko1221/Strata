@@ -27,6 +27,7 @@ from serve.session_ladder import (
     LadderConfig,
     TrackedSession,
     SessionLadder,
+    extract_parent_id,
     extract_session_id,
     join_event,
     join_event_tolerant,
@@ -81,6 +82,23 @@ class SessionLadderDecisions(unittest.TestCase):
         self.assertEqual(extract_session_id(headers), child)
         # A main (parentless) request carries the same value in every header: unchanged behavior.
         self.assertEqual(extract_session_id({k: parent for k in headers}), parent)
+
+    def test_extract_parent_id_opencode_child(self):
+        # The child-request shape above also carries the PARENT twice: x-opencode-parent-session-id and
+        # x-parent-session-id.  The ladder reads them only to MARK the session as a child (retention
+        # retires child files before main files, and the child TTL sweep covers child files only) -
+        # never as its identity, which extract_session_id pins.
+        parent, child = "ses_parent000000000000000000", "ses_child0000000000000000000"
+        headers = {"x-opencode-session-id": child, "x-opencode-parent-session-id": parent,
+                   "x-session-affinity": parent, "X-Session-Id": parent,
+                   "x-parent-session-id": parent, "x-opencode-session": parent}
+        self.assertEqual(extract_parent_id(headers), parent)
+        self.assertEqual(extract_parent_id({"x-parent-session-id": parent}), parent)   # the alias alone
+        # A main (parentless) request carries no parent header: None, unchanged behavior.
+        self.assertIsNone(extract_parent_id({"x-opencode-session-id": parent, "X-Session-Id": parent,
+                                             "x-session-affinity": parent, "x-opencode-session": parent}))
+        self.assertIsNone(extract_parent_id({}))
+        self.assertIsNone(extract_parent_id({"x-opencode-parent-session-id": ""}))  # empty is absent
 
     def test_join_event_unique(self):
         # verbatim P1 lines:
@@ -754,6 +772,26 @@ class LadderConfigFromJson(unittest.TestCase):
                 ladder_config_of({"session_ladder": {key: bad}}, engine, "/d")
             self.assertIn(key, str(cm.exception))            # names the bad key...
             self.assertIn(bad, str(cm.exception))            # ...and the value that failed to convert
+
+    def test_ladder_config_of_child_retention_keys(self):
+        # The child-retention keys (the subagent story): retention_max_child_files caps CHILD files on
+        # top of the global retention_max_files, and child_ttl_s ages clean child checkpoints out of the
+        # ledger (0 disables the sweep).  Pinned defaults 8 files / 21600 s (6 h); same _num wrap as the
+        # other keys (a malformed value names key and value, never a bare ValueError).
+        from serve.server import ladder_config_of
+        engine = _FakeEngine(["--conversation-cache-mib", "8192"])
+        cfg = ladder_config_of({"session_ladder": {"retention_max_child_files": 4, "child_ttl_s": 900.5}},
+                               engine, "/d")
+        self.assertEqual((cfg.retention_max_child_files, cfg.child_ttl_s), (4, 900.5))
+        cfg = ladder_config_of({"session_ladder": {}}, engine, "/d")
+        self.assertEqual((cfg.retention_max_child_files, cfg.child_ttl_s), (8, 21600.0))  # pinned defaults
+        cfg = ladder_config_of({"session_ladder": {"child_ttl_s": 0}}, engine, "/d")
+        self.assertEqual(cfg.child_ttl_s, 0.0)              # 0 = the sweep is off, a legal explicit value
+        for key, bad in (("retention_max_child_files", "few"), ("child_ttl_s", "soon")):
+            with self.assertRaises(SystemExit) as cm:
+                ladder_config_of({"session_ladder": {key: bad}}, engine, "/d")
+            self.assertIn(key, str(cm.exception))
+            self.assertIn(bad, str(cm.exception))
 
 
 if __name__ == "__main__":

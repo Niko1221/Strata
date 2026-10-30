@@ -86,6 +86,8 @@ class TrackedSession:
     # replace the deeper live state with the older file and re-read the difference every turn; resident
     # beats any restore (evidence: momo-restore-churn-diagnosis-20261027T0900.md, re-reads grew
     # 2045 -> 6869 -> 12471 tokens turn after turn).
+    last_save: float = 0.0            # epoch seconds of the ladder's last save of this session's file
+    # (the TTL anchor: it survives the restart through the sidecar, where in-memory last_active does not).
 
 
 @dataclass
@@ -95,6 +97,13 @@ class LadderConfig:
     park_budget_mib: int
     idle_save_s: float = 8.0
     retention_max_files: int = 16
+    retention_max_child_files: int = 8   # child-retention (the subagent story): CHILD files are capped
+    # separately ON TOP of the global cap - a fleet of finished subagents cannot occupy the whole ledger
+    # while retention_max_files still has room.  0 disables the child cap (the global cap alone).
+    child_ttl_s: float = 21600.0         # the child TTL sweep: a clean child checkpoint no request has
+    # touched for this many seconds (max(last_active, last_save) as the anchor) is retired by the idle
+    # beat - a finished OpenCode subagent never speaks to the engine again, and silence is the only
+    # completion signal the wire carries.  0 disables the sweep.  Mains are never swept.
 
 
 def extract_session_id(headers: dict) -> str | None:
@@ -102,6 +111,25 @@ def extract_session_id(headers: dict) -> str | None:
     Header names are matched case-insensitively (BaseHTTPRequestHandler's headers are too)."""
     lowered = {k.lower(): v for k, v in headers.items()}
     for name in SESSION_HEADERS:
+        value = lowered.get(name)
+        if value:
+            return value
+    return None
+
+
+# OpenCode stamps the PARENT on a child (subagent) request twice - x-opencode-parent-session-id and the
+# x-parent-session-id alias (2.1.4 binary, alongside the affinity family).  The ladder reads them ONLY to
+# mark the session as a child: child files retire before main files under retention pressure (a child
+# re-prefills a subagent conversation, a main its whole context), and the child TTL sweep covers child
+# files alone.  Identity is never taken from here - extract_session_id pins that.
+PARENT_HEADERS = ("x-opencode-parent-session-id", "x-parent-session-id")
+
+
+def extract_parent_id(headers: dict) -> str | None:
+    """The parent session id from OpenCode's parent headers, first non-empty in PARENT_HEADERS order;
+    None for a parentless (main) request.  Case-insensitive like extract_session_id."""
+    lowered = {k.lower(): v for k, v in headers.items()}
+    for name in PARENT_HEADERS:
         value = lowered.get(name)
         if value:
             return value
@@ -329,6 +357,11 @@ class SessionLadder:
         # records as the prefix; LRU-capped to cfg.retention_max_files entries (an arrival past the cap
         # evicts the oldest, the ConvCacheLog._pending ring idiom) and pruned with the LRU file eviction,
         # so the retained text can never outrun the 16-file bound (map §6) however many ids churn.
+        self.parent_of: dict = {}                       # child sessions only: own id -> the parent id their
+        # request headers named (extract_parent_id).  The child mark that drives child-first retirement,
+        # the child cap, and the TTL sweep; a main never appears here.  Same bounded LRU idiom as
+        # last_prompts (a mark evicted behind the cap degrades that session to main-retirement treatment -
+        # safe, the ledger caps hold either way), adopted back from the sidecar across a restart.
         self._lock = threading.Lock()
         self.last_active: str | None = None             # the session the engine is on right now (Task 7's on_arrival)
         if self.cfg.enabled and self.cfg.slot_save_path:
@@ -338,7 +371,8 @@ class SessionLadder:
         """The session's tracked state, or None when the ladder never saw it (an event never invents one)."""
         return self.tracked.get(session_id)
 
-    def on_arrival(self, service, session_id: str | None, prompt: str) -> None:
+    def on_arrival(self, service, session_id: str | None, prompt: str,
+                   parent_id: str | None = None) -> None:
         """Task 7's request-path hook, called while the service FIFO is held, immediately before the prompt
         goes to the engine.  A switch (the arriving session differs from the last one the ladder saw) is
         where the engine's single conversation slot changes hands: first the outgoing session is saved when
@@ -354,6 +388,9 @@ class SessionLadder:
         degrades to a plain prefill: the request is not failed, the refusal is logged, and no phantom file
         state is recorded.  An EngineDied is re-raised unchanged: the engine is gone and the request path
         handles it as it always has.
+        `parent_id` (the request path's extract_parent_id of the same headers): a non-None value marks the
+        INCOMING session as a CHILD of that parent in parent_of - sticky (a later parentless request does
+        not clear it: OpenCode continues a subagent with the same headers) and bounded like last_prompts.
         `service` duck-types only: .engine.session_file; the save/restore directory is the ladder's own
         cfg.slot_save_path.  F4 (final review): the hook runs in windows on the ladder lock - the DECISION
         window (all ladder bookkeeping, no engine touched), then the ENGINE I/O window (session_file
@@ -380,6 +417,10 @@ class SessionLadder:
                         if self.last_active not in (None, session_id) else None)
             self.last_prompts.pop(session_id, None)  # re-inserting moves a known id to the recent end (LRU)
             self.last_prompts[session_id] = prompt   # what a save of this session will record next
+            if parent_id is not None and parent_id != session_id:
+                self.parent_of.pop(session_id, None)
+                self.parent_of[session_id] = parent_id   # the child mark (sticky: only a parent header
+            # writes it, no header clears it); a self-referential header is treated as absent.
             save_plan = None
             if outgoing is not None and should_save(outgoing, self.tracked, self.cfg) \
                     and not (outgoing.file_path is not None and not outgoing.dirty):
@@ -402,6 +443,9 @@ class SessionLadder:
             # bound, review fix): retained prompt text can never outrun the retention_max_files file bound no
             # matter how many ids churn in and out - the least-recently-arrived prompt goes first, and the cap
             # runs after the decision window captured this request's outgoing save prefix in its plan.
+            while len(self.parent_of) > self.cfg.retention_max_files:
+                del self.parent_of[next(iter(self.parent_of))]   # the same ring bound on the child marks:
+            # a mark churned out behind the cap only degrades that session to main-retirement treatment.
             self.last_active = session_id
         saved_ok = save_plan is not None and self._engine_save(service, save_plan)   # engine I/O: no lock
         if saved_ok:
@@ -625,12 +669,51 @@ class SessionLadder:
             s.resident = False                      # residency dies with the switch: from here the
             # engine keeps or loses the conversation, and a later switch-back may owe it a restore.
 
+    def _file_owners(self, path: str) -> list:
+        """The tracked sessions whose file_path names this ledger path."""
+        return [sid for sid, v in self.tracked.items() if v.file_path == path]
+
+    def _is_child_path(self, path: str) -> bool:
+        """A ledger path is a CHILD file when any owner of it carries a parent mark (parent_of).  An
+        orphan (no tracked owner) is not a child - it has nothing left to protect, and retirement reaches
+        it first for that reason."""
+        return any(self.parent_of.get(sid) for sid in self._file_owners(path))
+
+    def _retirement_victim(self) -> str:
+        """Which file an over-cap save retires (child-first, the subagent retention order).  Plain LRU
+        puts the OLDEST file first - under a subagent fleet that is a finished child's multi-GB checkpoint
+        competing with the main's: a child re-prefills a subagent conversation, a main re-prefills its whole
+        context (the expensive restore the ladder exists to avoid), so the victim is the LEAST-RECENT file
+        that is not a main file: an orphan (nothing lives behind it), then a child file.  Only when every
+        file belongs to a main does retirement fall back to the plain least-recent.  The hard cap is
+        unchanged either way: exactly one file goes per over-cap save."""
+        for path in self.saved_files:                        # least-recent first
+            if not self._file_owners(path) or self._is_child_path(path):
+                return path
+        return self.saved_files[0]
+
+    def _retire_file(self, path: str) -> None:
+        """One retired ledger file, whichever cap or sweep decided it: the ledger entry, every tracked
+        session and retained prompt bound to it, its child mark, and the file on disk."""
+        if path in self.saved_files:
+            self.saved_files.remove(path)
+        for sid in self._file_owners(path):
+            del self.tracked[sid]
+            self.last_prompts.pop(sid, None)               # the prefix bound to a retired file retires with it
+            self.parent_of.pop(sid, None)
+        try:
+            os.remove(path)
+        except OSError:
+            pass                                       # already gone (the age rule got there first): the ledger is what matters
+
     def _note_file_saved(self, session_id: str, path: str) -> None:
         """Task 7 records a ladder file it saved for this session: the file joins the LRU ledger (a re-save of
         the same path moves it to the recent end - saves overwrite in place), the session's file_path follows
-        it, and the ledger caps at cfg.retention_max_files: an over-cap save retires the least-recent file -
-        removed from disk (one canonical file per session; the cap is what bounds the big ones, the tmpfiles
-        age rule owns the rest) together with that session's tracked state."""
+        it, and the two retention caps run: first the CHILD cap (cfg.retention_max_child_files, oldest child
+        first - a fleet never occupies the whole ledger), then the global cfg.retention_max_files cap with
+        _retirement_victim's child-first order.  Each retirement removes the file from disk (one canonical
+        file per session; the caps are what bound the big ones) together with that session's tracked state.
+        The save also stamps last_save - the TTL anchor the sidecar carries across a restart."""
         if path in self.saved_files:
             self.saved_files.remove(path)
         self.saved_files.append(path)
@@ -638,16 +721,53 @@ class SessionLadder:
         if s is not None:
             s.file_path = path
             s.dirty = False                           # Task 8: the ladder's own save makes it clean
+            s.last_save = time.time()
+        while (self.cfg.retention_max_child_files > 0
+               and sum(1 for p in self.saved_files if self._is_child_path(p))
+               > self.cfg.retention_max_child_files):
+            victim = next((p for p in self.saved_files if self._is_child_path(p)), None)
+            if victim is None:
+                break                                  # unreachable while the count says otherwise
+            self._retire_file(victim)
         while len(self.saved_files) > self.cfg.retention_max_files:
-            old = self.saved_files.pop(0)
-            for sid in [k for k, v in self.tracked.items() if v.file_path == old]:
-                del self.tracked[sid]
-                self.last_prompts.pop(sid, None)               # the prefix bound to a retired file retires with it
-            try:
-                os.remove(old)
-            except OSError:
-                pass                                       # already gone (the age rule got there first): the ledger is what matters
+            self._retire_file(self._retirement_victim())
         self._write_index()       # R4: this save's file facts (entry, move, retirement) into the sidecar
+
+    def _sweep_child_ttl(self, now: float | None = None) -> int:
+        """The child TTL sweep (the subagent completion story): a finished OpenCode subagent never speaks
+        to the engine again - the wire carries no completion signal, silence IS the signal - so a CHILD
+        checkpoint no request has touched for cfg.child_ttl_s is dead weight: multi-GB files of dead
+        conversations pushing mains out of the ledger is exactly what retention must not keep.  The sweep
+        retires clean child files past their anchor - max(last_active, last_save) (in-memory activity, or
+        the sidecar-persisted save time for sessions adopted at restart) older than the TTL.  It never
+        touches: a MAIN file (mains survive across days of OpenCode sessions), a DIRTY child (its save is
+        still owed - retiring it would drop an unsaved conversation), or the CURRENT session (the engine's
+        slot keeps working from that state; its file is the safety net).  Returns the number retired;
+        cfg.child_ttl_s 0 disables the sweep entirely.  Bookkeeping + small file removal only, no engine
+        touch - it runs on the idle beat and under the ladder lock."""
+        if not self.cfg.enabled or self.cfg.child_ttl_s <= 0:
+            return 0
+        now = time.time() if now is None else now
+        victims = []
+        for path in list(self.saved_files):
+            owners = self._file_owners(path)
+            if not owners or not self._is_child_path(path):
+                continue                                # a main file, or an orphan: never swept
+            sid = owners[0]
+            if sid == self.last_active:
+                continue                                # the current session keeps its safety net
+            s = self.tracked[sid]
+            if s.dirty:
+                continue                                # save owed: the idle/switch path owns this one
+            if now - max(s.last_active, s.last_save) > self.cfg.child_ttl_s:
+                victims.append(path)
+        for path in victims:
+            self._retire_file(path)
+        if victims:
+            print(f"[strata] session ladder: retired {len(victims)} stale subagent checkpoint(s) "
+                  f"past the {self.cfg.child_ttl_s:.0f}s child TTL", flush=True)
+            self._write_index()
+        return len(victims)
 
     def _index_path(self) -> str:
         return os.path.join(self.cfg.slot_save_path, INDEX_FILE_NAME)
@@ -669,6 +789,13 @@ class SessionLadder:
                 if s.file_path == path:
                     entries[sid] = {"file": path, "tokens": s.tokens,
                                     "saved_prefix": s.saved_prefix or ""}
+                    # the child mark and the save stamp ride with the entry they describe: an adopted
+                    # ladder keeps child-first retirement order, the child cap, and the TTL anchor across
+                    # the restart (additive keys: an older ladder reading this sidecar ignores them).
+                    if self.parent_of.get(sid):
+                        entries[sid]["parent"] = self.parent_of[sid]
+                    if s.last_save > 0:
+                        entries[sid]["saved_at"] = s.last_save
         try:
             tmp = self._index_path() + ".tmp"
             with open(tmp, "w") as f:
@@ -704,14 +831,21 @@ class SessionLadder:
             if path not in files or isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
                 continue
             prefix = e.get("saved_prefix")
+            saved_at = e.get("saved_at")
+            parent = e.get("parent")
             self.tracked[sid] = TrackedSession(
                 session_id=sid, tokens=tokens, parked=False,
                 save_eligible=(tokens * PARK_COST_KIB_PER_TOKEN / 1024.0 > self.cfg.park_budget_mib
                                or tokens >= MIN_PARK_TOKENS),
                 file_path=path, saved_prefix=prefix if isinstance(prefix, str) and prefix else None,
                 last_active=0.0, evictions_at_last_switch=0, dirty=False,
-                byte_count=int(tokens * PARK_COST_KIB_PER_TOKEN * 1024))   # the same normalization an
+                byte_count=int(tokens * PARK_COST_KIB_PER_TOKEN * 1024),   # the same normalization an
             # on_turn_done intake gives: the estimate stands in until a joined event re-anchors to measured
+            last_save=(saved_at if isinstance(saved_at, (int, float)) and not isinstance(saved_at, bool)
+                       else 0.0))
+            if isinstance(parent, str) and parent and parent != sid:
+                self.parent_of[sid] = parent              # the child mark survives the restart: an
+            # adopted child still retires before an older main (pinned by test_parent_identity_...)
         for path in reversed(files):
             owner = next((sid for sid, s in self.tracked.items() if s.file_path == path), None)
             if owner is not None:
@@ -750,3 +884,5 @@ class SessionLadder:
     note_file_saved = _locked(_note_file_saved)
     record_saved_prefix = _locked(record_saved_prefix)
     on_start = _locked(_on_start)
+    sweep_child_ttl = _locked(_sweep_child_ttl)   # the idle beat's child-TTL pass: ladder state + small
+    # file removals only, no engine touch - the wrapped posture fits it exactly.
