@@ -7592,12 +7592,10 @@ def sycl_setup(argv) -> int:
     with the Intel steps swapped in. Nothing of the CUDA / HIP paths is used or changed."""
     say()
     say("  Intel Arc (--backend sycl): supported since 0.1.40.2 on Linux, tested on an Arc Pro B70 (xe) and an Arc A750 "
-        "(i915); other Arc cards and driver versions are untested, and reports help (docs/INTEL.md).")
-    if WIN:
-        fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             "run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
-    say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
-    say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
+        "(i915). Windows is supported by the same source build (an Arc B390 iGPU, docs/INTEL_ARC.md). Other Arc cards "
+        "and driver versions are untested, and reports help (docs/INTEL.md).")
+    say(f"  There is no ready-made Intel engine: it is built from source with Intel oneAPI "
+        f"({'icx' if WIN else 'icpx'} + oneMKL), docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     rest, skip = [], False
     for x in argv:                                     # setup_intel.py drives this setup through its AMD path
         if skip:

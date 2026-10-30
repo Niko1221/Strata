@@ -151,6 +151,72 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
     return ok;
 }
 
+bool gpu_shared_memory_budget_intel(uint32_t device_id, uint64_t& budget, uint64_t& usage, bool& integrated,
+                                    std::string& why) {
+    // A SYCL device's own PCI id is only a hint: the OpenCL back end answers with ids of its own (the CPU's), and a
+    // device the runtime does not classify answers with none.  So the adapter is looked for by that id first and,
+    // when no adapter carries it, as the Intel adapter with the largest pool - exact on the one-Intel-GPU PCs this
+    // port runs on, a close approximation on a rig of two identical cards.
+    budget = usage = 0;
+    integrated = false;
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    if (dxgi == nullptr) { why = "dxgi.dll not found"; return false; }
+    using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+    const auto create = (CreateFactory) (void*) GetProcAddress(dxgi, "CreateDXGIFactory1");
+    IDXGIFactory1* factory = nullptr;
+    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory1), (void**) &factory)) || factory == nullptr) {
+        why = "CreateDXGIFactory1 failed";
+        FreeLibrary(dxgi);
+        return false;
+    }
+    bool ok = false;
+    why = "no Intel adapter found";
+    for (int pass = device_id ? 0 : 1; pass <= 1 && !ok; ++pass) {
+        const uint32_t want = pass == 0 ? device_id : 0u;
+        for (UINT i = 0;; ++i) {
+            IDXGIAdapter1* a = nullptr;
+            if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND || a == nullptr) break;
+            DXGI_ADAPTER_DESC1 d{};
+            if (SUCCEEDED(a->GetDesc1(&d)) && d.VendorId == 0x8086 && (want == 0 || d.DeviceId == want)) {
+                IDXGIAdapter3* a3 = nullptr;
+                if (SUCCEEDED(a->QueryInterface(__uuidof(IDXGIAdapter3), (void**) &a3)) && a3 != nullptr) {
+                    DXGI_QUERY_VIDEO_MEMORY_INFO seg[2] = {};
+                    bool got[2] = {SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &seg[0])),
+                                   SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                                                                      &seg[1]))};
+                    // Which segment the driver puts the GPU's usable memory in is the driver's choice.  An Arc B390
+                    // (the Panther Lake iGPU, driver 32.0.101.9150, measured 2026-10-30) reports 26.67 GiB in LOCAL
+                    // and nothing in NON_LOCAL, although every byte of that pool is system RAM; a discrete card names
+                    // its VRAM LOCAL and its spill into system RAM NON_LOCAL.  The pool this process may still fill
+                    // is the larger of the two, with that segment's own use - both per process, as DXGI defines them,
+                    // which is what makes them usable for sizing a cache.
+                    int take = -1;
+                    if (got[0]) take = 0;
+                    if (got[1] && (take < 0 || seg[1].Budget > seg[take].Budget)) take = 1;
+                    if (take >= 0 && seg[take].Budget >= budget) {
+                        budget = seg[take].Budget;
+                        usage = seg[take].CurrentUsage;
+                        // An adapter with almost nothing of its own runs in the machine's memory: 0.12 GiB of
+                        // dedicated on the B390, against the 4-32 GiB a discrete Arc reports in the same field.
+                        integrated = d.DedicatedVideoMemory < (1ull << 30);
+                        ok = budget > 0;
+                        why = ok ? "" : "the adapter reports no memory budget";
+                    } else {
+                        why = "the adapter reports no memory budget";
+                    }
+                    a3->Release();
+                } else {
+                    why = "no IDXGIAdapter3 on this adapter";
+                }
+            }
+            a->Release();
+        }
+    }
+    factory->Release();
+    FreeLibrary(dxgi);
+    return ok;
+}
+
 uint64_t total_physical_memory() {
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof ms;
@@ -189,6 +255,14 @@ void unlock_resident(void* p, uint64_t bytes) {
 
 bool gpu_shared_memory_budget(const void*, uint64_t& budget, uint64_t& usage, std::string& why) {
     budget = usage = 0;
+    why = "DXGI is Windows-only";
+    return false;
+}
+
+bool gpu_shared_memory_budget_intel(uint32_t, uint64_t& budget, uint64_t& usage, bool& integrated,
+                                    std::string& why) {
+    budget = usage = 0;
+    integrated = false;
     why = "DXGI is Windows-only";
     return false;
 }

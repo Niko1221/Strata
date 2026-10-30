@@ -57,11 +57,13 @@ public:
     uint64_t mirrored_bytes() const { return mirror_bytes_; }
 
 private:
-    int fd_of(int64_t layer, int role, std::string& err);
+    void* fd_of(int64_t layer, int role, std::string& err);
 
     std::string shard_;
     std::string dir_;
-    std::vector<int> fds_;              ///< per distinct file name, opened once
+    std::vector<void*> fds_;            ///< per distinct file name, opened once. Windows: a read mapping of the
+                                        ///< shard; Linux: the fd as a pointer-sized value. void* keeps the platform
+                                        ///< header out of this one.
     std::vector<std::string> names_;
     std::vector<int> layer_fd_;         ///< per layer and role (3 * layer + role): index into fds_
     std::vector<std::vector<uint8_t>> ring_;

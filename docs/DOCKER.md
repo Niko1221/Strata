@@ -11,7 +11,7 @@ Intel Arc needs prepared model files. Keep the data volume to reuse downloads an
 
 Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the Mac app or the Terminal
 ([MAC.md](MAC.md), [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md)). Docker Desktop on **Windows** passes NVIDIA cards through
-(WSL 2) but not Radeon or Arc cards; on Windows use the native app for supported NVIDIA or AMD cards. Intel Arc has no native Windows engine; follow the Linux guide.
+(WSL 2) but not Radeon or Arc cards; on Windows use the native app for supported NVIDIA or AMD cards. Intel Arc has no Windows engine package; the source build on Windows is in [INTEL_ARC.md](INTEL_ARC.md), the Docker images are Linux.
 
 ## Which image for which card
 

@@ -6,6 +6,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/platform/memory.hpp"
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
 // the gfx906 compat build (PR #638), which compiles this file as HIP without STRATA_USE_HIP
@@ -63,6 +64,24 @@ static unsigned long long own_drm_local_bytes() {
 #endif
 }
 
+namespace {
+/// STRATA_UMA_HEADROOM_GIB: a whole number of GiB of RAM that a shared-memory card leaves for everything else
+/// (0..1024, default 6).  Both unified-memory paths use it: /proc/meminfo's MemAvailable on Linux, the WDDM
+/// shared budget on Windows.
+unsigned long long uma_headroom_bytes() {
+    static const unsigned long long head = [] {
+        const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
+        if (h == nullptr) return 6ull << 30;
+        char* end = nullptr;
+        const long v = std::strtol(h, &end, 10);
+        if (end != h && *end == '\0' && v >= 0 && v <= 1024) return (unsigned long long) v << 30;
+        std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
+        return 6ull << 30;
+    }();
+    return head;
+}
+}  // namespace
+
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
 // NVIDIA's reference snippet): an expert cache that pushes the system into swap would be far slower than a smaller one.
@@ -98,6 +117,34 @@ size_t device_free_bytes() try {
             std::fprintf(stderr, "strata: the driver reports the whole card as free although this process holds %.2f GiB of it (Arc A750/i915 does this); sizing from the DRM fdinfo instead\n", (double) own / 1073741824.0);
         free_b = (size_t) (total_b - own);
     }
+#if defined(_WIN32)
+    // An Arc iGPU (the B390 of a Panther Lake PC) has no memory of its own: its "card memory" is the WDDM shared
+    // (non-local) segment, which is system RAM the GPU may still take.  Level Zero reports that segment's free
+    // bytes only while the runtime reads the driver's sysman stats (ZES_ENABLE_SYSMAN=1); without it the figure is
+    // the whole aperture, the cache fills it, and Windows moves the card's pages out - the same trap the HIP build
+    // dodges on a Strix Halo (#243).  DXGI asks the driver for that budget directly; the SYCL runtime names no
+    // adapter by LUID, so the Intel adapter is matched by its PCI device id.
+    {
+        uint32_t did = 0;
+        try { did = (uint32_t) dpct::get_current_device().get_info<sycl::ext::intel::info::device::device_id>(); }
+        catch (...) { did = 0; }
+        uint64_t budget = 0, usage = 0;
+        bool integrated = false;
+        std::string why;
+        if (strata::platform::gpu_shared_memory_budget_intel(did, budget, usage, integrated, why) && integrated) {
+            const unsigned long long head = uma_headroom_bytes();
+            if (budget > usage + head && budget - usage - head > free_b) {
+                static std::atomic<bool> said{false};
+                if (!said.exchange(true))
+                    std::fprintf(stderr, "strata: integrated Arc: sizing from the WDDM shared-memory budget %.1f GiB"
+                                         " - %.1f GiB in use - %.1f GiB headroom\n",
+                                 (double) budget / 1073741824.0, (double) usage / 1073741824.0,
+                                 (double) head / 1073741824.0);
+                free_b = (size_t) (budget - usage - head);
+            }
+        }
+    }
+#endif
 #if defined(__linux__) && !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
     // per device: a box can mix an integrated GPU (an APU) with a discrete one, and the answer is the CURRENT device's
     static std::atomic<int> uma_cache[64];   // 0 unknown, 1 integrated (unified memory), 2 discrete
@@ -126,16 +173,7 @@ size_t device_free_bytes() try {
                 if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) break;
             std::fclose(m);
             // STRATA_UMA_HEADROOM_GIB: a whole number of GiB, 0..1024; anything else keeps the default 6 (said once)
-            static const long gib = [] {
-                const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
-                if (h == nullptr) return 6L;
-                char* end = nullptr;
-                const long v = std::strtol(h, &end, 10);
-                if (end != h && *end == '\0' && v >= 0 && v <= 1024) return v;
-                std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
-                return 6L;
-            }();
-            const unsigned long long head = (unsigned long long) gib << 30;
+            const unsigned long long head = uma_headroom_bytes();
             const unsigned long long avail = kb << 10;
             if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
         }

@@ -24,6 +24,9 @@ BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
     "metal": ("macos-arm64",),
     "cuda": ("windows-x86_64", "linux-x86_64", "linux-aarch64"),   # linux-aarch64: the NVIDIA DGX Spark (GB10, sm_121) only
     "hip": ("windows-x86_64", "linux-x86_64"),
+    # A packaged Intel engine exists for Linux only.  Windows runs the same engine built from source with oneAPI
+    # (docs/INTEL_ARC.md, an Arc B390 measured 2026-10-30): setup --backend sycl and sycl/setup_intel.py accept it,
+    # and this row keeps the handoff from promising a package that was never published.
     "sycl": ("linux-x86_64",),
     "cpu": ("macos-arm64", "macos-x86_64", "windows-x86_64", "linux-x86_64"),
 }

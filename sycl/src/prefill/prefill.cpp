@@ -49,6 +49,9 @@
 #include <chrono>
 #include <stdexcept>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>   // _mkdir: MSVC has no POSIX mkdir with a mode argument
+#endif
 #include <tuple>
 #include <chrono>
 #include <cmath>
@@ -909,7 +912,11 @@ void i8_cache_write(const std::string& key, const I8Cross& c) {
     }
     std::FILE* f = std::fopen(path.c_str(), "w");
     if (!f) {
+#ifdef _WIN32
+        ::_mkdir(dir.c_str());   // Windows: no mode argument
+#else
         ::mkdir(dir.c_str(), 0755);
+#endif
         f = std::fopen(path.c_str(), "w");
         if (!f) return;
     }

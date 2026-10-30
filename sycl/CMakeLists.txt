@@ -270,6 +270,14 @@ add_library(strata_prefill STATIC ${_prefill}
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
+if(WIN32)
+  # -qmkl=sequential adds the MKL import libraries by itself on Linux; on Windows it adds none, and the
+  # oneapi::mkl::blas (SYCL) domain lives in its own DLL import library. Sequential/ILP64, as -qmkl picks.
+  find_library(STRATA_MKL_SYCL_BLAS mkl_sycl_blas_dll HINTS $ENV{MKLROOT}/lib)
+  find_library(STRATA_MKL_ILP64 mkl_intel_ilp64_dll HINTS $ENV{MKLROOT}/lib)
+  find_library(STRATA_MKL_CORE mkl_core_dll HINTS $ENV{MKLROOT}/lib)
+  target_link_libraries(strata_prefill PUBLIC ${STRATA_MKL_SYCL_BLAS} ${STRATA_MKL_ILP64} ${STRATA_MKL_CORE})
+endif()
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
