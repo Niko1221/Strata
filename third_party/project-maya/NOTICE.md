@@ -27,3 +27,6 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
 - A5, the prompt path's flow timing correction kept per prompt-size class (`ds4_path_policy.hpp`, `PathModel::flow`; only
   the opt-in `DS4_PICK=adaptive` timing pick uses it, the default pick is by length): Project Maya #612 (Will Hampson,
   6e0d27d). Test: `tests/dsv41/path_policy_test.cpp`.
+
+Taken from Project Maya v1.1.35 to v1.1.42 on branch f-040-maya-ds:
+- the thread pool's generation fence (#618, Cody Harrison).
