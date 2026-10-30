@@ -15,7 +15,6 @@
 #include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
-#include "strata/kernels/cpu/tq_cpu.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -122,6 +121,10 @@ bool iq512x_supported(int) noexcept { return false; }
 void iq512x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX-512 exact i-quant kernel");
 }
+bool iq256x_supported(int) noexcept { return false; }   // (the DeepSeek CPU lane's multi-token rows: ggml-cpu's NEON dots instead)
+void iq256x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
+    unsupported("the AVX2 multi-token i-quant rows");
+}
 int iq256_variant() noexcept { return 0; }
 int iq256_variants() noexcept { return 0; }
 void iq256_gu_rows_v(int, int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {
@@ -203,12 +206,6 @@ void nvfp4_512_rows(const uint8_t* w, size_t row_bytes, int n, const void* const
 void q2_0_gguf_rows_multi_avx1_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out, int r0, int r1) { cpu_kernel_unreachable("q2_0_gguf_rows_multi_avx1_legacy"); }
 void q2_0_gguf_rows_multi_avx1(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out, int r0, int r1) { cpu_kernel_unreachable("q2_0_gguf_rows_multi_avx1"); }
 void q8k_quant_avx1(const float* x, void* y, int64_t n) { cpu_kernel_unreachable("q8k_quant_avx1"); }
-void tq_gu_rows(TqIsa isa, int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt, float* const* ff, int r0, int r1) { cpu_kernel_unreachable("tq_gu_rows"); }
-TqIsa tq_isa() { return TqIsa::scalar; }
-int tq_kbits(int ggml_type) noexcept { return 0; }
-bool tq_kernels_enabled() { return false; }
-void tq_rows(TqIsa isa, int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out, int r0, int r1) { cpu_kernel_unreachable("tq_rows"); }
-
-bool tq_supported(int) noexcept { return false; }
+// (the trellis rows are tq_cpu.cpp's: its scalar kernel runs here, as in the Metal build)
 
 }  // namespace strata::kernels::cpu

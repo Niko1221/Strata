@@ -25,14 +25,33 @@ class UnifiedMemoryCard(unittest.TestCase):
         with mock.patch.object(setup, "out", return_value=GB10), mock.patch.object(setup, "is_arm64", return_value=False):
             self.assertEqual(setup.gpus(), [])
 
-    def test_gb10_takes_the_pool_size_from_the_machine_ram(self):
+    def test_gb10_is_a_unified_memory_gpu_with_the_ram_less_the_os_share(self):
         with mock.patch.object(setup, "out", return_value=GB10), mock.patch.object(setup, "is_arm64", return_value=True), \
-                mock.patch("builtins.open", mock.mock_open(read_data=MEMINFO)):
+                mock.patch.object(setup, "ram_gb", return_value=130000000 / 1024.0 / 1024.0):
             found = setup.gpus()
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["name"], "NVIDIA GB10")
         self.assertEqual(found[0]["arch"], "121")
-        self.assertAlmostEqual(found[0]["vram_gb"], 130000000 / 1024.0 / 1024.0, places=3)
+        usable = 130000000 / 1024.0 / 1024.0 - setup.UMA_OS_LEFT_GB
+        self.assertAlmostEqual(found[0]["vram_gb"], usable, places=3)
+        self.assertTrue(found[0]["uma"])
+        self.assertEqual(found[0]["dedicated_gb"], 0.0)       # none of it is room beside the RAM: the low-RAM rules must not count it twice
+        self.assertAlmostEqual(found[0]["shared_gb"], usable, places=3)
+        self.assertEqual(setup.low_ram_vram(found[0]), 0.0)
+
+    def test_the_spark_settings_are_for_the_gb10_only(self):
+        gb10 = {"uma": True, "arch": "121", "name": "NVIDIA GB10"}
+        with mock.patch.object(setup, "is_arm64", return_value=True), mock.patch.object(setup.sys, "platform", "linux"):
+            self.assertTrue(setup.is_gb10(gb10))
+            self.assertFalse(setup.is_gb10({**gb10, "arch": "110"}))               # another unified-memory NVIDIA part: not measured
+            self.assertFalse(setup.is_gb10({"uma": False, "arch": "121"}))
+            self.assertFalse(setup.is_gb10({"arch": "121"}))
+        with mock.patch.object(setup, "is_arm64", return_value=False):
+            self.assertFalse(setup.is_gb10(gb10))
+        self.assertFalse(setup.is_gb10(None))
+
+    def test_a_normal_x86_card_is_never_a_gb10(self):
+        self.assertFalse(setup.is_gb10({"arch": "121", "vram_gb": 32.0, "name": "a discrete card"}))
 
     def test_a_normal_card_is_unchanged(self):
         with mock.patch.object(setup, "out", return_value="0, NVIDIA GeForce RTX 5070, 12227, 12.0, 580.1\n"):
@@ -46,6 +65,14 @@ class ArmCpu(unittest.TestCase):
             name, avx2, avx512 = setup.cpu_info()
         self.assertFalse(avx2)
         self.assertFalse(avx512)
+
+    def test_an_arm_cpu_is_named_from_lscpu(self):
+        lscpu = "Architecture: aarch64\nModel name:          Cortex-X925\nModel name:          Cortex-A725\nModel name:          Cortex-X925\n"
+        with mock.patch.object(setup, "WIN", False), mock.patch("builtins.open", mock.mock_open(read_data=ARM_CPUINFO)), \
+                mock.patch.object(setup, "out", return_value=lscpu):
+            name, avx2, avx512 = setup.cpu_info()
+        self.assertEqual(name, "Cortex-X925 + Cortex-A725")
+        self.assertEqual((avx2, avx512), (False, False))
 
     def test_an_x86_cpuinfo_is_read_as_before(self):
         text = "flags\t\t: fpu avx avx2 avx512f avx512bw avx512vl avx512_vnni avx512vbmi\nmodel name\t: Test CPU\n"

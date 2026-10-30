@@ -441,6 +441,9 @@ if(STRATA_SYCL_PARITY)
   add_executable(esimd_moe_mode_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_moe_mode_test.cpp)   # 151-b70: the default choice of the expert chain (no GPU)
   target_include_directories(esimd_moe_mode_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME esimd_moe_mode_test COMMAND esimd_moe_mode_test)
+  add_executable(pipeline_auto_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/pipeline_auto_test.cpp)   # the default of --pipeline-windows (no GPU)
+  target_include_directories(pipeline_auto_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME pipeline_auto_test COMMAND pipeline_auto_test)
   if(_i8_esimd)   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build, nor with STRATA_SYCL_I8_ESIMD=OFF
     add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
     add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
@@ -451,6 +454,13 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # SYCL port: the same grouped native experts timed per mode on real GGUF rows at the decode window's shape
+    # (G experts, T tokens), checked bit for bit against the reference mode.  The source was in the tree without a
+    # target, so the numbers that decide the decode expert path could not be reproduced.
+    #   native_expert_bench <shard1.gguf> <layer> <G> <T> <ref mode> <mode> [iters]
+    add_executable(native_expert_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_bench.cpp)
+    target_include_directories(native_expert_bench PRIVATE ${STRATA_ROOT}/third_party/ggml)
+    target_link_libraries(native_expert_bench PRIVATE strata_kernels strata_kernels_cpu)
     # Gyro (APR) trellis experts on real GGUF tensors: tq_sycl_parity <pack> <model.gguf> [layer ...]
     add_executable(tq_sycl_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/tq_sycl_parity.cpp)
     target_include_directories(tq_sycl_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)

@@ -208,6 +208,7 @@ class Install(unittest.TestCase):
         extra = [mock.patch.object(setup, "get_prebuilt", fake_prebuilt(calls)),
                  mock.patch.object(setup, "pip_cuda_libs", lambda tk=13: libs.append(tk)),
                  mock.patch.object(setup, "OLD_GPUS", None),
+                 mock.patch.object(setup, "cuda12_min_driver", lambda feed=False: (575, "575.51", "the published figure")),   # never the real feed
                  mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "", "STRATA_CUDA": "", **(env or {})})]
         code, out, cfg, asked = install(ram, found, argv, extra=extra)
         return code, out, cfg, calls, libs
@@ -244,6 +245,8 @@ class Install(unittest.TestCase):
     def test_a_p40_with_an_older_driver(self):
         code, out, cfg, calls, _ = self.run_setup(95.0, [P40], argv_for("qwen", "IQ3_XXS"))
         self.assertEqual(code, 0, out[-3000:])                 # driver 535: enough for CUDA 12
+        self.assertIn("575.51", out)                            # #4247: said with the package's own figure, and as a warning, not a stop
+        self.assertNotIn("works with driver 528", out)
         self.assertEqual(calls, [12])
 
     def test_a_newer_card_beside_a_v100_is_unchanged(self):

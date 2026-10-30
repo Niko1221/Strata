@@ -285,6 +285,9 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
     if a.dspark:
         s.extra = {**s.extra, "--dspark": a.dspark}
+        if a.dspark == "on" and sys.platform == "darwin":
+            notices.append(S.Notice("warn", "DeepSeek's drafter (DSpark) is not supported on a Mac yet, so --dspark on will probably stop the engine.",
+                                    "Leave it out: on a Mac the drafter is off and answers are as fast without it."))
     if a.pool_cores:
         text = a.pool_cores.replace(" ", "")
         if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):

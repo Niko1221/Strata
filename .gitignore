@@ -89,3 +89,9 @@ node_modules/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
+
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/

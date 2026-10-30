@@ -9,7 +9,7 @@
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       at the pinned commit (setup.py LLAMA_CPP_COMMIT); mtmd and ggml come from it
 #   HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>   (TheRock: _rocm_sdk_devel, _rocm_sdk_core, _rocm_sdk_libraries_*)
-#   OUT=<work folder>  PKGVER=0.1.52  COMMIT=<source commit for the build id>  JOBS=16
+#   OUT=<work folder>  PKGVER=0.1.54  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   DSV41=1|0                        also build strata-dsv41 (the DeepSeek-V4.1 engine, tools/dsv41/build_hip_linux.sh's flags) and ship it beside
 #                                    strata: default 1 for the rx9070 variant (gfx1200 gfx1201; built and run on an R9700), 0 for the others
@@ -26,7 +26,7 @@ HP=${HP:?HP=<ROCm devel root>}
 CORE=${CORE:-$HP}
 LIBW=${LIBW:-$HP}
 OUT=${OUT:-$PWD/work-$V}
-PKGVER=${PKGVER:-0.1.52}
+PKGVER=${PKGVER:-0.1.54}
 COMMIT=${COMMIT:-unknown}
 JOBS=${JOBS:-16}
 case "$V" in

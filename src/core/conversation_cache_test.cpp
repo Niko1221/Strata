@@ -720,5 +720,30 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // #4420: a batch slot's chain holds one checkpoint (its admission's): parking it must not drop (#342) the main session's copy of the
+        // same conversation that also holds the root a sibling borrows from (an agent's system prompt and tools) - supersedes_richer()
+        // names that case, so the slot is not parked
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        SavedConversation main_copy = image({1, 2, 3, 4, 10, 11, 12});
+        main_copy.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11})};
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(std::move(main_copy)), "park the main session's copy with its root and turn checkpoints");
+        const std::vector<int32_t> slot_ids{1, 2, 3, 4, 10, 11, 12, 20, 21};          // the slot decoded the reply
+        const std::vector<ConversationCheckpoint> slot_chain{cp({1, 2, 3, 4, 10, 11})};   // the admission's only one
+        check(cache.supersedes_richer(slot_ids, {}, slot_chain, true), "the slot's park would drop the root checkpoint");
+        const std::vector<ConversationCheckpoint> full_chain{cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11})};
+        check(!cache.supersedes_richer(slot_ids, {}, full_chain, true), "a chain that holds both loses nothing");
+        check(!cache.supersedes_richer(slot_ids, {}, slot_chain, false), "steering mode is isolated");
+        check(!cache.supersedes_richer(std::vector<int32_t>{1, 2, 3, 4, 30, 31}, {},
+                                       std::vector<ConversationCheckpoint>{cp({1, 2, 3, 4, 30})}, true),
+              "another conversation on the same root supersedes nothing");
+        check(cache.size() == 1 && cache.superseded() == 0, "the predicate changes nothing");
+        const auto sib = cache.best(std::vector<int64_t>{1, 2, 3, 4, 40}, {}, true);
+        check(sib.tokens == 4 && cache.borrows(sib), "a sibling still borrows the root");
+        // what drop_superseded does with the slot's chain (the park this rule prevents): the root goes
+        check(cache.drop_superseded(slot_ids, {}, slot_chain, true) == 1 && cache.size() == 0,
+              "the slot's chain supersedes the richer copy");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
