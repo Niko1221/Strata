@@ -1,6 +1,6 @@
 {
-  "include/strata/core/conversation_cache.hpp": "221217f03200bc23f52f5a6eaffe6809c47c01841980429746334ae1d60f0f96",
-  "include/strata/core/conversation_buffer.hpp": "88bf74178628af541b0c0259b7762d73b1f1b6850143e8e73545d53dbf43e6b1",
-  "include/strata/core/progress.hpp": "ff8151a46b5f9768a6f3fddb4ed57edd15af096f619ffa1859b0721b5a83b054",
+  "include/strata/core/conversation_cache.hpp": "2d74ed5e73bf56c2dd9bae853f4a7a3246064db8378157d5aec037a887478df3",
+  "include/strata/core/conversation_buffer.hpp": "0530e4eb3dd11580cf67943b6421d99035f3d1a38a9867c282a8135aedca0be6",
+  "include/strata/core/progress.hpp": "cf0376eb23e2fd43a062c1fb40d3ac7885ef8283975051af51034f3f7182d622",
   "tests/core/conversation_cache_release_probe.cpp": "e30e7ceb828aa79a98fc4477ec9d16d97013a82cfba6b7bff6dbab15e160251f"
 }
