@@ -20,6 +20,10 @@
 #include <initializer_list>
 #include <stdexcept>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_is_hip_device(int ordinal);   // cmake/hybrid.cmake; defined in src/core/hybrid_runtime.cpp
+#endif
+
 namespace strata::core {
 namespace {
 
@@ -200,6 +204,15 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
     if (hi_prio) hipDeviceGetStreamPriorityRange(&prio_lo, &prio_hi);
     if (hipStreamCreateWithPriority(&cs_, hipStreamNonBlocking, hi_prio ? prio_hi : 0) != cudaSuccess ||
         hipStreamCreateWithPriority(&cs2_, hipStreamNonBlocking, hi_prio ? prio_hi : 0) != cudaSuccess) {
+#elif defined(STRATA_HYBRID)
+    // Hybrid: the drafter takes the defaults of the runtime its card runs on (device 0; the wrapped calls reach it):
+    // CUDA default priority policy on a CUDA primary, the HIP opt-in rule (STRATA_DF2_PRIO=1) on a HIP primary.
+    static const bool hip0 = strata_hybrid_is_hip_device(0) != 0;
+    static const bool hi_prio = [] { const char* e = std::getenv("STRATA_DF2_PRIO");
+        return hip0 ? (e != nullptr && e[0] == '1') : !(e != nullptr && e[0] == '0'); }();
+    if (hi_prio) cudaDeviceGetStreamPriorityRange(&prio_lo, &prio_hi);
+    if (cudaStreamCreateWithPriority(&cs_, cudaStreamNonBlocking, hi_prio ? prio_hi : 0) != cudaSuccess ||
+        cudaStreamCreateWithPriority(&cs2_, cudaStreamNonBlocking, hi_prio ? prio_hi : 0) != cudaSuccess) {
 #else
     static const bool hi_prio = [] { const char* e = std::getenv("STRATA_DF2_PRIO"); return !(e && e[0] == '0'); }();
     cudaDeviceGetStreamPriorityRange(&prio_lo, &prio_hi);
@@ -445,6 +458,9 @@ bool Dflash2Drafter::capture(int n, const float* taps, std::string& err) {
     // measured: -0.3 ms a round on an RTX 3060, +0.0..0.7 on a Strix Halo (gfx1151), so the HIP builds keep one stream (STRATA_DF2_FORK=1 / 0 overrides)
 #if defined(STRATA_USE_HIP)
     static const bool fork_default = false;
+#elif defined(STRATA_HYBRID)
+    // The measured fork gain is a CUDA-side number (+0.0..0.7 ms on a Strix Halo): a hybrid HIP primary keeps one stream.
+    static const bool fork_default = strata_hybrid_is_hip_device(0) == 0;
 #else
     static const bool fork_default = true;
 #endif
