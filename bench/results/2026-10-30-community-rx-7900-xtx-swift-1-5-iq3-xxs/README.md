@@ -7,7 +7,7 @@ Measured on 2026-10-30 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 - GPU and VRAM: AMD Radeon RX 7900 XTX, 24 GiB VRAM
 - CPU: AMD Ryzen 9 5900X 12-Core Processor (12 cores, 24 threads); installed RAM: 63.9 GiB; storage: SAMSUNG MZ7LM1T9HMJP-00005 SSD/SATA; Msft Virtual Disk SSD/File Backed Virtual; TOSHIBA MG09ACA18TE HDD/SATA; CT500MX500SSD1 SSD/SATA
 - OS: Windows 10 (10.0.19044); GPU driver: 32.0.32015.7029; CUDA (driver supports up to): not read
-- Model files and packs: on a KINGSTON SKC3000D2048G NVMe SSD (the list above leaves this drive out)
+- Model files and packs: on a KINGSTON SKC3000D2048G NVMe SSD (KC3000 2 TB, M.2 2280, PCIe 4.0 x4, Phison E18, rated 7,000 MB/s sequential read; Windows reports the link at PCIe 4.0 x4; also the Windows system drive). The list above leaves this drive out.
 - Strata: project 0.1.54, commit 870aedd9; engine 0.1.54
 - Strata release v0.2.8 (a clone of tag v0.2.8); setup installed the ready-made engine 0.1.54-windows-x86_64-hip-rdna3 from the signed update feed
 - Background workloads (added by hand): llama-swap proxy idle with a 230M llama.cpp title generator loaded on the CPU (-ngl 0); qBittorrent; ProtonVPN service; Signal; opencode; Microsoft SQL Server (sqlservr); WizTree; Windows Defender
