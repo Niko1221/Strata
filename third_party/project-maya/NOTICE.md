@@ -13,3 +13,6 @@ Changes made while porting into Strata are listed in the git history of the `src
 Later changes taken from Project Maya releases v1.1.18 to v1.1.26 (the same approach re-written onto Strata's engine,
 for example the long-prompt layer skip, the thinking budget, conversation slots) are covered by the same copyright
 and permission notice, in `LICENSE` beside this file.
+
+Taken from Project Maya v1.1.36 (MIT, same copyright and permission notice as above):
+- the thread pool's generation fence in `src/dsv41/ds4_pool.hpp` (#618, Cody Harrison).
