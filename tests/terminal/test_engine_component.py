@@ -294,6 +294,24 @@ class WindowsAmd(unittest.TestCase):
         with mock.patch.object(ec.shutil, "which", lambda name: None), mock.patch.object(ec.os, "name", "nt"),                 mock.patch.object(ec, "host_platform", return_value="windows-x86_64"),                 mock.patch.object(ec, "windows_display_adapters", return_value=self.TESTER_A):
             self.assertEqual(ec.detect_backend({}), ("hip", "display adapters"))
 
+    def test_cim_output_handles_a_failed_text_reader(self):
+        completed = subprocess.CompletedProcess(["powershell"], 0, stdout=None)
+        with mock.patch.object(ec.os, "name", "nt"), \
+                mock.patch.object(ec.shutil, "which", return_value="powershell"), \
+                mock.patch.object(ec.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(ec._windows_adapters_cim(), [])
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_mcp_command_reader_uses_replacement_decoding(self):
+        from tools import strata_mcp
+
+        completed = subprocess.CompletedProcess(["child"], 0, stdout="GPU \ufffd")
+        with mock.patch.object(strata_mcp.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(strata_mcp.run_quiet(["child"]), "GPU \ufffd")
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
     def test_the_arch_table_is_the_one_setup_uses(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         import setup as strata_setup
