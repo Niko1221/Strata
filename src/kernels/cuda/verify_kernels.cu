@@ -670,7 +670,17 @@ __global__ void row_top_prob_kernel(const float* __restrict__ logits, int n_voca
     const float* l = logits + (size_t) t * n_vocab;
     const float m = l[ids[t]];
     float s = 0.0f;
-    for (int i = threadIdx.x; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
+    // eight loads in flight a thread (one per round was latency-bound), added in the same order: the same sum
+    const int bd = (int) blockDim.x;
+    int i = threadIdx.x;
+    for (; i + 7 * bd < n_vocab; i += 8 * bd) {
+        float x[8];
+#pragma unroll
+        for (int u = 0; u < 8; ++u) x[u] = l[i + u * bd];
+#pragma unroll
+        for (int u = 0; u < 8; ++u) s += __expf(x[u] - m);
+    }
+    for (; i < n_vocab; i += bd) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
     __syncthreads();
