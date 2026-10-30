@@ -519,6 +519,12 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   tool the request did not declare. The server window prints the same names (`N <tool_call> block(s) ... went back as text`), and
   `/metrics/prometheus` counts the blocks in `strata:tool_calls_unread_total`. A block that is malformed (not an undeclared name) is counted
   there and in the window, but has no name to list.
+- **Anthropic's tool search on `/v1/messages` (#4663).** A tool with `"defer_loading": true` is declared but not listed in the
+  prompt; a `tool_reference` block in a `tool_result` (a tool search's result) puts that tool's definition into the prompt where it
+  stands, in the form the tool list uses, so loading a tool leaves the prompt's start, and the prompt cache, unchanged. Any other
+  reference is left out, as before (a tool whose MCP server is gone must not fail the session). A request with a deferred tool holds back more tools than
+  it declares (Claude Code declares ToolSearch and a `DeferredToolPlaceholder` and names its MCP tools in the conversation), so
+  there a call for an undeclared name is returned as a `tool_use`: Claude Code runs it, where text ended the turn.
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema
   must accept only JSON objects at its root (`"type":"object"`, or `anyOf`/`oneOf` of object schemas). Local `#` references
   work and remote ones are refused. This is schema prompting followed by server validation, not grammar-constrained
