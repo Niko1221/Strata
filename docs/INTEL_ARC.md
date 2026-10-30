@@ -195,6 +195,10 @@ list (there is no `/sys/class/drm`), uses `build-win\strata.exe` and writes a co
 Docker, and the oneAPI runtime folders go in the config's `lib_dirs` because a service does not inherit what
 `setvars.bat` put on `PATH`.
 
+`strata launch --plan` on such a PC says the same thing in one line: there is no Intel engine package to download, so the
+engine is built here. The launcher finds the card in Windows' own device list, and an Arc iGPU is counted as what it
+is - a chip that shares the computer's RAM, never twice (its own carve-out plus the RAM).
+
 Two settings a Windows run needs, and the config writes both:
 
 - **`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`.** Windows lists the same chip twice, once through Level Zero and once

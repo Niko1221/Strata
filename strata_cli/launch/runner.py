@@ -198,6 +198,24 @@ def no_gpu_words(names: list[str] | None = None) -> str:
     return NO_GPU_PREFIX
 
 
+def engine_plan_note(vendors: set[str] | None = None, os_name: str | None = None) -> str:
+    """The plan's one line about the engine when none is installed.  Normally Strata downloads the package for the
+    card; an Intel card on Windows has nothing to download, because no Intel package is published for any system -
+    there the engine is built with oneAPI and setup's Intel route uses it (docs/INTEL_ARC.md, an Arc B390 measured
+    on Windows 2026-10-30).  `vendors` / `os_name` come from the computer the plan is showing; this PC answers when
+    they are not given."""
+    from strata_control import engine_component as ec, targets
+    if vendors is None or os_name is None:
+        from strata_control import gpu_fit
+        vendors = {m for m in (gpu_fit.vendor_of_backend(b) for b in ec.gpu_makes_present()) if m}
+        os_name = ""
+    if str(os_name or targets.host_platform()).lower().startswith("windows") and vendors == {"intel"}:
+        return (" Your graphics card is an Intel Arc, and there is no Intel engine to download: build it with Intel "
+                "oneAPI and run `setup --backend sycl`, which sets the card up with the engine you built "
+                "(docs/INTEL_ARC.md, \"Windows\").")
+    return " The engine for your graphics card is downloaded first (from the update source; its size is shown when it starts)."
+
+
 def _step_for(reason: str) -> str:
     return NO_GPU_STEP if reason.startswith(NO_GPU_PREFIX) else NO_ENGINE_STEP
 
@@ -1983,7 +2001,13 @@ class Runner:
             text += (f" An engine ({', '.join(here[:3])}) is installed, but it did not pass Strata's check on this computer, so Strata looks for a working one "
                      "first. `strata components engine` says why.")
         elif not engine:
-            text += " The engine for your graphics card is downloaded first (from the update source; its size is shown when it starts)."
+            comp = None
+            try:
+                comp = self.catalog.computer()
+            except Exception:                                # noqa: BLE001 - the plan must not fail on this
+                comp = None
+            text += engine_plan_note({str(g.get("vendor") or "") for g in (comp.gpus if comp else [])} or None,
+                                     comp.os if comp else None)
         return {"gb": gb, "parts": parts, "engine_missing": not engine and not here, "engine_usable": engine, "own_files": st.own_files, "text": text}
 
     def ready_pack_gap(self) -> dict | None:

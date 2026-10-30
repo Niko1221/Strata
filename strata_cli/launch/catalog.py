@@ -217,6 +217,37 @@ def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
     return cards
 
 
+# Arc iGPUs: the graphics chip of a Panther Lake PC.  It has no memory of its own, so gpu_fit counts only the
+# carve-out Windows reports for it, beside the computer's RAM.  0xb082 is the Arc B390 (measured on Windows, driver
+# 32.0.101.9150); the rest of the 0xb08x block is the same family, untested.
+INTEL_INTEGRATED_IDS = frozenset({"0xb080", "0xb081", "0xb082", "0xb083"})
+
+
+def intel_arc_cards_windows(adapters: list[dict] | None = None) -> list[dict]:
+    """The Intel GPUs of a Windows computer, from the display adapters Windows has a driver for (there is no
+    /sys/class/drm there).  An id the table does not name keeps the name Windows gives it."""
+    if adapters is None:
+        from strata_control import engine_component as ec
+        adapters = ec.windows_display_adapters()
+    cards: list[dict] = []
+    for adapter in adapters:
+        if str(adapter.get("vendor")) != "8086":
+            continue
+        did = "0x%04x" % int(adapter.get("device") or 0)
+        name, gb = INTEL_ARC.get(did, (str(adapter.get("name") or f"Intel GPU {did}"), float(adapter.get("vram_gb") or 0.0)))
+        card = {"vendor": "intel", "name": name if name.startswith("Intel") else "Intel " + name,
+                "vram_gb": gb, "usable": True, "index": len(cards)}
+        if did in INTEL_INTEGRATED_IDS:
+            card["integrated"] = True
+            # Windows names the pool the chip may take (28 GiB of this PC's 31.5 GB on the B390) as its memory, and
+            # that pool IS the RAM: a dedicated carve-out is not reported.  gpu_fit counts only `dedicated_gb`
+            # beside the RAM, so leaving it 0 keeps the model from being counted twice (docs/MULTI_GPU.md, the
+            # Strix Halo rule).
+            card["dedicated_gb"] = 0.0
+        cards.append(card)
+    return cards
+
+
 class Catalog:
     """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
@@ -259,10 +290,13 @@ class Catalog:
             return hw
         hw = dict(self.strata.hardware(fresh=fresh))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
-        if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
-            arc = intel_arc_cards()
+        if not hw.get("gpus"):                         # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+            # Windows too: an Arc iGPU there is the only graphics device of the PC, and gpu_fit leaves an integrated
+            # chip out when the computer has a card with memory of its own, so this cannot outrank a real card.
+            arc = (intel_arc_cards_windows() if str(hw.get("os", "")).startswith("Windows") or os.name == "nt"
+                   else intel_arc_cards())
             if arc:
-                hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+                hw["gpus"] = arc
         return hw
 
     @staticmethod
