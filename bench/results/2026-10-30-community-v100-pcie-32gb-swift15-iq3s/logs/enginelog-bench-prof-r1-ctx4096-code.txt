@@ -1,0 +1,12 @@
+strata serve: conversation cache: parked 42 tokens in 243.9 ms; parked=1 bytes=236803068 evictions=0 snapshot_bytes=236803068 reused_kv_bytes=0
+strata verify: capturing the 2-token window (300 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata serve: PCIe share: the CPU pool takes 123 us per missed expert (16.6 GB/s of expert bytes), the link 12.3 GB/s -> pcie_frac 0.30 (was 0.34; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)
+strata serve: adaptive tier: the swaps held the windows up by 6.7% (12.48 ms per token): trying the asynchronous tier for a while
+strata decode timing: 167 windows, avg T 3.66, 3.07 tokens/window, 40.36 ms/window = adapt wait 2.04 + verify 35.12 (GPU-reach wait 24.84 + per-layer host 6.71 [plan 0.25 actq 0.23 jobs 0.05 CPU 6.00] + stage 0.16) + commit/emit 0.11 + draft 3.08 + adapt join 0.00 + other 0.01; per layer-window: CPU experts 1.07 (1.41 entries), VRAM hits 33.92, PCIe 0.11; 4.5 swaps/window
+strata decode GPU stages (ms/window): GDN layers: q8+qkv/q-idx gemv 2.51 conv 0.20 ab 0.46 z 1.49 rec 0.62 out-proj 1.49 router+plan+bell 1.30 shared+quant 1.64 waitA 1.60 VRAM hits 4.98 waitB 1.38 PCIe grp 0.36 waitCPU 0.81 copy+combine 0.65 (gap) 0.06 head 1.63   hc0 norm 0.55   hc0 down 1.01   hc0 up 1.00   hc1 norm 0.31   hc1 down 0.93   hc1 up 0.94 | QSA layers: q8+kv-idx 0.13 k/v+norm-rope 0.30 kv+idx append 0.17 q+q-idx 1.09 scores+topk 0.43 kv-resolve 0.02 attention 0.83 gate 0.06 out-proj 0.55 router+plan+bell 0.43 shared+quant 0.54 waitA 0.16 VRAM hits 1.58 waitB 0.54 PCIe grp 0.12 waitCPU 0.32 copy+combine 0.22 (gap) 0.02   hc0 norm 0.11   hc0 down 0.33   hc0 up 0.33   hc1 norm 0.11   hc1 down 0.33   hc1 up 0.32 | total 34.91 ms/window over 168 windows
+strata serve: prompt 4041 tokens = 0 reused + 4041 read in 3569 ms (1132.3 tok/s), 512 generated in 6740 ms (76.0 tok/s), drafts accepted 346 of 445, 1 checkpoints
+strata serve: decode expert cache hit rate: 96.0% (271937 hits / 283233 lookups); 981 more read by the GPU over PCIe or from another GPU (0.3% of all 284214 routed)
+strata serve: route tail skip: 10612 missed experts skipped (11292 entries) since the start
+strata serve: asynchronous adaptive tier: 11 rounds, 846 experts swapped in, 36.9 ms per round (start to flip, between windows) (arena, copy-in only, batch 0, wait 1, pick inline 0.27 ms/round)
+strata serve: suffix drafts: 4 windows, 4 of 10 drafts accepted

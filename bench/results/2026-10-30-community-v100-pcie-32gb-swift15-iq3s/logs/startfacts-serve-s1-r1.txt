@@ -1,0 +1,5 @@
+[strata] 2026-10-30 00:03:22 engine started: <strata-dev>/build-v100-rel/strata --serve --pack <data>/packs/swift-iq3_s --native <data>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <data>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --expert-profile <strata>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <data>/mtp/rt --max-context 262144 --kv int8 --ple-io ram --kv-resident 32768 --vram-reserve-mib 768
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata generate: expert cache auto: 25.35 GiB free, 768 MiB reserved (+218 MiB for the draft head) -> 9833 slots
+strata generate: expert cache 12845 slots, 24.38 GiB of VRAM; policy is
+strata serve: 554 MiB of VRAM free with everything loaded

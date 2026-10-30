@@ -1,0 +1,12 @@
+{"arm": "qwen-s1", "case": "I1", "passed": true, "seen": "{\"ok\":true,\"count\":3}", "finish": "stop", "completion_tokens": 73, "s": 2.3}
+{"arm": "qwen-s1", "case": "I2", "passed": true, "seen": "[-4,1,2,9]", "finish": "stop", "completion_tokens": 56, "s": 1.7}
+{"arm": "qwen-s1", "case": "I3", "passed": true, "seen": "{\n  \"project\": \"Orion\",\n  \"build\": 17\n}", "finish": "stop", "completion_tokens": 89, "s": 1.9}
+{"arm": "qwen-s1", "case": "I4", "passed": true, "seen": "READY", "finish": "stop", "completion_tokens": 40, "s": 1.2}
+{"arm": "qwen-s1", "case": "R1", "passed": true, "seen": "ORBIT-731", "finish": "stop", "completion_tokens": 53, "s": 4.2}
+{"arm": "qwen-s1", "case": "R2", "passed": true, "seen": "CEDAR-284", "finish": "stop", "completion_tokens": 56, "s": 4.3}
+{"arm": "qwen-s1", "case": "R3", "passed": true, "seen": "DELTA-906", "finish": "stop", "completion_tokens": 67, "s": 11.6}
+{"arm": "qwen-s1", "case": "R4", "passed": true, "seen": "{\n  \"north\": \"N-124\",\n  \"south\": \"S-875\"\n}", "finish": "stop", "completion_tokens": 146, "s": 12.9}
+{"arm": "qwen-s1", "case": "T1", "passed": true, "seen": "lookup_record({\"id\": \"A-17\"})", "finish": "tool_calls", "completion_tokens": 74, "s": 2.4}
+{"arm": "qwen-s1", "case": "T2", "passed": true, "seen": "get_weather({\"city\": \"Zagreb\", \"unit\": \"celsius\"})", "finish": "tool_calls", "completion_tokens": 92, "s": 2.3}
+{"arm": "qwen-s1", "case": "T3", "passed": true, "seen": "convert_units({\"value\": 3, \"from_unit\": \"km\", \"to_unit\": \"m\"})", "finish": "tool_calls", "completion_tokens": 116, "s": 2.5}
+{"arm": "qwen-s1", "case": "T4", "passed": true, "seen": "get_build_status({\"project\": \"Orion\", \"build\": 17})", "finish": "tool_calls", "completion_tokens": 77, "s": 2.0}
