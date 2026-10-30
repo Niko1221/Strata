@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -16,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.launch import modelstate, settings as S
-from strata_cli.launch.catalog import Catalog
+from strata_cli.launch.catalog import Catalog, installer_folder
 from strata_cli.launch.runner import Runner
 from strata_control import discovery, models
 from tests.terminal.launch_support import HW_12
@@ -104,6 +105,26 @@ class GuiLayout(unittest.TestCase):
         self.config_path = self.install / "strata-gyro-gyro-s.json"
         self.config_path.write_text(json.dumps(self.cfg))
         (self.install.parent / "app-settings.json").write_text(json.dumps({"data_dir": str(self.docs), "installs": [str(self.install)]}))
+        here = Path(installer_folder())
+        if discovery.config_files(here):
+            #: a checkout that has run setup keeps run configs (strata-*.json) in its own folder; the wizard would then pick
+            #: the checkout ("here") and disagree with the list, which is not what these tests check. Pretend a clean one.
+            real = discovery.config_files
+
+            def clean(directory, _real=real, _here=here):
+                return [] if Path(directory).resolve() == _here else _real(directory)
+
+            p = mock.patch.object(discovery, "config_files", clean)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def own_settings(self) -> Path:
+        #: the Terminal's own settings file: these tests always wrote the Windows place (%APPDATA%\Strata\settings.json);
+        #: on a Mac the product reads $XDG_CONFIG_HOME/strata/settings.json, so there the test asks the product where its
+        #: file is. Windows and Linux keep the old path, so their runs stay exactly as they were.
+        if sys.platform == "darwin":
+            return discovery.own_settings_file()
+        return Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
 
     def catalog(self) -> Catalog:
         return Catalog(hardware=HW_12)
@@ -142,7 +163,7 @@ class GuiLayout(unittest.TestCase):
         old = self.base / "T-Strata"
         old.mkdir()
         (old / "strata-qwen-iq3_xxs.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.own_settings()
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"installs": [str(old)]}))
         got = models.list_installed()
@@ -239,7 +260,7 @@ class GuiLayout(unittest.TestCase):
     def test_an_own_setting_beats_the_apps_folder(self):
         mine = self.base / "mine"
         mine.mkdir()
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.own_settings()
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"data_dir": str(mine)}))
         self.assertEqual(self.catalog().data_dir().resolve(), mine.resolve())

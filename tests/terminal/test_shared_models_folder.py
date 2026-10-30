@@ -13,7 +13,7 @@ from tests.terminal.test_discovery import GuiLayout
 
 class SharedModelsFolder(GuiLayout):
     def files(self):
-        mine = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        mine = self.own_settings()          # the file the product itself reads, wherever this machine keeps it
         mine.parent.mkdir(parents=True, exist_ok=True)
         return mine, discovery.app_settings_file()
 
