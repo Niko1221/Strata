@@ -10,8 +10,8 @@ holds the technical context behind the short [README](../README.md). Use [AI_SET
 - Strata runs supported language models locally, with a desktop app, a terminal app, and an inference engine.
 - The engine uses the GPU, system RAM and, for applicable models and memory modes, SSD storage.
   See [how it works](HOW_IT_WORKS.md) and [engine details](DETAILS.md).
-- There is one app installer per system (`Strata-0.2.7-windows-x64-setup.exe`, `Strata-0.2.7-linux-x86_64.AppImage`,
-  `Strata-0.2.7-macos-arm64.dmg`). The Windows and Linux installers carry no engine: the app downloads the engine for the
+- There is one app installer per system (`Strata-0.2.8-windows-x64-setup.exe`, `Strata-0.2.8-linux-x86_64.AppImage`,
+  `Strata-0.2.8-macos-arm64.dmg`). The Windows and Linux installers carry no engine: the app downloads the engine for the
   graphics card on first start, or installs a file the user already has. The Mac dmg keeps its Metal engine inside.
   The Terminal's `strata launch` downloads the appropriate engine and model.
   See [installation](INSTALL.md) and [Terminal launch](TERMINAL_LAUNCH.md).

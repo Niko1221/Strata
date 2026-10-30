@@ -81,5 +81,5 @@
  "fx80": "Precisa de cerca de {0} GB de espaço livre em disco. O que não cabe na memória é lido do seu SSD.",
  "fx81": "{0} de RAM + VRAM, mais cerca de {1} GB de disco",
  "fx82": "Respostas mais rápidas em placas NVIDIA de 12 GB",
- "fx83": "Prefere as partes do modelo que já estão na placa de vídeo, o que deixa as respostas bem mais rápidas em placas de 12 GB. Desative se as respostas parecerem piores do que antes."
+ "fx83": "Prefere as partes do modelo que já estão na placa de vídeo, o que deixa as respostas mais rápidas em placas de 12 GB. Desativado por padrão: em sessões longas de agente ele pode se repetir e dar resultados mais fracos. Ative se você usa principalmente o chat e quer a velocidade."
 }

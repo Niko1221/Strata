@@ -293,10 +293,12 @@ int main() {
         using namespace strata;
         CHECK(is_026_token("026") && is_026_token("0.2.6") && is_026_token("v0.2.6"));
         CHECK(!is_026_token(nullptr) && !is_026_token("") && !is_026_token("0") && !is_026_token("027"));
-        // residency-biased routing: 0 under 026 on the card that gets 1.5 otherwise
-        CHECK(route_prior_default(false, false, 12.0 * GiB, false) == 1.5f);
+        // residency-biased routing: 0 with the master switch on or off (0.2.8: off by default on every card, 026 or not)
+        CHECK(route_prior_default(false, false, 12.0 * GiB, false) == 0.0f);
         CHECK(route_prior_default(false, false, 12.0 * GiB, true) == 0.0f);
         CHECK(route_prior_default(false, false, 8.0 * GiB, true) == 0.0f);
+        // an explicit STRATA_ROUTE_PRIOR=1.5 wins over 026 as well
+        CHECK(route_prior_resolve("1.5", false, false, 12.0 * GiB, true) == 1.5f);
         // the wide HC up read: on for a 12.0 card on CUDA, off under 026, off in HIP, off on sm_86 / sm_121
         CHECK(gr_up_wide_default(false, 12, 0));
         CHECK(!gr_up_wide_default(false, 12, 0, true));
@@ -358,19 +360,31 @@ int main() {
     {
         const double GiB = 1073741824.0;
         using namespace strata;
-        // residency-biased routing: 1.5 on a discrete CUDA card of 13 GiB or less, nothing else
-        CHECK(route_prior_default(false, false, 11.9 * GiB) == 1.5f);       // RTX 3060 / 5070 12 GB
-        CHECK(route_prior_default(false, false, 12.0 * GiB) == 1.5f);
-        CHECK(route_prior_default(false, false, 8.0 * GiB) == 1.5f);        // an 8 GB card
-        CHECK(route_prior_default(false, false, 13.0 * GiB) == 1.5f);       // the boundary is inclusive
-        CHECK(route_prior_default(false, false, 12.0 * GiB) == strata::kRoutePriorSmallCard);   // the one place the value lives (1.5 by the owner decision of 2026-10-26; 2.0 before)
-        CHECK(route_prior_default(false, false, 13.5 * GiB) == 0.0f);
-        CHECK(route_prior_default(false, false, 15.7 * GiB) == 0.0f);       // 16 GB card: z440's A4000, P100
-        CHECK(route_prior_default(false, false, 72.0 * GiB) == 0.0f);       // RTX PRO 5000
-        CHECK(route_prior_default(true, false, 12.0 * GiB) == 0.0f);        // a HIP build: a 12 GB RX 6700 XT / 7700 XT
-        CHECK(route_prior_default(true, true, 12.0 * GiB) == 0.0f);         // Strix Halo with a small carve-out
-        CHECK(route_prior_default(false, true, 8.0 * GiB) == 0.0f);         // an integrated GPU on CUDA (Jetson-like)
-        CHECK(route_prior_default(false, false, 0.0) == 0.0f);              // unknown memory
+        // residency-biased routing (owner decision of 2026-10-29, #4402): OFF by default on every card, the 0.2.6 / STRATA_ROUTE_PRIOR=0 answer.
+        // 0.2.7 gave 1.5 to a discrete CUDA card of 13 GiB or less; the same cards are listed so the table says where the default went.
+        const double cards[] = {0.0, 4.0 * GiB, 8.0 * GiB, 11.9 * GiB, 12.0 * GiB, 13.0 * GiB, 13.5 * GiB, 15.7 * GiB, 24.0 * GiB, 31.4 * GiB, 48.0 * GiB, 72.0 * GiB};
+        for (const double bytes : cards)
+            for (const bool hip : {false, true})
+                for (const bool integrated : {false, true})
+                    for (const bool v026 : {false, true}) {
+                        CHECK(route_prior_default(hip, integrated, bytes, v026) == 0.0f);
+                        CHECK(route_prior_resolve(nullptr, hip, integrated, bytes, v026) == 0.0f);   // nothing set: off, = STRATA_ROUTE_PRIOR=0
+                        CHECK(route_prior_resolve(nullptr, hip, integrated, bytes, v026) == route_prior_resolve("0", hip, integrated, bytes, v026));
+                    }
+        CHECK(route_prior_default(false, false, 11.9 * GiB) == 0.0f);       // RTX 3060 / 5070 12 GB: was 1.5 in 0.2.7
+        CHECK(route_prior_default(false, false, 13.0 * GiB) == 0.0f);       // the old boundary
+        // the explicit opt-in still works: any set value wins on every card (the Expert-settings row writes 1.5)
+        CHECK(strata::kRoutePriorSmallCard == 1.5f);                          // the one place the opt-in value lives
+        CHECK(route_prior_resolve("1.5", false, false, 12.0 * GiB) == 1.5f);
+        CHECK(route_prior_resolve("1.5", false, false, 12.0 * GiB) == strata::kRoutePriorSmallCard);
+        CHECK(route_prior_resolve("1.5", false, false, 8.0 * GiB, true) == 1.5f);   // also under STRATA_DEFAULTS=026
+        CHECK(route_prior_resolve("1.5", false, false, 72.0 * GiB) == 1.5f);        // and on a card the 0.2.7 default never touched
+        CHECK(route_prior_resolve("1.5", true, false, 12.0 * GiB) == 1.5f);         // the variable is the user's own on any build
+        CHECK(route_prior_resolve("2.0", false, false, 12.0 * GiB) == 2.0f);
+        CHECK(route_prior_resolve("0.5", false, false, 12.0 * GiB) == 0.5f);
+        CHECK(route_prior_resolve("0", false, false, 12.0 * GiB) == 0.0f);
+        CHECK(route_prior_resolve("", false, false, 12.0 * GiB) == 0.0f);           // set but empty reads as 0, as atof always did here
+        CHECK(route_prior_resolve("off", false, false, 12.0 * GiB) == 0.0f);
         // the stream-split hyper-connection read: a discrete 12.0 card above 13 GiB (RTX PRO 5000 72 GB, RTX 5090 32 GB), nothing else
         CHECK(gr_v3_default(false, 12, 0, false, 72.0 * GiB));
         CHECK(gr_v3_default(false, 12, 0, false, 31.4 * GiB));              // RTX 5090

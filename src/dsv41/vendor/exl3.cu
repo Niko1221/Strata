@@ -19,6 +19,10 @@
 // NVIDIA GPUs before sm_80 (V100, T4, RTX 20) decode with v1.1.8's kernels instead (exl3_legacy.cu, use_legacy
 // below): this file's CUDA-core fallback was slower there (a V100 with EXL3-3.05bpw: decode 4.9 -> 4.4 tok/s).  The
 // prompt path below is this file's on every GPU.
+#include "../ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
+#if defined(STRATA_METAL)
+#include <ds4_metal_host.h>
+#endif
 #include "strata/dsv41/exl3.hpp"
 
 #include <cuda_fp16.h>
@@ -1156,53 +1160,53 @@ bool dispatch(int K, int cb, A&&... args) {
 }
 
 template <int K, int cb> struct RunMv {
-    static void run(const KBatch& b, int blocks, cudaStream_t s) { mv_kernel<K, cb><<<blocks, kThreads, 0, s>>>(b); }
+    static void run(const KBatch& b, int blocks, cudaStream_t s) { strata_ds4_launch(mv_kernel<K, cb>, blocks, kThreads, 0, s, b); }
 };
 template <int K, int cb> struct RunWin {
     static void run(const KWin& a, int groups, cudaStream_t s) {
-        win_gu_kernel<K, cb><<<dim3((unsigned) (a.n_ff / kCols), (unsigned) groups, 2u), kThreads, 0, s>>>(a);
+        strata_ds4_launch(win_gu_kernel<K, cb>, dim3((unsigned) (a.n_ff / kCols), (unsigned) groups, 2u), kThreads, 0, s, a);
     }
 };
 template <int K, int cb> struct RunWinDown {
     static void run(const KWin& a, int groups, cudaStream_t s) {
-        win_down_kernel<K, cb><<<dim3((unsigned) (a.n_embd / kCols), (unsigned) groups), kThreads, 0, s>>>(a);
+        strata_ds4_launch(win_down_kernel<K, cb>, dim3((unsigned) (a.n_embd / kCols), (unsigned) groups), kThreads, 0, s, a);
     }
 };
 template <int K, int cb> struct RunGU {
     static void run(const KMoe& a, cudaStream_t s) {
-        moe_gate_up_kernel<K, cb><<<dim3((unsigned) (a.n_ff / kCols), (unsigned) a.k, 2u), kThreads, 0, s>>>(a);
+        strata_ds4_launch(moe_gate_up_kernel<K, cb>, dim3((unsigned) (a.n_ff / kCols), (unsigned) a.k, 2u), kThreads, 0, s, a);
     }
 };
 template <int K, int cb> struct RunDown {
     static void run(const KMoe& a, cudaStream_t s) {
-        moe_down_kernel<K, cb><<<dim3((unsigned) (a.n_embd / kCols), (unsigned) a.k), kThreads, 0, s>>>(a);
+        strata_ds4_launch(moe_down_kernel<K, cb>, dim3((unsigned) (a.n_embd / kCols), (unsigned) a.k), kThreads, 0, s, a);
     }
 };
 template <int K, int cb> struct RunRows {
     static void run(const Mat& m, uint16_t* dst, bool bf16, cudaStream_t s) {
-        recon_rows_kernel<K, cb><<<dim3((unsigned) (m.n / kCols), (unsigned) (m.k / kCols)), kThreads, 0, s>>>(
+        strata_ds4_launch(recon_rows_kernel<K, cb>, dim3((unsigned) (m.n / kCols), (unsigned) (m.k / kCols)), kThreads, 0, s, 
             m.trellis, m.ld > 0 ? m.ld : m.n / 16, m.suh, m.svh, m.k, dst, bf16);
     }
 };
 #if !defined(STRATA_USE_HIP)
 template <int K, int cb> struct RunGemm {
-    static void run(const tc::GArgs& a, dim3 grid, cudaStream_t s) { tc::gemm_kernel<K, cb><<<grid, kThreads, 0, s>>>(a); }
+    static void run(const tc::GArgs& a, dim3 grid, cudaStream_t s) { strata_ds4_launch(tc::gemm_kernel<K, cb>, grid, kThreads, 0, s, a); }
 };
 template <int K, int cb> struct RunGateUp {
     static void run(const tc::GArgs& a, dim3 grid, cudaStream_t s) {
-        tc::gate_up_kernel<K, cb><<<grid, kThreads, 0, s>>>(a);
+        strata_ds4_launch(tc::gate_up_kernel<K, cb>, grid, kThreads, 0, s, a);
     }
 };
 #endif
 template <int K, int cb> struct RunInnerRows {
     static void run(const Mat& m, uint16_t* dst, cudaStream_t s) {
-        inner_rows_kernel<K, cb><<<dim3((unsigned) (m.n / kCols), (unsigned) (m.k / kCols)), kThreads, 0, s>>>(
+        strata_ds4_launch(inner_rows_kernel<K, cb>, dim3((unsigned) (m.n / kCols), (unsigned) (m.k / kCols)), kThreads, 0, s, 
             m.trellis, m.ld > 0 ? m.ld : m.n / 16, m.k, dst);
     }
 };
 template <int K, int cb> struct RunInner {
     static void run(const Mat& m, uint16_t* dst, cudaStream_t s) {
-        recon_inner_kernel<K, cb><<<dim3((unsigned) (m.n / kCols), (unsigned) (m.k / 16)), kThreads, 0, s>>>(
+        strata_ds4_launch(recon_inner_kernel<K, cb>, dim3((unsigned) (m.n / kCols), (unsigned) (m.k / 16)), kThreads, 0, s, 
             m.trellis, m.ld > 0 ? m.ld : m.n / 16, m.n, dst);
     }
 };
@@ -1266,7 +1270,10 @@ int sm_count() {
 // token path and the verify windows take the same family on a device, so a window stays bit for bit its token path.
 // Asked once per device.
 bool use_legacy() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
+    // HIP has no v1.1.8 kernels.  Metal has neither them nor a compute capability to ask for: the shim answers
+    // cudaDeviceGetAttribute with an error, so `major` stayed 0 and every Metal run without STRATA_GLM_EXL3_DECODE=new
+    // took this branch and aborted in exl3::legacy::prepare's stub.  The 2.25 bpw pack never uses EXL3.
     return false;
 #else
     static std::atomic<int> cache[64];   // 0 not asked, 1 v1.1.8's kernels, 2 this file's
@@ -1584,8 +1591,8 @@ bool win_experts(const WinArgs& a, cudaStream_t s) {
     if (!dispatch<RunWin>(a.lay.K[0], a.lay.cb, w, groups, s) ||
         !dispatch<RunWinDown>(a.lay.K[2], a.lay.cb, w, groups, s))
         return false;
-    if (a.wait_ptr != nullptr) win_wait_kernel<<<1, 32, 0, s>>>(a.wait_ptr, a.wait_val);
-    win_combine_kernel<<<dim3((unsigned) (a.n_embd / kCols), (unsigned) a.T), kCols, 0, s>>>(w);
+    if (a.wait_ptr != nullptr) strata_ds4_launch(win_wait_kernel, 1, 32, 0, s, a.wait_ptr, a.wait_val);
+    strata_ds4_launch(win_combine_kernel, dim3((unsigned) (a.n_embd / kCols), (unsigned) a.T), kCols, 0, s, w);
     launch_check("win_experts");
     return true;
 }
@@ -1714,7 +1721,7 @@ void rows_rot_f16(const float* x, int ldx, const int* idx, int nrows, int ncols,
                   cudaStream_t s) {
     if (nrows <= 0) return;
     const long long warps = (long long) nrows * (ncols / kCols);
-    rows_rot_f16_kernel<<<(unsigned) ((warps + kWarps - 1) / kWarps), kThreads, 0, s>>>(x, ldx, idx, nrows, ncols, suh,
+    strata_ds4_launch(rows_rot_f16_kernel, (unsigned) ((warps + kWarps - 1) / kWarps), kThreads, 0, s, x, ldx, idx, nrows, ncols, suh,
                                                                                          out);
     launch_check("rows_rot_f16");
 }
@@ -1722,13 +1729,16 @@ void rows_rot_f16(const float* x, int ldx, const int* idx, int nrows, int ncols,
 void rows_rot_out(float* y, int ldy, int nrows, int ncols, const uint16_t* svh, cudaStream_t s) {
     if (nrows <= 0) return;
     const long long warps = (long long) nrows * (ncols / kCols);
-    rows_rot_out_kernel<<<(unsigned) ((warps + kWarps - 1) / kWarps), kThreads, 0, s>>>(y, ldy, nrows, ncols, svh);
+    strata_ds4_launch(rows_rot_out_kernel, (unsigned) ((warps + kWarps - 1) / kWarps), kThreads, 0, s, y, ldy, nrows, ncols, svh);
     launch_check("rows_rot_out");
 }
 
 void rows_f16(const float* x, int ldx, const int* idx, int nrows, int ncols, uint16_t* out, cudaStream_t s) {
     if (nrows <= 0) return;
-    rows_f16_kernel<<<dim3((unsigned) std::min(8, (ncols + 255) / 256), (unsigned) nrows), 256, 0, s>>>(x, ldx, idx,
+#if defined(STRATA_METAL)
+    if (::strata::dsv41::metal_host::rows_f16(x, ldx, idx, nrows, ncols, out)) return;
+#endif
+    strata_ds4_launch(rows_f16_kernel, dim3((unsigned) std::min(8, (ncols + 255) / 256), (unsigned) nrows), 256, 0, s, x, ldx, idx,
                                                                                                          ncols, out);
     launch_check("rows_f16");
 }
