@@ -746,6 +746,9 @@ FUNC_END = "</function>"
 # `<=NAME>` (the word `function` dropped), `<function:NAME>`, `<function =NAME>`, or the bare `<NAME>`
 _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*>")
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
+# Qwen may pluralize the Harness question tool. Accept that spelling only when the request declares the exact
+# singular tool and its required questions-array schema.
+_TOOL_NAME_ALIASES = {"ask_user_questions": "ask_user_question"}
 
 
 # a quoted call's opener in a value: `<function=NAME>` and its first parameter or close; a bare FUNC_START is text
@@ -1165,12 +1168,42 @@ class OutputParser:
         self.fence, self.line, self.ticks = snap
         return ok
 
+    def _alias_target(self, name: str) -> str | None:
+        """A known spelling may map only to its declared tool with the matching required argument schema."""
+        target = _TOOL_NAME_ALIASES.get(name)
+        schema = self.schemas.get(target) if target else None
+        parameters = (schema or {}).get("parameters") or {}
+        properties = parameters.get("properties") or {}
+        return target if target and "questions" in (parameters.get("required") or []) \
+            and (properties.get("questions") or {}).get("type") == "array" else None
+
+    def _canonical_tool_name(self, name: str) -> str:
+        """Keep declared names; map only a specific compatibility spelling to a declared target."""
+        return name if name in self.schemas else (self._alias_target(name) or name)
+
+    def _parse_tool_body(self, body: str) -> ToolCall | None:
+        """Parse a call with its declared schema; return None when a compatibility alias lacks required arguments."""
+        name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
+        declared = self.aliases.get(name, name)           # PR #3556: the Responses spelling of a namespace tool
+        canonical = self._canonical_tool_name(declared)   # or a declared tool's own compatibility spelling
+        call = parse_tool_call(body, self.schemas.get(canonical), self.notes)
+        if canonical != declared:
+            # a compatibility spelling counts only when its declared target's required arguments are all present
+            parameters = self.schemas[canonical].get("parameters") or {}
+            if (not isinstance(call.arguments, dict)
+                    or any(key not in call.arguments for key in parameters.get("required", []))
+                    or not isinstance(call.arguments.get("questions"), list)):
+                return None
+        if canonical != name:
+            call.name = canonical
+        return call
+
     def _callable(self, name: str) -> bool:
         """#3075: may a call for `name` be a call?  A tool the request declared (or its Responses spelling); with
         none declared, only where `declared_only` is off."""
         if not self.schemas:
             return not self.declared_only
-        return name in self.schemas or name in self.aliases
+        return name in self.schemas or name in self.aliases or self._alias_target(name) is not None
 
     def _loose_open(self, after: str):
         """#3441: `after` (text after a `<tool_call>`, whitespace dropped) opens a call in a drifted form that names a
@@ -1338,6 +1371,7 @@ class OutputParser:
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
         self.ss = "name"             # name -> between -> str|raw -> ... -> function_done -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
+        self.salias = False           # compatibility aliases wait for complete argument validation before streaming
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
@@ -1363,7 +1397,7 @@ class OutputParser:
         out = []
 
         def args(s):
-            if s:
+            if s and not self.salias:
                 out.append(Event("tool_args", s, call=self.scall))
         while True:
             rest = self.buf[self.sp:]
@@ -1375,13 +1409,16 @@ class OutputParser:
                 raw_name = rest[a + 10:b]
                 name = raw_name.strip()
                 name = self.aliases.get(name, name)
-                if raw_name != raw_name.strip() and name not in self.schemas:
+                canonical = self._canonical_tool_name(name)
+                if raw_name != raw_name.strip() and canonical not in self.schemas:
                     return out
-                self.scall = ToolCall(name=name, arguments={})
-                props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
+                self.salias = canonical != name
+                self.scall = ToolCall(name=canonical, arguments={})
+                props = ((self.schemas.get(canonical) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
-                out.append(Event("tool_start", call=self.scall))
-                args("{")
+                if not self.salias:
+                    out.append(Event("tool_start", call=self.scall))
+                    args("{")
                 self.sp += b + 1
                 self.ss = "between"
             elif self.ss == "between":
@@ -1461,7 +1498,8 @@ class OutputParser:
         elif self.ss == "raw":
             tail += json.dumps(self.buf[self.sp:].strip("\n"))
         tail += "}"
-        out.append(Event("tool_args", tail, call=self.scall))
+        if not self.salias:
+            out.append(Event("tool_args", tail, call=self.scall))
         self.ss = "done"
         return out
 
@@ -1499,11 +1537,10 @@ class OutputParser:
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
-                        name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
+                        name = body[:end].strip()[len(FUNC_START):].split(">", 1)[0].strip()
                         name = self.aliases.get(name, name)
-                        if name in self.schemas:
-                            call = parse_tool_call(body[:end], self.schemas.get(name), self.notes)
-                            call.name = name
+                        if self._callable(name):
+                            call = self._parse_tool_body(body[:end])
                     except ValueError:
                         pass
                     raw = self.buf[:len(CALL_START) + end + drop]
@@ -1804,7 +1841,21 @@ class OutputParser:
             return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
+            if self.salias:
+                call = None
+                # whole up to </function>: an alias counts only once its complete arguments validate against the schema
+                if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
+                    try:
+                        call = self._parse_tool_body(self.buf)
+                    except ValueError:
+                        pass
+                if call is not None:
+                    call.id = self.scall.id
+                    out.append(Event("tool_call", call=call))
+                else:
+                    out.append(Event("content", self._track(CALL_START + self.buf)))
+                    self.state = "content"
+            elif self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
                 # A natural end immediately after </function> retains native streaming recovery.
                 out += self._close_scan()
                 call = self.scall
@@ -1835,15 +1886,19 @@ class OutputParser:
         raw_name = body.strip()[len(FUNC_START):].split(">", 1)[0]
         name = raw_name.strip()
         name = self.aliases.get(name, name)
+        canonical = self._canonical_tool_name(name)
         bare, self.bare = self.bare, False
         try:
-            if raw_name != raw_name.strip() and name not in self.schemas:
+            if raw_name != raw_name.strip() and canonical not in self.schemas:
                 raise ValueError("whitespace tool name is not declared")
-            call = parse_tool_call(body, self.schemas.get(name), self.notes)
-            call.name = name
+            call = self._parse_tool_body(body)
         except ValueError:
             if not self.recover:
                 raise
+            self._reset_scan()
+            self.state = "content"
+            return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]
+        if call is None:
             self._reset_scan()
             self.state = "content"
             return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]

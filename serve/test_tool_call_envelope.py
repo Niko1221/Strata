@@ -1,6 +1,7 @@
 """#3441 (a call whose envelope drifted by a token) and #3075 (a call for a tool the request never declared)."""
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -11,15 +12,20 @@ import frontend  # noqa: E402
 TOOLS = [{"name": "functions.exec", "parameters": {"properties": {"input": {"type": "string"}}}},
          {"name": "shell", "parameters": {"properties": {"cmd": {"type": "string"}}}},
          {"name": "ns.web_search", "parameters": {"properties": {"q": {"type": "string"}}}}]
+ASK_USER_TOOL = {"name": "ask_user_question", "parameters": {
+    "type": "object", "properties": {"questions": {"type": "array", "items": {"type": "object"}}},
+    "required": ["questions"]}}
+ASK_USER_QUESTIONS = [{"id": "upgrade_scope", "question": "是否升级？",
+                       "options": [{"label": "全部升级"}], "multi_select": False}]
 
 
 def body(opener, param="input", value="1+1", name=None):
     return f"<tool_call>\n{opener}\n<parameter={param}>\n{value}\n</parameter>\n</function>\n</tool_call>"
 
 
-def run(text, width=0, **kw):
+def run(text, width=0, stream_tools=True, **kw):
     """-> (events, parser); `width` 0 feeds the text whole, else that many characters at a time."""
-    p = frontend.OutputParser(thinking=False, stream_tools=True, **kw)
+    p = frontend.OutputParser(thinking=False, stream_tools=stream_tools, **kw)
     evs = []
     if width:
         for k in range(0, len(text), width):
@@ -124,6 +130,52 @@ class OnlyDeclaredTools(unittest.TestCase):
         p = frontend.OutputParser(thinking=True, tools=TOOLS, stream_tools=True)
         evs = p.feed("think " + body("<function=shell>", "cmd", "ls") + "</think>\n\nok") + p.finish()
         self.assertEqual(calls(evs), [])
+
+
+class AskUserQuestionAlias(unittest.TestCase):
+    def test_plural_alias_becomes_the_declared_tool_only_with_required_arguments(self):
+        raw = body("<function=ask_user_questions>", "questions", json.dumps(ASK_USER_QUESTIONS, ensure_ascii=False))
+        expected = [("ask_user_question", {"questions": ASK_USER_QUESTIONS})]
+        for stream_tools in (False, True):
+            for width in (0, 1, 7, 31):
+                with self.subTest(stream_tools=stream_tools, width=width):
+                    evs, _ = run(raw, width, stream_tools=stream_tools, tools=[ASK_USER_TOOL], declared_only=True)
+                    self.assertEqual(calls(evs), expected)
+                    self.assertEqual(text(evs), "")
+
+    def test_alias_requires_declared_target_and_valid_questions_array(self):
+        valid = body("<function=ask_user_questions>", "questions", json.dumps(ASK_USER_QUESTIONS))
+        missing = body("<function=ask_user_questions>")
+        wrong_type = body("<function=ask_user_questions>", "questions", '"not-an-array"')
+        for raw, tools in ((valid, TOOLS), (missing, [ASK_USER_TOOL]), (wrong_type, [ASK_USER_TOOL])):
+            for stream_tools in (False, True):
+                with self.subTest(raw=raw, stream_tools=stream_tools):
+                    evs, _ = run(raw, 3, stream_tools=stream_tools, tools=tools, declared_only=True)
+                    self.assertEqual(calls(evs), [])
+                    self.assertEqual(text(evs), raw)
+                    self.assertFalse([e for e in evs if e.kind in ("tool_start", "tool_args")])
+
+    def test_alias_inside_reasoning_uses_the_same_declared_name(self):
+        raw = body("<function=ask_user_questions>", "questions", json.dumps(ASK_USER_QUESTIONS))
+        p = frontend.OutputParser(thinking=True, tools=[ASK_USER_TOOL], stream_tools=True)
+        evs = p.feed("I need a decision.\n" + raw + "</think>\n\n") + p.finish()
+        self.assertEqual(calls(evs), [("ask_user_question", {"questions": ASK_USER_QUESTIONS})])
+
+    def test_openai_response_contains_a_structured_tool_call(self):
+        from types import SimpleNamespace
+        from serve.server import openai_chunks, openai_collect
+
+        raw = body("<function=ask_user_questions>", "questions", json.dumps(ASK_USER_QUESTIONS))
+        evs, _ = run(raw, 5, tools=[ASK_USER_TOOL], declared_only=True)
+        events = [("event", event) for event in evs]
+        events.append(("done", {"finish": "stop", "completion_tokens": 1, "prompt_tokens": 1}))
+        svc = SimpleNamespace(model_for=lambda _req: "test-model")
+        response = openai_collect(openai_chunks(svc, {}, [], False, [ASK_USER_TOOL], 32, None, run=events))
+        choice = response["choices"][0]
+        tool_call = choice["message"]["tool_calls"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertEqual(tool_call["function"]["name"], "ask_user_question")
+        self.assertEqual(json.loads(tool_call["function"]["arguments"]), {"questions": ASK_USER_QUESTIONS})
 
 
 if __name__ == "__main__":
