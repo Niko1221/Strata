@@ -228,6 +228,24 @@ def oneapi_runtime_dirs() -> list:
     return dirs
 
 
+def level_zero_answers() -> bool:
+    """Does a Level Zero GPU answer in this environment?  Windows lists the same chip twice, and Level Zero is the one
+    that reports the memory this process may still take and completes the verify graphs; when the oneAPI loader is not
+    reachable for the process that starts the engine, only the OpenCL device answers (docs/INTEL_ARC.md, an Arc B390
+    measured 2026-10-30)."""
+    import shutil
+    tool = shutil.which("sycl-ls")
+    if tool is None:
+        return False
+    try:
+        done = subprocess.run([tool], capture_output=True, text=True, timeout=25, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    low = (done.stdout or "").lower()
+    return "level_zero" in low and "gpu" in low
+
+
 def oneapi_environment() -> dict:
     """The environment setvars.sh makes (the SYCL reader's build needs MKL and the compiler's libraries); {} when there is no setvars.sh."""
     setvars = Path("/opt/intel/oneapi/setvars.sh")
@@ -423,11 +441,19 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         # only reports the card's free memory while the runtime reads the driver's sysman stats, which is what the
         # cache sizing needs on an integrated Arc (docs/INTEL_ARC.md).
         out.update({"backend": "sycl", "exe": str(exe), "args": args})
-        # Level Zero, always: on Windows the OpenCL device answers get_memory_info with no free figure at all
-        # ("ext_intel_free_memory is not supported", free 0.00 GiB), and the cache then sizes to nothing (B390,
-        # 2026-10-30).  ZES_ENABLE_SYSMAN is what makes Level Zero report the driver's real numbers.
-        env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:gpu"
-        env["ZES_ENABLE_SYSMAN"] = "1"
+        # Level Zero when it answers: it reports the memory this process may still take (with ZES_ENABLE_SYSMAN),
+        # while the OpenCL device answers get_memory_info with no free figure at all
+        # ("ext_intel_free_memory is not supported") and, on the B390, fails later at the verify-graph capture
+        # ("verify: begin capture failed", 2026-10-30).  Nothing is pinned when Level Zero is not reachable for this
+        # process - a forced selector then leaves the engine with no device at all - and the person is told to start
+        # Strata where Intel's setvars.bat has run.
+        if level_zero_answers():
+            env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:gpu"
+            env["ZES_ENABLE_SYSMAN"] = "1"
+        else:
+            S.warn("Intel oneAPI's Level Zero device was not found from here: run strata from a window where "
+                   "\"C:\Program Files (x86)\Intel\oneAPI\setvars.bat\" has run (or put its bin folder on PATH), "
+                   "or the engine starts on the OpenCL device, which is slower and fails on some cards")
         if dirs := oneapi_runtime_dirs():
             out["lib_dirs"] = dirs
     else:

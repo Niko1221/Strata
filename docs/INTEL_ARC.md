@@ -201,10 +201,13 @@ is - a chip that shares the computer's RAM, never twice (its own carve-out plus 
 
 Two settings a Windows run needs, and the config writes both:
 
-- **`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`.** Windows lists the same chip twice, once through Level Zero and once
-  through OpenCL. The OpenCL device answers the free-memory query with nothing at all
-  (`get_memory_info: ext_intel_free_memory is not supported`, 0.00 GiB free), the expert cache then sizes to zero and
-  the session is refused before it starts (Arc B390, 2026-10-30).
+- **`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`, when Level Zero answers.** Windows lists the same chip twice, once
+  through Level Zero and once through OpenCL. The OpenCL device reports no free memory at all
+  (`get_memory_info: ext_intel_free_memory is not supported`) and, on the B390, fails later when the verify window is
+  captured (`verify: begin capture failed`). So the config pins Level Zero - but only when `sycl-ls` sees a Level Zero
+  GPU in the environment that will start the engine, which means Strata was run where Intel's `setvars.bat` has run.
+  A pinned selector with no Level Zero device leaves the engine with no graphics device at all, so in that case
+  nothing is pinned and setup says what to do. Measured on a B390, 2026-10-30.
 - **`ZES_ENABLE_SYSMAN=1`**, which is what lets Level Zero report the memory the driver actually has for this process.
 
 ### An Arc iGPU (the B390) shares the computer's memory

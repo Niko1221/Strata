@@ -218,7 +218,7 @@ class ToSycl(unittest.TestCase):
         # answers get_memory_info with no free bytes at all, and the cache then sizes to nothing).
         m = self.mod()
         with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "oneapi_runtime_dirs",
-                                                                   return_value=[r"C:\oneAPI\mkl\latestin"]):
+                                                                   return_value=[r"C:\oneAPI\mkl\latestin"]),                 mock.patch.object(m, "level_zero_answers", return_value=True):
             c = m.to_sycl(self.cfg(m), m.ROOT / "build-win" / "strata.exe", 32.0, {}, 31.5, "xe", "b082")
         self.assertEqual(c["backend"], "sycl")
         self.assertEqual(c["exe"], str(m.ROOT / "build-win" / "strata.exe"))
@@ -226,6 +226,11 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["env"]["ONEAPI_DEVICE_SELECTOR"], "level_zero:gpu")
         self.assertEqual(c["env"]["ZES_ENABLE_SYSMAN"], "1")
         self.assertNotIn("sycl_root", c)
+        # with no Level Zero device reachable, nothing is pinned: a forced selector would leave the engine no device
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "level_zero_answers", return_value=False),                 mock.patch.object(m, "oneapi_runtime_dirs", return_value=[]):
+            quiet = m.to_sycl(self.cfg(m), m.ROOT / "build-win" / "strata.exe", 32.0, {}, 31.5, "xe", "b082")
+        self.assertNotIn("ONEAPI_DEVICE_SELECTOR", quiet.get("env") or {})
+        self.assertNotIn("lib_dirs", quiet)
 
     def test_windows_finds_an_integrated_arc_from_the_registry(self):
         m = self.mod()
