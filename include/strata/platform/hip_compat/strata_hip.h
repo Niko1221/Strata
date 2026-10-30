@@ -197,12 +197,31 @@ inline hipError_t cudaInitDevice(int device, unsigned int device_flags, unsigned
 #define __shfl_sync(mask, var, lane, ...) __shfl(var, lane, STRATA_SHFL_W(__VA_ARGS__))
 #define __shfl_up_sync(mask, var, delta, ...) __shfl_up(var, delta, STRATA_SHFL_W(__VA_ARGS__))
 #define __shfl_down_sync(mask, var, delta, ...) __shfl_down(var, delta, STRATA_SHFL_W(__VA_ARGS__))
-#define __shfl_xor_sync(mask, var, lanemask, ...) __shfl_xor(var, lanemask, STRATA_SHFL_W(__VA_ARGS__))
+#define __shfl_xor_sync(mask, var, lanemask, ...) strata_shfl_xor(var, lanemask, STRATA_SHFL_W(__VA_ARGS__))
 // STRATA_SHFL_W() -> 32, STRATA_SHFL_W(w) -> w
 #define STRATA_SHFL_W(...) STRATA_SHFL_W_I(dummy, ##__VA_ARGS__, STRATA_SHFL_W_GIVEN, STRATA_SHFL_W_DEFAULT)(__VA_ARGS__)
 #define STRATA_SHFL_W_I(d, a, b, ...) b
 #define STRATA_SHFL_W_GIVEN(w) (w)
 #define STRATA_SHFL_W_DEFAULT(...) 32
+// __shfl_xor is a ds_bpermute: an LDS round trip, and a reduction waits on each one in turn (~4 us per token in the
+// hyper-connection read).  For a compile-time mask below both the width and 32 the same lane exchange is a DPP
+// quad_perm (masks 1, 2) or a ds_swizzle in bitmask mode (4, 8, 16: xor inside 32 lanes, no address): the same
+// values in the same order, so bit for bit __shfl_xor.  Anything else (mask 32, a runtime mask, 64-bit values) is
+// unchanged.
+template <typename T>
+static __device__ __forceinline__ T strata_shfl_xor(T var, int lanemask, int width) {
+    if constexpr (sizeof(T) == 4) {
+        if (__builtin_constant_p(lanemask) && __builtin_constant_p(width) && lanemask < width && lanemask < 32) {
+            const int v = __builtin_bit_cast(int, var);
+            if (lanemask == 1) return __builtin_bit_cast(T, __builtin_amdgcn_mov_dpp(v, 0xb1, 0xf, 0xf, true));
+            if (lanemask == 2) return __builtin_bit_cast(T, __builtin_amdgcn_mov_dpp(v, 0x4e, 0xf, 0xf, true));
+            if (lanemask == 4) return __builtin_bit_cast(T, __builtin_amdgcn_ds_swizzle(v, 0x101f));
+            if (lanemask == 8) return __builtin_bit_cast(T, __builtin_amdgcn_ds_swizzle(v, 0x201f));
+            if (lanemask == 16) return __builtin_bit_cast(T, __builtin_amdgcn_ds_swizzle(v, 0x401f));
+        }
+    }
+    return __shfl_xor(var, lanemask, width);
+}
 #define __all_sync(mask, pred) __all(pred)
 #define __any_sync(mask, pred) __any(pred)
 
