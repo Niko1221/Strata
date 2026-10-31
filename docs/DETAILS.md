@@ -1179,6 +1179,32 @@ moves threads only and never changes a result.
 - It prints `strata aux cpus: threads that are neither pool workers nor the host go to CPUs 24 (on; N threads placed so far)`.
 - Not covered: other processes and the engine's host thread. The measurement is one machine: see [History](#history--older-measurements).
 
+### ggml-cpu without BMI2 `pdep` on a Zen 1 / Zen 2 build machine (CMake `STRATA_GGML_PDEP`, default `AUTO`)
+
+ggml-cpu's AVX2 IQ1_S and IQ1_M dot products build their grid indices with BMI2 `pdep` when `__BMI2__` is defined,
+which a `-march=native` build on any BMI2 CPU does. AMD Zen 1, Zen+ and Zen 2 (CPU family 17h, and Hygon's 18h) run
+`pdep` in microcode, and there those two dots are 10-19x slower than the shift-and-mask branch beside them, which
+computes the same integer sums. With `AUTO`, a native build (compiled on that PC) on such a CPU compiles ggml-cpu
+without `__BMI2__`; `OFF` does so in every build and `ON` in none. The portable (release) build keeps `pdep` under
+`AUTO`, and so does every other CPU. Windows builds compiled with MSVC define `__BMI2__` only with ggml's `GGML_BMI2`,
+which only the release build turns on, so they already ran the shift-and-mask branch. Only packs with IQ1_S / IQ1_M
+layers change speed (upstream GSQ-RCO IQ2_XS has IQ1_M in 3 of its 48 layers; the IQ3_S, IQ3_XXS and Q2_0 files have
+none). On a Threadripper 3960X (Zen 2, Linux, GCC 15), `ggml_dot_bench` (one thread, the weights in cache) took 24
+instead of 379 ns per 256 weights for IQ1_S and 29 instead of 543 for IQ1_M (16x and 19x faster); the other formats
+compile to the same machine code in both builds. With an RTX 2080 Ti and upstream IQ2_XS: one IQ1_M expert took 0.72
+instead of 7.53 ms per thread (kq_cpu_bench, 24 threads, one token; 1.42 instead of 14.99 for two tokens). In the
+engine (tools/ab_engine.py, 4 alternating rounds, `--expert-cache auto`, `--spec 4` with the draft layer) the CPU
+time per CPU expert fell from 46-51 to 21-23 us (-54..-57%), decode went from 58-76 to 71-99 tok/s (+8..+30%) and
+short prompts from 58-70 to 94-103 tok/s; the 6.3K-token prompt, which runs on the GPU, did not change. The output
+does not change: tools/quant_quality.py with every expert on the CPU gave byte-identical results from both builds
+(4,995 positions, the 64 most likely tokens of each), and in the engine, with the draft policy's window sizes held
+fixed (a local test switch: they are otherwise priced from measured times, so a faster CPU picks other windows), both
+builds gave the same answers token for token and the same draft and cache counters; with that same work, decode was
+19-31% faster and short prompts 48-60%. Not measured: Zen 1 / Zen+, Hygon, the release build on Zen 2.
+To measure it on another PC: `python tools/bench_ggml_pdep.py` builds `ggml_dot_bench` (ggml-cpu's dot per format, CPU
+only, no model) with and without pdep and prints ns per 256 weights for both, with the 2-, 3- and 4-bit formats as the
+control and a checksum that shows whether the two builds computed the same results.
+
 ---
 
 <a id="experimental-speed-projection"></a>
