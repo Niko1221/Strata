@@ -57,6 +57,32 @@ def is_wide(raw0, mnemonic, ops):
     return raw0 == 0x62 or WIDE_MNEMONIC.match(mnemonic) is not None or WIDE_OPERAND.search(ops) is not None
 
 
+def split_instr(body):
+    """(mnemonic, operands) of an objdump instruction line, without its encoding markers.
+
+    binutils 2.42 prints AVX-VNNI as "{vex} vpdpbusd %ymm0,%ymm1,%ymm2": the marker is the first token, so a naive
+    split reads "{vex}" as the instruction and the check calls a binary holding vpdpbusd clean, which is the one
+    thing #795 exists to catch.  Leading {vex} / {evex} markers are dropped; "" means no instruction.
+    """
+    parts = body.split()
+    while parts and parts[0].startswith("{"):
+        parts = parts[1:]
+    return (parts[0], " ".join(parts[1:])) if parts else ("", "")
+
+
+def in_objects(obj, names):
+    """Whether an object file (an archive member path, or a map's "lib:file.obj") is one of `names`.
+
+    On the file name, never a substring: "native_expert.cpp.o" ENDS WITH "expert.cpp.o", so under the substring
+    test every function of the former passed for one of the latter - a policy hole as wide as the one #795 was
+    filed for.
+    """
+    if not obj:
+        return False
+    base = obj.replace("\\", "/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    return base in {n + ".o" for n in names} or base in {n + ".obj" for n in names}
+
+
 def judge(name, obj, wide_text, guarded, weak, is_elf):
     """Returns None if this wide function is allowed, else the reason."""
     if guarded:
@@ -69,7 +95,7 @@ def judge(name, obj, wide_text, guarded, weak, is_elf):
     anon = ("(anonymous namespace)" in name) or ("?A0x" in name)
     if weak:
         return "weak / COMDAT symbol: the linker may pick this wide copy for every caller (ODR)"
-    if obj is not None and not any(obj.endswith(o + ".obj") or obj.endswith(o + ".o") or o in obj for o in WIDE_OBJECTS):
+    if obj is not None and not in_objects(obj, WIDE_OBJECTS):
         return "wide-ISA code outside the wide-ISA translation units (object %s)" % obj
     if anon or base in WIDE_PUBLIC:
         return None
@@ -113,17 +139,16 @@ def run_elf(path):
         if len(parts) < 3:
             continue
         raw = parts[1].split()
-        text = parts[2].strip().split(None, 1)
-        if not raw or not text:
+        mnem, ops = split_instr(parts[2].strip())
+        if not raw or not mnem:
             continue
-        ops = text[1] if len(text) > 1 else ""
-        if is_wide(int(raw[0], 16), text[0], ops):
-            e = wide.setdefault((obj, cur), [0, text[0]])
+        if is_wide(int(raw[0], 16), mnem, ops):
+            e = wide.setdefault((obj, cur), [0, mnem])
             e[0] += 1
         # a static initialiser of a wide-ISA / older-CPU object: any VEX / EVEX encoding is an illegal instruction on a
         # CPU without AVX (or FMA, AVX2), and the initialiser runs before main
-        if cur.startswith("_GLOBAL__sub_I_") and obj and any(obj.endswith(o + ".o") for o in INIT_FREE_OBJECTS) and                 (int(raw[0], 16) in (0xC4, 0xC5, 0x62) or (text[0].startswith("v") and text[0] not in ("verr", "verw"))):
-            e = inits.setdefault((obj, cur), [0, text[0]])
+        if cur.startswith("_GLOBAL__sub_I_") and obj and in_objects(obj, INIT_FREE_OBJECTS) and                 (int(raw[0], 16) in (0xC4, 0xC5, 0x62) or (mnem.startswith("v") and mnem not in ("verr", "verw"))):
+            e = inits.setdefault((obj, cur), [0, mnem])
             e[0] += 1
     bad = []
     for (obj, name), (n, first) in sorted(wide.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])):
@@ -187,7 +212,7 @@ def run_pe(path, mapf):
     for (b, sym, obj), (n, first, guarded) in sorted(wide.items()):
         why = judge(sym, obj.split(":")[-1], "", guarded, False, False)
         # an inline function defined in a header comes out of the map as `f i`; the wide-ISA files must have none
-        in_wide_obj = any(o in obj for o in WIDE_OBJECTS)
+        in_wide_obj = in_objects(obj, WIDE_OBJECTS)
         if why is None and in_wide_obj and not guarded and re.search(r"std@@|\?\$", sym) and not ("?A0x" in sym):
             why = "template / std:: instantiation inside a wide-ISA object (COMDAT: the linker may share it)"
         if why:
