@@ -346,9 +346,44 @@ class Validation(FakeRoot):
         self.assertRejected("strata_install", {"data_dir": "\\\\server\\share\\Strata-data"}, "network")
         sysdir = (os.environ.get("SystemRoot", "C:\\Windows") + "\\Strata-data") if M.WIN else "/etc/Strata-data"
         self.assertRejected("strata_install", {"data_dir": sysdir}, "system folder")
+        if not M.WIN:
+            for path in ("/run/media/user/external_SSD/Strata-data", str(Path.home() / "Strata-data")):
+                target = Path(path)
+                if not target.parent.is_dir():
+                    continue
+                self.assertEqual(M.norm(self.tools.check_data_dir(path)), M.norm(target))
+            self.assertRejected("strata_install", {"data_dir": "/run/Strata-data"}, "system folder")
+            self.assertRejected("strata_install", {"data_dir": "/var/lib/Strata-data"}, "system folder")
         ok = [self.root.parent / "Strata-data", self.root / "models-here", self.root.parent / "Strata-big"]
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
+
+    @unittest.skipIf(M.WIN, "POSIX path rules")
+    def test_related_writable_linux_paths_are_allowed_but_other_system_paths_are_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            home_target = base / "var" / "home" / "user"
+            home_target.mkdir(parents=True)
+            home_link = base / "home" / "user"
+            home_link.parent.mkdir()
+            try:
+                home_link.symlink_to(home_target, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable")
+
+            media_root = base / "run" / "media"
+            media = media_root / "user" / "external_SSD"
+            media.mkdir(parents=True)
+            other_system = base / "var" / "lib"
+            other_system.mkdir(parents=True)
+
+            with (mock.patch.object(M, "system_folders", lambda: [M.norm(base / "var"), M.norm(base / "run")]),
+                  mock.patch.object(M, "_POSIX_EXTERNAL_MEDIA", media_root),
+                  mock.patch.object(M.Path, "home", return_value=home_link)):
+                for path in (home_target / "Strata-data", media / "Strata-data"):
+                    self.assertEqual(M.norm(self.tools.check_data_dir(str(path))), M.norm(path))
+                for path in (other_system / "Strata-data", base / "run" / "Strata-data"):
+                    self.assertRejected("strata_install", {"data_dir": str(path)}, "system folder")
 
     def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
         """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new

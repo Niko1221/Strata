@@ -42,6 +42,7 @@ PROTOCOL = "2025-06-18"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this server answers in
 VERSION = "0.1.0"
 WIN = os.name == "nt"
+_POSIX_EXTERNAL_MEDIA = Path("/run/media")
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 # The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
 # .venv and installs no package (setup.py's own CONTROL mode).
@@ -487,6 +488,15 @@ def system_folders() -> list[Path]:
         return [norm(p) for p in env if p]
     return [norm(p) for p in ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/run", "/sbin",
                               "/sys", "/usr", "/var", "/snap")]
+
+
+def allowed_user_path(path: Path) -> bool:
+    """True when a path resolves within the user's home, even if /home is a symlink to /var/home."""
+    target = norm(path)
+    home = norm(Path.home())
+    home_real = norm(Path(os.path.realpath(home)))
+    target_real = norm(Path(os.path.realpath(path)))
+    return is_inside(target, home) or is_inside(target, home_real) or is_inside(target_real, home)
 
 
 # ------------------------------------------------------------------------------------------------ Strata
@@ -2242,7 +2252,9 @@ class Tools:
                                 "model files")
             if not p.parent.is_dir():
                 raise ToolError(f"data_dir {raw!r}: its parent folder {p.parent} does not exist")
-            if any(n == f or is_inside(n, f) for f in system_folders()):
+            in_system_folder = any(n == f or is_inside(n, f) for f in system_folders())
+            is_external_media = not WIN and is_inside(n, norm(_POSIX_EXTERNAL_MEDIA))
+            if in_system_folder and not is_external_media and not allowed_user_path(p):
                 raise ToolError(f"data_dir {raw!r} is inside a system folder")
             if p.exists() and not p.is_dir():
                 raise ToolError(f"data_dir {raw!r} is a file")
