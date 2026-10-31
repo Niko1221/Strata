@@ -1222,7 +1222,7 @@ class StrataEngine:
         self.lines: queue.Queue = queue.Queue()
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
-        asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
+        asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots", "--parallel") if k in args), 0)
         self.batch = int(self.info.get("batch_slots") or 0)
         if self.multi:                                  # DeepSeek --parallel: several requests at once, in its own protocol
             self.batch = self.multi                     # (the server's parallel paths key on it: no FIFO, a request's own figures)
@@ -3433,6 +3433,16 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     if ds:
         # DeepSeek: --parallel N (the engine holds N conversations at once, each its own rings and KV in VRAM, taken out of the
         # experts' room; their tokens are decoded together).  Not --batch: that is the Qwen engine's slots.
+        # An engine package from before this flag would stop at the start on it ("unknown option"): asked of the engine itself, and said.
+        try:
+            from strata_control import dsv41_flags
+            old_engine = dsv41_flags.takes_parallel(cfg.get("exe")) is False
+        except Exception:                                # noqa: BLE001 - a probe that fails decides nothing
+            old_engine = False
+        if old_engine:
+            print(f'[strata] "parallel": {n} - this DeepSeek engine ({cfg.get("exe")}) is from before --parallel, so it answers one request at a '
+                  "time. Update the engine (strata update) to answer several at once.", flush=True)
+            return []
         if n > PARALLEL_MAX:
             print(f'[strata] "parallel": {n} - the DeepSeek engine runs at most {PARALLEL_MAX} conversations at once; it will use '
                   f"{PARALLEL_MAX}", flush=True)

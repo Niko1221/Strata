@@ -1445,6 +1445,7 @@ class Runner:
             gpu_pick.remember(base_path, [int(g) for g in self.s.gpus])
         self.apply_four_card(cfg)
         self.use_own_dsv41_engine(cfg)
+        self.gate_parallel(cfg)
         apply_experts(cfg, self.experts_flag(cfg.get("exe")))   # after the engine is settled: only a 0.1.50+ engine is given --experts
         wait = self.start_wait()
         if wait > 600 and not cfg.get("engine_ready_s"):     # the server's own wait for the engine (900 s) must not end before the start's
@@ -1453,6 +1454,21 @@ class Runner:
         write_private(out, cfg)
         self.config_path = out
         return out
+
+    def gate_parallel(self, cfg: dict) -> None:
+        """DeepSeek `--parallel N` and the engine this launch will run (settled just above, a self-upgrade included): an engine package from before the
+        flag stops at its start on it, so it is asked (`--help` names the flag) and, when it cannot, the launch goes on one at a time and says so in
+        one line.  The choice stays in the preset.  Unknown (the engine could not be asked): the flag is passed on, as for any engine."""
+        self.parallel_dropped = False
+        if cfg.get("arch") != "deepseek41" or not (self.s.parallel and self.s.parallel > 1):
+            return
+        from strata_control import dsv41_flags
+        if dsv41_flags.takes_parallel(cfg.get("exe")) is False:
+            self.parallel_dropped = True
+            text = (f"This DeepSeek engine ({Path(str(cfg.get('exe'))).parent.name or 'installed'}) is from before --parallel, so it answers one request at "
+                    f"a time and --parallel {self.s.parallel} is not used. Update the engine with `strata update` and start again to answer several at once.")
+            self.notices.append(text)
+            self.emit("config", text, None, level="warn")
 
     def apply_four_card(self, cfg: dict) -> None:
         """Four Radeon AI PRO R9700 cards and Qwen3.8-Flash-Next IQ3_S: the measured serving profile (strata_control/amd_four_card.py), filled
@@ -1477,6 +1493,8 @@ class Runner:
         from strata_control import profiles
         name = self.profile
         parallel = self.s.parallel if self.s.parallel else (getattr(self, "four_card_parallel", None) or self.catalog_parallel())
+        if getattr(self, "parallel_dropped", False):         # DeepSeek: the engine in use is from before the flag (gate_parallel)
+            parallel = None
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
@@ -1493,14 +1511,14 @@ class Runner:
             profiles.save(name, {**cur, "overrides": want}, expected_revision=rev)
 
     def multi_file(self) -> bool:
-        """The chosen model is DeepSeek-V4.1-Flash (setup.py MULTI_FILE_FAMILIES): nine shards, its own engine; no tuning and no parallel slots."""
+        """The chosen model is DeepSeek-V4.1-Flash (setup.py MULTI_FILE_FAMILIES): nine shards, its own engine; its own short tuner, and several conversations at once only when --parallel N is asked for."""
         try:
             return bool(self.s.family and self.catalog.strata.multi_family(self.s.family))
         except Exception:                                    # noqa: BLE001
             return False
 
     def catalog_parallel(self) -> int | None:
-        if self.multi_file():                                # the DeepSeek engine answers one request at a time: no --batch to pass
+        if self.multi_file():                                # DeepSeek: one at a time unless --parallel N is asked for (never fitted to the card; and never --batch)
             return None
         try:
             comp = self.catalog.computer()
@@ -2077,7 +2095,16 @@ class Runner:
                "speed": self.speed_line()}
         if self.multi_file():
             out["placement"] = self.placement()
+            if self.s.parallel and self.s.parallel > 1:      # only when asked for: a plan without --parallel is what it was
+                out["parallel"] = self.parallel_plan()
         return out
+
+    def parallel_plan(self) -> dict:
+        """DeepSeek `--parallel N` for --plan: how many conversations at once, and in plain words what it does with the measured numbers
+        (strata_control/dsv41_parallel.py).  Nothing is changed."""
+        from strata_control import dsv41_parallel
+        return {"requested": self.s.parallel, "conversations": dsv41_parallel.clamp(self.s.parallel),
+                "lines": dsv41_parallel.explain(self.s.parallel, self.s.context)}
 
     def resolved_speed(self) -> tuple[str, bool] | None:
         """DeepSeek's speed: ("faster" | "full", whether it is the default for this PC); None for any other model. The default is the engine's own
