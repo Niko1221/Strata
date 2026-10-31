@@ -12,7 +12,7 @@
 //   - page tables with unresident (-1) pages: scattered single pages, and one run of 64 pages (256 consecutive cells)
 //     that the window-shaped selections land on, so whole chunks inside the width are masked (m = -FLT_MAX, l = 0,
 //     acc = 0) and some queries are masked entirely (output 0);
-//   - widths {-1, 0, 1, 63, 64, 65, 1023, 1024, 1025, 2051, 4096, 16383, 16385, 32768, INT_MAX} per query (1023-1025 and 16383 /
+//   - widths {-1, 0, 1, 31, 32, 33, 63, 64, 65, 1023, 1024, 1025, 2051, 4096, 16383, 16385, 32768, INT_MAX} per query (1023-1025 and 16383 /
 //     16385 sit on the v2 merge's 16-chunk block edges), all queries alike and mixed within one batch; a width above
 //     aligned cap (2112/32768) is bounded by the chunk grid; an unaligned cap2051 keeps width<=cap;
 //   - n_q 1..6, caps2051/2112 (main selection and its rounded capacity) and32768 (the drafter's
@@ -24,6 +24,8 @@
 //
 //   qsa_merge_daily_parity [--device N]           the sweep; exit 0 when every case is bit-identical (77: no GPU)
 //   qsa_merge_daily_parity [--device N] --bench   plus each merge's time per call at target/drafter caps2051/32768
+//   qsa_variants_parity [--device N] --variants compares variant 2 with the default, including graph replay.
+//   Variant 2 allows abs(error) <= 2e-5 + 2e-5 * abs(reference). Other values require identical bits.
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -44,6 +46,23 @@
 namespace k = strata::kernels;
 
 namespace {
+bool variants = false;
+double max_abs = 0, sum_sq = 0;
+size_t compared = 0, bit_diffs = 0;
+bool compare_variant(const std::vector<float>& a, const std::vector<float>& b) {
+    const char* env = std::getenv("STRATA_QSA_ATTN_VARIANT");
+    const bool variant2 = env && std::strcmp(env, "2") == 0;
+    bool ok = true;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double e = std::abs(double(a[i]) - b[i]);
+        const bool different = std::memcmp(&a[i], &b[i], 4) != 0;
+        max_abs = std::max(max_abs, e); sum_sq += e * e;
+        ++compared; bit_diffs += different;
+        ok &= std::isfinite(a[i]) && std::isfinite(b[i]) &&
+              (variant2 ? e <= 2e-5 + 2e-5 * std::abs(double(a[i])) : !different);
+    }
+    return ok;
+}
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_merge_daily_parity: %s: %s\n", what, cudaGetErrorString(e));
@@ -252,7 +271,7 @@ struct Harness {
         k::qsa_decode_attn_batch(q, pools.view(c.fmt, table), ids, steps, c.cap, s, scratch, attn_new, c.n_q, nullptr);
         ck(cudaDeviceSynchronize(), "batch entry sync");
         ck(cudaMemcpy(b.data(), attn_new, n * 4, cudaMemcpyDeviceToHost), "batch entry output");
-        if (std::memcmp(a.data(), b.data(), n * 4) != 0) {
+        if (variants ? !compare_variant(a, b) : std::memcmp(a.data(), b.data(), n * 4) != 0) {
             std::puts("FAIL production batch differs from merge reference");
             entry_same = false;
         }
@@ -264,6 +283,27 @@ struct Harness {
                 std::puts("FAIL production step differs from merge reference");
                 entry_same = false;
             }
+        }
+        if (variants) {
+            // Capture and replay the same production entry point used by kbench.
+            cudaStream_t stream;
+            cudaGraph_t graph;
+            cudaGraphExec_t exec;
+            ck(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "variant stream");
+            ck(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "variant capture");
+            k::qsa_decode_attn_batch(q, pools.view(c.fmt, table), ids, steps, c.cap, s,
+                                     scratch, attn_new, c.n_q, stream);
+            ck(cudaStreamEndCapture(stream, &graph), "variant end capture");
+            ck(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "variant graph");
+            ck(cudaMemsetAsync(attn_new, 0xFF, n * 4, stream), "variant replay fill");
+            ck(cudaGraphLaunch(exec, stream), "variant replay");
+            ck(cudaStreamSynchronize(stream), "variant replay sync");
+            ck(cudaMemcpy(b.data(), attn_new, n * 4, cudaMemcpyDeviceToHost), "variant replay output");
+            entry_same = compare_variant(a, b) && entry_same;
+            ck(cudaGraphExecDestroy(exec), "variant graph destroy");
+            ck(cudaGraphDestroy(graph), "variant graph free");
+            ck(cudaStreamDestroy(stream), "variant stream free");
+            return same && nan == 0 && entry_same;
         }
         // The Daily's chunk kernel on the same inputs, into NaN-filled scratch, merged by both mergers.
         bool daily_same = true;
@@ -357,10 +397,11 @@ int main(int argc, char** argv) {
     int device = 0;
     bool do_bench = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--bench") == 0) do_bench = true;
+        if (std::strcmp(argv[i], "--variants") == 0) variants = true;
+        else if (std::strcmp(argv[i], "--bench") == 0) do_bench = true;
         else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) device = std::atoi(argv[++i]);
         else {
-            std::fprintf(stderr, "usage: qsa_merge_daily_parity [--device N] [--bench]\n");
+            std::fprintf(stderr, "usage: qsa_merge_daily_parity [--device N] [--bench] [--variants]\n");
             return 2;
         }
     }
@@ -379,7 +420,7 @@ int main(int argc, char** argv) {
     hx.init(rng, 7, 32768);
 
     // 1023 / 1024 / 1025 and 16383 / 16385: the v2 merge's U = 16 chunks x 64 cells block edges
-    const int32_t widths[] = {-1, 0, 1, 63, 64, 65, 1023, 1024, 1025, 2051, 4096, 16383, 16384, 16385, 32768, std::numeric_limits<int32_t>::max()};
+    const int32_t widths[] = {-1, 0, 1, 31, 32, 33, 63, 64, 65, 1023, 1024, 1025, 2051, 4096, 16383, 16384, 16385, 32768, std::numeric_limits<int32_t>::max()};
     const int n_widths = (int) (sizeof(widths) / sizeof(widths[0]));
     long long cases = 0, failed = 0, nonzero_total = 0;
     for (int fmt = 0; fmt < 4; ++fmt) {
@@ -408,11 +449,13 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        std::printf("[%s] %lld cases, %s (%lld differ)\n", fmt_name(fmt), fmt_cases, fmt_failed ? "FAIL" : "bit-identical",
+        std::printf("[%s] %lld cases, %s (%lld differ)\n", fmt_name(fmt), fmt_cases, fmt_failed ? "FAIL" : (variants ? "PASS" : "bit-identical"),
                     fmt_failed);
     }
     std::printf("qsa_merge_daily_parity: %lld cases, %lld differ, %lld nonzero output values in all -> %s\n", cases, failed,
                 nonzero_total, failed == 0 && nonzero_total > 0 ? "PASS" : "FAIL");
+    if (variants) std::printf("variant errors: max_abs=%.9g rms=%.9g bit_diffs=%zu/%zu\n",
+                             max_abs, std::sqrt(sum_sq / std::max(size_t(1), compared)), bit_diffs, compared);
     if (do_bench) bench(hx, rng);
     return failed == 0 && nonzero_total > 0 ? 0 : 1;
 }

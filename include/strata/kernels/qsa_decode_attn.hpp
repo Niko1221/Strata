@@ -40,6 +40,9 @@ struct QsaAttnPoolsRows {
 };
 
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
+/// STRATA_QSA_ATTN_VARIANT is read once. Set it before sizing scratch or capturing a graph.
+/// Batch variant: 2 = 32-cell chunks. All other values keep the default.
+/// Step, slot and direct batch_rows kernels keep 64-cell chunks.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);
 
 void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,

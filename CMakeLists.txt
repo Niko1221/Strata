@@ -1550,6 +1550,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+  # STRATA_QSA_ATTN_VARIANT=2: the decode attention's 32-cell chunks against the default kernel
+  add_executable(qsa_variants_parity src/kernels/qsa_merge_daily_parity.cpp)
+  target_include_directories(qsa_variants_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(qsa_variants_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  foreach(v 0 2)
+    add_test(NAME qsa_attn_variant_${v} COMMAND qsa_variants_parity --variants)
+    set_tests_properties(qsa_attn_variant_${v} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300
+      ENVIRONMENT "STRATA_QSA_ATTN_VARIANT=${v};STRATA_ATTN_DAILY=0;STRATA_ATTN_V3=0;STRATA_ATTN_MERGE_V2=0;STRATA_ATTN_PRE75=0;STRATA_ATTN_LANECELL=0")
+  endforeach()
   # the register kernel from the smallest prompt batch (the line gfx1151 moves to 4096 blocks): same ids at every case
   add_test(NAME qsa_topk_parity_reg_always COMMAND qsa_topk_parity --selftest)
   set_tests_properties(qsa_topk_parity_reg_always PROPERTIES ENVIRONMENT "STRATA_TOPK_REG_MIN_BLOCKS=0")
