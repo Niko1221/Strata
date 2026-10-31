@@ -9,7 +9,10 @@
 // int8 per 32 values in their natural order here (quantize_act_native), not the Q2_0 path's permuted one.
 //
 // Covered: gate/up IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS; down Q2_0, IQ4_NL - every layer of the IQ2_XS,
-// IQ3_XXS and IQ3_S packs but the IQ1_M ones (which MMQ does not cover either).  Other layers keep MMQ.
+// IQ3_XXS and IQ3_S packs but the IQ1_M ones (which MMQ does not cover either). Other layers keep their fallback.
+// SM75 only: STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_IQ1_M=1 also enables IQ1_M / Q2_0.
+// This opt-in uses int8 activations instead of the FP16 fallback; outputs differ at rounding level. The fixed
+// 128-row tile uses 53,760 bytes of shared memory. Failed setup leaves IQ1_M on the fallback path.
 #pragma once
 
 #include "strata/prefill/moe_fused.hpp"

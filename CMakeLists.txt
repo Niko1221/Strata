@@ -2313,6 +2313,12 @@ if(STRATA_NATIVE_EXPERTS)
       target_link_libraries(prefill_fused_iq_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
       add_test(NAME prefill_fused_iq_test COMMAND prefill_fused_iq_test)
       set_tests_properties(prefill_fused_iq_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+      add_test(NAME prefill_fused_iq_test_iq1m COMMAND prefill_fused_iq_test --only=IQ1_M --require-iq1 --no-timing)
+      set_tests_properties(prefill_fused_iq_test_iq1m PROPERTIES
+        ENVIRONMENT "STRATA_PF_FUSED_SM75=1;STRATA_PF_FUSED_IQ1_M=1" SKIP_RETURN_CODE 77 TIMEOUT 600)
+      add_test(NAME prefill_fused_iq_test_iq1m_disabled COMMAND prefill_fused_iq_test --iq1-disabled)
+      set_tests_properties(prefill_fused_iq_test_iq1m_disabled PROPERTIES
+        ENVIRONMENT "STRATA_PF_FUSED_SM75=1;STRATA_PF_FUSED_IQ1_M=0" SKIP_RETURN_CODE 77 TIMEOUT 60)
       # the opt-in STRATA_PF_FUSED_Q2N=1 on its own (the test leaves STRATA_PF_FUSED unset): the native Q2_0 pack's Q2_0 / Q2_0
       # layers on sm_80+ (77 below sm_80 and without a card)
       add_test(NAME prefill_fused_iq_test_q2n COMMAND prefill_fused_iq_test "--only=Q2_0 / Q2_0" --unset-pf-fused)

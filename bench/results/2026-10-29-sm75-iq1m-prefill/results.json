@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "raw_evidence": "https://github.com/riccardogiorato/Strata/tree/b23b3375ced8da17649cc8dbaa250f9e0f24b368/bench/results/2026-10-29-sm75-iq1m-prefill",
+  "provenance": {
+    "upstream": "46c152a1310f77cd2f0ce2c7cd213962df14fe83",
+    "production_base": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+    "ggml": "3cf03257f",
+    "tensorfold_reviewed": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "tensorfold_sources": [
+      "src/tensorfold/cuda/kernels/qmm_prefill.cu",
+      "src/tensorfold/cuda/experts_prefill.cu"
+    ],
+    "attribution": "Investigation inspired by tiled quantized prefill and shared-memory stage sizing. Original IQ1_M adapter for existing Strata kernels; no TensorFold code copied.",
+    "patch_sha256": "0119b6ec6db01fab4cdd836210948c9c52009ebbdd00274b5dea2781f995f179",
+    "gpu": "NVIDIA GeForce RTX 2080, 615.78.08, 8192 MiB, 165.00 W",
+    "cuda": "13.4.92",
+    "host_compiler": "GCC 16.2.1",
+    "os": "Omarchy 4.0.6",
+    "model_download_checksum_sidecars": {
+      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": "ca3b302d3d1eb6eddce3ea4acc79854e6cc5fdc0583e374a6a8b6bb67327743b",
+      "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": "e4996a6de18fd49c58d9a0040fcfd73787db6407c51973f29884bee7b14c9dbb"
+    },
+    "model_revision": "not recorded; checksum sidecars retained, not rehashed during GPU measurements",
+    "expert_layout_sha256": "ad437fa433f5ca2bc2e5058e02dafbe6535cca64421b256996343bd10b57eaeb",
+    "expert_profile_seed_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+    "kernel_commit": "38704fa2e969fd225eb4c8add17d665e49a22332"
+  },
+  "fixture": {
+    "context_capacity": 131072,
+    "input_tokens": 122451,
+    "output_tokens_every_cold_run": 1433,
+    "cached_tokens_every_cold_run": 0,
+    "temperature": 0,
+    "seed": 1234,
+    "reasoning": "disabled"
+  },
+  "cold_run_columns": [
+    "label",
+    "build",
+    "arm",
+    "actual_chunk",
+    "prefill_ms",
+    "decode_ms",
+    "ttft_s",
+    "wall_s",
+    "exact_edit_pass"
+  ],
+  "cold_runs": [
+    ["long-1-prod", "local-fixed", "prod", 4096, 142309.5, 18356.9, 142.559091, 160.86337, true],
+    ["long-2-off", "local-fixed", "off", 4096, 144011.6, 17749.6, 144.244834, 161.957434, true],
+    ["long-3-on", "local-fixed", "on", 4096, 139860.6, 17819.5, 140.067097, 157.848474, false],
+    ["long-4-on", "local-fixed", "on", 4096, 140048.1, 17714.1, 140.254546, 157.929716, true],
+    ["long-5-off", "local-fixed", "off", 4096, 144756.8, 18896.4, 144.963143, 163.821751, false],
+    ["long-6-prod", "local-fixed", "prod", 4096, 144674.4, 17984.6, 144.882137, 162.826256, true],
+    ["upstream-1-off", "upstream", "off", 1024, 346412.9, 18301.5, 346.619551, 364.880497, true],
+    ["upstream-2-on", "upstream", "on", 1024, 346355.3, 18863.6, 346.560812, 365.384108, false],
+    ["upstream-3-on", "upstream", "on", 1024, 346541.3, 17865.5, 346.760393, 364.579016, true],
+    ["upstream-4-off", "upstream", "off", 1024, 346507.6, 18909.0, 346.71472, 365.583168, true],
+    ["auto-1-off", "local-auto", "off", 4352, 145366.0, 17891.1, 145.583013, 163.43559, false],
+    ["auto-2-on", "local-auto", "on", 4608, 138690.5, 18190.4, 138.894308, 157.047949, true],
+    ["auto-3-on", "local-auto", "on", 4608, 138628.1, 18666.9, 138.883134, 157.46209, true],
+    ["auto-4-off", "local-auto", "off", 4352, 145430.7, 19014.7, 145.742598, 164.613774, true]
+  ],
+  "speed_columns": [
+    "arm",
+    "prompt_size",
+    "runs",
+    "median_prefill_tps",
+    "min_prefill_tps",
+    "max_prefill_tps"
+  ],
+  "speed_runs": [
+    ["off", "4K", 3, 662.9, 658.3, 668.9],
+    ["off", "16K", 3, 865.5, 863.9, 867.8],
+    ["off", "32K", 3, 881.7, 877.8, 882.8],
+    ["on", "4K", 3, 650.8, 650.3, 654.8],
+    ["on", "16K", 3, 907.9, 906.1, 909.6],
+    ["on", "32K", 3, 919.7, 917.3, 920.6]
+  ],
+  "limits": [
+    "Local tuned and upstream results are separate comparisons; the example config reproduces the upstream arm.",
+    "Auto off/on selected different chunks; its gain includes chunk sizing.",
+    "Exact-edit failures are retained above; broad coding-quality equivalence is unproven.",
+    "Raw logits, full outputs, diagnostics and exact per-run configs are preserved at raw_evidence."
+  ]
+}

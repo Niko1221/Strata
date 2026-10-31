@@ -1078,6 +1078,18 @@ Options that change answers stay separate: `STRATA_SELECT_SIMT=1|2`, `STRATA_PA_
 (Q2_0 pack, 7.5 card only), `STRATA_PF_FUSED_Q2N=1` (the native Q2_0 pack's prompt experts on sm_80+, below) and
 `STRATA_BF16_TC=1` with `STRATA_XN_F16`.
 
+### IQ1_M / Q2_0 prompt experts on Turing (opt-in)
+
+`STRATA_PF_FUSED_IQ1_M=1`, together with `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1`, also takes native layers whose
+gate/up format is IQ1_M and whose down format is Q2_0. It is limited to sm_75. Unset, IQ1_M keeps its fallback; other formats and devices keep
+their existing path. The 128-row tile uses 53,760 bytes of shared memory. If kernel setup fails, the layer keeps its
+fallback. The existing `STRATA_PF_FUSED_NATIVE=0` override still disables it.
+
+Weights are represented exactly as small signed integers and a scale per 16 values, but the activations and intermediate
+values use the fused path's int8 rounding. Generated text can change. This does not guarantee a larger prompt chunk:
+the engine still reduces the requested chunk to fit its buffer budget. See the [RTX 2080 measurements](../bench/results/2026-10-29-sm75-iq1m-prefill/README.md)
+for the measured speed, mixed short-prompt results, correctness checks and untested configurations.
+
 ### The native Q2_0 pack's prompt experts on the fused int8 kernels (`STRATA_PF_FUSED_Q2N=1`, opt-in, sm_80+)
 
 A PC whose CPU lacks the AVX-512 set that setup looks for gets the native Q2_0 pack. On a CUDA card of sm_80 or newer its
