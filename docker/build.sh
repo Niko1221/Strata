@@ -64,7 +64,7 @@ case "$commit" in *[!0-9a-f]*|"") commit="" ;; esac
 # tools/: every .py at any depth, because the bundle's DeepSeek scripts are nested (INSTALLER_SCRIPTS in package_terminal.py names dsv41/*:
 # the Dockerfile's terminal stage stops at "installer tool missing: tools/dsv41/tune.py" when only the top-level modules are in the context)
 cd "$repo"
-paths="packaging bin strata.py strata_control strata_cli serve requirements.txt requirements-monitor.txt docs/MANAGEMENT_PROTOCOL.md docs/TERMINAL_LAUNCH.md data bench/prompts/standard-v1 setup.py ref/load.py CMakeLists.txt"
+paths="packaging bin strata.py strata_control strata_cli serve requirements.txt requirements-monitor.txt docs/MANAGEMENT_PROTOCOL.md docs/TERMINAL_LAUNCH.md data bench/prompts/standard-v1 setup.py ref/load.py CMakeLists.txt tools/dsv41"
 if git rev-parse --git-dir >/dev/null 2>&1; then
   # shellcheck disable=SC2086
   { git ls-files -z -- $paths ':(glob)tools/**/*.py'; } | tar --null -T - -cf - | tar -xf - -C "$ctx/terminal-src"

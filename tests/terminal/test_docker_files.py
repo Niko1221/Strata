@@ -53,6 +53,7 @@ class Scripts(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertTrue((ctx / "Dockerfile").is_file())
             self.assertTrue((ctx / "terminal-src" / "docs" / "TERMINAL_LAUNCH.md").is_file())
+            self.assertTrue((ctx / "terminal-src" / "tools" / "dsv41" / "tune.py").is_file())
             self.assertTrue((ctx / "engine" / "pkg" / "engine-component.json").is_file())
             # the bundle reads tools/ modules by path as well (INSTALLER_SCRIPTS), and the DeepSeek ones are nested: every name must be in the
             # context, or package_terminal.py stops the build at "installer tool missing: tools/<name>.py" (the image build after v0.2.4.1 was broken this way)
@@ -253,6 +254,17 @@ class Publishing(unittest.TestCase):
         self.assertTrue(payload)
         for item in payload:
             self.assertTrue(any(item == p or item.startswith(p.rstrip("/") + "/") for p in listed), f"build.sh does not copy {item}")
+        installer_scripts = next(
+            ast.literal_eval(node.value) for node in pt.body
+            if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "INSTALLER_SCRIPTS" for t in node.targets)
+        )
+        for item in installer_scripts:
+            if "/" in item:
+                source = f"tools/{item}.py"
+                self.assertTrue(
+                    any(source == p or source.startswith(p.rstrip("/") + "/") for p in listed),
+                    f"build.sh does not copy installer script {source}",
+                )
 
     def test_the_source_build_passes_the_commit_to_the_terminal_stage(self):
         """.git is not in the build context (.dockerignore), so the root Dockerfile's terminal stage gets the commit as a build argument, the way
