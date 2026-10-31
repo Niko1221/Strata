@@ -10,6 +10,7 @@
 // file and the parity test in src/kernels/dequant_s2_parity.cpp is what says whether a change is still right.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/kernels/dequant_s2.hpp"
 
@@ -51,8 +52,8 @@ void dequant_s2(const uint8_t *codes, const float *scales, float *out,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        dpct::get_in_order_queue()
-            .parallel_for<dpct_kernel_name<class dequant_s2_kernel_bdb833>>(
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class dequant_s2_kernel_bdb833>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)blocks) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),

@@ -18,7 +18,13 @@
 namespace strata::core {
 
 /// The environment settings that are the defaults of `gcn_arch` (hipDeviceProp_t::gcnArchName; "gfx1151" or
-/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.
+/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.  `defaults026` (STRATA_DEFAULTS=026, defaults_026.hpp): the gfx12 table of
+/// v0.2.6 (the five prompt switches only, without the four 0.2.7 decode switches); the one-argument form asks the environment.
+std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026);
+/// The same with the platform given instead of read from the build (a pure rule, so a test can check both).  0.2.7: on Windows the gfx1151
+/// table leaves STRATA_SH_STREAM out (the fork is off, +6.9% decode on a Strix Halo Windows PC, same ids); Linux gfx1151 and every
+/// other architecture are unchanged; `defaults026` keeps it in on both.  An explicit STRATA_SH_STREAM=1 turns the fork on anywhere.
+std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026, bool windows);
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
 /// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose

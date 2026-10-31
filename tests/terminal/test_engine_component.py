@@ -20,6 +20,7 @@ from strata_control import acquisition, components, engine_component as ec
 
 WINDOWS = os.name == "nt"
 HERE = components.host_platform()
+NO_HIP = HERE == "linux-aarch64"      # the DGX Spark: CUDA only
 EXE = "strata.exe" if WINDOWS else "strata"
 
 
@@ -116,6 +117,7 @@ class Resolution(unittest.TestCase):
             ec.resolve(self.root, backend="cuda")
         self.assertIn(f"is for {other}", str(caught.exception))
 
+    @unittest.skipIf(NO_HIP, "there is no HIP engine for arm64 Linux (BACKEND_MATRIX): this test builds one for the host platform")
     def test_another_backend_is_refused_with_the_reason(self):
         make_package(self.root, backend="hip")
         with self.assertRaises(ec.EngineMissing) as caught:
@@ -258,6 +260,16 @@ class WindowsAmd(unittest.TestCase):
                            {"vendor": "1002", "device": 0x744C, "name": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0}]
     IGPU_ONLY = [{"vendor": "1002", "device": 0x15BF, "name": "AMD Radeon 780M Graphics", "vram_gb": 0.5}]
 
+    def test_a_removed_nvidia_card_left_in_the_registry_does_not_win(self):      # #3892
+        old = {"vendor": "10de", "device": 0x2684, "name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0}
+        new = self.TESTER_A[0]
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(new)]):
+            self.assertEqual(ec._windows_vendor_backend(), "hip")
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(old), dict(new)]):
+            self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # both really there: NVIDIA first, as before
+        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[]):
+            self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # Windows could not say: nothing is dropped
+
     def test_nvidia_wins_and_an_integrated_radeon_is_not_a_card(self):
         self.assertEqual(ec._windows_vendor_backend(self.OWNER_PC), "cuda")
         self.assertEqual(ec.windows_amd_cards(self.OWNER_PC), [])
@@ -293,6 +305,7 @@ class WindowsAmd(unittest.TestCase):
                 self.assertIn(device, ec.WIN_AMD_IGPU_IDS)
 
 
+@unittest.skipIf(NO_HIP, "there is no HIP engine for arm64 Linux (BACKEND_MATRIX): this test builds one for the host platform")
 class WrongCardFamily(unittest.TestCase):
     """A tester build is for one AMD card family; on another family the person gets one plain line, not a technical list."""
 
@@ -323,6 +336,7 @@ class WrongCardFamily(unittest.TestCase):
             self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").backend, "hip")
 
 
+@unittest.skipIf(NO_HIP, "there is no HIP engine for arm64 Linux (BACKEND_MATRIX): this test builds one for the host platform")
 class Rx6000Package(unittest.TestCase):
     """0.2.2: the RX 6000 package (gfx1030 / gfx1031) is the one an RX 6000 card finds, and no other card family finds it."""
 

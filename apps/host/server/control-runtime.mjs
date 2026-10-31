@@ -74,6 +74,17 @@ export function findControl({ env = process.env, platform = process.platform, ex
   return control;
 }
 
+/**
+ * The environment of the server the host starts from a source checkout (#3851): the key travels in the run configuration, so a
+ * STRATA_API_KEY the host itself was started with is removed. Setting it to an empty string made serve/server.py stop with
+ * "an API key was given but it is empty".
+ */
+export function sourceServerEnvironment(env = process.env) {
+  const next = { ...env, PYTHONUNBUFFERED: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+  delete next.STRATA_API_KEY;
+  return next;
+}
+
 /** The environment Control runs in: nothing from the user's Python, and acquiring forbidden. */
 export function controlEnvironment(control, { env = process.env, components = componentsDirectory({ env }), acquire = false } = {}) {
   const next = { ...env };
@@ -182,6 +193,12 @@ export function createControl({ control = findControl(), env = process.env, run 
       const failed = result.json?.results?.find?.(r => r.status === 'failed');
       if (failed) throw Object.assign(new ControlError(failed.error, { exitCode: failed.exit_code ?? result.code, output: result.json }), { code: result.code === 7 ? 'engine_serving' : 'update_failed' });
       throw failure(result, 'The update failed.');
+    },
+    /** Install an engine package the person downloaded and chose (the offline path): no network; Control checks the package's own signature. */
+    async installEngineFile(path, { onEvent = null, signal = null } = {}) {
+      const result = await call(['components', 'install-file', path, '--output', 'jsonl'], { timeoutMs: 3600_000, onLine: onEvent ?? (() => {}), signal });
+      if (result.json?.ok) return { ok: true, results: [result.json] };
+      throw failure(result, 'This file could not be installed.');
     },
     async rollbackEngine() {
       const result = await call(['components', 'rollback', '--output', 'json'], { timeoutMs: 120_000 });

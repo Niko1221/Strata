@@ -5,7 +5,9 @@
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
+#include "strata/kernels/window_start.hpp"  // KVA: the draft layer's window floor
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/pdl.hpp"
 
@@ -90,7 +92,7 @@ __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __
     hist[c * 3 + 2] = seq[2];
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
@@ -141,7 +143,7 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
     }
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
@@ -276,7 +278,7 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
-    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const float d = q8_1_finite(q81_div(amax, 127.0f));   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit (#3948: and its division)
     const int8_t q = q8_1_quant(xi, d, amax);
     xq[idx / 32].qs[idx % 32] = q;
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
@@ -1016,6 +1018,30 @@ void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_str
     check("window_ids");
 }
 
+namespace {
+// window_ids with a floor read from (mapped) memory when the kernel RUNS: the captured graph keeps the pointer, the
+// value changes between sessions.  A floor of 0 gives window_ids' selection exactly (strata::kernels::window_start).
+__global__ void window_ids_floor_kernel(int32_t* steps, int window, int32_t* ids, long long stride,
+                                        const volatile int32_t* floor_cell) {
+    const int q = blockIdx.y;
+    int32_t* st = steps + q * 4;
+    const int n_kv = st[1];
+    const int start = strata::kernels::window_start(n_kv, window, *floor_cell);
+    const int width = n_kv - start;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < width; j += gridDim.x * blockDim.x)
+        ids[q * stride + j] = start + j;
+    __syncthreads();
+    if (blockIdx.x == 0 && threadIdx.x == 0) st[3] = width;
+}
+}  // namespace
+
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream) {
+    window_ids_floor_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride,
+                                                                                    floor_cell);
+    check("window_ids_floor");
+}
+
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
     dense_steps_kernel<<<1, 64, 0, (cudaStream_t) stream>>>(cells, n, steps);
     check("dense_steps");
@@ -1053,6 +1079,7 @@ void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv
         case 4: gdn_conv_ab_kernel<4, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 5: gdn_conv_ab_kernel<5, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 6: gdn_conv_ab_kernel<6, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 7: case 8: gdn_conv_ab_kernel<kVerifyNarrowT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         default: gdn_conv_ab_kernel<kVerifyMaxT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_conv_ab_multi");
@@ -1102,6 +1129,7 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
         case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 7: case 8: gdn_ab_multi_kernel<kVerifyNarrowT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_ab_multi");
@@ -1146,8 +1174,12 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
     if (split && (t_out_begin >= n_tok || n_tok - t_out_begin >= 2)) {
         const dim3 grid((unsigned) h_v, S / GS_COLS), block(GS_COLS, RG);
         if (t_out_begin >= n_tok) {   // no outputs (the commit): the state only
-            gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
-                state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            if (n_tok > kVerifyNarrowT)
+                gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            else
+                gdn_state_replay_kernel<kVerifyNarrowT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
         } else {
             gdn_step_split_kernel<true><<<grid, block, 0, (cudaStream_t) stream>>>(
                 state, h, conv_channels, gate, beta, y, h_k, h_v, n_tok, n_keep, t_out_begin);
@@ -1275,20 +1307,25 @@ void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int
 }
 
 namespace {
-// one thread per window entry: up to kVerifyMaxT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
-// 7+ tokens lost its last entries)
-constexpr int kResidentPlanMax = 128;
+// one thread per window entry: up to kVerifyNarrowT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
+// 7+ tokens lost its last entries).  A window of 9..16 rows (up to 160 entries) runs the same kernel on 256 threads;
+// one block size per window class, so a narrow window launches exactly the 128-thread kernel it always did.
+constexpr int kResidentPlanNarrow = 128;
+constexpr int kResidentPlanMax = kVerifyMaxT > kVerifyNarrowT ? 256 : kResidentPlanNarrow;
+static_assert(kVerifyNarrowT * 10 <= kResidentPlanNarrow, "resident_plan: one thread per entry");
 static_assert(kVerifyMaxT * 10 <= kResidentPlanMax, "resident_plan: one thread per entry");
-// the parallel scan keeps one partial sum per warp in s_wsum[4] and packs (entries << 16 | groups) in an int
-static_assert(kResidentPlanMax <= 128 && kResidentPlanMax % 32 == 0, "resident_plan: at most 4 warps");
+// the parallel scan keeps one partial sum per warp in s_wsum[NT / 32] and packs (entries << 16 | groups) in an int
+static_assert(kResidentPlanMax <= 256 && kResidentPlanMax % 32 == 0, "resident_plan: at most 8 warps");
 static_assert(kResidentPlanMax < 32768, "resident_plan: the packed entry count must stay below 2^15");
-__global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
+template <int NT>
+__global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
                                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
                                      long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
                                      uint32_t ring, volatile uint32_t* plan_err) {
-    __shared__ int32_t s_ids[kResidentPlanMax];
-    __shared__ int32_t s_excl[kResidentPlanMax];
-    __shared__ int32_t s_wsum[4];
+    constexpr int NW = NT / 32;
+    __shared__ int32_t s_ids[NT];
+    __shared__ int32_t s_excl[NT];
+    __shared__ int32_t s_wsum[NW];
     __shared__ int s_bad;
     const int tid = threadIdx.x;
     if (tid == 0) s_bad = 0;
@@ -1352,7 +1389,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
     if (is_first) {
         int tot = s_excl[tid];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < warp) tot += s_wsum[w];
         }
         const int grp_idx = tot & 0xffff;
@@ -1364,7 +1401,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < fj_warp) fj_tot += s_wsum[w];
         }
         const int out_idx = (fj_tot >> 16) + rank_in_group;
@@ -1372,7 +1409,14 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        const int groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;
+        int groups;
+        if constexpr (NW == 4) groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;   // (the 128-thread kernel as it was)
+        else {
+            groups = 0;
+#pragma unroll
+            for (int w = 0; w < NW; ++w) groups += s_wsum[w];
+            groups &= 0xffff;
+        }
         start[groups] = n;
         start2[0] = n;
         counts[0] = groups;
@@ -1470,8 +1514,18 @@ __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile flo
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
-    resident_plan_kernel<<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+    if (n_entries > kResidentPlanNarrow) {   // a 9..16-row window (kResidentPlanMax == 256 only in a wide build)
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
+        else {
+            std::fprintf(stderr, "resident_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                              blob, plan, capx, skip, ring, plan_err);
+    }
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {

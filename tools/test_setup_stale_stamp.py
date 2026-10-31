@@ -73,6 +73,7 @@ class BuildEngineStamp(unittest.TestCase):
                    mock.patch.object(setup, "cpu_floor", lambda avx2: ""),
                    mock.patch.object(setup, "cpu_info", lambda: ("cpu", True)),
                    mock.patch.object(setup, "cmake_build", self.fake_build),
+                   mock.patch.object(setup, "gpus", lambda: []),          # no real card of the box the test runs on (#4662: the build also covers every other card)
                    mock.patch.object(setup, "say", lambda *a, **k: None),
                    mock.patch.object(setup, "ok", lambda *a, **k: None)]
         for p in patches:

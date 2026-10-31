@@ -84,12 +84,14 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--preset", metavar="NAME", help="start a saved preset (other flags change it for this start)")
     g.add_argument("--model", metavar="NAME", help="the model size, e.g. iq3_xxs, q2_0, ud-q4_k_xl (any case)")
     g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
+    g.add_argument("--dsv41-package", metavar="FILE", help="DeepSeek: the engine package you downloaded from the release page (.tar.gz or .zip); "
+                                                          "it is checked and installed instead of being fetched")
     g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
     g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
     g.add_argument("--move-data", action="store_true",
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
                         "where they are and stay usable, and the new folder gets the new downloads")
-    g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
+    g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens (DeepSeek-V4.1-Flash: up to 512k and 1m)")
     g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
@@ -103,11 +105,18 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster: auto (recommended: Strata picks from what it measured on cards like yours; "
                         "that is the MTP today), mtp, dflash2 (Qwen3.8-Flash-Next only; downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run "
                         "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
+    g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
+                   help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
+                        "of graphics memory or less), full uses all 6")
+    g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
                    "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
+    g.add_argument("--dspark", type=_choice("a DSpark mode", ("on", "off", "auto", "none")), metavar="on|off|auto|none",
+                   help="DeepSeek: the DSpark drafter that guesses ahead (auto loads it only where it helps; off still loads it on some cards). "
+                        "The same as --set dspark=<word>")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
     g.add_argument("--pool-cores", metavar="LIST",
@@ -141,7 +150,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     m.add_argument("--delete-preset", metavar="NAME", help="delete a saved preset")
     m.add_argument("--status", action="store_true", help="show what this command is serving now")
     m.add_argument("--stop", action="store_true", help="stop what this command started (with --preset NAME: that one)")
-    m.add_argument("--show-key", action="store_true", help="print the API key of --preset NAME (or of the running launch)")
+    m.add_argument("--show-key", action="store_true", help="print the API key of --preset NAME (or of the running launch); with none of those, the key of a model setup.py set up "
+                                                                    "(--model NAME picks one when several have a key)")
 
     c = sp.add_parser(
         "connect", help="print (or write) the setup for an app that uses the running server", epilog=EXAMPLES,
@@ -199,6 +209,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     s = store.load(a.preset) if a.preset else S.LaunchSettings()
     if a.preset:
         s.name = s.name or a.preset
+    if getattr(a, "dsv41_package", None):
+        s.dsv41_package = str(Path(a.dsv41_package).expanduser())
     if a.model_path:
         s.model_path = str(Path(a.model_path).expanduser())
         if not a.model:
@@ -229,6 +241,12 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.mtp = a.mtp
     if a.drafting:
         s.drafting = a.drafting
+    if getattr(a, "full_quality", False):
+        if getattr(a, "speed", None) == "faster":
+            notices.append(S.Notice("warn", "--full-quality and --speed faster were both given; full quality is used.", ""))
+        s.speed = "full"
+    elif getattr(a, "speed", None):
+        s.speed = a.speed
     if a.gpu and getattr(a, "gpu_roles", None):
         raise ValueError("Use --gpu (which cards) or --gpu-roles (a role for each card), not both.")
     if a.gpu:
@@ -265,6 +283,11 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if a.dspark:
+        s.extra = {**s.extra, "--dspark": a.dspark}
+        if a.dspark == "on" and sys.platform == "darwin":
+            notices.append(S.Notice("warn", "DeepSeek's drafter (DSpark) is not supported on a Mac yet, so --dspark on will probably stop the engine.",
+                                    "Leave it out: on a Mac the drafter is off and answers are as fast without it."))
     if a.pool_cores:
         text = a.pool_cores.replace(" ", "")
         if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):
@@ -275,6 +298,24 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     if a.save_preset:
         s.name = a.save_preset
     return s, notices
+
+
+def _placement_lines(placement: dict | None) -> None:
+    """DeepSeek-V4.1-Flash's plan: the cards, the experts in graphics memory and on the CPU, the n-gram table on the SSD, the warnings."""
+    if not placement:
+        return
+    import textwrap
+    _say("  placement")
+    for line in placement.get("lines") or []:
+        wrapped = textwrap.wrap(line, 94) or [""]
+        _say("    - " + wrapped[0])
+        for w in wrapped[1:]:
+            _say("      " + w)
+    for line in placement.get("warnings") or []:
+        wrapped = textwrap.wrap(line, 90) or [""]
+        _say("  [!] " + wrapped[0])
+        for w in wrapped[1:]:
+            _say("      " + w)
 
 
 def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
@@ -308,7 +349,17 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 if s.vision == "off" and r.images and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
-        notices += S.check_context(s, max_fit_tokens=None)
+        if catalog.strata.multi_family(s.family):           # DeepSeek-V4.1-Flash: one request at a time, no tuning
+            if s.parallel and s.parallel > 1:
+                notices.append(S.Notice("warn", f"{s.model} answers one request at a time in this Strata version, so --parallel {s.parallel} is not used.", ""))
+                s.parallel = None
+            # pictures: on unless the person chose off - the engine reads them with its own vision tower, no separate reader
+            s.vision = "off" if s.vision == "off" else "on"   # (tuning is DeepSeek's own short tune: tools/dsv41/tune.py, run by the launch)
+        elif s.speed:
+            notices.append(S.Notice("warn", "--speed and --full-quality are for DeepSeek; this model uses all its experts, so they are not used.", ""))
+            s.speed = None
+        deepseek = bool(catalog.strata.multi_family(s.family))
+        notices += S.check_context(s, max_fit_tokens=None, deepseek=deepseek, pack_limit=catalog.pack_limit(s.family, s.model) if deepseek else None)
     if s.access != "local" and not s.api_key and not s.no_key:
         from strata_cli.launch import access
         kept = access.kept_key(s.name or f"{s.model or 'model'} {S.context_label(s.context)}")
@@ -383,6 +434,15 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 
 
 # ------------------------------------------------------------------------------------------------ plain-text run
+
+def _engine_log_of(config) -> str:
+    """Where this launch writes the engine's log (#3656): the config's own "log", printed so a failure can be read without a search."""
+    try:
+        from strata_cli.launch.runner import read_config
+        return str(read_config(Path(config)).get("log") or "")
+    except (OSError, ValueError, TypeError):
+        return ""
+
 
 def _say(line: str = "") -> None:
     sys.stdout.write(line + "\n")
@@ -506,6 +566,22 @@ def open_page(url: str) -> bool:
         return False
 
 
+def _screens_missing() -> str | None:
+    """The Python package the screens need that this install lacks ("rich" / "textual"), None when both are there.  A source install made before
+    setup installed them has neither: `strata launch` then goes on in plain lines instead of stopping with a traceback."""
+    import importlib.util
+    return next((m for m in ("rich", "textual") if importlib.util.find_spec(m) is None), None)
+
+
+def final_hint_lines(s, preset_saved: bool) -> list[str]:
+    """The last lines of a flag launch: how to connect an app and how to stop.  `--preset "<name>"` is suggested only when a preset by that name exists
+    (--preset NAME, or --save-preset NAME); otherwise the plain command, and how to keep the settings."""
+    if preset_saved:
+        return [f"  Connect an app:  strata connect opencode      Stop:  strata launch --stop --preset \"{s.name}\""]
+    return ["  Connect an app:  strata connect opencode      Stop:  strata launch --stop",
+            "  To keep these settings for next time, add --save-preset NAME."]
+
+
 def _tui(run, *args, **kw) -> int:
     """Open the screens. An error of the screens themselves ends with a plain sentence and a non-zero exit code, never a traceback and exit 0
     (tester report T02)."""
@@ -582,6 +658,31 @@ def launch_info(name: str | None = None) -> dict | None:
             "port": port, "access": preset.access if preset else None}
 
 
+def setup_config_keys(wanted: str | None = None) -> list[tuple[str, Path, str]]:
+    """(model id, config file, API key) for the models setup.py set up (strata-<model>.json in the install folders) that carry a key, #3570.
+    `wanted` keeps the model whose id is that name or ends with it (coder-iq1_m for IQ1_M); case does not matter."""
+    from strata_control import models
+    try:
+        listed = models.list_installed().get("models", [])
+    except Exception:                                    # noqa: BLE001 - a folder that cannot be read has no key to show
+        return []
+    found = []
+    for entry in listed:
+        source = entry.get("source_config")
+        if not source:
+            continue
+        model_id = str(entry.get("id") or Path(source).stem)
+        if wanted and not (model_id.lower() == wanted.lower() or model_id.lower().endswith(wanted.lower())):
+            continue
+        try:
+            key = str(json.loads(Path(source).read_text(encoding="utf-8-sig")).get("api_key") or "").strip()
+        except (OSError, ValueError, AttributeError):
+            continue
+        if key and key.lower() != "none":
+            found.append((model_id, Path(source), key))
+    return found
+
+
 def run_launch(a: argparse.Namespace) -> int:
     from strata_cli.launch import store
     from strata_cli.launch.catalog import Catalog, CatalogUnavailable
@@ -626,10 +727,22 @@ def run_launch(a: argparse.Namespace) -> int:
             return 0
         if a.show_key:
             info = launch_info(a.preset)
-            if not info or not info.get("key"):
-                return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME."), 5)
-            _say(info["key"])
-            return 0
+            if info and info.get("key"):
+                _say(info["key"])
+                return 0
+            if not a.preset:
+                # not a launch: a model set up by setup.py keeps its key in its own strata-<model>.json (#3570)
+                found = setup_config_keys(getattr(a, "model", None))
+                if len(found) == 1:
+                    _say(found[0][2])
+                    if not machine:
+                        print(f"(the key of {found[0][0]}, from {found[0][1]})", file=sys.stderr)
+                    return 0
+                if len(found) > 1:
+                    return fail("Several models set up by setup.py have an API key: " + ", ".join(f[0] for f in found) + ". Name one with --model NAME.", 5)
+                if getattr(a, "model", None):
+                    return fail(f"No model set up by setup.py matches '{a.model}' and has an API key, and no launch is running.", 5)
+            return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME, or a model set up by setup.py with --model NAME."), 5)
 
         try:
             catalog = Catalog()
@@ -640,17 +753,24 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting)
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
+        no_screens_package = None
+        if interactive and _screens_missing():
+            no_screens_package = _screens_missing()
+            interactive = False
+            _say(f"The screens need a Python package this install does not have yet ({no_screens_package}), so Strata goes on in plain lines. "
+                 "Run setup again (START-HERE / ./setup.sh) to get the screens.")
         if not have_choices and not interactive and not a.plan:
             if machine or a.no_tui or catalog is None or not _can_ask():     # --no-tui never asks (round 8, M)
                 return fail("`strata launch` with no choices opens screens, and this is not a terminal (or --no-tui was given). Name what to start: --preset NAME, or --model NAME "
                             "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
             # Git Bash, mintty and some editor panels cannot show the screens although a person is typing: go on in plain lines, and ask first
             plain_questions = True
-            _say("This window cannot show Strata's screens (Git Bash and similar windows do not pass the keyboard through). "
-                 "For the screens, open Windows Terminal, PowerShell or cmd, or run `winpty strata launch`. Going on with plain questions.")
+            if no_screens_package is None:
+                _say("This window cannot show Strata's screens (Git Bash and similar windows do not pass the keyboard through). "
+                     "For the screens, open Windows Terminal, PowerShell or cmd, or run `winpty strata launch`. Going on with plain questions.")
         if interactive and not have_choices:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
@@ -691,10 +811,13 @@ def run_launch(a: argparse.Namespace) -> int:
                     _say(f"  model     {m.get('title') or 'your model files'}{size}   (your files in {s.model_path})")
                 else:
                     _say(f"  model     {m.get('title') or f'{s.family} {s.model}'}{size}")
-                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {s.parallel or 'fit to your card'}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {('one at a time' if plan.get('placement') else s.parallel or 'fit to your card')}")
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
+                if plan.get("speed"):
+                    _say(f"  speed     {plan['speed'].replace('Speed: ', '', 1)}")
+                _placement_lines(plan.get("placement"))
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
@@ -760,7 +883,19 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"  {'Anthropic apps':<14} {result.urls[0]}   (Claude Code: ANTHROPIC_BASE_URL, no /v1 at the end)")
         if result.key:
             from strata_cli.launch import access
-            _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key --preset \"{s.name}\")")
+            _say(f"  {'API key':<14} {access.mask_key(result.key)}   (show it: strata launch --show-key"
+                 + (f" --preset \"{s.name}\")" if (a.preset or a.save_preset) else ")"))
+        speed_line = ""
+        if hasattr(runner, "speed_line"):
+            from strata_cli.launch.runner import experts_from_log
+            speed_line = runner.speed_line(experts_from_log(_engine_log_of(result.config) or None))
+            if not isinstance(speed_line, str):
+                speed_line = ""
+        if speed_line:
+            _say(f"  {'Speed':<14} {speed_line.replace('Speed: ', '', 1)}")
+        engine_log = _engine_log_of(result.config)
+        if engine_log:
+            _say(f"  {'Engine log':<14} {engine_log}   (follow it: strata logs --follow)")
         for n in result.notices:
             _say(f"[!] {n}")
         local = next((u for u in result.urls if "127.0.0.1" in u), result.urls[0] if result.urls else "")
@@ -772,7 +907,8 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"  Watch it:    STRATA_API_KEY=$(strata launch --show-key) strata monitor --url {local} --credential-env STRATA_API_KEY")
         else:
             _say(f"  Watch it:    strata monitor --url {local}")
-        _say(f"  Connect an app:  strata connect opencode      Stop:  strata launch --stop --preset \"{s.name}\"")
+        for line in final_hint_lines(s, bool(a.preset or a.save_preset)):
+            _say(line)
         return 0
     except store.PresetError as e:
         return fail(str(e), 2)

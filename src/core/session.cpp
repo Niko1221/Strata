@@ -21,14 +21,9 @@
 #include <cstring>
 #include <vector>
 
-// `_mm_pause` for the doorbell spin.  Guarded because it is x86-only; a target without it still builds, the
-// spin is just less polite to the pipeline.
-#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
-#include <immintrin.h>
-#define STRATA_SPIN_PAUSE() _mm_pause()
-#else
-#define STRATA_SPIN_PAUSE() ((void) 0)
-#endif
+// The doorbell spin.  x86 pauses, aarch64 yields (include/strata/platform/cpu_relax.hpp).
+#include "strata/platform/cpu_relax.hpp"
+#define STRATA_SPIN_PAUSE() strata_cpu_pause()
 
 namespace strata::core {
 namespace {
@@ -141,7 +136,7 @@ void session_release(SessionState& s) {
 #if defined(STRATA_GPU_METAL)
 }  // namespace strata::core
 namespace strata::metal_engine {
-void window_reset();   // metal/src/engine/window.cpp: the decode window's running state back to a new sequence's
+void window_reset(const strata::core::SessionState* ss);   // metal/src/engine/window.cpp: that session's running state (the main one or a batch slot's) back to a new sequence's
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
@@ -150,7 +145,7 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
 #if defined(STRATA_GPU_METAL)
     // the running state lives in the Metal decode window; the session's own device buffers are not read there
     (void) g; (void) R_init; (void) stream;
-    strata::metal_engine::window_reset();
+    strata::metal_engine::window_reset(&s);
     s.ple_prev[0] = -1;
     s.ple_prev[1] = -1;
     s.ple_token = -1;
@@ -716,6 +711,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
             if (rang) break;                             // rung, and the graph is still running: the overlap
             STRATA_SPIN_PAUSE();
         }
+        strata_load_fence();   // the ring was seen: the GPU's x_f / ids / weights are read after it (a no-op on x86)
         if (mid_graph) ++gr.rings_mid_graph;
         // the window, from just before the launch to the instant the ring was seen
         const auto t_ring = std::chrono::steady_clock::now();
@@ -968,11 +964,12 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
                 return false;
             }
         }
+        strata_load_fence();   // as above, for the token loop's wait
         const auto t1 = Clock::now();
         progress_at("token: the CPU experts of layer", l);
         if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        _mm_sfence();
+        strata_store_fence();
         *flag = want;
         const auto t2 = Clock::now();
         tg.ms_wait += std::chrono::duration<double, std::milli>(t1 - t0).count();

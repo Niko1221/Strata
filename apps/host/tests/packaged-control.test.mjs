@@ -1,3 +1,4 @@
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -25,8 +26,10 @@ function fakeControlDir() {
 
 test('the Control component is found by STRATA_CONTROL_DIR or beside the host, and only if it is whole', () => {
   const dir = fakeControlDir();
+  // The explicit env has no STRATA_COMPONENTS_DIR, so findControl would look in the real per-user components folder and find an updated Control installed on this PC.
+  const none = join(dir, 'no-components');
   try {
-    const found = findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'nowhere') });
+    const found = findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'nowhere'), components: none });
     assert.equal(found.dir, dir);
     assert.equal(found.python, bundledPython(dir));
     assert.equal(found.bundle.python, '3.12.15');
@@ -34,15 +37,15 @@ test('the Control component is found by STRATA_CONTROL_DIR or beside the host, a
     const install = mkdtempSync(join(tmpdir(), 'strata-install-'));
     try {
       mkdirSync(join(install, 'host', 'server'), { recursive: true });
-      assert.equal(findControl({ env: {}, hostDir: join(install, 'host') }), null, 'nothing beside the host yet');
+      assert.equal(findControl({ env: {}, hostDir: join(install, 'host'), components: none }), null, 'nothing beside the host yet');
       mkdirSync(join(install, 'control', 'python', ...(isWin ? [] : ['bin'])), { recursive: true });
       mkdirSync(join(install, 'control', 'strata_control'));
       writeFileSync(bundledPython(join(install, 'control')), 'x');
       writeFileSync(join(install, 'control', 'strata.py'), '#');
-      assert.equal(findControl({ env: {}, hostDir: join(install, 'host') }).dir, join(install, 'control'));
+      assert.equal(findControl({ env: {}, hostDir: join(install, 'host'), components: none }).dir, join(install, 'control'));
     } finally { rmSync(install, { recursive: true, force: true }); }
     rmSync(join(dir, 'strata.py'));
-    assert.equal(findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'x') }), null, 'a half component is not used');
+    assert.equal(findControl({ env: { STRATA_CONTROL_DIR: dir }, hostDir: join(dir, 'x'), components: none }), null, 'a half component is not used');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -85,13 +88,29 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  /* The Control this app found, as it is on disk. The app reads the start-wait ceiling out of these files instead of trusting
+     the version, because a start wait is checked three times before the engine is reached and a released Control has those
+     three ceilings disagreeing:
+       'old'        no runtime ceiling at all, both gates 600 (Control before #3949)
+       'split'      the runtime takes 1800, the CLI and the record still stop at 600 (every Control 0.1.50 to 0.1.52)
+       'cli-only'   the CLI follows the runtime, the record still stops at 600 (`direct runtime intent has an invalid timeout`)
+       'runtime'    all three hand the wait to the runtime's own ceiling */
+  const controlSource = join(root, 'control', 'strata_control');
+  mkdirSync(controlSource, { recursive: true });
+  writeFileSync(join(controlSource, 'runtime.py'), cliStartWait === 'old' ? '' : 'MAX_START_WAIT = 1800\n');
+  writeFileSync(join(controlSource, 'management.py'), ['cli-only', 'runtime'].includes(cliStartWait)
+    ? '        wait = _seconds(wait, 0, runtime.MAX_START_WAIT, "start wait")\n'
+    : '        wait = _seconds(wait, 0, 600, "start wait")\n');
+  writeFileSync(join(controlSource, 'journal.py'), cliStartWait === 'runtime'
+    ? '        ranges = {"wait_s": (0, start_wait_max) if kind == "runtime.start" else\n'
+    : '        ranges = {"wait_s": (0, 600) if kind == "runtime.start" else\n');
   const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
   process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
-  const configs = ['iq2_xs', 'iq3_s'].map(id => {
+  const configs = ids.map(id => {
     const path = join(install, `strata-${id}.json`);
     writeFileSync(path, JSON.stringify({ exe: 'component:strata-engine', tokenizer: join(install, 'tok'), args: ['--max-context', '32768'], model_name: `Qwen ${id}`, port: 8080 }));
     return { id, path };
@@ -102,7 +121,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false }
   const rpc = [];
   let startFailure = null, startFailureLeft = Infinity;
   const control = {
-    control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: '0.1.45',
+    control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: controlVersion,
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
     async engine() {
       calls.push(['engine']);
@@ -123,7 +142,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false }
   // answers like it: the catalog, the hardware with the GPUs, and an install plan or job.
   const catalog = { families: [{ family: 'qwen', title: 'Qwen3.8-Flash-Next', about: 'x', images: true, experimental: false, sizes: [
     { id: 'q2_0', model: 'Q2_0', download_gb: 66.4, ram_needed_gb: 48, about: 'fast', on_this_pc: 'fits', installed: false, images: true, experimental: false },
-    { id: 'iq3_xxs', model: 'IQ3_XXS', download_gb: 75.8, ram_needed_gb: 60, about: 'balanced', on_this_pc: 'fits', installed: false, images: true, experimental: false }] }],
+    { id: 'iq3_xxs', model: 'IQ3_XXS', download_gb: 75.8, ram_needed_gb: 60, about: 'balanced', on_this_pc: 'fits', installed: false, images: true, experimental: false }, ...extraSizes] }],
     contexts: [8192, 32768], recommendation: { family: 'qwen', model: 'IQ3_XXS', context: 32768 }, context_note: '' };
   const hardware = { ram_gb: 63, cpu: { name: 'cpu', cores: 12 }, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5070', vram_gb: 11.9, usable: true }] };
   let installJob = null;
@@ -199,6 +218,59 @@ test('packaged: load = saved profile + runtime start under Control; unload = run
     assert.equal(f.native.state().instances.length, 1);
     assert.equal(f.others().length, 0, 'the host never spawned anything itself');
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: a model id with dots (DeepSeek) is listed, loaded from its run config, and unloaded', async () => {
+  const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
+  const f = packagedFixture({ ids: [id] });
+  try {
+    writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', '--eos', '1'], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    const state = await f.native.refresh(true);
+    assert.deepEqual(state.installed.models.map(m => m.model), [id], 'listed (the install finished but the app used to show nothing)');
+    assert.equal(state.installed.models[0].ready, true);
+    const job = await finish(f.native, f.native.operation('load', { model: id }).id);
+    assert.equal(job.state, 'done', job.error);                    // used to end with "The model configuration is outside the Strata installation."
+    assert.deepEqual(f.calls.filter(c => ['saveProfile', 'start'].includes(c[0])).map(c => c.slice(0, 2)), [['saveProfile', 'app-1'], ['start', 'app-1']]);
+    const flags = f.saved[0].args.filter(a => a.startsWith('--'));
+    assert.deepEqual(flags, ['--pack', '--max-context', '--eos'], 'The own engine of DeepSeek gets none of the Flash-Next options (it ended with "unknown option --batch")');
+    assert.equal(f.calls.find(c => c[0] === 'start')[2], 600, 'it waits longer than the usual 300 s, up to the 600 s Control allows');
+    const instance = f.native.state().instances[0];
+    assert.equal(instance.model, id);
+    assert.equal(instance.status, 'ready');
+    await f.native.unload(instance.id);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'stop').at(-1), ['stop', 'app-1']);
+    assert.equal(f.native.state().instances.length, 0);
+    for (const odd of ['a..b', '../x', 'x/y', '.hidden']) assert.equal((await finish(f.native, f.native.operation('load', { model: odd }).id)).state, 'error', odd);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: the Speed choice of DeepSeek passes --experts 5 or 6 only when chosen and only for an engine that knows it (0.1.50 or newer)', async () => {
+  const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
+  const run = async (values, extraArgs = [], engine = '0.1.50-windows-x86_64-cuda-cuda13') => {
+    const f = packagedFixture({ ids: [id] });
+    try {
+      writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', engine, 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', ...extraArgs], model_name: 'deepseek-v4.1-flash', port: 8080 }));
+      await f.native.refresh(true);
+      const capability = f.native.settings(id).capabilities.dsExperts;
+      const job = await finish(f.native, f.native.operation('load', { model: id, ...(values ? { values } : {}) }).id);
+      assert.equal(job.state, 'done', job.error);
+      return { cfg: f.saved[0], capability };
+    } finally { await f.native.close(); f.cleanup(); }
+  };
+  const flag = cfg => { const i = cfg.args.indexOf('--experts'); return i < 0 ? null : cfg.args[i + 1]; };
+  const none = await run(null);
+  assert.equal(flag(none.cfg), null, 'nothing chosen: the engine decides (--experts auto)');
+  assert.equal(none.capability, true);
+  assert.equal(flag((await run({ ds_experts: '5' })).cfg), '5');
+  assert.equal(flag((await run({ ds_experts: '6' }, ['--experts', '5'])).cfg), '6', 'the choice replaces an older flag');
+  assert.equal(flag((await run({ ds_experts: null }, ['--experts', '5'])).cfg), null, 'Default clears an older flag');
+  assert.equal('ds_experts' in (await run({ ds_experts: '5' })).cfg, false, 'the app-only key is not handed to the engine');
+  assert.equal(flag((await run({ ds_experts: '5' }, [], '0.1.60-windows-x86_64-cuda-cuda13')).cfg), '5', 'a newer engine knows it');
+  for (const old of ['0.1.49.2-windows-x86_64-cuda-cuda13', '0.1.49-linux-x86_64-cuda-cuda13']) {
+    const r = await run({ ds_experts: '5' }, [], old);
+    assert.equal(r.capability, false, `${old}: the choice is hidden`);
+    assert.equal(flag(r.cfg), null, `${old}: nothing is passed (it would end the start with "unknown option --experts")`);
+  }
 });
 
 test('packaged: no engine for this PC is the notice, and nothing is started', async () => {
@@ -548,5 +620,45 @@ test("onboarding 'use your own GGUF' (#3507, #3424): the models folder the perso
     assert.notEqual(sent.data_dir, own, 'the folder of GGUF files is not the data folder: the packs would be downloaded into it');
     // a folder of GGUF files named like a data folder's models/<tag> hands its Strata folder to the installer
     assert.ok(sent.data_dir === undefined || sent.data_dir === join(f.root, 'Strata-data'), `data_dir was ${sent.data_dir}`);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+/* The start wait follows the model's size, as `strata launch` does since #3949, and never asks an older Control for more than it takes.
+   Reported on the app side by #3459 and #4191: a big model on a slow disk was stopped at 300 s while the engine went on reading. */
+test('packaged: a big model is waited for by its size, inside the ceiling of the Control this app has (#3459 #4191)', async () => {
+  const run = async (cliStartWait, downloadGb) => {
+    const f = packagedFixture({ ids: ['big'], cliStartWait, extraSizes: [{ id: 'big', model: 'BIG', download_gb: downloadGb, ram_needed_gb: 60, about: 'x', on_this_pc: 'fits', installed: false, images: false, experimental: false }] });
+    try {
+      await f.native.refresh(true);
+      const job = await finish(f.native, f.native.operation('load', { model: 'big' }).id);
+      assert.equal(job.state, 'done', job.error);
+      const start = f.calls.find(c => c[0] === 'start');
+      const saved = f.saved[0];
+      await f.native.close();
+      return { wait: start[2], ready: saved.engine_ready_s };
+    } finally { f.cleanup(); }
+  };
+  assert.equal((await run('old', 180)).wait, 600, 'a Control with no long-wait ceiling at all is asked for 600 s, as today');
+  assert.equal((await run('split', 180)).wait, 600, 'a Control whose runtime takes 1800 s but whose CLI still stops at 600 is asked for 600 s: the CLI would refuse the start outright (#3949)');
+  assert.equal((await run('cli-only', 180)).wait, 600, 'a Control whose CLI takes it but whose operation record still stops at 600 is asked for 600 s too: the record is written before the start runs');
+  const long = await run('runtime', 180);
+  assert.equal(long.wait, 1720, '600 s + 8 s per GB above 40 GB, as in strata launch, once the CLI really takes it');
+  assert.equal(long.ready, 1780, 'the server readies after the start gave up, never before it');
+  const small = await run('runtime', 20);
+  assert.equal(small.wait, 300, 'a model under 40 GB keeps the 300 s it always had');
+  assert.equal(small.ready, undefined, 'nothing is added to a small model’s run config');
+  const huge = await run('runtime', 400);
+  assert.equal(huge.wait, 1800, 'and never more than this Control accepts');
+});
+
+test('packaged: a run config that names a longer engine wait is honoured, and never shortened by the app', async () => {
+  const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], cliStartWait: 'runtime' });
+  try {
+    writeFileSync(join(f.install, 'strata-deepseek-v4.1-flash-ist-das-2.00bpw.json'), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack')], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('load', { model: 'deepseek-v4.1-flash-ist-das-2.00bpw' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.find(c => c[0] === 'start')[2], 1800, 'the wait of the newest Control, which is what the ceiling allows');
+    assert.equal(f.saved[0].engine_ready_s, 3600, 'setup’s own longer wait stays as it is');
   } finally { await f.native.close(); f.cleanup(); }
 });

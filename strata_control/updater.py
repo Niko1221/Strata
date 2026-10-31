@@ -51,6 +51,12 @@ STAGE_DIR = ".s"                 # staging is short on purpose: <components>\.s\
 SKEW_FREE_BYTES = 1.15
 
 
+def megabytes(n) -> int:
+    """Decimal megabytes (1 MB = 1,000,000 bytes), rounded half up, at least 1: the one figure for an engine's size in the Terminal, the app
+    (apps/host/src/lib/format.ts megabytes) and the release page. Both sides are tested on the same numbers."""
+    return max(1, int((n or 0) / 1_000_000 + 0.5))
+
+
 class UpdateError(RuntimeError):
     """An update step stopped. `exit_code` is the CLI's; the old engine is untouched unless the message says otherwise."""
 
@@ -223,7 +229,7 @@ def _gfx_names() -> list[str]:
         tool = shutil.which("rocminfo") if os.name != "nt" else shutil.which("hipInfo")
         if tool:
             try:
-                done = subprocess.run([tool], capture_output=True, text=True, timeout=10,
+                done = subprocess.run([tool], capture_output=True, text=True, errors="replace", timeout=10,
                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 found = sorted(set(re.findall(r"\bgfx[0-9a-f]{3,4}\b", done.stdout)))
             except (OSError, subprocess.SubprocessError):
@@ -252,11 +258,10 @@ def detect_hardware(environ=None) -> dict:
     selection treats as "cannot tell", never as a refusal."""
     environ = os.environ if environ is None else environ
     prefer = ""
-    forced = str(environ.get(ec.ENV_BACKEND, "")).strip().lower()
-    if forced.startswith("hip-") and forced not in ec.BACKEND_MATRIX:
+    family, prefer = ec.split_backend(environ.get(ec.ENV_BACKEND, ""))
+    if prefer:
         # "hip-rx9070" is how the feed labels a package; accept it as "the hip family, this variant"
-        prefer = forced[4:]
-        environ = {**environ, ec.ENV_BACKEND: "hip"}
+        environ = {**environ, ec.ENV_BACKEND: family}
     backend, how = ec.detect_backend(environ)
     hw = {"platform": host_platform(), "backend": backend, "backend_source": how, "runtime": ec.runtime_version(),
           "nvidia_driver": None, "cuda_archs": [], "gfx": [], "gpu_names": [], "variant_wanted": prefer,
@@ -360,6 +365,8 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
         loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
     except feedmod.FeedDowngrade as exc:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
+    for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
+        ctx.say("feed", line)
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})
@@ -482,7 +489,7 @@ def _download(ctx: Context, state_name: str, url_ref: str, size: int, sha256: st
             ctx.emit({"event": "progress", "phase": "download", "component": state_name, "label": label,
                       "done": done, "total": total, "percent": pct, "bytes_per_second": int(rate)})
 
-    ctx.say("download", f"Downloading {label} ({size / (1 << 20):.0f} MiB)", component=state_name)
+    ctx.say("download", f"Downloading {label} ({megabytes(size)} MB)", component=state_name)
     try:
         return transfer.download(feed.url(url_ref), partial, size=size, sha256=sha256, progress=progress, cancel=ctx.cancel)
     except transfer.Cancelled:
@@ -571,7 +578,7 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
                 "download_bytes": 0, "previous": state.section("engine").get("previous"), "pinned": state.section("engine").get("pinned"),
                 "problem": None}, None
     installed, missing_reason = installed_engine(ctx.components, ctx.hardware)
-    sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend == "hip" else ""}
+    sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend in ("hip", "cuda") else ""}
     offered, reasons = feedmod.select_engine([p for p in feed.engine], sticky)
     section = state.section("engine")
     report = {"installed": _engine_view(installed), "offered": offered.to_dict() if offered else None,
@@ -698,15 +705,31 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         raise
 
 
+def _runs_on_dsv41_engine(config) -> bool:
+    """True for a DeepSeek run config. The test start swaps the engine for the one being updated (the Strata engine), and a DeepSeek model
+    runs on strata-dsv41, which has its own package: the Strata engine rejects its options ('unknown argument: --eos') and a good engine
+    would be refused. Unreadable configs count as not DeepSeek, so they are tried as before."""
+    try:
+        cfg = json.loads(Path(config).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    exe = cfg.get("exe")
+    return cfg.get("arch") == "deepseek41" or (isinstance(exe, str) and "strata-dsv41" in exe.replace("\\", "/").rsplit("/", 1)[-1].lower())
+
+
 def discover_run_config(environ=None) -> Path | None:
     """A saved model's run config for the test start: the one a saved profile uses if its files are all present, otherwise any
-    installed model whose files are present. None when no model is installed (the first run)."""
+    installed model whose files are present. DeepSeek models are left out (they run on strata-dsv41, not on the engine under test).
+    None when no model can be used (the first run)."""
     from strata_control import models, profiles
     try:
         listed = models.list_installed()
     except Exception:                                   # noqa: BLE001 - discovery is best effort
         return None
-    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")]
+    ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")
+             and not _runs_on_dsv41_engine(m["source_config"])]
     if not ready:
         return None
     try:
@@ -744,7 +767,7 @@ def binary_smoke(component: ec.EngineComponent, timeout: float = 60) -> dict:
     env = dict(os.environ)
     env[var] = os.pathsep.join(ec.package_lib_dirs(component.root)) + os.pathsep + env.get(var, "")
     try:
-        done = subprocess.run([str(component.exe), "--version"], capture_output=True, text=True, timeout=timeout, env=env,
+        done = subprocess.run([str(component.exe), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, env=env,
                               cwd=str(component.root), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         raise TestStartFailed(component.version, f"the engine could not run ({type(exc).__name__}: {exc})") from None
@@ -782,6 +805,55 @@ def _keep_log(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> Non
         logs = sorted(target.glob("test-start-*.log"), key=lambda p: p.stat().st_mtime)
         for old in logs[:-5]:
             old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_RECORD_LIMIT = 65536                     # bytes read from any one kept file
+_RECORDS_KEPT = 3                         # failed test starts whose records stay in .updates/logs
+
+
+def _scrub(value, key: str = ""):
+    """A kept JSON record without anything that could authorise a request: keys that name a token or a key keep only their first
+    characters (enough to see that two records agree), the API key is dropped."""
+    if isinstance(value, dict):
+        return {k: _scrub(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, key) for v in value]
+    low = key.lower()
+    if isinstance(value, str) and value and ("api_key" in low or low in ("key", "authorization")):
+        return "<removed>"
+    if isinstance(value, str) and ("token" in low or "secret" in low or low.endswith("_key")):
+        return value[:8] + "...(rest removed)"
+    return value
+
+
+def _keep_records(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> None:
+    """A failed test start keeps what the sandbox knew, because the sandbox is deleted right after (#3654): the run config the test used
+    (without keys), the host, child and ready records of the runtime (their PIDs show a mismatch), and the host and server logs, next to the
+    engine log in ``.updates/logs/test-start-<version>-failed``. The last few failed starts are kept. Best effort: it never hides the failure."""
+    try:
+        target = updates_dir(ctx.components) / "logs" / f"test-start-{component.version}-failed"
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True)
+        wanted = [sandbox / "run.json", sandbox / "engine.log"]
+        wanted += sorted((sandbox / "runtime").glob("*.json")) + sorted((sandbox / "runtime").glob("*.log"))
+        for source in wanted:
+            try:
+                if not source.is_file():
+                    continue
+                data = source.read_bytes()[-_RECORD_LIMIT:]
+                if source.suffix == ".json":
+                    try:
+                        data = (json.dumps(_scrub(json.loads(data.decode("utf-8-sig"))), indent=1) + "\n").encode("utf-8")
+                    except ValueError:
+                        pass                                                   # not JSON after all: kept as it is
+                (target / source.name).write_bytes(data)
+            except OSError:
+                continue
+        folders = sorted((d for d in target.parent.glob("test-start-*-failed") if d.is_dir()), key=lambda d: d.stat().st_mtime)
+        for old in folders[:-_RECORDS_KEPT]:
+            shutil.rmtree(old, ignore_errors=True)
     except OSError:
         pass
 
@@ -836,7 +908,41 @@ def _test_start_failure(component: ec.EngineComponent, started: dict, ctx: Conte
         return TestStartFailed(component.version, f"it was still loading the model after {minutes} minutes", busy=True,
                                hint="Nothing was changed. A slow disk or a card that other programs are using can do this: close them and run "
                                     "`strata update` again." + kept)
-    return TestStartFailed(component.version, f"it did not answer a one-token probe ({error or started.get('state')}){tail}")
+    reason = f"it did not answer a one-token probe ({error or started.get('state')}){tail}"
+    # #4692: "report it with the log" named no log. The engine's words stay out of the sentence, but the person is told where the kept log is.
+    hint = (None if TestStartFailed.BUSY.search(reason) else
+            f"Run `strata update --force` to try again; if it fails again, report it with the log: {log}")
+    return TestStartFailed(component.version, reason, hint=hint)
+
+
+TEST_CONTEXT = 4096
+_TEST_DROP_WITH_VALUE = ("--kv-resident", "--vision-tokens")
+_TEST_DROP_FLAGS = ("--vision",)
+
+
+def light_test_args(args: list) -> list:
+    """The saved model's engine options made light for the test start (#3842): a short context, no KV kept in VRAM and no picture reader. The
+    test asks whether the NEW engine loads and answers one token, not whether this card holds the model's 262,144-token settings next to the
+    desktop and the running model; a 16 GB card refused good engines with 'out of memory' at the first weight upload."""
+    out, i = [], 0
+    values = [str(x) for x in args]
+    while i < len(values):
+        item = values[i]
+        nxt = values[i + 1] if i + 1 < len(values) else None
+        if item == "--max-context" and nxt is not None:
+            try:
+                out += [item, str(min(int(nxt), TEST_CONTEXT))]
+            except ValueError:
+                out += [item, nxt]
+            i += 2
+        elif item in _TEST_DROP_WITH_VALUE and nxt is not None:
+            i += 2
+        elif item in _TEST_DROP_FLAGS:
+            i += 2 if nxt is not None and not nxt.startswith("--") else 1
+        else:
+            out.append(item)
+            i += 1
+    return out
 
 
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
@@ -855,6 +961,8 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
         cfg["backend"] = component.backend
         cfg.pop("lib_dirs", None)
+        if isinstance(cfg.get("args"), list):
+            cfg["args"] = light_test_args(cfg["args"])
         cfg["host"] = "127.0.0.1"
         cfg["port"] = _free_port()
         cfg["log"] = str(sandbox / "engine.log")
@@ -878,14 +986,18 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
                     started = {**started, **runtime.verify(name, timeout=min(ctx.test_timeout, 600), load=True)}
                 if not started.get("ok") or started.get("state") != "ready" or started.get("generation_ready") is not True:
                     _keep_log(sandbox, component, ctx)
+                    _keep_records(sandbox, component, ctx)
                     raise _test_start_failure(component, started, ctx, _log_tail(sandbox, component))
                 _keep_log(sandbox, component, ctx)
                 return {"mode": "full", "model": cfg.get("model_name") or source.stem, "state": started["state"],
                         "generation_ready": True, "detail": "started, answered a one-token probe, stopped"}
             except TestStartFailed:
                 _keep_log(sandbox, component, ctx)
+                _keep_records(sandbox, component, ctx)
                 raise
             except Exception as exc:                    # noqa: BLE001
+                _keep_log(sandbox, component, ctx)
+                _keep_records(sandbox, component, ctx)
                 raise TestStartFailed(component.version, f"{type(exc).__name__}: {exc}") from None
             finally:
                 try:
@@ -950,6 +1062,14 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         if exc.exit_code == 5:
             archive.unlink(missing_ok=True)             # a refused package is not kept for a retry
         raise
+    return _finish_engine_install(ctx, state, pkg, stage_root, staged, archive, result, delete_archive=True)
+
+
+def _finish_engine_install(ctx: Context, state: State, pkg: feedmod.EnginePackage, stage_root: Path, staged: ec.EngineComponent,
+                           archive: Path, result: dict, *, delete_archive: bool) -> dict:
+    """The part of an engine install both ways share (a download from the feed, a file the person chose): test-start the staged engine,
+    switch to it, keep the previous one, remove the staging folder. ``archive`` is only deleted when Strata downloaded it."""
+    root = ctx.components
     before_installed, _ = installed_engine(root, ctx.hardware)
     before_identity = preset_marks.identity_of(before_installed, _manifest_sha(before_installed.root)) if before_installed else None
     try:
@@ -1021,13 +1141,85 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                        "from": before_installed.version if before_installed else None, "to": pkg.version, "ok": True,
                        "detail": smoke.get("mode")})
         state.save()
-        archive.unlink(missing_ok=True)
+        if delete_archive:
+            archive.unlink(missing_ok=True)
         result.update({"changed": True, "status": "updated", "installed_after": _engine_view(chosen), "test_start": smoke,
                        "previous": previous, "removed": removed, "presets_marked": bool(mark)})
         ctx.say("done", f"Engine {pkg.version} is installed and will be used on the next start", component="engine")
         return result
     finally:
         shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
+
+
+def _archive_format(archive: Path) -> str:
+    name = archive.name.lower()
+    for suffix, fmt in ((".tar.gz", "tar.gz"), (".tgz", "tar.gz"), (".tar.xz", "tar.xz"), (".zip", "zip")):
+        if name.endswith(suffix):
+            return fmt
+    raise UpdateError("this is not a Strata engine package (it should be a .tar.gz or .zip file from the release page)", 5)
+
+
+def install_engine_file(ctx: Context, archive: Path) -> dict:
+    """Install an engine package the person downloaded themselves (the offline path of the first-run card). No feed and no network:
+    the package must carry the feed key's signature on its manifest, every file must match the manifest, and the package must fit this
+    PC. After that it goes through the same test start and switch as a downloaded one. The file the person chose is left where it is."""
+    archive = Path(archive)
+    if not archive.is_file():
+        raise UpdateError(f"{archive} is not a file", 5)
+    fmt = _archive_format(archive)
+    state_root = ctx.components
+    with update_lock(state_root):
+        state = State(state_root)
+        stage_root = new_stage(state_root)
+        keep_stage = False
+        try:
+            try:
+                total = _archive_size(archive, fmt)
+            except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError) as exc:
+                raise UpdateError(f"this file cannot be read as a package ({type(exc).__name__}); download it again", 5) from None
+            _free_space_check(state_root, total * 2, ctx, "", "engine")
+            folder = stage_root / "engine" / "incoming"
+            longpath.long_path(folder.parent).mkdir(parents=True, exist_ok=True)
+            ctx.say("verify", "Unpacking the engine file", component="engine")
+            extract(archive, folder, fmt, total)
+            try:
+                component = ec.read_manifest(folder)
+            except ec.ComponentProblem as exc:
+                raise UpdateError(f"this file is not a Strata engine package: {exc}", 5) from None
+            ctx.say("verify", "Checking the package signature and every file", component="engine")
+            outer = ec._verifier
+            signing.install_component_verifier(ctx.trusted)
+            try:
+                ec.verify_signature(component, {**ctx.environ, ec.ENV_REQUIRE_SIGNED: "1"})
+                ec.verify(component, full=True)
+            except ec.ComponentProblem as exc:
+                raise UpdateError(f"this file did not pass the security check, so it was not used ({exc})", 5) from None
+            finally:
+                ec.register_signature_verifier(outer)
+            pkg = feedmod.EnginePackage(
+                version=component.version, platform=component.platform, backend=component.backend, variant=component.variant or "",
+                archs=tuple(component.archs), min_driver=dict(component.min_driver or {}), min_runtime=component.min_runtime,
+                build_id=component.build_id, url="", format=fmt, size=archive.stat().st_size, sha256=transfer.sha256_file(archive),
+                manifest_sha256=transfer.sha256_file(folder / ec.MANIFEST), installed_bytes=total)
+            why = feedmod.engine_fit_reasons(pkg, ctx.hardware)
+            if why:
+                raise UpdateError("this file is not a Strata engine for this PC: " + "; ".join(why), 5)
+            # the staged folder gets the name an installed package has
+            final_stage = stage_root / "engine" / folder_name(pkg)
+            if final_stage != folder:
+                _move_dir(folder, final_stage)
+            staged = ec.read_manifest(final_stage)
+            before, _ = installed_engine(state_root, ctx.hardware)
+            if before is not None and feedmod.version_key(before.version) > feedmod.version_key(pkg.version) and not ctx.force:
+                return {"component": "engine", "status": "current", "changed": False, "installed_before": _engine_view(before),
+                        "note": f"Engine {before.version} is already installed and is newer than this file ({pkg.version}); nothing was changed."}
+            result = {"component": "engine", "status": "install" if before is None else "available",
+                      "installed_before": _engine_view(before), "changed": False, "source": "file"}
+            keep_stage = True
+            return _finish_engine_install(ctx, state, pkg, stage_root, staged, archive, result, delete_archive=False)
+        finally:
+            if not keep_stage:
+                shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
 
 
 def rollback_engine(ctx: Context) -> dict:
@@ -1117,7 +1309,7 @@ def _control_version(interpreter: str, entry: Path, stage: Path, ctx: Context, v
     done = None
     for attempt, timeout in enumerate(CONTROL_VERSION_TIMEOUTS):
         try:
-            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(stage),
+            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(stage),
                                   env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"},
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             last_error = None

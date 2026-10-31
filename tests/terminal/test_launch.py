@@ -109,6 +109,9 @@ class CatalogRules(unittest.TestCase):
             models, families, contexts, source = cat.tables()
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
+                if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
+                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
@@ -141,8 +144,13 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M"})
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two IST-DAS sets run on a Mac, UD-IQ1_S since f-039
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
+            for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
+                self.assertEqual(rows[name].family, "deepseek41")
+                self.assertEqual(rows[name].verdict, "tight")
+                self.assertFalse(rows[name].images)
+                self.assertGreater(rows[name].spill_gb, 100)
             self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
             self.assertEqual(rows["IQ3_S"].verdict, "tight")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
@@ -337,6 +345,38 @@ class SetupArgs(unittest.TestCase):
             kw.setdefault("vision", "off")
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", **kw)
             return Runner(s, catalog=cat).setup_args()
+
+    def args_for(self, **kw):
+        values = dict(family="qwen", model="IQ3_XXS", context=32768, kv="q4_0", vision="off")
+        values.update(kw)
+        with Home():
+            return Runner(S.LaunchSettings(**values), catalog=catalog(HW_12)).setup_args()
+
+    def test_a_lower_case_tag_from_a_saved_preset_reaches_setup_as_its_key(self):
+        """#4209: a preset keeps "model": "iq3_xxs", and setup's --model choices are the table's own keys
+        ("IQ3_XXS"). Starting such a preset with any changed choice reruns setup, which then refused it."""
+        args = self.args_for(model="iq3_xxs")
+        self.assertEqual(args[args.index("--model") + 1], "IQ3_XXS")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
+        for fam, model, want in (("coder", "iq1_m", "IQ1_M"), ("gyro", "gyro-s", "Gyro-S"), ("qwen", "IQ3_S", "IQ3_S")):
+            args = self.args_for(family=fam, model=model)
+            self.assertEqual(args[args.index("--family") + 1], fam)
+            self.assertEqual(args[args.index("--model") + 1], want)
+
+    def test_an_unknown_model_is_still_setup_to_report(self):
+        args = self.args_for(model="not-a-model")
+        self.assertEqual(args[args.index("--model") + 1], "not-a-model")
+
+    def test_a_model_list_that_cannot_be_read_leaves_the_values_alone(self):
+        """The resolver is an improvement, never a new way for the launch to fail: when it cannot answer, the
+        preset's own values go to setup as they did before #4209."""
+        with Home():
+            cat = catalog(HW_12)
+            r = Runner(S.LaunchSettings(family="qwen", model="iq3_xxs", context=32768, vision="off"), catalog=cat)
+            with mock.patch.object(cat, "resolve", side_effect=RuntimeError("the model list cannot be read")):
+                args = r.setup_args()
+        self.assertEqual(args[args.index("--model") + 1], "iq3_xxs")
+        self.assertEqual(args[args.index("--family") + 1], "qwen")
 
     def test_pictures_default_on_the_cpu_reader_under_24_gb_and_the_gpu_reader_from_24_gb_on_every_make(self):
         from tests.terminal.launch_support import HW_12 as NV
@@ -829,6 +869,37 @@ class FlagsCommand(unittest.TestCase):
         self.assertNotIn("--pool-cores", p["settings"]["extra"])
         self.assertTrue(any("pool-cores" in w for w in p["warnings"]))
 
+    def test_dspark_on_a_mac_is_warned_about_and_not_refused(self):
+        # the drafter has no Metal kernels yet: --dspark on is passed on as asked, with a plain warning (recommend, never force)
+        import sys
+        from unittest import mock
+        with mock.patch.object(sys, "platform", "darwin"):
+            p = self.plan("--model", "q2_0", "--dspark", "on")
+        self.assertEqual(p["settings"]["extra"].get("--dspark"), "on")
+        self.assertTrue(any("DSpark" in w and "Mac" in w for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "q2_0", "--dspark", "auto")
+        self.assertFalse(any("DSpark" in w and "Mac" in w for w in p["warnings"]))
+
+    def test_dspark_takes_a_word_and_the_word_reaches_the_engine_line(self):
+        # --set dspark=on used to start strata-dsv41 with a lone "--dspark" ("--dspark needs a value", #3959)
+        from strata_cli.launch import settings as S
+        from strata_control import tune_knobs
+        base = ["--pack", "p", "--max-context", "262144"]
+        for word in ("on", "off", "auto", "none"):
+            a, _ = S.as_argv_changes({"--dspark": word}, tune_knobs.BOOL_FLAGS)
+            self.assertEqual(a, {"--dspark": word})
+            out = tune_knobs.apply_to_argv(base + ["--dspark", "auto"], a)
+            self.assertEqual(out[out.index("--dspark") + 1], word, word)
+            self.assertEqual(out.count("--dspark"), 1)
+        a, _ = S.as_argv_changes({"--dspark": "ON", "--dspark-conf": "0.7"}, tune_knobs.BOOL_FLAGS)
+        self.assertEqual(a, {"--dspark": "on", "--dspark-conf": "0.7"})
+        self.assertEqual(S.as_argv_changes({"--dspark": ""}, tune_knobs.BOOL_FLAGS)[0], {})
+        code, out, _err = run_cli(["launch", "--help"])
+        self.assertIn("--dspark", out)
+        p = self.plan("--model", "q2_0", "--dspark", "on")
+        self.assertEqual(p["settings"]["extra"], {"--dspark": "on"})
+        self.assertIn("--set dspark=on", p["flags"])
+
     def test_api_key_flags(self):
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-mine")
         self.assertEqual(p["settings"]["api_key"], "set")
@@ -949,6 +1020,24 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("Nothing was changed.", out)
         self.assertEqual(store.list_presets(), [])
 
+    def test_the_access_help_names_the_flags_for_showing_and_setting_a_key(self):             # #3713 #3951
+        from strata_cli.launch import screens
+        self.assertIn("strata launch --show-key", screens.AccessScreen.help_text)
+        self.assertIn("--api-key YOUR-KEY", screens.AccessScreen.help_text)
+
+    def test_the_summary_says_where_the_engine_log_is(self):                                  # #3656
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "x.json"
+            cfg.write_text(json.dumps({"log": str(Path(d) / "office.engine.log"), "args": []}), encoding="utf-8")
+            fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080"], key=None, tune_word=None, notices=[], config=str(cfg))
+            with mock.patch.object(Runner, "run", return_value=fake):
+                code, out, err = run_cli(["launch", "--no-tui", "--model", "q2_0"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Engine log", out)
+        self.assertIn("office.engine.log", out)
+        self.assertIn("strata logs --follow", out)
+
     def test_run_without_screens_prints_the_address_and_saves_the_preset(self):
         fake = Result(profile="launch-office", urls=["http://127.0.0.1:8080", "http://192.168.1.5:8080"], key="sk-strata-abcdefghijkl",
                       tune_word=None, notices=[], config="/x")
@@ -966,6 +1055,17 @@ class FlagsCommand(unittest.TestCase):
         code, out, _ = run_cli(["launch", "--show-key", "--preset", "Office"])
         self.assertEqual(code, 0)                                              # the preset's own key
         self.assertTrue(out.strip().startswith("sk-strata-"))
+
+    def test_a_setup_line_joined_after_the_model_could_not_be_installed_starts_with_a_capital(self):
+        from strata_cli.launch.runner import setup_failure
+        e = setup_failure([], "the model does not answer sensibly after the preparation: no answer", "", None, False)
+        self.assertTrue(e.text.startswith("The model could not be installed. The model does not answer sensibly"), e.text)
+
+    def test_a_reason_joined_after_a_sentence_starts_with_a_capital(self):
+        from strata_cli.launch.runner import capital
+        self.assertEqual(capital("the update feed could not be read: no route"), "The update feed could not be read: no route")
+        self.assertEqual(capital("Already fine."), "Already fine.")
+        self.assertEqual(capital(""), "")
 
     def test_launch_error_is_one_plain_sentence(self):
         from strata_cli.launch.runner import LaunchError
@@ -1222,7 +1322,19 @@ class ConnectCommand(unittest.TestCase):
     def test_context_flag_reaches_the_config(self):
         code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
         self.assertIn('"contextWindow": 65536', out)
-        self.assertIn('"reserveTokens": 50536', out)
+        self.assertIn('"reserveTokens": 33394', out)             # 65536 - 32142: the tested 52.3% share, not a flat 15K
+
+    def test_the_compaction_point_scales_with_the_window(self):
+        """A wider server must not be summarised every 15,000 tokens: the share the tested 32K configs used carries over."""
+        wide = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 262144)
+        self.assertEqual(harness.compact_at(wide), 135000)                     # 52.3% of the 258048 input limit
+        cfg = json.loads(self.render("opencode", context=262144)["files"][0]["text"])
+        self.assertEqual(wide.input_limit - cfg["compaction"]["buffer"], 135000)
+        self.assertIn("model_auto_compact_token_limit = 135000", self.render("codex", context=262144)["files"][0]["text"])
+        self.assertIn("thresholdTokens: 135000", self.render("omp", context=262144)["files"][1]["text"])
+        # the window every config was tested on keeps exactly the value it was tested at
+        tested = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 32768)
+        self.assertEqual(harness.compact_at(tested), 15000)
 
 
 class GpuRolesFlag(unittest.TestCase):
