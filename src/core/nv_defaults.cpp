@@ -38,6 +38,26 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             {"STRATA_QSA_ROWS", "1"},            // -0.5, -1.2
             {"STRATA_B6_MMVQ_ROWS", "1"},        // A4000 0, 3060 -1.7
         };
+    } else if (mj == 7 && mn == 0) {
+        if (off("STRATA_SM70_PERF")) return t;
+        t = {
+            // Dual V100 PCIe 32 GB, IQ3_S, MTP4: initial six-switch stack +5.8%/+7.6% decode;
+            // seven additions +4.7%/+4.8% against that stack. Ten decoded texts matched.
+            // Combined-stack evidence, not a token-id gate: bench/results/2026-10-20-v100-sm70-defaults/.
+            {"STRATA_SIDE_MIXER", "2"},
+            {"STRATA_GR_UP75", "1"},
+            {"STRATA_B6_MMVQ_ROWS", "1"},
+            {"STRATA_GU_SWIGLU", "1"},
+            {"STRATA_QSA_ROWS", "1"},
+            {"STRATA_ATTN_DAILY", "1"},
+            {"STRATA_SM70_TABLE", "1"},
+            {"STRATA_GR_NORM_FAST", "1"},
+            {"STRATA_ARGMAX_ROWS_SM70", "1"},
+            {"STRATA_QIL", "1"},
+            {"STRATA_EXPDEC", "1"},
+            {"STRATA_GR_DOWN_TG", "1"},
+            {"STRATA_DEQUANT_WIDE", "1"},
+        };
     } else if (mj == 6 && mn == 0) {
         if (off("STRATA_SM60_PERF")) return t;
         t = {
@@ -93,13 +113,15 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     }
     if (!set.empty()) {
         const bool sm86 = mj == 8;
+        const bool sm70 = mj == 7 && mn == 0;
         const bool sm121 = mj == 12 && mn == 1;
         // sm_86 / sm_60: bit-exact switches.  sm_121: the fused prompt path and the FP4-activation NVFP4 prompt round differently from the
         // paths they replace (24 of 24 greedy answers were identical on the Spark; no KL run), so the line does not say "exact".
         std::fprintf(stderr, "strata: %s: %zu %sspeed switches on by default (%s=0 turns them off%s; a switch you set is kept): ",
-                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : "sm_60 (Pascal)", set.size(), sm121 ? "" : "exact ",
-                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : "STRATA_SM60_PERF",
+                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : sm70 ? "sm_70 (Volta)" : "sm_60 (Pascal)", set.size(), (sm121 || sm70) ? "" : "exact ",
+                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : sm70 ? "STRATA_SM70_PERF" : "STRATA_SM60_PERF",
                      sm121 ? ", as does STRATA_DEFAULTS=026" : "");
+
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
     }

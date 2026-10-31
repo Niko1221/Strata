@@ -69,6 +69,34 @@ int main() {
     put("STRATA_DEFAULTS", "026");
     CHECK(nv_default_env(12, 1).empty());
     unset("STRATA_DEFAULTS");
+    unset("STRATA_SM70_PERF");
+    const auto table = nv_default_env(7, 0);
+    CHECK(table.size() == 13);
+    for (const auto& kv : table) unset(kv.first.c_str());
+    CHECK(nv_default_env(7, 5).empty());
+    CHECK(nv_default_env(7, 2).empty());
+    CHECK(nv_default_env(8, 0).empty());
+    CHECK(nv_default_env(8, 6).size() == 9);
+    CHECK(nv_default_env(6, 0).size() == 7);
+    put("STRATA_SM70_PERF", "0");
+    CHECK(nv_default_env(7, 0).empty());
+    CHECK(apply_nv_defaults(7, 0).empty());
+    for (const auto& kv : table) CHECK(std::getenv(kv.first.c_str()) == nullptr);
+    CHECK(!nv_default_env(8, 6).empty()); // opt-out affects only Volta
+    unset("STRATA_SM70_PERF");
+    put("STRATA_SIDE_MIXER", "0");
+    put("STRATA_GR_UP75", "custom");
+    const auto set = apply_nv_defaults(7, 0);
+    CHECK(set.size() == 11);
+    CHECK(std::string(std::getenv("STRATA_SIDE_MIXER")) == "0");
+    CHECK(std::string(std::getenv("STRATA_GR_UP75")) == "custom");
+    for (const auto& kv : table) {
+        if (kv.first == "STRATA_SIDE_MIXER" || kv.first == "STRATA_GR_UP75") continue;
+        const char* v = std::getenv(kv.first.c_str());
+        CHECK(v && std::string(v) == kv.second);
+    }
+    CHECK(apply_nv_defaults(7, 0).empty()); // idempotent
+    for (const auto& kv : table) unset(kv.first.c_str());
     if (fails == 0) std::printf("nv_defaults_test: ok\n");
     return fails == 0 ? 0 : 1;
 }

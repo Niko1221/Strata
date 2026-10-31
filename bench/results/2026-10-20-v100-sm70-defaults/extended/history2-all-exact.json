@@ -1,0 +1,275 @@
+{
+  "label": "history2-all-exact",
+  "rows": [
+    {
+      "ttft_ms": 276.69,
+      "wall_s": 3.393,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "259",
+          "158.4",
+          "256",
+          "3132",
+          "81.7"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 0,
+      "output_utf8_sha256": "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+    },
+    {
+      "ttft_ms": 275.17,
+      "wall_s": 3.226,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "258",
+          "159.0",
+          "256",
+          "2966",
+          "86.3"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 1,
+      "output_utf8_sha256": "5ddaa59637ace2789e2ba7c0a497325b150392cdd36ba7548c40496f410ff904"
+    },
+    {
+      "ttft_ms": 275.64,
+      "wall_s": 3.479,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "258",
+          "158.8",
+          "256",
+          "3218",
+          "79.5"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 2,
+      "output_utf8_sha256": "85de2f18f3c5dedb5b5d675cf61944049e9b74bb7756b00e8ebfed6a04c43c69"
+    },
+    {
+      "ttft_ms": 374.72,
+      "wall_s": 2.452,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "357",
+          "165.2",
+          "256",
+          "2093",
+          "122.3"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 0,
+      "output_utf8_sha256": "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+    },
+    {
+      "ttft_ms": 374.91,
+      "wall_s": 2.435,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "358",
+          "165.0",
+          "256",
+          "2075",
+          "123.4"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 1,
+      "output_utf8_sha256": "70020e0688fa8230d5c513b55c342f36d975bf83f45cca021fd871153589025a"
+    },
+    {
+      "ttft_ms": 375.85,
+      "wall_s": 2.457,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "359",
+          "164.6",
+          "256",
+          "2097",
+          "122.1"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 2,
+      "output_utf8_sha256": "7003adf89c47f3d2a760de8e970cbdc5169bb0911a70e2c02d5530463ca054e4"
+    },
+    {
+      "ttft_ms": 2230.33,
+      "wall_s": 2.985,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2212",
+          "701.2",
+          "64",
+          "770",
+          "83.1"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 0,
+      "output_utf8_sha256": "50c88cd4980d5053451c91ab2e19897da511bafa29f5e8c940faabfccaecaeb9"
+    },
+    {
+      "ttft_ms": 2215.06,
+      "wall_s": 2.87,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2197",
+          "706.0",
+          "64",
+          "671",
+          "95.4"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 1,
+      "output_utf8_sha256": "e65a56393b34e4e338e6585e9dd25f0da938030ca1089836cab5275dbb357e66"
+    },
+    {
+      "ttft_ms": 2198.95,
+      "wall_s": 2.869,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2181",
+          "711.1",
+          "64",
+          "686",
+          "93.3"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 2,
+      "output_utf8_sha256": "4c14b66c91323138f411809c1470aa8aaafd599a4f1a0010d8cea698a7957332"
+    },
+    {
+      "ttft_ms": 10737.19,
+      "wall_s": 11.431,
+      "usage": {
+        "prompt_tokens": 15352,
+        "completion_tokens": 64,
+        "total_tokens": 15416,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "15352",
+          "0",
+          "15352",
+          "10717",
+          "1432.5",
+          "64",
+          "709",
+          "90.2"
+        ]
+      ],
+      "kind": "prefill16k",
+      "repeat": 0,
+      "output_utf8_sha256": "429e2e5cd91cdef31c9f2fb098d49235033c751deb413e8bc08e22d073043ab0"
+    }
+  ]
+}
