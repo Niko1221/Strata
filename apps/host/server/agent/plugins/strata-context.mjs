@@ -16,7 +16,7 @@
  * request the Harness marks `purpose: 'compaction'` is touched in `llm.stream`. Nothing in the Harness is rewritten: a Harness update
  * that renames either leaves compaction as it was, and the test that runs the real Harness fails.
  */
-import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK } from '../context-budget.mjs';
+import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK, withSummaryLanguage } from '../context-budget.mjs';
 
 export const name = 'strata-context';
 export const inject = ['tokenMeter', 'llm'];
@@ -108,6 +108,7 @@ export function apply(ctx) {
   const refusedForSize = finish => finish?.kind === 'error' && isContextOverflow(finish.failure ?? finish);
 
   async function* summaryStream(options, original) {
+    options = { ...options, messages: withSummaryLanguage(options.messages) };   // #4750: the summary follows the conversation's language
     let window = 0;
     try { window = (await llm.resolveModelInfo(options.provider, options.model, options.signal))?.context?.contextWindow ?? 0; } catch { window = 0; }
     const messages = options.messages ?? [];
