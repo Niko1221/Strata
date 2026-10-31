@@ -766,8 +766,18 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 Open the server's address in a browser. Everything in it runs from the server's own files: no CDN, no outside address. Chats,
 settings and the API key stay in the browser.
 
-**Chat settings** (the button next to the message box) holds the sampling and thinking settings and the switches below. Every
-switch below is **off by default**; with all of them off the page behaves as it did before.
+**Context gauge.** Beside the message box, the gauge shows token usage reported by the API with the latest reply and the
+context limit. It warns at 70% and 90%. After compaction, the count is an estimate until the next reply. Editing a message
+does not request a new token count; the gauge uses the last available reading.
+
+**Conversation summary.** The **Compact older turns** button beside the message box asks the model to summarize older
+messages. Those messages stay visible, but later requests use the summary in their place. Messages kept outside the summary
+retain their files, images and tool results. Compacting again uses the previous summary and newer messages. Summaries can
+omit details. Expand the summary card to read it; **Put back into the context** on the latest card undoes that compaction.
+Compaction and restoring messages are disabled while a request runs, an editor is open or a message is waiting to be sent.
+
+**Chat settings** (the button next to the message box) holds sampling and thinking settings and the switches below. These
+switches are **off by default**.
 
 - **Render math.** Equations written as `\( ... \)`, `\[ ... \]`, `$x$` or `$$ ... $$` are drawn as formulas by KaTeX 0.19.0, which
   ships in `serve/web/vendor/katex` (MIT; `PROVENANCE.json` there lists the package and a hash of every file). The text of a
@@ -785,7 +795,9 @@ switch below is **off by default**; with all of them off the page behaves as it 
   here** hides the messages after it. **Branch from here** (needs the saved chats list) starts a new chat from the messages up to
   that point and leaves this chat as it is; the branch keeps a name such as "Branch of ..." and links back to the original. An
   **Undo** bar above the box brings back what was hidden, until your next question, another chat or a reload. A picture or file
-  that was only kept by name is not sent again: the page asks you to attach it again.
+  that was only kept by name is not sent again: the page asks you to attach it again. Editing or rewinding can remove a
+  later conversation summary, undoing that compaction. **Edit summary** on a summary card changes only its text. It keeps
+  other messages and which earlier messages the summary replaces. No request is sent; Undo restores the previous summary.
 - **When you send while it is answering.** *Wait* (the default): Send is off until the answer is done. *Send after*: your message
   waits and goes when the answer is done. *Interrupt*: the answer stops where it is, what was written stays and is marked
   interrupted, and your message goes at once; a tool that is running finishes first. Only one message waits, and **Take back**
