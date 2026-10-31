@@ -1892,10 +1892,7 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
         std::fprintf(stderr, "gdn_step_norm_multi: invalid arguments\n");
         std::exit(1);
     }
-    static const bool qk_reg = [] {
-        const char* v = std::getenv("STRATA_GDN_QK_REG");
-        return v && v[0] == '1';
-    }();
+    static const bool qk_reg = strata::bm_default_on("STRATA_GDN_QK_REG", strata::q_of(stream)->get_device());
     if (qk_reg && !xq && !n_keep && t_out_begin == 0 &&
         h_k == 16 && h_v == 48 && conv_channels == 10240 &&
         strata::intel_gpu_gen(strata::q_of(stream)->get_device()) == strata::IntelGpuGen::Battlemage) {
@@ -2467,10 +2464,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
     if (g_mirror_table != nullptr && in_mirror_table(res_layer)) mir = g_mirror_table + (res_layer - g_mirror_res);
     if (g_usage != nullptr && in_mirror_table(res_layer)) use = g_usage + (res_layer - g_mirror_res);
-    static const bool compact = [] {
-        const char* e = std::getenv("STRATA_RESIDENT_PLAN_COMPACT");
-        return e != nullptr && std::atoi(e) != 0;
-    }();
+    static const bool compact = strata::bm_default_on("STRATA_RESIDENT_PLAN_COMPACT", strata::q_of(stream)->get_device());
     const int threads = compact ? std::max(32, ((n_entries + 31) / 32) * 32) : kResidentPlanMax;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{

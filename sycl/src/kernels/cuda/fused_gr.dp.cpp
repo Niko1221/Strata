@@ -1978,14 +1978,8 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         return false;   // SYCL port: never writes the q8_1 images (STRATA_QFUSE is not supported here)
     }
     m.part = down_partials(st);
-    static const bool reuse_norm = [] {
-        const char* v = std::getenv("STRATA_GR_CACHED_NORM");
-        return v && v[0] == '1';
-    }();
-    static const bool reuse_lo = [] {
-        const char* v = std::getenv("STRATA_GR_LO_REUSE");
-        return v && v[0] == '1';
-    }();
+    static const bool reuse_norm = strata::bm_default_on("STRATA_GR_CACHED_NORM", st->get_device());
+    static const bool reuse_lo = strata::bm_default_on("STRATA_GR_LO_REUSE", st->get_device());
     if ((reuse_norm || reuse_lo) && gr_norm_split() && gr_down_sliced() &&
         !gr_more_groups(st) && !gr_large_grf(st) && !gr_up_ilp() && gr_up_cols() == UPM_COLS &&
         strata::intel_gpu_gen(st->get_device()) == strata::IntelGpuGen::Battlemage &&
@@ -2062,10 +2056,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         const sycl::nd_range<3> nr(sycl::range(1, 1, nred) * sycl::range(1, 1, 128),
                                     sycl::range(1, 1, 128));
         if (m.cached_lo) {
-            static const bool reduce_ilp = [] {
-                const char* v = std::getenv("STRATA_GR_REDUCE_ILP");
-                return v && v[0] == '1';
-            }();
+            static const bool reduce_ilp = strata::bm_default_on("STRATA_GR_REDUCE_ILP", st->get_device());
             if (reduce_ilp) {
                 strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_reduce_lo_ilp>>(nr,
                     [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {

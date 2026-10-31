@@ -29,7 +29,10 @@ endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
-option(STRATA_SYCL_IQ_DECODE_FAST "Opt in to the packed IQ/Q2 decode helpers" OFF)
+# PR #4185 (glorysdj): the packed Q2 / IQ4 lookup / IQ3_S sign arithmetic of the mixed-IQ3 decode kernels. Integer arithmetic with the
+# same results as the code it replaces (bit-exact, checked end to end on 2x Arc Pro B65), faster on Battlemage; ON by default in every
+# build, including the JIT release package. -DSTRATA_SYCL_IQ_DECODE_FAST=OFF builds the earlier helpers.
+option(STRATA_SYCL_IQ_DECODE_FAST "Packed IQ/Q2 decode helpers (bit-exact integer arithmetic, faster on Battlemage)" ON)
 if(STRATA_SYCL_IQ_DECODE_FAST)
   add_compile_definitions(STRATA_Q2_WORD_FAST=1 STRATA_IQ4NL_LUT_SWAR=1 STRATA_IQ4XS_LUT_SWAR=1
                          STRATA_IQ4_LUT_SWAR=1 STRATA_IQ3S_SIGN_FAST=1 STRATA_IQ3S_SIGN_APPLY_FAST=1)

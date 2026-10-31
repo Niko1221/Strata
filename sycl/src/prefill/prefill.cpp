@@ -3323,7 +3323,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         // 3x faster at 40K), so by default only for a batch reaching 2,048 blocks.
                         // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always.
                         static const int sel_gemm_mode = [] { const char* v = std::getenv("STRATA_SELECT_GEMM"); return v ? std::atoi(v) : -1; }();
-                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= 2048);
+                        static const int64_t sel_gemm_min = [] { const char* v = std::getenv("STRATA_SELECT_GEMM_MIN"); return v ? (int64_t) std::atoll(v) : (int64_t) 2048; }();   // blocks (4 cells each)
+                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= sel_gemm_min);
                         const int64_t sel_tile = std::min<int64_t>(8192, (int64_t) ((uint64_t) m.attn_batch *
                             strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) / (uint64_t) (nb * 4)));
                         bool sel_done = false;

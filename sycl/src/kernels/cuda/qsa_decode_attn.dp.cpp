@@ -677,11 +677,8 @@ __dpct_inline__ void attn_merge_active_kernel(
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
-bool merge_active_on() {
-    static const bool on = [] {
-        const char* v = std::getenv("STRATA_ATTN_MERGE_ACTIVE");
-        return v && v[0] == '1';
-    }();
+bool merge_active_on(const sycl::device& d) {
+    static const bool on = strata::bm_default_on("STRATA_ATTN_MERGE_ACTIVE", d);
     return on;
 }
 
@@ -1076,7 +1073,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        if (merge_active_on() && n_q <= 8) {
+        if (merge_active_on(st->get_device()) && n_q <= 8) {
             strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class attn_merge_active>>(
                 sycl::nd_range<3>(
                     sycl::range(1, (unsigned)n_q, (unsigned)s.n_head) *
