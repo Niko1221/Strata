@@ -220,3 +220,15 @@ test('#4798 the three new Serving sentences are translated', async () => {
   }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4722
+test('#4722 paragraphs, lists and quotes share one measure; tables and code blocks keep the full column', () => {
+  const css = src('styles/app.css');
+  assert.match(css, /\.st-msg--assistant \.st-bubble :is\(p, ul, ol, blockquote\) \{\s*max-width: var\(--st-measure\);\s*\}/);
+  assert.doesNotMatch(css, /\.st-bubble \.md-li/, 'no rule names the class that the renderer never emits');
+  assert.doesNotMatch(css, /\.st-bubble[^{]*(table|\.md-table|\.st-code)[^{]*\{[^}]*max-width: var\(--st-measure\)/);
+  // The renderer really emits bare lists, which is what the rule now targets.
+  const md = src('components/Markdown.tsx');
+  assert.match(md, /ordered \? <ol key=\{key\}>\{tr\(items\)\}<\/ol> : <ul key=\{key\}>/);
+  assert.doesNotMatch(md, /className="md-li"/);
+});

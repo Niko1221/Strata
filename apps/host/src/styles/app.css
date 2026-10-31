@@ -462,11 +462,12 @@
 }
 
 /* ========================================================= reading comfort ==
-   Prose is capped at a comfortable measure; code blocks, tables and metric
-   grids in the same bubble still use the full width, because a wide table is
-   easier to read than a wrapped one. */
-.st-msg--assistant .st-bubble p,
-.st-msg--assistant .st-bubble .md-li {
+   Prose is capped at a comfortable measure: paragraphs, lists and quotes share one
+   width (the list rule used to name `.md-li`, a class the renderer never emits, so
+   lists ran the full column, #4722). Code blocks, tables and metric grids in the
+   same bubble still use the full width, because a wide table is easier to read
+   than a wrapped one. */
+.st-msg--assistant .st-bubble :is(p, ul, ol, blockquote) {
   max-width: var(--st-measure);
 }
 

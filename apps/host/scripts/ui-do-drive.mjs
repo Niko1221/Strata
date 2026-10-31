@@ -392,6 +392,30 @@ cases.serving = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4722 */
+cases.width = async () => {
+  const text = '用中文写一段九十字左右的段落，说明本地模型为什么适合处理私人文件，并且不需要把任何内容上传到网络上去，这样可以让人放心。\n\n- 第一条要点同样写得比较长，用来观察列表项在气泡里到底会排到多宽才换行，看看它是否与上面的段落一样。\n- 第二条要点也一样长，看看两条要点是不是排得整齐，不会比段落更宽也不会更窄。\n\nAnd an English paragraph that is long enough to wrap onto at least two lines so that the measure of the prose can be read off it by the test.\n\n1. A numbered point in English that is also long enough to wrap onto a second line in the same bubble as the paragraph above it.\n2. Another numbered point.\n\n| Name | Value |\n| --- | --- |\n| a long cell that is wide | another long cell that is wide too |\n\n```bash\nnpm install a-very-long-package-name another-very-long-package-name yet-another-long-package-name --save-dev --legacy-peer-deps\n```';
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const page = await open(scheme, w, h, [chat('s1', 'Width', [user('u1', 'Write'), reply('a1', text)])]);
+    await page.locator('.st-bubble ul').first().waitFor({ timeout: 15000 });
+    const m = await page.evaluate(() => {
+      const b = document.querySelector('.st-msg--assistant .st-bubble'), r = el => Math.round(el.getBoundingClientRect().width);
+      return { bubble: r(b), p: r(b.querySelector('p')), ul: r(b.querySelector('ul')), ol: r(b.querySelector('ol')), table: r(b.querySelector('.md-table-wrap')), code: r(b.querySelector('.st-code')) };
+    });
+    const note = JSON.stringify(m);
+    if (w > 700) {
+      check(Math.abs(m.ul - m.p) <= 2 && Math.abs(m.ol - m.p) <= 2, `${tag}: bullets and numbers have the paragraph's width`, note);
+      check(m.table > m.p + 20 && m.code > m.p + 20, `${tag}: the table and the code block keep the full width`, note);
+    } else {
+      check(Math.abs(m.ul - m.p) <= 2 && m.p <= m.bubble, `${tag}: narrow window: everything fits the column`, note);
+    }
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    await shot(page, `4722-${tag}`);
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {
