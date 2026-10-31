@@ -70,6 +70,15 @@ class UnifiedMemoryPlan(unittest.TestCase):
         self.assertEqual(len(p["cards"]), 2)
         self.assertTrue(any("Two cards share" in l for l in p["lines"]))
 
+    def test_the_amd_plan_matches_what_the_engine_held_on_real_r9700_runs(self):
+        """0.2.9 gates (2.25 set, R9700 32 GiB): one card held 2,366 experts, four cards 12,147 (the plan used to say 2,947 and 13,180)."""
+        from unittest import mock
+        card = {**R9700[0], "vendor": "amd"}
+        with mock.patch.object(F, "_on_windows", lambda: False):
+            for n, real in ((1, 2366), (4, 12147)):
+                p = F.plan([{**card, "index": i} for i in range(n)], 128.0, 700.0, 8192, vendor="amd", model="IST-DAS-2.25bpw")
+                self.assertLess(abs(p["experts_in_vram"] - real), 0.005 * real, (n, p["experts_in_vram"]))
+
     def test_the_smaller_set_is_recommended_for_a_small_unified_pc(self):
         self.assertEqual(F.recommend(32.0), "IST-DAS-1.75bpw")
         self.assertEqual(F.recommend(63.6), "IST-DAS-2.00bpw")

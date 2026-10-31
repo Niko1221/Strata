@@ -87,6 +87,11 @@ ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_1
                          "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
 ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
+# AMD (ROCm) cards keep more beside the experts than the 12 GB NVIDIA cards above: the HIP engine's prompt buffers and graphs.  Fitted to the two real
+# runs of the 2.25 set (0.2.9 gates, 32 GiB R9700): 1 card holds 2,366 experts, 4 cards 12,147 (the plan said 2,947 and 13,180):
+# non-expert memory per card = AMD_RESERVE_GB + AMD_DENSE_ON_GPU_GB / cards  (11.4 GB with one card, 4.9 GB with four).
+AMD_DENSE_ON_GPU_GB = 8.7
+AMD_RESERVE_GB = 2.7
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
@@ -284,8 +289,10 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
         warns.append("No graphics card Strata can use was found: this model needs one or more cards (8 GB or more; 12 GB is what it was "
                      "measured with).")
     else:
-        per_dense = ISTA_DENSE_ON_GPU_GB / n
-        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - RESERVE_GB) for c in keep]
+        amd_cards = all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
+        per_dense = (AMD_DENSE_ON_GPU_GB if amd_cards else ISTA_DENSE_ON_GPU_GB) / n
+        reserve = AMD_RESERVE_GB if amd_cards else RESERVE_GB
+        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - reserve) for c in keep]
         vram_exp = min(v["experts_gb"], sum(cap))
         ranges = split_layers([float(c.get("vram_gb") or 0) for c in keep])
         in_vram = 0
