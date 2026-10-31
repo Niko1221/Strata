@@ -92,6 +92,13 @@ if(STRATA_HIP_GFX906)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
+# The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
+# switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
+# The rocBLAS tables are switched at run time (STRATA_AMD_COMMUNITY_TUNING=0).
+option(STRATA_AMD_COMMUNITY_TUNING "Compile the community-made gfx1010 SDWA dot product (the runtime switch of the same name controls the gfx1030 rocBLAS tables)" ON)
+if(NOT STRATA_AMD_COMMUNITY_TUNING)
+  add_compile_definitions(STRATA_AMD_COMMUNITY_DOT_OFF=1)
+endif()
 # The rows one verify / batch window holds (include/strata/kernels/window_limits.hpp): 8, the 0.2.7 window, or 16 (four pipelined
 # groups of 16 slots = 64 slots on a four-card split, docs/BATCHING.md).  Only the CUDA and HIP engines are built from
 # these sources with a wide window; the SYCL and Metal builds never read this variable and keep 8.  A window of up to
@@ -1810,6 +1817,15 @@ if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
   add_test(NAME arch_defaults_test COMMAND arch_defaults_test)
+  # STRATA_AMD_COMMUNITY_TUNING: the switch turns each community-made AMD change off (header only; run from the source tree)
+  add_executable(amd_community_test src/core/amd_community_test.cpp)
+  target_include_directories(amd_community_test PRIVATE include)
+  target_compile_definitions(amd_community_test PRIVATE EXPECT_DOT_BUILT=1)
+  add_test(NAME amd_community_test COMMAND amd_community_test WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  add_executable(amd_community_test_dot_off src/core/amd_community_test.cpp)   # the -DSTRATA_AMD_COMMUNITY_TUNING=OFF build
+  target_include_directories(amd_community_test_dot_off PRIVATE include)
+  target_compile_definitions(amd_community_test_dot_off PRIVATE EXPECT_DOT_BUILT=0 STRATA_AMD_COMMUNITY_DOT_OFF=1)
+  add_test(NAME amd_community_test_dot_off COMMAND amd_community_test_dot_off WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   add_executable(nv_defaults_test src/core/nv_defaults_test.cpp src/core/nv_defaults.cpp)   # the sm_121 (GB10) table and its two off switches
   target_include_directories(nv_defaults_test PRIVATE include)
   add_test(NAME nv_defaults_test COMMAND nv_defaults_test)
