@@ -3224,15 +3224,18 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
     if m.exists() and any(f"sha256 {x}" in m.read_text(encoding="utf-8", errors="replace") for x in (sha, *also)):
         return
     have = s.stat().st_size if s.exists() else -1
-    if own and have > 0 and have != size and own_gguf_is_whole(s):
-        # a fine-tune or another build with the layout of the published file (#3777: 96 bytes apart): recommend, never refuse
-        warn(f"{s.name} is {have:,} bytes; the published file is {size:,}. It is a complete GGUF file, so Strata uses it as it is; "
-             "it may be another version or a fine-tune, so check a few answers before you rely on it")
-        return
     if have != size:
         if own:                                        # --gguf-dir: the person's own file is never deleted by setup
+            if own_gguf_is_whole(s):                   # another version or a fine-tune: recommend, never refuse
+                warn(f"{s.name} is {have:,} bytes; the published file is {size:,}. It is a complete GGUF file, so Strata uses it as it is; "
+                     "it may be another version or a fine-tune, so check a few answers before you rely on it")
+                return
             fail(f"{s.name} is {have:,} bytes; the published file is {size:,}",
                  "it may be cut short or another version; your file was left as it is. Copy the whole published file into the folder")
+        if own_gguf_is_whole(s):                       # #3777: a download of another build (96 bytes of padding apart) is used too
+            warn(f"{s.name} is {have:,} bytes; the published file is {size:,}. It is a complete GGUF file, so Strata uses it as it is; "
+                 "it may be another version or a fine-tune, so check a few answers before you rely on it")
+            return
         fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     digest = _hash_file(s, size)
