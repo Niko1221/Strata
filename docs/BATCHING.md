@@ -184,7 +184,11 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   checkpoint at the prompt's last turn boundary); the next turn of that conversation goes to that slot and the
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
-  conversation takes an empty slot, else the one used longest ago.
+  conversation takes an empty slot, else the one used longest ago. With `STRATA_SLOT_EXPIRE_S` set to some seconds
+  (the run config's `"env"` block or the server's environment; off unless set, 600 suits coding agents), it takes the
+  one whose conversation is cheapest to lose instead: an expired one (idle that long), then the one holding the
+  shortest history (the one used longest ago among equals), so a short side request (a title, a summary) does not take
+  the slot of a long conversation that is still going.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
