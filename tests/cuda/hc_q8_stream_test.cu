@@ -40,7 +40,13 @@ std::vector<uint16_t> reference(const std::vector<int8_t>& q, const std::vector<
 // keeps its stream busy for a few ms: bounded on purpose, so the test cannot hang on a host/device ordering mistake
 // (a host copy that releases a spinning kernel would itself wait for that stream)
 __global__ void spin_kernel() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
     for (int i = 0; i < 20000; ++i) __nanosleep(1000);
+#else
+    // sm_60/61 have no __nanosleep: spin on the clock for about the same few ms
+    const long long t0 = clock64();
+    while (clock64() - t0 < 20000000LL) {}
+#endif
 }
 
 // one case: enqueue the expansion on `A`, optionally behind a spin that holds `A` busy, and read it back ordered only by
