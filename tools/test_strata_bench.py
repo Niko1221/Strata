@@ -218,14 +218,15 @@ class RedactionTests(unittest.TestCase):
 
     def test_config_view_drops_secrets_and_cuts_paths(self):
         cfg = {"exe": r"C:\Users\me\Strata\engine\strata.exe", "args": ["--native", "/home/me/models/m-IQ3_XXS.gguf", "--ctx", "65536"],
-               "api_key": "hunter2", "model_name": "Fake Model", "log": "/tmp/x.log", "port": 8080,
-               "env": {"STRATA_FOO": "/home/me/z", "PATH": "/usr/bin", "STRATA_TOKEN": "t"}}
+               "api_key": "hunter2", "model_name": "Fake Model", "log": "/tmp/x.log", "port": 8080, "fit_max_tokens": True,
+               "env": {"STRATA_FOO": "/home/me/z", "PATH": "/usr/bin", "STRATA_TOKEN": "t", "STRATA_SPEC_MIN_TOKENS": "2"}}
         v = B.config_view(cfg)
         self.assertEqual(v["exe"], "strata.exe")
         self.assertEqual(v["args"], ["--native", "m-IQ3_XXS.gguf", "--ctx", "65536"])
         self.assertNotIn("api_key", v)
         self.assertNotIn("log", v)
-        self.assertEqual(v["env"], {"STRATA_FOO": "z"})
+        self.assertEqual(v["env"], {"STRATA_FOO": "z", "STRATA_SPEC_MIN_TOKENS": "2"})   # a count, not a secret (#4472)
+        self.assertIs(v["fit_max_tokens"], True)
         self.assertEqual(B.detect_quant(v), "IQ3_XXS")
         self.assertNotIn("hunter2", json.dumps(v))
 
