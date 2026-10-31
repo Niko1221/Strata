@@ -13907,6 +13907,31 @@ int main(int argc, char** argv) {
                 live_ok = false;
                 continue;
             }
+            // LORA <path>: swap the loaded adapter's TABLES for the ones in this adapter GGUF, in place - same
+            // shapes required (a captured graph holds the addresses), no restart, no re-capture.  A zeroth-order
+            // step reads the cost of theta + eps*z and of theta - eps*z, and theta moves every step: without this
+            // the engine would be useful for exactly one step, or every step would pay a restart's load time.
+            // The engine must have been started with --lora (an adapter to update); the polarity is left at +1,
+            // which is what `lora=1` and SCORE's default both mean.
+            if (line.rfind("LORA ", 0) == 0) {
+                const std::string lpath = std::string(line.c_str() + 5);
+                if (!strata::kernels::lora().loaded) {
+                    std::printf("ERR lora: no adapter is loaded (start the engine with --lora <the initial one>)\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                strata::kernels::LoraAdapterFiles lfiles(1, {lpath, 1.0f});
+                std::string lsum, lerr;
+                uint64_t ldig = 0;
+                if (!strata::kernels::load_lora_adapters(lfiles, g, lsum, ldig, lerr, /*update=*/true)) {
+                    std::printf("ERR lora: %s\n", lerr.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                std::printf("LORAOK %llu %s\n", (unsigned long long) ldig, lsum.c_str());
+                std::fflush(stdout);
+                continue;
+            }
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");

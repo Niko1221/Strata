@@ -23,7 +23,11 @@ using LoraAdapterFiles = std::vector<std::pair<std::string, float>>;
 /// adapted layers), `digest` identifies the uploaded tables (0 means none was loaded).  Fails on a tensor the engine
 /// does not adapt, on a shape that does not match layer l, and on a file built for another architecture - an adapter
 /// applied to part of a model gives neither model.
+///
+/// `update` runs the tables through `lora_update` instead: same shapes required (a captured graph holds the
+/// addresses), contents replaced in place.  That is a training step's business - theta +/- eps land in the engine
+/// without a restart - and it is why the caller's ranks must not change mid-run.
 bool load_lora_adapters(const LoraAdapterFiles& files, const core::ModelGeometry& g, std::string& summary,
-                        uint64_t& digest, std::string& err);
+                        uint64_t& digest, std::string& err, bool update = false);
 
 }  // namespace strata::kernels

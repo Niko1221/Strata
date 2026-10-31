@@ -28,7 +28,7 @@ namespace strata::kernels {
 // stacked), into the tables `lora_upload` takes.  A tensor the engine does not adapt is an error: running part of
 // an adapter would give neither model.  `summary` is what INFO reports; `digest` identifies the uploaded tables.
 bool load_lora_adapters(const LoraAdapterFiles& files, const strata::core::ModelGeometry& g, std::string& summary,
-                        uint64_t& digest, std::string& err) {
+                        uint64_t& digest, std::string& err, const bool update) {
     const int64_t L = g.n_layers, N = g.n_embd;
     std::vector<strata::kernels::LoraLayerHost> layers((size_t) L);
     auto f32_of = [&](const strata::GgufFile& f, const strata::TensorInfo& t, std::vector<float>& out) -> bool {
@@ -139,10 +139,11 @@ bool load_lora_adapters(const LoraAdapterFiles& files, const strata::core::Model
         if (digest == 0) digest = 1;   // 0 means "none loaded"
     }
     const uint64_t bytes = strata::kernels::lora_device_bytes(layers);
-    if (!strata::kernels::lora_upload(layers, err)) return false;
+    if (update ? !strata::kernels::lora_update(layers, err) : !strata::kernels::lora_upload(layers, err)) return false;
     summary = std::to_string(covered);
-    std::fprintf(stderr, "strata: LoRA: %zu file%s, %d layers adapted, %.1f MiB per device\n",
-                 files.size(), files.size() == 1 ? "" : "s", covered, (double) bytes / (1024.0 * 1024.0));
+    std::fprintf(stderr, "strata: LoRA %s: %zu file%s, %d layers adapted, %.1f MiB per device\n",
+                 update ? "updated" : "loaded", files.size(), files.size() == 1 ? "" : "s", covered,
+                 (double) bytes / (1024.0 * 1024.0));
     return true;
 }
 
