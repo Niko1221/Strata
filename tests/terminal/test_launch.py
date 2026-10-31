@@ -457,6 +457,21 @@ class SetupArgs(unittest.TestCase):
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="off"), cat)
             self.assertEqual(s.vision, "off")
 
+    def test_a_disk_warning_is_not_shown_for_files_used_where_they_are_and_reads_once(self):
+        import dataclasses
+        from strata_cli.launch.cmd import apply_defaults
+        with Home():
+            cat = catalog(HW_12)
+            real = cat.rows()
+            rows = [dataclasses.replace(r, verdict="tight", words="tight: needs more disk space") for r in real]
+            with mock.patch.object(type(cat), "rows", lambda self, *a, **k: rows):
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", model_path="/x"), cat)
+                self.assertFalse([n for n in notes if "tight" in n.text], notes)
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), cat)
+                text = " ".join(n.text for n in notes)
+                self.assertIn("is a tight fit: needs more disk space.", text)
+                self.assertNotIn("tight: tight", text)
+
     def test_the_apps_own_installer_arguments(self):
         import tempfile
         own = tempfile.mkdtemp()

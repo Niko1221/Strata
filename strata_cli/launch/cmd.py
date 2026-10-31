@@ -339,8 +339,11 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
             r = rows[0]
             if r.verdict == "no":
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
+            elif r.verdict == "tight" and s.model_path and "disk space" in r.words:
+                pass                                         # the files are already here ("used where they are"): there is no download to make room for
             elif r.verdict == "tight":
-                notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
+                words = r.words[len("tight:"):].strip() if r.words.startswith("tight:") else r.words
+                notices.append(S.Notice("warn", f"{r.title} is a tight fit: {words}.", "Close other programs before you start."))
             if s.vision not in (None, "off") and not r.images:
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
