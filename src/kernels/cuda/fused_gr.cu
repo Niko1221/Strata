@@ -7,6 +7,7 @@
 #define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 tails divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/core/geometry.hpp"
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -730,9 +731,21 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q32_kernel(GrMulti m) {
 // card's opt-in limit at kFusedGrMaxT tokens (Ampere 99 KB: S = 1; Turing / HIP 64 KB: S = 2); a card where
 // neither fits keeps the default kernels.
 constexpr int PR = LR + HC;                        // partial rows per (token, stream): 320 down + 4 inject
+
+// BW-DENSE (STRATA_GR_V3_PF): the v3 kernels issue their weight loads FIRST, into registers, so the DRAM fetch overlaps the
+// prologue (gr_down: staging R / bo / w_norm into shared memory; gr_up: the partial sums -> lo) instead of starting behind it.
+// The same loads, the same values, the same arithmetic in the same order: bitwise the kernels without it (gr_v3_screen).
+// ld.global.nc as a volatile asm so the compiler cannot sink the load back to its first use, behind the barrier.
+__device__ __forceinline__ uint4 ldg_v4(const uint4* p) {
+    uint4 v;
+    asm volatile("ld.global.nc.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "l"(p));
+    return v;
+}
 constexpr int TQ3 = N / 8 / 32;                    // uint4 weight chunks per lane in one stream's slice (10)
 
-template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int R2V = 1>
+// PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the staging's loads (R, bo, w_norm of every token) before using any
+// of them; bit 1 loads the warp's weight row into registers first. R2V == 1, S == 1 only.
+template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int R2V = 1, int PF = 0>
 __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* __restrict__ part, float* __restrict__ ssg) {
     extern __shared__ __align__(16) float xs[];    // [T][N / S]
     constexpr int R2 = R2V;                        // down rows per warp (R2V > 1: fewer blocks, each stages its stream slice once for R2V x the rows; the same dots)
@@ -749,7 +762,71 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
     const int nrows = inject_block ? ((m.a[0].w_inject != nullptr && warp < HC) ? 1 : 0) : R2;
     const bool active = nrows > 0;
     const uint16_t* wbase = inject_block ? m.a[0].w_inject : m.a[0].w_down;
+    uint4 wq[(PF & 2) ? TQS : 1];   // PF bit 1: this warp's row of weights, loaded before the staging below
+    if constexpr (PF != 0) static_assert(R2V == 1 && S == 1, "the prefetch variants are for the one-row-a-warp kernels");
+    if constexpr ((PF & 2) != 0) {
+        if (active) {
+            const uint4* w4 = reinterpret_cast<const uint4*>(wbase + (size_t) row0 * D + (size_t) c * N + (size_t) h * SL);
+#pragma unroll
+            for (int q = 0; q < TQS; ++q) wq[q] = ldg_v4(w4 + lane + 32 * q);
+        }
+    }
     float ssp[MAX_T];
+    if constexpr ((PF & 1) != 0) {
+        // the same per-thread sums in the same order (items i = t, t + THREADS, ... ascending, tokens in order), with the
+        // loads of a group of tokens in flight together instead of one dependent L2 round trip per item
+        constexpr int NI = (SL / 4 + THREADS - 1) / THREADS;
+        constexpr int TG = MAX_T < 4 ? MAX_T : 4;
+        float4 gv[NI];
+#pragma unroll
+        for (int ii = 0; ii < NI; ++ii) {
+            const int i = t + ii * THREADS;
+            gv[ii] = i < SL / 4 ? reinterpret_cast<const float4*>(m.a[0].w_norm + (size_t) c * N + (size_t) h * SL)[i] : make_float4(0.f, 0.f, 0.f, 0.f);
+        }
+#pragma unroll
+        for (int k0 = 0; k0 < MAX_T; k0 += TG) {
+            float4 rv[TG][NI], bv[TG][NI];
+#pragma unroll
+            for (int kk = 0; kk < TG; ++kk) {
+                const int k = k0 + kk;
+                if (k >= MAX_T || (!EXACT_T && k >= T)) continue;
+                const FusedGrArgs& a = m.a[k];
+                const float4* R4 = reinterpret_cast<const float4*>(a.R + (size_t) c * N + (size_t) h * SL);
+                const float4* B4 = reinterpret_cast<const float4*>(a.bo_prev + (size_t) h * SL);
+#pragma unroll
+                for (int ii = 0; ii < NI; ++ii) {
+                    const int i = t + ii * THREADS;
+                    rv[kk][ii] = i < SL / 4 ? R4[i] : make_float4(0.f, 0.f, 0.f, 0.f);
+                    bv[kk][ii] = (a.apply && i < SL / 4) ? B4[i] : make_float4(0.f, 0.f, 0.f, 0.f);
+                }
+            }
+#pragma unroll
+            for (int kk = 0; kk < TG; ++kk) {
+                const int k = k0 + kk;
+                if (k >= MAX_T) continue;
+                ssp[k] = 0.0f;
+                if (!EXACT_T && k >= T) continue;
+                const FusedGrArgs& a = m.a[k];
+                const float gw = a.apply ? 2.0f * sigmoidf_(a.inj_prev[c] / (float) HC) : 0.0f;
+                float4* X4 = reinterpret_cast<float4*>(xs + (size_t) k * SL);
+#pragma unroll
+                for (int ii = 0; ii < NI; ++ii) {
+                    const int i = t + ii * THREADS;
+                    if (i < SL / 4) {
+                        float4 r = rv[kk][ii];
+                        if (a.apply) {
+                            const float4 b = bv[kk][ii];
+                            r.x = fmaf(b.x, gw, r.x); r.y = fmaf(b.y, gw, r.y);
+                            r.z = fmaf(b.z, gw, r.z); r.w = fmaf(b.w, gw, r.w);
+                        }
+                        const float4 g = gv[ii];
+                        ssp[k] += r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w;
+                        X4[i] = make_float4(r.x * g.x, r.y * g.y, r.z * g.z, r.w * g.w);
+                    }
+                }
+            }
+        }
+    } else {
 #pragma unroll
     for (int k = 0; k < MAX_T; ++k) {
         ssp[k] = 0.0f;
@@ -771,6 +848,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
             ssp[k] += r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w;
             X4[i] = make_float4(r.x * g.x, r.y * g.y, r.z * g.z, r.w * g.w);
         }
+    }
     }
 #pragma unroll
     for (int k = 0; k < MAX_T; ++k) {
@@ -795,7 +873,9 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
 #pragma unroll
         for (int q = 0; q < TQS; ++q) {
             const int j = lane + 32 * q;
-            const Bf16x8 wvq = unpack8(__ldg(w4 + j));
+            Bf16x8 wvq;
+            if constexpr ((PF & 2) != 0) wvq = unpack8(wq[q]);
+            else wvq = unpack8(__ldg(w4 + j));
 #pragma unroll
             for (int k = 0; k < MAX_T; ++k)
                 if (EXACT_T || k < T) acc[k] += dot8u_ptr(wvq, xs + (size_t) k * SL + j * 8);
@@ -819,7 +899,10 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
     }
 }
 
-template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false>
+// PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the loads of the partial sums and of every row's R / w_norm / bo / inj before
+// their first use (the in-place store of R in the row loop otherwise ends each row's loads at a full latency); bit 1 loads the
+// warp's w_up rows first. S == 1, EXACT_T only.
+template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int PF = 0>
 __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const float* __restrict__ part,
                                                            const float* __restrict__ ssg) {
     __shared__ __align__(16) float lo[MAX_T][LR];
@@ -829,6 +912,48 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
     const int T = EXACT_T ? MAX_T : m.T;
     const int d0 = blockIdx.x * UPM_COLS;
     constexpr int RPW = HC * UPM_COLS / WARPS;     // 8 rows per warp
+    uint4 pwa[(PF & 2) ? RPW : 1], pwb[(PF & 2) ? RPW : 1];   // PF bit 1: the warp's 8 rows of w_up, loaded before the prologue
+    if constexpr (PF != 0) static_assert(S == 1 && EXACT_T, "the prefetch variants are for the exact-T, one-half kernels");
+    if constexpr ((PF & 2) != 0) {
+#pragma unroll
+        for (int q = 0; q < RPW; ++q) {
+            const int r = warp + q * WARPS;
+            const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
+            const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
+            pwa[q] = ldg_v4(w4 + lane);
+            pwb[q] = lane < LR / 8 - 32 ? ldg_v4(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
+        }
+    }
+    constexpr int NIT = (MAX_T * LR + THREADS - 1) / THREADS;
+    float ppv[(PF & 1) ? NIT : 1][HC];                        // PF bit 0: the partial sums lo is built from
+    float prv[(PF & 1) ? RPW : 1], pwn[(PF & 1) ? RPW : 1], pbo[(PF & 1) ? RPW : 1], pip[(PF & 1) ? RPW : 1];
+    if constexpr ((PF & 1) != 0) {
+#pragma unroll
+        for (int it = 0; it < NIT; ++it) {
+            const int i = t + it * THREADS;
+#pragma unroll
+            for (int c = 0; c < HC; ++c) {
+                ppv[it][c] = 0.0f;
+                if (i < MAX_T * LR) {
+                    const int k = i / LR, r = i - k * LR;
+                    ppv[it][c] = part[(((size_t) k * HC + c) * S + 0) * PR + r];
+                }
+            }
+        }
+        if (lane < T) {
+            const FusedGrArgs& a = m.a[lane];
+#pragma unroll
+            for (int q = 0; q < RPW; ++q) {
+                const int r = warp + q * WARPS;
+                const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
+                prv[q] = a.R[i];
+                pwn[q] = a.w_norm[i];
+                pbo[q] = 0.0f;
+                pip[q] = 0.0f;
+                if (a.apply) { pbo[q] = a.bo_prev[d0 + dd]; pip[q] = a.inj_prev[c]; }
+            }
+        }
+    }
     if (t < T * HC) {
         const int k = t / HC, c = t - k * HC;
         float ss = 0.0f;
@@ -839,6 +964,24 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
         if (blockIdx.x == 0) m.a[k].rs[c] = r;
     }
     __syncthreads();
+    if constexpr ((PF & 1) != 0) {
+#pragma unroll
+        for (int it = 0; it < NIT; ++it) {
+            const int i = t + it * THREADS;
+            if (i < MAX_T * LR) {
+                const int k = i / LR, r = i - k * LR;
+                float sum = 0.0f;
+#pragma unroll
+                for (int c = 0; c < HC; ++c) {
+                    float p = 0.0f;
+                    p += ppv[it][c];
+                    sum = fmaf(rsS[k][c], p, sum);
+                }
+                const float x = sum / (float) HC;
+                lo[k][r] = x / (1.0f + __expf(-x));
+            }
+        }
+    } else
     for (int i = t; i < T * LR; i += THREADS) {
         const int k = i / LR, r = i - k * LR;
         float sum = 0.0f;
@@ -871,17 +1014,26 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
     for (int q = 0; q < RPW; ++q) {
         const int r = warp + q * WARPS;
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
-        const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
-        const Bf16x8 wa = unpack8(__ldg(w4 + lane));
-        const Bf16x8 wb = unpack8(lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0));
+        Bf16x8 wa, wb;
+        if constexpr ((PF & 2) != 0) {
+            wa = unpack8(pwa[q]);
+            wb = unpack8(pwb[q]);
+        } else {
+            const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
+            wa = unpack8(__ldg(w4 + lane));
+            wb = unpack8(lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0));
+        }
         float rv = 0.0f, wn = 0.0f, bo = 0.0f, ip = 0.0f;
         bool apply = false;
         if (lane < T) {
             const FusedGrArgs& a = m.a[lane];
-            rv = a.R[i];
-            wn = a.w_norm[i];
             apply = a.apply;
-            if (apply) { bo = a.bo_prev[d0 + dd]; ip = a.inj_prev[c]; }
+            if constexpr ((PF & 1) != 0) { rv = prv[q]; wn = pwn[q]; bo = pbo[q]; ip = pip[q]; }
+            else {
+                rv = a.R[i];
+                wn = a.w_norm[i];
+                if (apply) { bo = a.bo_prev[d0 + dd]; ip = a.inj_prev[c]; }
+            }
         }
         float mine = 0.0f;
         if constexpr (EXACT_T && MAX_T >= 5 && MAX_T <= 8) {   // the tokens' warp sums together (warp_sum8, missing tokens 0): the same bits
@@ -2383,6 +2535,103 @@ static bool gr_v3_default_on(int dev) {
 #endif
 }
 
+
+// BW-DENSE STRATA_GR_V3_PF: the v3 read's load-ordering variants, bitwise the kernels without them (gr_v3_screen: 0 differing, T 1-8).
+// Bits 0-1 gr_down (1 = the staging's loads of every token in flight together, 2 = weight prefetch), bits 2-3 gr_up (1 = partial sums and
+// per-row inputs loaded before use, 2 = weight prefetch), bits 4-5 gr_down rows a warp 2 / 4 (T <= 4).  Measured on the RTX PRO 5000 (cold
+// weights, 16 sets, read = down + up): 5 (= down 1, up 1) is 4-8% faster at T 1-8 (T4 26.45 -> 24.90 us); weight prefetch and 2 / 4 rows a
+// warp are slower (2 = +17% at T4) and stay off.  Default: 5 on a compute capability 12.0 card, 0 elsewhere (unmeasured there);
+// STRATA_GR_V3_PF=0 restores the plain kernels, any value forces that mask.
+static int v3_pf_mask() {
+    static const int env = [] { const char* e = std::getenv("STRATA_GR_V3_PF"); return e != nullptr ? std::atoi(e) : -1; }();
+    if (env >= 0) return env;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    static int per_dev[64];   // 0 unknown, else mask + 1
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? strata::gr_v3_pf_default(ma, mi) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
+}
+static int g_v3_pf_force = -1;   // fused_gr_v3_pf (tests, benchmarks): the mask for every read; -1 = STRATA_GR_V3_PF
+template <int K, int PF>
+static void gr_down_pf_launch(const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    constexpr size_t sm = (size_t) K * N * sizeof(float);
+    static const bool once = [] {
+        cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, 1, PF>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
+        cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, 1, PF>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        return true;
+    }();
+    (void) once;
+    gr_down_v3_kernel<1, K, true, 1, PF><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
+}
+template <int PF>
+static bool gr_down_pf_dispatch_k(int n_tok, const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    switch (n_tok) {
+    case 1: gr_down_pf_launch<1, PF>(m, part, ssg, st); return true;
+    case 2: gr_down_pf_launch<2, PF>(m, part, ssg, st); return true;
+    case 3: gr_down_pf_launch<3, PF>(m, part, ssg, st); return true;
+    case 4: gr_down_pf_launch<4, PF>(m, part, ssg, st); return true;
+    case 5: gr_down_pf_launch<5, PF>(m, part, ssg, st); return true;
+    case 6: gr_down_pf_launch<6, PF>(m, part, ssg, st); return true;
+    case 7: if (kFusedGrMaxT >= 7) { gr_down_pf_launch<7, PF>(m, part, ssg, st); return true; } return false;
+    case 8: if (kFusedGrMaxT >= 8) { gr_down_pf_launch<8, PF>(m, part, ssg, st); return true; } return false;
+    default: return false;
+    }
+}
+// the exact-T down kernels of 1..4 tokens with R2V rows a warp (2 or 4: half / a quarter of the blocks, each staging the stream's
+// activations once for R2V times the rows; the same dots)
+template <int K, int R2V>
+static void gr_down_r2_launch(const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    constexpr size_t sm = (size_t) K * N * sizeof(float);
+    gr_down_v3_kernel<1, K, true, R2V><<<dim3(LR / (WARPS * R2V) + 1, HC), THREADS, sm, st>>>(m, part, ssg);
+}
+template <int R2V>
+static bool gr_down_r2_dispatch_k(int n_tok, const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    switch (n_tok) {
+    case 1: gr_down_r2_launch<1, R2V>(m, part, ssg, st); return true;
+    case 2: gr_down_r2_launch<2, R2V>(m, part, ssg, st); return true;
+    case 3: gr_down_r2_launch<3, R2V>(m, part, ssg, st); return true;
+    case 4: gr_down_r2_launch<4, R2V>(m, part, ssg, st); return true;
+    default: return false;
+    }
+}
+static bool gr_down_pf_dispatch(int pf, int n_tok, const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    switch (pf & 3) {
+    case 1: return gr_down_pf_dispatch_k<1>(n_tok, m, part, ssg, st);
+    case 2: return gr_down_pf_dispatch_k<2>(n_tok, m, part, ssg, st);
+    case 3: return gr_down_pf_dispatch_k<3>(n_tok, m, part, ssg, st);
+    default: return false;
+    }
+}
+template <int PF>
+static bool gr_up_pf_dispatch_k(int n_tok, const GrMulti& m, const float* part, const float* ssg, cudaStream_t st) {
+#define GR_UP_PF(K) case K: gr_up_v3_kernel<1, K, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true;
+    switch (n_tok) {
+    GR_UP_PF(1) GR_UP_PF(2) GR_UP_PF(3) GR_UP_PF(4) GR_UP_PF(5) GR_UP_PF(6)
+    case 7: if (kFusedGrMaxT >= 7) { gr_up_v3_kernel<1, 7, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
+    case 8: if (kFusedGrMaxT >= 8) { gr_up_v3_kernel<1, 8, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
+    default: return false;
+    }
+#undef GR_UP_PF
+}
+static bool gr_up_pf_dispatch(int pf, int n_tok, const GrMulti& m, const float* part, const float* ssg, cudaStream_t st) {
+    switch (pf & 3) {
+    case 1: return gr_up_pf_dispatch_k<1>(n_tok, m, part, ssg, st);
+    case 2: return gr_up_pf_dispatch_k<2>(n_tok, m, part, ssg, st);
+    case 3: return gr_up_pf_dispatch_k<3>(n_tok, m, part, ssg, st);
+    default: return false;
+    }
+}
+
 // One read of at most kFusedGrMaxT tokens: the kernels below are built for that many (the instantiations, the shared
 // memory, the by-value launch argument), whatever the window is.
 static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
@@ -2474,7 +2723,11 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         strata::dispatch::kernel(strata::dispatch::kHc, 20 + split, 0, N, LR, n_tok);   // BW-MEASURE: the stream-split (v3) bf16 read; it declines Q8 weights (s_down set)
         const size_t sm = (size_t) n_tok * (N / split) * sizeof(float);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
+        const int pfm = g_v3_pf_force >= 0 ? g_v3_pf_force : v3_pf_mask();
         if (split == 2) gr_down_v3_kernel<2><<<dim3(LR / WARPS + 1, HC * 2), THREADS, sm, st>>>(m, part, ssg);
+        else if (((pfm >> 4) & 3) == 1 && gr_down_r2_dispatch_k<2>(n_tok, m, part, ssg, st)) {}
+        else if (((pfm >> 4) & 3) == 2 && gr_down_r2_dispatch_k<4>(n_tok, m, part, ssg, st)) {}
+        else if ((pfm & 3) != 0 && gr_down_pf_dispatch(pfm & 3, n_tok, m, part, ssg, st)) {}
         else if (n_tok == 1) gr_down_v3_kernel<1, 1, true><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
         else if (n_tok == 2) gr_down_v3_kernel<1, 2, true><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
         else if (n_tok == 3) gr_down_v3_kernel<1, 3, true><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
@@ -2492,6 +2745,7 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         else gr_down_v3_kernel<1, kFusedGrMaxT, false><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
         if (split == 2) gr_up_v3_kernel<2><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
+        else if (((pfm >> 2) & 3) != 0 && gr_up_pf_dispatch((pfm >> 2) & 3, n_tok, m, part, ssg, st)) {}
         else if (n_tok == 1) gr_up_v3_kernel<1, 1, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         else if (n_tok == 2) gr_up_v3_kernel<1, 2, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         else if (n_tok == 3) gr_up_v3_kernel<1, 3, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
@@ -2549,6 +2803,31 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
 // crosses tokens), so the slices are bitwise the one wide read; the cost is the hyper-connection weights read once per
 // slice.  The STRATA_QFUSE counters belong to token 0: each slice's first token carries them (the kernels zero them
 // again for the next launch); the profile stamps are the first slice's.
+void fused_gr_v3_pf(int mask) { g_v3_pf_force = mask; }
+// The bench only: registers, spills, shared memory and resident blocks a multiprocessor of the v3 kernels (T = 4) on the current card, one line each.
+void fused_gr_v3_print_resources() {
+    auto one = [](const char* name, const void* f, size_t dyn) {
+        cudaFuncAttributes a;
+        int blocks = 0;
+        if (cudaFuncGetAttributes(&a, f) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, f, THREADS, dyn) == cudaSuccess)
+            std::printf("gr_v3 %-22s regs %3d  local %4zu B  static smem %5zu B  dyn smem %6zu B  blocks/SM %d\n", name, a.numRegs, a.localSizeBytes,
+                        a.sharedSizeBytes, dyn, blocks);
+        else {
+            cudaGetLastError();
+            std::printf("gr_v3 %-22s (no attributes)\n", name);
+        }
+    };
+    const size_t sm4 = (size_t) 4 * N * sizeof(float);
+    one("down T4 plain", (const void*) gr_down_v3_kernel<1, 4, true, 1, 0>, sm4);
+    one("down T4 pf1 (batched)", (const void*) gr_down_v3_kernel<1, 4, true, 1, 1>, sm4);
+    one("down T4 pf2 (weights)", (const void*) gr_down_v3_kernel<1, 4, true, 1, 2>, sm4);
+    one("down T4 pf3", (const void*) gr_down_v3_kernel<1, 4, true, 1, 3>, sm4);
+    one("up T4 plain", (const void*) gr_up_v3_kernel<1, 4, true, 0>, 0);
+    one("up T4 pf1 (batched)", (const void*) gr_up_v3_kernel<1, 4, true, 1>, 0);
+    one("up T4 pf2 (weights)", (const void*) gr_up_v3_kernel<1, 4, true, 2>, 0);
+    one("up T4 pf3", (const void*) gr_up_v3_kernel<1, 4, true, 3>, 0);
+}
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {
     if (n_tok <= kFusedGrMaxT) return fused_gr_read_multi_slice(a, n_tok, xn_scratch, stream, stamp_buf, stamp_i0);

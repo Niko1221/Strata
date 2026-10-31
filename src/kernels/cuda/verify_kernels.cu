@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -98,7 +99,7 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
-                                                          float* __restrict__ beta, int n, int h_v, int T) {
+                                                          float* __restrict__ beta, int n, int h_v, int T, int fast = 0) {
     const int row = bx * 2 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (row >= 2 * h_v) return;
     const bool is_beta = row >= h_v;
@@ -107,6 +108,33 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
     float acc[MAX_T];
 #pragma unroll
     for (int t = 0; t < MAX_T; ++t) acc[t] = 0.0f;
+    if (fast != 0 && n == 2560) {
+        // BW-DENSE (STRATA_SMALL_UNR bit 1): the same ten passes (j = lane + 32 jj, all < n / 8 = 320) with a constant trip count, so the
+        // compiler can issue the weight and activation loads of several passes before the first FMA chain; the same FMAs in the same
+        // order (pass ascending, token inside): bitwise the loop below.
+#pragma unroll
+        for (int jj = 0; jj < 10; ++jj) {
+            const int j = lane + 32 * jj;
+            const uint4 wv = __ldg(w4 + j);
+            const float w0 = __uint_as_float(wv.x << 16), w1 = __uint_as_float(wv.x & 0xffff0000u);
+            const float w2 = __uint_as_float(wv.y << 16), w3 = __uint_as_float(wv.y & 0xffff0000u);
+            const float w4f = __uint_as_float(wv.z << 16), w5 = __uint_as_float(wv.z & 0xffff0000u);
+            const float w6 = __uint_as_float(wv.w << 16), w7 = __uint_as_float(wv.w & 0xffff0000u);
+#pragma unroll
+            for (int t = 0; t < MAX_T; ++t) {
+                if (!EXACT_T && t >= T) break;
+                const float* xt = x + (size_t) t * n;
+                const float4 xa = __ldg(reinterpret_cast<const float4*>(xt + j * 8));
+                const float4 xb = __ldg(reinterpret_cast<const float4*>(xt + j * 8 + 4));
+                float a = acc[t];
+                a = fmaf(w0, xa.x, a); a = fmaf(w1, xa.y, a);
+                a = fmaf(w2, xa.z, a); a = fmaf(w3, xa.w, a);
+                a = fmaf(w4f, xb.x, a); a = fmaf(w5, xb.y, a);
+                a = fmaf(w6, xb.z, a); a = fmaf(w7, xb.w, a);
+                acc[t] = a;
+            }
+        }
+    } else
     for (int j = lane; j < n / 8; j += 32) {
         const uint4 wv = __ldg(w4 + j);
         const float w0 = __uint_as_float(wv.x << 16), w1 = __uint_as_float(wv.x & 0xffff0000u);
@@ -149,8 +177,8 @@ __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restric
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
-                                                          float* __restrict__ beta, int n, int h_v, int T) {
-    gdn_ab_body<MAX_T, EXACT_T>(blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T);
+                                                          float* __restrict__ beta, int n, int h_v, int T, int fast) {
+    gdn_ab_body<MAX_T, EXACT_T>(blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T, fast);
 }
 
 // 143-amdk (STRATA_FUSE_CONVAB): the conv + L2 norm and the a/b projections in ONE launch.  They read different inputs (the qkv
@@ -1115,6 +1143,26 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
     return true;
 }
 
+// BW-DENSE STRATA_SMALL_UNR bit 1: see gdn_ab_body (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
+static int gdn_ab_fast() {
+    static int per_dev[64];   // 0 unknown, else bit + 1
+    const char* e = std::getenv("STRATA_SMALL_UNR");
+    if (e != nullptr) return (std::atoi(e) >> 1) & 1;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? ((strata::small_unr_default(ma, mi) >> 1) & 1) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
+}
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
     if (n_embd % 8 != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {
@@ -1124,14 +1172,14 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
     const unsigned blocks = (unsigned) ((2 * h_v + 1) / 2);
     cudaStream_t st = (cudaStream_t) stream;
     switch (n_tok) {
-        case 1: gdn_ab_multi_kernel<1, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 2: gdn_ab_multi_kernel<2, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 3: gdn_ab_multi_kernel<3, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 7: case 8: gdn_ab_multi_kernel<kVerifyNarrowT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 1: gdn_ab_multi_kernel<1, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 2: gdn_ab_multi_kernel<2, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 3: gdn_ab_multi_kernel<3, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 7: case 8: gdn_ab_multi_kernel<kVerifyNarrowT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
     }
     check("gdn_ab_multi");
 }
