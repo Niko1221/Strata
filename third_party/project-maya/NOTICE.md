@@ -24,3 +24,6 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
   `serve/test_ds4_restore_points.py`): Project Maya #639 (needmorevram) and v1.1.37 / v1.1.39 (mw00).
 - A3, shared start across conversations (`prefix_keep` / `prefix_find` / `prefix_take` in `ds4_main.cpp`): Project Maya #607
   (mw00, b2d4c30, v1.1.37).
+- A4, restore points near a prompt's end kept in one read (`Model::feed_marks`, `marks_inside`, `feed(..., after)`, the
+  layers' snapshot sets `snap_win[]`/`snap_kv[]`/`snap_sc[]`): Project Maya #691 (needmorevram, c7d08c5, v1.1.40). The
+  "a chunk streams only the experts it picks" and EXL3 lend parts of #691 are not ported.

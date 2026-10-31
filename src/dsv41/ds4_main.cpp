@@ -1001,9 +1001,27 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             size_t n = std::min<size_t>((size_t) m.feed_unit(), total - done);
             if (next_cut < cuts.size() && (size_t) cuts[next_cut].pos < done + n) n = (size_t) cuts[next_cut].pos - done;
+            // (the rest of the prompt in one read that keeps the restore points left on the way, where that costs at most
+            //  a chunk's rows more than stopping at each - a run of chunks has a fixed cost of its own, the CPU lane's
+            //  experts streamed for it: a point near the prompt's tail read alone cost as much as the rest; not past a
+            //  shared start a read from token 0 reaches first: the read stops there and prefix_keep keeps its state)
+            std::vector<std::pair<int64_t, bool>> inner;
+            const size_t rest = total - done;
+            const bool start_kept = prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
+                                    cuts[0].shared && (size_t) cuts[0].pos >= prefix_min;
+            if (next_cut < cuts.size() && !last_window && !start_kept && rest <= (size_t) m.feed_unit()) {
+                std::vector<int64_t> rel;
+                for (size_t j = next_cut; j < cuts.size(); ++j) rel.push_back(cuts[j].pos - (int64_t) done);
+                if (m.marks_inside((int) rest, rel))
+                    for (size_t j = next_cut; j < cuts.size(); ++j) inner.push_back({cuts[j].pos, cuts[j].shared});
+            }
+            if (!inner.empty()) n = rest;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
             const bool fin = done + n == total;
-            if (fin && last_window) {
+            if (!inner.empty()) {
+                ok = m.feed_marks(r.ids.data() + done, (int) n, 1, 1, inner, err);
+                if (ok) next_cut = cuts.size();   // (the points the read went past: kept by it)
+            } else if (fin && last_window) {
                 ok = (n < 2 || m.feed(r.ids.data() + done, (int) n - 1, 0, err));
                 if (ok) m.checkpoint(1);
                 ok = ok && m.feed(r.ids.data() + done + n - 1, 1, 1, err);
