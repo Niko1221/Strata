@@ -675,6 +675,21 @@ void test_host_memory() {
     require(!probe("0::/box\n"), "v2 malformed limit accepted");
     fs::remove(t.path / "fs/box/memory.max");
     require(!probe("0::/box\n"), "v2 group without memory.max accepted");
+    put("fs/box/cgroup.controllers", "cpu memory pids\n");
+    require(!probe("0::/box\n"), "v2 group with the memory controller but no memory.max accepted");
+    // an elogind session on a sysvinit host: the parent leaves the memory controller off, so the group has no
+    // memory.max and an empty cgroup.controllers - no limit at that level, MemAvailable alone
+    put("fs/box/cgroup.controllers", "");
+    require(probe("0::/box\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull,
+            "v2 group without the memory controller: MemAvailable alone");
+    // the same session under a limited parent: the parent's limit still applies
+    put("fs/user/cgroup.controllers", "memory\n");
+    put("fs/user/memory.max", std::to_string(48 * GiB) + "\n");
+    put("fs/user/memory.current", std::to_string(16 * GiB) + "\n");
+    put("fs/user/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
+    put("fs/user/1/cgroup.controllers", "");
+    require(probe("0::/user/1\n") && m.available == 36 * GiB - 48 * GiB / 64 && m.cgroup_limit == 48 * GiB,
+            "v2 group without the memory controller under a limited parent");
     // v1: the memory controller's group (a hybrid line list), a 32 GiB limit with 10 GiB used
     put("fs/memory/docker/abc/memory.limit_in_bytes", std::to_string(32 * GiB) + "\n");
     put("fs/memory/docker/abc/memory.usage_in_bytes", std::to_string(10 * GiB) + "\n");
