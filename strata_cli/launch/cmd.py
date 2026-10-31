@@ -355,6 +355,14 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         else:
             notices.append(S.Notice("error", "No model fits this computer by Strata's rules, and none was chosen.",
                                     "Name one with --model (strata launch --help lists them); a bigger one will run slowly."))
+    try:
+        from strata_control import engine_component as _ec
+        _b, _how = _ec.detect_backend()
+        if _how == "saved choice":
+            notices.append(S.Notice("warn", f"The engine for {_ec.MAKE_NAMES.get(_b, _b)} cards is used (your saved choice). "
+                                            "`strata launch --backend auto` goes back to the PC's own choice.", ""))
+    except Exception:                                    # noqa: BLE001
+        pass
     broken = _broken_nvidia_note(comp)
     if broken:
         notices.append(S.Notice("warn", broken, ""))

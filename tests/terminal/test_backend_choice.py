@@ -79,5 +79,17 @@ class BrokenNvidia(unittest.TestCase):
             self.assertIsNone(cmd._broken_nvidia_note(comp), "the person already chose")
 
 
+class SavedChoiceLine(unittest.TestCase):
+    def test_a_launch_after_a_saved_choice_says_so(self):
+        from strata_cli.launch import cmd, settings as S
+        from tests.terminal.launch_support import HW_12, Home, catalog
+        with Home(), mock.patch.object(ec, "detect_backend", lambda *a, **k: ("sycl", "saved choice")):
+            _s, notes = cmd.apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), catalog(HW_12))
+            hit = [n for n in notes if "your saved choice" in n.text]
+            self.assertTrue(hit, [n.text for n in notes])
+            self.assertIn("Intel cards", hit[0].text)
+            self.assertIn("--backend auto", hit[0].text)
+
+
 if __name__ == "__main__":
     unittest.main()

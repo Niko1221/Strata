@@ -2029,6 +2029,9 @@ class Runner:
             # a ready-made pack (NVFP4) is taken from setup's own models folder, not from where the person's files are (round 8, N2: the plan
             # said "nothing to download" and setup then asked for 129 GB): count what setup will fetch
             parts = [p for p in parts if p["kind"] != "weights"] + [{"kind": "weights", "label": "the ready-made pack", "gb": gap["gb"]}]
+        intel = self.intel_chosen()
+        if intel:                                            # the Intel route builds the pack from the files and fetches no draft layer, picture reader or drafter
+            parts = [p for p in parts if p["kind"] not in ("mtp", "mmproj", "dflash2")]
         gb = round(sum(p["gb"] for p in parts), 1)
         engine, here = True, []
         if self.multi_file():                                # DeepSeek does not use the Strata engine: nothing about it in the plan (its own package is in the placement)
@@ -2069,6 +2072,9 @@ class Runner:
                      "first. `strata components engine` says why.")
         elif not engine:
             text += " The engine for your graphics card is downloaded first (from the update source; its size is shown when it starts)."
+        if intel:
+            text += (" For the Intel card Strata builds the model's pack from your files itself (once, a few minutes); the first time it fetches "
+                     "a small helper (llama.cpp's gguf-py) from GitHub. No draft layer or picture reader is used on Intel cards yet.")
         return {"gb": gb, "parts": parts, "engine_missing": not engine and not here, "engine_usable": engine, "own_files": st.own_files, "text": text}
 
     def ready_pack_gap(self) -> dict | None:
