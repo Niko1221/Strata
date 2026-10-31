@@ -250,3 +250,48 @@ Q8_0 at the card's bandwidth and the rest waits for the CPU pool, so only the sm
 KL against the 512 chunk on six real 1.5K to 3.2K-token documents (48 teacher-forced rows each): chunk 1024 4.0e-3,
 2048 4.2e-3, 4096 3.6e-3, top-1 agreement 44 to 48 of 48 rows. Greedy 64 tokens after those documents: the default chunk
 gives the base engine's text for 2 of 6, `--prefill 512` for 6 of 6.
+
+**Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
+changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese
+prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second
+stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. Chunked (WY) GDN and the PCIe-assisted hybrid decode
+were not attempted.
+
+## The K/V cache: FP16 by default, int8 with `--kv-q8`
+
+The cache was FP32. For this family's geometry (41 blocks, full attention every 4th, so 11 attention layers plus the
+MTP block; 2 KV heads of 256 dims) that is 12 x 2 x 2 x 262144 x 256 x 4 B = **12.0 GiB at 262144 cells** - the
+whole of a 16 GiB card before a single expert, so the context had to stop at 192K.
+
+FP32 was also the wrong precision here. The prompt path has always staged the cache through `__half` - `k_kv_f16`
+compacts `[kvh][ctx][HD]` into the `[kvh][P][HD]` halves that the Q K^T and P V GEMMs read - so **a prompt attended
+over FP16 values while the split-K decode of the very next token read FP32**. The cache format only ever gave the
+decode a higher precision than the prefill sharing its sequence.
+
+**FP16 is now the default** (6.0 GiB at 262144), the default the main engine's `kKvF16` already had, and
+**`--kv-q8`** stores int8 codes with one FP16 scale per 64 dims - the main engine's `kv_q8.hpp` scheme
+(`KV_Q8_GROUP`), 3.1 GiB at 262144. The VRAM it hands back goes to the expert cache, so here q8 is both the smaller
+cache and the faster one, which is not obvious and is the reason to prefer it over FP16 on a small card.
+
+Radeon VII (gfx906, 16 GiB), ROCm 7.1, `--max-context 262144 --chunk 4096 --expert-vram 8`, `tg32` medians:
+
+| cache | VRAM free | experts in VRAM | tg32 |
+| --- | ---: | ---: | ---: |
+| FP32 (before) | does not allocate | - | - |
+| FP16 (default) | 4.46 GiB | 49 / 256 | 41.4 tok/s |
+| `--kv-q8` | 7.12 GiB | 91 / 256 | 49.1 tok/s |
+
+(The two cache sizes move `tg32` by about 18%, larger than the 12% the expert counts suggest: the q8 read also
+halves the bytes the split-K decode pulls across PCIe. A second run of the pair gave 45.0 and 52.6, so read the
+gap as "+18 +/- 4" rather than a tight number.)
+
+Parity against an FP32 build of the same tree: 4 prompts of 4,000 tokens, greedy 96, `--mtp 0`, and **both
+binaries checked to place the same 81/256 experts** so the comparison is the cache format and nothing else. FP16
+383 / 384 generated tokens identical, `--kv-q8` 384 / 384. The single FP16 difference is an argmax near-tie at
+token 43 of the first prompt; no earlier token moves.
+
+The three kernels that touch the cache (`k_attn_prep`, `k_attn_part`, `k_kv_f16`) are templated on the format, so
+the FP16 path carries no branch; the session-to-slot copy and the batch rows' per-session pointer tables carry the
+scales alongside the codes. `k_attn_prep` drops its `if (i >= HD) return;` early return - the q8 group max needs a
+`__syncthreads()` every thread has to reach - and guards the stores with `i < HD` instead.
+
