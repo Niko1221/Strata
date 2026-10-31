@@ -522,6 +522,117 @@ class Replicas(unittest.TestCase):
         self.assertTrue(batch_slots_on(SimpleNamespace(batch=4)))
 
 
+class Completions(unittest.TestCase):
+    """Legacy /v1/completions with logprobs: vLLM's `logprobs` object, the shape a decision client
+    (a typed choice read from one next-token distribution) already reads from `vllm serve`."""
+
+    def setUp(self):
+        self.tok = Tokenizer()
+        self.engine = LpEngine(self.tok, "Six.")
+        self.svc = Service(self.engine, self.tok, TEMPLATE)
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def post(self, body):
+        body = {"model": "m", "prompt": "Two times three is", "max_tokens": 8, **body}
+        req = urllib.request.Request(self.base + "/v1/completions", json.dumps(body).encode(),
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+
+    def refused(self, body):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post(body)
+        self.assertEqual(cm.exception.code, 400)
+        return cm.exception.read().decode()
+
+    def test_the_legacy_shape(self):
+        choice = self.post({"logprobs": 4})["choices"][0]
+        lp = choice["logprobs"]
+        self.assertEqual(choice["text"], "Six.")
+        # every generated token, the stop token too: a one-token read whose top token is the stop still has its row
+        self.assertEqual(lp["tokens"], ["S", "i", "x", ".", "<|im_end|>"])
+        self.assertEqual(lp["token_logprobs"], [-0.01, -0.02, -0.03, -0.04, -0.05])
+        self.assertEqual(lp["top_logprobs"][0], {"A": -0.5, "H": -1.25, "X": -3.0, "[": -4.2})
+        self.assertEqual(lp["text_offset"], [0, 1, 2, 3, 4])
+        self.assertEqual(self.engine.sampling.get("logprobs"), 4)          # logprobs=4 reached the engine
+
+    def test_the_chat_form_of_the_field(self):
+        lp = self.post({"logprobs": True, "top_logprobs": 2})["choices"][0]["logprobs"]
+        self.assertEqual("".join(lp["tokens"][:-1]), "Six.")
+
+    def test_echo_offsets_start_after_the_prompt(self):
+        lp = self.post({"logprobs": 1, "echo": True})["choices"][0]["logprobs"]
+        self.assertEqual(lp["text_offset"][0], len("Two times three is"))
+
+    def test_allowed_token_ids_are_full_vocabulary_values(self):
+        # not renormalised (unlike chat): a caller reading a choice can tell how much mass its labels hold
+        self.engine = self.svc.engine = NamedEngine(self.tok, "A")
+        lp = self.post({"logprobs": 1, "max_tokens": 1, "allowed_token_ids": [65, 66, 67]})["choices"][0]["logprobs"]
+        self.assertEqual(lp["tokens"], ["A"])
+        self.assertEqual(lp["top_logprobs"][0], {"A": -0.01, "B": -0.7, "C": -0.71})   # as the engine printed them
+
+    def test_tokens_as_token_ids(self):
+        lp = self.post({"logprobs": 2, "max_tokens": 1, "return_tokens_as_token_ids": True})["choices"][0]["logprobs"]
+        self.assertEqual(lp["tokens"], ["token_id:83"])
+        self.assertEqual(lp["top_logprobs"][0], {"token_id:65": -0.5, "token_id:72": -1.25,
+                                                 "token_id:88": -3.0, "token_id:91": -4.2})
+
+    def test_a_tokenized_prompt(self):
+        out = self.post({"prompt": list(b"Two times three is"), "logprobs": 1, "echo": True})
+        self.assertTrue(out["choices"][0]["text"].startswith("Two times three is"))
+        self.tok.tokens = [str(i) for i in range(300)]
+        self.assertIn("vocabulary", self.refused({"prompt": [300]}))
+        self.refused({"prompt": [[1, 2], [3]]})                           # one prompt per request
+
+    def test_not_asked_no_logprobs(self):
+        self.assertIsNone(self.post({})["choices"][0]["logprobs"])
+        self.assertIsNone(self.post({"logprobs": False})["choices"][0]["logprobs"])   # as chat: not asked
+
+    def test_a_request_reads_only_its_own_lines(self):
+        # as Api's: A's last "." is held by its stop string and sent after A has left the queue, when B is
+        # already generating on the same engine; each reply's tokens are its own
+        first_out = threading.Event()
+        engine = NextEngine(self.tok, ["Six.", "Bonjour!"], first_out)
+        svc = Service(engine, self.tok, TEMPLATE)
+        svc.fifo = HandOver(engine)
+        httpd = serve(svc, port=0)
+        got = {}
+        try:
+            self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            a = threading.Thread(target=lambda: got.update(a=self.post({"logprobs": 1, "stop": [".!"]})))
+            b = threading.Thread(target=lambda: got.update(b=self.post({"logprobs": 1})))
+            a.start()
+            self.assertTrue(engine.first_in.wait(10))
+            b.start()
+            a.join(30)
+            first_out.set()
+            b.join(30)
+        finally:
+            first_out.set()
+            httpd.shutdown()
+            httpd.server_close()
+        for key, text in (("a", "Six."), ("b", "Bonjour!")):
+            choice = got[key]["choices"][0]
+            self.assertEqual(choice["text"], text)
+            self.assertEqual("".join(t for t in choice["logprobs"]["tokens"] if t != "<|im_end|>"), text, key)
+
+    def test_refusals(self):
+        self.assertIn("stream", self.refused({"logprobs": 1, "stream": True}))
+        self.refused({"logprobs": "yes"})
+        self.engine.batch = 2                                             # batch slots: only a one-token read
+        self.assertIn("--parallel", self.refused({"logprobs": 1}))
+
+    def test_no_length_cap(self):
+        # as on chat: max_tokens (or the rest of the context, 0) is the reply's only bound
+        lp = self.post({"logprobs": 1, "max_tokens": 0})["choices"][0]["logprobs"]
+        self.assertEqual("".join(lp["tokens"][:-1]), "Six.")
+
+
 class Span(unittest.TestCase):
     def entries(self, *toks):
         return [{"token": t} for t in toks]
