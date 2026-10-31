@@ -6,7 +6,7 @@
 // shared expert), a window's grouped experts (bit for bit the token path's), the prompt path's expert sets and the CPU
 // lane's rows; the PCIe lane's streamed experts (bit for bit the VRAM ones'); and the KV caches' packed rows
 // (ds4_kernels.cu) against the BF16 rows bit for bit.  Needs a GPU, no model.
-// ds4_gguf_test [n_embd n_ff] | --kv (the caches alone) | --lane (the PCIe lane alone)
+// ds4_gguf_test [n_embd n_ff] | --kv (the caches alone) | --lane (the PCIe lane alone) | --rows (--parallel's rows)
 #include "../../src/dsv41/ds4_gguf.cuh"
 #include "../../src/dsv41/ds4_gguf_cpu.hpp"
 #include "../../src/dsv41/ds4_iq.cuh"
@@ -667,6 +667,71 @@ void test_mv_q(int type, cudaStream_t s) {
         std::snprintf(what, sizeof(what), "mv %s, %d activations", tn(type), nc);
         expect(what, y.data(), want.data(), want.size(), 2e-5);
         cudaFree(dx), cudaFree(db), cudaFree(dy), cudaFree(dw);
+    }
+}
+
+// --parallel's multi step (maya-ds4 Model::step_multi): the rows of several conversations through one mv - each
+// activation's outputs bit for bit its own mv alone, whatever its place among the others (every dense format, every
+// low-bit one; the decode's activation counts)
+void test_mv_rows(cudaStream_t s) {
+    std::vector<int> fmts = {-gg::kFmtBF16 - 1, -gg::kFmtMXFP4 - 1, -gg::kFmtQ8_0 - 1};   // (negative: a dense format)
+    for (int t : {gg::iq::kIQ2_XXS, gg::iq::kIQ2_S, gg::iq::kIQ3_XXS, gg::iq::kIQ3_S, gg::iq::kIQ4_XS, gg::iq::kQ2_K,
+                  gg::iq::kQ3_K, gg::iq::kQ4_K})
+        fmts.push_back(t);
+    for (int f : fmts) {
+        const bool lowbit = f >= 0;
+        const int fmt = lowbit ? gg::kFmtGG : -f - 1;
+        const int k = 1024, n = 264;
+        std::vector<uint16_t> wb;
+        std::vector<uint8_t> wm;
+        if (fmt == gg::kFmtBF16) {
+            wb.resize((size_t) n * k);
+            for (auto& v : wb) v = f2bf(frand(0.05f));
+        } else if (lowbit) wm = q_rand(f, n, k);
+        else wm = fmt == gg::kFmtMXFP4 ? mx_rand(n, k) : q8_rand(n, k);
+        void* dw = fmt == gg::kFmtBF16 ? (void*) dev(wb) : (void*) dev(wm);
+        x3::Mat m;
+        m.fmt = fmt;
+        if (lowbit) m.K = f;
+        m.raw = dw;
+        m.k = k;
+        m.n = n;
+        bool same = true;
+        for (int nc : {2, 4, 8, 16}) {
+            const size_t xcs = (size_t) k;
+            std::vector<float> x(xcs * nc);
+            for (auto& v : x) v = frand();
+            float* dx = dev(x);
+            float* dy = dev(std::vector<float>((size_t) n * nc, 0.0f));
+            float* dy1 = dev(std::vector<float>((size_t) n, 0.0f));
+            x3::MvJob j;
+            j.m = &m;
+            j.xf = dx;
+            j.y = dy;
+            j.ncol = nc;
+            j.xf_cs = xcs;
+            j.y_cs = n;
+            if (!gg::mv(&j, 1, s)) ++g_fail;
+            CU(cudaStreamSynchronize(s));
+            const std::vector<float> y = host(dy, (size_t) n * nc);
+            for (int c = 0; c < nc; ++c) {
+                x3::MvJob j1 = j;
+                j1.xf = dx + (size_t) c * xcs;
+                j1.y = dy1;
+                j1.ncol = 1;
+                if (!gg::mv(&j1, 1, s)) ++g_fail;
+                CU(cudaStreamSynchronize(s));
+                const std::vector<float> y1 = host(dy1, (size_t) n);
+                same = same && std::memcmp(y1.data(), y.data() + (size_t) c * n, (size_t) n * 4) == 0;
+            }
+            cudaFree(dx), cudaFree(dy), cudaFree(dy1);
+        }
+        if (!same) ++g_fail;
+        char what[96];
+        std::snprintf(what, sizeof(what), "mv rows %s: each of 2 / 4 / 8 / 16 alone, bit for bit",
+                      lowbit ? tn(f) : fmt == gg::kFmtBF16 ? "BF16" : fmt == gg::kFmtMXFP4 ? "MXFP4" : "Q8_0");
+        std::printf("%-60s %s\n", what, same ? "ok" : "FAIL");
+        cudaFree(dw);
     }
 }
 
@@ -1820,6 +1885,11 @@ int main(int argc, char** argv) {
         std::printf("%s (%d failed)\n", g_fail ? "FAILED" : "ALL OK", g_fail);
         return g_fail ? 1 : 0;
     }
+    if (argc >= 2 && std::strcmp(argv[1], "--rows") == 0) {   // --parallel's multi step: each row's mv alone
+        test_mv_rows(s);
+        std::printf("%s (%d failed)\n", g_fail ? "FAILED" : "ALL OK", g_fail);
+        return g_fail ? 1 : 0;
+    }
     if (argc >= 2 && std::strcmp(argv[1], "--kv") == 0) {   // the caches' packing alone
         test_kv_pack(s);
         std::printf("%s (%d failed)\n", g_fail ? "FAILED" : "ALL OK", g_fail);
@@ -1832,6 +1902,7 @@ int main(int argc, char** argv) {
     for (int t : {gg::iq::kIQ2_XXS, gg::iq::kIQ2_S, gg::iq::kIQ3_XXS, gg::iq::kIQ3_S, gg::iq::kIQ4_XS, gg::iq::kQ2_K,
                   gg::iq::kQ3_K, gg::iq::kQ4_K})
         test_mv_q(t, s);
+    test_mv_rows(s);
     for (const auto& pr : kQPairs) test_experts_q(512, 256, pr.first, pr.second, s);
     test_lanes(s);
     if (argc >= 3) {
