@@ -38,16 +38,25 @@ def pointer(*parts) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------ redaction
+def credential_value(value) -> str | None:
+    """A credential as the operator gave it: None when empty or "none" (serve's own "no key" value, any case), else the text."""
+    text = str(value or "").strip()
+    return None if not text or text.lower() == "none" else text
+
+
 def redactor(key: str = ""):
     """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced."""
     subs: list[tuple[re.Pattern, str]] = []
+    key = credential_value(key) or ""
 
-    def add(value, label, word=False):
+    def add(value, label, word=False, exact=False):
+        # exact: the key is matched as written and as a whole word; a case-insensitive substring match turned the
+        # key "none" into "<key>" inside "nonempty" and would hit a short hex key inside any hash (#4483)
         if value and len(str(value)) >= 4:
             text = str(value)
             for form in sorted({text, text.replace("\\", "/"), text.replace("/", "\\")}, key=len, reverse=True):
                 pattern = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, re.I), label))
+                subs.append((re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, 0 if exact else re.I), label))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -58,7 +67,7 @@ def redactor(key: str = ""):
         pass
     add(socket.gethostname(), "<host>", True)
     add(platform.node(), "<host>", True)
-    add(key, "<key>")
+    add(key, "<key>", True, True)
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     private_ip = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])"

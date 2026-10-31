@@ -1252,7 +1252,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         return _error("--load-timeout must be 1..86400 seconds", 2, machine)
     plan = None
     saved = None
-    key = os.environ.get(a.credential_env)
+    key = bench_facts.credential_value(os.environ.get(a.credential_env))   # "none" is no key, as in a run config (#4483)
     if a.profile:
         _, saved, _, cfg = _source(a.profile)
         plan, _ = _launch_plan(a.profile)
