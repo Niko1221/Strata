@@ -11959,6 +11959,10 @@ int main(int argc, char** argv) {
                     if (pl) {   // the copies in at each card's next gap: after this step, so fenced (see above)
                         a_res_dirty = true;
                         for (const ASwap& w : aswaps) a_in_due[(size_t) w.home] = 1;
+                        // the whole round is one batch: when the pipelined loop drains before step 3, the next tick
+                        // takes step 3 serially and marks [a_lo, a_hi), which an earlier round left otherwise
+                        a_lo = 0;
+                        a_hi = a_bi = aswaps.size();
                         ajob->post(a_stage_in);
                     } else {
                         res_upload();
