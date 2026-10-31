@@ -194,7 +194,8 @@ public:
     /// blocks' included), the compressors' partial groups and each KV source's compressed KV and index keys up to it,
     /// the pieces the state a prompt continues is made of.  0 and err: nothing was set aside (it holds pictures, there
     /// is no conversation, or the conversation is already set aside - unchanged since).
-    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err);
+    /// `at` >= 0: the conversation as it stood at its restore point `at` (a mark kept by mark()), though it was read on past it.
+    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1);
     /// `data` (a slot's bytes) back into the model: the state at the slot's position n_pos, as slot_save took it -
     /// what a prompt that continues the slot's tokens reads on from (the caller checked the tokens are a prefix).
     bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err);
