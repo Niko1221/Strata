@@ -41,6 +41,10 @@ EDITABLE = [
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+    ("vram_elastic", "bool",
+     "The expert cache in segments, so POST /v1/vram can give VRAM to another program between requests (from the next start)"),
+    ("vram_segment_mib", "int>=0",
+     "Segment size in MiB for \"vram_elastic\" (the engine's default is 512)"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 

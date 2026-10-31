@@ -340,7 +340,7 @@ By default the model stays loaded until you close Strata. Three server options, 
 | Option | Config key | What it does |
 | --- | --- | --- |
 | `--idle-unload 600` | `"idle_unload_s": 600` | Unload the model after 600 s without requests. The next request loads it again. |
-| `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | Load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back). Otherwise answer **503** "the GPU is in use by another program". With several GPUs it checks the first one. |
+| `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | Load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back). Otherwise answer **503** "the GPU is in use by another program". With several GPUs it reads every card the run will use and names the busy ones. |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | A command run before the model is loaded again, for example one that unloads another server's model. |
 | | `"before_load_timeout_s": 120` | How long that command may run. When it fails or times out, the free VRAM decides: with `min_free_vram_mib` set and not enough free, the request gets **503** with `Retry-After`; otherwise the model loads with a warning. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads. |
 
@@ -361,12 +361,26 @@ API without the engine or the vision encoder. The first generation request or `P
 `application/json` and no foreign browser Origin, and return **409** while a request is active or queued). `/api/health`
 aliases `/health`, and `/v1/status` exposes `loaded` and `auto_load`.
 
-**Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
+**Giving part of the VRAM back while it keeps serving** (opt-in, NVIDIA, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
 `"vram_elastic": true` (engine flag `--vram-elastic`) the expert cache is allocated in 512 MiB segments
 (`"vram_segment_mib"`). `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much VRAM is free;
 `{"reserve_mib": null}` grows it back toward its full size, and `{"reserve_mib": 0}` takes all of it back. The experts of the
-segments given back are computed on the CPU, so answers keep coming, slower. Nothing resizes on its own. Not with a layer
-split, the helper caches, `--peer-device` or the resident low-RAM mode.
+segments given back are computed on the CPU, so answers keep coming, slower. Nothing resizes on its own. Not with
+the helper caches, `--peer-device` or the resident low-RAM mode.
+
+**One card at a time on a layer split (0.1.39).** A split runs with one expert cache per card, so the reserve is per
+card: `POST /v1/vram {"reserve_mib": 16000, "gpu": 1}` shrinks only the cache of GPU 1 - the engine's numbering,
+0 = the main card, the same numbers as `--split-device`, so with `"gpu": [0, 1]` its 1 is the card `nvidia-smi -i 1`
+shows - and leaving `"gpu"` out moves every card of the run. The answer carries one entry per card in `"gpus"` plus
+the totals over the cards it moved; the engine's own stdin line is `VRAM <reserve_mib|- [device]`, the dash standing
+for the reserve the engine started each card with - on a split that is `--vram-reserve-later-mib` for the later
+cards - so a bare null restores every card to its own; a number in that slot IS the reserve, so `VRAM 1` is a 1 MiB
+reserve on every card, not device 1. Only that card's
+layers lose their cached experts, so its decodes fall to the CPU for them and the other cards are untouched. The
+cache keeps 128 slots plus what the smallest prompt chunk needs, and the chunk drops to the largest one every card
+can still lend (`--prefill auto`'s share cap applies to each card as it is now). A card's dense weights, session and
+KV - and, on the last card, the draft layer and head - stay put: the split itself never moves and nothing is
+reloaded. Not measured on a split yet; the numbers above are the one-card case.
 
 **Keep what the expert cache learned across restarts** (opt-in). `"expert_profile_save": "expert-profile-learned.bin"` saves
 the experts in VRAM, then the counted routing, then the shipped order, on a clean exit and every 10 minutes between
