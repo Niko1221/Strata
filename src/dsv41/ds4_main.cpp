@@ -969,8 +969,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         double t0 = 0;
         size_t from = 0;   // the tokens the state already held
     };
+    // (between: --parallel with STRATA_DS4_PIECE=<tokens>, the prompt read a piece at a time: it runs between two pieces - the other
+    //  conversations' decode steps go on while a long prompt is read, as Project Maya #587's scheduler does; null: one read as before)
+    const long long piece_tokens = std::getenv("STRATA_DS4_PIECE") != nullptr ? std::atoll(std::getenv("STRATA_DS4_PIECE")) : 0;
     const auto prompt_in = [&](Req& r, bool geni, const std::string& tag, const std::function<bool()>& stop_now,
-                               Prompt& P) -> bool {
+                               Prompt& P, const std::function<void()>& between = nullptr) -> bool {
         const double t0 = now_ms();
         P.t0 = t0;
         std::vector<Pic> pics;
@@ -1135,12 +1138,15 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         m.set_cancel(stop_now);
         if (!cuts.empty() && cuts[0].pos == (int64_t) from) m.mark(cuts[next_cut++].shared);   // (the state as it is)
         bool stopped = false;
+        const bool pieces = between != nullptr && piece_tokens > 0;
         while (ok && done < total) {
             if (stop_now()) {
                 stopped = true;
                 break;
             }
+            if (pieces && done > from) between();   // (the others' steps; this conversation bound again after)
             size_t n = std::min<size_t>((size_t) m.feed_unit(), total - done);
+            if (pieces) n = std::min<size_t>(n, (size_t) piece_tokens);
             if (next_cut < cuts.size() && (size_t) cuts[next_cut].pos < done + n) n = (size_t) cuts[next_cut].pos - done;
             // (the rest of the prompt in one read that keeps the restore points left on the way, where that costs at most
             //  a chunk's rows more than stopping at each - a run of chunks has a fixed cost of its own, the CPU lane's
@@ -1150,7 +1156,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             const size_t rest = total - done;
             const bool start_kept = prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
                                     cuts[0].shared && (size_t) cuts[0].pos >= prefix_min;
-            if (next_cut < cuts.size() && !last_window && !start_kept && rest <= (size_t) m.feed_unit()) {
+            if (next_cut < cuts.size() && !last_window && !start_kept && !pieces && rest <= (size_t) m.feed_unit()) {
                 std::vector<int64_t> rel;
                 for (size_t j = next_cut; j < cuts.size(); ++j) rel.push_back(cuts[j].pos - (int64_t) done);
                 if (m.marks_inside((int) rest, rel))
@@ -1411,7 +1417,108 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             seq_used[(size_t) a.seq] = ++use_clock;
             in.forget(a.r.rid);
         };
-        // a GEN line into a free conversation: its prompt read (the others wait), its first token picked
+        // one round of the running requests: each writes its next token, the model makes the next ones (a plain step, its rounds with
+        // drafts alone, or one multi step for several).  Run by the loop, and between the pieces of a prompt read (STRATA_DS4_PIECE)
+        const auto decode_round = [&]() {
+        // each running request writes its next token; those whose next one the model must make go below
+        std::vector<Act*> need;
+        const long long n0 = busy_n;
+        for (auto& ap : acts) {
+            Act& a = *ap;
+            if (in.stopped(a.r.rid)) {
+                a.finish = "cancel";
+                a.done = true;
+                continue;
+            }
+            std::printf("T %lld %d\n", a.r.rid, a.tok);
+            ++a.produced;
+            ++busy_n;
+            bool eos_tok = false;
+            for (int e : eos) eos_tok = eos_tok || a.tok == e;
+            if (eos_tok) {
+                a.finish = "stop";
+                a.done = true;
+                continue;
+            }
+            if (a.produced >= a.limit || m.seq_pos(a.seq) >= m.max_context()) {
+                a.done = true;
+                continue;
+            }
+            if (!a.got.empty()) {
+                a.tok = a.got.back();
+                a.got.pop_back();
+                continue;
+            }
+            need.push_back(&a);
+        }
+        if (busy_n / 8 != n0 / 8) {   // the Monitor's line, every 8 tokens of all of them
+            std::string st = stat_text(busy_t1, busy_s, busy_io, busy_n, 0, 0);
+            st += " active=" + std::to_string(acts.size());
+            std::printf("%s\n", st.c_str());
+        }
+        std::fflush(stdout);
+        if (need.size() == 1 && acts.size() == 1) {   // alone: its rounds, as with one conversation
+            Act& a = *need[0];
+            bind(a.seq);
+            const int room = (int) std::min<long long>(a.limit - a.produced, m.max_context() - m.pos());
+            penalties(a.r);
+            int off = 0, acc = 0;
+            const bool try_spec = (a.r.spec < 0 ? spec : a.r.spec != 0) && !a.cool;
+            if (!round(m, a.tok, room, try_spec, a.r.conf >= 0 ? a.r.conf : conf_min, a.r.temperature, a.r.top_p,
+                       a.r.top_k, a.r.min_p, a.r.seed, a.counter, a.got, off, acc, err, a.r.cum)) {
+                std::fprintf(stderr, "ds4: %s\n", err.c_str());
+                a.finish = "cancel";
+                a.done = true;
+            } else {
+                a.d_off += off;
+                a.d_acc += acc;
+                a.cool = try_spec && off == 0;
+                std::reverse(a.got.begin(), a.got.end());
+                a.tok = a.got.back();
+                a.got.pop_back();
+            }
+        } else if (need.size() == 1) {   // one of several: a plain step of its conversation
+            Act& a = *need[0];
+            bind(a.seq);
+            if (!m.step(a.tok, true, err)) {
+                std::fprintf(stderr, "ds4: %s\n", err.c_str());
+                a.finish = "cancel";
+                a.done = true;
+            } else {
+                penalties(a.r);
+                a.tok = m.sample(a.r.temperature, a.r.top_p, a.r.top_k, a.r.min_p, a.r.seed, a.counter++);
+            }
+        } else if (need.size() > 1) {   // several: a token of each through the model together
+            std::vector<int> sv, tv;
+            for (Act* a : need) {
+                sv.push_back(a->seq);
+                tv.push_back(a->tok);
+            }
+            if (!m.step_multi(sv.data(), tv.data(), (int) sv.size(), err)) {
+                std::fprintf(stderr, "ds4: %s\n", err.c_str());
+                for (Act* a : need) {
+                    a->finish = "cancel";
+                    a->done = true;
+                }
+            } else
+                for (size_t i = 0; i < need.size(); ++i) {
+                    Act& a = *need[i];
+                    penalties(a.r);
+                    a.tok = m.sample_multi((int) i, a.r.temperature, a.r.top_p, a.r.top_k, a.r.min_p, a.r.seed,
+                                           a.counter++);
+                }
+        }
+        for (size_t i = 0; i < acts.size();) {
+            if (!acts[i]->done) {
+                ++i;
+                continue;
+            }
+            std::unique_ptr<Act> a = std::move(acts[i]);
+            acts.erase(acts.begin() + (long) i);
+            finish_act(*a);
+        }
+        };
+        // a GEN line into a free conversation: its prompt read (the others wait, or with STRATA_DS4_PIECE go on between its pieces), its first token picked
         const auto admit = [&](const std::string& ln) {
             const bool geni = ln.rfind("GENI ", 0) == 0;
             auto a = std::make_unique<Act>();
@@ -1454,7 +1561,12 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             if (acts.empty()) m.begin_request();   // (DISK_SKIP_AUTO: between requests only - none runs now)
             const long long rid = r.rid;
             const std::string tag = " " + std::to_string(rid);
-            if (!prompt_in(r, geni, tag, [&in, rid] { return in.stopped(rid); }, a->P)) {
+            const std::function<void()> hook = [&] {
+                const int cur = m.seq_bound();
+                if (!acts.empty()) decode_round();
+                bind(cur);
+            };
+            if (!prompt_in(r, geni, tag, [&in, rid] { return in.stopped(rid); }, a->P, piece_tokens > 0 ? hook : nullptr)) {
                 in.forget(rid);
                 return;
             }
@@ -1507,103 +1619,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 admit(g);
             }
             if (quit) in.stop_all.store(true);
-            // each running request writes its next token; those whose next one the model must make go below
-            std::vector<Act*> need;
-            const long long n0 = busy_n;
-            for (auto& ap : acts) {
-                Act& a = *ap;
-                if (in.stopped(a.r.rid)) {
-                    a.finish = "cancel";
-                    a.done = true;
-                    continue;
-                }
-                std::printf("T %lld %d\n", a.r.rid, a.tok);
-                ++a.produced;
-                ++busy_n;
-                bool eos_tok = false;
-                for (int e : eos) eos_tok = eos_tok || a.tok == e;
-                if (eos_tok) {
-                    a.finish = "stop";
-                    a.done = true;
-                    continue;
-                }
-                if (a.produced >= a.limit || m.seq_pos(a.seq) >= m.max_context()) {
-                    a.done = true;
-                    continue;
-                }
-                if (!a.got.empty()) {
-                    a.tok = a.got.back();
-                    a.got.pop_back();
-                    continue;
-                }
-                need.push_back(&a);
-            }
-            if (busy_n / 8 != n0 / 8) {   // the Monitor's line, every 8 tokens of all of them
-                std::string st = stat_text(busy_t1, busy_s, busy_io, busy_n, 0, 0);
-                st += " active=" + std::to_string(acts.size());
-                std::printf("%s\n", st.c_str());
-            }
-            std::fflush(stdout);
-            if (need.size() == 1 && acts.size() == 1) {   // alone: its rounds, as with one conversation
-                Act& a = *need[0];
-                bind(a.seq);
-                const int room = (int) std::min<long long>(a.limit - a.produced, m.max_context() - m.pos());
-                penalties(a.r);
-                int off = 0, acc = 0;
-                const bool try_spec = (a.r.spec < 0 ? spec : a.r.spec != 0) && !a.cool;
-                if (!round(m, a.tok, room, try_spec, a.r.conf >= 0 ? a.r.conf : conf_min, a.r.temperature, a.r.top_p,
-                           a.r.top_k, a.r.min_p, a.r.seed, a.counter, a.got, off, acc, err, a.r.cum)) {
-                    std::fprintf(stderr, "ds4: %s\n", err.c_str());
-                    a.finish = "cancel";
-                    a.done = true;
-                } else {
-                    a.d_off += off;
-                    a.d_acc += acc;
-                    a.cool = try_spec && off == 0;
-                    std::reverse(a.got.begin(), a.got.end());
-                    a.tok = a.got.back();
-                    a.got.pop_back();
-                }
-            } else if (need.size() == 1) {   // one of several: a plain step of its conversation
-                Act& a = *need[0];
-                bind(a.seq);
-                if (!m.step(a.tok, true, err)) {
-                    std::fprintf(stderr, "ds4: %s\n", err.c_str());
-                    a.finish = "cancel";
-                    a.done = true;
-                } else {
-                    penalties(a.r);
-                    a.tok = m.sample(a.r.temperature, a.r.top_p, a.r.top_k, a.r.min_p, a.r.seed, a.counter++);
-                }
-            } else if (need.size() > 1) {   // several: a token of each through the model together
-                std::vector<int> sv, tv;
-                for (Act* a : need) {
-                    sv.push_back(a->seq);
-                    tv.push_back(a->tok);
-                }
-                if (!m.step_multi(sv.data(), tv.data(), (int) sv.size(), err)) {
-                    std::fprintf(stderr, "ds4: %s\n", err.c_str());
-                    for (Act* a : need) {
-                        a->finish = "cancel";
-                        a->done = true;
-                    }
-                } else
-                    for (size_t i = 0; i < need.size(); ++i) {
-                        Act& a = *need[i];
-                        penalties(a.r);
-                        a.tok = m.sample_multi((int) i, a.r.temperature, a.r.top_p, a.r.top_k, a.r.min_p, a.r.seed,
-                                               a.counter++);
-                    }
-            }
-            for (size_t i = 0; i < acts.size();) {
-                if (!acts[i]->done) {
-                    ++i;
-                    continue;
-                }
-                std::unique_ptr<Act> a = std::move(acts[i]);
-                acts.erase(acts.begin() + (long) i);
-                finish_act(*a);
-            }
+            decode_round();
             if (acts.empty() && quit) break;
             (void) end;
         }
