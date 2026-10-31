@@ -1606,6 +1606,23 @@ struct DraftTiming {
 DraftTiming g_dt;
 }  // namespace
 
+namespace {
+// Diagnosis only (STRATA_DRAFT_KV_LOG): one line per round / chain launch naming the cells the drafter's
+// K/V is about to be written at and with which token's shift, so a difference between two window depths can be read off
+// the log instead of guessed.  Off unless the variable is set; it neither changes a launch nor allocates.
+bool draft_kv_log_on() {
+    static const bool on = std::getenv("STRATA_DRAFT_KV_LOG") != nullptr;
+    return on;
+}
+void draft_kv_log(const char* what, int64_t p, int a, int T, int n_out, const int32_t* tokens) {
+    if (!draft_kv_log_on()) return;
+    std::fprintf(stderr, "strata draft kv: %s p=%lld a=%lld T=%d round=[%lld,%lld) steps=[%lld,%lld) tok0=%d tok_a=%d tok_last=%d\n",
+                 what, (long long) p, (long long) a, T, (long long) p, (long long) (p + T),
+                 (long long) (p + a + 1), (long long) (p + a + n_out), (long long) (tokens ? tokens[0] : -1),
+                 (long long) (tokens && a < T ? tokens[a] : -1), (long long) (tokens && T > 0 ? tokens[T - 1] : -1));
+}
+}  // namespace
+
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts, DraftResult* result) {
     if (result) { *result = {}; if (n_drafts) *n_drafts = 0; }
@@ -1653,6 +1670,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     for (int j = 1; j < max_steps; ++j)
         put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+    draft_kv_log("round", p, a, T, max_steps, tokens);
     for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
@@ -1857,6 +1875,7 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
     if (round_exec_[T] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
     for (int j = 1; j < n_out; ++j)
         if (step_exec_[j] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+    draft_kv_log("chain", p, a, T, n_out, tokens);
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {

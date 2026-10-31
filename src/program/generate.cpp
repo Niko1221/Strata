@@ -16322,6 +16322,19 @@ int main(int argc, char** argv) {
             // for this request, said once per reason, instead of ending the engine.
             bool pl_go = false;
             strata::pl::Config cfg;
+            // STRATA_STATE_CLEAN=1 (default off): the session a request leaves behind must not depend on how much
+            // speculation ran.  Today a window commits up to the row it happened to end on (keep = a + 1), so the same
+            // reply leaves L = prompt + reply after a window that overran the reply's last token and L = prompt + reply
+            // - 1 after one that ended exactly on it - and every state below L then differs by a position.
+            // The value says how far the drafter's K/V is cleaned.  1 = [first_needed, L - kMaxRows), the
+            // last window's own rows left as they are (mtp still differed in the cells of the window that
+            // ended the reply); 2 = every cell below L, which is what a drafter that had never speculated before the
+            // last window would hold - deterministic by construction, at the cost of the drafts of a resumed session
+            // (its window is refilled by the request's own prompt pass, from first_needed() on).
+            static const int state_clean = [] {
+                const char* v = std::getenv("STRATA_STATE_CLEAN");
+                return v != nullptr ? std::atoi(v) : 0;
+            }();
             // how many of a window's accepted tokens the reply keeps - the emission loops' own rule (a stop
             // token is emitted and ends the reply; then max_new; a cancel still emits the whole window).  The commit
             // keeps this many, so the session always ends exactly at the reply (PlIo::emit_count).
@@ -17281,9 +17294,14 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
-                    {   // keep only the rows the reply emits, so the session ends at the reply's last token
-                        const int ek = V1(A).nonfinite_row() >= 0 ? 0 : std::max(emit_keep(a, outp.data()), 0);
-                        if (const int keep = std::min(a + 1, ek + 1); keep < a + 1) a = keep - 1;
+                    {   // STRATA_STATE_CLEAN: keep only the rows the reply emits, so the session ends at the reply's last
+                        // token, also when the accepted window ended exactly on it (without the switch: as before)
+                        if (state_clean != 0) {
+                            const int ek = V1(A).nonfinite_row() >= 0 ? 0 : std::max(emit_keep(a, outp.data()), 0);
+                            int keep = std::min(a + 1, ek + 1);
+                            if (ek > 0) keep = std::min(keep, ek);
+                            if (keep < a + 1) a = keep - 1;
+                        }
                         if (a >= 0 && !V1(A).pl_commit_async(a + 1, err)) return die(err);
                     }
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
@@ -17708,12 +17726,14 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
-                // a reply that stops (max_new, or a stop token) inside this window keeps only the rows it emits
-                // (keep = ec, PlIo::emit_count), so the session ends exactly at the reply's last token
-                // (Sched::verdict does the same for the new pipelined loop)
-                if (!merged) {
+                // STRATA_STATE_CLEAN: a reply that stops (max_new, or a stop token) inside this window keeps only the
+                // rows it emits (keep = ec, PlIo::emit_count), so the session ends exactly at the reply's last token
+                // (Sched::verdict does the same for the new pipelined loop).  Without the switch: as before.
+                if (!merged && state_clean != 0) {
                     const int ek = std::max(emit_keep(a, outv.data()), 0);
-                    if (const int keep = std::min(a + 1, ek + 1); keep < a + 1) a = keep - 1;
+                    int keep = std::min(a + 1, ek + 1);   // see the loop above
+                    if (ek > 0) keep = std::min(keep, ek);
+                    if (keep < a + 1) a = keep - 1;
                 }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
@@ -17935,6 +17955,156 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: STRATA_EXPERT_NIBBLE_RECHECK: %lld 4-bit slots hash as at load (%.0f ms)\n",
                              (long long) checked, std::chrono::duration<double, std::milli>(Clock::now() - rt0).count());
             }
+            // STRATA_STATE_CLEAN=1: put the session back into the content it would have had without speculation,
+            // so that whatever the engine hashes, parks or resumes is the same for the same reply at any window depth.
+            //  (a) the K/V cells of the last page that no reply token claims ([L, page end)): a rolled back row or a
+            //      reply the commit did not reach wrote them;
+            //  (b) the indexer's spare pooled row (the "dead" key, a constant) is copied from idx_dead instead of being
+            //      left as whatever the last block completion put there;
+            //  (c) the drafter's K/V below its window (mtp.first_needed()): its prompt pass never writes them and its
+            //      attention never reads them again, they are only what an earlier, shorter session left behind.
+            // The arrays are addressed exactly as the state fingerprint reads them (identity layout over cells; the
+            // host copy when the state streams).
+            if (state_clean != 0 && !cancelled) {
+                const Clock::time_point clean_t0 = Clock::now();
+                const int64_t Lc = (int64_t) live.size();
+                const strata::kernels::QsaShapes qc = strata::core::qsa_shapes(g);
+                const int64_t endc = std::min<int64_t>(((Lc + qc.page_size - 1) / qc.page_size) * qc.page_size, ss.max_cells);
+                auto cell_arrays = [&](const strata::core::QsaState& st, std::vector<std::pair<void*, int64_t>>& a) {
+                    const bool h = st.kv_mode != 0;
+                    a.clear();
+                    if (st.kv_q4) {
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qc.head_dim);
+                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_hybrid) {
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qc.head_dim);
+                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {st.v_q, (int64_t) qc.head_dim}};
+                    } else if (st.kv_int8) {
+                        const int64_t scb = (int64_t) (qc.head_dim / 64) * 2;
+                        a = {{h ? (void*) st.host.k_q : (void*) st.k_q, (int64_t) qc.head_dim},
+                             {h ? (void*) st.host.v_q : (void*) st.v_q, (int64_t) qc.head_dim},
+                             {h ? (void*) st.host.k_scale : (void*) st.k_scale, scb},
+                             {h ? (void*) st.host.v_scale : (void*) st.v_scale, scb}};
+                    } else {
+                        a = {{h ? (void*) st.host.k_pool : (void*) st.k_pool, (int64_t) qc.head_dim * 2},
+                             {h ? (void*) st.host.v_pool : (void*) st.v_pool, (int64_t) qc.head_dim * 2}};
+                    }
+                    return st.kv_mode;
+                };
+                // 4 MiB of zeros, pinned, made once: the copy below is a host-to-device one because an array may
+                // belong to a stage whose device is not current (cudaMemcpyDefault).  A page-sized buffer here (round 1)
+                // meant a 6 KB copy per 6 KB - two seconds on a 200K-token session.
+                static uint8_t* zeros = [] {
+                    void* q = nullptr;
+                    const size_t zn = (size_t) 4 << 20;
+                    if (cudaHostAlloc(&q, zn, cudaHostAllocDefault) != cudaSuccess) return (uint8_t*) nullptr;
+                    std::memset(q, 0, zn);
+                    return (uint8_t*) q;
+                }();
+                const size_t zsize = (size_t) 4 << 20;
+                // Zero the cells [c0, c1): one copy for the run of pages [c0 / page, c1 / page) - the pages are laid out
+                // contiguously over the heads, so whole pages are one contiguous byte range - and one copy per head for
+                // the partial page at either end.  (Round 1 issued one 1 KB copy per page per head: on a 200K-token
+                // session that was several hundred thousand copies, a measurable pause at every request end.)
+                auto wipe = [&](void* p, int64_t per, int64_t c0, int64_t c1, int mode) -> bool {
+                    if (p == nullptr || c1 <= c0) return true;
+                    auto zero_at = [&](int64_t cell, int64_t n_cells) -> bool {
+                        const size_t off = (size_t) (cell * per);
+                        const size_t n = (size_t) (n_cells * per);
+                        if (mode != 0) {
+                            std::memset((uint8_t*) p + off, 0, n);   // the streamed state's host copy is the layout
+                            return true;
+                        }
+                        if (zeros == nullptr) {
+                            std::vector<uint8_t> z(n, 0);
+                            return cudaMemcpy((uint8_t*) p + off, z.data(), n, cudaMemcpyDefault) == cudaSuccess;
+                        }
+                        for (size_t done = 0; done < n; done += zsize) {
+                            const size_t k = std::min(n - done, zsize);
+                            // cudaMemcpyDefault: the arrays may belong to a stage whose device is not current
+                            if (cudaMemcpy((uint8_t*) p + off + done, zeros, k, cudaMemcpyDefault) != cudaSuccess)
+                                return false;
+                        }
+                        return true;
+                    };
+                    const int64_t ps = qc.page_size;
+                    const int64_t a0 = ((c0 + ps - 1) / ps) * ps;   // first whole page
+                    const int64_t a1 = (c1 / ps) * ps;              // end of the last whole page
+                    if (a0 > c0) {
+                        const int64_t e = std::min<int64_t>(c1, ((c0 / ps) + 1) * ps);
+                        for (int64_t h = 0; h < qc.n_head_kv; ++h) {
+                            const int64_t pg = c0 / ps;
+                            if (!zero_at(((pg * qc.n_head_kv + h) * ps) + (c0 - pg * ps), (e - c0))) return false;
+                        }
+                    }
+                    if (a1 >= a0 + ps && !zero_at(a0 * qc.n_head_kv * ps, (a1 - a0) * qc.n_head_kv * ps)) return false;
+                    if (a1 > a0 && a1 < c1) {   // the partial page at the end
+                        for (int64_t h = 0; h < qc.n_head_kv; ++h) {
+                            const int64_t pg = a1 / ps;
+                            if (!zero_at(((pg * qc.n_head_kv + h) * ps), (c1 - a1))) return false;
+                        }
+                    }
+                    return true;
+                };
+                bool clean_ok = true;
+                for (int64_t j = 0; clean_ok && j < ss.qsa_alloc; ++j) {
+                    strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + j];
+                    std::vector<std::pair<void*, int64_t>> arr;
+                    const int mode = cell_arrays(st, arr);
+                    for (const auto& [p, per] : arr) clean_ok = clean_ok && wipe(p, per, Lc, endc, mode);
+                    const int64_t row = Lc / qc.idx_block;   // the spare row the next block completion overwrites
+                    if (clean_ok && st.idx_pooled != nullptr && st.idx_dead != nullptr)
+                        clean_ok = cudaMemcpy(st.idx_pooled + row * qc.idx_dim, st.idx_dead, (size_t) qc.idx_dim * 4,
+                                              cudaMemcpyDefault) == cudaSuccess;
+                }
+                if (clean_ok && use_mtp) {
+                    strata::core::MtpDrafter& md = mtp;
+                    strata::core::QsaState& ms = md.kv_state_rw();
+                    // (c) the drafter's K/V.  Every write traced (STRATA_DRAFT_KV_LOG): a cell below the
+                    //     end of the reply is written by the chain's *steps* (chain_launch stages p + a + 1 .. p + a +
+                    //     n_out - 1, up to ten cells past the row the window accepts, and past the cells the next
+                    //     round then rewrites) with the K/V of the tokens the chain *guessed*.  How far the chain ran,
+                    //     and how many of its guesses were right, is the window depth's business - so the same reply at
+                    //     depth 2 and depth 3 holds different K/V in every cell the last windows' chains wrote.  A
+                    //     drafter that had never speculated holds zeros there (that is what the prompt pass leaves
+                    //     below first_needed()), so the clean is zeros; it costs no draft, a resumed session's window is
+                    //     refilled by its own prompt pass (measured: drafts accepted on the cache-tail pass 403 of 428
+                    //     fresh vs 404 of 428 resumed, decode 99.8 vs 99.5 tok/s).
+                    const int64_t mtp_end = std::min<int64_t>(Lc, ms.max_cells);
+                    const int64_t mtp_win0 = std::max<int64_t>(0, md.first_needed());
+                    int64_t mtp_c0 = mtp_end, mtp_c1 = mtp_end;
+                    // 1 (the clean to ship): every cell below L - what a drafter that had never speculated holds.
+                    //   Measured: with the range starting at first_needed() instead (2), the long reads still differed
+                    //   in the fingerprint's first cells: those hold what an earlier request's steps left, since a
+                    //   resumed or longer request's prompt pass only writes from its own first_needed() on.
+                    // 2 (round 1): below the window and all but the last kMaxRows - insufficient, the cells of the
+                    //   window that ended the reply still differed between depth 2 and 3.
+                    // 3 (experiment): only the last 16 cells, the reach of one chain; keeps the drafter's prompt cache
+                    //   (measured insufficient too).
+                    if (state_clean == 1)
+                        mtp_c0 = 0;
+                    else if (state_clean == 2)
+                        mtp_c0 = std::max<int64_t>(std::min<int64_t>(mtp_win0, mtp_end),
+                                                   std::max<int64_t>(0, mtp_end - strata::pl::kMaxRows));
+                    else if (state_clean == 3)
+                        mtp_c0 = std::max<int64_t>(0, mtp_end - 16);
+                    std::vector<std::pair<void*, int64_t>> arr;
+                    const int mode = cell_arrays(ms, arr);
+                    for (const auto& [p, per] : arr) clean_ok = clean_ok && wipe(p, per, mtp_c0, mtp_c1, mode);
+                    if (std::getenv("STRATA_STATE_CLEAN_LOG") != nullptr)
+                        std::fprintf(stderr, "strata state clean: L=%lld mode=%d qsa=[%lld,%lld) mtp=[%lld,%lld) pool=%lld"
+                                             " first_needed=%lld ms=%.1f\n",
+                                     (long long) Lc, state_clean, (long long) Lc, (long long) endc,
+                                     (long long) mtp_c0, (long long) mtp_c1, (long long) mtp_end,
+                                     (long long) md.first_needed(),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - clean_t0).count());
+                }
+                if (cudaDeviceSynchronize() != cudaSuccess) clean_ok = false;
+                if (!clean_ok) {
+                    std::printf("ERR cleaning the session state (STRATA_STATE_CLEAN)\n");
+                    return 1;
+                }
+            }
             static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
             if (state_hash && !cancelled && o.prompt_cache > 0) {   // every finished request, ckpt=0 too (parity gates)
                 // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
@@ -17945,6 +18115,21 @@ int main(int argc, char** argv) {
                 }
                 const int64_t L = (int64_t) live.size();
                 const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
+                // Debug: the geometry the fingerprint covers (page = a K/V cell page, idx_block = the indexer's
+                // pool block) and, with STRATA_STATE_DUMP=<path>, the fingerprint page by page, so two runs
+                // (depth 2 / depth 3) can be diffed to the cell.
+                if (std::getenv("STRATA_STATE_DUMP") != nullptr) {
+                    const strata::core::QsaState& p0 = ss.qsa_states[ss.qsa_primary()];
+                    const strata::core::QsaState& m0 = mtp.kv_state();
+                    std::fprintf(stderr,
+                                 "strata state geometry: L=%lld page=%lld max_cells=%lld idx_block=%lld idx_dim=%lld "
+                                 "idx_pooled_rows=%lld kv_int8=%d kv_q4=%d rot=%d | mtp max_cells=%lld kv_mode=%d slots=%d "
+                                 "idx_pooled_rows=%lld\n",
+                                 (long long) L, (long long) qs.page_size, (long long) p0.max_cells,
+                                 (long long) qs.idx_block, (long long) qs.idx_dim, (long long) p0.idx_pooled_rows,
+                                 (int) p0.kv_int8, (int) p0.kv_q4, (int) p0.kv_rot, (long long) m0.max_cells,
+                                 m0.kv_mode, (int) m0.n_slots, (long long) m0.idx_pooled_rows);
+                }
                 bool hash_ok = true;
                 std::array<uint8_t, 65536> hash_buffer;
                 auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
@@ -18031,6 +18216,55 @@ int main(int argc, char** argv) {
                     const int64_t mL = std::min<int64_t>(L, ms.max_cells);
                     for (const auto& [pool, w] : kv_arrays(ms))
                         if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+                }
+                // Debug (STRATA_STATE_DUMP=<path>): a coarse map of the same state, so two runs (depth 2 / depth 3,
+                // or with and without the switch) can be diffed down to the cells that differ: one line per 1024 cells over
+                // [0, L + one page) - the stale cells of the last page included - then one per 64 cells near the end,
+                // the pooled rows around L / idx_block, and the geometry each state was built with.
+                if (const char* pd = std::getenv("STRATA_STATE_DUMP"); pd != nullptr && state_hash && !cancelled && o.prompt_cache > 0) {
+                    FILE* f = std::fopen(pd, "a");
+                    if (f != nullptr) {
+                        std::fprintf(f, "geom L=%lld page=%lld kvhead=%lld hd=%lld idxb=%lld idxd=%lld end=%lld\n",
+                                     (long long) L, (long long) qs.page_size, (long long) qs.n_head_kv, (long long) qs.head_dim,
+                                     (long long) qs.idx_block, (long long) qs.idx_dim, (long long) end_cell);
+                        auto dump_state = [&](const char* tag, const strata::core::QsaState& st, int64_t hi) {
+                            std::fprintf(f, "state %s kv_mode=%d int8=%d q4=%d hyb=%d max_cells=%lld slots=%lld pages=%lld host=%d\n",
+                                         tag, st.kv_mode, (int) st.kv_int8, (int) st.kv_q4, (int) st.kv_hybrid,
+                                         (long long) st.max_cells, (long long) st.n_slots, (long long) st.n_pages,
+                                         (int) (st.kv_mode != 0 && st.host.k_pool != nullptr));
+                            for (const auto& [pool, w] : kv_arrays(st)) {
+                                if (pool == nullptr) continue;
+                                for (int64_t c = 0; c < hi; c += 1024)
+                                    std::fprintf(f, "k %s %lld %016llx\n", tag, (long long) c,
+                                                 (unsigned long long) hash_cells(pool, w, c, std::min(hi, c + 1024),
+                                                                                 1469598103934665603ull));
+                                for (int64_t c = std::max<int64_t>(0, hi - 256); c < hi; c += 64)
+                                    std::fprintf(f, "e %s %lld %016llx\n", tag, (long long) c,
+                                                 (unsigned long long) hash_cells(pool, w, c, c + 1,
+                                                                                 1469598103934665603ull));
+                            if (std::strcmp(tag, "mtp") == 0)   // the drafter's cells, one at a time over [0, 8192 + 256)
+                                for (int64_t c = 0; c < std::min<int64_t>(hi, 8448); c += 1)
+                                    std::fprintf(f, "m %s %lld %016llx\n", tag, (long long) c,
+                                                 (unsigned long long) hash_cells(pool, w, c, c + 1,
+                                                                                 1469598103934665603ull));
+                            }
+                            const int64_t row = L / qs.idx_block;
+                            for (int64_t r = std::max<int64_t>(0, row - 3); r <= row; ++r)
+                                std::fprintf(f, "p %s %lld %016llx\n", tag, (long long) r,
+                                             (unsigned long long) hash_dev((const uint8_t*) st.idx_pooled + r * qs.idx_dim * 4,
+                                                                           (size_t) qs.idx_dim * 4, 1469598103934665603ull));
+                        };
+                        for (int64_t j = 0; j < ss.qsa_alloc; ++j) {
+                            char tag[16];
+                            std::snprintf(tag, sizeof tag, "qsa%d", (int) (ss.qsa_ord0 + j));
+                            dump_state(tag, ss.qsa_states[ss.qsa_ord0 + j], end_cell);
+                        }
+                        if (use_mtp) {
+                            const strata::core::QsaState& ms = mtp.kv_state();
+                            dump_state("mtp", ms, std::min<int64_t>(L + qs.page_size, ms.max_cells));
+                        }
+                        std::fclose(f);
+                    }
                 }
                 if (!hash_ok) {
                     std::printf("ERR reading state fingerprint\n");
