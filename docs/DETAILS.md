@@ -361,12 +361,14 @@ API without the engine or the vision encoder. The first generation request or `P
 `application/json` and no foreign browser Origin, and return **409** while a request is active or queued). `/api/health`
 aliases `/health`, and `/v1/status` exposes `loaded` and `auto_load`.
 
-**Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
-`"vram_elastic": true` (engine flag `--vram-elastic`) the expert cache is allocated in 512 MiB segments
+**Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA or HIP GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
+`"vram_elastic": true` (engine flag `--vram-elastic`) and without `--kv-grow`, the expert cache is allocated in 512 MiB segments
 (`"vram_segment_mib"`). `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much VRAM is free;
 `{"reserve_mib": null}` grows it back toward its full size, and `{"reserve_mib": 0}` takes all of it back. The experts of the
 segments given back are computed on the CPU, so answers keep coming, slower. Nothing resizes on its own. Not with a layer
 split, the helper caches, `--peer-device` or the resident low-RAM mode.
+
+With both `--kv-grow` and `--vram-elastic`, VRAM borrows from the same region the K/V grows into. See [VRAM_ELASTIC.md](VRAM_ELASTIC.md#with---kv-grow).
 
 **Keep what the expert cache learned across restarts** (opt-in). `"expert_profile_save": "expert-profile-learned.bin"` saves
 the experts in VRAM, then the counted routing, then the shipped order, on a clean exit and every 10 minutes between

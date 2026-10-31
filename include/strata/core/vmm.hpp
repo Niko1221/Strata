@@ -2,9 +2,10 @@
 // CUDA virtual memory (the elastic K/V, --kv-grow): an address range reserved once, whose physical memory is mapped and
 // unmapped in chunks of the device's granularity (2 MiB).  The K/V pools grow with the context by taking chunks the
 // expert cache gives up, and neither moves: every captured graph and stored pointer stays valid.  The driver calls
-// are reached through the runtime's entry-point query, so nothing links the driver library.  Not under HIP.
+// are reached through the runtime's entry-point query, so nothing links the driver library.  HIP requires a successful runtime probe.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace strata::core {
@@ -14,8 +15,17 @@ using VmmChunk = unsigned long long;
 
 /// The current device supports it and the entry points resolved.
 bool vmm_available();
+/// Why VMM is unavailable; empty when the runtime probe passed.
+std::string vmm_off_reason();
 /// The chunk size (0 when not available).
 uint64_t vmm_granularity();
+/// Segmented-cache operations on the current device, gated by the same availability verdict.
+bool vmm_device_supported();
+uint64_t vmm_segment_granularity();
+uintptr_t vmm_reserve(uint64_t bytes);
+void vmm_address_free(uintptr_t va, uint64_t bytes);
+bool vmm_segment_map(uintptr_t va, uint64_t bytes, VmmChunk& handle);
+bool vmm_segment_unmap(uintptr_t va, uint64_t bytes, VmmChunk handle);
 /// A new physical chunk on the current device (0: out of memory), and its release.
 VmmChunk vmm_chunk_new();
 void vmm_chunk_free(VmmChunk h);
