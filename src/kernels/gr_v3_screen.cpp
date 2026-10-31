@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace K = strata::kernels;
@@ -29,6 +30,8 @@ static uint16_t bf16(float x) {
 int main(int argc, char** argv) {
     setenv("STRATA_GR_V3", "1", 1);
     setvbuf(stdout, nullptr, _IONBF, 0);
+    K::fused_gr_v3_print_resources();
+    if (argc > 1 && std::string(argv[1]) == "--resources") return 0;
     const int iters = argc > 1 ? std::atoi(argv[1]) : 400;
     const int t_lo = argc > 2 ? std::atoi(argv[2]) : 1, t_hi = argc > 3 ? std::atoi(argv[3]) : 8;
     const int sets = argc > 4 ? std::atoi(argv[4]) : 16;

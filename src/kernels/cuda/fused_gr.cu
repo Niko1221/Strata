@@ -2798,6 +2798,30 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
 // slice.  The STRATA_QFUSE counters belong to token 0: each slice's first token carries them (the kernels zero them
 // again for the next launch); the profile stamps are the first slice's.
 void fused_gr_v3_pf(int mask) { g_v3_pf_force = mask; }
+// The bench only: registers, spills, shared memory and resident blocks a multiprocessor of the v3 kernels (T = 4) on the current card, one line each.
+void fused_gr_v3_print_resources() {
+    auto one = [](const char* name, const void* f, size_t dyn) {
+        cudaFuncAttributes a;
+        int blocks = 0;
+        if (cudaFuncGetAttributes(&a, f) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, f, THREADS, dyn) == cudaSuccess)
+            std::printf("gr_v3 %-22s regs %3d  local %4zu B  static smem %5zu B  dyn smem %6zu B  blocks/SM %d\n", name, a.numRegs, a.localSizeBytes,
+                        a.sharedSizeBytes, dyn, blocks);
+        else {
+            cudaGetLastError();
+            std::printf("gr_v3 %-22s (no attributes)\n", name);
+        }
+    };
+    const size_t sm4 = (size_t) 4 * N * sizeof(float);
+    one("down T4 plain", (const void*) gr_down_v3_kernel<1, 4, true, 1, 0>, sm4);
+    one("down T4 pf1 (batched)", (const void*) gr_down_v3_kernel<1, 4, true, 1, 1>, sm4);
+    one("down T4 pf2 (weights)", (const void*) gr_down_v3_kernel<1, 4, true, 1, 2>, sm4);
+    one("down T4 pf3", (const void*) gr_down_v3_kernel<1, 4, true, 1, 3>, sm4);
+    one("up T4 plain", (const void*) gr_up_v3_kernel<1, 4, true, 0>, 0);
+    one("up T4 pf1 (batched)", (const void*) gr_up_v3_kernel<1, 4, true, 1>, 0);
+    one("up T4 pf2 (weights)", (const void*) gr_up_v3_kernel<1, 4, true, 2>, 0);
+    one("up T4 pf3", (const void*) gr_up_v3_kernel<1, 4, true, 3>, 0);
+}
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {
     if (n_tok <= kFusedGrMaxT) return fused_gr_read_multi_slice(a, n_tok, xn_scratch, stream, stamp_buf, stamp_i0);
