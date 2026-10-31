@@ -1493,6 +1493,12 @@ class StrataEngine:
                 keys += f" pin={pn}"
         # logprobs: the engine writes an `LP` line after each `T` line (an engine without them ignores
         # the key, so an older engine answers exactly as it did).  Absent = no LP lines at all.
+        # a canonical read (a typed decision: one token's logprobs, or "strata_deterministic": true): the engine computes
+        # every expert of this request on the GPU, so the same prompt gives the same logprobs whatever the expert cache,
+        # the adaptive tier, the PCIe share and the prefill CPU share have done since the start (#4059).  An engine
+        # without it skips the key.
+        if canonical_read(sampling):
+            keys += " canon=1"
         k = top_logprobs(sampling)
         if k is not None:
             keys += f" logprobs={k}"
@@ -4050,6 +4056,20 @@ def top_logprobs(req: dict):
     if isinstance(lp, int) and not isinstance(lp, bool) and lp >= 0:
         return min(20, lp)
     return None
+
+
+def canonical_read(req: dict) -> bool:
+    """Is this request a canonical read (#4059)?  `"strata_deterministic": true|false` decides when it is sent; else a
+    request for logprobs whose reply is one token (max_tokens or max_completion_tokens 1) is one: a typed decision read
+    from one next-token distribution, which a client compares with its other reads and so needs the same numbers for
+    the same prompt.  Longer replies and other requests keep the engine's adaptive paths (and their speed)."""
+    v = req.get("strata_deterministic")
+    if isinstance(v, bool):
+        return v
+    if top_logprobs(req) is None:
+        return False
+    mt = req.get("max_completion_tokens") or req.get("max_tokens")
+    return isinstance(mt, int) and not isinstance(mt, bool) and mt == 1
 
 
 def allowed_ids(req: dict) -> list:

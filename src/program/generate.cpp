@@ -13903,6 +13903,12 @@ int main(int argc, char** argv) {
             // embedding floats, so a picture encoded again with other bits still matches.  Absent: the embeddings' hash.
             std::vector<uint64_t> req_img_keys;
             bool req_pcie_set = false;   // the request names its own share (the measured one holds meanwhile)
+            // canon=1 (#4059): a canonical read.  Every routed expert of this request is computed on the GPU - the missed
+            // ones over PCIe, none skipped, no prompt chunk shared with the CPU - and no cached prefix is reused, so its
+            // logits depend on the prompt alone, not on what the expert cache, the adaptive tier, the PCIe share and the
+            // prefill share have done since the start.  For typed decisions (one token's logprobs); other requests keep
+            // the adaptive paths.
+            bool req_canon = false;
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -13942,6 +13948,7 @@ int main(int argc, char** argv) {
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
+                    else if (key == "canon") req_canon = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
                     else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;
@@ -13985,6 +13992,21 @@ int main(int argc, char** argv) {
             if (req_prefill_only && (geni || o.batch > 0 || n < 2)) {
                 std::printf("ERR prefill=1 needs a text prompt of at least 2 tokens and no --batch\n");
                 continue;
+            }
+            // canon=1: the two process-wide switches are paused for this request only, and given back however it ends
+            struct CanonPause {
+                bool on;
+                explicit CanonPause(bool c) : on(c) {
+                    if (on) { strata::core::pause_tail_skip(true); strata::prefill::Prefill::pause_cpu_share(true); }
+                }
+                ~CanonPause() {
+                    if (on) { strata::core::pause_tail_skip(false); strata::prefill::Prefill::pause_cpu_share(false); }
+                }
+            } canon_pause(req_canon);
+            if (req_canon) {
+                req_pcie_frac = 1.0;   // every missed expert of its one-token window over PCIe to the GPU
+                req_pcie_set = true;
+                req_ckpt = false;      // nothing reuses it: the prompt is read in one part, not split at the turn
             }
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
@@ -14187,7 +14209,7 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
-            if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+            if (o.prompt_cache > 0 && !req_canon && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
@@ -14201,7 +14223,7 @@ int main(int argc, char** argv) {
             // of a slot's checkpoint this request moved into `checks` (from the slot it is admitted to), -1: none
             int lent_slot = -1;
             int64_t moved_in = -1;
-            if (slot_ckpt_move_env() && o.prompt_cache > 0 && want_cvec == cvec_cached && live_ok)
+            if (slot_ckpt_move_env() && o.prompt_cache > 0 && !req_canon && want_cvec == cvec_cached && live_ok)
                 for (int b = 0; b < (int) bs.size(); ++b) {
                     if (bs[(size_t) b].cvec != cvec_cached || bs[(size_t) b].tainted) continue;   // (#879)
                     for (const ConvCheckpoint& c : bs[(size_t) b].checks) {
@@ -14226,7 +14248,7 @@ int main(int argc, char** argv) {
             ConvCheckpoint::PromptPlan resume_plan;
             int64_t resume_plan_at = -1, resume_plan_end = -1;   // where it goes on, and the segment end it needs
             const ConvCheckpoint* slot_ck = nullptr;   // the slot's checkpoint the prompt continues from (else its end)
-            if (o.prompt_cache > 0 && req_imgs.empty())
+            if (o.prompt_cache > 0 && !req_canon && req_imgs.empty())
                 for (int b = 0; b < (int) bs.size(); ++b) {
                     const BSlot& sl = bs[(size_t) b];
                     const bool idle_source = !sl.active && sl.cached;
@@ -14281,7 +14303,8 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            auto parked = conversations.best(ids, req_imgs, want_cvec);
+            if (req_canon) parked.tokens = 0;   // a canonical read reads its whole prompt (canon=1)
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
@@ -14768,7 +14791,9 @@ int main(int argc, char** argv) {
                                      "whole prompt through the batched path, none of it through the verify windows\n");
             }
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
-                if (no_short || b - a > req_short_read) return false;
+                // a canonical read never reads its prompt through the windows: a window of several tokens can miss more
+                // experts than its PCIe staging holds, and the rest fall to the CPU by what the cache holds (canon=1)
+                if (no_short || req_canon || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
                         if (sp.embd_rows[i] != nullptr) return false;
@@ -16980,7 +17005,32 @@ int main(int argc, char** argv) {
                 if (gated_proposal) ver.set_spec_proposal(proposal.n_q ? proposal.mu.data() : nullptr, proposal.n_q);
                 else if (use_mtp && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
                 const auto decode_pool_fn = use_mtp && mtp.prob() ? invariant_win_pool_fn : win_pool_fn;
-                if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
+                // canon=1: the window computes every routed expert as a miss.  A resident expert goes through the hit
+                // path and a missed one through the PCIe (or CPU) path, which round differently, and which experts are
+                // resident is what the adaptive tier and the prompt path's slot loan change from request to request:
+                // with every expert a miss, each takes the same path every time (over PCIe where its blob is pinned,
+                // else the CPU pool), whatever the cache holds.  The tables are given back right after the window,
+                // before the next adaptive round looks at them.
+                std::vector<int32_t> canon_res;
+                const bool canon_win = req_canon && !host_res.empty() && d_res != nullptr;
+                if (canon_win) {
+                    if (aflipped || !pending.empty()) apply_pending(true);   // the last swaps land: nothing is in flight
+                    canon_res = host_res;
+                    std::fill(host_res.begin(), host_res.end(), strata::core::kNotResident);
+                    if (res_upload() != cudaSuccess) {
+                        std::printf("ERR canon=1: the residency table could not be cleared for the window\n");
+                        return 1;
+                    }
+                }
+                const bool win_ok = ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) && !drive.d.failed;
+                if (canon_win) {
+                    std::copy(canon_res.begin(), canon_res.end(), host_res.begin());
+                    if (res_upload() != cudaSuccess) {
+                        std::printf("ERR canon=1: the residency table could not be restored after the window\n");
+                        return 1;
+                    }
+                }
+                if (!win_ok) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }

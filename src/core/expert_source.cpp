@@ -4852,6 +4852,10 @@ int tail_skip_rank() {
     return r;
 }
 void set_tail_skip_rank(int r) { g_tail_skip_rank.store(r > 0 && r < 10 ? r : 0, std::memory_order_relaxed); }
+namespace {
+std::atomic<bool> g_tail_skip_paused{false};   // pause_tail_skip: a canonical read is running
+}  // namespace
+void pause_tail_skip(bool paused) { g_tail_skip_paused.store(paused, std::memory_order_relaxed); }
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out, strata::kernels::cpu::NativeArithmetic arithmetic) {
@@ -4932,7 +4936,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
         // only at rank >= R (the smallest weights of the top-10) is neither copied nor computed; its contribution is
         // zero, without renormalisation (the others keep the weight the router gave them).  Less PCIe and CPU work.
-        const int tail_rank = tail_skip_rank();
+        // a canonical read computes every routed expert: which ones are missed depends on the cache, so a skip would too
+        const int tail_rank = g_tail_skip_paused.load(std::memory_order_relaxed) ? 0 : tail_skip_rank();
         bool skip_d[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
         if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
