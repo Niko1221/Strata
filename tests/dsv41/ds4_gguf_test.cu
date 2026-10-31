@@ -697,6 +697,7 @@ void test_mv_rows(cudaStream_t s) {
         m.k = k;
         m.n = n;
         bool same = true;
+        uint32_t sig = 2166136261u;   // (the single-column results' bits: the same build to build where the one-column path is untouched)
         for (int nc : {2, 4, 8, 16}) {
             const size_t xcs = (size_t) k;
             std::vector<float> x(xcs * nc);
@@ -722,7 +723,18 @@ void test_mv_rows(cudaStream_t s) {
                 if (!gg::mv(&j1, 1, s)) ++g_fail;
                 CU(cudaStreamSynchronize(s));
                 const std::vector<float> y1 = host(dy1, (size_t) n);
-                same = same && std::memcmp(y1.data(), y.data() + (size_t) c * n, (size_t) n * 4) == 0;
+                const bool eq = std::memcmp(y1.data(), y.data() + (size_t) c * n, (size_t) n * 4) == 0;
+                if (!eq) {   // (which row count and column, how many outputs, how far)
+                    int nd = 0;
+                    double mx = 0;
+                    for (int r = 0; r < n; ++r) {
+                        const float a = y1[r], b = y[(size_t) c * n + r];
+                        if (std::memcmp(&a, &b, 4) != 0) ++nd, mx = std::max(mx, (double) std::fabs(a - b));
+                    }
+                    std::printf("  rows: %d activations, column %d: %d of %d outputs differ from its single mv, max |d| %.3g\n", nc, c, nd, n, mx);
+                }
+                for (int r = 0; r < n; ++r) { uint32_t u; std::memcpy(&u, &y1[r], 4); sig = sig * 16777619u + u; }
+                same = same && eq;
             }
             cudaFree(dx), cudaFree(dy), cudaFree(dy1);
         }
@@ -730,7 +742,7 @@ void test_mv_rows(cudaStream_t s) {
         char what[96];
         std::snprintf(what, sizeof(what), "mv rows %s: each of 2 / 4 / 8 / 16 alone, bit for bit",
                       lowbit ? tn(f) : fmt == gg::kFmtBF16 ? "BF16" : fmt == gg::kFmtMXFP4 ? "MXFP4" : "Q8_0");
-        std::printf("%-60s %s\n", what, same ? "ok" : "FAIL");
+        std::printf("%-60s %s  (one-column bits %08x)\n", what, same ? "ok" : "FAIL", sig);
         cudaFree(dw);
     }
 }
