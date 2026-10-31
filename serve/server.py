@@ -1442,6 +1442,11 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        rp = sampling.get("route_prior")
+        if rp is None and isinstance(sampling.get("strata_tune"), dict):
+            rp = sampling["strata_tune"].get("route_prior")
+        if rp is not None and isinstance(rp, (int, float)) and not isinstance(rp, bool) and float(rp) >= 0.0:
+            keys += f" route_prior={float(rp)!r}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -7108,6 +7113,10 @@ def make_handler(svc: Service):
                                records if request_id else {"requests": records, "retention": 100, "persistent": False,
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
+            if path in ("/v1/route_prior", "/route_prior"):
+                if self._authorized():
+                    self._json(200, {"route_prior": svc.shared.get("route_prior", 0.0)})
+                return
             if path == "/settings":
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
@@ -7222,6 +7231,22 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path in ("/v1/route_prior", "/route_prior"):
+                body = self._body()
+                try:
+                    data = json.loads(body or b"{}")
+                    val = float(data.get("route_prior", 0.0))
+                    svc.shared["route_prior"] = val
+                    if hasattr(svc.engine, "proc") and svc.engine.proc and svc.engine.proc.stdin:
+                        try:
+                            svc.engine.proc.stdin.write(f"ROUTE_PRIOR {val}\n")
+                            svc.engine.proc.stdin.flush()
+                        except Exception:
+                            pass
+                    self._json(200, {"status": "ok", "route_prior": val})
+                except Exception as ex:
+                    self._json(400, {"error": {"message": str(ex)}})
                 return
             if path == "/settings":
                 self._settings()

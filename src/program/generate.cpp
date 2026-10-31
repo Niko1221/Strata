@@ -759,6 +759,7 @@ struct Options {
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
+    float route_prior = -1.0f; ///< < 0: default from STRATA_ROUTE_PRIOR / card arch; >= 0: explicit bonus
     bool pcie_frac_auto = false;     ///< single-GPU serve (CUDA + HIP/gfx1100), no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
     double pcie_probe_gbps = 0.0;    ///< the start-up probe's reading (for PcieAuto)
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
@@ -3165,6 +3166,7 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
+        else if (a == "--route-prior") o.route_prior = (float) std::atof(next("--route-prior"));
         else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_every_given = true; }
         else if (a == "--adapt-decay") o.adapt_decay = strata::program::adapt_decay_checked(std::atof(next("--adapt-decay")));   // #1284: outside 0..1 -> 0.7, said
         else if (a == "--adapt-min-gain") o.adapt_min_gain = (float) std::atof(next("--adapt-min-gain"));
@@ -9957,6 +9959,12 @@ int main(int argc, char** argv) {
                     stage_ver_p(st, par).set_always_publish(true);
                 }
         }
+        if (o.route_prior >= 0.0f) {
+            for (int st = 0; st < n_stages; ++st) {
+                stage_ver(st).set_route_prior(o.route_prior);
+                if (pipe) stage_ver_p(st, 1).set_route_prior(o.route_prior);
+            }
+        }
         if (n_stages > 1) {
             // pipelined slot groups write their rows at hbase = group * rows-per-group, so with more than
             // kVerifyNarrowT slots in groups the hand-off holds one row per slot (otherwise kVerifyNarrowT, as before; a
@@ -13444,6 +13452,18 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
+            if (line.rfind("ROUTE_PRIOR ", 0) == 0 || line == "ROUTE_PRIOR") {
+                const float v = line == "ROUTE_PRIOR" ? (o.route_prior >= 0.0f ? o.route_prior : ver.route_prior()) : (float) std::atof(line.c_str() + 12);
+                o.route_prior = v;
+                for (int st = 0; st < n_stages; ++st) {
+                    stage_ver(st).set_route_prior(v);
+                    if (pipe) stage_ver_p(st, 1).set_route_prior(v);
+                }
+                std::fprintf(stderr, "strata serve: route_prior set to %.2f\n", (double) v);
+                std::printf("OK route_prior=%.2f\n", (double) v);
+                std::fflush(stdout);
+                continue;
+            }
             // a command may touch the expert cache (a request lends slots, a K/V growth moves them, a session restore
             // quiesces it): a round of the asynchronous tier that the batch windows left in flight lands first
             if (!adapt_tick(true)) {
@@ -13784,6 +13804,8 @@ int main(int argc, char** argv) {
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
             double req_pipe = -1.0;   // --prefill-pipe for this request (setup's calibration of a layer split)
             int req_aux_cpus = -1;   // aux_cpus=0|1: --aux-cpus for this request (-1 = the start-up value)
+            float req_route_prior = -1.0f;
+            bool req_route_prior_set = false;
             // #2228: img_keys=<hex>,<hex>,... (GENI): each picture's key from the server (its normalized bytes' hash),
             // in prompt order.  With them the conversation cache matches a picture by its key and grid, not by its
             // embedding floats, so a picture encoded again with other bits still matches.  Absent: the embeddings' hash.
@@ -13828,6 +13850,7 @@ int main(int argc, char** argv) {
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
+                    else if (key == "route_prior") { req_route_prior = std::max(0.0f, fv); req_route_prior_set = true; }
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
                     else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;
@@ -13847,6 +13870,13 @@ int main(int argc, char** argv) {
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
+            if (req_route_prior_set || o.route_prior >= 0.0f) {
+                const float eff_rp = req_route_prior_set ? req_route_prior : o.route_prior;
+                for (int st = 0; st < n_stages; ++st) {
+                    stage_ver(st).set_route_prior(eff_rp);
+                    if (pipe) stage_ver_p(st, 1).set_route_prior(eff_rp);
+                }
+            }
             std::vector<float> req_bias;
             std::string bias_error;
             if (req_bias_present && (o.batch > 0 ||
@@ -17865,6 +17895,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (o.route_prior >= 0.0f) ver.set_route_prior(o.route_prior);
         const bool use_mtp = !o.mtp.empty();
         if (use_mtp && !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());

@@ -273,10 +273,14 @@ inline int g_side_mixer() {
 // back on 2026-10-29 (#4402: repetition loops and weaker results in long agent sessions).  With nothing set this is 0.2.6's behaviour, exactly.
 // Measured on an RTX 3060 12 GB only (IQ3_XXS; at 1.5 story +15%, code +37% decode against off).  Any value in the variable wins on every card.
 // The value is read once.
+static std::atomic<float> g_dyn_route_prior{-1.0f};
+
 inline float g_route_prior() {
-    static const char* const env_s = std::getenv("STRATA_ROUTE_PRIOR");
+    const float dyn = g_dyn_route_prior.load(std::memory_order_relaxed);
+    if (dyn >= 0.0f) return dyn;
+    const char* const env_s = std::getenv("STRATA_ROUTE_PRIOR");
     static const float lambda = strata::route_prior_resolve(env_s, false, false, 0.0);
-    return lambda;
+    return env_s ? (float) std::atof(env_s) : lambda;
 }
 inline bool g_qfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_QFUSE"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
 #define VDBG(...) do { if (g_dbg) { std::fprintf(stderr, "verify dbg: " __VA_ARGS__); std::fflush(stderr); } } while (0)
@@ -786,6 +790,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     release_gpu_fn().store(&release_live_verifiers);
     cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
     rr_stats_ = route_resident_cfg().stats_on(device_);   // STRATA_ROUTE_RESIDENT: this GPU's counters, outside graph capture
+    route_prior_ = g_route_prior();
+    {   // once per card, here: record_window (graph capture) only reads the cached value
+        const float rp = this->route_prior();
+        if (rp > 0.0f && std::getenv("STRATA_ROUTE_PRIOR") == nullptr)
+            std::fprintf(stderr, "strata verify: residency-biased routing is on by default on this card (STRATA_ROUTE_PRIOR=%.1f)\n", (double) rp);
+    }
     strata::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
     strata::kernels::fused_gr_persist_init();   // opt-in STRATA_HC_PERSIST=1 (HIP)
     wt_ = &wt;
@@ -2084,10 +2094,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
         // STRATA_ROUTE_PRIOR=lambda (changes the output): the top-10 picked again with a logit bonus for the resident
-        // experts; the weights stay the router's (route_prior.cu).  g_route_prior() above: off unless STRATA_ROUTE_PRIOR is set
-        // (measured on an RTX 3060 12 GB at 2.0: story +37.6%, code +35.2%; on an RTX PRO 5000 72 GB -1.9% / -0.5%, on 2x RTX A4000
-        // -4.2% / +11.0%, so it only helps a card that streams most experts).
-        const float route_prior = g_route_prior();
+        // STRATA_ROUTE_PRIOR=lambda (changes the output): the top-10 picked again with a logit bonus for the resident
+        // experts; the weights stay the router's (route_prior.cu).
+        const float route_prior = this->route_prior();
         if (route_prior > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr)
             route_prior_top10(logits_ + tb * NE, hits_.d_res + l * g.n_expert, route_prior, ids_ + tb * K, w_ + tb * K, n, cs);
         if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
@@ -4149,6 +4158,56 @@ bool Verifier::evict_window_graph(int keep_t, bool& evicted, std::string& err) {
     (ar_off_ ? launched_nr_ : launched_)[sel_long_][victim] = false;   // the next graph of that size is a cold first launch again
     evicted = true;
     return true;
+}
+
+void Verifier::clear_graphs() {
+    if (cs_ != nullptr) cudaStreamSynchronize(cs_);
+    for (int sl = 0; sl < 2; ++sl) {
+        for (int t = 0; t < 9; ++t) {
+            if (exec_[sl][t]) {
+                cudaGraphExecDestroy(exec_[sl][t]);
+                exec_[sl][t] = nullptr;
+            }
+            if (exec_nr_[sl][t]) {
+                cudaGraphExecDestroy(exec_nr_[sl][t]);
+                exec_nr_[sl][t] = nullptr;
+            }
+            launched_[sl][t] = false;
+            launched_nr_[sl][t] = false;
+        }
+    }
+    for (auto& kv : exec_bm_) {
+        if (kv.second) cudaGraphExecDestroy(kv.second);
+    }
+    exec_bm_.clear();
+    for (auto& kv : commit_bm_) {
+        if (kv.second) cudaGraphExecDestroy(kv.second);
+    }
+    commit_bm_.clear();
+    for (auto* m : {&save_bm_, &dcommit_bm_}) {
+        for (auto& kv : *m)
+            if (kv.second) cudaGraphExecDestroy(kv.second);
+        m->clear();
+    }
+    bm_used_.clear();
+    if (commit_exec_) {
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+    }
+}
+
+void Verifier::set_route_prior(float rp) {
+    const float cur = this->route_prior();
+    if (std::abs(cur - rp) > 1e-4f) {
+        route_prior_ = rp;
+        clear_graphs();
+    }
+    if (next_ != nullptr) next_->set_route_prior(rp);
+}
+
+float Verifier::route_prior() const {
+    if (route_prior_ >= 0.0f) return route_prior_;
+    return g_route_prior();
 }
 
 // STRATA_GRAPH_PRIO: the capture-time notes.  A fork note keeps cs's current tail (the node the branch's first kernel
