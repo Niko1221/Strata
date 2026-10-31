@@ -1787,7 +1787,13 @@ class StrataEngine:
                     turn = False                        # the lines: not the engine this request was meant for
                 if not turn:
                     with self.slot_cv:
-                        self.slot_cv.wait(timeout=min(0.5, max(0, left)))
+                        # A notification may have arrived after the earlier check.
+                        # Recheck both fairness and short-first order before waiting.
+                        eligible = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+                        if eligible and new and ADMIT_SHORT_FIRST > 0:
+                            eligible = self._admit_next() is entry
+                        if not eligible or not self.alive():
+                            self.slot_cv.wait(timeout=min(0.5, max(0, left)))
                 if cancel.is_set():
                     return False
                 if time.monotonic() - beat >= 10.0:     # a heartbeat every 10 s, as the engine's own wait
@@ -1795,9 +1801,13 @@ class StrataEngine:
                     yield None
         finally:
             with self.slot_cv:
+                previous_waiting = self.waiting
                 self.waiting = max(0, self.waiting - 1)
                 if entry in self.wait_lens:
                     self.wait_lens.remove(entry)
+                if (previous_waiting > 1 and self.waiting <= 1) or (new and ADMIT_SHORT_FIRST > 0):
+                    # Removing an ordered entry can change the winner even with several waiters left.
+                    self.slot_cv.notify_all()
         with self.slot_cv:
             self.ctl_epoch += 1
             self.slot_cv.notify_all()
