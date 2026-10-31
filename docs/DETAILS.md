@@ -760,6 +760,11 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 - Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
+- The restore does not hold the K/V in RAM: a read pass parses and checks the whole file on disk, and an
+  apply pass re-reads it and copies every K/V block into its pools 16 MiB at a time - this is what restores a session
+  larger than RAM. The apply pass is bound to the read pass: a layer or part whose size differs from what the read
+  pass saw is refused before it is applied; a divergence found after the first applied block ends the engine (`FATAL`)
+  rather than decode from a partial state.
 
 ### The web page (Chat, Images, Monitor, About)
 
