@@ -18,6 +18,13 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   magnitude between rigs (about 700 tokens on four GP100 dies, 5000 on two RTX 3090 Ti) and costs
                   when it is wrong (a fixed 1024 read 22-36% slower on two RTX 4090) - so it is measured here, once,
                   as the prompt read speed of fresh prompts, rather than guessed or learned while the PC serves.
+  STRATA_METAL_TILES (Mac only)
+                  the tiles of the GPU kernels a decode window runs (the dense GEMVs, the hyper-connection read, the
+                  routed experts).  The engine's defaults were tuned on the M4 and M5; a GPU with less ALU per byte of
+                  bandwidth wants others (the M1 Max: a 2-token window's GEMVs 33 -> 21 ms).  The engine measures them
+                  itself (STRATA_METAL_CALIBRATE) while it answers a few prompts, then they race the defaults and go
+                  into the config's "env" only when they win.  The answers may differ slightly from the defaults' (the
+                  order of a sum: a near-tie can flip).
   STRATA_SH_STREAM (AMD only)
                   the shared expert on its own stream.  Off by default on HIP (#816: an RX 6800 on Windows and 4x R9700
                   decode 12-45% faster without it), but the same card family on another PC goes the other way (#1272:
@@ -36,6 +43,7 @@ adaptive expert tier and the OS make single measurements noisy by a few percent.
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import sys
 import threading
@@ -55,6 +63,8 @@ SWEEP_ROUNDS = 3                   # how many times the sweep visits each value 
 # HIP: the shared-expert stream fork, off (the HIP default) against on; an engine environment variable, not an argument
 SH_STREAM = "STRATA_SH_STREAM"
 ADAPT_CANDIDATES = (None, ("1", "80", "0.97"), ("1", "160", "0.97"))
+# a Mac: the engine measures its kernels' tiles into CALIBRATE's file; TILES points the engine at the result
+CALIBRATE, TILES = "STRATA_METAL_CALIBRATE", "STRATA_METAL_TILES"
 ADAPT_FLAGS = ("--adapt-every", "--adapt-swaps", "--adapt-decay")
 MAX_NEW = 128
 # the expert tier follows a text over some windows: 128-token answers end before it shows (on a Xeon E5-2673 v3 with
@@ -240,6 +250,10 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
+    if sys.platform == "darwin":   # a file a model: another model's calibration must not take this one's shapes away
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", cfg.get("model_name") or "model")
+        return measure_metal(engine_args(cfg), ids_list, start_engine, say, Path(cfg.get("cwd") or ROOT) / f"metal-tiles-{name}.txt",
+                             progress=progress, cancel_event=cancel_event)
     if progress is None and cancel_event is None:
         return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
                        hip=cfg.get("backend") == "hip")
@@ -446,6 +460,50 @@ def fork_is_unsafe(args) -> bool:
     return sys.platform == "win32" and arg_value(args, "--kv-resident") is not None
 
 
+def measure_metal(base_args: list[str], ids_list, start_engine, say=print, tiles: Path = ROOT / "metal-tiles.txt", *,
+                  progress=None, cancel_event=None) -> dict:
+    """A Mac: the engine measures its decode kernels' tiles on this GPU while it answers the prompts, then the tiles race
+    the defaults - a restart each, interleaved rounds, on the config's own arguments (the PC's product defaults are not
+    the Mac's) - and are kept (env STRATA_METAL_TILES) only when they win by more than MIN_GAIN.  Both variables are set
+    on every start (empty: off), so a tiles file the config names already does not decide the baseline."""
+    t0 = time.time()
+    report: dict = {}
+    new = tiles.with_suffix(".new.txt")
+    new.unlink(missing_ok=True)
+    _check_cancel(cancel_event)
+    _progress(progress, "loading", 0, 1)
+    say("  Measuring the GPU kernels' tiles on this Mac ...")
+    e = start_engine(base_args, {CALIBRATE: str(new), TILES: ""})
+    try:
+        Session(e, ids_list, cancel_event).warm_up(1)
+    finally:
+        close(e)
+    _progress(progress, "loading", 1, 1)
+    if not new.exists():
+        raise RuntimeError("the engine wrote no tiles")
+    rates: dict = {"default": [], "tiles": []}
+    for rnd in range(SWEEP_ROUNDS):
+        for key in ("default", "tiles") if rnd % 2 == 0 else ("tiles", "default"):
+            _check_cancel(cancel_event)
+            env = {CALIBRATE: "", TILES: str(new) if key == "tiles" else ""}
+            say(f"  Measuring the {'measured tiles' if key == 'tiles' else 'default tiles'} (restarts the engine) ...")
+            got: dict = {}
+            measure_candidate(lambda a: start_engine(a, env), base_args, key, say, report, got, key, ids_list,
+                              cancel_event=cancel_event)
+            rates[key] += got.get(key, [])
+    report["metal_tiles"] = rates
+    env = {}
+    if pick(rates, "default") == "tiles":
+        new.replace(tiles)
+        env[TILES] = str(tiles)
+    else:
+        new.unlink(missing_ok=True)
+    best = rates["tiles" if env else "default"]
+    report["seconds"] = round(time.time() - t0)
+    report["tok_s"] = round(statistics.median(best), 1) if best else None
+    return {"settings": {}, "env": env, "report": report}
+
+
 def restart(start_engine, args, what, say, report):
     """#1337: a later step's engine start that fails is a candidate that loses, not a failed run: what the earlier
     steps measured (and the settings they chose) must survive it.  Returns the engine, or None after saying why and
@@ -511,7 +569,7 @@ def apply(args: list[str], settings: dict) -> list[str]:
     return out
 
 
-ENV_KEYS = (SH_STREAM,)
+ENV_KEYS = (SH_STREAM, TILES, CALIBRATE)
 
 
 def apply_env(env: dict | None, calibrated: dict | None) -> dict:

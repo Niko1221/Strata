@@ -324,6 +324,28 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 
 
 # ------------------------------------------------------------------------------------------------ main
+def calibrate_config(cfg_path: Path) -> bool:
+    """The Mac's tuning (tools/calibrate.py): the engine measures its GPU kernels' tiles, they race the defaults, and the
+    config's "env" names them (STRATA_METAL_TILES) only when they are faster."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import calibrate as CAL
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    S.say()
+    S.say("  Tuning Strata for this Mac: the engine measures its GPU kernels' tiles, then they race the defaults.")
+    S.say("  It takes a few minutes (longer when the experts stream from the SSD); the Mac is busy meanwhile.")
+    try:
+        res = CAL.run(cfg, say=S.say)
+    except Exception as e:                             # never stops an install: the defaults stay
+        S.warn(f"the tuning did not finish ({e}): the default settings stay")
+        return False
+    cfg["env"] = CAL.apply_env(cfg.get("env"), res["env"])
+    S.write_config(cfg_path, cfg)
+    tok_s = res["report"].get("tok_s")
+    S.ok(("tuned for this Mac: the measured tiles" if res["env"] else "tuned for this Mac: the default tiles are already the fastest here")
+         + (f" ({tok_s} tok/s)" if tok_s else ""))
+    return True
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
@@ -346,6 +368,8 @@ def main(argv=None) -> int:
                     help="where model files come from: auto (huggingface), huggingface, modelscope; "
                          "same as STRATA_SOURCE")
     ap.add_argument("--setup", action="store_true")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="measure the GPU kernels' tiles on this Mac (a few minutes) and keep them when they are faster")
     ap.add_argument("--no-start", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
@@ -367,6 +391,8 @@ def main(argv=None) -> int:
     models_root = Path(a.models_dir) if a.models_dir else data / "models"
 
     have = mac_configs()
+    if have and a.calibrate and not (a.setup or a.model or a.check or a.update or a.build):
+        return 0 if calibrate_config(have[0]) else 1
     if have and not (a.setup or a.model or a.check or a.no_start or a.update or a.build):
         return start(have[0], a.port, a.browser is not False)
 
@@ -544,6 +570,13 @@ def main(argv=None) -> int:
     port = a.port or 8080
     cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    try:                                               # an earlier --calibrate survives a reinstall
+        tiles = json.loads(cfg_path.read_text(encoding="utf-8-sig")).get("env", {}).get("STRATA_METAL_TILES")
+    except (OSError, ValueError):
+        tiles = None
+    if tiles and Path(tiles).exists():
+        cfg["env"]["STRATA_METAL_TILES"] = tiles
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,
@@ -556,8 +589,9 @@ def main(argv=None) -> int:
         cfg["draft_vocab"] = a.draft_vocab
     if a.browser is not None:
         cfg["open_browser"] = a.browser
-    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     S.write_config(cfg_path, cfg)
+    if a.calibrate:
+        calibrate_config(cfg_path)
     script = S.write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     S.ok(f"start script: {script.name}")
     S.say()
