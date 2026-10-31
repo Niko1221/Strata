@@ -5,6 +5,9 @@
 // these decode a 64-value block once and apply it to each token. Each token's arithmetic is that dot product's AVX2
 // path step for step (the same integer sums, the same FMA order, the same horizontal sum), so a row equals
 // ggml-cpu's bit for bit - what an AVX2 CPU computed before these existed. Activations are Q8_0.
+//
+// Where the CPU has AVX-VNNI the integer sums come from vpdpbusd, the one instruction the AVX-512 rows use for the
+// same maddubs + maddwd pair (same bits: maddubs cannot saturate on 4-bit weights against int8 activations).
 #pragma once
 
 #include <cstddef>
@@ -22,5 +25,15 @@ void nvfp4_256_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
 /// Plain rows [r0, r1) against `nt` Q8_0 activations of `n` values, times `scale`, as nvfp4_512_rows.
 void nvfp4_256_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                     int r0, int r1, float scale = 1.f);
+
+/// The same rows with the AVX-VNNI dot (vpdpbusd) on or off, not as the CPU says (tests and benches A/B them side by
+/// side in one process).  Off is what an AVX2 CPU runs; on is taken only where it holds, and both are the same bits.
+void nvfp4_256_gu_rows_v(bool vnni_rows, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                         const void* const* act, int nt, float* const* ff, int r0, int r1, float s_gate, float s_up);
+void nvfp4_256_rows_v(bool vnni_rows, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
+                      float* const* out, int r0, int r1, float scale = 1.f);
+/// Whether the two above take the AVX-VNNI forms as the engine runs them: the build has the intrinsics, the CPU has
+/// AVX-VNNI (cpu_avxvnni_ok) and STRATA_NO_NVFP4_VNNI does not answer no.
+bool nvfp4_256_vnni_ok();
 
 }  // namespace strata::kernels::cpu

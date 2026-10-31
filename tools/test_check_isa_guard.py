@@ -63,6 +63,13 @@ class Policy(unittest.TestCase):
         self.assertIsNotNone(G.judge("?$sneak@$00@?A0x12345678@cpu@kernels@strata@@YAXXZ",
                                      "strata_kernels_cpu:native_expert.cpp.obj", "", False, False, False))
 
+    def test_nvfp4_avx2_vnni_copy_is_fine(self):
+        """the NVFP4 AVX-2 rows' vpdpbusd copy (nvfp4_avx2_rows.inl): internal, in a file with a VNNI arm."""
+        name = "void strata::kernels::cpu::(anonymous namespace)::vnni::row_dot<8>(unsigned char const*, int, float*)"
+        obj = "CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/nvfp4_avx2.cpp.o"
+        self.assertIsNone(G.judge(name, obj, "", False, False, True))
+        self.assertIsNotNone(G.judge(name, obj.replace("nvfp4_avx2", "native_expert"), "", False, False, True))
+
     def test_listed_public_entry_point_is_fine(self):
         self.assertIsNone(G.judge("?act_quant_q8_1@cpu@kernels@strata@@YAXPEBMHAEAUActQ@123@@Z",
                                   "strata_kernels_cpu:expert.cpp.obj", "", False, False, False))

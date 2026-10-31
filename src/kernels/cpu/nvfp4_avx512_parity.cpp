@@ -8,10 +8,12 @@
 // expert (layer 0, expert 0 of a pack's experts.bin) covers the checkpoint's own distribution.
 // Also the down rows (n 640) and gate/up through silu with the blob tail's scales, 1..9 tokens (past one slice).
 // The AVX2 rows follow ggml's AVX2 path step for step, so for them every row must also be bit-equal (ggml-cpu built
-// with AVX2: STRATA_PORTABLE, or a native build). Each kernel is checked when this CPU runs it.
+// with AVX2: STRATA_PORTABLE, or a native build).  On a CPU with AVX-VNNI the rows' two forms - maddubs + maddwd and
+// vpdpbusd - are checked separately and both must be bit-equal; they are the same integer sums. Each kernel is
+// checked when this CPU runs it.
 // Speed: gate+up rows of one expert for 1..8 tokens, each way, as the CPU pool runs them.
 //
-//     nvfp4_avx512_parity --bw THREADS TOKENS [ggml|avx2]
+//     nvfp4_avx512_parity --bw THREADS TOKENS [ggml|avx2|avx2plain|avx2vnni]
 //     nvfp4_avx512_parity --expert pack/experts.bin [layer expert]
 //
 // --expert: one whole expert as decode runs it (Q8_0 input, gate/up + silu, Q8_0 of the hidden, down) against a
@@ -48,6 +50,29 @@ struct Kern {
 };
 const Kern k512{"avx512", strata::kernels::cpu::nvfp4_512_gu_rows, strata::kernels::cpu::nvfp4_512_rows, false};
 const Kern k256{"avx2", strata::kernels::cpu::nvfp4_256_gu_rows, strata::kernels::cpu::nvfp4_256_rows, true};
+
+// The same 256-bit rows with the AVX-VNNI dot forced one way.  vpdpbusd stands for maddubs + maddwd and cannot
+// saturate on these operands, so `avx2+vnni` owes ggml the same bit equality `avx2` does - and forcing both in one
+// process is the only way to price THIS kernel: the engine-wide STRATA_NO_AVXVNNI takes the Q2_0 and i-quant copies
+// down with it, so a token-rate delta read off it says nothing about the NVFP4 rows.
+void gu_off(const uint8_t* b, size_t gr, size_t up, int n, const void* const* act, int nt, float* const* ff, int r0,
+            int r1, float sg, float su) {
+    strata::kernels::cpu::nvfp4_256_gu_rows_v(false, b, gr, up, n, act, nt, ff, r0, r1, sg, su);
+}
+void gu_on(const uint8_t* b, size_t gr, size_t up, int n, const void* const* act, int nt, float* const* ff, int r0,
+           int r1, float sg, float su) {
+    strata::kernels::cpu::nvfp4_256_gu_rows_v(true, b, gr, up, n, act, nt, ff, r0, r1, sg, su);
+}
+void rows_off(const uint8_t* w, size_t rb, int n, const void* const* act, int nt, float* const* out, int r0, int r1,
+              float s) {
+    strata::kernels::cpu::nvfp4_256_rows_v(false, w, rb, n, act, nt, out, r0, r1, s);
+}
+void rows_on(const uint8_t* w, size_t rb, int n, const void* const* act, int nt, float* const* out, int r0, int r1,
+             float s) {
+    strata::kernels::cpu::nvfp4_256_rows_v(true, w, rb, n, act, nt, out, r0, r1, s);
+}
+const Kern k256v{"avx2+vnni", gu_on, rows_on, true};
+const Kern k256p{"avx2+plain", gu_off, rows_off, true};
 
 constexpr int N = 2560, ROWS = 1280, BLK = 36;   // an expert's gate+up: 1280 rows of 2560 values
 constexpr int FF = 640;                          // its down: 2560 rows of 640
@@ -321,11 +346,20 @@ int main(int argc, char** argv) {
     const bool has512 = strata::kernels::cpu::cpu_avx512_ok(), has256 = strata::kernels::cpu::cpu_avx2_ok();
     if (argc >= 4 && std::string(argv[1]) == "--bw") {
         const std::string how = argc >= 5 ? argv[4] : "";
-        return bandwidth(std::atoi(argv[2]), std::atoi(argv[3]), how == "ggml", how == "avx2" || !has512 ? k256 : k512);
+        if (how == "avx2vnni" && !strata::kernels::cpu::nvfp4_256_vnni_ok()) {   // would fault: no vpdpbusd here
+            std::printf("--bw avx2vnni: this build or CPU has no AVX-VNNI; measuring the plain rows instead\n");
+            return bandwidth(std::atoi(argv[2]), std::atoi(argv[3]), false, k256p);
+        }
+        const Kern& k = how == "avx2vnni" ? k256v : how == "avx2plain" ? k256p
+                      : how == "avx2" || !has512 ? k256 : k512;
+        return bandwidth(std::atoi(argv[2]), std::atoi(argv[3]), how == "ggml", k);
     }
     std::vector<const Kern*> ks;
     if (has512) ks.push_back(&k512);
     if (has256) ks.push_back(&k256);
+    // both forms of the 256-bit rows, forced, so one machine checks the AVX-VNNI dot against the AVX2 pair (the
+    // engine picks between them with cpu_avxvnni_ok(); STRATA_NO_NVFP4_VNNI=1 turns only these rows back)
+    if (has256 && strata::kernels::cpu::nvfp4_256_vnni_ok()) { ks.push_back(&k256v); ks.push_back(&k256p); }
     std::mt19937 rng(20260929);
     std::vector<uint8_t> w(BLOB);
     // random blocks: every code, scales 0x20..0x5f (sign bit clear, never 0x7F), as ModelOpt writes them
