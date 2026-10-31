@@ -736,9 +736,13 @@ constexpr int PR = LR + HC;                        // partial rows per (token, s
 // The same loads, the same values, the same arithmetic in the same order: bitwise the kernels without it (gr_v3_screen).
 // ld.global.nc as a volatile asm so the compiler cannot sink the load back to its first use, behind the barrier.
 __device__ __forceinline__ uint4 ldg_v4(const uint4* p) {
+#if defined(__HIPCC__)
+    return *p;   // (PTX does not exist on HIP; the plain load)
+#else
     uint4 v;
     asm volatile("ld.global.nc.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "l"(p));
     return v;
+#endif
 }
 constexpr int TQ3 = N / 8 / 32;                    // uint4 weight chunks per lane in one stream's slice (10)
 
@@ -2801,6 +2805,10 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
 void fused_gr_v3_pf(int mask) { g_v3_pf_force = mask; }
 // The bench only: registers, spills, shared memory and resident blocks a multiprocessor of the v3 kernels (T = 4) on the current card, one line each.
 void fused_gr_v3_print_resources() {
+#if defined(__HIPCC__)
+    std::printf("gr_v3 resources: not printed on HIP\n");
+    return;
+#else
     auto one = [](const char* name, const void* f, size_t dyn) {
         cudaFuncAttributes a;
         int blocks = 0;
@@ -2822,6 +2830,7 @@ void fused_gr_v3_print_resources() {
     one("up T4 pf1 (batched)", (const void*) gr_up_v3_kernel<1, 4, true, 1>, 0);
     one("up T4 pf2 (weights)", (const void*) gr_up_v3_kernel<1, 4, true, 2>, 0);
     one("up T4 pf3", (const void*) gr_up_v3_kernel<1, 4, true, 3>, 0);
+#endif
 }
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {
