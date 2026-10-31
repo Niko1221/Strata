@@ -74,12 +74,21 @@ def chunk_of(prefill) -> int:
         return AUTO_CHUNK
 
 
+def experts_fit_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300,
+                    prefill="auto", vendor: str = "intel", kv_in_vram: int | None = None) -> float:
+    """MiB the estimate leaves for the experts, counting only the KV that stays in VRAM (`kv_in_vram`; the whole context
+    when not given - a streamed KV keeps 32K of it on the card).  `slack_mib` is this with the whole context in VRAM."""
+    gap = GAP_MIB.get(str(vendor or "").lower(), GAP_OTHER_MIB)
+    prompt = PROMPT_BASE_MIB + PROMPT_PER_TOKEN_MIB * chunk_of(prefill)
+    tokens = ctx if kv_in_vram is None else max(0, int(kv_in_vram))
+    return (vram_gb * 1024 - gap - base_mib(model) - session_mib(tokens, kv) - HEAD_MIB
+            - max(int(reserve_mib), 0) - prompt)
+
+
 def slack_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto",
               vendor: str = "intel") -> float:
     """MiB the estimate leaves for the expert cache (negative: the engine would stop with "no VRAM is left for the expert cache")."""
-    gap = GAP_MIB.get(str(vendor or "").lower(), GAP_OTHER_MIB)
-    prompt = PROMPT_BASE_MIB + PROMPT_PER_TOKEN_MIB * chunk_of(prefill)
-    return (vram_gb * 1024 - gap - base_mib(model) - session_mib(ctx, kv) - HEAD_MIB - max(int(reserve_mib), 0) - prompt)
+    return experts_fit_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor)
 
 
 def needed_mib() -> float:

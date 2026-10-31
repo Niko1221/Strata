@@ -332,16 +332,16 @@ int main(int argc, char** argv) {
         {
             const float msv = (float) ms;
             const bool zero_ok = std::memcmp(&msv, &yc[0], 4) == 0 && ys[0] == 0.0f;
-            const int far = max_pos - 1;
+            const int far_pos = max_pos - 1;
             const double inv_f = 1.0;   // pair 0: theta ** 0
-            const double extrap_f = (double) far * inv_f, interp_f = fs * extrap_f;
+            const double extrap_f = (double) far_pos * inv_f, interp_f = fs * extrap_f;
             const double inv_l = std::pow(theta, -2.0 * (double) (half - 1) / (double) n_rot);
-            const double extrap_l = (double) far * inv_l, interp_l = fs * extrap_l;
+            const double extrap_l = (double) far_pos * inv_l, interp_l = fs * extrap_l;
             const float ef = (float) (std::cos(interp_f * (1.0 - 1.0) + extrap_f * 1.0) * ms);
             const float itf = (float) (std::cos(interp_f * (1.0 - 0.0) + extrap_f * 0.0) * ms);
             const float sl_e = (float) (std::sin(interp_l * (1.0 - 1.0) + extrap_l * 1.0) * ms);
             const float sl_i = (float) (std::sin(interp_l * (1.0 - 0.0) + extrap_l * 0.0) * ms);
-            const float got_f = yc[(size_t) far * half], got_l = ys[(size_t) far * half + (half - 1)];
+            const float got_f = yc[(size_t) far_pos * half], got_l = ys[(size_t) far_pos * half + (half - 1)];
             const bool first_extrapolates = std::memcmp(&got_f, &ef, 4) == 0;
             const bool last_interpolates = std::memcmp(&got_l, &sl_i, 4) == 0;
             const bool distinguishable = std::fabs((double) ef - (double) itf) > 1e-3 &&

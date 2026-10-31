@@ -634,9 +634,9 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
                     want[4 + i] = (uint8_t) (int8_t) (amax == 0.0f ? 0.0f : std::round(v[i] / d));
                 // native_mmvq.cu is built with --use_fast_math (its divisions are approximate): there the sum must be
                 // the same bits, the scale within one fp16 step and each value within one step
-                bool near = path >= 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
-                for (int i = 0; near && i < 32; ++i) near = std::abs((int) (int8_t) g[4 + i] - (int) (int8_t) want[4 + i]) <= 1;
-                if (std::memcmp(want, g, 36) == 0 || near) ++same;
+                bool near_expected = path >= 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
+                for (int i = 0; near_expected && i < 32; ++i) near_expected = std::abs((int) (int8_t) g[4 + i] - (int) (int8_t) want[4 + i]) <= 1;
+                if (std::memcmp(want, g, 36) == 0 || near_expected) ++same;
                 else { ++bad; std::printf("  q8_1 path %d block %d: changed although it was finite\n", path, b); }
             } else {
                 const float fd = k::f32_from_f16(gd), fs = k::f32_from_f16(gs);
