@@ -9,6 +9,9 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+This guide covers the Qwen engines. **DeepSeek-V4.1-Flash serves one request at a time** in this version;
+`--parallel` is ignored with a warning. See [DEEPSEEK41.md](DEEPSEEK41.md) for its current limits.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 
