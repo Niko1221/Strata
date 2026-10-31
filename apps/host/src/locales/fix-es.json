@@ -81,5 +81,15 @@
  "fx80": "Necesita unos {0} GB de espacio libre en disco. Lo que no cabe en memoria se lee de tu SSD.",
  "fx81": "{0} de RAM + VRAM, más unos {1} GB de disco",
  "fx82": "Respuestas más rápidas en tarjetas NVIDIA de 12 GB",
- "fx83": "Prefiere las partes del modelo que ya están en la tarjeta gráfica, lo que hace las respuestas más rápidas en tarjetas de 12 GB. Desactivado por defecto: en sesiones largas de agente puede repetirse y dar resultados más débiles. Actívalo si sobre todo chateas y quieres la velocidad."
+ "fx83": "Prefiere las partes del modelo que ya están en la tarjeta gráfica, lo que hace las respuestas más rápidas en tarjetas de 12 GB. Desactivado por defecto: en sesiones largas de agente puede repetirse y dar resultados más débiles. Actívalo si sobre todo chateas y quieres la velocidad.",
+ "fx84": "Resumir mensajes antiguos",
+ "fx85": "Empezar a resumir mensajes antiguos",
+ "fx86": "Avanzado: espacio libre reservado",
+ "fx87": "Espacio libre antes de resumir",
+ "fx88": "Strata deja parte de la ventana libre para que quepan el resumen y la respuesta. Menos espacio hace que el resumen empiece más tarde; en ventanas de hasta 256K decide esto, no el porcentaje.",
+ "fx89": "En {0} ({1} tokens) empieza alrededor de {2} tokens ({3}% de la ventana).",
+ "fx90": "Carga un modelo para ver la cifra de tu ventana.",
+ "fx91": "Ahora manda la variable de entorno STRATA_COMPACTION_…; elegir aquí la reemplaza.",
+ "fx92": "No se guardó la elección.",
+ "fx93": "Cuánto debe llenarse un chat para que el asistente comprima el principio. Más tarde conserva más conversación pero deja menos sitio para una respuesta; el asistente usará el nuevo número en el siguiente mensaje."
 }
