@@ -510,8 +510,8 @@ function renderKvDonut(fsm, live, eng, last, requests) {
   const usedShown = legKs ? kfmt((legKs[0] + legKs[1] + legKs[2]) * 1000) : kfmt(used);   // no integer split: the true count
   $("kv-sub").textContent = ctx ? `${usedShown} / ${ctxfmt(ctx)}` : "–";
   // exact counts live in the arc hover titles; the arcs are never dimmed — the phase story rides the legend rows' .dim and the lamp
-  // never a false 100 % while the tail is still being read: 100 % only for a strictly zero prefill, floored to a tenth otherwise
-  const effPct = (segRead === 0 && segReuse > 0) ? "100%"
+  // never a false 100 % while the tail is still being read: the engine publishes the cached prefix (reused) as soon as it is busy, before any read progress arrives — "100 %" belongs only to a prefix that covers the whole prompt (eff >= 1), floored to a tenth otherwise
+  const effPct = (segRead === 0 && eff >= 1) ? "100%"
                : eff > 0 ? pctFloor(eff)
                : "0%";
   // the merged ring keeps no per-request eff — it says only what it knows for sure

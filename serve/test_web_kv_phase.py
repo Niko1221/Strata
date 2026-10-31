@@ -57,8 +57,10 @@ class PhaseScript(unittest.TestCase):
         ring = ring_of(src)
         self.assertNotIn("kv-leg-reuse-label", ring,
                          "the REUSE row keeps a fixed static name in the page; the donut never rewrites it")
-        self.assertIn('const effPct = (segRead === 0 && segReuse > 0) ? "100%"', ring,
-                      "100 % only for a strictly zero prefill")
+        self.assertIn('const effPct = (segRead === 0 && eff >= 1) ? "100%"', ring,
+                      "100 % only for a prefix that covers the whole prompt, never before any read progress")
+        self.assertNotIn('(segRead === 0 && segReuse > 0)', ring,
+                         "B-1: a cached prefix reported before read progress must not read as a full hit")
         self.assertIn('const cachedHit = requests.find(r => (r.reused || 0) > 0 && (r.prompt_tokens || 0) > 0);', ring,
                       "the quiet percent quotes the newest history record that really got a cached prefix")
         self.assertIn('$("kv-leg-reuse-pct").textContent = segReuse > 0 ? (merged ? quietPct : effPct) : "";', ring)
