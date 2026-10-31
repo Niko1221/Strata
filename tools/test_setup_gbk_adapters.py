@@ -32,6 +32,14 @@ class GbkOutput(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("VEN_10DE", found[0]["pnp"])
 
+    def test_the_tuning_probe_keeps_what_a_child_printed_with_odd_bytes(self):
+        # #4629: the reader thread's UnicodeDecodeError left stdout None
+        from strata_control import tune_machine
+        code = "import sys; sys.stdout.buffer.write(%r)" % (GBK_LINE,)
+        text = tune_machine._run([sys.executable, "-X", "utf8", "-c", code])
+        self.assertIsInstance(text, str)
+        self.assertIn("VEN_10DE", text)
+
     def test_a_mangled_name_still_matches_its_registry_entry_by_pci_id(self):
         adapters = [{"name": "AMD Radeon(TM) Graphics �", "pnp": "PCI/VEN_1002&DEV_744C&SUBSYS", "ram": 0}]
         registry = [{"DriverDesc": "AMD Radeon RX 7900 XTX", "MatchingDeviceId": "PCI/VEN_1002&DEV_744C",
