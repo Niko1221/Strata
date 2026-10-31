@@ -558,3 +558,46 @@ class Runs(unittest.TestCase):
         self.assertGreaterEqual(setup.DL_CONNECTIONS, 8)
         self.assertGreaterEqual(setup.DL_RUN, 2)
         self.assertEqual(setup.DL_CHUNK, 32 << 20)                           # the piece list on disk names this size: resumes need it
+
+class WholeMarkNeedsThePin(unittest.TestCase):
+    """#4088: a full-length shard with no finish mark and a pinned SHA-256 must not be marked "whole".
+
+    A run killed between the rename of a finished .part and the end of its hash leaves exactly that state, and a mark
+    written by the next run made done() true: download() skipped the file, the pinned hash was never checked, and a
+    shard damaged by that crash stayed in place."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+
+    def pinned_url(self):
+        repo = next(r for r, files in setup.REPO_PINS.items() if files)
+        name = next(iter(setup.REPO_PINS[repo]))
+        return name, f"https://huggingface.co/{repo}/resolve/main/{name}"
+
+    def test_a_pinned_shard_is_left_for_the_download_check(self):
+        name, url = self.pinned_url()
+        shard = self.folder / name
+        shard.write_bytes(b"x")
+        self.assertIsNotNone(setup.file_pin(url), "the file must have a pin for this test to mean anything")
+        self.assertFalse(setup.mark_whole_or_leave_it_to_the_pin(shard, url, own=False))
+        self.assertFalse(setup.done(shard), "no finish mark: download() has to hash it and repair it")
+        self.assertFalse(shard.with_name(shard.name + ".done").exists())
+
+    def test_a_file_without_a_pin_keeps_the_whole_mark(self):
+        shard = self.folder / "hand-copied.gguf"
+        shard.write_bytes(b"x")
+        url = "https://huggingface.co/someone/else/resolve/main/hand-copied.gguf"
+        self.assertIsNone(setup.file_pin(url))
+        self.assertTrue(setup.mark_whole_or_leave_it_to_the_pin(shard, url, own=False))
+        self.assertTrue(setup.done(shard))
+        self.assertIn("whole", shard.with_name(shard.name + ".done").read_text(encoding="utf-8"))
+
+    def test_the_persons_own_file_keeps_the_mark(self):
+        """--gguf-dir: not a download, and setup does not hash-check a person's own file either way."""
+        name, url = self.pinned_url()
+        shard = self.folder / name
+        shard.write_bytes(b"x")
+        self.assertTrue(setup.mark_whole_or_leave_it_to_the_pin(shard, url, own=True))
+        self.assertTrue(setup.done(shard))
