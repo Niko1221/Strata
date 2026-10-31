@@ -119,15 +119,19 @@ class Config(unittest.TestCase):
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
     def test_iq3_s_runs_a_three_token_window_with_min_p(self):
-        # M5 Max, MTP, 5 interleaved pairs, identical tokens: --spec 3 --spec-min-p 0.5 is +1.4..3.6% over --spec 2 on IQ3_S; Q2_0 is flat
+        # M5 Max, MTP, 5 interleaved pairs, identical tokens: --spec 3 --spec-min-p 0.5 over --spec 2: IQ3_S -0.9% / +2.5% / +16.7% / +4.9%
+        # (story / code / JSON / agent turn), Q2_0 +0.4% / +11.5% / +6.3% / +1.9%
         shards = [Path("/m/a-00001.gguf"), Path("/m/a-00002.gguf")]
         iq = M.engine_args(Path("/p/packs/iq3_s"), shards, Path("/d/mtp/rt"), 32768, model="IQ3_S")
         self.assertEqual(iq[iq.index("--spec") + 1], "3")
         self.assertEqual(iq[iq.index("--spec-min-p") + 1], "0.5")
         self.assertIn("--mtp", iq)
         q2 = M.engine_args(Path("/p/packs/q2_0"), shards, Path("/d/mtp/rt"), 32768, model="Q2_0")
-        self.assertEqual(q2[q2.index("--spec") + 1], "2")
-        self.assertNotIn("--spec-min-p", q2)
+        self.assertEqual(q2[q2.index("--spec") + 1], "3")
+        self.assertEqual(q2[q2.index("--spec-min-p") + 1], "0.5")
+        other = M.engine_args(Path("/p/packs/iq3_xxs"), shards, Path("/d/mtp/rt"), 32768, model="IQ3_XXS")   # not measured: the old default
+        self.assertEqual(other[other.index("--spec") + 1], "2")
+        self.assertNotIn("--spec-min-p", other)
         none = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), 32768)         # no model named: the old default
         self.assertEqual(none[none.index("--spec") + 1], "2")
         self.assertNotIn("--spec-min-p", none)

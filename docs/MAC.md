@@ -130,8 +130,8 @@ The ready-made Mac engine is in the app and in the Terminal's engine component, 
 ## Defaults and options
 
 The config uses the Mac defaults: `--spec 2` with MTP (best on mixed text; an explicit `--spec N` in the config's `args` is kept),
-or `--spec 3 --spec-min-p 0.5` for the IQ3_S set (M5 Max, 5 interleaved pairs, same tokens: story +1.4%, code +3.0%, JSON +3.6%,
-agent turn +2.8% over `--spec 2`; on Q2_0 the same setting measured flat, so Q2_0 stays at `--spec 2`),
+or `--spec 3 --spec-min-p 0.5` for the IQ3_S and Q2_0 sets (M5 Max, 5 interleaved pairs, same tokens, over `--spec 2`: IQ3_S story -0.9%,
+code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +6.3%, agent turn +1.9%; the other sets are not measured),
 and the Q8_0 hyper-connection read. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read. The Mac engine is
 deterministic: two runs give identical numbers.
 

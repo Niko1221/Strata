@@ -44,15 +44,15 @@ STREAM_COPY_GAIN = "decoding about 15%, prompts about 25%"   # without the exper
 # (UD-Q5_K_XL, story: 28 tok/s without MTP, 41.8 at --spec 2, 50.6 at --spec 3). Smaller Macs stream without it.
 STREAM_MTP_FROM_GB = 96
 STREAM_SPEC = 3
-# A resident IQ3_S pack runs a 3-token window with --spec-min-p 0.5 (the draft layer extends the window only when sure): M5 Max,
-# MTP, 5 interleaved pairs, identical tokens, story / code / JSON / agent turn +1.4% / +3.0% / +3.6% / +2.8% over --spec 2
-# (phaseA-tests/mac-q/RESULTS.md).  Q2_0 measured flat (-1% to 0%), so it stays at --spec 2.
-SPEC3_MODELS = ("IQ3_S",)
+# A resident IQ3_S or Q2_0 pack runs a 3-token window with --spec-min-p 0.5 (the draft layer extends the window only when sure):
+# M5 Max, MTP, 5 interleaved pairs, identical tokens, over --spec 2: IQ3_S story / code / JSON / agent turn -0.9% / +2.5% / +16.7% /
+# +4.9%; Q2_0 +0.4% / +11.5% / +6.3% / +1.9% (phaseA-tests/mac-q/RESULTS.md sections 14 and 15).  Other sets are not measured: --spec 2.
+SPEC3_MODELS = ("IQ3_S", "Q2_0")
 SPEC3_MIN_P = "0.5"
 
 
 def spec_args(model: str, stream: bool, mtp: bool) -> list[str]:
-    """The window flags for a Mac config: --spec 3 --spec-min-p 0.5 for a resident IQ3_S pack, STREAM_SPEC when the model
+    """The window flags for a Mac config: --spec 3 --spec-min-p 0.5 for a resident IQ3_S or Q2_0 pack, STREAM_SPEC when the model
     streams from the SSD with the draft layer, else --spec 2."""
     if stream and mtp:
         return ["--spec", str(STREAM_SPEC)]
