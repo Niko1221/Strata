@@ -4,11 +4,13 @@
 #include "ggml.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -16,6 +18,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <sys/time.h>
+#endif
+
+#include "strata/platform/cpu_relax.hpp"
 
 namespace cpu = strata::kernels::cpu;
 
@@ -216,6 +225,74 @@ int main(int argc, char** argv) {
         unset_env("STRATA_POOL_SPIN_US");
         if (cpu::active_numa_split().on) { std::fprintf(stderr, "numa-split plan outlived its pool\n"); return 1; }
     }
+#if defined(__unix__) || defined(__APPLE__)
+    {   // What a park costs.  A parked worker waits `kSpinBeforeSleep` before it sleeps and reads the clock once
+        // every 1024 pauses, so `STRATA_POOL_SPIN_US=0` used to run 1024 pauses before the kernel sleep: a hot
+        // stage asked for as 0 us still spun.  The pauses change no output - every check above passes with them
+        // or without them - so cost is the only thing that tells the two apart, and this is where it is checked.
+        //
+        // One tiny batch per phase with a gap between the phases, so every idle worker parks once per phase.  The
+        // CPU that window uses, minus the same phases run back to back (no gap, nothing parks), is what the parks
+        // cost.  Bound: it must stay under half of what the same number of `strata_cpu_pause()` iterations costs
+        // in one thread - a worker that spins through its park runs that loop once per park, so the parks must not
+        // add up to a second one.  Calibrated on a Core Ultra 9 275HX (8 workers, no pinning, knob 0, 3 reps):
+        // 410 ms of CPU per 1000 phases with a spinning worker, 226 ms for the same phases back to back, and
+        // 76-86 ms for the pauses alone; the bound is 38-43 ms and the two builds differ by 180 ms.
+        put_env("STRATA_POOL_SPIN_US", "0");
+        const int pw = 8, pphases = 1000, pgap_us = 200;
+        std::vector<cpu::ExpertJobMulti> pjob(1);
+        std::vector<float> pout((size_t) cpu::MAXT * cpu::H, 0.0f);
+        pjob[0].blob = blob.data();
+        pjob[0].nt = 1;
+        pjob[0].nact[0] = act[0].data();
+        pjob[0].act[0] = &qact[0];
+        pjob[0].out[0] = pout.data();
+        const auto cpu_us = [] {
+            struct rusage r;
+            getrusage(RUSAGE_SELF, &r);
+            return (double) r.ru_utime.tv_sec * 1e6 + (double) r.ru_utime.tv_usec
+                 + (double) r.ru_stime.tv_sec * 1e6 + (double) r.ru_stime.tv_usec;
+        };
+        const auto gap = std::chrono::microseconds(pgap_us);
+        cpu::ExpertPool pool(pw, false, true, cpu::PoolAffinity::All, 0);
+        const auto phase = [&] { nan_h(pout.data()); pool.run_split_multi_native(f, pjob.data(), 1); };
+        for (int warm = 0; warm < 20; ++warm) { phase(); std::this_thread::sleep_for(gap); }
+        if (!std::isfinite(pout[0])) { std::fprintf(stderr, "park cost: the batch left no output\n"); return 1; }
+        const double parked0 = cpu_us();
+        for (int p = 0; p < pphases; ++p) { phase(); std::this_thread::sleep_for(gap); }
+        const double parked1 = cpu_us();
+        const double hot0 = cpu_us();
+        for (int p = 0; p < pphases; ++p) phase();   // back to back: the workers never park between phases
+        const double hot1 = cpu_us();
+        const double parked_us = parked1 - parked0, hot_us = hot1 - hot0;
+        const double parks_us = parked_us - hot_us;
+        const long pauses = (long) pw * pphases * 1024;   // one pause stage per idle worker per phase
+        const double ref0 = cpu_us();
+        for (long i = 0; i < pauses; ++i) strata_cpu_pause();
+        const double ref_us = cpu_us() - ref0;
+        std::printf("pool tasks: park cost: %d workers x %d phases at %d us: %.0f ms of CPU with the gap, %.0f ms "
+                    "back to back, parks %.0f ms; %ld plain pauses alone %.0f ms; %.2f of that\n",
+                    pw, pphases, pgap_us, parked_us / 1000, hot_us / 1000, parks_us / 1000, pauses, ref_us / 1000,
+                    ref_us > 0 ? parks_us / ref_us : 0.0);
+        unset_env("STRATA_POOL_SPIN_US");
+        // that parks nothing is caught by the same line: the gap window has to cost CPU, or the check below
+        // cannot tell one build from the other.
+        if (parked_us + 0.25 * ref_us < hot_us) {
+            std::fprintf(stderr, "park cost: the gap window used no more CPU than the back-to-back window, so "
+                                 "it measured no parks\n");
+            return 1;
+        }
+        if (parks_us > 0.5 * ref_us) {
+            std::fprintf(stderr, "park cost: a parked worker at STRATA_POOL_SPIN_US=0 spent %.0f ms in %d phases, "
+                                 "%.2f of the cost of %ld plain pauses: the worker spun before it slept, so the "
+                                 "hot stage the knob turns off was still running\n",
+                         parks_us / 1000, pphases, ref_us > 0 ? parks_us / ref_us : 0.0, pauses);
+            return 1;
+        }
+    }
+#else
+    std::printf("pool tasks: park cost not measured here (no getrusage)\n");
+#endif
 #if defined(__linux__)
     {   // the real split refuses STRATA_EXCHANGE_ROTATE=1 (experts move between slots, the slices need fixed ones)
         put_env("STRATA_NUMA_SPLIT", "1");

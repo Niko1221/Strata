@@ -989,10 +989,14 @@ void ExpertPool::worker(int id) {
         // diagnostic and nothing branched on it.  See the note on the atomics in pool.hpp.
         //
         // After `kSpinBeforeSleep` with no work the worker sleeps instead (issue #4).  The clock is read once
-        // every 1024 pauses, so the spin itself is unchanged.
+        // every 1024 pauses, so the spin itself is unchanged.  A hot stage of 0 skips the pause loop: those 1024
+        // pauses are the spin the knob's zero asks not to run.
         const auto parked_at = std::chrono::steady_clock::now();
         uint32_t spins = 0;
         const uint64_t um = umwait_cycles();
+        // `STRATA_POOL_SPIN_US=0` means no pause stage at all: the worker goes to the kernel sleep instead of
+        // running the 1024 pauses the clock check sits behind.
+        const bool spin_hot = spin_before_sleep_.count() != 0;
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)   // MSVC proper: clang-cl (the Windows HIP build) has no WAITPKG intrinsics by default
         const uint64_t um_esc = umwait_escalate();
         const uint64_t um_t0 = um != 0 && um_esc != 0 ? __rdtsc() : 0;
@@ -1009,7 +1013,7 @@ void ExpertPool::worker(int id) {
                 if ((++spins & 15u) != 0) continue;   // each wait is ~um cycles: look at the clock more often
             } else
 #endif
-            {
+            if (spin_hot) {
                 strata_cpu_pause();
                 if ((++spins & 1023u) != 0) continue;
             }

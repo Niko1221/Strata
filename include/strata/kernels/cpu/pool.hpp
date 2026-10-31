@@ -278,7 +278,9 @@ public:
     /// doing nothing" (7 of the 5700X's 16 threads).  Between requests the workers block on `sleep_cv_`.  NOT only
     /// between requests: with most experts in VRAM (a 24 GB card) many layers have no CPU work, so the workers
     /// also sleep mid-request - which the claim protocol above must survive (issue #29).
-    /// `STRATA_POOL_SPIN_US` overrides it (a test knob: a short spin makes the workers sleep constantly).
+    /// `STRATA_POOL_SPIN_US` overrides it (a test knob: a short spin makes the workers sleep constantly).  A value
+    /// of 0 skips the pause stage too: the clock in that loop is read only every 1024 pauses, so `0 us` would
+    /// otherwise still spin before the worker sleeps.
     static constexpr std::chrono::milliseconds kSpinBeforeSleep{20};
     /// A pool wait that sees no completion for this long is a bug; the engine stops with a message instead of
     /// spinning forever, and the server starts it again (issue #29).
