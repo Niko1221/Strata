@@ -16056,6 +16056,10 @@ int main(int argc, char** argv) {
             std::vector<int32_t> consumed;
             consumed.reserve((size_t) (n + max_new + S));
             for (int64_t i = 0; i < p; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
+            // #4590 (opt-in, STRATA_PENALTY_PROMPT=0): the repeat / frequency / presence penalties count the tokens this reply has
+            // written, not the prompt's last tokens.  Default unchanged: the window is the last penalty_last_n tokens of prompt + reply.
+            static const bool pen_gen_only = [] { const char* e = std::getenv("STRATA_PENALTY_PROMPT"); return e != nullptr && e[0] == '0'; }();
+            const size_t pen_gen0 = pen_gen_only ? consumed.size() : 0;
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
@@ -16966,7 +16970,7 @@ int main(int argc, char** argv) {
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
                     // before that row - what plain decode would have counted there.  (Until 0.1.19 only row 0
                     // was staged, and the drafted rows read unwritten slots.)
-                    strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(), window.data(), T,
+                    strata::kernels::penalty_rows(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), window.data(), T,
                                                   hist_n, hist_stage.data());
                     const strata::core::OnDevice on_h(hist_dev);
                     cudaMemcpy(d_hist, hist_stage.data(), (size_t) T * (size_t) hist_n * sizeof(int32_t),
@@ -17066,7 +17070,7 @@ int main(int argc, char** argv) {
                 // coupled drafts with penalties: the next window's row-0 history (`consumed` holds this window's
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
-                    mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
+                    mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
                 generation = {};   // a skipped or failed production must not expose an older q view
                 const GatedDraftLimit draft_limit(mtp, gated_proposal, S_mtp, p + a + 1, o.max_context);
                 const bool drafted = !use_mtp || eos || produced_n >= max_new ||
