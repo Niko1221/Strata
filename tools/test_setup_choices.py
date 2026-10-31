@@ -617,6 +617,21 @@ class CudaVision(unittest.TestCase):
                 self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
 
 
+class ProxyHint(unittest.TestCase):
+    """0.2.9.1: a download that cannot reach its server says what to do behind a proxy."""
+
+    def test_the_hint_names_the_variable_and_notices_one_already_set(self):
+        names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for n in names:
+                os.environ.pop(n, None)
+            self.assertIn("set HTTPS_PROXY", setup.proxy_hint())
+            os.environ["HTTPS_PROXY"] = "http://user:secret@proxy:3128"
+            hint = setup.proxy_hint()
+            self.assertIn("a proxy is set", hint)
+            self.assertNotIn("secret", hint)
+
+
 class SwiftIq3s(unittest.TestCase):
     """#1651: Swift 1.5 has its own IQ3_S tier since 2026-10-08 (ukisai's Swift-1.5 GGUF repo) - the model choice
     must not hide it behind the qwen family.  Names and sizes checked against the Hub listing when written."""
