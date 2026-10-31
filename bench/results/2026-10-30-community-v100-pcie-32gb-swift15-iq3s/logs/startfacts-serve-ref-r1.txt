@@ -1,0 +1,12 @@
+strata serve: 492 MiB of VRAM free with everything loaded
+strata serve: WARNING: only 492 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 768 to the config's args, or lower --max-context / --batch
+strata verify: capturing the 6-token window (492 MiB of VRAM free)
+strata verify: capturing the 3-token window (474 MiB of VRAM free)
+strata verify: capturing the 1-token window (458 MiB of VRAM free)
+strata verify: capturing the 4-token window (442 MiB of VRAM free)
+strata verify: capturing the 2-token window (326 MiB of VRAM free)
+strata generate: --batch: 2 slot sessions on CUDA0 (3.65 GiB each); 16.74 GiB free
+strata generate: --batch 2: the slot sessions take 7.31 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+strata generate: expert cache auto: 15.08 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 5719 slots
+strata generate: expert cache 7478 slots, 14.18 GiB of VRAM; policy is
+strata serve: 492 MiB of VRAM free with everything loaded

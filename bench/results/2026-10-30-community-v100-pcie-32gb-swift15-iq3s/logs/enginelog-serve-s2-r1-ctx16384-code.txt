@@ -1,0 +1,5 @@
+strata serve: conversation cache: parked 4529 tokens in 367.7 ms; parked=3 bytes=847853256 evictions=0 snapshot_bytes=305341832 reused_kv_bytes=0
+strata serve: prompt 16291 tokens = 0 reused + 16291 read in 10853 ms (1501.0 tok/s), 512 generated in 6809 ms (75.2 tok/s), drafts accepted 359 of 416, 1 checkpoints
+strata serve: decode expert cache hit rate: 91.1% (244301 hits / 268174 lookups); 6386 more read by the GPU over PCIe or from another GPU (2.3% of all 274560 routed)
+strata serve: KV streaming: 98.86% of 3561648 block reads hit VRAM, 163.1 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 4 of 6 drafts accepted
