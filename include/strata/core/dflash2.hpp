@@ -59,6 +59,10 @@ public:
     void note_rows(const int32_t* toks, int64_t n, int64_t pos0);
     /// Context rows without a draft: `n` rows of taps (device, [n][5 * n_embd]) for positions pos0 ... pos0 + n - 1.
     bool context(const float* taps_dev, int64_t n, int64_t pos0, std::string& err);
+    /// The same without the wait: the rows are queued on the drafter's stream (n <= kRows) and a later context_wait() (or the next draft / context call, which
+    /// waits first) finds them done.  The taps must stay as they are until then.  --draft auto keeps the idle drafter current this way, overlapped with the other's draft.
+    bool context_async(const float* taps_dev, int64_t n, int64_t pos0, std::string& err);
+    bool context_wait(std::string& err);
     /// One round: the new context rows (n_new in 1..8: the committed window rows, taps device [n_new][5 * n_embd], positions pos0 ...),
     /// then the block for `anchor` (the last committed token, at pos0 + n_new).  `drafts` / `probs` get kDrafts entries (the
     /// selector's pick and its probability).  The taps pointer must be the same device buffer on every call (graphs are captured on it).
@@ -142,6 +146,7 @@ private:
     int64_t have_ctx_ = 0;
     std::vector<int32_t> hist_;     ///< the token of every position the ring was filled for (serve)
     int64_t ring_hi_ = 0;           ///< one past the highest position written in this epoch
+    bool ctx_pending_ = false;      ///< context_async() queued rows nobody has waited for yet
     int32_t epoch_ = 0;             ///< stamped into the ring tags: a new epoch makes every older slot invalid
     int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
     cudaEvent_t ev_a_ = nullptr, ev_b_ = nullptr;

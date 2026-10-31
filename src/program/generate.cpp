@@ -16165,7 +16165,17 @@ int main(int argc, char** argv) {
             // what the session holds once this request is done: the prompt read so far, then every committed token
             std::vector<int32_t> consumed;
             consumed.reserve((size_t) (n + max_new + S));
-            double keep_ms = 0;   // --draft auto: time spent keeping the idle drafter current
+            double keep_ms = 0;   // --draft auto: host time spent queueing the idle drafter's upkeep
+            bool keep_pending = false;
+            auto keep_sync = [&]() -> bool {   // the queued upkeep is done: the verifier may rewrite the taps / residual rows now
+                if (!keep_pending) return true;
+                keep_pending = false;
+#if defined(STRATA_HAVE_DFLASH2)
+                if (use_df2 && !df2.context_wait(err)) return false;
+#endif
+                if (use_mtp && cudaStreamSynchronize(mtp.stream()) != cudaSuccess) { err = "the MTP upkeep failed"; return false; }
+                return true;
+            };
             const int64_t rounds_at_start = rounds;
             for (int64_t i = 0; i < p; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
@@ -16953,6 +16963,7 @@ int main(int argc, char** argv) {
                                          : from_sfx ? sbuf[(size_t) i - 1]
                                                     : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -17194,10 +17205,13 @@ int main(int argc, char** argv) {
                 // --draft auto: the drafter this request does not use keeps up with the commit (its context / its K/V), so a later request can use it
                 if (use_df2 && o.draft_auto && !merged && !draft_keep_off) {
                     const Clock::time_point tk0 = Clock::now();
+                    // queued on the idle drafter's own stream, overlapped with the other's draft; keep_sync() below waits before the next window rewrites the taps / rows
                     if (!req_df2) {
-                        if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        if (!df2.context_async(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        keep_pending = true;
                     } else if (use_mtp) {
-                        if (!mtp.prefill(ver.final_R_all(), outv.data(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        if (!mtp.prefill(ver.final_R_all(), outv.data(), a + 1, p, err, false)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        keep_pending = true;
                     }
                     keep_ms += std::chrono::duration<double, std::milli>(Clock::now() - tk0).count();
                 }
@@ -17293,6 +17307,7 @@ int main(int argc, char** argv) {
                 x = outv[(size_t) a];
                 p += a + 1;
             }
+            if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             if (draft_log && use_df2)
                 std::fprintf(stderr, "strata draft: request %lld drafter=%s window<=%d tokens=%lld rounds=%lld decode_ms=%.1f keep_ms=%.1f (%.3f per round)\n",
