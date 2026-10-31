@@ -298,6 +298,8 @@ void xfer_get(const Xfer& x, const unsigned* flag, unsigned seq, cudaStream_t s)
 /// set_flag: *flag = v after a system fence (a reader's acknowledgement).
 void wait_flags(const unsigned* flags, int n, int stride, unsigned seq, cudaStream_t s);
 void set_flag(unsigned* flag, unsigned v, cudaStream_t s);
+/// tab_set: n (address, value) pairs, *pairs[2i] = pairs[2i + 1], in one launch (the expert cache's table entries).
+void tab_set(const unsigned long long* pairs, int n, cudaStream_t s);
 /// A tensor-parallel group's all-reduce: host-mapped rows data[member][slot] (stride floats), flags[member][slot]
 /// (32 apart).  x (n floats, n % 4 == 0: this member's partial) -> the sum of the nm members' partials in member order,
 /// the same bits on every member; seq counts the group's all-reduces (the same on each member), slot = seq % slots.

@@ -116,10 +116,10 @@ std::vector<float> q8_round(const float* x, int k) {
 }
 // x rounded as the low-bit experts' kernels round it (iq_act_quant): ggml's Q8_K per 256 values (max = the signed
 // value of the largest magnitude, the first one; iscale = -127 / max; q = min(127, round-half-even(iscale x)), the
-// product rounded to F32 first; d = 1 / iscale), or q8_round's per 32 with DS4_IQ_Q8K=0 or k not a multiple of 256
+// product rounded to F32 first; d = 1 / iscale), or q8_round's per 32 unless DS4_IQ_Q8K=1 (Strata: opt-in) or k not a multiple of 256
 std::vector<float> act_round(const float* x, int k) {
     const char* on = std::getenv("DS4_IQ_Q8K");
-    if ((on != nullptr && std::atoi(on) == 0) || k % 256 != 0) return q8_round(x, k);
+    if ((on == nullptr || std::atoi(on) == 0) || k % 256 != 0) return q8_round(x, k);
     std::vector<float> v(k, 0.0f);
     for (int b = 0; b < k / 256; ++b) {
         const float* xb = x + (size_t) b * 256;
@@ -1746,7 +1746,7 @@ void test_q8k(cudaStream_t s) {
         for (int i = 0; i < D; ++i) worst = std::max(worst, std::fabs((double) yc[i] - (double) yg[i]) / mx);
         char what[96];
         std::snprintf(what, sizeof what, "q8k: %s/%s expert, CPU lane vs GPU (%s)", tn(pr.first), tn(pr.second),
-                      on == nullptr || std::atoi(on) != 0 ? "Q8_K" : "per 32");
+                      on != nullptr && std::atoi(on) != 0 ? "Q8_K" : "per 32");
         std::printf("%-56s max diff %.3g of the largest output\n", what, worst);
         cudaFree(dpp), cudaFree(dw), cudaFree(dxs), cudaFree(dh), cudaFree(dsh), cudaFree(dout), cudaFree(Q.dev);
     }

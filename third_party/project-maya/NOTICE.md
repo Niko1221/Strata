@@ -20,3 +20,5 @@ MAYA-B port (2026-10-31), staged merges onto the v1.1.17 base:
   DISK_SKIP_AUTO, the stdin read(2) loop and the CPU-lane tuning. In Strata the lane (DS4_STREAM=1) and the Q8_K rounding
   (DS4_IQ_Q8K=1) are opt-in until their gates have run.
 - #329 (mw00): the lane judged over whole decode steps.
+- #344 (needmorevram; selective port): the expert cache's recent slots (rc_* fields, the fill thread, tab_set, batched table updates), opt-in
+  DS4_RECENT=<n>. Not taken: its all-reduce over DMA, segmented top-k and the tensor-core index scores.

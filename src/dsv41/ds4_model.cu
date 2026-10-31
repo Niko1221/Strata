@@ -840,7 +840,18 @@ struct Layer {
     std::vector<float> heat;
     std::vector<int> cpu_hits;                  // CPU-lane experts used since the cache last looked
     bool swap_pending = false;
+    int sw_in = -1;                             // the expert a swap under way brings in (-1: none)
     unsigned long long* tab_pin = nullptr;      // pinned: the table entries a swap writes
+    // the recent slots (DS4_RECENT; Project Maya #344): rc_n VRAM slots from rc_base, each a copy of a CPU-lane expert
+    // the layer used lately - its host parts stay where they are, so one goes out by its table entry alone; least
+    // recently used out
+    int rc_base = -1, rc_n = 0, rc_off = 0;     // (rc_off: the layer's slots in Impl::rc_done)
+    std::vector<int> rc_exp, rc_fill;           // a slot's expert (-1: none), the expert its copy is bringing (-1: none)
+    std::vector<unsigned> rc_gen;               // a filling slot's fill (the gen rc_done says when done)
+    std::deque<std::vector<int>> rc_hist;       // the CPU-lane experts of the layer's last ticks (a fill's rule)
+    std::vector<unsigned> rc_stamp;             // the tick that last used it
+    std::vector<cudaEvent_t> rc_ev;             // [slot][member]: the fill's copies done
+    unsigned long long* rc_pin = nullptr;       // pinned: [slot][member] the slot's address, then a 0
     // a speculative window's backups (trunk layers): the ring rows it replaced, and a compressor's state before it and
     // the window's raw rows (kv, then score) to replay the accepted ones
     uint8_t* ring_bak = nullptr;
@@ -1426,6 +1437,33 @@ struct Model::Impl {
     std::vector<SwapBufs> sw_bufs;
     std::vector<std::thread> cache_ths;
     int sw_inflight = 0;
+    // the recent slots: DS4_RECENT a layer (0: none, the default), at most DS4_RECENT_FILLS (2) new ones a layer a
+    // tick, once the expert was on the CPU lane DS4_RECENT_NEED (2) times in the layer's last DS4_RECENT_WIN (8) ticks.
+    // A thread of its own issues each fill's copies (on rc_cs, after rc_go) and marks it done (rc_done[the layer's
+    // rc_off + slot] = the fill's gen) once its copies are; a tick's table entries go in one launch a device (tab_set,
+    // from rc_upd: mapped, [2 x kRcUpd])
+    int recent_n = std::max(0, (int) env_f("DS4_RECENT", 0.0f));
+    const int recent_fills = std::max(1, (int) env_f("DS4_RECENT_FILLS", 2.0f));
+    const int recent_need = std::max(1, (int) env_f("DS4_RECENT_NEED", 2.0f));
+    const int recent_win = std::max(1, (int) env_f("DS4_RECENT_WIN", 8.0f));
+    struct RcJob {
+        int layer = 0, slot = 0, expert = 0;
+        unsigned gen = 0;
+    };
+    static constexpr int kRcUpd = 8192;
+    std::vector<cudaStream_t> rc_cs;            // a device's copy stream for the fills
+    std::vector<cudaEvent_t> rc_go;             // (the fills after the main stream's work so far)
+    std::mutex rc_mu;
+    std::condition_variable rc_cv;
+    std::deque<RcJob> rc_q;
+    std::thread rc_th;
+    std::unique_ptr<std::atomic<unsigned>[]> rc_done;
+    std::vector<unsigned long long*> rc_upd;
+    std::atomic<unsigned> rc_clock{1};
+    int64_t rc_fills_done = 0, rc_fills_started = 0, rc_ticks = 0;
+    double rc_tick_ms = 0;
+    std::vector<std::vector<unsigned long long>> tick_upd;   // [device]: (entry, value) pairs
+    std::vector<RcJob> tick_jobs;
     // a run of chunks borrowing the lending devices' tails (borrow_begin / borrow_end): whether one does now, the
     // pinned staging that reads the experts back after it (rf_bytes each), what that read back in all
     bool lent = false;
@@ -1740,6 +1778,15 @@ struct Model::Impl {
         }
         sw_cv.notify_all();
         ram_cv.notify_all();
+        {
+            std::lock_guard<std::mutex> lk(rc_mu);
+        }
+        rc_cv.notify_all();
+        if (rc_th.joinable()) rc_th.join();
+        if (std::getenv("DS4_RECENT_STATS") != nullptr && rc_ticks > 0)
+            std::fprintf(stderr, "recent slots: %lld ticks, %.3f ms a tick, %.2f fills started and %.2f mapped a tick\n",
+                         (long long) rc_ticks, rc_tick_ms / rc_ticks, (double) rc_fills_started / rc_ticks,
+                         (double) rc_fills_done / rc_ticks);
         for (std::thread& t : cache_ths)
             if (t.joinable()) t.join();
         if (ram_th.joinable()) ram_th.join();
@@ -5136,8 +5183,11 @@ struct Model::Impl {
             // a layer with experts on both sides keeps one VRAM slot free for the cache's swaps
             l.n_slots = std::min(l.n_vram, l.n_exp);
             if (o.expert_cache && l.n_slots >= 2 && l.n_slots < l.n_exp) {   // (every expert fits: nothing to swap)
-                l.n_vram = l.n_slots - 1;
+                const int r = recent_n > 0 && !l.mtp && l.n_slots - 1 - recent_n >= 1 ? recent_n : 0;
+                l.n_vram = l.n_slots - 1 - r;   // (the recent slots: [n_vram, n_vram + r), from the profile's coldest)
                 l.spare_vram = l.n_slots - 1;
+                l.rc_base = l.n_vram;
+                l.rc_n = r;
             } else {
                 l.n_vram = l.n_slots;
                 l.spare_vram = -1;
@@ -5222,6 +5272,22 @@ struct Model::Impl {
                 for (int e = 0; e < l.n_exp; ++e)
                     if (l.slot[(size_t) e] >= 0) set_vm(l, e, l.slot[(size_t) e]);
             if (!halloc(l.tab_pin, (size_t) 2 * l.nm, err)) return false;
+            if (l.rc_n > 0) {
+                l.rc_exp.assign((size_t) l.rc_n, -1);
+                l.rc_fill.assign((size_t) l.rc_n, -1);
+                l.rc_gen.assign((size_t) l.rc_n, 0u);
+                l.rc_stamp.assign((size_t) l.rc_n, 0u);
+                if (!halloc(l.rc_pin, (size_t) l.rc_n * l.nm + 1, err)) return false;
+                l.rc_ev.assign((size_t) l.rc_n * l.nm, nullptr);
+                for (int i = 0; i < l.rc_n; ++i)
+                    for (int mm = 0; mm < l.nm; ++mm) {
+                        Layer& x = member(l, mm);
+                        l.rc_pin[(size_t) i * l.nm + mm] = (unsigned long long) sat(l, x, l.rc_base + i, unit(x));
+                        CK(cudaSetDevice(devs[(size_t) x.dev].id));
+                        CK(cudaEventCreateWithFlags(&l.rc_ev[(size_t) i * l.nm + mm], cudaEventDisableTiming));
+                    }
+                l.rc_pin[(size_t) l.rc_n * l.nm] = 0ull;
+            }
             for (int m = 0; m < l.nm; ++m) {
                 Layer& x = member(l, m);
                 std::vector<unsigned long long> tab((size_t) l.n_exp, 0ull);
@@ -7839,7 +7905,10 @@ struct Model::Impl {
                          (long long) (st.swaps - s0), now_ms() - t0, cancel.load() ? 1 : 0);
     }
     void cache_tick(int T) {
+        tick_begin();
+        rc_tick();
         cache_tick_swaps(T);
+        tick_flush();
         store_sync();
         store_watch();
     }
@@ -7865,6 +7934,256 @@ struct Model::Impl {
                 for (float& h : l.heat) h *= c_decay;
         }
         cache_queue();
+    }
+    // ---- the recent slots (Project Maya #344)
+    bool tab_bufs() {
+        if (!rc_upd.empty()) return true;
+        std::string e0;
+        rc_go.assign(devs.size(), nullptr);
+        rc_upd.assign(devs.size(), nullptr);
+        for (size_t di = 0; di < devs.size(); ++di) {
+            cudaSetDevice(devs[di].id);
+            cudaEventCreateWithFlags(&rc_go[di], cudaEventDisableTiming);
+            if (!hmap(rc_upd[di], (size_t) 2 * kRcUpd, e0)) {
+                rc_upd.clear();
+                return false;
+            }
+        }
+        return true;
+    }
+    // a tick's table entries start empty, and go to the devices in tick_flush (the recent slots')
+    void tick_begin() {
+        tick_upd.resize(devs.size());
+        for (auto& u : tick_upd) u.clear();
+        tick_jobs.clear();
+    }
+    // (stream order: one launch a device, before the next window; then rc_go there, the fills after it - a copy of
+    // each entry on its own was ~10 us of the host's)
+    void tick_flush() {
+        const std::vector<RcJob>& jobs = tick_jobs;
+        bool any = !jobs.empty();
+        for (const auto& u : tick_upd) any = any || !u.empty();
+        if (!any || !tab_bufs()) return;
+        for (size_t di = 0; di < devs.size(); ++di) {
+            const std::vector<unsigned long long>& u = tick_upd[di];
+            if (u.empty() && jobs.empty()) continue;
+            cudaSetDevice(devs[di].id);
+            const int n = (int) std::min<size_t>(u.size() / 2, (size_t) kRcUpd);
+            if (n > 0) {
+                std::memcpy(rc_upd[di], u.data(), (size_t) n * 16);
+                tab_set(rc_upd[di], n, devs[di].st);
+            }
+            cudaEventRecord(rc_go[di], devs[di].st);
+        }
+        if (!jobs.empty()) {
+            {
+                std::lock_guard<std::mutex> lk(rc_mu);
+                for (const RcJob& j : jobs) rc_q.push_back(j);
+            }
+            rc_cv.notify_one();
+        }
+    }
+    void rc_loop() {
+        std::vector<RcJob> fly;     // issued, not yet done
+        std::string err;
+        for (;;) {
+            std::deque<RcJob> held;
+            {
+                std::unique_lock<std::mutex> lk(rc_mu);
+                if (fly.empty()) rc_cv.wait(lk, [&] { return quit.load() || !rc_q.empty(); });
+                if (quit.load()) return;
+                held.swap(rc_q);
+            }
+            for (const RcJob& j : held) {
+                Layer& l = L[(size_t) j.layer];
+                for (int m = 0; m < l.nm; ++m) {
+                    Layer& x = member(l, m);
+                    const int di = x.dev;
+                    cudaSetDevice(devs[(size_t) di].id);
+                    cudaStreamWaitEvent(rc_cs[(size_t) di], rc_go[(size_t) di], 0);   // (after the tick's tables)
+                    stream_expert(l, m, j.expert, sat(l, x, l.rc_base + j.slot, unit(x)), rc_cs[(size_t) di], err);
+                    cudaEventRecord(l.rc_ev[(size_t) j.slot * l.nm + m], rc_cs[(size_t) di]);
+                }
+                fly.push_back(j);
+            }
+            for (size_t i = 0; i < fly.size();) {   // the ones whose copies are all done: marked
+                const RcJob& j = fly[i];
+                Layer& l = L[(size_t) j.layer];
+                bool done = true;
+                for (int m = 0; m < l.nm && done; ++m) {
+                    cudaSetDevice(devs[(size_t) member(l, m).dev].id);
+                    done = cudaEventQuery(l.rc_ev[(size_t) j.slot * l.nm + m]) == cudaSuccess;
+                }
+                if (done) {
+                    rc_done[(size_t) (l.rc_off + j.slot)].store(j.gen, std::memory_order_release);
+                    fly[i] = fly.back();
+                    fly.pop_back();
+                } else
+                    ++i;
+            }
+            if (!fly.empty()) std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+    }
+    // the fills done: mapped (unless a swap took the expert in meanwhile); their table entries go in this tick's batch
+    void rc_map(unsigned now) {
+        for (Layer& l : L) {
+            if (l.rc_n == 0) continue;
+            const int nm = l.nm;
+            for (int i = 0; i < l.rc_n; ++i) {
+                const int e = l.rc_fill[(size_t) i];
+                if (e < 0 || rc_done[(size_t) (l.rc_off + i)].load(std::memory_order_acquire) != l.rc_gen[(size_t) i]) continue;
+                l.rc_fill[(size_t) i] = -1;
+                if (l.slot[(size_t) e] >= 0) continue;
+                l.slot[(size_t) e] = l.rc_base + i;
+                l.rc_exp[(size_t) i] = e;
+                l.rc_stamp[(size_t) i] = now;
+                if (nm == 1) set_vm(l, e, l.rc_base + i);
+                if (!l.zc.empty() && l.zc[(size_t) e]) {   // (VRAM's now: not the store's to compute any more)
+                    l.zc[(size_t) e] = 0;
+                    if (l.zc_tab != nullptr) {
+                        cudaSetDevice(devs[0].id);
+                        cudaMemsetAsync(l.zc_tab + e, 0, 8, devs[0].st);
+                    }
+                    store->unmark(l.il, e);
+                }
+                for (int m = 0; m < nm; ++m) {
+                    Layer& x = member(l, m);
+                    tick_upd[(size_t) x.dev].push_back((unsigned long long) (x.vram_tab + e));
+                    tick_upd[(size_t) x.dev].push_back(l.rc_pin[(size_t) i * nm + m]);
+                }
+                ++rc_fills_done;
+                if (check_swaps && l.lay.fmt == gg::kFmtMXFP4 && nm == 1) {   // DS4_CHECK_SWAPS: the slot against the model file
+                    std::vector<uint8_t> want(l.blob, 0), dev(l.blob);
+                    read_mx_file(l, e, want.data());
+                    cudaSetDevice(devs[(size_t) l.dev].id);
+                    cudaStreamSynchronize(rc_cs[(size_t) l.dev]);
+                    cudaMemcpy(dev.data(), sat(l, l, l.rc_base + i, l.blob), l.blob, cudaMemcpyDeviceToHost);
+                    bool ok = true;
+                    for (int r = 0; r < 3 && ok; ++r)
+                        ok = std::memcmp(dev.data() + l.lay.trellis[r], want.data() + l.lay.trellis[r], mx_part_bytes(l, r)) == 0;
+                    std::fprintf(stderr, "ds4 recent: layer %d expert %d in slot %d: %s\n", l.il, e, l.rc_base + i,
+                                 ok ? "matches the model file" : "MISMATCH");
+                } else if (check_swaps && l.lay.fmt != gg::kFmtMXFP4) {
+                    std::vector<uint8_t> reg(l.region_bytes[(size_t) e]), want(l.blob), dev(l.blob);
+                    pk.read_at(l.region_file[(size_t) e], l.region_off[(size_t) e], reg.size(), reg.data());
+                    repack(l, reg.data(), want.data());
+                    for (int m = 0; m < nm; ++m) {
+                        std::vector<uint8_t> h(member(l, m).hblob);
+                        cudaSetDevice(devs[(size_t) member(l, m).dev].id);
+                        cudaStreamSynchronize(rc_cs[(size_t) member(l, m).dev]);
+                        if (nm == 1) {
+                            cudaMemcpy(dev.data(), sat(l, l, l.rc_base + i, l.blob), l.blob, cudaMemcpyDeviceToHost);
+                        } else {
+                            cudaMemcpy(h.data(), sat(l, member(l, m), l.rc_base + i, member(l, m).hblob), member(l, m).hblob,
+                                       cudaMemcpyDeviceToHost);
+                            half_to_blob(l, h.data(), m, dev.data());
+                        }
+                    }
+                    bool ok = true;
+                    for (int r = 0; r < 3; ++r)
+                        ok = ok && std::memcmp(dev.data() + l.lay.trellis[r], want.data() + l.lay.trellis[r], l.piece_bytes[r][0]) == 0 &&
+                             std::memcmp(dev.data() + l.lay.suh[r], want.data() + l.lay.suh[r], l.piece_bytes[r][1]) == 0 &&
+                             std::memcmp(dev.data() + l.lay.svh[r], want.data() + l.lay.svh[r], l.piece_bytes[r][2]) == 0;
+                    std::fprintf(stderr, "ds4 recent: layer %d expert %d in slot %d: %s\n", l.il, e, l.rc_base + i,
+                                 ok ? "matches the model file" : "MISMATCH");
+                }
+            }
+        }
+    }
+    // before a run of chunks lends the tail: the fills under way waited for and mapped (a fill's copy into a slot
+    // under the run's buffers would be mapped garbage)
+    void rc_drain() {
+        if (!rc_th.joinable()) return;
+        const double t0 = now_ms();
+        for (;;) {
+            bool pending = false;
+            for (Layer& l : L)
+                for (int i = 0; i < l.rc_n; ++i)
+                    pending = pending || (l.rc_fill[(size_t) i] >= 0 &&
+                                          rc_done[(size_t) (l.rc_off + i)].load(std::memory_order_acquire) != l.rc_gen[(size_t) i]);
+            if (!pending || quit.load() || now_ms() - t0 > 10000.0) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+        tick_begin();
+        rc_map(rc_clock.load(std::memory_order_relaxed));
+        tick_flush();
+    }
+    void rc_tick() {
+        if (recent_n <= 0) return;
+        bool have = false;
+        for (const Layer& l : L) have = have || l.rc_n > 0;
+        if (!have) return;
+        const double t_tick = now_ms();
+        struct Tm {
+            Model::Impl* m;
+            double t;
+            ~Tm() {
+                m->rc_tick_ms += now_ms() - t;
+                ++m->rc_ticks;
+            }
+        } tm{this, t_tick};
+        if (rc_cs.empty()) {
+            if (!tab_bufs()) return;
+            rc_cs.assign(devs.size(), nullptr);
+            for (size_t di = 0; di < devs.size(); ++di) {
+                cudaSetDevice(devs[di].id);
+                cudaStreamCreateWithFlags(&rc_cs[di], cudaStreamNonBlocking);
+            }
+            int off = 0;
+            for (Layer& l : L) {
+                l.rc_off = off;
+                off += l.rc_n;
+            }
+            rc_done.reset(new std::atomic<unsigned>[(size_t) std::max(1, off)]);
+            for (int i = 0; i < off; ++i) rc_done[(size_t) i].store(0u);
+            rc_th = std::thread([this] { rc_loop(); });
+        }
+        const unsigned now = rc_clock.fetch_add(1, std::memory_order_relaxed) + 1;
+        rc_map(now);
+        std::vector<RcJob>& jobs = tick_jobs;
+        for (Layer& l : L) {
+            if (l.rc_n == 0) continue;
+            {   // this tick's CPU-lane experts into the history
+                std::vector<int> cur(l.cpu_hits.begin(), l.cpu_hits.end());
+                std::sort(cur.begin(), cur.end());
+                cur.erase(std::unique(cur.begin(), cur.end()), cur.end());
+                l.rc_hist.push_back(std::move(cur));
+                while ((int) l.rc_hist.size() > recent_win) l.rc_hist.pop_front();
+            }
+            int started = 0;
+            for (size_t h = l.cpu_hits.size(); h-- > 0 && started < recent_fills;) {   // (the latest first)
+                const int e = l.cpu_hits[h];
+                if (e < 0 || e >= l.n_exp || l.slot[(size_t) e] >= 0 || e == l.sw_in) continue;
+                int uses = 0;
+                for (const std::vector<int>& hv : l.rc_hist) uses += std::binary_search(hv.begin(), hv.end(), e) ? 1 : 0;
+                if (uses < recent_need) continue;
+                bool filling = false;
+                for (int i = 0; i < l.rc_n; ++i) filling = filling || l.rc_fill[(size_t) i] == e;
+                if (filling) continue;
+                int v = -1;   // an empty slot, else the least recently used one not filling
+                for (int i = 0; i < l.rc_n && v < 0; ++i)
+                    if (l.rc_fill[(size_t) i] < 0 && l.rc_exp[(size_t) i] < 0) v = i;
+                if (v < 0)
+                    for (int i = 0; i < l.rc_n; ++i)
+                        if (l.rc_fill[(size_t) i] < 0 && (v < 0 || l.rc_stamp[(size_t) i] < l.rc_stamp[(size_t) v])) v = i;
+                if (v < 0) break;
+                if (l.rc_exp[(size_t) v] >= 0) {   // (out: its table entry, before the next window)
+                    const int old = l.rc_exp[(size_t) v];
+                    l.slot[(size_t) old] = -1;
+                    for (int m = 0; m < l.nm; ++m) {
+                        Layer& x = member(l, m);
+                        tick_upd[(size_t) x.dev].push_back((unsigned long long) (x.vram_tab + old));
+                        tick_upd[(size_t) x.dev].push_back(0ull);
+                    }
+                    l.rc_exp[(size_t) v] = -1;
+                }
+                l.rc_fill[(size_t) v] = e;
+                l.rc_gen[(size_t) v] = now;
+                jobs.push_back({l.il, v, e, now});
+                ++started;
+                ++rc_fills_started;
+            }
+        }
     }
     // the swaps under way waited for and switched in: before a run of chunks lends the tail its slots (a swap's copy
     // into the spare slot, or out of the slot it frees, must not meet the run's buffers there)
@@ -7955,6 +8274,7 @@ struct Model::Impl {
                 cudaMemcpyAsync(x.vram_tab + sw.out, &l.tab_pin[2 * m + 1], 8, cudaMemcpyHostToDevice, dm.st);
             }
             l.swap_pending = false;
+            l.sw_in = -1;
             --sw_inflight;
             ++st.swaps;
         }
@@ -7968,14 +8288,22 @@ struct Model::Impl {
             std::vector<int> hits;
             hits.swap(l.cpu_hits);
             int best = -1, vin = -1;
-            for (int e : hits)
-                if (l.slot[(size_t) e] < 0 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best])) best = e;
+            for (int e : hits) {
+                bool filling = false;   // (a recent slot's fill brings it: the swaps leave it be)
+                for (int i = 0; i < l.rc_n; ++i) filling = filling || l.rc_fill[(size_t) i] == e;
+                if (!filling && l.slot[(size_t) e] < 0 && (best < 0 || l.heat[(size_t) e] > l.heat[(size_t) best])) best = e;
+            }
             if (best >= 0 && l.spare_vram >= 0 && !l.swap_pending && sw_inflight < c_inflight) {   // VRAM: the hottest in
-                int cold = -1;
-                for (int e = 0; e < l.n_exp; ++e)
-                    if (l.slot[(size_t) e] >= 0 && (cold < 0 || l.heat[(size_t) e] < l.heat[(size_t) cold])) cold = e;
+                int cold = -1;   // (of the layer's own slots: a recent slot's expert stays)
+                for (int e = 0; e < l.n_exp; ++e) {
+                    const int sl = l.slot[(size_t) e];
+                    if (sl >= 0 && !(l.rc_n > 0 && sl >= l.rc_base && sl < l.rc_base + l.rc_n) &&
+                        (cold < 0 || l.heat[(size_t) e] < l.heat[(size_t) cold]))
+                        cold = e;
+                }
                 if (cold >= 0 && l.heat[(size_t) best] > l.heat[(size_t) cold] * c_margin + c_bonus) {
                     l.swap_pending = true;
+                    l.sw_in = best;
                     ++sw_inflight;
                     vin = best;
                     Swap sw{l.il, best, cold};
@@ -8183,6 +8511,8 @@ struct Model::Impl {
                         }
                         const bool light = dsk && r.w[t][i] < disk_skip_w * wsum;
                         if (aon && !light) ++heavy;
+                        if (l.rc_n > 0 && l.slot[(size_t) e] >= l.rc_base && l.slot[(size_t) e] < l.rc_base + l.rc_n)
+                            l.rc_stamp[(size_t) (l.slot[(size_t) e] - l.rc_base)] = rc_clock.load(std::memory_order_relaxed);
                         if (l.slot[(size_t) e] < 0) {
                             l.cpu_hits.push_back(e);
                             if (T == 1 && !l.zc.empty() && l.zc[(size_t) e]) {   // the device computed it from the store's slot
@@ -10949,6 +11279,7 @@ struct Model::Impl {
         for (const auto& cp : chunks) any = any || (cp != nullptr && cp->borrow);
         if (!any) return true;
         cache_drain();
+        rc_drain();
         for (size_t di = 0; di < chunks.size(); ++di) {
             if (chunks[di] == nullptr || !chunks[di]->borrow) continue;
             Dev& d = devs[di];

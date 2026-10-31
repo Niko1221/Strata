@@ -1760,6 +1760,12 @@ __global__ void wait_flags_kernel(const unsigned* flags, int n, int stride, unsi
     for (int i = 0; i < n; ++i) wait_at_least(flags + (size_t) i * stride, seq);
     __threadfence_system();
 }
+// a batch of table entries: *pairs[2i] = pairs[2i + 1] (the expert cache's recent slots, between windows;
+// Project Maya #344)
+__global__ void tab_set_kernel(const unsigned long long* __restrict__ pairs, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) *(unsigned long long*) pairs[2 * i] = pairs[2 * i + 1];
+}
 __global__ void set_flag_kernel(unsigned* flag, unsigned v) {
     __threadfence_system();
     *(volatile unsigned*) flag = v;
@@ -2648,6 +2654,9 @@ void xfer_get(const Xfer& x, const unsigned* flag, unsigned seq, cudaStream_t s)
 }
 void wait_flags(const unsigned* flags, int n, int stride, unsigned seq, cudaStream_t s) {
     if (n > 0) strata_ds4_launch(wait_flags_kernel, 1, 32, 0, s, flags, n, stride, seq);
+}
+void tab_set(const unsigned long long* pairs, int n, cudaStream_t s) {
+    if (n > 0) strata_ds4_launch(tab_set_kernel, (n + 127) / 128, 128, 0, s, pairs, n);
 }
 void set_flag(unsigned* flag, unsigned v, cudaStream_t s) {
     strata_ds4_launch(set_flag_kernel, 1, 1, 0, s, flag, v);
