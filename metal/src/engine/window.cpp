@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <cstring>
 #include <cerrno>
 #include <filesystem>
@@ -112,6 +113,34 @@ bool metal_ctab() {
     }();
     return on;
 }
+
+// STRATA_METAL_MOE_GU / STRATA_METAL_MOE_DN ("L,R,S"): the routed experts' gate/up and down tiles, both windows (decode and
+// MTP); unset, the tiles chosen below.  Only the tiles moe.metal instantiates (GU_SET / DN_SET) are taken; anything else is
+// refused with a log line.  expert_parity --bench, M1 Max, Q2_0 (26 Oct 2026): gate/up 8,1,2 + down 4,2,4 against 32,1,4 +
+// 8,1,4 cut the expert block 17-24% at 1-3 tokens (114 -> 94, 214 -> 167, 318 -> 242 us a layer), parity y rel L2 6e-8.
+struct MoeTile { int l = 0, r = 0, s = 0; };
+MoeTile moe_tile_env(const char* name, bool down) {
+    static const int gu_set[][3] = {{32, 1, 4}, {32, 2, 4}, {32, 4, 4}, {32, 2, 2}, {32, 2, 8}, {32, 1, 8},
+                                    {16, 1, 4}, {16, 2, 4}, {8, 1, 4},  {8, 2, 4},  {8, 1, 2}};
+    static const int dn_set[][3] = {{8, 1, 4}, {8, 2, 4}, {8, 4, 4}, {8, 1, 8},  {8, 2, 8},  {4, 1, 4},
+                                    {4, 2, 4}, {4, 4, 4}, {16, 1, 4}, {16, 2, 4}, {32, 1, 4}, {2, 2, 4}};
+    const char* e = std::getenv(name);
+    if (!e || !*e) return {};
+    MoeTile t;
+    if (std::sscanf(e, "%d,%d,%d", &t.l, &t.r, &t.s) == 3) {
+        const int(*set)[3] = down ? dn_set : gu_set;
+        const size_t n = down ? std::size(dn_set) : std::size(gu_set);
+        for (size_t i = 0; i < n; ++i)
+            if (set[i][0] == t.l && set[i][1] == t.r && set[i][2] == t.s) {
+                std::fprintf(stderr, "strata metal: %s=%d,%d,%d\n", name, t.l, t.r, t.s);
+                return t;
+            }
+    }
+    std::fprintf(stderr, "strata metal: %s=%s is not an instantiated tile; the default tile stays\n", name, e);
+    return {};
+}
+const MoeTile& moe_gu_env() { static const MoeTile t = moe_tile_env("STRATA_METAL_MOE_GU", false); return t; }
+const MoeTile& moe_dn_env() { static const MoeTile t = moe_tile_env("STRATA_METAL_MOE_DN", true); return t; }
 
 int xkind(int t) {
     switch (t) {
@@ -1061,12 +1090,14 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
         // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
         const bool tq_ = tg_.type >= 144;
-        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        const MoeTile &egu = moe_gu_env(), &edn = moe_dn_env();
+        const int gl = egu.l ? egu.l : tq_ ? 16 : 32, gr = egu.l ? egu.r : tq_ ? 2 : 1, gs = egu.l ? egu.s : 4,
+                  ds_ = edn.l ? edn.s : 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        const int dl = edn.l ? edn.l : dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
+                  dr = edn.l ? edn.r : dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
@@ -2246,12 +2277,13 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         a.d_stride = (uint64_t) a.d_row * N;
         a.n_embd = N; a.n_ff = NFF; a.n_tok = 1; a.topk = TOPK; a.n_expert = NEXP;
         const bool dq2 = td.type == ref::Q2_0;
-        const int gl = 32, gr = 1, gs = 4, ds_ = 4;
+        const MoeTile &egu = moe_gu_env(), &edn = moe_dn_env();
+        const int gl = egu.l ? egu.l : 32, gr = egu.l ? egu.r : 1, gs = egu.l ? egu.s : 4, ds_ = edn.l ? edn.s : 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        const int dl = edn.l ? edn.l : dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
+                  dr = edn.l ? edn.r : dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
