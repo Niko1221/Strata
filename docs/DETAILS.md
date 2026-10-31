@@ -1236,7 +1236,8 @@ On 12.0 cards (sm_120) these also apply:
   IQ3_S and IQ4_XS gate/up. IQ2_XXS and IQ2_XS keep MMQ. Smaller 12.0 cards (an RTX 5070 with 48 SMs) keep MMQ because the fused
   kernels were 4.7% slower on 20K prompts there. `STRATA_PF_FUSED=0` keeps MMQ.
 - `--spec 4 --spec-min-p 0.5` stays the default depth.
-- Setup (Linux, not WSL): when the RAM covers the model's need plus the n-gram table plus 16 GB (Q2_0 93 GB, IQ3_S 107 GB), the table
+- Setup (Linux, not WSL): when the RAM covers the model's need plus the n-gram table plus 16 GB (Q2_0 93 GB, IQ3_S 107 GB; for Unsloth's budget
+  sizes the need is every expert in RAM with 16 GiB beside it, not the budget-mode floor: UD-Q4_K_XL 133 GB), the table
   is kept in RAM (`--ple-io ram`), so a new prompt does not wait for its rows from the SSD. With RAM short, ram mode costs
   prompt time and start-up time, which is why smaller PCs keep the SSD reads.
 
