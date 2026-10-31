@@ -8864,31 +8864,46 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def _in_another_engine_package(path: str, package: Path) -> bool:
+    """True when `path` sits in an engine package folder that is not `package` - the old folder an engine update leaves
+    behind. Only the components/engine/ layout counts, so a reader the person put somewhere else is left alone."""
+    parts = [part.lower() for part in Path(path).parent.parts]
+    if "components" not in parts or "engine" not in parts:
+        return False
+    try:
+        return Path(path).parent != package
+    except (OSError, ValueError):
+        return False
+
+
 def with_current_reader(cfg: dict, package: Path) -> dict:
-    """The picture reader (vision "exe", "cpu_exe") is written into the run config as an absolute path inside the engine package's folder,
-    and that folder is named after the engine version: after an engine update, or in a container made for another card, the path is gone
-    and the server would stop with "server_exited". Use the same file of the package that is installed now (the reader ships in the package)."""
+    """The picture reader (vision "exe", "cpu_exe") is written into the run config as an absolute path inside the engine package's
+    folder, and that folder is named after the engine version: after an engine update, or in a container made for another card,
+    the path is gone and the server would stop with "server_exited". Use the same file of the package that is installed now (the
+    reader ships in the package).
+
+    A missing path is not the only stale case (#4658): `strata update` keeps the old engine folder, so the old reader is still
+    there and the server went on starting it after an update. A reader in another engine package folder is replaced as well; a
+    reader outside components/engine/ is the person's own file and is left as it is."""
     vision = cfg.get("vision")
     if not isinstance(vision, dict):
         return cfg
     fixed = dict(vision)
     for key in ("exe", "cpu_exe"):
         old = fixed.get(key)
-        if isinstance(old, str) and old and not engine_component.is_reference(old) and os.path.isabs(old):
-            new = package / old.replace("\\", "/").rsplit("/", 1)[-1]
-            gone = not os.path.exists(old)
-            # #4658: the old engine folder is kept after `strata update`, so the old reader still exists; one in a SIBLING engine folder
-            # (components/engine/<version>-...) is the engine's reader from before the update, and the engine in use has its own
-            older = (not gone and Path(old).parent != package and Path(old).parent.parent == package.parent
-                     and package.parent.name.lower() == "engine")
-            if (gone or older) and new.is_file():
-                print(f"[strata] the picture reader {old} " + ("is not there any more" if gone else "belongs to an older engine")
-                      + f"; using {new} from the engine package in use", flush=True)
-                fixed[key] = str(new)
+        if not isinstance(old, str) or not old or engine_component.is_reference(old) or not os.path.isabs(old):
+            continue
+        gone = not os.path.exists(old)
+        if not gone and not _in_another_engine_package(old, package):
+            continue
+        new = package / old.replace("\\", "/").rsplit("/", 1)[-1]
+        if new.is_file():
+            why = "is not there any more" if gone else "belongs to an engine that is no longer the one in use"
+            print(f"[strata] the picture reader {old} {why}; using {new} from the engine package in use", flush=True)
+            fixed[key] = str(new)
     if fixed == vision:
         return cfg
     return {**cfg, "vision": fixed}
-
 
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and

@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import server  # noqa: E402  with_current_reader tests (#4658)
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
@@ -6309,6 +6310,48 @@ class UntimedReads(unittest.TestCase):
         v = server.Vision.__new__(server.Vision)
         v.proc = SimpleNamespace(stdout=SimpleNamespace(readline=lambda: "OK 7 1 1 1\n"))
         self.assertEqual(v._readline(5.0, "x"), "OK 7 1 1 1\n")
+
+
+class CurrentReader(unittest.TestCase):
+    """#4658: `strata update` keeps the old engine folder, so a missing reader was not the only stale case."""
+
+    def _package(self, root, version):
+        package = Path(root) / "components" / "engine" / version
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "strata-vision.exe").write_bytes(b"reader")
+        return package
+
+    def test_a_reader_in_an_old_engine_package_is_replaced_even_when_it_still_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._package(tmp, "0.1.52-windows-x86_64-cuda-cuda13")
+            new = self._package(tmp, "0.1.54-windows-x86_64-cuda-cuda13")
+            cfg = {"vision": {"exe": str(old / "strata-vision.exe"), "mmproj": "m.gguf"}}
+            got = server.with_current_reader(cfg, new)
+            self.assertEqual(got["vision"]["exe"], str(new / "strata-vision.exe"))
+            self.assertEqual(got["vision"]["mmproj"], "m.gguf")
+
+    def test_a_missing_reader_is_still_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            new = self._package(tmp, "0.1.54-linux-x86_64-cuda-cuda13")
+            gone = Path(tmp) / "components" / "engine" / "0.1.52-linux-x86_64-cuda-cuda13" / "strata-vision.exe"
+            cfg = {"vision": {"exe": str(gone)}}
+            got = server.with_current_reader(cfg, new)
+            self.assertEqual(got["vision"]["exe"], str(new / "strata-vision.exe"))
+
+    def test_a_reader_outside_the_engine_packages_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            new = self._package(tmp, "0.1.54-linux-x86_64-cuda-cuda13")
+            own = Path(tmp) / "my-encoders" / "strata-vision-q8"
+            own.parent.mkdir(parents=True)
+            own.write_bytes(b"mine")
+            cfg = {"vision": {"exe": str(own)}}
+            self.assertIs(server.with_current_reader(cfg, new), cfg)
+
+    def test_the_current_package_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            new = self._package(tmp, "0.1.54-linux-x86_64-cuda-cuda13")
+            cfg = {"vision": {"exe": str(new / "strata-vision.exe")}}
+            self.assertIs(server.with_current_reader(cfg, new), cfg)
 
 
 if __name__ == "__main__":
