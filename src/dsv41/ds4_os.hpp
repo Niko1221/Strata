@@ -26,6 +26,10 @@
 #endif
 #include <windows.h>
 #include <psapi.h>   // (K32QueryWorkingSetEx: kernel32's, no psapi.lib)
+#include <timeapi.h>   // (timeBeginPeriod: windows.h with WIN32_LEAN_AND_MEAN does not bring it; winmm.lib below)
+#if defined(_MSC_VER)
+#pragma comment(lib, "winmm.lib")
+#endif
 #include "strata/platform/commit.hpp"
 #else
 #include <fcntl.h>
