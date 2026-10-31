@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
@@ -205,5 +206,9 @@ public:
 private:
     std::unique_ptr<Impl> p_;
 };
+
+/// Times the experts' stream's unbuffered reads of the pack's model files in each reader layout and read size, and prints
+/// the settings to use as its last line, on the host alone.  0 when it ran, non-zero (and why) otherwise.
+int stream_probe(const std::string& pack, std::FILE* out);
 
 }  // namespace strata::ds4

@@ -106,7 +106,7 @@ void usage() {
                  "           [--vision on|off] [--mmap-experts on|off|auto]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
-                 "           | --pack-info)\n");
+                 "           | --pack-info | --stream-probe)\n");
 }
 
 // stdin lines on a thread, so a request can see STOP while it decodes
@@ -1301,6 +1301,7 @@ int main(int argc, char** argv) {
     unsigned long long cli_seed = 1;
     bool serve_mode = false;
     bool pack_info_mode = false;
+    bool stream_probe_mode = false;
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
     int enc_w = 0, enc_h = 0;
@@ -1375,6 +1376,7 @@ int main(int argc, char** argv) {
         else if (a == "--spec-eval") spec_ids = val("--spec-eval");
         else if (a == "--serve") serve_mode = true;
         else if (a == "--pack-info") pack_info_mode = true;
+        else if (a == "--stream-probe") stream_probe_mode = true;
         else if (a == "--layer-split") (void) val("--layer-split");   // the server's (this engine balances its own split)
         else if (a == "--help" || a == "-h") {
             usage();
@@ -1391,6 +1393,13 @@ int main(int argc, char** argv) {
             return 2;
         }
         return strata::ds4::pack_info(o.pack, stdout);
+    }
+    if (stream_probe_mode) {   // the drives' read speed in the experts' stream's settings, on the host alone
+        if (o.pack.empty()) {
+            usage();
+            return 2;
+        }
+        return strata::ds4::stream_probe(o.pack, stdout);
     }
     if (o.pack.empty() || (!serve_mode && ids_s.empty() && enc_rgb.empty() && score_ids.empty() && prof_ids.empty() && spec_ids.empty())) {
         usage();
