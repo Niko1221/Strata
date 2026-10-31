@@ -1,5 +1,5 @@
 /** Serving surface: API keys, access policy, and the request log. */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import os from 'node:os';
 import { get as getStore, update } from './store.mjs';
 import { nowIso, round, uid } from './util.mjs';
@@ -86,7 +86,11 @@ export function authorized(req) {
   const header = req.headers.authorization ?? '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
   const alt = req.headers['x-api-key'];
-  return bearer === key || alt === key;
+  // Constant time, as the engine's key_matches (#213): both sides hashed first, so a length difference ends nothing early either.
+  const digest = (value) => createHash('sha256').update(String(value ?? '')).digest();
+  const want = digest(key);
+  const viaBearer = timingSafeEqual(digest(bearer), want), viaHeader = timingSafeEqual(digest(alt), want);   // both compared, whichever is set
+  return viaBearer || viaHeader;
 }
 
 export function open({ client, endpoint, tokensIn = null, model, instanceId, gpuIds, cancel }) {
