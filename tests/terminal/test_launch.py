@@ -1237,7 +1237,19 @@ class ConnectCommand(unittest.TestCase):
         big = self.render("claude-code", context=131072)["env"]
         self.assertEqual(big["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "131072")
         self.assertNotIn("CLAUDE_CODE_SIMPLE", big)
-        self.assertTrue(any("CLAUDE_CODE_MAX_OUTPUT_TOKENS" in n for n in out["limits"]))
+        self.assertTrue(any("CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096" in n for n in out["limits"]))
+
+    def test_the_output_cap_grows_with_the_window(self):
+        """4,096 (thinking included) cut off long replies on a wide window; the tested window keeps it."""
+        caps = {ctx: harness.target("http://127.0.0.1:18900", None, "m", ctx).output_cap
+                for ctx in (8192, 32768, 65536, 131072, 204800, 524288)}
+        self.assertEqual(caps, {8192: 4096, 32768: 4096, 65536: 8192, 131072: 16384, 204800: 25600, 524288: 65536})
+        out = self.render("claude-code", context=204800)
+        self.assertEqual(out["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "25600")
+        self.assertTrue(any("CLAUDE_CODE_MAX_OUTPUT_TOKENS=25600" in n for n in out["limits"]))
+        model = json.loads(self.render("opencode", context=131072)["files"][0]["text"])
+        limit = next(iter(next(iter(model["provider"].values()))["models"].values()))["limit"]
+        self.assertEqual(limit, {"context": 131072, "input": 126976, "output": 16384})   # the input limit as before
 
     def test_pi_omp_hermes_openclaw_numbers(self):
         pi = self.render("pi")["files"]
