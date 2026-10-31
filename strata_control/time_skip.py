@@ -160,10 +160,10 @@ def _run_shell(command: str, cwd: str, timeout: float, env: dict[str, str]) -> "
     so a hung check would block here until it ended on its own. On Windows the whole tree is killed.
     """
     if os.name != "nt":
-        return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True,
+        return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace",
                               timeout=timeout, env=env)
     with subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, env=env) as process:
+                          text=True, errors="replace", env=env) as process:
         try:
             out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:

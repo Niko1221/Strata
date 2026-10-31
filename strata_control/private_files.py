@@ -95,6 +95,16 @@ def current_user_sid() -> str:
     return _sid_cache
 
 
+def _same_sid(sddl_trustee: str, sid: str) -> bool:
+    """True when an SDDL trustee names ``sid``. SDDL prints well-known accounts as two-letter aliases (the built-in
+    Administrator, RID 500, is ``LA``), so an alias is turned into its string SID before the compare (#3302)."""
+    if sddl_trustee == sid:
+        return True
+    if not WINDOWS:
+        return False
+    return _string_sid(sddl_trustee) == sid.upper()
+
+
 def restrict_to_current_user(path: str | os.PathLike, *, directory: bool | None = None) -> None:
     """Make ``path`` readable and writable by the current user only.
 
@@ -165,16 +175,15 @@ def is_private(path: str | os.PathLike) -> bool:
     """
     if not WINDOWS:
         return not (os.lstat(path).st_mode & 0o077)
+    if not volume_has_acls(path):
+        return True                                   # FAT / exFAT: there are no permissions to check
     sddl = dacl_sddl(path)
     head = sddl.split("(", 1)[0]
     entries = re.findall(r"\(([^()]*)\)", sddl)
     if not head.startswith("D:") or "P" not in head[2:] or len(entries) != 1:
         return False
     fields = entries[0].split(";")
-    return len(fields) >= 6 and fields[0] == "A" and fields[5] == current_user_sid()
-
-
-_PRIVILEGED = {"SY", "BA", "OW", "CO", "CG", "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
+    return len(fields) >= 6 and fields[0] == "A" and _same_sid(fields[5], current_user_sid())
 
 
 def is_unshared(path: str | os.PathLike) -> bool:
@@ -187,13 +196,105 @@ def is_unshared(path: str | os.PathLike) -> bool:
     """
     if not WINDOWS:
         return is_private(path)
-    sddl = dacl_sddl(path)
-    allowed = _PRIVILEGED | {current_user_sid()}
+    if not volume_has_acls(path):
+        return True                                   # FAT / exFAT: there are no permissions to check
+    return not unshared_offenders(dacl_sddl(path))
+
+
+def volume_has_acls(path: str | os.PathLike) -> bool:
+    """False for a drive without file permissions (FAT, exFAT); True for NTFS/ReFS, and when it cannot be told (Windows only)."""
+    if not WINDOWS:
+        return True
+    try:
+        drive = os.path.splitdrive(os.path.abspath(os.fspath(path)))[0]
+        if not drive:
+            return True
+        flags = wintypes.DWORD()
+        fn = _kernel.GetVolumeInformationW
+        fn.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p,
+                       ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD]
+        if not fn(drive.rstrip("\\") + "\\", None, 0, None, None, ctypes.byref(flags), None, 0):
+            return True
+        return bool(flags.value & 0x00000008)         # FILE_PERSISTENT_ACLS
+    except (OSError, ValueError):
+        return True
+
+
+_ACCOUNT_NAMES = {"WD": "Everyone", "BU": "Users", "AU": "Authenticated Users", "IU": "Interactive users",
+                  "NU": "Network users", "AN": "Anonymous", "DU": "Domain Users", "S-1-1-0": "Everyone",
+                  "S-1-5-32-545": "Users", "S-1-5-11": "Authenticated Users", "S-1-5-4": "Interactive users"}
+
+
+def _string_sid(trustee: str) -> str:
+    """An SDDL trustee (a string SID or a two-letter alias such as LA, BA, SY, WD) as an upper-case string SID; the text itself
+    when Windows does not know it."""
+    if trustee.upper().startswith("S-1-"):
+        return trustee.upper()
+    pointer = ctypes.c_void_p()
+    if not _advapi.ConvertStringSidToSidW(trustee, ctypes.byref(pointer)):
+        return trustee.upper()
+    try:
+        text = wintypes.LPWSTR()
+        if not _advapi.ConvertSidToStringSidW(pointer.value, ctypes.byref(text)):
+            return trustee.upper()
+        try:
+            return text.value.upper()
+        finally:
+            _kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        _kernel.LocalFree(pointer)
+
+
+def _is_privileged_sid(sid: str) -> bool:
+    """SYSTEM, the Administrators group, the built-in Administrator account (RID 500, SDDL "LA"), OWNER RIGHTS / CREATOR OWNER / GROUP."""
+    return sid in ("S-1-5-18", "S-1-5-32-544", "S-1-3-4", "S-1-3-0", "S-1-3-1") or \
+        re.fullmatch(r"S-1-5-21-[0-9-]+-500", sid) is not None
+
+
+def unshared_offenders(sddl: str) -> list[str]:
+    """The trustees of an SDDL DACL that make the object reachable by someone besides this user, SYSTEM and the administrators:
+    every allow entry that applies to the object itself, whatever form its account is written in (a string SID or an alias such
+    as LA).  An inherit-only entry (flag IO) is for the children of a folder, not for the folder, and is left out."""
+    me = current_user_sid().upper()
+    out: list[str] = []
     for entry in re.findall(r"\(([^()]*)\)", sddl):
         fields = entry.split(";")
-        if len(fields) >= 6 and fields[0] in ("A", "OA") and fields[5] not in allowed:
-            return False
-    return True
+        if len(fields) < 6 or fields[0] not in ("A", "OA") or "IO" in re.findall("..", fields[1].upper()):
+            continue
+        sid = _string_sid(fields[5])
+        if sid == me or _is_privileged_sid(sid) or fields[5].upper() in ("SY", "BA", "OW", "CO", "CG", "LA"):
+            continue
+        if fields[5] not in out:
+            out.append(fields[5])
+    return out
+
+
+def account_name(trustee: str) -> str:
+    """A plain name for an SDDL trustee (Everyone, Users, DOMAIN\\name), or the SID text when it cannot be looked up."""
+    plain = _ACCOUNT_NAMES.get(trustee.upper()) or _ACCOUNT_NAMES.get(_string_sid(trustee))
+    if plain or not WINDOWS:
+        return plain or trustee
+    pointer = ctypes.c_void_p()
+    if not _advapi.ConvertStringSidToSidW(trustee, ctypes.byref(pointer)):
+        return trustee
+    try:
+        name, domain = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+        n, d, use = wintypes.DWORD(256), wintypes.DWORD(256), wintypes.DWORD()
+        lookup = _advapi.LookupAccountSidW
+        lookup.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+                           wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+        if lookup(None, pointer, name, ctypes.byref(n), domain, ctypes.byref(d), ctypes.byref(use)):
+            return f"{domain.value}\\{name.value}" if domain.value else name.value
+        return trustee
+    finally:
+        _kernel.LocalFree(pointer)
+
+
+def who_can_reach(path: str | os.PathLike) -> list[str]:
+    """Plain names of the accounts besides this user, SYSTEM and the administrators that can reach ``path`` (Windows; [] elsewhere)."""
+    if not WINDOWS:
+        return []
+    return [account_name(t) for t in unshared_offenders(dacl_sddl(path))]
 
 
 # ---------------------------------------------------------------------------------------------- access repair
@@ -271,8 +372,11 @@ def adopt_user_defaults() -> bool:
             ok_owner = bool(_advapi.SetTokenInformation(token, _TOKEN_OWNER, ctypes.byref(_Owner(psid)),
                                                         ctypes.sizeof(_Owner)))
             descriptor = ctypes.c_void_p()
+            # A token default DACL also applies to processes, not just files. FA is
+            # FILE_ALL_ACCESS (0x1f01ff), which omits process query/set-information.
+            # GA is mapped to the full rights of the object being created.
             if not _advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    f"D:(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)", _SDDL_REVISION_1, ctypes.byref(descriptor), None):
+                    f"D:(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)", _SDDL_REVISION_1, ctypes.byref(descriptor), None):
                 return False
             present, defaulted, dacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
             if not _advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl),
@@ -383,7 +487,19 @@ def read_bytes_repairing(path: str | os.PathLike) -> bytes:
         return target.read_bytes()
 
 
-ACCESS_MESSAGE = "Strata can't open its settings file. Run Strata once as yourself (not as administrator) or press Repair."
+ACCESS_MESSAGE = ("Strata is not allowed to open one of its own files. Run `strata repair-access` (or press Repair in the app); "
+                "these files were probably made while Strata ran as administrator, so run it as your normal user from now on.")
+IN_USE_MESSAGE = ("A file Strata needs is in use by another program (usually antivirus, a backup or a sync tool). "
+                  "Wait a moment and run the same command again.")
+
+
+def is_sharing_violation(error: BaseException) -> bool:
+    """Windows "file in use" (WinError 32 or 33), as opposed to a real refusal (WinError 5): waiting helps, repairing does not."""
+    code = getattr(error, "winerror", None)
+    if code in (32, 33):
+        return True
+    text = str(error)
+    return "WinError 32" in text or "WinError 33" in text or "being used by another process" in text
 
 
 _SKIP_DIRS = {"models", "node_modules", "harness", "python", "host", "node", "control", "__pycache__", ".git"}

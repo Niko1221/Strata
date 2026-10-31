@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { externalEnvironment } from '../external-env.mjs';
+import { utf8Script } from '../powershell-utf8.mjs';
 
 const URL_PATTERN = /http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)/;
 
@@ -32,7 +33,7 @@ export function agentEnvironment(base = process.env, extra = {}) {
   }
   // DSH_PERMISSION_MODE is the composition default for a session no chat mode has touched (a child agent, a
   // seeded session): the strictest sandbox, which matches the Manual preset, never the Harness's wider default.
-  return { ...out, DSH_TELEMETRY_DISABLED: '1', DSH_PERMISSION_MODE: 'read-only', ...extra };
+  return { ...out, DSH_TELEMETRY_DISABLED: '1', DSH_PERMISSION_MODE: 'read-only', NODE_USE_SYSTEM_CA: '1', ...extra };
 }
 
 /**
@@ -127,7 +128,7 @@ export class HarnessProcess {
 function commandLineOf(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (process.platform === 'win32') {
-    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', utf8Script(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`)], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
     return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   }
   const r = spawnSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' });

@@ -7,14 +7,20 @@
 | Windows 10 / 11 | NVIDIA RTX, driver 580 or newer | `Strata-0.2.0-beta-windows-cuda13.exe` |
 | | NVIDIA, older card or driver older than 580 | `Strata-0.2.0-beta-windows-cuda12.exe` |
 | | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | `Strata-0.2.0-beta-windows-hip.exe` |
+| | AMD Radeon RX 7000 series or Ryzen AI Max (Strix Halo) | `Strata-0.2.0-beta-windows-hip-rdna3.exe` |
 | Linux | NVIDIA RTX, driver 580 or newer | `Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage` |
 | | NVIDIA, older card or driver older than 580 | `Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage` |
 | | AMD Radeon RX 9000 series or Radeon AI PRO R9700 | `Strata-0.2.0-beta-linux-amd-rx9070.AppImage` |
 | | AMD Radeon RX 7000 series | `Strata-0.2.0-beta-linux-amd-rx7900.AppImage` |
+| | AMD Ryzen AI Max (Strix Halo) | `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` |
 | Mac | Apple silicon, macOS 15 or newer | `Strata-0.2.0-beta-mac.dmg` (signed and notarised by Apple) |
 
 The Terminal installs with one line (below) and picks its engine by itself. The other files in this release are the
 engine and Terminal packages, the signed update feed and the in-app update files; you do not need to download them.
+
+## Added after the first upload
+
+Two installers and two engines were added to this release later: `Strata-0.2.0-beta-windows-hip-rdna3.exe` (Windows, RX 7000 series and Ryzen AI Max; GPU code for gfx1100, gfx1101, gfx1102 and gfx1151; ROCm 10.2.0a20260930) and `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` (Linux, Ryzen AI Max; gfx1151; ROCm 7.14.1). The signed update feed is now sequence 101 and lists the two engine packages; `latest.json` and every other file are unchanged. Any other app installer works too: install it, then press **Update engine** in Settings (or run `strata update` in the Terminal) and the matching engine downloads.
 
 ## What is new
 
@@ -77,7 +83,7 @@ Every speed number below is a median of interleaved pairs against the previous d
 - **Mac:** no picture reader yet; macOS 15 or newer. The app and the Terminal are signed and notarised by Apple.
 - **Windows:** the installers are not code-signed yet, so Windows shows "Windows protected your PC": choose **More info**, then **Run anyway**.
 - **Windows with an AMD card:** the installer and the GPU picture reader are built, but nothing has run on a real AMD card on Windows. The gfx12 prompt defaults are opt-in there.
-- **AMD RX 7000 (gfx1100-1102) and Strix Halo (gfx1151):** the builds compile; no RX 7000 or Strix Halo card ran them.
+- **AMD RX 7000 (gfx1100-1102) and Strix Halo (gfx1151):** the packages are built, linked and scanned (library imports, file hashes, the GPU code inside each binary, `--version` in a clean environment, a clean refusal of the Linux packages on an RX 9000 card, update-feed selection tests). The maintainers have not run them on an RX 7000 or a Strix Halo card. What other people ran: an RX 7900 XTX on Windows 11 ran the earlier ready-made Windows engine (0.1.40, report #1173), and Strix Halo owners ran Linux builds made from source on the ROCm 7.14 line (`bench/results/COMMUNITY.md`). Nobody has run Strix Halo on Windows. The packaged AMD engines do not carry the hipBLASLt tuning tables yet (planned for 0.2.1), so prompt reading is slower than the source-build numbers in [STRIX_HALO.md](STRIX_HALO.md) and [AMD_HIP.md](AMD_HIP.md).
 - **Mini PCs with a Radeon 780M / 880M / 890M:** the matrix-core prompt defaults are parked. On the 780M the GPU reset (MES REMOVE_QUEUE) when they were tried; the iGPU keeps its opt-in switches.
 - **R9700:** about half of the fresh engines with MTP read prompts 10-23% slower than the others (4K: about 1,350 instead of 1,700 tok/s). Not seen on NVIDIA; the cause is not found.
 - **Docker images are not published yet;** build them yourself (`docs/DOCKER.md`).

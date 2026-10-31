@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
-from strata_control import presets
+from strata_control import presets, tune_knobs
 
 CFG = {"exe": "strata", "model_name": "swift-iq2_xs", "ui_resource_profile": "work", "vram_reserve_mib": 1536,
        "args": ["--pack", "P", "--native", "Swift-IQ3_S-00001-of-00002.gguf", "--expert-cache", "auto", "--prefill", "auto",
@@ -80,6 +80,39 @@ class StoreTest(unittest.TestCase):
     def test_unsafe_settings_are_refused(self):
         bad = copy.deepcopy(RESULT)
         bad["settings"]["args"] = {"--expert-cache": 0}
+        with self.assertRaises(presets.PresetError):
+            self.make(result=bad)
+
+    def test_a_value_outside_the_tested_range_is_kept_with_a_warning(self):
+        # #3844: --spec 5 is not a value the tuner tries (its safe values are 3 and 4), but nobody measured it as bad on every
+        # card; a user who chose it keeps it, and is told once. The never list (--spec 6, --expert-cache 0 ...) still refuses.
+        res = copy.deepcopy(RESULT)
+        res["settings"]["args"] = {"--spec": 5}
+        self.make(result=res)                                               # saved, not refused
+        out, info = presets.overlay(CFG, now=identity())
+        self.assertTrue(info["applied"], info)
+        self.assertEqual(tune_knobs._current(out["args"], "--spec"), "5")
+        self.assertEqual(info["warnings"], ["--spec 5: not tried by the tuner, kept because it is your setting"])
+        self.assertNotIn("why_not", info)
+        self.assertEqual(tune_knobs._current(CFG["args"], "--spec"), "4")   # the input is not modified
+        # an in-range preset has no warnings
+        presets.delete(presets.list_presets()[0]["id"])
+        self.make()
+        _, info2 = presets.overlay(CFG, now=identity())
+        self.assertTrue(info2["applied"])
+        self.assertNotIn("warnings", info2)
+
+    def test_the_never_list_still_refuses_but_a_range_does_not(self):
+        ctx = tune_knobs.Context()
+        never, bounds = tune_knobs.check_setting_parts({"--spec": 5, "--pcie-frac": 0.6}, {}, ctx)
+        self.assertEqual(never, [])
+        self.assertEqual(len(bounds), 2)
+        never, bounds = tune_knobs.check_setting_parts({"--spec": 6}, {}, ctx)
+        self.assertTrue(never and bounds)                                   # slower (never list) and outside the values
+        # the tuner's own check is the two lists together, in the same order as before
+        self.assertEqual(tune_knobs.check_setting({"--spec": 6}, {}, ctx), never + bounds)
+        bad = copy.deepcopy(RESULT)
+        bad["settings"]["args"] = {"--spec": 6}
         with self.assertRaises(presets.PresetError):
             self.make(result=bad)
 
@@ -154,6 +187,8 @@ class StoreTest(unittest.TestCase):
         data["settings"]["args"] = {"--spec": 6}
         with self.assertRaises(presets.PresetError):
             presets.import_preset(data)
+        data["settings"]["args"] = {"--spec": 5}                            # #3844: only outside the tuner's range: kept
+        self.assertEqual(presets.import_preset(data)["settings"]["args"], {"--spec": 5})
 
     def test_recheck_keep_refreshes_the_identity(self):
         p = self.make()
@@ -169,6 +204,13 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(presets.bad_signatures(hw_hash="h", model_digest="m", engine_sha="e"), {"host_core_last"})
         self.assertEqual(presets.bad_signatures(hw_hash="h2", model_digest="m", engine_sha="e"), set())
         self.assertEqual(presets.bad_signatures(hw_hash="h", model_digest="m", engine_sha="e2"), set())
+
+    def test_a_command_that_passed_is_not_switched_off_by_a_later_failure(self):
+        # #3502: the plain base command passed four times, then a busy card wrote OOM rows
+        for status in ("PASS", "OOM"):
+            presets.record_trials([{"label": "base", "args": ["--x"], "env": {}, "status": status, "at": 1}],
+                                  hw_hash="h", model_digest="m", engine_sha="e")
+        self.assertEqual(presets.bad_signatures(hw_hash="h", model_digest="m", engine_sha="e"), set())
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <atomic>
 #include <chrono>
@@ -35,6 +36,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -93,6 +95,16 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/me
                            const std::string& self_cgroup = "/proc/self/cgroup",
                            const std::string& cgroup_root = "/sys/fs/cgroup");
 
+/// #4051: wait for the RAM an arena needs to come back.  An engine that was still exiting (or a program that was ending)
+/// holds memory a few seconds longer than its process; loading into that shortfall sent a 60 GiB host into reclaim for
+/// good.  Calls `sample(available)` (false: the RAM cannot be read; the wait ends) every `step_s` seconds, through
+/// `sleep(step_s)`, until `available >= need` or `max_wait_s` seconds have gone.  `waited` gets the seconds waited,
+/// `available` the last reading.  True when the RAM is there.  `progress(waited, available)` is called about every
+/// `note_s` seconds while waiting.  `max_wait_s <= 0` is no wait at all.
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available);
+
 /// Bound a resident budget by RAM and commit capacity after headroom; leave 256 MiB more when clamping.
 /// Pass UINT64_MAX for commit when the platform does not report it.
 uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom);
@@ -115,6 +127,15 @@ uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
 /// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
 /// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
 uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// Byte ranges [first, second) of slice `slice` of 2 inside one complement slot at arena offset `slot_off`, whose roles
+/// (gate, up, down) are `role_bytes[0..2]` long and back to back. Role r's slice-0 bytes are [start_r, start_r + role_r/2),
+/// its slice-1 bytes the rest. Page rule (absolute arena offsets): any page holding a slice-0 byte belongs to slice 0,
+/// so slice-0 ranges round OUTWARDS (start down, end up) and slice-1 ranges round INWARDS (start up, end down) - this
+/// also settles pages shared across role and slot boundaries. Returns three ranges in arena offsets, possibly empty
+/// (first == second). Adjacent roles smaller than a page may give overlapping slice-0 ranges: harmless (same node, the
+/// caller coalesces them).
+std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
+                                                               int slice, uint64_t page = 4096);
 /// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
 /// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
 std::string page_cache_hint(const std::string& meminfo_text);
@@ -661,7 +682,7 @@ int tail_skip_rank();
 void set_tail_skip_rank(int r);
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out);
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic = strata::kernels::cpu::NativeArithmetic::Default);
 
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about
@@ -706,6 +727,9 @@ public:
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// STRATA_NUMA_SPLIT: files the engine read at start outside this source (the pack's dense.bin, the MTP head),
+    /// whose cached pages the placement's drop gives back too.  Set BEFORE `pin_cache_complement`.
+    void set_extra_drop_files(std::vector<std::string> paths) { extra_drop_files_ = std::move(paths); }
     /// Whether the experts are read from the GGUF shards in place (no experts.bin).
     bool gguf_mode() const { return !role_ptr_.empty(); }
     /// Pin a compact host mirror of experts absent from a fully filled static GPU cache. The mmap remains open
@@ -806,7 +830,11 @@ public:
     /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
     /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
     bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    /// STRATA_RAM_ADAPT: the same move as replace_resident, but `in` is copied out of the finished stage buffer
+    /// a demand read left it in (no file read).  False, nothing changed, when `in` is not staged or still filling.
+    bool replace_resident_staged(int64_t layer, int64_t in, int64_t out);
     int64_t ram_adapts() const { return ram_adapts_; }
+    int64_t ram_staged() const { return ram_staged_; }   ///< of ram_adapts(): copied out of a stage buffer
     // ---- 149-prefetch (STRATA_RAM_ADAPT2): the same promotion, staged.  `ram_stage` queues the read of `in` on an I/O thread
     // (false: already queued, the queue is full, or no compact copy); `ram_install` - called by the decode thread at a window
     // boundary, when no window reads the RAM copy - puts every read that has landed into `out`'s place, unless the GPU tier
@@ -997,6 +1025,20 @@ public:
 #if defined(__linux__)
     bool linux_file_defaults() const override { return !role_ptr_.empty(); }   // the GGUF in place only (measured)
 #endif
+    /// 0.2.1: io prefetch + the decode gate by default also for an experts.bin pack (zero-copy is moot there: its blob is one
+    /// contiguous range the kernels already read from the mapping; the COLD_OVERLAP default stays with the GGUF in place).
+    /// Measured (RTX 3060, 43 GB pack): 32 GB of RAM decode +20..+34%, 16 GB decode +3..+8% but the cold 4K prompt -4..-6%, so
+    /// below the gate's room test the pack keeps reading as before
+    bool linux_io_defaults() const {
+#if defined(__linux__)
+        return role_ptr_.empty() ? cache_room_ratio() >= 0.55 : true;   // experts.bin: only while the page cache has room for it
+#else
+        return false;
+#endif
+    }
+    /// the memory the page cache can use (the tightest cgroup limit less what is not page cache, else MemAvailable) over the
+    /// experts' bytes; 0 when unknown.  The decode gate's room test (STRATA_IO_PF_GATE_LO), asked once at start.
+    double cache_room_ratio() const;
     bool gate_on() const { return gate_on_; }
     double gate_held() const { return gate_ewma_; }
     int64_t gate_closed_windows() const { return gate_closed_w_; }
@@ -1038,6 +1080,7 @@ private:
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
+    std::vector<std::string> extra_drop_files_;   ///< set_extra_drop_files
     struct Map {
         const uint8_t* base = nullptr;
         uint64_t bytes = 0;
@@ -1078,7 +1121,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
-    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    int64_t ram_adapts_ = 0;                  ///< replace_resident(_staged): experts moved into the compact copy
+    int64_t ram_staged_ = 0;                  ///< replace_resident_staged: of those, copied out of a stage buffer
     std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     // 149-prefetch: the staged promotions (ram_stage / ram_install)
     struct RamJob { int64_t layer, in, out; std::vector<uint8_t> buf; int state; };   ///< state 0 queued, 1 reading, 2 landed, 3 failed

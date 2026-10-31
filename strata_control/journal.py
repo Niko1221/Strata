@@ -19,6 +19,7 @@ from pathlib import Path
 
 from strata_control import profiles, recipes
 from strata_control.profiles import ProfileError
+from strata_control import posix_owner
 
 
 MAX_RECORDS = 500
@@ -51,8 +52,8 @@ def _directory(profile: str, *, create: bool = False) -> Path:
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode):
             raise ProfileError("operation journal directory must not be a symlink", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("operation journal directory must be owner-only", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(directory, details)):
+            raise ProfileError(posix_owner.owner_only_text("operation journal directory must be owner-only", directory), 5)
     return directory
 
 
@@ -129,9 +130,14 @@ def _validate_direct_intent(kind: str, intent: object) -> dict:
                     for key in ("if_owner_id", "if_instance_id"))):
             raise ProfileError("direct benchmark intent is invalid", 5)
     elif kind.startswith("runtime."):
-        ranges = {"wait_s": (0, 600) if kind == "runtime.start" else
+        # The waits are bounded by the runtime that runs them, so the ceiling is read from it (#3949): a start or a
+        # restart may wait for a big model up to MAX_START_WAIT. Repeating the number here is what broke a long start
+        # twice over - the CLI validator and this record both stopped it at 600 s on their way to the runtime.
+        from strata_control import runtime as _runtime
+        start_wait_max = int(_runtime.MAX_START_WAIT)
+        ranges = {"wait_s": (0, start_wait_max) if kind == "runtime.start" else
                     (1, 1800) if kind == "runtime.restart" else (1, 600),
-                  "shutdown_timeout_s": (0, 300), "startup_wait_s": (1, 600)}
+                  "shutdown_timeout_s": (0, 300), "startup_wait_s": (1, start_wait_max)}
         for key in set(intent) - {"expected_profile_revision", "expected_source_sha256",
                                "expected_owner_id", "expected_instance_id", "load",
                                "allow_source_switch", "allow_source_migration"}:
@@ -186,8 +192,8 @@ def _load_file(path: Path, profile: str) -> dict:
         details = path.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_RECORD_BYTES:
             raise ProfileError("operation record must be a regular file under 64 KiB", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("operation record must be owner-only", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(path, details)):
+            raise ProfileError(posix_owner.owner_only_text("operation record must be owner-only", path), 5)
         record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ProfileError("operation record was not found", 5) from None

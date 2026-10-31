@@ -236,6 +236,24 @@ class ModelStep(Base):
             self.assertIn("The n-gram table stays on your SSD", t)
         self.run_app(case)
 
+    def test_the_verdict_column_is_not_cut_off_at_80_columns(self):                       # 0.2.5 list
+        ctx = make_ctx()
+        app = LaunchApp(ctx)
+
+        async def go():
+            async with app.run_test(size=(80, 34)) as pilot:
+                await pilot.pause(0.2)
+                await press(pilot, "enter")
+                t = text_of(app)
+                self.assertIn("Fits?", t)
+                rec = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S " in l)
+                self.assertIn("fits (recommended)", rec)
+                for model in ("Q2_0", "NVFP4 ", "UD-Q5_K_XL"):
+                    row = next(l for l in t.splitlines() if model in l and "GB" in l)
+                    self.assertTrue(any(w in row for w in ("fits", "tight", "too big")), row)
+                self.assertTrue(all(len(l) <= 80 for l in t.splitlines()))
+        asyncio.run(go())
+
     def test_choosing_a_model_and_going_on(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "up", "up", "up", "enter")
@@ -259,10 +277,10 @@ class ModelStep(Base):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "o")
             self.assertIn("Type or paste the folder", text_of(app))
-            with mock.patch("strata_control.models.plan_import", return_value=plan) as pi:
+            with mock.patch("strata_control.models.plan_import", return_value=plan) as pi, mock.patch("strata_control.models.own_path_problem", return_value=None):
                 await typed(pilot, "/data/models/IQ3_XXS")
                 await press(pilot, "enter")
-            self.assertEqual(ctx.settings.model_path, str(Path("/data/models/IQ3_XXS")))
+            self.assertEqual(ctx.settings.model_path, os.path.abspath("/data/models/IQ3_XXS"))
             self.assertEqual((ctx.settings.family, ctx.settings.model), ("qwen", "IQ3_XXS"))
             self.assertIn("These files are qwen IQ3_XXS (2 file(s), 44 GB)", text_of(app))
             await press(pilot, "enter")
@@ -274,12 +292,23 @@ class ModelStep(Base):
 
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "o")
-            with mock.patch("strata_control.models.plan_import", return_value=plan):
+            with mock.patch("strata_control.models.plan_import", return_value=plan), mock.patch("strata_control.models.own_path_problem", return_value=None):
                 await typed(pilot, "/x")
                 await press(pilot, "enter")
             t = flat(app)
-            self.assertIn("some shards are missing", t)
+            self.assertIn("some parts of the model are missing", t)
             self.assertIn("pick a model from the list", t)
+            self.assertIsNone(ctx.settings.model_path)
+        self.run_app(case)
+
+    def test_own_files_folder_that_is_not_there_is_named(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "o")
+            await typed(pilot, "/no/such/folder")
+            await press(pilot, "enter")
+            t = flat(app)
+            self.assertIn("does not exist", t)
+            self.assertIn("Nothing was downloaded", t)
             self.assertIsNone(ctx.settings.model_path)
         self.run_app(case)
 
@@ -304,14 +333,14 @@ class FolderStep(Base):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Where should the model files be stored?", t)
-            self.assertIn("Not downloaded yet: about 84 GB", t)
+            self.assertIn("Not downloaded yet: about 90 GB", t)
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, "D:/Strata-data")
-            self.assertEqual(f.value, "D:/Strata-data")
+            await typed(pilot, str(self.home.base / "Strata-data"))
+            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, "D:/Strata-data")
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -322,13 +351,14 @@ class FolderStep(Base):
             (old / "models" / "Q2_0" / "x.gguf").write_text("x")
             with mock.patch.object(type(ctx.catalog), "data_dir", return_value=old):
                 await press(pilot, "enter", "enter")
-                self.assertNotIn("are moved into this folder", text_of(app))
+                self.assertNotIn("stay there and keep working", text_of(app))
                 f = app.screen.query_one("#folderpath")
                 f.value = ""
                 await typed(pilot, str(self.home.base / "new-data"))
                 t = " ".join(text_of(app).replace("\n", " ").split())
             self.assertIn("Model files Strata already keeps in", t)
-            self.assertIn("are moved into this folder when you start", t)
+            self.assertIn("stay there and keep working", t)
+            self.assertNotIn("are moved into this folder", t)
         self.run_app(case)
 
     def test_keeping_the_default_stores_nothing(self):
@@ -669,7 +699,7 @@ class AccessStep(Base):
                 await press(pilot, *self.reach(), "down", "down")
                 t = text_of(app)
                 self.assertIn("cloudflared is not installed on this computer", t)
-                self.assertIn("quick tunnel", t)
+                self.assertIn("quick tunnel", flat(app))
                 await press(pilot, "enter")
             self.assertEqual(ctx.settings.access, "cloudflare")
             self.assertIn("Save as preset, then launch", text_of(app))
@@ -715,9 +745,30 @@ class AccessStep(Base):
             self.assertNotEqual(ctx.settings.api_key, first)
             await press(pilot, "t")
             self.assertIsNone(ctx.settings.api_key)
-            self.assertIn("will not start on a network without one", text_of(app))
+            self.assertTrue(ctx.settings.no_key)
+            self.assertIn("anyone who can reach this port can use the model and its tools", text_of(app))
             await press(pilot, "t")
             self.assertTrue(ctx.settings.api_key)
+            self.assertFalse(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_default_is_a_key_and_no_key_survives_moving_on(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach(), "down")
+            self.assertTrue(ctx.settings.api_key)                       # default: Strata makes a key
+            await press(pilot, "t")                                     # one keypress: no key
+            await press(pilot, "down")                                  # moving the cursor does not bring the key back
+            await press(pilot, "up")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertTrue(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_local_never_asks_for_a_key(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach())
+            self.assertEqual(ctx.settings.access, "local")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertNotIn("An API key was made", text_of(app))
         self.run_app(case)
 
 
@@ -827,38 +878,58 @@ class SaveAndRun(Base):
 
 
 class CardsStep(Base):
-    def test_cards_step_defaults_to_the_largest_card_plus_ram_and_offers_the_split(self):
+    def test_cards_step_shows_a_role_for_every_card_and_the_recommendation_is_selected(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Which graphics cards should it use?", t)
             self.assertIn("Step 2 of 10", t)
             flat = " ".join(t.split())
-            self.assertIn("+ RAM", flat)                             # every choice says what it uses
-            self.assertIn("(layer split)", flat)                     # the second card is offered as a split
+            self.assertIn("[ Main ]", flat)                          # equal cards: the highest number is Main (the engine order stays [0, 1])
+            self.assertIn("[ Helper ]", flat)
             self.assertIn("recommended", flat)
-            self.assertIn("fits: needs", flat)                       # plain numbers
-            cur = app.screen.menu().current
-            self.assertEqual(len(cur.key), 1)                        # the recommended choice is the single largest card
-            await press(pilot, "enter")                              # keeping it stores "let Strata choose": the same rule runs in setup
+            self.assertIn("M Main", flat)
+            self.assertNotIn("slower", flat)                         # no explaining warning for a recommendation
+            await press(pilot, "enter")                              # keeping the recommendation stores "not set": a card added later is re-recommended
+            self.assertIsNone(ctx.settings.gpu_roles)
             self.assertIsNone(ctx.settings.gpus)
             self.assertIn("Where should the model files be stored?", text_of(app))
         self.run_app(case, ctx=make_ctx(HW_2X16))
 
-    def test_choosing_the_split_stores_both_cards(self):
-        async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter", "down", "enter")
-            self.assertEqual(ctx.settings.gpus, [0, 1])
-        self.run_app(case, ctx=make_ctx(HW_2X16))
-
-    def test_a_model_too_big_for_one_card_and_ram_recommends_the_split(self):
+    def test_m_h_o_set_the_role_of_the_card_under_the_cursor_and_r_goes_back(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
-            cur = app.screen.menu().current
-            self.assertEqual(sorted(cur.key), [0, 1])
-        hw = dict(HW_2X16)
-        hw["ram_gb"] = 24.0
-        self.run_app(case, ctx=make_ctx(hw))
+            await press(pilot, "o")                                  # card 1 (a Helper) Off
+            flat = " ".join(text_of(app).split())
+            self.assertIn("recommended: helper", flat)               # the muted tag says what was recommended
+            await press(pilot, "m")                                  # Main on card 1: card 2 becomes a Helper, one quiet line says so
+            flat = " ".join(text_of(app).split())
+            self.assertIn("is now a Helper.", flat)
+            await press(pilot, "enter")
+            self.assertEqual(ctx.settings.gpu_roles, {"0": "main", "1": "helper"})
+            self.assertIsNone(ctx.settings.gpus)
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_r_restores_the_recommendation(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "down", "o", "r", "enter")
+            self.assertIsNone(ctx.settings.gpu_roles)
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_every_card_off_is_allowed_with_one_short_line(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "down", "o", "up", "o")
+            flat = " ".join(text_of(app).split())
+            self.assertIn("! This engine needs a graphics card to start. Turn one on.", flat)
+            await press(pilot, "enter")
+            self.assertEqual(ctx.settings.gpu_roles, {"0": "off", "1": "off"})      # allowed; the server says plainly what the engine can do
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_d_shows_what_the_roles_mean(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "d")
+            self.assertIn("Helper: holds a share of the model", " ".join(text_of(app).split()))
+        self.run_app(case, ctx=make_ctx(HW_2X16))
 
     def test_an_integrated_chip_beside_one_card_gives_no_cards_step(self):
         async def case(app, pilot, ctx):

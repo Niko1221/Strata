@@ -141,7 +141,8 @@ def image_env(cfg: dict, base: dict | None = None) -> dict:
         var = {"cuda": "CUDA_VISIBLE_DEVICES", "hip": "HIP_VISIBLE_DEVICES",
                "vulkan": "GGML_VK_VISIBLE_DEVICES"}.get(cfg.get("backend"))
         if var:
-            env[var] = str(gpu)
+            # one card is "1"; a list ([1, 0], "1,0") is every one of them, in order - str() of a list is not a device list
+            env[var] = ",".join(str(x).strip() for x in gpu if str(x).strip() != "") if isinstance(gpu, (list, tuple)) else str(gpu)
             if var == "CUDA_VISIBLE_DEVICES":
                 env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     for k, v in (cfg.get("env") or {}).items():

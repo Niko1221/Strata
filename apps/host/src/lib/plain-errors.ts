@@ -8,15 +8,18 @@ import { tr } from './i18n';
 
 export interface PlainFailure { message: string; next?: string; detail?: string; kind: string }
 
-interface Rule { kind: string; match: RegExp; message: string; next?: string; detail?: (m: RegExpMatchArray, raw: string) => string | undefined }
+interface Rule { kind: string; match: RegExp; message: string | ((m: RegExpMatchArray) => string); next?: string; detail?: (m: RegExpMatchArray, raw: string) => string | undefined }
 
 const MEMORY = 'The model stopped while starting, most likely because the PC ran low on memory.';
 const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% for my work”. In Expert mode you can also turn on the low-RAM option, so part of the model is read from the SSD.';
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
+  // The host names the files it could not find (#3478). The sentence with the names is a template in every language: tr() fills it.
+  { kind: 'model-files-missing', match: /Some model files are missing: (.+?)\. Use Download/i, message: m => `These model files are missing: ${m[1]}.`, next: 'Press Download & load again to fetch them. Files that are already there are kept. If the same files are listed again, open Details and share them when you ask for help.' },
   { kind: 'tunnel-own-running', match: /Strata’s tunnel for this address is already running \(PID/i, message: 'Strata’s tunnel for this address is already running.', next: 'Stop it first, or use it as it is, then connect again here.' },
   { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
+  { kind: 'gpu-no-code', match: /none of this computer.s graphics cards has code in this Strata engine|not an architecture this Strata engine was compiled for/i, message: 'This Strata engine has no code for the graphics card it tried to use.', next: 'Pick another card under Run on, or open Details to see which cards were found and what the engine is built for.' },
   { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
   { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },
   { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },
@@ -33,6 +36,7 @@ const RULES: Rule[] = [
   { kind: 'blocked', match: /0xC0000022|3221225506|\bEACCES\b|\bEPERM\b|operation not permitted/i, message: 'Windows or your security software stopped the engine from starting.', next: 'Allow Strata in your security software, then try again.' },
   { kind: 'file-missing', match: /\bENOENT\b|no such file or directory|cannot find the (?:file|path)|0x80070002|exit code 127|file not found/i, message: 'Strata could not find a file it needs to start the engine.', next: 'Reinstall Strata or press Repair.' },
   { kind: 'memory', match: /out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate memory|not enough memory|bad_alloc|pinned-memory-exhausted|mapped staging|cudaErrorMemoryAllocation|insufficient memory/i, message: MEMORY, next: MEMORY_NEXT },
+  { kind: 'previous-session', match: /lost host child is still present|retry after it exits/i, message: 'The last Strata session is still closing down.', next: 'Wait a moment and try again. If it keeps happening, restart the computer.' },
   { kind: 'start-failed', match: /server_exited|engine stopped|exited before|died before/i, message: 'The model stopped while starting.', next: 'Try again. If it keeps happening, open Details and share them when you ask for help.' },
   { kind: 'slow-load', match: /loading took more than/i, message: 'Loading is taking too long.', next: 'The PC may be short on memory. Close other programs and try again.' },
   { kind: 'engine-missing', match: /no engine for this pc|engine component|never downloads an engine|engine .*not installed|no strata engine/i, message: 'Strata’s engine for this computer isn’t installed yet.', next: 'It is added when you download a model. Download your model again to add it.' },
@@ -49,7 +53,7 @@ export function plainFailure(raw: string | null | undefined): PlainFailure {
   for (const rule of RULES) {
     const m = text.match(rule.match);
     if (!m) continue;
-    return { kind: rule.kind, message: rule.message, next: rule.next, detail: rule.detail ? rule.detail(m, text) : text };
+    return { kind: rule.kind, message: typeof rule.message === 'function' ? rule.message(m) : rule.message, next: rule.next, detail: rule.detail ? rule.detail(m, text) : text };
   }
   return { kind: 'plain', message: text.replace(/^./, c => c.toUpperCase()) };
 }

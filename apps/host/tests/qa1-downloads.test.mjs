@@ -115,7 +115,7 @@ test('the three NVFP4 versions have clear names and one line that tells them apa
   assert.match(lines[2], /faster on short prompts/);
   assert.equal(lib.versionNote('IQ3_S'), '');
   assert.equal(lib.nativeShortName('nvfp4-nvfp4-nvidia'), 'NVFP4 (NVIDIA’s version)');
-  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko']) {
+  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
     lib.setTranslationLanguage(language);
     const local = ['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].map(m => lib.nativeVersionLabel(m));
     assert.equal(new Set(local).size, 3, `${language}: three different names`);
@@ -145,7 +145,7 @@ test('4d: picture reading is on unless the person turned it off (no saved choice
   } finally { await f.cleanup(); }
   const screen = readSource(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
   assert.match(screen, /setVision\(installed\.visionEnabled === false \? 'no'/);
-  assert.match(screen, /else\s+setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
+  assert.match(screen, /else\s*\{?\s*setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
 });
 
 test('no recognised engine: the app still downloads, warns in the card, and loading says it with the next step', async () => {
@@ -162,4 +162,14 @@ test('no recognised engine: the app still downloads, warns in the card, and load
   assert.match(warn, /The model will download, but it may not run until the right engine is installed \(Settings → Engine\)\./);
   // the install is not refused for a missing engine (only the engine-minimum refusal for a version that is too old stays)
   assert.doesNotMatch(source.slice(source.indexOf('async function install(job,args)'), source.indexOf('function terminate')), /engine\.usable/);
+});
+
+test('the draft layer download of setup step 6 is a stage of its own and counts in the one figure (#3257)', () => {
+  lib.setTranslationLanguage('en');
+  const draft = { parts: [{ kind: 'model', name: 'Model files', state: 'done', done_gb: 60, total_gb: 60 }, { kind: 'draft', name: 'Draft layer', state: 'downloading', done_gb: 2, total_gb: 5 }] };
+  assert.deepEqual(lib.installStage(draft), { kind: 'draft' });
+  assert.equal(lib.stageText(lib.installStage(draft)), 'Preparing your model…');
+  const p = lib.installProgress(draft);
+  assert.equal(p.total_gb, 65);
+  assert.equal(p.done_gb, 62);
 });

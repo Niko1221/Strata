@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -24,17 +25,40 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import params as P
 from strata_cli.launch import settings as S
 from strata_cli.launch import store
+from strata_control import dsv41_context
 from strata_cli.launch.widgets import (ACCENT, BAD, DARK, FG, LIGHT, MUTE, WARN, Cell, Item, Menu, bar)
 
 STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context", "Context"), ("pictures", "Pictures"),
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
 
 
+STEP_LABELS = {**dict(STEPS), "speed": "Speed"}
+
+
+def speed_choice_available(ctx) -> bool:
+    """The Speed step is an active choice only when the DeepSeek engine launch will run takes --experts (0.1.50 or newer); otherwise it is not
+    there, with no error. Asked once per run of the screens (the engine files are looked up once)."""
+    cached = getattr(ctx, "_speed_ok", None)
+    if cached is None:
+        try:
+            from strata_cli.launch.runner import Runner
+            cached = bool(Runner(ctx.settings, catalog=ctx.catalog, emit=lambda e: None).speed_engine_ok())
+        except Exception:                                    # noqa: BLE001
+            cached = False
+        try:
+            ctx._speed_ok = cached
+        except AttributeError:
+            pass
+    return cached
+
+
 def flow_for(ctx) -> list[str]:
-    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used."""
+    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Speed step only for DeepSeek."""
     ids = [sid for sid, _ in STEPS]
     if len(ctx.computer.usable_gpus) < 2:
         ids.remove("cards")
+    if getattr(getattr(ctx, "settings", None), "family", None) == "deepseek41" and speed_choice_available(ctx):
+        ids.insert(ids.index("context") + 1, "speed")
     return ids
 
 
@@ -111,7 +135,7 @@ class Base(Screen):
         out.append("STRATA  ", style=f"bold {ACCENT}")
         out.append(f"{self.title_line}", style=f"bold {ACCENT}")
         if self.step_id in flow:
-            labels = dict(STEPS)
+            labels = STEP_LABELS
             n = flow.index(self.step_id)
             if self.width() >= 118:
                 out.append("   ")
@@ -241,9 +265,9 @@ class StartScreen(Base):
         for p in self.presets:
             sm = store.summary(p)
             req = (f"{p.parallel} request" + ("s" if p.parallel != 1 else "")) if p.parallel else "fit to card"
-            tuned = f"tuned {p.tuned_at[5:]}" if p.tuned_preset and p.tuned_at else "not tuned"
+            tuned = f"tuned {p.tuned_at[5:]}" if p.is_tuned and p.tuned_at else "not tuned"
             used = f"last used {p.last_used[5:10]}" if p.last_used else "not used yet"
-            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.tuned_preset else ""),
+            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.is_tuned else ""),
                                Cell(used, MUTE)], key=("preset", p.name)))
         items.append(Item([Cell("Set up from the beginning", "")], key=("new", None)))
         items.append(Item([Cell("Use model files I already have", "")], key=("own", None)))
@@ -387,7 +411,7 @@ class ModelScreen(Base):
         w = self.width()
         if w >= 100:
             return [("Model", 42), ("Download", 10), ("Needs (RAM + VRAM)", 20), ("On this computer", 0)]
-        return [("Model", 41), ("Download", 9), ("Needs (RAM+VRAM)", 17), ("On this computer", 0)]
+        return [("Model", 41), ("Size", 8), ("Needs", 7), ("Fits?", 0)]      # 80 columns: the verdict column keeps room (the long words are below the list)
 
     def build_menu(self, initial: bool = False) -> None:
         s = self.ctx.settings
@@ -402,7 +426,11 @@ class ModelScreen(Base):
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
             need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
             ssd = f" · SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
-            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell((r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag, col)], key=(r.family, r.model)))
+            verdict = (r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag
+            if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
+                extra = " (recommended)" if r.recommended else " (installed)" if r.installed else " [experimental]" if r.experimental else ""
+                verdict = {"fits": "fits", "tight": "tight", "no": "too big"}[r.verdict] + extra
+            items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(verdict, col)], key=(r.family, r.model)))
             if (s.family, s.model) == (r.family, r.model):
                 sel = i
         m = self.query_one(Menu)
@@ -492,17 +520,22 @@ class ModelScreen(Base):
         self.check_own(path)
 
     def check_own(self, path: str) -> None:
-        from strata_cli.launch.runner import plain_issue
         from strata_control import models
+        problem = models.own_path_problem(path)
+        if problem:
+            self.say(f"{problem[0]} {problem[1]}", True)
+            return
+        if self.check_own_deepseek(path):
+            return
         try:
-            plan = models.plan_import(str(Path(path).expanduser().resolve()))
+            plan = models.plan_import(models.absolute(path))
         except Exception as e:                               # noqa: BLE001
             self.say(f"These files cannot be used: {e}. Pick the folder with every shard of one model, or a .gguf file of it.", True)
             return
         sel = plan.get("candidate_selection") or {}
         if sel.get("family") and sel.get("model") and not plan.get("issues"):
             s = self.ctx.settings
-            s.model_path, s.family, s.model = str(Path(path).expanduser()), sel["family"], sel["model"]
+            s.model_path, s.family, s.model = models.import_target(path, plan), sel["family"], sel["model"]
             self.ctx.picked_in_list = False
             self.close_field("own")
             gb = plan.get("total_bytes", 0) / 1e9
@@ -510,8 +543,44 @@ class ModelScreen(Base):
             self.menu().select((sel["family"], sel["model"]))
             self.paint()
         else:
-            why = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
-            self.say(f"These files cannot be used as they are ({why}). Check that every shard is in the folder, or pick a model from the list.", True)
+            why = models.problem_words(plan.get("issues") or [], missing=plan.get("missing_shards")) or "they are not a model Strata knows"
+            holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
+            self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
+                     "Check that every shard is in the folder, or pick a model from the list.", True)
+
+    def check_own_deepseek(self, path: str) -> bool:
+        """The files are DeepSeek-V4.1-Flash's (the pinned shard names): taken as that model, as `strata launch --model-path` does, instead of
+        the generic file check, which does not know DeepSeek and said "could not be read" for its n-gram shard (#3914).  True when it answered."""
+        from strata_cli.launch.runner import Runner
+        try:
+            mod = self.ctx.catalog.strata.setup_module()
+            found = Runner.deepseek_set_in(mod, path, self.ctx.settings.model)
+        except Exception:                                    # noqa: BLE001 - not DeepSeek's: the usual check goes on
+            return False
+        if found is None:
+            return False
+        model, d, folder = found
+        from strata_control import dsv41_fit
+        if dsv41_fit.not_here(model):
+            self.say(dsv41_fit.not_here(model) + " Pick the 2.00 or 2.25 version from the list, or point to those files.", True)
+            return True
+        _layout, names, missing = mod.dsv41_parts(d, lambda n: (folder / n).exists())       # the pinned four-shard layout, or ISTA's six-shard one (0.2.8.1)
+        if missing:
+            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(names)} parts are not in {folder} "
+                     f"(first missing: {missing[0]}). Put every part in the folder, or pick a model from the list.", True)
+            return True
+        s = self.ctx.settings
+        s.model_path, s.family, s.model = str(folder), "deepseek41", model
+        self.ctx.picked_in_list = False
+        self.close_field("own")
+        gb = sum(x.stat().st_size for x in folder.iterdir() if x.is_file() and x.name.endswith(".gguf")) / 1e9
+        self.say(f"These files are DeepSeek-V4.1-Flash {d.get('label', model)} ({gb:.0f} GB in this folder). Press Enter to use them.")
+        try:
+            self.menu().select(("deepseek41", model))
+        except Exception:                                    # noqa: BLE001 - the list may not show it; the choice is already made
+            pass
+        self.paint()
+        return True
 
     def action_back(self) -> None:
         if self.input_open():
@@ -524,13 +593,21 @@ class ModelScreen(Base):
 # ------------------------------------------------------------------------------------------------ 2 cards (only with 2+ cards)
 
 class CardsScreen(Base):
+    """Main / Helper / Off for every card (strata_control/gpu_roles.py). The recommendation is already selected; M H O set the role of the
+    card under the cursor, R goes back to the recommendation, D shows what the roles mean."""
+
     step_id = "cards"
-    help_text = ("Strata tries the model on your largest graphics card plus the computer's memory first. A second card is offered as a layer "
-                 "split: it adds room and reads prompts faster. The recommended choice is already selected; pick another if you prefer.")
-    hints = "↑↓ choose   Enter next   Esc back   ? help"
+    help_text = ("Main does the last steps of every answer; Helper holds part of the model; Off leaves the card alone. "
+                 "Keys: M Main, H Helper, O Off, R back to recommended, D details.")
+    hints = "↑↓ choose card   M Main   H Helper   O Off   R recommended   D details   Enter next   Esc back   ? help"
+    BINDINGS = Base.BINDINGS + [Binding("m", "role('main')", show=False), Binding("h", "role('helper')", show=False),
+                                Binding("o", "role('off')", show=False), Binding("r", "recommended", show=False),
+                                Binding("d", "details", show=False), Binding("right", "cycle(1)", show=False),
+                                Binding("left", "cycle(-1)", show=False)]
 
     def body(self) -> ComposeResult:
         yield Static(Text("Which graphics cards should it use?", style=f"bold {ACCENT}"), markup=False)
+        yield Static("", id="reco", markup=False)
         yield Menu([("", 0)], id="menu")
         yield Static("", id="cardnotes", markup=False)
 
@@ -539,50 +616,146 @@ class CardsScreen(Base):
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
         return float(r.memory_gb) if r is not None and r.memory_gb else 44.0
 
-    def choices(self) -> dict:
-        from strata_control import gpu_fit
-        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus, self.ctx.computer.engine_vendor)
+    def installed(self) -> list[int] | None:
+        """The cards the installed model was set to by a person's choice (kept unless this launch names others)."""
+        from strata_cli.launch.runner import installed_cards
+        try:
+            return installed_cards(self.ctx.base_config(), self.ctx.computer.usable_gpus)
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    def cards(self) -> list[dict]:
+        from strata_control import gpu_roles
+        c = self.ctx.computer
+        return gpu_roles.rows(c.gpus, c.engine_vendor)
+
+    def start_roles(self) -> dict[int, str]:
+        """The roles the screen opens with: this launch's own, else the installed model's own choice, else the recommendation."""
+        from strata_control import gpu_roles
+        s, cards = self.ctx.settings, self.cards()
+        if s.gpu_roles:
+            return gpu_roles.normalize({int(k): v for k, v in s.gpu_roles.items()}, cards)
+        if s.gpus:
+            return gpu_roles.from_legacy(list(s.gpus), cards, "as_given")
+        return self.baseline()
+
+    def baseline(self) -> dict[int, str]:
+        """What "no choice made here" means: the installed model's own cards, else the recommendation."""
+        from strata_control import gpu_roles
+        inst = self.installed()
+        cards = self.cards()
+        if inst:
+            return gpu_roles.from_legacy(inst, cards, "as_given")
+        return dict(gpu_roles.recommend(cards, self.ctx.computer.engine_vendor)["roles"])
 
     def on_mount(self) -> None:
-        self.res = self.choices()
-        items = []
-        sel = 0
-        cur = self.ctx.settings.gpus
-        for i, o in enumerate(self.res["options"]):
-            label = o["label"] + ("   (recommended)" if o["recommended"] else "")
-            items.append(Item([label, Cell(o["words"], WARN if o["verdict"] in ("spills", "tight") else "")], key=o["cards"]))
-            if cur is None and o["recommended"] or (cur is not None and o["cards"] == list(cur)):
-                sel = i
-        wide = max((len(str(i.cells[0])) for i in items), default=40)
-        self.query_one(Menu).columns = [("", max(40, min(wide + 3, 70))), ("", 0)]
-        self.query_one(Menu).set_items(items, sel)
+        from strata_control import gpu_roles
+        self.detail = False
+        self.note = ""
+        self.cardlist = self.cards()
+        self.roles = self.start_roles()
+        self.rec = gpu_roles.recommend(self.cardlist, self.ctx.computer.engine_vendor)
+        wide = max((len(gpu_roles.short_name(c)) for c in self.cardlist), default=20)
+        self.query_one(Menu).columns = [("", 8), ("", min(wide + 2, 34)), ("", 10), ("", 32), ("", 0)]
+        self.fill(0)
         self.paint()
 
-    def refresh_body(self) -> None:
-        lines = Text()
+    def role_cell(self, role: str) -> str:
+        words = [("main", "Main"), ("helper", "Helper"), ("off", "Off")]
+        return "".join(f"[ {w} ] " if r == role else f"  {w}   " for r, w in words)
+
+    def fill(self, index: int = 0) -> None:
+        from strata_control import gpu_roles
+        items = []
+        for c in self.cardlist:
+            i = int(c.get("index", 0))
+            role = self.roles.get(i, "off")
+            rec = self.rec["roles"].get(i)
+            tag = "recommended" if rec == role else f"recommended: {rec}"
+            mem = "built-in" if gpu_roles._shares(c) else f"{float(c.get('vram_gb') or 0):.0f} GB"
+            items.append(Item([gpu_roles.gpu_label(c), gpu_roles.short_name(c), mem, self.role_cell(role), Cell(tag, "" if rec == role else MUTE)], key=i))
+        self.query_one(Menu).set_items(items, index)
+
+    def current_card(self) -> int | None:
         cur = self.menu().current if self.menu() else None
-        opt = next((o for o in self.res["options"] if cur is not None and o["cards"] == cur.key), None)
-        for n in (opt or {}).get("notes", []):
-            lines.append(f"  {n}\n", style=MUTE)
-        for g in self.res["ignored"]:
-            lines.append(f"  Not used: {g.get('name')} ({g['why_ignored']}).\n", style=MUTE)
+        return None if cur is None else int(cur.key)
+
+    def action_role(self, role: str) -> None:
+        from strata_control import gpu_roles
+        i = self.current_card()
+        if i is None:
+            return
+        self.roles, code = gpu_roles.set_role(self.roles, self.cardlist, i, role)
+        self.note = gpu_roles.note_text(code, self.cardlist)
+        self.fill(self.menu().index)
+        self.paint()
+
+    def action_cycle(self, step: int) -> None:
+        order = ["main", "helper", "off"]
+        i = self.current_card()
+        if i is None:
+            return
+        self.action_role(order[(order.index(self.roles.get(i, "off")) + step) % 3])
+
+    def action_recommended(self) -> None:
+        self.roles = dict(self.rec["roles"])
+        self.note = ""
+        self.fill(self.menu().index)
+        self.paint()
+
+    def action_details(self) -> None:
+        self.detail = not self.detail
+        self.paint()
+
+    def is_cpu_engine(self) -> bool:
+        try:
+            return (self.ctx.catalog.installed_backend() or "") in ("cpu", "metal")
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def refresh_body(self) -> None:
+        if not hasattr(self, "roles"):
+            return
+        from strata_control import gpu_fit, gpu_roles
+        c = self.ctx.computer
+        try:
+            self.query_one("#reco", Static).update(Text(gpu_roles.sentence(self.cardlist, c.engine_vendor), style=MUTE))
+        except Exception:                                    # noqa: BLE001
+            return
+        lines = Text()
+        if self.note:
+            lines.append(f"  {self.note}\n", style=MUTE)
+        spill = gpu_roles.spill_for(self.roles, self.cardlist, self.model_memory(), c.ram_gb)
+        for w in gpu_roles.warnings(self.roles, self.cardlist, spill_gb=spill, engine_runs_cpu_only=self.is_cpu_engine()):
+            fix = ""
+            if w["fix"]:
+                n = gpu_roles.gpu_label(next(x for x in self.cardlist if int(x.get("index", 0)) == w["fix"]["card"]))
+                fix = f"   (select {n} and press {w['fix']['role'][0].upper()})"
+            lines.append(f"  ! {w['text']}{fix}\n", style=WARN)
+        if self.detail:
+            for word, text in (("Main", "does the last steps of every answer and keeps the conversation. Only one."),
+                               ("Helper", "holds a share of the model, so more of it fits on graphics cards."),
+                               ("Off", "Strata does not touch the card.")):
+                lines.append(f"  {word}: {text}\n", style=MUTE)
+        for g in gpu_fit.for_vendor(c.gpus, c.engine_vendor)[1]:
+            lines.append(f"  Not used: {g.get('name')} (another make of card than this engine drives).\n", style=MUTE)
         try:
             self.query_one("#cardnotes", Static).update(lines)
         except Exception:                                    # noqa: BLE001
             pass
 
-    def on_cursor(self) -> None:
-        self.refresh_body()
-
     def explain(self) -> Text:
-        return Text("One card plus your RAM is the normal way and keeps things simple. Two cards share the layers: more room for the model and "
-                    "prompts read about 20% faster, but a small second card can slow it down. Strata recommends one of them; the choice is yours.",
-                    style=MUTE)
+        return Text("Strata recommends the roles shown. A Helper holds part of the model; Off leaves a card alone (for a game or the screen). "
+                    "Any card is one key away; the choice is yours.", style=MUTE)
 
     def commit(self) -> None:
-        cur = self.menu().current
-        rec = next((o["cards"] for o in self.res["options"] if o["recommended"]), None)
-        self.ctx.settings.gpus = None if cur.key == rec else list(cur.key)         # the recommended choice stays "let Strata choose" (the same rule in setup)
+        if not hasattr(self, "roles"):
+            return
+        s = self.ctx.settings
+        if self.roles == self.baseline():
+            s.gpu_roles, s.gpus = None, None                 # the recommendation (or the installed choice) stays "not set": a card added later is re-recommended
+        else:
+            s.gpu_roles, s.gpus = {str(i): r for i, r in sorted(self.roles.items())}, None
 
 
 # ------------------------------------------------------------------------------------------------ 3 folder
@@ -652,8 +825,8 @@ class FolderScreen(Base):
             out.append("The free space of that folder could not be read.", style=MUTE)
         moving = self.models_that_would_move(value)
         if moving:
-            out.append(f"\nModel files Strata already keeps in {moving} are moved into this folder when you start "
-                       "(quick on the same drive; on another drive they stay where they are and are used from there).", style=WARN)
+            out.append(f"\nModel files Strata already keeps in {moving} stay there and keep working. This folder is used for new downloads. "
+                       "To move them here, use: strata models move.", style=MUTE)
         self.query_one("#folderinfo", Static).update(out)
 
     def models_that_would_move(self, value: str) -> str | None:
@@ -675,10 +848,23 @@ class FolderScreen(Base):
             return Text("This model is already on this computer, so the folder starts where it is. Press Enter to keep it. "
                         "Another folder only matters for files that still have to be downloaded.", style=MUTE)
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
-                    "Press Enter to keep it, or type another folder (it is created if it does not exist).", style=MUTE)
+                    "Press Enter to keep it, or type another folder (it is created if it does not exist). Models you already have stay where "
+                    "they are and stay usable; the new folder is for new downloads.", style=MUTE)
+
+    def typed(self) -> str:
+        return self.query_one("#folderpath", Input).value.strip().strip('"')
+
+    def action_next(self) -> None:
+        """The folder is checked before going on (B05): a path that cannot hold the models is said here, in plain words, and not saved."""
+        from strata_control import folders
+        found = folders.problem(self.typed())
+        if found:
+            self.say(folders.words(found), True)
+            return
+        super().action_next()
 
     def commit(self) -> None:
-        value = self.query_one("#folderpath", Input).value.strip().strip('"')
+        value = self.typed()
         default = str(self.ctx.default_folder())
         self.ctx.settings.data_dir = None if (not value or value == default) else value
 
@@ -717,20 +903,25 @@ class ContextScreen(Base):
         s, cat = self.ctx.settings, self.ctx.catalog
         items = []
         sel = 0
-        for i, c in enumerate(cat.contexts()):
+        deepseek = bool(s.family and cat.strata.multi_family(s.family))     # DeepSeek-V4.1-Flash: 8K to 1M, not Qwen's list or its rope scaling
+        sizes = cat.contexts_for(s.family, s.model)
+        for i, c in enumerate(sizes):
             kvgb = cat.kv_gb(c, self.kv())
             note, style = "", ""
             if c == self.rec:
                 note = "recommended"
+            elif deepseek:
+                if dsv41_context.note(c):
+                    note, style = "not tested yet: takes memory from the model", WARN
             elif c > max(self.rec * 2, 131072) and c <= 262144:
                 note, style = "tight on this computer", WARN
             elif c > 262144:
                 note, style = "experimental: rope scaling", WARN
-            items.append(Item([S.context_label(c), S.words_for(c), f"+{kvgb:.1f} GB", Cell(note, style)], key=c))
+            items.append(Item([S.context_label(c), S.words_for(c), "" if deepseek else f"+{kvgb:.1f} GB", Cell(note, style)], key=c))
             if c == s.context:
                 sel = i
-        if s.context and s.context not in cat.contexts():
-            items.append(Item([S.context_label(s.context), S.words_for(s.context), f"+{cat.kv_gb(s.context, self.kv()):.1f} GB",
+        if s.context and s.context not in sizes:
+            items.append(Item([S.context_label(s.context), S.words_for(s.context), "" if deepseek else f"+{cat.kv_gb(s.context, self.kv()):.1f} GB",
                                Cell("your own size", "")], key=s.context))
             sel = len(items) - 1
         items.append(Item(["Custom…"], key="custom"))
@@ -751,8 +942,13 @@ class ContextScreen(Base):
         cur = self.menu().current if self.menu() else None
         out = Text("More context lets agents read bigger projects. It uses more memory and the first reply of a long chat is slower. "
                    "The memory shown is only the extra for the conversation itself.", style=MUTE)
+        s = self.ctx.settings
+        deepseek = bool(s.family and self.ctx.catalog.strata.multi_family(s.family))
         if cur is not None and isinstance(cur.key, int) and cur.key > 262144:
-            out.append("\nThis is past what the model was trained on; setup adds rope scaling and answers may get less reliable.", style=WARN)
+            if deepseek:
+                out.append("\n" + dsv41_context.NOTE, style=WARN)
+            else:
+                out.append("\nThis is past what the model was trained on; setup adds rope scaling and answers may get less reliable.", style=WARN)
         return out
 
     def action_memory(self) -> None:
@@ -775,6 +971,12 @@ class ContextScreen(Base):
         except ValueError as e:
             self.say(str(e), True)
             return
+        s = self.ctx.settings
+        if s.family and self.ctx.catalog.strata.multi_family(s.family):       # DeepSeek: a size the pack cannot read is the one refusal
+            why = dsv41_context.problem(n, self.ctx.catalog.pack_limit(s.family, s.model))
+            if why:
+                self.say(why, True)
+                return
         self.ctx.settings.context = n
         self.close_field("custom")
         self.build()
@@ -819,10 +1021,15 @@ class PicturesScreen(Base):
         s = self.ctx.settings
         return next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
 
+    def own_tower(self) -> bool:
+        """DeepSeek reads pictures with a tower inside its own engine: no separate picture reader to look for."""
+        s = self.ctx.settings
+        return bool(s.family) and bool(self.ctx.catalog.strata.multi_family(s.family))
+
     def reader(self) -> str:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches it)."""
-        return self.ctx.catalog.reader_state()
+        return "present" if self.own_tower() else self.ctx.catalog.reader_state()
 
     def on_mount(self) -> None:
         s = self.ctx.settings
@@ -838,6 +1045,9 @@ class PicturesScreen(Base):
         self.paint()
 
     def explain(self) -> Text:
+        if self.own_tower() and self.supported:
+            return Text("Pictures are on by default. DeepSeek reads them with a picture tower of its own inside the engine: a 1 GB file that comes with "
+                        "the model's files and about 0.3 GB of graphics memory. Say No if you only chat in text.", style=MUTE)
         amd = any(str(g.get("vendor")) == "amd" for g in self.ctx.computer.usable_gpus)
         on_card = self.ctx.catalog.picture_default(True) == "gpu"
         extra = ("a 0.9 GB download (if it is not on this computer yet). On your AMD card the picture reader runs on the graphics card "
@@ -858,10 +1068,48 @@ class PicturesScreen(Base):
 
     def commit(self) -> None:
         key = self.menu().current.key
-        if key == "on":                                      # yes: the reader on the card (NVIDIA, AMD) or the CPU, as the default says
+        if key == "on" and not self.own_tower():             # yes: the reader on the card (NVIDIA, AMD) or the CPU, as the default says
             device = self.ctx.catalog.picture_default(True)
             key = device if device != "off" else "on"
         self.ctx.settings.vision = key
+
+
+# ------------------------------------------------------------------------------------------------ DeepSeek: speed
+
+class SpeedScreen(Base):
+    step_id = "speed"
+    help_text = ("DeepSeek picks 6 experts for every word it writes. Faster uses 5 of them: answers come sooner, with a small quality change that is "
+                 "usually not noticeable. Full quality uses all 6. Faster is the default on a PC whose graphics cards total 16 GB or less, and on an integrated GPU such as Strix Halo (the engine decides the same way).")
+
+    def body(self) -> ComposeResult:
+        yield Static(Text("Speed or full quality?", style=f"bold {ACCENT}"), markup=False)
+        yield Menu(id="menu")
+
+    def default_faster(self) -> bool:
+        from strata_cli.launch.runner import faster_by_default
+        return faster_by_default(self.ctx.computer, self.ctx.settings)
+
+    def on_mount(self) -> None:
+        s = self.ctx.settings
+        faster_default = self.default_faster()
+        here = Cell("default on this PC", "")
+        items = [Item(["Faster", here if faster_default else Cell("", "")], key="faster"),
+                 Item(["Full quality", here if not faster_default else Cell("", "")], key="full")]
+        sel = 0 if (s.speed or ("faster" if faster_default else "full")) == "faster" else 1
+        self.query_one(Menu).columns = [("", 24), ("", 0)]
+        self.query_one(Menu).set_items(items, sel)
+        self.paint()
+
+    def explain(self) -> Text:
+        key = self.menu().current.key if self.menu() and self.menu().current else "faster"
+        if key == "faster":
+            return Text(S.FASTER_NOTE + " It is the default on a PC with 16 GB of graphics memory or less.", style=MUTE)
+        return Text("Full quality uses all 6 experts per word. Answers are a little slower; pick it when the last bit of quality matters more.", style=MUTE)
+
+    def commit(self) -> None:
+        key = self.menu().current.key
+        default = "faster" if self.default_faster() else "full"
+        self.ctx.settings.speed = None if key == default else key        # the default stays "the default for this PC" in a saved preset
 
 
 # ------------------------------------------------------------------------------------------------ 6 parallel
@@ -918,11 +1166,17 @@ class TuningScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        first = self.ctx.fresh_setup and not s.tuned_preset
-        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
-                 Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
-                 Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
-        if not self.ctx.tune_chosen and s.tune == "skip" and not s.tuned_preset and self.ctx.fresh_setup:
+        first = self.ctx.fresh_setup and not s.is_tuned
+        if s.family == "deepseek41":                         # DeepSeek's own short tune (tools/dsv41/tune.py): its real length and what it tries
+            items = [Item(["Quick", "about 5-10 minutes", "tries the DSpark drafter on or off, a shorter draft block and the CPU threads; keeps only clear gains"
+                           + ("; suggested the first time" if first else "")], key="quick"),
+                     Item(["Thorough", "about 10-15 minutes", "also tries every CPU thread"], key="thorough"),
+                     Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
+        else:
+            items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
+                     Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
+                     Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
+        if not self.ctx.tune_chosen and s.tune == "skip" and not s.is_tuned and self.ctx.fresh_setup:
             s.tune = "quick"
         self.query_one(Menu).set_items(items, {"quick": 0, "thorough": 1, "skip": 2}.get(s.tune, 0))
         self.paint()
@@ -1166,8 +1420,9 @@ class AdvancedScreen(Base):
 class AccessScreen(Base):
     step_id = "access"
     hints = "↑↓ choose   Enter next   p port   k new key   t key on/off   Esc back   ? help"
-    help_text = ("Who can use the model. 'This computer only' is the safe default. Anything beyond it needs the API key: the server will not "
-                 "start on a network without one.")
+    help_text = ("Who can use the model. 'This computer only' is the safe default and never needs a key. Beyond it Strata makes an API key "
+                 "for you (recommended); press t if you would rather have no key: it still starts, but anyone who can reach it can use it. "
+                 "To see the key later: strata launch --show-key. To use a key of your own: strata launch --api-key YOUR-KEY (or --api-key-env NAME).")
 
     BINDINGS = Base.BINDINGS + [Binding("p", "port", show=False), Binding("k", "newkey", show=False), Binding("t", "keytoggle", show=False)]
 
@@ -1202,7 +1457,7 @@ class AccessScreen(Base):
         t = Text()
         t.append(f"\n   Port      [ {s.port} ]   press p to change\n")
         t.append(f"   API key   [ {'on' if on else 'off'} ]   {acc.mask_key(s.api_key)}  ", style=FG if on else WARN)
-        t.append("(recommended for anything beyond this computer)" if beyond else "(optional on this computer)", style=MUTE)
+        t.append(("(recommended for anything beyond this computer; t = no key)" if on else "(t = make a key)") if beyond else "(not needed on this computer)", style=MUTE)
         self.query_one("#portkey", Static).update(t)
 
     def explain(self) -> Text:
@@ -1216,9 +1471,9 @@ class AccessScreen(Base):
             if fw:
                 out.append(fw + "\n", style=WARN)
             if cur.key == "cloudflare":
-                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so keep the API key on.", style=MUTE)
+                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so an API key keeps others out.", style=MUTE)
             elif cur.key == "lan":
-                out.append("Other computers on your network can use it at the address shown. Keep the API key on.", style=MUTE)
+                out.append("Other computers on your network can use it at the address shown. An API key is recommended.", style=MUTE)
             elif cur.key == "tailscale":
                 out.append("Only devices signed in to your Tailscale network can reach it.", style=MUTE)
             else:
@@ -1229,9 +1484,11 @@ class AccessScreen(Base):
         kind = self.menu().current.key
         s = self.ctx.settings
         s.access = kind
-        if kind != "local" and not s.api_key:
-            s.api_key = acc.new_key()
-            self.say("An API key was made for you, because this reaches beyond your computer.")
+        if kind != "local" and not s.api_key and not s.no_key:
+            s.api_key = acc.kept_key() or acc.new_key()
+            self.say("An API key was made for you (recommended beyond this computer). Press t if you want no key.")
+        elif kind != "local" and s.no_key:
+            self.say(S.NO_KEY_PUBLIC if kind == "cloudflare" else S.NO_KEY_NETWORK, True)
 
     def action_port(self) -> None:
         self.open_field("portfield", str(self.ctx.settings.port), "port number")
@@ -1252,6 +1509,7 @@ class AccessScreen(Base):
 
     def action_newkey(self) -> None:
         self.ctx.settings.api_key = acc.new_key()
+        self.ctx.settings.no_key = False
         self.say("A new API key was made. Apps that used the old one need the new one (strata connect shows it).")
         self.paint()
 
@@ -1259,9 +1517,10 @@ class AccessScreen(Base):
         s = self.ctx.settings
         if s.api_key:
             s.api_key = None
-            self.say("The API key is off." + (" The server will not start on a network without one." if s.access != "local" else ""), s.access != "local")
+            s.no_key = s.access != "local"
+            self.say("The API key is off." + ((" " + (S.NO_KEY_PUBLIC if s.access == "cloudflare" else S.NO_KEY_NETWORK)) if s.access != "local" else ""), s.access != "local")
         else:
-            s.api_key = acc.new_key()
+            s.api_key, s.no_key = acc.new_key(), False
             self.say("The API key is on.")
         self.paint()
 
@@ -1274,8 +1533,8 @@ class AccessScreen(Base):
     def commit(self) -> None:
         s = self.ctx.settings
         s.access = self.menu().current.key
-        if s.access != "local" and not s.api_key:
-            s.api_key = acc.new_key()
+        if s.access != "local" and not s.api_key and not s.no_key:
+            s.api_key = acc.kept_key() or acc.new_key()
 
     def action_back(self) -> None:
         if self.input_open():
@@ -1319,13 +1578,17 @@ class SaveScreen(Base):
     def summary_lines(self) -> list[tuple[str, str]]:
         s = self.ctx.settings
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
+        from strata_cli.launch.runner import faster_by_default
         lines = [("Model", (r.title if r else (s.model or "?")) + (" (your files)" if s.model_path else "")),
                  ("Context", S.context_label(s.context) + f", memory {s.kv or 'int8'}"),
                  ("Pictures", "on" if s.vision != "off" else "off"),
+                 *([("Speed", S.speed_words(s.speed or ("faster" if faster_by_default(self.ctx.computer, s) else "full"),
+                                            s.speed is None))] if s.family == "deepseek41" and speed_choice_available(self.ctx) else []),
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
-                 ("Tuning", {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"}[s.tune]),
+                 ("Tuning", ({"quick": "quick (about 5-10 min)", "thorough": "thorough (about 10-15 min)", "skip": "skipped"} if s.family == "deepseek41"
+                              else {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"})[s.tune]),
                  ("Access", f"{S.ACCESS_WORDS[s.access]}, port {s.port}" + (", API key on" if s.api_key else ", no API key")),
-                 ("Storage", s.data_dir or "Strata's data folder")]
+                 ("Storage", s.data_dir or str(self.ctx.default_folder()))]
         if s.extra:
             lines.append(("Advanced", ", ".join(f"{k}={v}" for k, v in s.extra.items())))
         return lines
@@ -1399,10 +1662,15 @@ class SaveScreen(Base):
         s.name = name
         if choice in ("save", "save_launch"):
             try:
-                store.save(s, name)
+                if choice == "save":
+                    store.save(s, name)
+                else:
+                    store.check_name(name)                   # saved by the run once the restart question (if any) is answered "Restart"
             except store.PresetError as e:
                 self.say(str(e), True)
                 return
+            if choice == "save_launch":
+                self.ctx.pending_save = name
         if choice == "save":
             self.app.exit(None)
             self.app.stopped_after_save = True       # type: ignore[attr-defined]

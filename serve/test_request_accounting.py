@@ -148,14 +148,14 @@ class RequestAccounting(unittest.TestCase):
         usage = self.chat("/v1/messages")["usage"]
         self.assertEqual(self.engine.attempts, 2)
         self.assertEqual(usage["cache_read_input_tokens"], 5)
-        self.assertEqual(usage["input_tokens"], len(self.engine.prompts[0]) - 5)
+        self.assertEqual(usage["input_tokens"] + usage["cache_creation_input_tokens"], len(self.engine.prompts[0]) - 5)
 
     def test_anthropic_stream_classifies_only_original_input_as_cached(self):
         events = self.chat("/v1/messages", stream=True)
         usage = next(event["usage"] for event in events if event["type"] == "message_delta")
         self.assertEqual(self.engine.attempts, 2)
         self.assertEqual(usage["cache_read_input_tokens"], 5)
-        self.assertEqual(usage["input_tokens"], len(self.engine.prompts[0]) - 5)
+        self.assertEqual(usage["input_tokens"] + usage["cache_creation_input_tokens"], len(self.engine.prompts[0]) - 5)
 
     def test_single_segment_keeps_its_own_usage_and_timings(self):
         response = self.chat(budget=10000)

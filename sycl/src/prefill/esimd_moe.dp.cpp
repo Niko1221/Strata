@@ -22,6 +22,7 @@
 //    value, gave wrong values / garbage pointers (the first weight read faulted the GPU); the kernels use constant-index reads
 //    (pick_expert) and 2-D grids.  gather<T, N, VS> with VS > 1 is not available on Battlemage.
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <sycl/ext/intel/esimd.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
@@ -205,7 +206,7 @@ template <int F, int MT, int G>
 void launch_gu(sycl::queue& q, const GArgs a, int nrowblocks) {
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     constexpr int NS = (F == T_IQ2S) ? 2 : 1;   // IQ2_S: two scales per 32 values -> two DPAS with the other half zeroed
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<TagGu<F, MT, G>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int rbg = (int) id[0], nt = (int) id[1];
             const Pick pk = pick_expert(a, rbg);
@@ -346,7 +347,7 @@ void launch_gu(sycl::queue& q, const GArgs a, int nrowblocks) {
 template <int F, int MT, int G>
 void launch_dn(sycl::queue& q, const GArgs a, int nrowblocks) {
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<TagDn<F, MT, G>>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), props, [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int rbg = (int) id[0], nt = (int) id[1];
             const Pick pk = pick_expert(a, rbg);
@@ -477,7 +478,7 @@ void launch_gu_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
     using L = WgLayout<F, MT>;
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
     constexpr int NS = (F == T_IQ2S) ? 2 : 1;
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<TagGuW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
                                          [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
             slm_init<L::TOTAL>();
@@ -645,7 +646,7 @@ template <int F, int MT, int G>
 void launch_dn_wg(sycl::queue& q, const GArgs a, int nrowblocks) {
     using L = WgLayout<F, MT>;
     auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<G>};
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<TagDnW<F, MT, G>>(sycl::nd_range<2>(sycl::range<2>((size_t) nrowblocks, (size_t) a.ntiles), sycl::range<2>(1, WGT)), props,
                                          [=](sycl::nd_item<2> it) SYCL_ESIMD_KERNEL {
             slm_init<L::TOTAL>();
@@ -893,7 +894,7 @@ void quantize_rows(const uint16_t* X, const Layout& lo, int K, int8_t* Xq, float
     const size_t nthreads = (size_t) lo.tile0[lo.n] * a.nkb;
     const half* Xh = reinterpret_cast<const half*>(X);
     uint32_t* Xd = reinterpret_cast<uint32_t*>(Xq);
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<QuantTag>(sycl::range<2>((size_t) lo.tile0[lo.n], (size_t) a.nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int T = (int) id[0], kb = (int) id[1];
             // the expert of tile T, by constant-index reads of the argument arrays (see pick_expert)
@@ -938,7 +939,7 @@ void swiglu_quantize(const float* GU, const Layout& lo, int n_ff, int8_t* Hq, fl
     a.ld = 2 * n_ff;
     const size_t nthreads = (size_t) lo.tile0[lo.n] * a.nkb;
     uint32_t* Hd = reinterpret_cast<uint32_t*>(Hq);
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         h.parallel_for<SwigluTag>(sycl::range<2>((size_t) lo.tile0[lo.n], (size_t) a.nkb), [=](sycl::id<2> id) SYCL_ESIMD_KERNEL {
             const int T = (int) id[0], kb = (int) id[1];
             // the expert of tile T, by constant-index reads of the argument arrays (see pick_expert)

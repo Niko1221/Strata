@@ -212,7 +212,7 @@ def engine_flag_inventory(engine: Path) -> list[str] | None:
     at all.
     """
     try:
-        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, timeout=20,
+        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, errors="replace", timeout=20,
                               env=engine_env(engine))
     except (OSError, subprocess.SubprocessError):
         return None
