@@ -33,17 +33,18 @@ from pathlib import Path
 
 
 class Calib:
-    __slots__ = ("loaded", "tuple_str", "T_choice", "T_score", "a_noul", "c_noul")
+    __slots__ = ("loaded", "tuple_str", "T_choice", "T_score", "a_noul", "c_noul", "task")
 
     def __init__(self, loaded: bool = False, tuple_str: str = "",
                  T_choice: float = 1.0, T_score: float = 1.0,
-                 a_noul: float = 1.0, c_noul: float = 0.0):
+                 a_noul: float = 1.0, c_noul: float = 0.0, task: str = ""):
         self.loaded = loaded
         self.tuple_str = tuple_str
         self.T_choice = T_choice
         self.T_score = T_score
         self.a_noul = a_noul
         self.c_noul = c_noul
+        self.task = task
 
 
 # ---- active calibrator + lock ----
@@ -60,6 +61,40 @@ def active(mode: str = "") -> Calib | None:
         return _ACTIVE.get(mode)
 
 
+# ---- task scoping (cross-task contamination guard) ----
+# The defect this closes: swap() keys fits by READOUT LETTER only, so one
+# calib-L.json serves every text task.  A fit carrying a large positive noul
+# intercept from BoolQ/ARC/SST5 moved a 50/50 banking77 set's yes-rate from
+# 67.6% to 80.4% and cost 9.6 accuracy points (measured, 500 items, p<0.001).
+# When the server runs with a task tag (STRATA_JEV_TASK) a fit whose recorded
+# task does not match is NOT applied: identity beats a stranger's intercept.
+# Unset tag -> legacy behaviour, byte-identical to the last release.
+_TASK_OVERRIDE: "str | None" = None
+_MISMATCH_LOGGED: set = set()
+
+
+def task_tag() -> str:
+    """Runtime task identity for calibration scoping."""
+    if _TASK_OVERRIDE is not None:
+        return _TASK_OVERRIDE
+    return os.environ.get("STRATA_JEV_TASK", "").strip()
+
+
+def _set_task_for_test(v: "str | None") -> None:
+    global _TASK_OVERRIDE
+    _TASK_OVERRIDE = v
+
+
+def task_mismatch(c: "Calib", want: str) -> str:
+    """-> reason string when `c` must not be applied for task `want`, else ""."""
+    if not want or not c.loaded:
+        return ""
+    if c.task == want:
+        return ""
+    got = c.task or "<untagged>"
+    return f"fit task {got!r} != runtime task {want!r}"
+
+
 def _set_for_test(c: Calib | None, mode: str = "") -> None:
     with _MU:
         _ACTIVE[mode] = c
@@ -73,7 +108,7 @@ CALIB_DIR = Path(os.environ.get("STRATA_JEV_CALIB_DIR", "calib"))
 # "a_noul"/"c_noul") loads as identity while its T is still honoured - a silent half-fitted
 # calibrator.  STRATA_JEV_CALIB_STRICT=1 refuses such a file outright and logs why.
 STRICT = os.environ.get("STRATA_JEV_CALIB_STRICT", "0") not in ("0", "false", "False", "off", "")
-_KNOWN_KEYS = {"tuple", "a_noul", "c_noul", "T_choice", "T_score", "provenance"}
+_KNOWN_KEYS = {"tuple", "task", "a_noul", "c_noul", "T_choice", "T_score", "provenance"}
 
 
 def _strict_problem(j: dict) -> str:
@@ -138,6 +173,8 @@ def load(path: Path) -> Calib:
             c.c_noul = float(j["c_noul"])
         if "tuple" in j:
             c.tuple_str = str(j["tuple"])
+        if "task" in j:
+            c.task = str(j["task"])
         c.loaded = True
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -179,6 +216,14 @@ def apply(qtype: str, pr: list[float], mode: str = "") -> tuple[list[float], str
     if c is None and mode in ("", "L"):
         c = active("")
     if c is None or not c.loaded or not pr:
+        return pr, "identity"
+    want = task_tag()
+    why = task_mismatch(c, want)
+    if why:
+        if (c.tuple_str, c.task, want) not in _MISMATCH_LOGGED:
+            _MISMATCH_LOGGED.add((c.tuple_str, c.task, want))
+            print(f"[jev-calib] not applying fit ({why}); identity until a fit is "
+                  f"recorded for this task (refit: scripts/refit_calib.py)", flush=True)
         return pr, "identity"
     if qtype == "noul":
         p = min(max(pr[1] if len(pr) > 1 else 0.0, 1e-9), 1 - 1e-9)
