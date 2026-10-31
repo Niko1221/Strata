@@ -404,14 +404,38 @@ function renderConvCache(c) {
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
 
+// The Monitor's short line, for the state card where a phone has room for one line and no tooltip to hover. The cost
+// leads it, because it is the one number worth reading at a glance, and behind it come what the model was given and
+// what it returned since the counters began, with the date they began. The words are the two prices' own (input and
+// output); the sentence under the request table spells the same counts out in full and is this line's tooltip.
+function abbr(n) {
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M"
+       : n >= 1e3 ? String(Math.round(n / 1e3)) + "K" : String(n);
+}
+// The money. The server works the cost out from the prices it was started with and sends the rate each kind of token
+// is paid at, so the page only prints what it is told. A price is the US dollars a million tokens of that kind
+// costs; with no price set there is no cost to speak of, so no figure is printed rather than a "$0.00" that would
+// read as a model that works for free.
+const usd = (n) => `$${fmt(n, 2)}`;
+const price = (v) => `$${fmt(v || 0, v % 1 ? 2 : 0)}`;
+const hasCost = (t) => !!(t && (t.cost_input_per_million || t.cost_output_per_million));
+const costFirst = (t) => hasCost(t) ? `≈ ${usd(t.cost_usd)} · ` : "";
+const costPrices = (t) => !hasCost(t) ? ""
+  : ` · about ${usd(t.cost_usd)} at ${price(t.cost_input_per_million)} per million in, ` +
+    `${price(t.cost_output_per_million)} per million out`;
+function tokenLine(t) {
+  if (!t || !t.requests) return "";
+  const since = t.since ? ` · since ${new Date(t.since * 1000).toLocaleDateString([], {day: "numeric", month: "short"})}` : "";
+  return `${costFirst(t)}${abbr(t.prompt_tokens)} input (${abbr(t.reused)} reused) · ${abbr(t.output_tokens)} output${since}`;
+}
 function renderTotals(t) {
   if (!t || !t.requests) return "";
   const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
   const read = t.prompt_tokens - t.reused;
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
+  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} input tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
+         `${fmt(t.output_tokens)} output tokens${oSpeed}${costPrices(t)}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
@@ -553,6 +577,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
   $("req-totals").textContent = renderTotals(totals);
+  const tokLine = $("state-tokens");                 // the same counts, short enough for a phone's width
+  if (tokLine) { tokLine.textContent = tokenLine(totals) || "–"; tokLine.title = renderTotals(totals) || ""; }
 }
 
 function facts(el, rows) {
