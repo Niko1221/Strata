@@ -512,7 +512,8 @@ inline bool pf_pad() {
         if (!(p && p[0] == '1' && g && g[0] == '1')) return false;
         // The padded stride pays only for strata_pf_gemm_f16_ld, which is built for the gfx11 matrix cores.  On another
         // card nothing takes a padded X (it used to end the engine: "a padded X ... needs STRATA_PF_PAD's path", #1237):
-        // do not pad, and say so once.
+        // do not pad, and say so once.  In a hybrid build the host copy only ever sees the CUDA half - the padded product is compiled
+        // into the HIP half - so the padding stays pure-HIP.
         if (!strata_pf_padded_gemm_available()) {
             std::fprintf(stderr, "prefill gemm: STRATA_PF_PAD needs the padded gfx11 product, which this card does not run; "
                                  "not padding\n");
@@ -1471,10 +1472,18 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
 // request; generate.cpp starts it on a thread before the expert arena loads, so it costs no start-up time, and
 // Prefill::init waits for it.  The outputs go to scratch buffers of their own, so no later result changes.
 // STRATA_PREFILL_WARM=0 turns it off.
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+#endif
 void warm_gemm_libraries(int device) {
     static const bool off = [] { const char* e = std::getenv("STRATA_PREFILL_WARM"); return e != nullptr && e[0] == '0'; }();
     if (off) return;
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
+#if defined(STRATA_HYBRID)
+    // The NVIDIA card keeps the CUDA build's no-op. Warm the AMD card. cuBLAS and
+    // hipBLAS do not share the library state that #3204 measured across two AMD archs.
+    if (!strata_hybrid_is_hip_device(device)) return;
+#else
     // #3204: not when the process sees cards of more than one architecture (gfx1151 + gfx1201: prompts -25%); see
     // warm_policy.hpp.  STRATA_PREFILL_WARM=1 asks for it anyway.
     static const bool arch_ok = [] {
@@ -1493,6 +1502,7 @@ void warm_gemm_libraries(int device) {
         return wanted;
     }();
     if (!arch_ok) return;
+#endif
     static std::mutex mu;
     static unsigned done_mask = 0;   // per device: each card loads its own code objects
     if (device < 0 || device >= 32) return;
