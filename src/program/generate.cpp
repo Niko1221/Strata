@@ -2848,7 +2848,11 @@ static bool prepare_gated_window(strata::core::gated::Packet& packet,
     return true;
 }
 
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+static int engine_main(int argc, char** argv) {   // main() is at the end of this file (#3431)
+#else
 int main(int argc, char** argv) {
+#endif
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -18796,3 +18800,65 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+// #3431: no stack, heap block or mapping the engine uses may lie under the GPU alias of a pinned expert-arena range (see
+// claim_alias in src/core/pinned.cu: such a range and the ones after it are left unpinned, which is right but slower).  The
+// aliases sit low in the address space (seen between 8 and 300 GiB), where Windows also places stacks and heaps, and in about one
+// start in ten an alias covered the engine thread's stack.  So the free address space below 1 TiB is reserved here, for the life
+// of the process (address space only, nothing committed), and the engine runs on a new thread: its stack, and everything the
+// process allocates later, is placed above.  The aliases are not moved by it; one inside the reservation is clear.  What existed
+// before main stays low: this first thread's stack (it only waits from here on, so an alias may cover it) and a few blocks of the
+// process, which claim_alias still checks.  STRATA_STACK_ISOLATE=0 runs the engine on the first thread with nothing reserved.
+namespace {
+struct EngineArgs {
+    int argc;
+    char** argv;
+    int rc;
+};
+DWORD WINAPI engine_thread(LPVOID p) {
+    EngineArgs* a = static_cast<EngineArgs*>(p);
+    a->rc = engine_main(a->argc, a->argv);
+    return 0;
+}
+// every free piece below `limit` that a reservation can start in (64 KiB-aligned), reserved; the start of each piece
+std::vector<uint64_t> reserve_low_address_space(uint64_t limit) {
+    std::vector<uint64_t> held;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uint64_t gran = si.dwAllocationGranularity;
+    uint64_t at = (uint64_t) si.lpMinimumApplicationAddress;
+    MEMORY_BASIC_INFORMATION mbi;
+    while (at < limit && VirtualQuery((void*) at, &mbi, sizeof mbi) == sizeof mbi) {
+        const uint64_t end = (uint64_t) mbi.BaseAddress + mbi.RegionSize;
+        if (mbi.State == MEM_FREE) {
+            const uint64_t b = (at + gran - 1) & ~(gran - 1), e = std::min(end, limit);
+            if (b < e) {
+                if (VirtualAlloc((void*) b, (SIZE_T) (e - b), MEM_RESERVE, PAGE_NOACCESS) != nullptr) held.push_back(b);
+            }
+        }
+        if (end <= at) break;
+        at = end;
+    }
+    return held;
+}
+}  // namespace
+
+int main(int argc, char** argv) {
+    const char* iso = std::getenv("STRATA_STACK_ISOLATE");
+    if (iso == nullptr || iso[0] != '0') {
+        ULONG_PTR lo = 0, hi = 0;
+        GetCurrentThreadStackLimits(&lo, &hi);
+        strata::core::set_idle_thread_stack(lo, hi);
+        strata::core::set_held_address_space(reserve_low_address_space(1ull << 40));
+        EngineArgs a{argc, argv, 1};
+        HANDLE h = CreateThread(nullptr, 0, engine_thread, &a, 0, nullptr);   // 0: the exe's own stack size, as the first thread's
+        if (h != nullptr) {
+            WaitForSingleObject(h, INFINITE);
+            CloseHandle(h);
+            return a.rc;
+        }
+        strata::core::set_idle_thread_stack(0, 0);   // the engine runs on this thread after all
+    }
+    return engine_main(argc, argv);
+}
+#endif
