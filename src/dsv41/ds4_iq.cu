@@ -1360,7 +1360,7 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __res
 // buffer into the next warp's and gave wrong, run-to-run varying rows on a gfx11 device (UD-IQ1_S: garbage on every chunked prompt); every
 // other type reads through dq_rows_kernel2, whatever the device or DS4_DQ_OLD says.
 template <int T>
-constexpr bool dq_old_ok() {
+__host__ __device__ constexpr bool dq_old_ok() {
     return Ty<T>::TAB == 0 && (kQK<T> == 32 ? 32 : 4) * Ty<T>::B <= 44 * 16 && ((kQK<T> == 32 ? 32 : 4) * Ty<T>::B) % 16 == 0;
 }
 
