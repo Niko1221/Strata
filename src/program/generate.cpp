@@ -4047,9 +4047,13 @@ int main(int argc, char** argv) {
             if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess) {
                 std::string arch(p.gcnArchName);
                 if (const size_t colon = arch.find(':'); colon != std::string::npos) arch.resize(colon);
-                if (arch != "gfx1151")
+                // gfx1100 (RX 7900 XTX) validated 2026-10-31 on v0.2.7: tq_cpu_parity,
+                // native_hadamard_test (synthetic + real Gyro-Coder experts) and
+                // native_expert_parity over all 48 layers (gpu vs float <= 2.09e-2, bound
+                // 3e-2; the gpu dequant is bit-exact against ggml's to_float).
+                if (arch != "gfx1151" && arch != "gfx1100")
                     std::fprintf(stderr, "strata generate: warning: Hadamard-folded experts are validated end to end "
-                                         "on gfx1151 among AMD GPUs, not yet on %s\n", arch.c_str());
+                                         "on gfx1151 and gfx1100 among AMD GPUs, not yet on %s\n", arch.c_str());
             } else {
                 (void) cudaGetLastError();
             }
