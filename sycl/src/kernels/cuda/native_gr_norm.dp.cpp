@@ -24,6 +24,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
@@ -119,7 +120,7 @@ void native_gr_rms_norm_weighted_multi(const float* input, const float* gamma, f
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cuda_stream->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(cuda_stream, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class weighted_rms_norm_60b509, dpct_kernel_scalar<256>>>(
             sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
@@ -137,7 +138,7 @@ void native_gr_rms_norm_weighted_multi(const float* input, const float* gamma, f
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cuda_stream->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(cuda_stream, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class weighted_rms_norm_9382c8, dpct_kernel_scalar<1024>>>(
             sycl::nd_range<3>(grid * sycl::range(1, 1, 1024),
                               sycl::range(1, 1, 1024)),

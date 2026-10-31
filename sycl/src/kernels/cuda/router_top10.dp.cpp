@@ -53,6 +53,7 @@
 //     version was O(k*n) with a serial `exp` inside.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
@@ -75,7 +76,7 @@ template <bool FORCE_SERIAL>
 void launch_sycl_fast(sycl::queue& q, const float* logits, int n_tokens, int n_expert, int k,
                       int* ids, float* weights) {
     const int threads = (std::min(n_expert, RT_MAX_THREADS) + 31) & ~31;
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         sycl::local_accessor<double, 1> s_ex(sycl::range<1>(n_expert), h);
         sycl::local_accessor<float, 1> s_red(sycl::range<1>(RT_MAX_THREADS / 32), h);
         sycl::local_accessor<double, 1> s_dred(sycl::range<1>(RT_MAX_THREADS / 32), h);
@@ -661,7 +662,7 @@ bool router_top10_variant(const float* logits, int n_tokens, int n_expert, int k
         const int threads = (std::min(n_expert, RT_MAX_THREADS) + 31) & ~31;
         const size_t taken_bytes = ((size_t)n_expert + 15u) & ~size_t(15);
         const size_t smem = taken_bytes + n_expert * (sizeof(double) + sizeof(float));
-        q.submit([&](sycl::handler& h) {
+        strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
             sycl::local_accessor<uint8_t, 1> local(sycl::range<1>(smem), h);
             h.parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, (size_t)n_tokens * threads),
                                              sycl::range<3>(1, 1, threads)),
@@ -759,7 +760,7 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);

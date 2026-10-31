@@ -23,6 +23,7 @@
 // index with no permutation at all.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/gr.hpp"
@@ -504,7 +505,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             dpct::has_capability_or_fail(st->get_device(),
                                          {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_588e81,
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_kernel_588e81,
                                               dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc) *
                                       sycl::range(1, 1, THREADS),
@@ -520,7 +521,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_down_kernel_6ff92b, float>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
                                       sycl::range(1, 1, THREADS),
@@ -536,7 +537,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_gate_kernel_abf73c, float>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
@@ -556,7 +557,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             dpct::has_capability_or_fail(st->get_device(),
                                          {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_70bea5,
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_kernel_70bea5,
                                               dpct_kernel_scalar<false>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc) *
                                       sycl::range(1, 1, THREADS),
@@ -572,7 +573,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_down_kernel_518fbb, uint16_t>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
                                       sycl::range(1, 1, THREADS),
@@ -588,7 +589,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_gate_kernel_feafeb, uint16_t>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
@@ -607,7 +608,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class gr_mean_kernel_f4c4e8>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_mean_kernel_f4c4e8>>(
             sycl::nd_range<3>(
                 sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) *
                     sycl::range(1, 1, THREADS),
@@ -633,7 +634,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_inject_kernel_569ce0, float>>(
                 sycl::nd_range<3>(sycl::range(1, 1, nthreads),
                                   sycl::range(1, 1, nthreads)),
@@ -654,7 +655,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gr_inject_kernel_d9aa02, uint16_t>>(
                 sycl::nd_range<3>(sycl::range(1, 1, nthreads),
                                   sycl::range(1, 1, nthreads)),
@@ -747,7 +748,7 @@ void gr_write(const float *R, const float *block_out, const float *inject,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 /*
                 DPCT1083: The size of local memory in the migrated code may

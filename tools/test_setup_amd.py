@@ -80,6 +80,41 @@ class KfdDetection(unittest.TestCase):
         self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
 
 
+class Rx6000Detection(KfdDetection):
+    """0.2.2: the RX 6000 engine package (gfx1030 / gfx1031). Setup names the cards, says the package is built and not tested on a real
+    RX 6000 card, and says it for these two architectures only."""
+
+    def test_rx6000_cards_by_gfx_target_version(self):
+        fake_sysfs(self.root, [
+            (100300, 80, 128, "AMD Radeon RX 6900 XT", 16 << 30),     # gfx1030
+            (100301, 40, 129, None, 12 << 30),                        # gfx1031 (RX 6700 XT), no product name
+            (100302, 28, 130, None, 8 << 30),                         # gfx1032 (RX 6600): not in the package
+        ])
+        g = setup.amd_gpus(str(self.root))
+        self.assertEqual([x["arch"] for x in g], ["gfx1030", "gfx1031", "gfx1032"])
+        self.assertEqual(g[1]["name"], setup.AMD_NAMES["gfx1031"])
+        self.assertEqual([setup.is_rdna2(x) for x in g], [True, True, False])
+        self.assertIsNone(setup.amd_problem(g[0]))
+        self.assertIsNone(setup.amd_problem(g[1]))
+
+    def test_the_note_is_for_gfx103x_only(self):
+        for arch in ("gfx1030", "gfx1031", "gfx1030:sramecc-:xnack-"):
+            lines = setup.rdna2_notes({"arch": arch})
+            self.assertEqual(len(lines), 1, arch)
+            self.assertIn("built, not tested on a real RX 6000 card", lines[0])
+            self.assertIn(arch.split(":")[0], lines[0])
+        for arch in ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1151", "gfx1032", "gfx103", "gfx10300", "", None):
+            self.assertEqual(setup.rdna2_notes({"arch": arch}), [], arch)
+        self.assertEqual(setup.rdna2_notes(None), [])
+        self.assertFalse(setup.is_rdna2({"arch": "gfx1030x"}))
+
+    def test_windows_ids_and_names(self):
+        for device, arch in ((0x73BF, "gfx1030"), (0x73AF, "gfx1030"), (0x73A5, "gfx1030"), (0x73DF, "gfx1031")):
+            self.assertEqual(setup.win_amd_arch(device, ""), arch)
+        self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
+        self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")      # an RX 7000 card is not RDNA2
+
+
 class GpuLists(unittest.TestCase):
     """--gpus with AMD cards: every chosen card must be supported; the first is the main one."""
     AMD = [{"index": 0, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "arch": "gfx1201"},
@@ -100,6 +135,26 @@ class GpuLists(unittest.TestCase):
 
     def test_all_is_every_supported_card_most_vram_first(self):
         self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", self.AMD)], [1, 3, 0])
+
+    def test_all_leaves_out_the_apu_beside_two_cards(self):
+        """Strix Halo beside two discrete cards: "all" is the two cards (the APU shares the RAM and draws the desktop); with ONE card it is both
+        (two are needed for a split) and a number list still takes the APU as asked."""
+        apu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 64.0, "arch": "gfx1151", "uma": True}
+        r9700 = {"index": 1, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "arch": "gfx1201"}
+        r9070 = {"index": 2, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "arch": "gfx1201"}
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", [apu, r9700, r9070])], [1, 2])
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("all", [apu, r9700])], [1, 0])
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("0,1", [apu, r9700, r9070])], [0, 1])
+
+    def test_an_unused_apu_with_a_big_carve_out_is_said(self):
+        apu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 96.0, "arch": "gfx1151", "uma": True, "dedicated_gb": 64.0}
+        r9700 = {"index": 1, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "arch": "gfx1201"}
+        out = setup.unused_apu_notes([r9700], [apu, r9700], 62.0)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("!") and "64 GB" in out[0] and "62 GB" in out[0])
+        self.assertEqual(setup.unused_apu_notes([apu, r9700], [apu, r9700], 62.0), [])            # in the run: not "unused"
+        self.assertEqual(setup.unused_apu_notes([r9700], [dict(apu, dedicated_gb=2.0), r9700], 120.0), [])   # a small carve-out: nothing to say
+        self.assertEqual(setup.unused_apu_notes([r9700], [r9700], 120.0), [])
 
     def test_refusals(self):
         for text in ("1,2", "1,7", "1", "1,1", "x,y"):
@@ -306,6 +361,35 @@ class WindowsDetection(unittest.TestCase):
                 mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: ["display"]):
             self.assertEqual(setup.amd_gpus(), ["hip"])
 
+    def test_probe_in_the_component_folder(self):
+        """#3418: the app keeps the engine in the component folder, not in control/engine; the cards must be numbered by the
+        HIP runtime there too (an iGPU on ordinal 0 made the display-order "GPU 0" the wrong card)."""
+        from strata_control import engine_component as EC
+        name = "strata-device.exe" if setup.WIN else "strata-device"
+        with tempfile.TemporaryDirectory() as d:
+            root, comp = Path(d) / "control", Path(d) / "components" / "0.2-hip"
+            root.mkdir()
+            comp.mkdir(parents=True)
+            (comp / name).write_text("x")
+            (comp / "engine-component.json").write_text('{"backend": "hip"}')      # no BUILD.json in this package
+            found = mock.Mock(root=comp)
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(EC, "resolve", return_value=found) as res:
+                self.assertEqual(setup.hip_probe_path(), comp / name)
+                self.assertEqual(res.call_args.kwargs["backend"], "hip")
+                ran = mock.Mock(returncode=0, stdout=self.LIST)
+                with mock.patch.object(setup.subprocess, "run", return_value=ran) as run, \
+                        mock.patch.object(setup, "hip_runtime_beside_exe", lambda *a: None):
+                    cards = setup.hip_devices()
+                self.assertEqual(run.call_args.args[0][0], str(comp / name))
+                self.assertEqual([c["index"] for c in cards], [0, 1, 2])
+            (root / "engine").mkdir()
+            (root / "engine" / name).write_text("x")
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(EC, "resolve", side_effect=AssertionError):
+                self.assertEqual(setup.hip_probe_path(), root / "engine" / name)    # a checkout's own engine wins
+            with mock.patch.object(setup, "ROOT", Path(d) / "none"), \
+                    mock.patch.object(EC, "resolve", side_effect=EC.EngineMissing("none")):
+                self.assertFalse(setup.hip_probe_path().exists())                  # no engine anywhere: no probe
+
     def test_no_hip_engine_no_probe(self):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d)
@@ -345,6 +429,30 @@ class WindowsDetection(unittest.TestCase):
                 self.assertEqual(setup.hip_lib_dirs(eng), [eng / "rocm" / "bin"])
                 (pub / setup.WIN_HIP_ASSET).unlink()           # installed: kept, nothing downloaded again
                 self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}), eng)
+
+    def test_prebuilt_hip_zip_archs_as_list_or_string(self):
+        """#3810 review: gfx names are names, not numbers - an installed ready-made engine is recognised (no download again) and a zip
+        is accepted whether BUILD.json writes archs as a list or as the ';'-separated string."""
+        import json
+        import zipfile
+        for archs in (["gfx1100", "gfx1151"], "gfx1100;gfx1151"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                pub = root / "pub"
+                pub.mkdir()
+                ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
+                meta = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": archs, "lib_dirs": ["rocm/bin"]}
+                with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
+                    z.writestr(setup.EXE, "engine")
+                    z.writestr("strata-device.exe", "probe")
+                    z.writestr("rocm/bin/amdhip64_7.dll", "dll")
+                    z.writestr("BUILD.json", json.dumps(meta))
+                with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "say", lambda *a, **k: None),                         mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
+                    eng = setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"})
+                    self.assertEqual(eng, root / "engine", archs)
+                    (pub / setup.WIN_HIP_ASSET).unlink()           # installed: recognised, nothing downloaded again
+                    self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1151"}), eng, archs)
+                    self.assertEqual(setup.engine_archs_hip(), ["gfx1100", "gfx1151"], archs)
 
 
 _HIP_DEVICES = setup.hip_devices                      # the real parser, for the tests that mock setup.hip_devices
@@ -415,6 +523,22 @@ class CalibrationKey(unittest.TestCase):
             self.assertEqual(setup.hardware_key(self.cfg([0, 1], backend="cuda")),
                              "NVIDIA GeForce RTX 5070 + NVIDIA GeForce RTX 5070|24GB|AMD Ryzen 9 7950X|64GB|"
                              "qwen3.8-flash-next-iq3_xxs|32768|text")
+
+    def test_nvidia_string_dual_keys_like_the_list(self):
+        """A dual config's string "0,1" keys like [0, 1] (calibrate died with "there is no GPU 0,1")."""
+        def amd(*a, **k):
+            raise AssertionError("amd_gpus called for an NVIDIA config")
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            self.assertEqual(setup.hardware_key(self.cfg("0,1", backend="cuda")),
+                             setup.hardware_key(self.cfg([0, 1], backend="cuda")))
+            self.assertEqual(setup.gpu_sel("0,1"), [0, 1])
+            self.assertEqual(setup.gpu_sel("0"), [0])
+        asked = []
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: asked.append(i) or {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            setup.hardware_key(self.cfg(1, backend="cuda"))      # a single card given as a number still asks for that card
+            self.assertEqual(asked, [1])
 
     def test_setup_reuses_a_saved_calibration_on_linux_hip(self):
         cfg = self.cfg(1)
@@ -551,13 +675,24 @@ class EngineLaunchEnv(unittest.TestCase):
         (eng / "BUILD.json").write_text('{"backend": "hip", "lib_dirs": ["rocm/bin"]}', encoding="utf-8")
         return eng
 
-    def test_engine_env_puts_rocm_bin_first(self):
+    def test_engine_env_puts_rocm_bin_first_on_windows(self):
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}):
+            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 env = setup.engine_env(eng)
             self.assertEqual(env["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
             self.assertTrue(env["PATH"].endswith("C:\\Windows"))
+
+    def test_engine_env_puts_rocm_bin_first_on_ld_library_path(self):
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.dict("os.environ", {"PATH": "/usr/bin", "LD_LIBRARY_PATH": "/usr/lib"}), \
+                 mock.patch.object(setup.os, "name", "posix"):
+                env = setup.engine_env(eng)
+            self.assertEqual(env["LD_LIBRARY_PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+            self.assertTrue(env["LD_LIBRARY_PATH"].endswith("/usr/lib"))
+            self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_engine_without_lib_dirs_keeps_the_environment(self):
         with tempfile.TemporaryDirectory() as t:
@@ -572,7 +707,8 @@ class EngineLaunchEnv(unittest.TestCase):
             return mock.Mock(stdout="qwen4exp qwen35moe\n")
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.object(setup.subprocess, "run", fake_run):
+            with mock.patch.object(setup.subprocess, "run", fake_run), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 names = setup.engine_families(eng)
             self.assertEqual(names, {"qwen4exp", "qwen35moe"})
             self.assertEqual(seen["cmd"][1], "--families")
@@ -588,7 +724,7 @@ class EngineLaunchEnv(unittest.TestCase):
             eng = self.engine(Path(t))
             probe = eng / ("strata-device.exe" if setup.WIN else "strata-device")
             probe.write_text("x")
-            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None):
+            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None), mock.patch.object(setup.os, "name", "nt"):
                 found = setup.hip_devices(probe)
             self.assertEqual(found[0]["arch"], "gfx1100")
             self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))

@@ -8,6 +8,8 @@ export interface SoftwareUpdate {
   releaseUrl?: string;
   canInstall: boolean;
   message: string;
+  /** The technical reason behind `message`, shown only behind the Details disclosure. */
+  details?: string;
 }
 export interface UpdateCheckResult { checkedAt: string; strata: SoftwareUpdate; engine: SoftwareUpdate }
 
@@ -21,7 +23,7 @@ export interface HardwareCheck {
 
 export interface ProcessorInfo { id:string; socket:string; model:string; cores:number; threads:number; arch:string; ghz:number; logicalIds?:number[] }
 export interface CpuReading { id:string; utilizationPct:number|null }
-export interface GpuReading { id:string; temperatureC:number|null; utilizationPct:number|null; memoryUsedGb:number|null; source:string; sampledAt:string; powerW?:number|null; powerLimitW?:number|null; pcieGen?:number|null; pcieGenMax?:number|null; pcieWidth?:number|null; pcieRxMbs?:number|null }
+export interface GpuReading { id:string; temperatureC:number|null; utilizationPct:number|null; memoryUsedGb:number|null; source:string; sampledAt:string; powerW?:number|null; powerLimitW?:number|null; pcieGen?:number|null; pcieGenMax?:number|null; pcieWidth?:number|null; pcieRxMbs?:number|null; fanPct?:number|null; clockMhz?:number|null }
 
 export interface GpuInfo {
   id?: string;
@@ -223,11 +225,11 @@ export interface ServeRequest {
   finishReason?: string | null;
 }
 
-export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
+export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; warning?: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
 
 export interface ServingState {
   tunnel?: TunnelState;
-  sharing?: { active: boolean; url: string | null };
+  sharing?: { active: boolean; url: string | null; warning?: string | null };
   revision?: number;
   running: boolean;
   baseUrl: string;
@@ -283,6 +285,10 @@ export interface MonitorState {
     powerW?: number | null;
     powerLimitW?: number | null;
     pcieRxMbs?: number | null;
+    /** CPU and SSD temperatures (only where this PC can give one) and the GPU energy used since the host started, in Wh (#3628). */
+    cpuTempC?: number | null;
+    ssdTempC?: number | null;
+    energyWh?: number | null;
     diskReadGbs?: number | null;
     diskWriteMbs?: number | null;
     gpuLoad: number | null;
@@ -355,8 +361,13 @@ export interface ChatMessage {
   reasoningOpen?: boolean;
   tokens?: number;
   tps?: number;
+  promptTps?: number;
   durationMs?: number;
   error?: string;
+  /** What went wrong, as a code the page acts on (a context error offers its own recovery buttons). */
+  errorCode?: string;
+  /** The engine's own text of the error, kept behind Details. */
+  errorDetail?: string;
   tools?: ToolCall[];
 }
 
@@ -494,7 +505,7 @@ export interface SetupState {
   step: number;
   completedAt?: string;
   history: { step: number; at: string }[];
-  app: { version: string; modelsDir: string; dataDir: string };
+  app: { version: string; modelsDir: string; dataDir: string; modelsDirNotice?: string };
 }
 
 export interface EngineEvent {

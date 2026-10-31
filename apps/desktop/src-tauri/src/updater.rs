@@ -210,6 +210,16 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
             respond(&mut stream, "202 Accepted", &progress.lock().unwrap().json());
         }
         ("GET", "/app-update/status") => respond(&mut stream, "200 OK", &progress.lock().unwrap().json()),
+        // The host asks for a desktop notification (an approval is waiting): title and body are in the query, bounded and cleaned here.
+        ("POST", p) if p.starts_with("/shell/notify") => {
+            let title = crate::shell::clean_text(&crate::shell::query_value(p, "title").unwrap_or_default(), 120);
+            let body = crate::shell::clean_text(&crate::shell::query_value(p, "body").unwrap_or_default(), 300);
+            #[cfg(not(target_os = "linux"))]
+            let shown = crate::shell::notify(app, &title, &body);
+            #[cfg(target_os = "linux")]
+            let shown = false;
+            respond(&mut stream, "200 OK", &serde_json::json!({ "shown": shown }))
+        }
         _ => respond(&mut stream, "404 Not Found", &serde_json::json!({ "error": "unknown route" })),
     }
 }

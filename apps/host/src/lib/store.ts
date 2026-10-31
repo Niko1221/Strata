@@ -1,9 +1,11 @@
+import { workspaceIdForSession } from './session-workspace';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
+import { approvalNeeded, workFinished } from './attention';
 import { applyGoalFrame } from './goal';
 import { tidyAnswer } from './answer-text';
 import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
@@ -19,6 +21,7 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { createSessionWriter } from './session-persist';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -80,6 +83,13 @@ export interface AppState {
   transparency: 'translucent' | 'opaque';
   /** Chrome scale, independent of the conversation's reading size. */
   uiScale: number;
+  /** Price of one kWh for the Monitor's cost line (0 = not set) and the currency the person picked instead of the detected one ('' = automatic) (#3628). */
+  electricityPrice: number;
+  electricityCurrency: string;
+  /** Opt-in: a short sound when a task finishes (#3586). */
+  doneSound: boolean;
+  /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
+  approvalNotify: boolean;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -141,6 +151,10 @@ export interface Prefs {
   motion: 'system' | 'full' | 'reduced';
   transparency: 'translucent' | 'opaque';
   uiScale: number;
+  electricityPrice: number;
+  electricityCurrency: string;
+  doneSound: boolean;
+  approvalNotify: boolean;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -158,6 +172,10 @@ const PREFS_DEFAULTS: Prefs = {
   motion: 'system',
   transparency: 'translucent',
   uiScale: 1,
+  electricityPrice: 0,
+  electricityCurrency: '',
+  doneSound: false,
+  approvalNotify: false,
   shareTelemetry: false,
 };
 
@@ -201,6 +219,11 @@ function loadPrefs(): Prefs {
         language: validLanguage(parsed.language) ? parsed.language : 'en',
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily.slice(0,128).replace(/[\x00-\x1f]/g,'') : '',
         contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 14)),
+        uiScale: [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2].includes(Number(parsed.uiScale)) ? Number(parsed.uiScale) : 1,
+        electricityPrice: Number.isFinite(Number(parsed.electricityPrice)) && Number(parsed.electricityPrice) > 0 && Number(parsed.electricityPrice) < 1000 ? Number(parsed.electricityPrice) : 0,
+        electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
+        doneSound: parsed.doneSound === true,
+        approvalNotify: parsed.approvalNotify === true,
       };
     } catch {
       /* fall through to the next key */
@@ -212,6 +235,9 @@ function loadPrefs(): Prefs {
 const prefs = loadPrefs();
 // Use the saved language for the very first render, before host bootstrap.
 setTranslationLanguage(prefs.language);
+
+/** The last approval question a notification was shown for, so one question is announced once. */
+let lastApprovalNotice = '';
 
 let state: AppState = {
   language: prefs.language,
@@ -230,6 +256,10 @@ let state: AppState = {
   motion: prefs.motion,
   transparency: prefs.transparency,
   uiScale: prefs.uiScale,
+  electricityPrice: prefs.electricityPrice,
+  electricityCurrency: prefs.electricityCurrency,
+  doneSound: prefs.doneSound,
+  approvalNotify: prefs.approvalNotify,
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -420,9 +450,11 @@ function applyPrefs() {
   root.dataset.contrast = state.contrast;
   root.dataset.density = state.density;
   root.style.setProperty('--st-content-fs', `${state.contentFontSize}px`);
-  // The chrome scale. The reading size is deliberately separate: someone who
-  // needs larger prose does not necessarily want larger buttons.
-  root.style.setProperty('--st-ui-scale', String(state.uiScale));
+  // The interface size (#3970): the whole page is scaled, so every text, button, menu and dialog follows, not only the parts that were
+  // written with the scale token. The token stays at 1 so nothing is scaled twice. The reading size stays separate: someone who needs
+  // larger prose does not necessarily want larger buttons.
+  root.style.setProperty('--st-ui-scale', '1');
+  root.style.setProperty('zoom', state.uiScale === 1 ? '' : String(state.uiScale));
 
   // "system" means the OS decides, so the attribute is absent rather than set
   // to a third value the stylesheet would have to special-case.
@@ -450,6 +482,10 @@ function savePrefs() {
     motion: state.motion,
     transparency: state.transparency,
     uiScale: state.uiScale,
+    electricityPrice: state.electricityPrice,
+    electricityCurrency: state.electricityCurrency,
+    doneSound: state.doneSound,
+    approvalNotify: state.approvalNotify,
     shareTelemetry: state.shareTelemetry,
   };
   try {
@@ -469,7 +505,17 @@ export function toggleRail() {
   set({ rail: !state.rail });
   savePrefs();
 }
-export function setLanguage(language:Language){if(!validLanguage(language))return;setTranslationLanguage(language);set({language});savePrefs();}
+export function setLanguage(language:Language){if(!validLanguage(language))return;setTranslationLanguage(language);set({language});savePrefs();rememberShellLanguage(language);}
+let shellAnnounced = false;
+/** The desktop shell's tray menu follows the app's language; it reads it from a small file the host keeps (no effect in a browser). */
+function rememberShellLanguage(language:Language){api.post('/api/shell/prefs',{language}).catch(()=>undefined);}
+/** The shell started on another port than it wanted: the chats and settings saved on that port are not here, so say so once (#3402). */
+async function announcePortNotice(){
+  try{
+    const shell=await api.get<{portNotice:{wanted:number;used:number}|null}>('/api/shell');
+    if(shell.portNotice)pushToast('warn',tr('Strata could not use its port'),tr('Port {0} is used by another program, so Strata started on port {1}. Chats and settings saved on port {0} are not shown until Strata can use it again. Close the other program and restart Strata.',[shell.portNotice.wanted,shell.portNotice.used]));
+  }catch{/* a browser or an older host has no shell */}
+}
 export function setFontFamily(fontFamily:string){set({fontFamily:fontFamily.trim().slice(0,128).replace(/[\x00-\x1f]/g,'')});savePrefs();}
 
 export function setFocus(focus: boolean) {
@@ -542,7 +588,24 @@ export function setTransparency(transparency: 'translucent' | 'opaque') {
   savePrefs();
 }
 
-export const UI_SCALES = [0.9, 1, 1.1, 1.25] as const;
+/** The electricity price for the Monitor's cost line: a positive price per kWh; 0 turns the line off. The currency is the detected one unless a three-letter code is given (#3628). */
+export function setElectricity(price: number, currency: string) {
+  const ok = Number.isFinite(price) && price > 0 && price < 1000;
+  set({ electricityPrice: ok ? Math.round(price * 10000) / 10000 : 0, electricityCurrency: /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : '' });
+  savePrefs();
+}
+
+export function setDoneSound(doneSound: boolean) {
+  set({ doneSound });
+  savePrefs();
+}
+
+export function setApprovalNotify(approvalNotify: boolean) {
+  set({ approvalNotify });
+  savePrefs();
+}
+
+export const UI_SCALES = [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
 
 export function setUiScale(uiScale: number) {
   set({ uiScale });
@@ -678,8 +741,8 @@ function applyEvent(e: StreamEvent) {
       // A task finished on its own (the host ran it on schedule): say so, and say when it needs a person's yes or failed.
       const t = data as unknown as { title?: string; status?: string; attention?: string | null; error?: string | null };
       if (t.status === 'error') pushToast('error', 'Task failed', String(t.title ?? ''));
-      else if (t.attention) pushToast('warn', 'Task needs your yes', String(t.title ?? ''));
-      else if (t.status === 'done') pushToast('success', 'Task finished', String(t.title ?? ''));
+      else if (t.attention) { pushToast('warn', 'Task needs your yes', String(t.title ?? '')); void approvalNeeded(state.approvalNotify, String(t.title ?? '')); }
+      else if (t.status === 'done') { pushToast('success', 'Task finished', String(t.title ?? '')); workFinished(state.doneSound, Infinity); }
       break;
     }
     case 'agent':
@@ -720,10 +783,11 @@ export async function bootstrap() {
       skills,
       workspacePath: workspaceState.workspaces[0]?.path ?? '',
       workspaces: workspaceState.workspaces,
-      activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceState.workspaces[0]?.id ?? null,
+      activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceIdForSession(workspaceState.workspaces, state.sessions.find(s => s.id === state.activeSession)) ?? workspaceState.workspaces[0]?.id ?? null,
       connection: 'live',
     });
     applyProviders(providers);
+    if (!shellAnnounced) { shellAnnounced = true; void announcePortNotice(); rememberShellLanguage(state.language); }
     closeEvents?.();
     let reconnect = false;
     closeEvents = onEvent(applyEvent, (status) => {
@@ -1008,12 +1072,33 @@ export async function scopeSkill(id: string, workspaceId: string | null) {
 
 /* ---------------------------------------------------------------- sessions */
 
-function persistSessions(sessions: Session[]) {
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
-  } catch {
-    /* quota — sessions are a cache, not the source of truth */
-  }
+const sessionWriter = createSessionWriter({
+  write: (json) => {
+    try {
+      localStorage.setItem(SESSION_KEY, json);
+    } catch {
+      /* quota — sessions are a cache, not the source of truth */
+    }
+  },
+});
+
+/**
+ * Save the chat list. A one-off change (new, rename, delete, pin) is written now; `soon` is for the streaming
+ * path, where a write per token grew the renderer to gigabytes (#3604, #3603): those are coalesced to one a second.
+ */
+function persistSessions(sessions: Session[], soon = false) {
+  sessionWriter.schedule(sessions);
+  if (!soon) sessionWriter.flush();
+}
+
+/** Write the newest chat list now: a turn ended, or the page is going away. */
+export function flushSessions() {
+  sessionWriter.flush();
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && window.addEventListener) {
+  window.addEventListener('pagehide', flushSessions);
+  document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSessions(); });
 }
 
 export function newSession(): Session {
@@ -1082,7 +1167,11 @@ export function continueTaskInNewChat(task: Task) {
 }
 
 export function selectSession(id: string) {
-  set({ activeSession: id });
+  // A chat comes back in the workspace it was made in, so its next turn runs in the same folder (#3754).
+  const workspace = workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === id));
+  const change = workspace && workspace !== state.activeWorkspace;
+  set(change ? { activeSession: id, activeWorkspace: workspace } : { activeSession: id });
+  if (change) void loadWorkspaceFiles();
   markRead(id);
 }
 
@@ -1120,7 +1209,7 @@ export function renameSession(id: string, title: string) {
 
 function patchSession(id: string, fn: (s: Session) => Session) {
   const sessions = state.sessions.map((s) => (s.id === id ? fn(s) : s));
-  persistSessions(sessions);
+  persistSessions(sessions, true);
   set({ sessions });
 }
 
@@ -1364,6 +1453,55 @@ export async function retryLast(messageId?: string) {
     sessionStorage.setItem(`strata.chat-draft.${state.activeSession}`, '');
     await sendMessage(prompt);
   }
+}
+
+/** The open chat's last question and the answer that failed under it (null when the chat does not end that way). */
+function failedExchange(): { prompt: string; sessionId: string } | null {
+  const sessionId = state.activeSession;
+  const chat = state.sessions.find(s => s.id === sessionId);
+  if (!sessionId || !chat || state.streaming) return null;
+  const reply = chat.messages[chat.messages.length - 1], ask = chat.messages[chat.messages.length - 2];
+  return reply?.role === 'assistant' && reply.error && ask?.role === 'user' ? { prompt: ask.content, sessionId } : null;
+}
+/** Takes the failed question and its error out of the transcript, so asking again does not show the question twice. */
+function dropFailedExchange(sessionId: string) {
+  patchSession(sessionId, s => ({ ...s, messages: s.messages.slice(0, -2) }));
+}
+
+/**
+ * The error card of a conversation that no longer fits the model's window: summarise the older messages (the same as typing /compact), then
+ * ask the assistant to answer. The refused question is already in the assistant's conversation (it is the newest message, and a summary keeps
+ * the newest message as it is), so it is not sent a second time: a large one twice would not fit either.
+ */
+export async function summarizeAndContinue() {
+  if (!failedExchange()) return;
+  await sendMessage('/compact');
+  await sendMessage('Please answer my last message now.');
+}
+
+/**
+ * The error card of a message that is too large to send: the host makes it small enough (its text as a file in the chat's folder that the
+ * assistant reads in parts, or a shortened preview), and that is sent in its place.
+ */
+export async function sendOversized(mode: 'file' | 'preview') {
+  const failed = failedExchange();
+  if (!failed) return;
+  let reply: { message?: string };
+  try {
+    reply = await api.post<{ message?: string }>('/api/chat/oversize', { sessionId: failed.sessionId, mode, text: failed.prompt, nativeModelId: nativeState()?.instances.length ? nativeState()?.defaultId : undefined });
+  } catch {
+    pushToast('error', 'The message could not be prepared. Try a shorter message.');
+    return;
+  }
+  if (!reply.message) return;
+  dropFailedExchange(failed.sessionId);
+  await sendMessage(reply.message);
+}
+
+/** A new, empty chat, opened. */
+export function startNewChat() {
+  const session = newSession();
+  go('chat', session.id);
 }
 
 /**
@@ -1637,6 +1775,23 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const started = performance.now();
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
+  /* Text and reasoning arrive token by token (90 a second or more). Drawing the whole answer again for each one made the page do more work for every
+     word the longer the answer grew (measured: 15.7 s of main-thread time for 24 s of a 40,000-token answer), until the page stopped answering
+     and ran out of memory. The pieces are gathered and applied together about ten times a second; any other frame, the end and a failure
+     apply what is waiting first, so the order the person sees is the order it was written. */
+  const waiting: ['reasoning' | 'delta', string][] = [];
+  let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  const applyReasoning = (text: string) => patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + text, reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+  const applyDelta = (text: string) => patchAssistant((m) => { const content=tidyAnswer(m.content+text); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,text)}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+  const flushWaiting = () => {
+    if (waitingTimer !== null) { clearTimeout(waitingTimer); waitingTimer = null; }
+    for (const [kind, text] of waiting.splice(0)) if (kind === 'delta') applyDelta(text); else applyReasoning(text);
+  };
+  const queueText = (kind: 'reasoning' | 'delta', text: string) => {
+    const last = waiting[waiting.length - 1];
+    if (last && last[0] === kind) last[1] += text; else waiting.push([kind, text]);
+    waitingTimer ??= setTimeout(flushWaiting, 90);
+  };
   try {
     await streamPost(
       planStart ? '/api/plan/start-goal' : '/api/chat/stream',
@@ -1657,12 +1812,14 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
         mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual',
         // So a skill narrowed to another workspace does not fire here.
-        workspaceId: state.activeWorkspace,
+        workspaceId: workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === sessionId)) ?? state.activeWorkspace,
       },
       (frame) => {
         // A line from the app itself carries `key` (the English sentence): shown in the person's language.
         if (frame.type === 'delta' && typeof frame.key === 'string') frame = { ...frame, text: tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) };
         const type = frame.type as string;
+        if (type === 'delta' || type === 'reasoning') { queueText(type, String(frame.text ?? '')); return; }
+        flushWaiting();
         if (type === 'start' && frame.agent === true) { const turn = liveTurns.get(sessionId); if (turn) turn.agent = true; }
         if (type === 'queued') {
           patchAssistant(m => ({ ...m, requestId: String(frame.requestId) }));
@@ -1670,6 +1827,12 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           patchAssistant((m) => ({ ...m, demo: frame.demo === true, remoteModel: frame.remoteModel === true, requestId: typeof frame.requestId === 'string' ? frame.requestId : m.requestId, model: String(frame.model), contextMax: Number(frame.contextMax), skillsUsed: Array.isArray(frame.skills) ? frame.skills.map(String) : [] }));
         } else if (type === 'status') {
           applyStatusFrame(sessionId, frame as Record<string, unknown>);
+          // Manual mode waits for the person: a notification when they have opted in and Strata is in the background (#3477), once per question.
+          if (frame.code === 'waiting-approval' && lastApprovalNotice !== `${sessionId}:${String(frame.seq)}`) {
+            lastApprovalNotice = `${sessionId}:${String(frame.seq)}`;
+            const tool = (frame.args as { tool?: unknown } | undefined)?.tool;
+            void approvalNeeded(state.approvalNotify, typeof tool === 'string' ? tool : '');
+          }
         } else if (type === 'goal') {
           applyGoalFrame(sessionId, frame.goal);
         } else if (type === 'plan') {
@@ -1693,7 +1856,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'plan-step') {
           /* the whole plan follows in a plan frame; the live status already says which step is running */
         } else if (type === 'reasoning') {
-          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+          /* applied through queueText above */
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
@@ -1708,7 +1871,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=tidyAnswer(m.content+String(frame.text??'')); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          /* applied through queueText above */
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
@@ -1731,12 +1894,20 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             ...m,
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : m.tokens,
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
+        } else if (type === 'context') {
+          // What the context holds after each model request of an agent turn: the meter follows the turn instead of waiting for its end.
+          const used = Number(frame.contextTokens), max = Number(frame.contextMax);
+          if (Number.isFinite(used) && used > 0) patchAssistant((m) => ({ ...m, contextUsed: used, ...(Number.isFinite(max) && max > 0 ? { contextMax: max } : {}) }));
         } else if (type === 'error') {
           clearStatus(sessionId);
-          patchAssistant((m) => ({ ...m, error: plainFailure(String(frame.message ?? 'Engine error')).message, streaming: false }));
+          // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
+          const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
+          patchAssistant((m) => ({ ...m, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
           clearStatus(sessionId);
+          workFinished(state.doneSound, Number(frame.durationMs ?? performance.now() - started));
           patchSession(sessionId, (sess) => ({
             ...sess,
             tokensIn: sess.tokensIn + Number(frame.tokensIn ?? 0),
@@ -1752,13 +1923,17 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             inputTokens: typeof frame.tokensIn === 'number' ? frame.tokensIn : undefined,
             contextUsed: typeof frame.contextTokens === 'number' ? frame.contextTokens : undefined,
             usageSource: frame.usageSource === 'reported' || frame.usageSource === 'demo' ? frame.usageSource : 'unavailable',
-            tps: typeof frame.tps === 'number' ? frame.tps : undefined,
+            tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
+          // The final text is in `state`: write it once now instead of waiting for the coalescing timer.
+          flushSessions();
         }
       },
       turnAbort.signal,
     );
   } catch (err) {
+    flushWaiting();
     if ((err as Error).name !== 'AbortError') {
       patchAssistant((m) => ({
         ...m,
@@ -1770,6 +1945,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
+    flushWaiting();
+    // A cancelled or failed turn is still worth keeping.
+    flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
     const next = releasedMessages.get(sessionId)?.shift();

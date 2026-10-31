@@ -54,6 +54,16 @@ class Scripts(unittest.TestCase):
             self.assertTrue((ctx / "Dockerfile").is_file())
             self.assertTrue((ctx / "terminal-src" / "docs" / "TERMINAL_LAUNCH.md").is_file())
             self.assertTrue((ctx / "engine" / "pkg" / "engine-component.json").is_file())
+            # the bundle reads tools/ modules by path as well (INSTALLER_SCRIPTS), and the DeepSeek ones are nested: every name must be in the
+            # context, or package_terminal.py stops the build at "installer tool missing: tools/<name>.py" (the image build after v0.2.4.1 was broken this way)
+            pt = ast.parse((ROOT / "packaging" / "package_terminal.py").read_text(encoding="utf-8"))
+            tools: set[str] = set()
+            for node in pt.body:
+                if isinstance(node, ast.Assign) and any(getattr(t, "id", "") in ("INSTALLER_TOOLS", "INSTALLER_SCRIPTS") for t in node.targets):
+                    tools.update(ast.literal_eval(node.value))
+            self.assertTrue({"dsv41/pack_gguf", "dsv41/tune"} <= tools)          # the nested ones this assertion exists for
+            for name in sorted(tools):
+                self.assertTrue((ctx / "terminal-src" / "tools" / f"{name}.py").is_file(), f"build.sh did not copy tools/{name}.py into the context")
 
     def test_scripts_use_unix_line_ends(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):
@@ -123,6 +133,63 @@ class Compose(unittest.TestCase):
         self.assertNotIn("/dev/kfd:/dev/kfd", intel["devices"])
 
 
+@unittest.skipIf(SH is None, "needs sh")
+class LegacyModelsGuard(unittest.TestCase):
+    """#3421: model files left in the older image's /data/models (a folder the person mounted there, or a failed move) are not read by this image,
+    so the start would download the model again. It stops and says where the files are; MODEL_PATH names them, ALLOW_DOWNLOAD=1 goes on."""
+
+    def run_guard(self, folder, model_path="", allow=None):
+        import os
+        import tempfile
+        entry = (DOCKER / "entrypoint.sh").read_text(encoding="utf-8")
+        body = entry[entry.index("legacy_models_guard() {"):]
+        body = body[:body.index("\n}\n") + 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "guard.sh"
+            script.write_text("warn() { printf '[!] %s\\n' \"$*\" >&2; }\ndie() { printf '[X] %s\\n' \"$*\" >&2; exit \"${2:-1}\"; }\n" + body
+                              + f"\nlegacy_models_guard '{model_path}' '{sh_path(folder)}'\necho CONTINUED\n", encoding="utf-8", newline="\n")
+            env = dict(os.environ)
+            env.pop("ALLOW_DOWNLOAD", None)
+            if allow is not None:
+                env["ALLOW_DOWNLOAD"] = allow
+            return subprocess.run([SH, sh_path(script)], capture_output=True, text=True, env=env)
+
+    def test_files_in_the_older_place_stop_the_start_with_the_folder_named(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            shards = Path(tmp) / "IQ3_XXS"
+            shards.mkdir()
+            (shards / "model-00001-of-00002.gguf").write_bytes(b"GGUF")
+            done = self.run_guard(Path(tmp))
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            self.assertNotIn("CONTINUED", done.stdout)
+            self.assertIn(shards.name, done.stderr)
+            self.assertIn("MODEL_PATH", done.stderr)
+            self.assertIn("ALLOW_DOWNLOAD=1", done.stderr)
+            self.assertIn("Nothing was downloaded", done.stderr)
+
+    def test_model_path_allow_download_an_empty_folder_and_a_missing_one_go_on(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "IQ3_XXS").mkdir()
+            (Path(tmp) / "IQ3_XXS" / "model-00001-of-00002.gguf").write_bytes(b"GGUF")
+            named = self.run_guard(Path(tmp), model_path="/models")
+            self.assertEqual((named.returncode, "CONTINUED" in named.stdout), (0, True), named.stderr)
+            allowed = self.run_guard(Path(tmp), allow="1")
+            self.assertEqual((allowed.returncode, "CONTINUED" in allowed.stdout), (0, True), allowed.stderr)
+            self.assertIn("[!]", allowed.stderr)
+            self.assertIn("ALLOW_DOWNLOAD=1", allowed.stderr)
+        with tempfile.TemporaryDirectory() as empty:
+            nothing = self.run_guard(Path(empty))
+            self.assertEqual((nothing.returncode, "CONTINUED" in nothing.stdout), (0, True), nothing.stderr)
+        missing = self.run_guard(Path("/no/such/folder"))
+        self.assertEqual((missing.returncode, "CONTINUED" in missing.stdout), (0, True), missing.stderr)
+
+    def test_the_entry_point_runs_the_guard_before_any_flag_is_built(self):
+        entry = (DOCKER / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertLess(entry.index('legacy_models_guard "$model_path"'), entry.index('--model "$MODEL"'))
+
+
 class Document(unittest.TestCase):
     def test_every_documented_setting_is_read_by_the_entry_point(self):
         doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
@@ -138,10 +205,10 @@ class Document(unittest.TestCase):
 
     def test_tags_in_the_document_match_the_compose_defaults(self):
         doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
-        for tag in ("0.2.1-cuda13", "0.2.1-cuda12", "0.2.1-rocm-gfx120x", "0.2.1-rocm-gfx110x", "0.2.1-rocm-gfx1151", "0.2.1-sycl"):
+        for tag in ("0.2.7-cuda13", "0.2.7-cuda12", "0.2.7-rocm-gfx120x", "0.2.7-rocm-gfx110x", "0.2.7-rocm-gfx1151", "0.2.7-sycl"):
             self.assertIn(tag, doc)
-        for name, tag in (("docker-compose.nvidia.yml", "ghcr.io/niko1221/strata:0.2.1-cuda13"), ("docker-compose.amd.yml", "ghcr.io/niko1221/strata:0.2.1-rocm-gfx120x"),
-                          ("docker-compose.intel.yml", "ghcr.io/niko1221/strata:0.2.1-sycl")):
+        for name, tag in (("docker-compose.nvidia.yml", "ghcr.io/niko1221/strata:0.2.7-cuda13"), ("docker-compose.amd.yml", "ghcr.io/niko1221/strata:0.2.7-rocm-gfx120x"),
+                          ("docker-compose.intel.yml", "ghcr.io/niko1221/strata:0.2.7-sycl")):
             self.assertIn(tag, (DOCKER / "compose" / name).read_text(encoding="utf-8"))
 
     def test_the_user_doc_says_images_are_published_from_0_2_1(self):
@@ -172,7 +239,7 @@ class Publishing(unittest.TestCase):
         doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
         self.assertTrue({"cuda13", "cuda12", "rocm-gfx120x", "rocm-gfx110x", "rocm-gfx1151", "sycl"} <= set(flavors), flavors)
         for flavor in flavors:
-            self.assertIn(f"0.2.1-{flavor}", doc)
+            self.assertIn(f"0.2.7-{flavor}", doc)
 
     def test_build_script_copies_everything_the_terminal_package_needs(self):
         """docker/build.sh lists the Terminal's files by hand; the list must cover package_terminal.py's payload (it once missed docs/TERMINAL_LAUNCH.md)."""
@@ -186,6 +253,18 @@ class Publishing(unittest.TestCase):
         self.assertTrue(payload)
         for item in payload:
             self.assertTrue(any(item == p or item.startswith(p.rstrip("/") + "/") for p in listed), f"build.sh does not copy {item}")
+
+    def test_the_source_build_passes_the_commit_to_the_terminal_stage(self):
+        """.git is not in the build context (.dockerignore), so the root Dockerfile's terminal stage gets the commit as a build argument, the way
+        docker/Dockerfile does; without it package_terminal.py stops (#3644). The documented source-build commands pass it."""
+        for dockerfile in (ROOT / "Dockerfile", DOCKER / "Dockerfile"):
+            text = dockerfile.read_text(encoding="utf-8")
+            self.assertRegex(text, r"(?m)^ARG STRATA_COMMIT=", dockerfile.name)
+            self.assertIn("ENV STRATA_BUILD_COMMIT=${STRATA_COMMIT}", text, dockerfile.name)
+        self.assertIn(".git", (ROOT / ".dockerignore").read_text(encoding="utf-8").split())
+        doc = (ROOT / "docs" / "DOCKER.md").read_text(encoding="utf-8")
+        self.assertEqual(doc.count("docker build -t strata:src"), doc.count("--build-arg STRATA_COMMIT=$(git rev-parse HEAD)"))
+        self.assertIn("/data/install/", (ROOT / ".dockerignore").read_text(encoding="utf-8"))
 
     def test_workflow_is_manual_and_pushes_only_on_request(self):
         data = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))

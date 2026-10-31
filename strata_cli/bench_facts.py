@@ -1,12 +1,13 @@
 """What a standard benchmark report says about the machine, the build, the model and the settings (docs/BENCHMARK_PROTOCOL.md).
 
-Every probe is best effort and local: it reads the inference host's own tools (nvidia-smi, rocm-smi, PowerShell, /proc, sysctl) and the
+Every probe is best effort and local: it reads the inference host's own tools (nvidia-smi, rocm-smi, amd-smi, PowerShell, /proc, sysctl) and the
 server's answers. A fact that cannot be read becomes `None` with a reason in `Why`, never a guess. Nothing here changes the machine.
 """
 
 from __future__ import annotations
 
 import getpass
+import glob
 import hashlib
 import json
 import os
@@ -166,7 +167,8 @@ def nvidia_gpus() -> tuple[list[dict], str | None, str | None]:
                       "memory_kind": "dedicated", "power_limit_w": watts, "driver": part[4]})
     cuda = None
     if cards:
-        match = re.search(r"CUDA Version:\s*([\d.]+)", run_cmd(["nvidia-smi"]))
+        # driver 615 prints "CUDA UMD Version: 13.4" where older drivers print "CUDA Version: 13.0"
+        match = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", run_cmd(["nvidia-smi"]))
         cuda = match.group(1) if match else None
     return cards, (cards[0]["driver"] if cards else None), cuda
 
@@ -192,12 +194,80 @@ def other_gpus() -> tuple[list[dict], str | None]:
             driver = next((c.get("driver") for c in found if c.get("driver")), None)
         except Exception:                               # noqa: BLE001 - a report without the card's name is still a report
             pass
+    elif os.name != "nt" and sys.platform != "darwin":      # (a Mac has no AMD card to ask for; its chip is read below)
+        # ROCm 7 and newer ship amd-smi and no rocm-smi (verified on ROCm 10.1). Different grammar: `static --asic`
+        # gives the marketing name, `static --driver` the kernel driver's version, and the PCI address only comes
+        # from `amd-smi list`; the VRAM size is the amdgpu driver's sysfs file for that address.
+        def amd_json(args):
+            try:
+                return json.loads(run_cmd(["amd-smi", "static"] + args + ["--json"]).strip() or "{}").get("gpu_data") or []
+            except (ValueError, OSError):
+                return []
+        try:
+            bdf = {e.get("gpu"): (e.get("bdf") or "") for e in json.loads(run_cmd(["amd-smi", "list", "--json"]).strip() or "[]")}
+        except (ValueError, OSError):
+            bdf = {}
+        drv = {e.get("gpu"): ((e.get("driver") or {}).get("version") or "") for e in amd_json(["--driver"])}
+        for i, e in enumerate(amd_json(["--asic"])):
+            name = ((e.get("asic") or {}).get("market_name") or "").strip()
+            if not name:
+                continue
+            d = drv.get(e.get("gpu"), "")
+            driver = driver or (d if d.upper() not in ("", "N/A") else None)
+            vram = None
+            for dev in glob.glob("/sys/class/drm/card[0-9]*/device"):
+                try:
+                    if bdf.get(e.get("gpu")) and os.path.basename(os.path.realpath(dev)).lower() == bdf[e["gpu"]].lower():
+                        with open(os.path.join(dev, "mem_info_vram_total"), encoding="utf-8") as f:
+                            total = f.read().strip()
+                        vram = int(total) if total.isdigit() else None
+                except OSError:
+                    pass
+            cards.append({"device_index": i, "name": name, "memory_bytes": vram, "memory_kind": "dedicated",
+                          "power_limit_w": None})
     elif sys.platform == "darwin":
         chip = cpu_name()
         if chip:
             cards = [{"device_index": 0, "name": chip, "memory_bytes": ram_bytes(), "memory_kind": "shared",
                       "power_limit_w": None}]
     return cards, driver
+
+
+def rocm_version() -> str | None:
+    """ROCm's own version, which `rocm-smi --showdriverversion` used to report with the driver. ROCm 10 has no
+    `rocm-smi` and no `/opt/rocm/.info/`: its version file sits under `<install>/core/.info/version`, and
+    `amd-smi -h` prints the same version."""
+    for base in [os.environ.get("ROCM_PATH", ""), "/opt/rocm"]:
+        if not base:
+            continue
+        for sub in (".info/version", "core/.info/version"):
+            try:
+                with open(os.path.join(base, sub), encoding="utf-8") as f:
+                    found = f.read().strip()
+                if found:
+                    return found
+            except OSError:
+                pass
+    match = re.search(r"ROCm version:\s*([\d.]+)", run_cmd(["amd-smi", "-h"]))
+    return match.group(1) if match else None
+
+
+def lsblk_disk(data: dict) -> list[dict] | None:
+    """The first physical disk in `lsblk -J -s` output. `-s` lists the parents of a device as nested children: an LVM volume
+    is lvm -> partition -> disk, two levels down, so the walk goes all the way down."""
+    def disks(item):
+        if item.get("type") == "disk":
+            yield item
+        for child in item.get("children") or []:
+            yield from disks(child)
+
+    for device in data.get("blockdevices") or []:
+        for item in disks(device):
+            rotational = str(item.get("rota")).lower() in ("1", "true")
+            bus = str(item.get("tran") or "unknown").lower()
+            return [{"kind": "hdd" if rotational else ("nvme" if bus == "nvme" else "ssd"),
+                     "model": str(item.get("model") or "unknown").strip(), "bus": bus}]
+    return None
 
 
 def storage_of(path: Path | None) -> list[dict] | None:
@@ -229,14 +299,7 @@ def storage_of(path: Path | None) -> list[dict] | None:
             data = json.loads(run_cmd(["lsblk", "-J", "-s", "-o", "NAME,TYPE,ROTA,MODEL,TRAN", source]))
         except ValueError:
             return None
-        for device in data.get("blockdevices") or []:
-            chain = [device, *(device.get("children") or [])]
-            for item in chain:
-                if item.get("type") == "disk":
-                    rotational = str(item.get("rota")).lower() in ("1", "true")
-                    bus = str(item.get("tran") or "unknown").lower()
-                    return [{"kind": "hdd" if rotational else ("nvme" if bus == "nvme" else "ssd"),
-                             "model": str(item.get("model") or "unknown").strip(), "bus": bus}]
+        return lsblk_disk(data)
     return None
 
 
@@ -265,7 +328,12 @@ def hardware(why: Why, *, selected: list[int], served_gpu: str | None, model_dir
         named = [c for c in cards if c["name"] == served_gpu]
         cards = named[:1] or cards[:1]
     served = [n for n in (served_gpu or "").split(" + ") if n and n != "?"]
-    if served and cards and not all(n in {c["name"] for c in cards} for n in served):
+    # the amdgpu driver's product_name is empty on some cards (gfx1201 among them), so the server falls back to a bare
+    # "AMD Radeon": that names the vendor, not the card, and the local probe's marketing name is the one to keep
+    stub = re.compile(r"(?i)^(amd radeon|advanced micro devices(,? inc\.?)?|nvidia( corporation)?|intel"
+                      r"( corporation)?)( graphics)?$")
+    if served and cards and not all(stub.match(n) for n in served) \
+            and not all(n in {c["name"] for c in cards} for n in served):
         # the server reads cards the local tools do not list (another vendor's, or a different numbering)
         cards = [{"device_index": i, "name": n, "memory_bytes": None, "memory_kind": "dedicated", "power_limit_w": None}
                  for i, n in enumerate(served)]
@@ -296,7 +364,10 @@ def hardware(why: Why, *, selected: list[int], served_gpu: str | None, model_dir
     if not declared_background:
         why.add(pointer("hardware", "background_workloads"),
                 "the runner does not inspect other programs; none were declared with --background")
-    return block, {"driver": driver, "cuda": cuda}
+    # an AMD card on Linux runs on ROCm, which the report names as the runtime; on ROCm 7 and newer that version no
+    # longer comes from rocm-smi, but from the install itself
+    rocm = rocm_version() if (sys.platform.startswith("linux") and cards and not cuda) else None
+    return block, {"driver": driver, "cuda": cuda, "rocm": rocm}
 
 
 # ------------------------------------------------------------------------------------------------------------ software
@@ -328,11 +399,32 @@ def git_commit(folder: Path = ROOT) -> str | None:
     return text if HEX40.match(text) else None
 
 
-def software(why: Why, machine: dict, *, engine_version: str | None, build_options: list[str] | None) -> dict:
+def engine_build_runtime(exe: str | None) -> dict | None:
+    """The GPU runtime a release engine was built with, from its engine-component.json (build_id "a7bdbfdabc9a+cuda12.9"):
+    {"name": "cuda", "version": "12.9"}. None for a source build or an engine without that file."""
+    if not exe:
+        return None
+    try:
+        record = json.loads((Path(exe).parent / "engine-component.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    match = re.search(r"\+(cuda|rocm|hip|sycl)([\d.]+)\Z", str(record.get("build_id") or "")) if isinstance(record, dict) else None
+    return {"name": "rocm" if match.group(1) == "hip" else match.group(1), "version": match.group(2)} if match else None
+
+
+def software(why: Why, machine: dict, *, engine_version: str | None, build_options: list[str] | None,
+             engine_build: dict | None = None) -> dict:
     commit = git_commit()
     runtime = []
-    if machine.get("cuda"):
+    if engine_build:
+        # the library the engine runs on; nvidia-smi's "CUDA Version" is only the newest one the driver supports
+        runtime.append(engine_build)
+        if machine.get("cuda") and engine_build["name"] == "cuda":
+            runtime.append({"name": "cuda-driver-supports", "version": machine["cuda"]})
+    elif machine.get("cuda"):
         runtime.append({"name": "cuda", "version": machine["cuda"]})
+    if machine.get("rocm") and not any(r.get("name") == "rocm" for r in runtime):
+        runtime.append({"name": "rocm", "version": machine["rocm"]})
     if sys.platform == "darwin":
         runtime.append({"name": "metal", "version": platform.mac_ver()[0] or platform.release()})
     drivers = [{"name": "gpu-driver", "version": machine["driver"]}] if machine.get("driver") else []

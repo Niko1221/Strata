@@ -4,9 +4,11 @@
 Result format: `strata-standard-benchmark`, schema version `1`.
 
 This document specifies a repeatable community benchmark and the data a future website can consume. The
-required suite targets **20–30 minutes after model loading**. This duration has not been measured for this
-protocol. Faster machines may finish sooner and slower machines may take longer; everyone runs the same work.
-Downloads, installation, compilation, and model loading are excluded. Report their duration separately if measured.
+required suite took **2 to 4 minutes after model loading** on the two machines it has been run on (RTX 3060 and
+2x RTX A4000, IQ3_XXS, Strata 0.2.1: 3 min 22 s and 2 min 22 s; the optional concurrency stage added 1.5 to 2 minutes).
+Slower machines take longer; everyone runs the same work. Downloads, installation, compilation, and model loading are
+excluded; so is the hashing of the model files that the runner does first (about 1 to 5 minutes for a 44 to 71 GB model).
+Report their duration separately if measured.
 
 `strata bench run` implements this protocol from Strata 0.2.1. It sends the frozen fixtures in
 `bench/prompts/standard-v1` (corpus SHA-256 `e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407`)
@@ -210,6 +212,12 @@ reading needs a new protocol ID.
   A different tokenizer or template breaks that and makes the run `nonconforming`.
 - **Truncation.** `finish_reason: "length"` is `truncated`. It stays in the speed summaries and fails a sanity case.
   Any other finish reason except `stop` and `tool_calls` is a failure.
+- **Reading it out.** On the first real runs (RTX 3060, 2x RTX A4000, six runs) 35 of 36 4K and 16K performance
+  requests stopped at the 512-token cap while still reasoning, and so did 5 of 18 `short` requests. Their total time is the time to the cap, and
+  they have no first-answer time. The plain summary and the README therefore carry a `Capped` column (how many of a case's
+  requests reached the cap). The `short` prompt is about 80 tokens, so its prompt rate (130 to 190 tok/s there) measures the
+  fixed cost of a request and is left out of those two readouts; `results.json` keeps it. Changing the cap or the prompts
+  would be a new protocol ID.
 - **Numbers.** JSON equality compares types: `3` is not `3.0`, and `true` is not `1`. A tool case needs exactly one
   structured call; text next to it is ignored.
 - **After a failure.** The runner asks `/health` once. If the server does not answer, the remaining requests are
@@ -321,7 +329,12 @@ An install with neither has no commit, and the run is `nonconforming`. `engine_v
 from `/props` (`build_info`), or `/v1/status` when `/props` has none. `build_kind` is `source` when the
 folder has a `.git`, otherwise `release`. The runner cannot read build options from a server; pass `--build-options`
 for a source build. The drivers and the CUDA version come from `nvidia-smi` (or `rocm-smi`, or the Windows display
-driver key), read on the machine that runs the engine.
+driver key), read on the machine that runs the engine. ROCm 7 and newer ship `amd-smi` and no `rocm-smi`: the card's
+name is that tool's `static --asic` market name, its memory is the amdgpu sysfs file of the PCI address `amd-smi list`
+reports, and the `rocm` runtime entry is the version file inside the ROCm install (`amd-smi -h` prints the same
+version). Where the kernel builds amdgpu in there is no driver version to read, and `gpu-driver` stays null with a
+reason. When the server can only name a vendor, because the amdgpu `product_name` is empty on some cards, the card the
+local probe named is kept instead.
 
 Except for typed objects, arrays, numbers and booleans identified above, identity and descriptive fields are
 strings (or null with a reason where unavailable). Empty configuration objects mean no relevant options;

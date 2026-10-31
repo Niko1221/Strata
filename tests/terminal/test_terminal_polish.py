@@ -14,11 +14,12 @@ from strata_cli.launch.runner import download_text
 class AlreadyDownloaded(unittest.TestCase):
     def test_a_model_on_disk_is_not_called_a_download(self):
         dl = {"done_gb": 58.5, "total_gb": 58.5, "percent": 100.0}
-        self.assertEqual(download_text(dl, True), "Model already downloaded (58.5 GB), checking the files")
+        self.assertEqual(download_text(dl, True), "The model files are already on this computer (58.5 GB); checking them")
 
     def test_a_real_download_keeps_its_numbers(self):
         dl = {"done_gb": 12.0, "total_gb": 58.5, "percent": 20.5}
         self.assertEqual(download_text(dl, False), "Downloading 12.0 of 58.5 GB")
+        self.assertEqual(download_text(dl, False, "Downloading the draft layer"), "Downloading the draft layer: 12.0 of 58.5 GB")
 
 
 class MonitorFindsLaunch(unittest.TestCase):

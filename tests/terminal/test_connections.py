@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -149,10 +150,12 @@ class ConnectionTests(unittest.TestCase):
             connections.create("local", "http://127.0.0.1:8095")
         if os.name == "posix":
             record = self.directory / "local.json"
-            record.chmod(0o644)
-            with self.assertRaisesRegex(connections.ConnectionError, "private regular"):
-                connections.load("local")
-            record.chmod(0o600)
+            record.chmod(0o644)                          # our own file with drifted modes is put back, not refused
+            connections.load("local")
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+            with mock.patch("os.getuid", return_value=os.getuid() + 1):      # a file that belongs to another account is refused
+                with self.assertRaisesRegex(connections.ConnectionError, "belongs to .*sudo chown"):
+                    connections.load("local")
         record = self.directory / "local.json"
         corrupted = json.loads(record.read_text())
         corrupted["url"] = 42

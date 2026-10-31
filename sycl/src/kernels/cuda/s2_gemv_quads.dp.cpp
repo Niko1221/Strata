@@ -16,6 +16,7 @@
 // generic `s_gemv_split` still serves S4 and S8.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/kernels/s_gemv.hpp"
 
@@ -108,7 +109,7 @@ void s2_gemv_quads(const uint16_t *x, const uint8_t *codes, const float *scales,
         dpct::has_capability_or_fail(dpct::get_in_order_queue().get_device(),
                                      {sycl::aspect::fp16});
 
-        dpct::get_in_order_queue().submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                 sycl::range(smem), cgh);
 

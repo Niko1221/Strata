@@ -60,6 +60,7 @@ class RulesTest(unittest.TestCase):
         ctx = make_ctx(arch="gfx1201")
         bad = [({"--expert-cache": 0}, {}), ({"--kv-resident": 20480}, {}), ({"--pcie-frac": 0.75}, {}),
                ({"--spec": 6}, {}), ({"--spec": 2}, {}), ({"--lookup-chain": 4}, {}), ({"--adapt-every": 100000}, {}),
+               ({"--spec": 5}, {}),   # outside the tuner's values: still not tried (a saved preset may keep it, #3844)
                ({"--prefill": 512}, {}), ({"--ple-io": "ram"}, {}), ({}, {"STRATA_SH_STREAM": "1"}),
                ({}, {"STRATA_RDNA2_SGEMM": "all"}), ({}, {"STRATA_HIP_WMMA": "1"}), ({"--pool-workers": 8}, {})]
         for args, env in bad:
@@ -266,6 +267,22 @@ class TunerTest(unittest.TestCase):
         self.assertEqual(len(session.runs), 1, "only the base was started")
         self.assertEqual(r.outcome, "default_confirmed")
         self.assertTrue(any(a["status"] == "skipped" and "memory" in a["reason"] for a in r.arms))
+
+    def test_memory_wait_gives_up_when_nothing_is_freed(self):
+        # #3490: a loaded model keeps the memory; ten minutes of waiting per candidate made a tuning last for hours
+        model = speed_with({})
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock)
+
+        def system():
+            out = session.system()
+            out["memory"]["available_mib"] = 40000 if not session.runs else 3000
+            return out
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(per_request=False), clock=clock,
+                           sleep=clock.sleep, system=system, total_ram_mib=64000, quiet=lambda: None)
+        before = clock()
+        t.run()
+        self.assertLess(clock() - before, 600.0, "waited for the whole ten minutes per candidate")
 
     def test_nothing_compared_is_inconclusive_not_default_confirmed(self):
         model = speed_with({})

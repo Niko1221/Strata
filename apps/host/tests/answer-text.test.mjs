@@ -37,7 +37,7 @@ test('streaming: a tag that arrives in pieces is removed once it is complete', (
 
 test('the store applies it to the answer, the ordered pieces and the Markdown export', async () => {
   const store = await readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8');
-  assert.match(store, /tidyAnswer\(m\.content\+String\(frame\.text/);
+  assert.match(store, /tidyAnswer\(m\.content\+text\)/);   // applyDelta, which the queued pieces go through
   assert.match(store, /m\.role === 'assistant' \? tidyAnswer\(m\.content\) : m\.content\)/);
   assert.match(await readFile(new URL('../src/lib/deliverables.ts', import.meta.url), 'utf8'), /tidyAnswer\(last\.text \+ text\)/);
 });
