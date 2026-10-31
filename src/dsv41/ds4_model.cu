@@ -8879,6 +8879,12 @@ struct Model::Impl {
     // At most kRcDrainMs: a stalled copy must not hang the prompt, so past it the prompt goes on as in v1.1.27 (no wait,
     // nothing mapped now: the next tick maps what landed).  The wait itself makes no GPU call.
     static constexpr double kRcDrainMs = 5000.0;
+    // the recent slots in use (set up at the load while the one-GPU path was on - one_gpu_plan may turn that path off
+    // after its timing, and the slots and their fills stay): they lie in the tail a run of chunks or a picture borrows.
+    // A fill done but not yet mapped, or still to be issued, left there by a lend landed in the buffers or under them,
+    // and the tick after the hand-back mapped its expert over what the run wrote: the decode read garbage (NaN routing,
+    // then an illegal memory access) - a 32K prompt on one GPU after a few shorter ones (Project Maya v1.1.45)
+    bool rc_in_tail() const { return recent_n > 0 && !rc_cs.empty(); }
     void rc_drain() {
         if (recent_n <= 0 || rc_cs.empty()) return;
         const double t0 = now_ms();
@@ -12446,7 +12452,7 @@ struct Model::Impl {
         for (const auto& cp : chunks) any = any || (cp != nullptr && cp->borrow);
         if (!any) return true;
         cache_drain();
-        if (ln_one || ln_land) rc_drain();   // (the one-GPU path's; elsewhere v1.1.27's: no wait)
+        if (ln_one || ln_land || rc_in_tail()) rc_drain();   // (none of them: v1.1.27's path, no wait)
         for (size_t di = 0; di < chunks.size(); ++di) {
             if (chunks[di] == nullptr || !chunks[di]->borrow) continue;
             Dev& d = devs[di];
