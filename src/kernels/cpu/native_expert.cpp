@@ -516,6 +516,25 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
 template <NativeArithmetic Arithmetic>
 void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
+    // Opt-in reference-order down rows for the mixed IQ2_S gate/up + IQ2_S/IQ3_S down layout.
+    // iq256x_rows reuses weight decoding across tokens without changing ggml's AVX2 reduction order.
+    // The reference library's COMPILED ISA matters, not just the runtime cap (see exact_one above).
+    // Keep unqualified geometries, rotations and AVX-512 references on the existing path.
+    static const bool iq_down_exact = [] {
+        const char* v = std::getenv("STRATA_IQ_DOWN_EXACT");
+        return v && v[0] == '1' && v[1] == 0;
+    }();
+    if (iq_down_exact && nt >= 2 && nt <= 8 && f.gu_type == 22 && (f.d_type == 22 || f.d_type == 21) &&
+        f.gu_act == 15 && f.d_act == 15 && f.n_ff == 512 && f.n_embd == 2048 &&
+        f.gu_row == 656 && f.d_row == (f.d_type == 22 ? 164u : 220u) &&
+        f.act_bytes == 2336 && f.h_bytes == 584 && f.up_off == 656u * 512u &&
+        f.down_off == 2u * f.up_off && f.bytes == f.down_off + f.d_row * 2048u &&
+        f.tail_off == 0 && !f.had_gu && !f.had_d && r0 >= 0 && r0 <= r1 && r1 <= 2048 &&
+        cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr && !cpu_avx512_ok() &&
+        ggml_cpu_has_avx2() && !ggml_cpu_has_avx512() && nt >= native_gu_mt_min(f.gu_type)) {
+        iq256x_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
