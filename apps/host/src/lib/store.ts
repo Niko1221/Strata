@@ -1,7 +1,7 @@
 import { workspaceIdForSession } from './session-workspace';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
-import { updateAgent } from './agents';
+import { settleAgents, updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
@@ -191,6 +191,7 @@ function loadSessions(): Session[] {
     return Array.isArray(parsed) ? parsed.map(session => ({
       ...session,
       ...(session.showcase && !session.showcaseAgentStates ? {agents:SHOWCASE_AGENTS,showcaseAgentStates:true}:{}),
+      ...(!session.showcase && session.agents ? { agents: settleAgents(session.agents) } : {}),
       messages: session.messages.map(message => message.streaming ? {
         ...message,
         streaming: false,
