@@ -9007,7 +9007,7 @@ def mac_control_setup(a) -> int:
     step(7, "writing the run settings")
     port = a.port or 8080
     args = MF.engine_args(pack, [files[0], files[0]] if family == "gyro" else files, rt, ctx, stream, ram,
-                          ROOT / "data" / "expert-profile.bin")      # Gyro: one file, the model and its n-gram table
+                          ROOT / "data" / "expert-profile.bin", model)      # Gyro: one file, the model and its n-gram table
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
