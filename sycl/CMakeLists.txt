@@ -422,6 +422,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
+  add_executable(dq_dense_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dq_dense_parity.cpp)   # dense dequantizers + mmvq vs the CPU dequantizers, random blocks, no model
+  target_link_libraries(dq_dense_parity PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
   add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
