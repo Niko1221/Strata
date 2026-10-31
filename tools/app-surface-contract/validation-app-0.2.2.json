@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "timezone": "Asia/Kuala_Lumpur",
+  "environment": {
+    "platform": "win32 x64",
+    "node": "v24.18.0",
+    "appVersion": "0.2.2",
+    "controlVersion": "0.1.47"
+  },
+  "baseRevision": "8932fa9c08b748f8378eb90af5d4dd34d153e6a9",
+  "toolSourceSha256": {
+    "contract.mjs": "32a663e277050493c09d147814d1d9168e10895a53631b107e66037d4daeb274",
+    "surfaces.mjs": "3f6d3bdc1a47e0b9714893e2e918afd8046c31e9b0f5bf23d44c3f8e36611a20",
+    "assets.mjs": "581622df10489a9d2e9ab2ce3cba50cf26b480a0d8ec331abb0a31f646922e6a",
+    "cli.mjs": "dc7849f10f07625a03972f1a1ddb4232afbbb4c70de14aa8c5c4757710f2ad07",
+    "contract.test.mjs": "7d980e1f429412aeff23abbfc400235175f1236aaf5ed0935a5d0a8d5a563d83",
+    "assets.test.mjs": "04ba7aaebbcf7ab08c9fe2bb82d5eb62f83bdf05232361a555c306924c1d95c4"
+  },
+  "officialSourceSha256": {
+    "hostPackage": "7c462f799ad1a9567b9a72ef64ef58fc0443343d75192c785288ed838f6f3009",
+    "hostIndex": "3e3c9e3bc98ee8ba500a93d346e534054f7e76d9f8f4d836a308874f49d62aaf",
+    "controlBundle": "13412df142d6be4fcd644c2ed750dfc72ba31632a5d95529248233224710c6db"
+  },
+  "baseline": {
+    "state": "needs_validation",
+    "reason": "official_app_version_needs_validation",
+    "reproducedBeforeFix": true
+  },
+  "acceptance": {
+    "snapshotState": "compatible",
+    "surfaceAppVersion": "0.2.2",
+    "surfaceValidation": "source-anchors-only",
+    "ownershipAreas": 14,
+    "contexts": [
+      8192,
+      32768,
+      65536,
+      131072,
+      204800,
+      262144,
+      393216,
+      524288
+    ],
+    "idle": {
+      "minimum": 0,
+      "maximum": 86400,
+      "shortcuts": [
+        300,
+        600,
+        1800
+      ]
+    },
+    "sourceFingerprint": "a29301a6a3f7ad920658952f323d5d04c529aa885e1e757e1b76d20d4297a0bd",
+    "exportedAssetFiles": 75,
+    "manifestSha256": "10db57a68272cba5d0ee44cdb2adf92a67fb914212e9f91322ffbc4cf38fc4b7",
+    "freshVerificationState": "verified",
+    "exportedAssetsMatchInstalledBytes": true,
+    "protectedHostFiles": 184,
+    "protectedControlFiles": 3,
+    "protectedPrivateFiles": 4,
+    "protectedFilesUnchanged": true
+  },
+  "limits": [
+    "Metadata and asset/source-identity acceptance only",
+    "No Host, model or updater operation requested",
+    "No inference, GPU allocation, idle timing, App installation/update or browser acceptance",
+    "No macOS/Linux installed-App acceptance; unknown versions remain unsupported"
+  ],
+  "toolSourceHashBasis": "Tested working-tree bytes; unchanged Windows checkout files may use CRLF.",
+  "fixtureChecks": {
+    "skipped": 0,
+    "command": "node --test tools/app-surface-contract/contract.test.mjs tools/app-surface-contract/assets.test.mjs",
+    "durationMs": 3215.1099,
+    "passed": 19,
+    "failed": 0
+  }
+}
