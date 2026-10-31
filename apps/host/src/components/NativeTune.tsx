@@ -2,7 +2,7 @@ import { tr } from '../lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { Btn, Dialog, Select } from './ui';
 import { TuneRunView, TuneOutcomeCard } from './TuneRunView';
-import { readOutcome } from '../lib/tune-outcome';
+import { failureDetails, readOutcome } from '../lib/tune-outcome';
 import { go } from '../lib/store';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { answerNotice, tunePresetAction, tuneStatus, tuneUndo, type TuneProgress, type TunePreset, type TuneResult, type TuneStatus } from '../lib/native-tune';
@@ -67,7 +67,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
     } else if (phase === 'result') {
         const outcome = readOutcome(result, job?.state);
         const ok = outcome.tone === 'ok';
-        body = <div className="stack"><TuneOutcomeCard outcome={outcome} details={job?.state === 'error' ? (job.details || job.error) : null}/>{outcome.code === 'faster' ? notice(result?.answers?.class, result?.answers?.default_repeatable) : null}</div>;
+        body = <div className="stack"><TuneOutcomeCard outcome={outcome} details={job?.state === 'error' ? (job.details || job.error) : outcome.code === 'failed' || outcome.code === 'busy_pc' ? failureDetails(job?.result as TuneResult | null, native?.hardware) : null}/>{outcome.code === 'faster' ? notice(result?.answers?.class, result?.answers?.default_repeatable) : null}</div>;
         const again = <Btn variant={ok ? undefined : 'primary'} disabled={busy || !!other} onClick={() => void start('autotune')}>{tr(outcome.code === 'faster' || outcome.code === 'already_fastest' || outcome.code === 'still_fast' ? 'Tune again' : 'Try again')}</Btn>;
         actions = <>
             {status?.can_undo && outcome.code === 'faster' ? <Btn disabled={busy} onClick={() => void act(async () => { await tuneUndo(model, resourceProfile, vision); setJobId(''); })}>{tr("Undo")}</Btn> : null}

@@ -12,7 +12,7 @@ async function load(file) {
 }
 globalThis.window ??= globalThis; globalThis.localStorage ??= { getItem: () => null, setItem: () => {} };
 globalThis.navigator ??= { language: 'en' };
-const { readOutcome, tokS } = await load('tune-outcome.ts');
+const { readOutcome, tokS, failureDetails } = await load('tune-outcome.ts');
 const { tunedFields, describeChange } = await load('tune-values.ts');
 
 test('every outcome the host reports lands on one card with a tone, an icon and its reason', () => {
@@ -60,4 +60,17 @@ test('item 11: Expert mode shows the values the tuning set', () => {
   assert.deepEqual(tunedFields([{ flag: '--mmap-experts', was: '', now: null }]), { lowRam: 'auto' });
   assert.deepEqual(tunedFields(undefined), {});
   assert.deepEqual(describeChange({ flag: '--pool-workers', was: '6', now: '8' }), { name: 'pool workers', now: '8', was: '6' });
+});
+
+test('#4805: a tuning that did not finish carries the reason the tuner gave and what this PC has in its Details', () => {
+  const hardware = { ram_gb: 32, gpus: [{ name: 'NVIDIA GeForce RTX 4050 Laptop GPU', vram_gb: 6 }] };
+  const text = failureDetails({ message: 'Your current settings could not be measured: the engine stopped: no VRAM is left for the expert cache', notes: ['The model was unloaded for the test.'] }, hardware);
+  assert.match(text, /^Your current settings could not be measured: the engine stopped: no VRAM is left for the expert cache/);
+  assert.match(text, /The model was unloaded for the test\./);
+  assert.match(text, /Memory: 32 GB in this PC/);
+  assert.match(text, /Graphics card: NVIDIA GeForce RTX 4050 Laptop GPU, 6 GB/);
+  assert.equal(failureDetails({ message: 'Not tuned: not enough free memory to start it safely (3.1 GiB free, 9.0 GiB needed)' }, null), 'Not tuned: not enough free memory to start it safely (3.1 GiB free, 9.0 GiB needed)');
+  assert.equal(failureDetails({ summary: 'x' }, hardware), null, 'nothing to say: no empty Details');
+  assert.equal(failureDetails(null, hardware), null);
+  assert.equal(failureDetails({ message: 'a', notes: ['a'] }, null), 'a', 'the same sentence is not repeated');
 });
