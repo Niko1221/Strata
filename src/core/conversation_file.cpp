@@ -31,6 +31,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/vfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -1334,6 +1335,18 @@ bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, 
 
 int64_t session_phase_limit_s(uint64_t bytes) {
     return std::min<int64_t>(3600, 60 + (int64_t) std::min<uint64_t>(bytes >> 22, 3600));
+}
+
+bool session_folder_ram_backed(const std::string& path) {
+#ifdef _WIN32
+    (void) path;   // no tmpfs on Windows; a RAM drive is not reported here
+    return false;
+#else
+    struct statfs s {};
+    if (::statfs(path.c_str(), &s) != 0) return false;   // unstatable: the caller's folder checks report that
+    return s.f_type == 0x01021994 ||   // TMPFS_MAGIC
+           s.f_type == 0x0858451f;     // RAMFS_MAGIC
+#endif
 }
 
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,

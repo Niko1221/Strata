@@ -1032,6 +1032,14 @@ int main() {
               "restore_meta's RAM refusal is 'memory'");
     }
 
+    {   // the disk cache's startup guard: a "disk" folder on RAM-backed storage parks conversations IN RAM,
+        // and those pages outlive the engine in no process (the exact leak the disk cache exists to avoid)
+        const fs::path shm = "/dev/shm";
+        if (fs::exists(shm))
+            check(session_folder_ram_backed(shm.string()), "/dev/shm (tmpfs) is RAM-backed");
+        check(!session_folder_ram_backed((dir / "no-such-folder").string()), "an unstatable path is not called RAM-backed");
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);
     return 0;

@@ -10490,6 +10490,17 @@ int main(int argc, char** argv) {
                              conv_cache_dir.string().c_str(), ec.message().c_str());
                 conv_disk = false;
             }
+            else if (strata::core::session_folder_ram_backed(conv_cache_dir.string())) {
+                // a "disk" folder on tmpfs/ramfs parks conversations IN RAM: the pages are the file, they outlive
+                // the engine, belong to no process and show in no per-process memory report - the exact leak the
+                // disk cache exists to avoid.  Refuse the whole disk mode; what is already there is the user's to
+                // move or delete (with --conversation-cache-days N > 0 they asked for the files to be kept).
+                std::fprintf(stderr, "strata serve: conversation cache: %s is on RAM-backed storage (tmpfs): the "
+                                     "parked files would hold RAM that outlives the engine - disk cache off; "
+                                     "point --conversation-cache-dir (and the pack folder it defaults under) at "
+                                     "a real disk\n", conv_cache_dir.string().c_str());
+                conv_disk = false;
+            }
             else if (!session_identity(conv_id, cerr, {})) {
                 std::fprintf(stderr, "strata serve: conversation cache: %s: %s - disk cache off\n",
                              conv_cache_dir.string().c_str(), cerr.c_str());
@@ -10641,12 +10652,12 @@ int main(int argc, char** argv) {
             // file - no host copy of the session is ever made.  Every refusal here is the same skip-park success the
             // RAM path answers with: parking never fails a request.
             if (conv_disk) {
-                const std::vector<ConvCheckpoint> deep = strata::core::session_checkpoints_to_save(checks);
-                const strata::core::ConversationView view{live, live_imgs, deep, cvec_cached};
+                const std::vector<ConvCheckpoint> deep = strata::core::session_checkpoints_to_save(src.checks);
+                const strata::core::ConversationView view{src.ids, src.imgs, deep, src.cvec};
                 // the same draft the RAM park captures and the restore validates with: no --mtp, no draft K/V
-                const strata::core::QsaState* draft = use_mtp ? &mtp.kv_state() : nullptr;
+                const strata::core::QsaState* draft = src.draft0;   // a disk park has no stages, so only draft0 applies
                 size_t estimate = 0;
-                if (!strata::core::conversation_snapshot_bytes(view, ss, g, draft, estimate, err)) {
+                if (!strata::core::conversation_snapshot_bytes(view, src.session, g, draft, estimate, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip disk parking (%s)\n", err.c_str());
                     err.clear();   // recoverable: do not poison the batched draft prefill's error channel
                     return true;
@@ -10670,15 +10681,15 @@ int main(int argc, char** argv) {
                     strata::core::ConversationStateSizes z;
                     std::string why;
                     uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
-                    if (strata::core::conversation_session_sizes(g, ss, z, why)) {
-                        const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
+                    if (strata::core::conversation_session_sizes(g, src.session, z, why)) {
+                        const uint64_t q = (uint64_t) std::max<int64_t>(src.session.qsa_alloc, 0);
                         const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
                         if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
                     }
                     sl.state_bytes = state;
-                    sl.tokens = live.size();
-                    sl.images = live_imgs.size();
-                    sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + (draft ? 1 : 0);
+                    sl.tokens = src.ids.size();
+                    sl.images = src.imgs.size();
+                    sl.kv_layers = (uint64_t) std::max<int64_t>(src.session.qsa_alloc, 0) + (draft ? 1 : 0);
                 }
                 {   // admit gate; refuse-and-skip when it says no (nothing parked lives in RAM to evict for it)
                     const auto mem = strata::core::sample_host_memory();
@@ -10695,7 +10706,7 @@ int main(int argc, char** argv) {
                 const auto t0 = Clock::now();
                 strata::core::SavedConversation meta;
                 std::vector<strata::core::SessionKvSource> sources;
-                if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, draft, err)) {
+                if (!strata::core::conversation_snapshot_sources(meta, sources, view, src.session, g, draft, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip disk parking (%s)\n", err.c_str());
                     err.clear();
                     return true;
@@ -10750,7 +10761,7 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 std::fprintf(stderr, "strata serve: conversation cache: parked %zu tokens to disk (%llu bytes) in %.1f ms; "
-                             "parked=%zu bytes=%zu evictions=%zu\n", live.size(), (unsigned long long) file_bytes,
+                             "parked=%zu bytes=%zu evictions=%zu\n", src.ids.size(), (unsigned long long) file_bytes,
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions());
                 return true;
@@ -14585,7 +14596,20 @@ int main(int argc, char** argv) {
                                  (long long) strata::program::conv_cache::kRestoreFirstUseMib);
                     auto retry = std::move(*incoming);
                     incoming.reset();
-                    if (!conversations.put(std::move(retry)))
+                    if (!disk_incoming_path.empty()) {
+                        // disk mode: the parked form is the file, so the entry goes back around it - a streamed
+                        // meta must never return as a RAM entry (it holds no K/V).  put_disk takes the file back;
+                        // only when that itself refuses does the file go with the entry (the read removed it)
+                        std::error_code ec;
+                        if (conversations.put_disk(std::move(retry), disk_incoming_path, disk_incoming_bytes))
+                            disk_incoming_path.clear();
+                        else {
+                            std::filesystem::remove(disk_incoming_path, ec);
+                            disk_incoming_path.clear();
+                            std::fprintf(stderr, "strata serve: conversation cache: could not return the skipped "
+                                                 "conversation\n");
+                        }
+                    } else if (!conversations.put(std::move(retry)))
                         std::fprintf(stderr, "strata serve: conversation cache: could not return the skipped snapshot\n");
                     err.clear();
                 }

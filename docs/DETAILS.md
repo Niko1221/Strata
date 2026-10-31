@@ -732,6 +732,8 @@ host-RAM copies: N MiB is the whole budget across the files, and while it is on,
 ignored (the engine says so). A park streams what the save endpoint writes - running state, the deepest checkpoint,
 every layer's K/V including the draft - to a new file in `--conversation-cache-dir` (default: a `conversation_cache`
 folder next to the pack), after which RAM keeps only the token and checkpoint index; the budget counts the file. A
+folder on RAM-backed storage (tmpfs, ramfs - a `/tmp` default is one) turns the disk cache off at startup and says so:
+parking files there parks conversations in RAM, and those pages belong to no process and outlive the engine. A
 parked write needs disk room for the whole file plus `--session-min-free-mib`, with an 8 GiB floor, and the host RAM
 admission gate can refuse the write's peak too - then the park is skipped like the other skip-park paths and the
 conversation is simply not parked. The request switch restores the same way in reverse: it parses only the running

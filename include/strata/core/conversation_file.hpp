@@ -306,6 +306,12 @@ bool conversation_cache_index(const std::filesystem::path& dir, const std::strin
                               uint64_t max_tokens, uint64_t max_checkpoints,
                               std::vector<CachedConversationFile>& out, std::string& error);
 
+/// True when `path` sits on RAM-backed storage (tmpfs, ramfs): a "disk" cache folder there parks conversations
+/// IN RAM - the pages are the file, they stay allocated after the engine dies, belong to no process and appear
+/// in no per-process memory report.  False when the folder cannot be stated (the caller's own checks report it)
+/// and always false on Windows (no tmpfs there).
+bool session_folder_ram_backed(const std::string& path);
+
 // The folder the free-space preflight asks about for `path`, by the rules of Windows or of POSIX (exposed so both can
 // be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC
 // folder (\\server\share\dir\) and gives a drive root (C:\); empty for a bare file name (the current folder).
