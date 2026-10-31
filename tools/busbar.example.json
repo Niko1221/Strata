@@ -1,0 +1,53 @@
+{
+  "default_pool": "fast",
+  "pools": {
+    "fast": {
+      "members": [
+        {
+          "name": "claude",
+          "weight": 80,
+          "wire": "anthropic",
+          "base_url": "https://api.anthropic.com/v1",
+          "model": "claude-sonnet-4-5",
+          "key_env": "ANTHROPIC_API_KEY"
+        },
+        {
+          "name": "gpt",
+          "weight": 20,
+          "wire": "openai",
+          "base_url": "https://api.openai.com/v1",
+          "model": "gpt-5.2",
+          "key_env": "OPENAI_KEY"
+        }
+      ],
+      "failover": ["bedrock"],
+      "timeout_s": 120,
+      "cooldown_s": 30,
+      "max_fails": 2
+    },
+    "bedrock": {
+      "members": [
+        {
+          "name": "bedrock",
+          "weight": 1,
+          "wire": "openai",
+          "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/model",
+          "model": "anthropic.claude-sonnet-4-5",
+          "key_env": "AWS_BEARER_TOKEN_BEDROCK"
+        }
+      ]
+    },
+    "local": {
+      "members": [
+        {
+          "name": "strata",
+          "weight": 1,
+          "wire": "openai",
+          "base_url": "http://127.0.0.1:8080/v1",
+          "model": "qwen3.8-flash-next",
+          "key_env": "STRATA_API_KEY"
+        }
+      ]
+    }
+  }
+}
