@@ -6,6 +6,12 @@
 // layer's rows: [k/128][rows] block_q8_1_mmq, of which blocks 0-4 are read.  (Measured on a GP100 die: ws / per-group
 // MMQ 0.24-0.29 at 2.5 rows per expert, 0.38-0.49 at 10, 0.52-0.68 at 35, 0.61-0.74 at 160; bit-identical,
 // compute-sanitizer clean with exact-size matrices.)
+// These kernels are GP100-only (ws::mode() is 0 on any other card, so they never launch there) but this file is built
+// for every architecture of the experimental build.  They use half-precision arithmetic (HFMA2), which ptxas accepts
+// from sm_53; a Maxwell (sm_52) build stopped here with "Feature 'f16 arithemetic and compare instructions' requires
+// .target sm_53 or higher".  Below sm_53 the device pass is left empty: the host code is unchanged, and for sm_60 and
+// newer the device code is too.
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 530
 #include "common.cuh"
 #include "mmq.cuh"
 
@@ -643,3 +649,5 @@ void dn_iq4_nl(const Layer& L, double u, cudaStream_t s, bool fast) {
 }
 
 }  // namespace strata::prefill::ws::detail
+
+#endif  // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 530
