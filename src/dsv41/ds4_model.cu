@@ -177,10 +177,14 @@ std::vector<std::vector<os::Core>> node_threads() {
     std::vector<std::vector<os::Core>> nodes = os::node_core_threads();
 #else
     std::vector<std::vector<os::Core>> nodes;
+#if defined(__linux__)
     cpu_set_t allowed;
     CPU_ZERO(&allowed);
     const bool have_mask = sched_getaffinity(0, sizeof allowed, &allowed) == 0;
     auto ok = [&](int c) { return c >= 0 && (!have_mask || (c < CPU_SETSIZE && CPU_ISSET(c, &allowed))); };
+#else   // (macOS has no CPU affinity mask)
+    auto ok = [&](int c) { return c >= 0; };
+#endif
     // a hybrid Intel CPU's performance cores (the kernel's cpu_core PMU lists them; its E-cores are cpu_atom's)
     const std::vector<int> pcores = cpu_list(read_file("/sys/devices/cpu_core/cpus"));
     const bool hybrid = !pcores.empty() && !read_file("/sys/devices/cpu_atom/cpus").empty();
@@ -5969,7 +5973,11 @@ struct Model::Impl {
     bool zc_host_ptr() const {   // (the pinned pages' host addresses are the devices' too)
         for (const Dev& d : devs) {
             int ok = 0;
+#if defined(STRATA_METAL)
+            (void) d;   // (unified memory: no registered pinned pages to ask about)
+#else
             if (cudaDeviceGetAttribute(&ok, cudaDevAttrCanUseHostPointerForRegisteredMem, d.id) != cudaSuccess) ok = 0;
+#endif
             if (!ok) {
                 cudaGetLastError();
                 return false;
@@ -9519,7 +9527,9 @@ struct Model::Impl {
     }
     std::string lane_dev_key(int di) const {
         char bus[32] = "?";
+#if !defined(STRATA_METAL)   // (no PCI bus on a Mac)
         if (cudaDeviceGetPCIBusId(bus, (int) sizeof bus, devs[(size_t) di].id) != cudaSuccess) cudaGetLastError();
+#endif
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, devs[(size_t) di].id) != cudaSuccess) {
             cudaGetLastError();
