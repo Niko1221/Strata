@@ -168,6 +168,10 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 
 Run **`strata connect`** to see setup instructions for your tool. [Connection guide](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 
+For a shared single engine, the experimental, opt-in [priority scheduler](docs/SOLO_PRIORITY.md)
+lets short text requests interrupt and resume a long answer using the conversation RAM cache.
+Cold reads can still delay a short request.
+
 <a id="guides"></a>
 <a id="how-fast-is-it"></a>
 <a id="how-does-it-work"></a>

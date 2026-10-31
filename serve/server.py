@@ -1000,7 +1000,7 @@ class StrataEngine:
     # own thread, so each one reads its own request's figures (Service.run records them); one at a time, the one dict.
     @property
     def last(self):
-        if self.batch:
+        if self.batch or getattr(self, "solo_scheduler", None):
             tl = self.__dict__.setdefault("_tl", threading.local())
             if not hasattr(tl, "last"):
                 tl.last = {}
@@ -1010,7 +1010,7 @@ class StrataEngine:
     @last.setter
     def last(self, value):
         self.__dict__["_last"] = value
-        if self.batch:
+        if self.batch or getattr(self, "solo_scheduler", None):
             tl = self.__dict__.setdefault("_tl", threading.local())
             tl.last = value
 
@@ -2334,6 +2334,18 @@ class StrataEngine:
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
+        scheduler = getattr(self, "solo_scheduler", None)
+        if scheduler is not None:
+            if prefill_only:
+                raise ValueError("solo_priority does not support prefill_only / split serving")
+            yield from scheduler.generate(self, ids, max_new, sampling, cancel, embeddings,
+                                          engine_died=EngineDied, request_stats=request_stats)
+        else:
+            yield from self._generate_single(ids, max_new, sampling, cancel, embeddings,
+                                            prefill_only=prefill_only)
+
+    def _generate_single(self, ids, max_new, sampling, cancel, embeddings=None, *, pause=None,
+                         prefill_only=False):
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
@@ -2355,6 +2367,7 @@ class StrataEngine:
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
+        pause_sent = False
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
         silence = float(self.silence_s or 0)
@@ -2365,6 +2378,9 @@ class StrataEngine:
         stall_state: dict = {}
         try:
             while True:
+                if pause is not None and not pause_sent and not cancel.is_set() and pause():
+                    self._send("STOP")
+                    pause_sent = True
                 wait = 10.0
                 if allow > 0:
                     wait = min(wait, allow - (time.monotonic() - heard))
@@ -4899,7 +4915,7 @@ class Service:
 
     @staticmethod
     def _rate_of(s, rate):
-        if not s.get("busy") or not s.get("first_token"):
+        if not s.get("busy") or not s.get("first_token") or s.get("solo_paused"):
             return 0.0
         now = time.time()
         newest = rate[-1] if rate else None
@@ -4958,7 +4974,9 @@ class Service:
         with self.status_lock:
             s = dict(self.status)
             if self.live_reqs:                          # parallel requests: the newest one's status
-                s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
+                current = self.solo_scheduler.current_state() if getattr(self, "solo_scheduler", None) else None
+                s = {**s, **dict(current if current is not None else list(self.live_reqs.values())[-1][0]),
+                     "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
         now = time.time()
@@ -5004,6 +5022,8 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        if getattr(self, "solo_scheduler", None):
+            live["solo_priority"] = self.solo_scheduler.snapshot()
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
@@ -5439,6 +5459,8 @@ class Service:
 
     def _progress(self, last_print, every=1.0, st=None):
         """A progress line in the server window every `every` seconds while a request runs."""
+        if getattr(self, "solo_scheduler", None) and not self.solo_scheduler.owned():
+            return last_print
         now = time.time()
         if now - last_print < every:
             return last_print
@@ -5465,7 +5487,12 @@ class Service:
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only)
+            scheduler = getattr(self, "solo_scheduler", None)
+            if scheduler is None:
+                yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only)
+            else:
+                with scheduler.request(ids, max_new, sampling, cancel):
+                    yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only)
         finally:
             if ka is not None:
                 ka.release()
@@ -5558,7 +5585,8 @@ class Service:
         first_engine_token_s = None  # this request, from entering the engine queue; includes queue/prefill
         # #465: with "parallel" (the engine's batch slots) requests run at once: each keeps its own status and rate
         # window (self.status says busy while any runs); one at a time they are self.status / self.rate, as before
-        par = bool(getattr(self.engine, "batch", 0))
+        solo = getattr(self, "solo_scheduler", None)
+        par = bool(getattr(self.engine, "batch", 0) or solo)
         st = {} if par else self.status
         rate = collections.deque(maxlen=32) if par else self.rate
         request_id = uuid.uuid4().hex[:12]
@@ -5589,7 +5617,7 @@ class Service:
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
             turn = contextlib.ExitStack()
-            if not par:
+            if not par or solo:
                 # #1619: a request waiting for the single turn sends a keep-alive every QUEUE_BEAT_S, so a client with
                 # a stream idle timeout does not abort a healthy queued request (and its retry read the prompt again);
                 # a client that left while queued gives its place up instead of taking the turn only to cancel there
@@ -5608,7 +5636,7 @@ class Service:
                         if deadline is not None and time.monotonic() >= deadline:
                             self.fifo.release()
                             raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
-                        turn.callback(self.fifo.release)
+                        turn.callback(solo.release_if_owned if solo else self.fifo.release)
                     else:
                         yield "ping", None
             with turn:
@@ -5627,7 +5655,7 @@ class Service:
                     # #1603: a parallel request stays counted as queued until it is registered as running below -
                     # waiting here for the fifo (an image encode, a /v1/vram resize) left it neither - and one on a
                     # loaded engine has nothing to start, so it does not wait for the fifo at all
-                    if not par:
+                    if not par or solo:
                         self.ensure_loaded()
                     elif not (self.loaded() and not self._vision_down()):
                         with self._inference_fifo(deadline, cancel):
@@ -5636,11 +5664,13 @@ class Service:
                         if par:
                             self.status["queued"] -= 1
                             queued_counted = False
-                            self.terminal_requests[request_id].update(state="waiting", admitted_at=time.time())
+                            self.terminal_requests[request_id].update(state="admitted" if solo else "waiting", admitted_at=time.time())
                             self._terminal_event_locked(request_id, "admitted")
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
+                        if solo:
+                            solo.bind_state(st)
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -9327,6 +9357,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         per_replica = requested if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0 else 1
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
+    if cfg.get("solo_priority", False) is not False:
+        from serve.solo_priority import enable as enable_solo_priority
+        try:
+            enable_solo_priority(svc, cfg)
+        except ValueError as e:
+            raise SystemExit(f"[strata] config: {e}")
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))

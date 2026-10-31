@@ -1,0 +1,17 @@
+{
+  "wall_s": 24.69013509998331,
+  "success": true,
+  "activity": {
+    "requests": 456,
+    "in_flight": 0,
+    "last_request_at": 1792445234
+  },
+  "scheduler": {
+    "enabled": true,
+    "preemptions": 298,
+    "resume_prompt_read": 295,
+    "resume_prefix_missed": 0,
+    "waiting": 0,
+    "paused": 0
+  }
+}

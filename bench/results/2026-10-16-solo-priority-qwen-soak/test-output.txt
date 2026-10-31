@@ -1,0 +1,7 @@
+Python 3.11.7 with regex 2026.9.10 available; runtime 69a6b86.
+Ran 798 tests in 296.962s
+OK (skipped=8)
+
+The earlier attempt without regex failed on dependency imports; retained privately.
+Script/module exception regression: old82e74a5 fails with uncaught serve.server.EngineDied;69a6b86 passes.
+Restored-prefill regression: old202f9fe fails after STOP before first token; b121239 and69a6b86 pass.

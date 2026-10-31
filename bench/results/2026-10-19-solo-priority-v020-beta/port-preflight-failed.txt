@@ -1,0 +1,159 @@
+test_config_off_does_not_replace_lock_or_engine (serve.test_solo_priority.Scheduling.test_config_off_does_not_replace_lock_or_engine) ... ok
+test_invalid_config_is_rejected (serve.test_solo_priority.Scheduling.test_invalid_config_is_rejected) ... ok
+test_waiting_age_and_minimum_run_time (serve.test_solo_priority.Scheduling.test_waiting_age_and_minimum_run_time) ... ok
+test_cancel_while_paused_does_not_stop_the_other_request (serve.test_solo_priority.Streaming.test_cancel_while_paused_does_not_stop_the_other_request) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (789.7 tok/s) (stop, cancel=False)
+FAIL
+test_close_generator_while_paused_does_not_release_other_owner (serve.test_solo_priority.Streaming.test_close_generator_while_paused_does_not_release_other_owner) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (794.7 tok/s) (stop, cancel=False)
+FAIL
+test_cold_prefill_yields_and_resumes (serve.test_solo_priority.Streaming.test_cold_prefill_yields_and_resumes) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 352 tokens in 1 s (396.0 tok/s) (length, cancel=False)
+FAIL
+[strata] done: 352 tokens in 1 s (395.8 tok/s) (stop, cancel=False)
+test_engine_death_while_paused_releases_all_waiters (serve.test_solo_priority.Streaming.test_engine_death_while_paused_releases_all_waiters) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (794.4 tok/s) (stop, cancel=False)
+FAIL
+test_equal_priority_does_not_preempt (serve.test_solo_priority.Streaming.test_equal_priority_does_not_preempt) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (794.2 tok/s) (stop, cancel=False)
+FAIL
+test_parked_failure_uses_the_launching_server_exception_class (serve.test_solo_priority.Streaming.test_parked_failure_uses_the_launching_server_exception_class) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 10 output tokens
+[strata] the engine reported an error: injected engine failure
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped while this request was paused. The engine exited (code 3) after it reported: injected engine failure - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 10 tokens in 0 s (769.4 tok/s) (error, cancel=False)
+ok
+test_preempt_inside_a_tool_argument_emits_one_call (serve.test_solo_priority.Streaming.test_preempt_inside_a_tool_argument_emits_one_call) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 416 tokens in 1 s (465.4 tok/s) (length, cancel=False)
+[strata] done: 288 tokens in 1 s (393.9 tok/s) (stop, cancel=False)
+FAIL
+test_preemption_keeps_utf8_tool_arguments_and_usage (serve.test_solo_priority.Streaming.test_preemption_keeps_utf8_tool_arguments_and_usage) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (793.3 tok/s) (stop, cancel=False)
+[strata] done: 704 tokens in 1 s (794.9 tok/s) (stop, cancel=False)
+FAIL
+test_restored_partial_prefill_reaches_a_token_before_yielding (serve.test_solo_priority.Streaming.test_restored_partial_prefill_reaches_a_token_before_yielding) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 352 tokens in 1 s (339.0 tok/s) (length, cancel=False)
+[strata] done: 352 tokens in 1 s (339.0 tok/s) (stop, cancel=False)
+FAIL
+test_third_short_request_does_not_wait_for_long_request_to_finish (serve.test_solo_priority.Streaming.test_third_short_request_does_not_wait_for_long_request_to_finish) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] done: 704 tokens in 1 s (676.4 tok/s) (stop, cancel=False)
+FAIL
+test_a_queued_stream_gets_keep_alives_then_its_answer (serve.test_queue_keepalive.QueueKeepAlive.test_a_queued_stream_gets_keep_alives_then_its_answer) ... [strata] thinking limited to 24386 of max_tokens 32514 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 3 tokens in 0 s (49734.8 tok/s) (stop, cancel=False)
+ok
+test_a_request_cancelled_while_queued_never_takes_the_turn (serve.test_queue_keepalive.QueueKeepAlive.test_a_request_cancelled_while_queued_never_takes_the_turn) ... ok
+test_closing_a_queued_request_is_no_longer_queued (serve.test_queue_keepalive.QueueKeepAlive.test_closing_a_queued_request_is_no_longer_queued) ... ok
+test_a_continuation_is_not_held_back (serve.test_admit_order.AdmitOrderTest.test_a_continuation_is_not_held_back)
+A request already admitted once (new=False: promoted from the solo path) is not part of the order. ... ok
+test_a_long_request_that_waited_too_long_goes_first (serve.test_admit_order.AdmitOrderTest.test_a_long_request_that_waited_too_long_goes_first) ... ok
+test_off_by_default (serve.test_admit_order.AdmitOrderTest.test_off_by_default) ... ok
+test_short_first_puts_the_chat_before_the_agent_reads (serve.test_admit_order.AdmitOrderTest.test_short_first_puts_the_chat_before_the_agent_reads) ... ok
+
+======================================================================
+FAIL: test_cancel_while_paused_does_not_stop_the_other_request (serve.test_solo_priority.Streaming.test_cancel_while_paused_does_not_stop_the_other_request)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 186, in test_cancel_while_paused_does_not_stop_the_other_request
+    self.wait_for(lambda: self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+======================================================================
+FAIL: test_close_generator_while_paused_does_not_release_other_owner (serve.test_solo_priority.Streaming.test_close_generator_while_paused_does_not_release_other_owner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 305, in test_close_generator_while_paused_does_not_release_other_owner
+    self.wait_for(lambda: self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+======================================================================
+FAIL: test_cold_prefill_yields_and_resumes (serve.test_solo_priority.Streaming.test_cold_prefill_yields_and_resumes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 200, in test_cold_prefill_yields_and_resumes
+    self.assertEqual(short.result(8)[-1][1]['finish'], 'stop')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'length' != 'stop'
+- length
++ stop
+
+
+======================================================================
+FAIL: test_engine_death_while_paused_releases_all_waiters (serve.test_solo_priority.Streaming.test_engine_death_while_paused_releases_all_waiters)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 241, in test_engine_death_while_paused_releases_all_waiters
+    self.wait_for(lambda: self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+======================================================================
+FAIL: test_equal_priority_does_not_preempt (serve.test_solo_priority.Streaming.test_equal_priority_does_not_preempt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 207, in test_equal_priority_does_not_preempt
+    self.wait_for(lambda: self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+======================================================================
+FAIL: test_preempt_inside_a_tool_argument_emits_one_call (serve.test_solo_priority.Streaming.test_preempt_inside_a_tool_argument_emits_one_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 233, in test_preempt_inside_a_tool_argument_emits_one_call
+    self.assertEqual(len(calls), 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_preemption_keeps_utf8_tool_arguments_and_usage (serve.test_solo_priority.Streaming.test_preemption_keeps_utf8_tool_arguments_and_usage)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 163, in test_preemption_keeps_utf8_tool_arguments_and_usage
+    self.wait_for(lambda: self.eng.progress is not None and self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+======================================================================
+FAIL: test_restored_partial_prefill_reaches_a_token_before_yielding (serve.test_solo_priority.Streaming.test_restored_partial_prefill_reaches_a_token_before_yielding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 156, in test_restored_partial_prefill_reaches_a_token_before_yielding
+    self.assertGreater(self.sched.preemptions, 0)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 not greater than 0
+
+======================================================================
+FAIL: test_third_short_request_does_not_wait_for_long_request_to_finish (serve.test_solo_priority.Streaming.test_third_short_request_does_not_wait_for_long_request_to_finish)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<patched-source>/serve/test_solo_priority.py", line 214, in test_third_short_request_does_not_wait_for_long_request_to_finish
+    self.wait_for(lambda: self.sched.locked())
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<patched-source>/serve/test_solo_priority.py", line 140, in wait_for
+    if time.monotonic()>end: self.fail('timed out')
+                             ~~~~~~~~~^^^^^^^^^^^^^
+AssertionError: timed out
+
+----------------------------------------------------------------------
+Ran 20 tests in 55.517s
+
+FAILED (failures=9)
