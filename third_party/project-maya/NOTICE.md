@@ -22,7 +22,7 @@ MAYA-B port (2026-10-31), staged merges onto the v1.1.17 base:
 - #329 (mw00): the lane judged over whole decode steps.
 - #344 (needmorevram; selective port): the expert cache's recent slots (rc_* fields, the fill thread, tab_set, batched table updates), opt-in
   DS4_RECENT=<n>. Not taken: its all-reduce over DMA, segmented top-k and the tensor-core index scores.
-- #476 (RubenTorney), 1b60249 / 7c0ceb1 / (mw00, #551 #496), 32f3c8c (handmade0octopus), #646 (handmade0octopus), #567 (TheSmokeDev),
+- #476 (RubenTorney), 1b60249 / 482e46c / 7c0ceb1 (mw00, #496 #551), 32f3c8c (handmade0octopus), #646 (handmade0octopus), #567 (TheSmokeDev),
   #563 (Cass, mw00): one-GPU decode with the CPU lane's copies pulled in place, verify windows streamed, streamed experts landing in recent
   slots, IQ1_S multi-token CPU rows. In Strata the lane is opt-in (DS4_STREAM=1); the helper-GPU condition (#415) is not ported.
 
