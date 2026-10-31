@@ -39,15 +39,42 @@ def _fit(task: str, a: float = 0.6127, c: float = 0.6539) -> "jev_calib.Calib":
 
 class TaskScopedCalibration(unittest.TestCase):
     def setUp(self):
+        self._snapshot()
         self._env_task = os.environ.pop("STRATA_JEV_TASK", None)
         jev_calib._set_task_for_test(None)      # fall back to the environment
-        jev_calib._set_for_test(None)
+        with jev_calib._MU:
+            jev_calib._ACTIVE.clear()
+            jev_calib._ACTIVE[""] = None
         jev_calib._MISMATCH_LOGGED.clear()
 
     def tearDown(self):
-        jev_calib._set_task_for_test(None)
-        jev_calib._set_for_test(None)
+        self._restore()
+
+    # ── state isolation ────────────────────────────────────────────────────
+    # _set_for_test(c) defaults to mode "", so resetting it alone leaves a fit
+    # parked in _ACTIVE["L"].  That leak is not theoretical: it failed CI's
+    # "Minimal serving runtime" job on 2026-10-31 (run 41246840308), three tests
+    # in serve/test_systemone.py that assert uncalibrated probabilities.  Files
+    # run alphabetically, so test_jev_calib_task finished first and its leftover
+    # Calib(a_noul=0.6127, c_noul=+0.6539, T_choice=1.0557, T_score=2.263) was
+    # applied by the server those tests start:
+    #   noul  0.982   -> 0.9570665554  (CI observed 0.9570665554111856)
+    #   score 0.9887011299 -> 0.9524334890 (CI observed exactly that)
+    #   choice 0.0178982102 -> 0.0219656216 (CI observed exactly that)
+    # Restore EVERY mode, the task override, and the log set.
+    def _snapshot(self):
+        with jev_calib._MU:
+            self._active = dict(jev_calib._ACTIVE)
+        self._task_override = jev_calib._TASK_OVERRIDE
+        self._mismatch = set(jev_calib._MISMATCH_LOGGED)
+
+    def _restore(self):
+        with jev_calib._MU:
+            jev_calib._ACTIVE.clear()
+            jev_calib._ACTIVE.update(self._active)
+        jev_calib._set_task_for_test(self._task_override)
         jev_calib._MISMATCH_LOGGED.clear()
+        jev_calib._MISMATCH_LOGGED.update(self._mismatch)
         os.environ.pop("STRATA_JEV_TASK", None)
         if self._env_task is not None:
             os.environ["STRATA_JEV_TASK"] = self._env_task
@@ -109,6 +136,20 @@ class TaskScopedCalibration(unittest.TestCase):
         self.assertTrue(c.loaded)
         self.assertEqual(c.task, "banking77-mf")
         self.assertAlmostEqual(c.c_noul, -1.5607, places=6)
+
+    # ── 7a. this file must not leak a fit into other test files ────────────
+    def test_restore_clears_every_mode(self):
+        jev_calib._set_for_test(_fit("leaky"), "L")          # what a test leaves behind
+        jev_calib._set_for_test(_fit("leaky"), "")
+        self.assertIsNotNone(jev_calib.active("L"))
+        self._restore()                                      # what tearDown does
+        self.assertIsNone(jev_calib.active("L"),
+                          "a leftover fit in mode 'L' is applied by later test files")
+        self.assertIsNone(jev_calib.active(""))
+        # and the legacy fallback path in apply() must now be identity too
+        pr, cid = jev_calib.apply("noul", [0.018, 0.982], mode="L")
+        self.assertEqual(cid, "identity")
+        self.assertEqual(pr, [0.018, 0.982])
 
     # ── 7. STRICT mode does not reject a task-tagged file ──────────────────
     def test_task_key_is_known_to_strict_loader(self):
