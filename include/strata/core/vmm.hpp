@@ -17,7 +17,7 @@ bool vmm_available();
 /// The chunk size (0 when not available).
 uint64_t vmm_granularity();
 /// A new physical chunk on the current device (0: out of memory), and its release.
-VmmChunk vmm_chunk_new();
+VmmChunk vmm_chunk_new(int dev);
 void vmm_chunk_free(VmmChunk h);
 
 class VmmRange {
@@ -49,6 +49,7 @@ private:
     bool commit_run(int64_t lo, int64_t hi);
     unsigned long long base_ = 0;
     std::vector<VmmChunk> h_;   // per chunk: its physical chunk, 0 = unmapped
+    int dev_ = -1;              // the device the chunks are created on (captured in reserve)
 };
 
 template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take) {
@@ -62,7 +63,7 @@ template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take
             continue;
         }
         VmmChunk h = take();
-        if (h == 0) h = vmm_chunk_new();
+        if (h == 0) h = vmm_chunk_new(dev_);
         if (h == 0 || !map_one(i, h)) {
             if (h != 0) vmm_chunk_free(h);
             if (run >= 0) commit_run(run, i);
