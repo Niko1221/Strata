@@ -11306,7 +11306,7 @@ struct Model::Impl {
             // past the cache, 14.0 after windows; a long one's past it, more than the cache holds - DS4_FLOW_BUFFERED,
             // 1024 tokens on one GPU, 0 on more: the longest run read through it)
             static const int buf_max = std::getenv("DS4_FLOW_BUFFERED") ? std::atoi(std::getenv("DS4_FLOW_BUFFERED"))
-                                                                        : devs.size() == 1 ? 1024 : 0;
+                                                                        : 0;   // (Strata: off until measured - Maya's 1024 on one GPU)
             int run_n = 0;
             for (int t : run.T) run_n += t;
             c.buffered = run_n <= buf_max;
