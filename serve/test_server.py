@@ -4146,6 +4146,28 @@ class ThinkingEngine(MockEngine):
             yield t
 
 
+class InFlightThinkingEngine(ThinkingEngine):
+    """The real engine stops between verify windows: a consumer that stops reading leaves IN_FLIGHT more tokens
+    generated (and held in the engine's state), which the drain reads as `overrun`."""
+    IN_FLIGHT = 3
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        self.overrun = []
+        done = self.tok.decode(ids).endswith("</think>\n\n")
+        text = self.ANSWER if done else self.THOUGHT + "</think>\n\n" + self.ANSWER
+        toks = (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]
+        sent = 0
+        try:
+            for t in toks:
+                if cancel.is_set():
+                    return
+                sent += 1
+                yield t
+        finally:
+            self.overrun = toks[sent:sent + self.IN_FLIGHT]
+
+
 class EndsInsideThinkingEngine(ThinkingEngine):
     """The #1053 reply: one sentence of reasoning, then the end-of-turn token, no </think>.  A prompt that ends the
     thinking (the retry) gets the answer."""
@@ -4264,6 +4286,49 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)   # a prefix + more
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
+
+    def test_the_continuation_keeps_the_tokens_generated_past_the_budget(self):
+        """The engine stopped a few tokens past the budget's cut: the next prompt holds them, so it extends the
+        engine's state (a prefix it already holds) instead of diverging from it a few tokens back."""
+        from serve.server import REASONING_WRAP_UP
+        self.engine = InFlightThinkingEngine(self.tok)
+        self.svc.engine = self.engine
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        k = InFlightThinkingEngine.IN_FLIGHT
+        self.assertEqual(msg["reasoning_content"], ThinkingEngine.THOUGHT[:20 + k] + wrap)
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20 + k]) + extra)
+        self.assertEqual(b["usage"]["completion_tokens"], 20 + k + len(extra) + len(ThinkingEngine.ANSWER) + 1)
+
+    def test_tokens_in_flight_that_could_hold_a_tag_are_left_out(self):
+        """As before the fix when what was in flight could hold a tag: the thinking stops at the budget."""
+        from serve.server import REASONING_WRAP_UP
+        self.engine = InFlightThinkingEngine(self.tok)
+        self.engine.THOUGHT = "x" * 20 + "a<b" + "y" * 20
+        self.svc.engine = self.engine
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        self.assertEqual(second, first + self.tok.encode("x" * 20) + extra)
+
+    def test_tokens_in_flight_that_would_leave_no_room_to_answer_are_left_out(self):
+        """As before the fix when carrying them would leave the answer no room: the answer still gets its tokens."""
+        from serve.server import REASONING_WRAP_UP
+        self.engine = InFlightThinkingEngine(self.tok)
+        self.svc.engine = self.engine
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        room = 2                                    # answer tokens left without the carried ones, fewer than in flight
+        code, b = self.openai(reasoning_budget_tokens=20, max_tokens=20 + len(extra) + room)
+        self.assertEqual(code, 200, b)
+        first, second = self.engine.prompts
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)
+        self.assertEqual(b["choices"][0]["message"]["content"], ThinkingEngine.ANSWER[:room])
 
     def test_llama_cpp_thinking_budget_tokens_is_the_same_budget(self):
         """llama.cpp's name (pi-llama-cpp sends it): the same wrap-up; reasoning_budget_tokens wins when both are set."""

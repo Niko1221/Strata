@@ -2331,6 +2331,9 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
+        # the tokens the engine generated after the consumer stopped reading (read while draining to DONE below): the
+        # engine stops between verify windows, so its state can hold a few tokens past the consumer's cut
+        self.overrun = []
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
@@ -2471,6 +2474,8 @@ class StrataEngine:
                     if line.startswith("DONE"):
                         self._parse_done(line)
                         break
+                    if line.startswith("T ") and line[2:].strip().isdigit():
+                        self.overrun.append(int(line[2:]))
                     if not self.can_stop:
                         heard = time.monotonic()
 
@@ -5850,12 +5855,24 @@ class Service:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
                         extra = self.tok.encode(text, parse_special=True)
-                        if max_new - n - len(extra) < 1:
+                        # The engine stops between its verify windows, so it may already hold a few thinking tokens
+                        # past the budget that this pass did not read.  The next prompt carries them too, so it extends
+                        # the engine's state instead of diverging from it (which re-read the whole thinking from the
+                        # prompt's checkpoint).  Not when they could end the thinking or hold part of a tag or character,
+                        # nor when they would take the room an answer still has.
+                        over = list(getattr(self.engine, "overrun", None) or []) if wrap else []
+                        if over and (any(t in self.stop_ids for t in over) or
+                                     any(c in self.tok.decode(over) for c in "<�") or
+                                     max_new - n - len(over) - len(extra) < 1):
+                            over = []
+                        if max_new - n - len(over) - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
-                            print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
+                            print(f"[strata] thinking budget reached ({thought} tokens"
+                                  f"{f', {len(over)} more in flight' if over else ''}): wrapping up the thinking",
                                   flush=True)
-                        for t in extra:
+                        seg = seg + over
+                        for t in over + extra:
                             n += 1
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
