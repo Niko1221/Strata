@@ -981,6 +981,9 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 }
 
 double Context::run_graph(const std::vector<Dispatch>& ds) {
+    // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
+    // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
+    static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
@@ -990,7 +993,12 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
         }
         [enc endEncoding];
         [cb commit];
-        [cb waitUntilCompleted];
+        if (spin) {
+            const auto t0 = std::chrono::steady_clock::now();
+            while (cb.status < MTLCommandBufferStatusCompleted &&
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20e-3) {}
+        }
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);

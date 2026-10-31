@@ -418,7 +418,9 @@ private:
     std::map<int, Prof> prof_;
     Prof cprof_, dprof_;   // commit (folds), the draft rounds
     double tp_pre_ = 0, tp_rg_ = 0;
+    bool prof_printed_ = false;
 public:
+    void print_prof(bool periodic = false);
     ~Window();
     void prof_add(bool draft, double ms) { Prof& x = draft ? dprof_ : cprof_; ++x.n; x.all += ms; }
 private:
@@ -1613,7 +1615,14 @@ void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
 
 Window::~Window() {
     if (logpos_) std::fclose(logpos_);
-    if (std::getenv("STRATA_METAL_PROFILE") == nullptr) return;
+    print_prof();
+}
+
+// STRATA_METAL_PROFILE=1: the per-window time split.  Printed once: at the window's destruction, or at process exit
+// (the serve loop leaves through exit() without destroying the window)
+void Window::print_prof(bool periodic) {
+    if ((prof_printed_ && !periodic) || std::getenv("STRATA_METAL_PROFILE") == nullptr) return;
+    prof_printed_ = !periodic;
     auto line = [](const char* what, const Prof& x) {
         if (x.n == 0) return;
         std::fprintf(stderr, "strata metal profile: %-10s %6lld x  %.3f ms: host before %.3f, run_graph %.3f (GPU %.3f, so "
@@ -1638,6 +1647,8 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
         const double t1 = now_ms();
         ++x.n; x.pre += tp_pre_ - t0; x.rg += tp_rg_; x.gpu += last_gpu_ms_; x.fin += t1 - tp_pre_ - tp_rg_;
         x.all += t1 - t0;
+        static int nprof = 0;
+        if (++nprof % 100 == 0) print_prof(true);   // cumulative; the serve loop may leave without a destructor
     }
     logpos(Tn, tokens, pos0, head);
     if (Tn == 1 || partial_) hp_ = 1 - hp_;   // the window committed its first row (or all of them) in the step
@@ -2925,7 +2936,10 @@ namespace {
 Window* g_the_window = nullptr;
 }
 void* window_create() {
-    if (g_the_window == nullptr) g_the_window = new Window();
+    if (g_the_window == nullptr) {
+        g_the_window = new Window();
+        if (std::getenv("STRATA_METAL_PROFILE")) std::atexit([] { if (g_the_window) g_the_window->print_prof(); });
+    }
     return g_the_window;
 }
 void window_destroy(void* w) {
