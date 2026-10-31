@@ -301,6 +301,41 @@ struct Pic {
 
 // GENI's file: int32 'DSI1', int32 count, then per picture int64 start, int32 width, int32 height and its
 // height x width x 3 RGB bytes, in prompt order
+namespace {
+// After a fatal GPU error (an illegal memory access, a launch failure, a hardware exception) the device context is gone: every later
+// CUDA / HIP call of this process fails, so an engine that keeps serving only turns each request into an error until someone restarts
+// it (#4350, an unattended agent loop is dead).  The engine says so on stdout and exits; the server starts it again on the next
+// request, like any engine death, and fails only the request in flight with a 503 (retryable).
+bool gpu_fatal_text(const std::string& e) {
+    static const char* const k[] = {"illegal memory access", "unspecified launch failure", "hardware exception", "illegal instruction",
+                                    "misaligned address", "device-side assert", "uncorrectable ECC", "launch timed out",
+                                    "launch failure", "device lost", "ERROR_DEVICE_LOST"};
+    for (const char* w : k)
+        if (e.find(w) != std::string::npos) return true;
+    return false;
+}
+[[noreturn]] void die_gpu_fatal(const std::string& e) {
+    std::fprintf(stderr, "ds4: fatal GPU error (%s): the GPU context cannot be used again, so the engine ends and the server starts it again\n",
+                 e.c_str());
+    std::fflush(stderr);
+    std::printf("ERR fatal GPU error: %s\n", e.c_str());
+    std::fflush(stdout);
+    std::_Exit(3);   // (not a clean unwind: freeing device memory on a dead context can hang, as the Qwen engine's #224 exit knows)
+}
+// DS4_INJECT_FATAL=N (a test hook, off when unset): the Nth GEN request fails with the text of a real fatal error, taking the same path
+bool inject_fatal_now() {
+    static const long n = [] { const char* v = std::getenv("DS4_INJECT_FATAL"); return v != nullptr ? std::atol(v) : 0L; }();
+    static long seen = 0;
+    if (!(n > 0 && ++seen == n)) return false;
+    // DS4_INJECT_FATAL_ONCE=<file>: fires once across restarts (the file is made when it fires; while it exists nothing is injected)
+    if (const char* f = std::getenv("DS4_INJECT_FATAL_ONCE"); f != nullptr && *f) {
+        if (std::FILE* t = std::fopen(f, "rb")) { std::fclose(t); return false; }
+        if (std::FILE* t = std::fopen(f, "wb")) std::fclose(t);
+    }
+    return true;
+}
+}  // namespace
+
 bool read_pics(const std::string& path, std::vector<Pic>& v, std::string& err) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (f == nullptr) {
@@ -903,6 +938,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         m.set_cancel(nullptr);
         m.set_images({});
+        if (inject_fatal_now()) die_gpu_fatal("injected (DS4_INJECT_FATAL): an illegal memory access was encountered");
+        if (!ok && gpu_fatal_text(err)) die_gpu_fatal(err);
         if (stopped || (!ok && m.cancelled())) {
             const bool back = from > 0 && m.restore((int64_t) from) && (size_t) m.pos() == from;
             if (!back) {
@@ -992,6 +1029,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 if (!round(m, tok, room, try_spec, r.conf >= 0 ? r.conf : conf_min, r.temperature, r.top_p, r.top_k,
                            r.min_p, r.seed, counter, got,
                            off, acc, err, r.cum)) {
+                    if (gpu_fatal_text(err)) die_gpu_fatal(err);
                     std::fprintf(stderr, "ds4: %s\n", err.c_str());
                     finish = "cancel";
                     break;

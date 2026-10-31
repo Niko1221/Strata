@@ -1279,6 +1279,10 @@ class StrataEngine:
             if "issue #29" in line:
                 return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
                         "line: " + line.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
+        if (self.last_err or "").startswith("fatal GPU error"):    # #4350: the engine ended itself; the next request starts it again
+            return ("The graphics card reported a fatal error (" + self.last_err[len("fatal GPU error:"):].strip()[:160] + "), so the engine "
+                    "ended. The next request starts it again. If this repeats, please report it at github.com/Niko1221/Strata/issues "
+                    "with the log.")
         proc = self.proc                                 # None while a restart has not started the next one yet
         rc = proc.poll() if proc is not None else None
         if rc is not None and rc >= 0 and self.last_err:  # its own last words on stdout: they say why
@@ -1599,6 +1603,7 @@ class StrataEngine:
                     self._yielded = (int(f[1]), int(f[2]))
             elif line.startswith("ERR"):
                 self._ctl_erred = True                   # #1059: the engine refused it and is idle: no DONE follows
+                self._raise_if_fatal_gpu(line)
                 raise ValueError(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
@@ -1636,6 +1641,17 @@ class StrataEngine:
         if len(f) >= 5 and isinstance(self.last, dict):
             self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
                          "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+
+    def _raise_if_fatal_gpu(self, line: str) -> None:
+        """#4350: the engine's ERR line "fatal GPU error: ..." means it is ending (its GPU context is gone).  The request in flight fails
+        as an engine death (a 503 the client can send again), not as a bad request (400), and the engine counts as ended, so the next
+        request starts it again at once instead of finding a closed pipe."""
+        text = line[4:].strip()
+        if not text.startswith("fatal GPU error"):
+            return
+        self.last_err = text
+        self.ended = True
+        raise EngineDied("the GPU reported a fatal error and the engine ended: " + text[len("fatal GPU error:"):].strip()[:200])
 
     def _bdone_after_eos(self, slot: int, wait_s: float = 2.0):
         """#1869: a request in a slot whose consumer left at the stop token has its BDONE right behind it (the engine prints it
@@ -2441,6 +2457,7 @@ class StrataEngine:
                     return
                 elif line.startswith("ERR"):
                     done = True
+                    self._raise_if_fatal_gpu(line)
                     raise ValueError(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
@@ -4618,6 +4635,34 @@ class Service:
         except Exception:
             return None
 
+    FATAL_GPU_MAX = 3            # fatal GPU errors of one engine within FATAL_GPU_WINDOW_S: after that it is not started again
+    FATAL_GPU_WINDOW_S = 600.0
+
+    def _note_fatal_gpu_exit(self, code) -> None:
+        """#4350: the engine ends itself after a fatal GPU error (the device context cannot be used again) and says so in its last
+        ERR line.  The next request starts it again, like any engine death, with one plain line here; the request that was in
+        flight already failed with a 503.  Three such deaths within ten minutes mean a restart will not help (a bad card, driver or
+        model state): then the server stops starting it and says so (503), until the ten minutes have passed."""
+        why = getattr(self.engine, "last_err", None) or ""
+        if "fatal GPU error" not in why:
+            return
+        pid = getattr(getattr(self.engine, "proc", None), "pid", None)
+        seen = self.__dict__.setdefault("_fatal_gpu_pids", set())
+        times = self.__dict__.setdefault("_fatal_gpu_times", [])
+        now = time.time()
+        if pid not in seen:                              # one death counts once, however many requests find it dead
+            seen.add(pid)
+            times.append(now)
+        times[:] = [t for t in times if now - t < self.FATAL_GPU_WINDOW_S]
+        print(f"[strata] the GPU reported a fatal error ({why[len('fatal GPU error:'):].strip()[:160]}); the engine ended "
+              f"(exit code {code}) and is started again; the request that was running failed and can be sent again "
+              f"({len(times)} of {self.FATAL_GPU_MAX} allowed in {self.FATAL_GPU_WINDOW_S / 60:g} minutes)", flush=True)
+        if len(times) >= self.FATAL_GPU_MAX:
+            raise EngineDied(f"the GPU reported a fatal error {len(times)} times in {self.FATAL_GPU_WINDOW_S / 60:g} minutes, so "
+                             "the engine is not started again (the last: " + why[:160] + "). Check the graphics driver, the "
+                             "card's temperature and power, and the log; a request after "
+                             f"{self.FATAL_GPU_WINDOW_S / 60:g} minutes tries again")
+
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
@@ -4686,6 +4731,7 @@ class Service:
             print("[strata] loading the model again (it was unloaded) ...", flush=True)
         else:
             code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
+            self._note_fatal_gpu_exit(code)
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
         try:
