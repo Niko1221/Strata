@@ -1,0 +1,10 @@
+docs/benchmarks/expert-lookahead-2026-10-19-rtx5070/inputs/prose.oracle8.routing.bin: routed per token 480 (layer, expert) pairs; misses against the static profile 350.1/token (7.29/layer)
+  lookahead  1: copies/token  124.1 (after token 8:  118.1) -> PCIe  5.82 ms/token at 28.4 GB/s
+  lookahead 16: copies/token   70.9 (after token 8:   59.1) -> PCIe  2.91 ms/token at 28.4 GB/s
+  lookahead 32: copies/token   58.5 (after token 8:   44.8) -> PCIe  2.21 ms/token at 28.4 GB/s
+  lookahead 64: copies/token   53.7 (after token 8:   39.3) -> PCIe  1.94 ms/token at 28.4 GB/s
+docs/benchmarks/expert-lookahead-2026-10-19-rtx5070/inputs/code.oracle8.routing.bin: routed per token 480 (layer, expert) pairs; misses against the static profile 357.5/token (7.45/layer)
+  lookahead  1: copies/token  179.8 (after token 8:  173.8) -> PCIe  8.57 ms/token at 28.4 GB/s
+  lookahead 16: copies/token  111.3 (after token 8:   96.8) -> PCIe  4.77 ms/token at 28.4 GB/s
+  lookahead 32: copies/token  100.4 (after token 8:   84.4) -> PCIe  4.16 ms/token at 28.4 GB/s
+  lookahead 64: copies/token   96.2 (after token 8:   79.5) -> PCIe  3.92 ms/token at 28.4 GB/s
