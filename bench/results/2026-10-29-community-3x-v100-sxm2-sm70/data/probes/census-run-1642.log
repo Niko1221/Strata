@@ -1,0 +1,16 @@
+[16:42:47] drop-in 已备份
+[16:43:46] 引擎带 hook 起来了（60s）
+[16:43:46] engine pid=231606
+[16:43:52] 发 20K decode 探针…
+[16:44:10] 探针耗时 15s，快照 <repo>/ext/kernels/work/census-1029-1642
+# census <repo>/ext/kernels/work/census-1029-1642
+launches_total=47372 launches_window=46910
+memcpys=52873 syncs=1658
+windows_in_run=161
+launches_per_window=291.3664596273292
+
+calls_delta	cpu_ms_delta	name
+8591	57.610	off+0x34ce40
+[16:44:10] restore: 摘 probe.conf
+[16:45:25] restore: health OK after 75s
+NRestarts=0 SubState=running 

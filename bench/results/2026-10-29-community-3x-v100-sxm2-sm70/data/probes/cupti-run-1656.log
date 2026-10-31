@@ -1,0 +1,7 @@
+[16:57:50] ready 75s engine pid=235226
+[16:57:56] 发 20K 探针
+decode=87.00 t/s prompt_n=20040
+[16:58:14] done <repo>/ext/kernels/work/cupti-1029-1656
+[16:58:14] restore
+[16:59:29] health OK after 75s
+NRestarts=0 SubState=running 

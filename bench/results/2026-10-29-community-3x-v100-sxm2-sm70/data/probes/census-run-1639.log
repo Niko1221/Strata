@@ -1,0 +1,8 @@
+[16:39:25] drop-in 已备份
+[16:40:24] 引擎带 hook 起来了（60s）
+[16:40:30] 发 20K decode 探针…
+decode=97.10 t/s prefill=2050.30 tok/s prompt_n=20040 predicted_n=512
+[16:40:50] 探针耗时 15s，快照已存 <repo>/ext/kernels/work/census-1029-1639
+[16:40:50] restore: 摘 probe.conf
+[16:41:49] restore: health OK after 60s
+NRestarts=0 SubState=running 
