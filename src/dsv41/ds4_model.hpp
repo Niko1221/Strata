@@ -65,6 +65,10 @@ struct Options {
     bool vision = true;               // the vision tower (the checkpoint's vision.* / aligner.*), when it has one
     bool vision_only = false;         // (tests) load the vision tower alone: encode_image() and nothing else
     bool verbose = false;
+    float route_prior = [] {
+        const char* v = std::getenv("STRATA_ROUTE_PRIOR");
+        return v != nullptr ? (float) std::atof(v) : 0.1f;
+    }();
 };
 
 /// A picture in the prompt: its span's rows (every position of the span carries the image token), BF16 [span][dim]
@@ -193,6 +197,8 @@ public:
     /// The pictures of the prompt about to be fed ({}: none): positions inside a span read its rows (and route with
     /// the image bias, and take no part in the Engram n-grams); the rest the embedding table's.
     void set_images(std::vector<Image> images);
+    void set_route_prior(float rp);
+    float route_prior() const;
 
     void save_profile() const;
     const Stats& stats() const;

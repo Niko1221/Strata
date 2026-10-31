@@ -268,6 +268,11 @@
       <label class="st-label" for="s-seed"><span data-i18n="drawer.seed">Seed</span> <output data-i18n="drawer.seedNote">empty = random</output></label>
       <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random" data-i18n-placeholder="drawer.random">
     </div>
+    <div class="st-field">
+      <label class="st-label" for="s-route-prior"><span>Route prior (VRAM bias)</span> <output id="o-route-prior"></output></label>
+      <input class="st-slider" type="range" id="s-route-prior" min="0" max="1" step="0.05" value="0.1">
+      <span class="muted small">0 = off; 0..1 bias towards VRAM resident experts (auto-scaled per model)</span>
+    </div>
     <div class="toggle-row"><span><span data-i18n="drawer.showThinking">Show thinking</span><br><span class="muted small" data-i18n="drawer.showThinkingNote">expanded while it streams</span></span>
       <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking" data-i18n-label="drawer.showThinking"></button></div>
     <div class="toggle-row"><span><span data-i18n="drawer.math">Render math</span><br><span class="muted small"

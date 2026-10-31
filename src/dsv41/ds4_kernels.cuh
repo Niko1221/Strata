@@ -25,12 +25,13 @@ constexpr int kPicks = 8;     // routed experts a token can take at most
 ///   kKvFp4   the compressed KV: d / 2 bytes of E2M1 codes (value 2i in the low nibble), then d / 16 E4M3 scales
 ///   kKvFp4p  the index keys: d / 2 bytes of E2M1 codes, then d / 32 UE8M0 scales
 /// kKvBf16: plain BF16 rows (a DSpark block's own rows, and the reference the tests check the packed rows against).
-constexpr int kKvBf16 = 0, kKvFp8 = 1, kKvFp4 = 2, kKvFp4p = 3;
+constexpr int kKvBf16 = 0, kKvFp8 = 1, kKvFp4 = 2, kKvFp4p = 3, kKvFp8B64 = 4;
 __host__ __device__ constexpr size_t kv_row_bytes(int fmt, int d) {
-    return fmt == kKvBf16  ? (size_t) d * 2
-           : fmt == kKvFp8 ? ((size_t) d + (size_t) d / 32 + 15) / 16 * 16
-           : fmt == kKvFp4 ? ((size_t) d / 2 + (size_t) d / 16 + 15) / 16 * 16
-                           : ((size_t) d / 2 + (size_t) d / 32 + 15) / 16 * 16;
+    return fmt == kKvBf16    ? (size_t) d * 2
+           : fmt == kKvFp8   ? ((size_t) d + (size_t) d / 32 + 15) / 16 * 16
+           : fmt == kKvFp4   ? ((size_t) d / 2 + (size_t) d / 16 + 15) / 16 * 16
+           : fmt == kKvFp8B64 ? ((size_t) (d - 64) + 64 * 2 + (size_t) ((d - 64) / 64) + 15) / 16 * 16
+                             : ((size_t) d / 2 + (size_t) d / 32 + 15) / 16 * 16;
 }
 
 /// h[t][s][e] = BF16 rows[t][e] for each of the hc streams.
@@ -50,6 +51,8 @@ struct Finish {
     int rd = 0, pos = 0, inverse = 0, vpp = 1, pos_step = 1;
     const float* freqs = nullptr;   // rd / 2 values
     int quant = 0;
+    int unit_norm = 0;
+    int hadamard128 = 0;
     uint16_t* dst = nullptr;
     long long dst_stride = 0;
     uint8_t* pdst = nullptr;
@@ -104,7 +107,9 @@ struct VlBits {
     uint32_t w[kVlRows / 32];
 };
 void route(const float* logits, const float* bias, int n, int k, int T, float route_scale, int* idx, float* w,
-           cudaStream_t s, const float* bias_vl = nullptr, const VlBits* vl = nullptr);
+           cudaStream_t s, const float* bias_vl = nullptr, const VlBits* vl = nullptr,
+           const int* tid2eid = nullptr, const int* toks = nullptr,
+           const unsigned long long* vram = nullptr, float route_prior = 0.0f);
 
 /// h = silu(min(g, lim)) * clamp(u, -lim, lim)  (lim <= 0: no clamp); n values.
 void swiglu(const float* g, const float* u, int n, float lim, float* h, cudaStream_t s);
@@ -113,7 +118,8 @@ void swiglu(const float* g, const float* u, int n, float lim, float* h, cudaStre
 /// completes a group writes the group's pooled latent (softmax over the slots, per value, then rmsnorm(w)) to the next
 /// row of latent.
 void compress_win(const float* kv, const float* score, float* kv_state, float* score_state, int ratio, int p0, int T,
-                  int d, const float* w, float eps, float* latent, cudaStream_t s);
+                  int d, const float* w, float eps, float* latent, cudaStream_t s, int coff = 1,
+                  const float* ape = nullptr);
 
 /// Per-query sizes, by value - or (gen > 0, a chunk of any length) made on the device from the query's position: query
 /// t at position p0 + t has nn = (p0 + t + 1) / R compressed positions and cb = min(ccap, ceil(nn / blk)) candidate
@@ -238,10 +244,12 @@ struct Resp {
 void route_publish(const float* logits, const float* bias, int n, int k, int T, float route_scale,
                    const unsigned long long* vram, const float* x, int dim, int* idx, float* w,
                    unsigned long long* plan_ptr, Req* req, unsigned seq, cudaStream_t s, const float* bias_vl = nullptr,
-                   unsigned vl = 0, int na0 = 0, int na1 = 0);
+                   unsigned vl = 0, int na0 = 0, int na1 = 0, const int* tid2eid = nullptr, const int* toks = nullptr,
+                   float route_prior = 0.0f);
 /// Lookahead: the m picks a later layer will likely make (its gate's logits on this layer's FFN input, the routing's
 /// score + bias, the m best of n) into req->ahead[t][off ..) for the T tokens - before route_publish, which publishes them.
-void route_ahead(const float* logits, const float* bias, int n, int m, int T, Req* req, int off, cudaStream_t s);
+void route_ahead(const float* logits, const float* bias, int n, int m, int T, Req* req, int off, cudaStream_t s,
+                 const unsigned long long* vram = nullptr, float route_prior = 0.0f);
 /// The RAM store's picks for the device (a decode token's k plan pointers): those the VRAM table left at 0 whose expert zc_tab has (the
 /// slot's device address) are copied into stage slot i (stride apart, `bytes` each) and the plan then points there.
 void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, uint8_t* stage, size_t stride, size_t bytes,

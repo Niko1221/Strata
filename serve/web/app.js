@@ -787,7 +787,7 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
-                  chatList: false, chatEdit: false, whileBusy: "wait"};
+                  route_prior: 0.1, chatList: false, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
@@ -1221,6 +1221,7 @@ async function generateReply() {
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
+  if (settings.route_prior !== undefined && +settings.route_prior >= 0) body.route_prior = +settings.route_prior;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
@@ -1438,6 +1439,7 @@ function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  if ($("s-route-prior")) $("s-route-prior").value = s.route_prior !== undefined ? s.route_prior : 0.1;
   $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
@@ -1464,6 +1466,7 @@ function sharedDefaults(s) {
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
+  if (s.route_prior !== undefined && +s.route_prior >= 0) d.route_prior = +s.route_prior;
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
   return d;
 }
@@ -1487,6 +1490,10 @@ function outputs() {
   $("o-temp").textContent = t === 0 ? tr("drawer.greedy", "0 · greedy") : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
+  if ($("s-route-prior") && $("o-route-prior")) {
+    const rp = +$("s-route-prior").value;
+    $("o-route-prior").textContent = rp === 0 ? "0 (off)" : rp.toFixed(2);
+  }
   const sel = segValue("s-thinking");
   $("o-thinking").textContent = sel ? {none: tr("drawer.thinkNone", "answers right away"), low: tr("drawer.thinkLow", "short"),
     medium: tr("drawer.thinkMedium", "medium"), high: tr("drawer.thinkHigh", "thorough (default)")}[sel] : "";
@@ -1498,7 +1505,7 @@ function outputs() {
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
-for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+for (const id of ["s-temp", "s-topp", "s-topk", "s-route-prior"]) if ($(id)) $(id).oninput = outputs;
 for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-edit"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
@@ -1509,6 +1516,7 @@ $("s-apply").onclick = async () => {
   const locked = !!busy || !!panel;
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+              route_prior: $("s-route-prior") ? +$("s-route-prior").value : 0.1,
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
               whileBusy: segValue("s-busy") || "wait"};

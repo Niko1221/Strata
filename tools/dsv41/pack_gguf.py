@@ -118,6 +118,12 @@ LAYER = {
     "attn_compressor_kv.weight": "attn.compressor.wkv.weight",
     "attn_compressor_gate.weight": "attn.compressor.wgate.weight",
     "attn_compressor_norm.weight": "attn.compressor.norm.weight",
+    "attn_compressor_ape.weight": "attn.compressor.ape.weight",
+    "indexer_compressor_ape.weight": "attn.indexer.ape.weight",
+    "indexer_compressor_gate.weight": "attn.indexer.wgate.weight",
+    "indexer_compressor_kv.weight": "attn.indexer.wk.weight",
+    "indexer_compressor_norm.weight": "attn.indexer.k_norm.weight",
+    "ffn_gate_tid2eid.weight": "ffn.gate.tid2eid",
     "indexer.attn_q_b.weight": "attn.indexer.wq_b.weight",
     "indexer.attn_k.weight": "attn.indexer.wk.weight",
     "indexer.k_norm.weight": "attn.indexer.k_norm.weight",
@@ -146,7 +152,8 @@ LAYER = {
     "engram_q.weight": "engram.q_weight",
     "engram_k.weight": "engram.k_weight",
 }
-GLOBAL = {"token_embd.weight": "embed.weight", "output_norm.weight": "norm.weight", "output.weight": "head.weight"}
+GLOBAL = {"token_embd.weight": "embed.weight", "output_norm.weight": "norm.weight", "output.weight": "head.weight",
+          "output_hc_base.weight": "output.hc_base", "output_hc_fn.weight": "output.hc_fn", "output_hc_scale.weight": "output.hc_scale"}
 
 
 ALIASES = {
@@ -215,9 +222,10 @@ def geometry(kv: dict, vocab: int) -> dict:
         "rope_theta": g("rope.freq_base"),
         "compress_rope_theta": g("attention.compress_rope_freq_base"),
         "compress_ratios": ratios,
-        "kv_source_layer_ids": list(g("attention.kv_source_layers", [])),
-        "index_source_layer_ids": list(g("attention.indexer.source_layers", [])),
+        "kv_source_layer_ids": list(g("attention.kv_source_layers", [])) if g("attention.kv_source_layers") is not None else [i for i, r in enumerate(ratios) if r > 0],
+        "index_source_layer_ids": list(g("attention.indexer.source_layers", [])) if g("attention.indexer.source_layers") is not None else [i for i, r in enumerate(ratios) if r == 4],
         "engram_layer_ids": list(g("engram.layers", [])),
+        "hash_layer_count": g("hash_layer_count", 0),
         "max_position_embeddings": g("context_length"),
         "dspark_block_size": g("dspark.block_size", 0),
         "dspark_noise_token_id": g("dspark.noise_token_id", 0),
@@ -382,8 +390,8 @@ def engram_is_last_shard(explicit: str | None, split: int, shards: list) -> int:
 
 
 def model_kv(gs):
-    """The metadata of the model: of the first group whose architecture IS deepseek41 - never an Engram file's, whatever order they come in."""
-    return next((g.kv for g in gs if g.kv.get("general.architecture") == "deepseek41"), None)
+    """The metadata of the model: architecture deepseek41 or deepseek4 - never an Engram file's, whatever order they come in."""
+    return next((g.kv for g in gs if g.kv.get("general.architecture") in ("deepseek41", "deepseek4")), None)
 
 
 def engram_set(model: pathlib.Path, explicit: str | None):
@@ -416,6 +424,8 @@ def write_engram(out: pathlib.Path, kv: dict, vocab: int):
     g = lambda k, d=None: kv.get("%s.%s" % (a, k), d)  # noqa: E731
     layers = list(g("engram.layers", []))
     if not layers:
+        with out.open("wb") as f:
+            f.write(struct.pack("<4s6i", b"DSE1", vocab, 0, 0, 0, 0, 0))
         return 0, 0
     ngram, heads, hd = g("engram.max_ngram_size"), g("engram.head_count"), g("engram.head_dim")
     tm = list(g("engram.token_map"))
@@ -553,9 +563,10 @@ def main() -> int:
         if part == "engram_gate":
             return "blk.%d.engram_q.weight" % il in names and "blk.%d.engram_k.weight" % il in names
         return False
-    lacking = not layers or any(not has_part(il, part, have)
+    has_engram_support = bool(layers)
+    lacking = has_engram_support and any(not has_part(il, part, have)
                                 for il in layers for part in ("engram_embd", "engram_kv", "engram_gate"))
-    eg_dir, egs = engram_set(model, a.engram) if lacking or a.engram else (None, [])
+    eg_dir, egs = engram_set(model, a.engram) if (lacking or a.engram) and has_engram_support else (None, [])
     eg_from = {}
     if eg_dir is not None:
         eshards = [g.path for g in egs]
@@ -603,12 +614,15 @@ def main() -> int:
             if skip_re is not None and skip_re.search(name):
                 skipped.append("%s (asked for)" % name)
                 continue
-            if typ not in TYPES:
+            if typ == 26 and name.endswith(".ffn_gate_tid2eid.weight"):
+                tname, per, bpb = "I32", 1, 4
+            elif typ not in TYPES:
                 if typ in (24, 25, 26, 27, 28):   # I8 / I16 / I32 / I64 / F64: metadata carried as tensors, not weights
                     skipped.append("%s (type %d)" % (name, typ))   # (the IST-DAS sets' engram_token_map.weight)
                     continue
                 raise SystemExit("%s: %s has ggml type %d, which the engine does not read" % (g.path.name, name, typ))
-            tname, per, bpb = TYPES[typ]
+            else:
+                tname, per, bpb = TYPES[typ]
             nel = 1
             for d in dims:
                 nel *= d

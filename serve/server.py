@@ -1458,6 +1458,11 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        rp = sampling.get("route_prior")
+        if rp is None and isinstance(sampling.get("strata_tune"), dict):
+            rp = sampling["strata_tune"].get("route_prior")
+        if rp is not None and isinstance(rp, (int, float)) and not isinstance(rp, bool) and float(rp) >= 0.0:
+            keys += f" route_prior={float(rp)!r}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -3758,7 +3763,7 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
-    if (cfg.get("arch") or "") == "deepseek41":      # (only this engine reads these; Qwen's environment is untouched)
+    if (cfg.get("arch") or "") in ("deepseek41", "deepseek4"):      # (only this engine reads these; Qwen's environment is untouched)
         deepseek_slot_env(env, cfg)
     parallel_stack_env(env, cfg)
     gdn_stack_env(env, cfg)
@@ -4292,7 +4297,7 @@ class Service:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
         token, DSML tool calls, reasoning-effort words).  The others keep the defaults."""
         self.family = family
-        if family == "deepseek41":
+        if family in ("deepseek41", "deepseek4"):
             from serve import dsml
             eos = (getattr(self.tok, "special_ids", None) or {}).get("eos", 1)
             self.stop_ids = {int(eos)}
@@ -4513,7 +4518,7 @@ class Service:
             value = req.get("thinking_budget_tokens")
         if value is None:
             value = self.reasoning_budget_tokens
-            if not value and self.family == "deepseek41" and not self.reasoning_budget_configured:
+            if not value and self.family in ("deepseek41", "deepseek4") and not self.reasoning_budget_configured:
                 value = DS41_DEFAULT_BUDGET          # DeepSeek-V4.1 only, as Maya ships it: no budget anywhere = this one
         if isinstance(value, float) and value.is_integer():
             value = int(value)
@@ -5219,7 +5224,7 @@ class Service:
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
             if self.vision is None:
-                if self.family == "deepseek41":
+                if self.family in ("deepseek41", "deepseek4"):
                     raise ValueError("this server was started without pictures for DeepSeek (--vision off, or a pack made without the "
                                      "picture reader): run strata launch again without --vision off to read images")
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
@@ -5313,7 +5318,7 @@ class Service:
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
-        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
+        if self.family in ("deepseek41", "deepseek4") and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
             lead = self.deepseek_shared_start(messages)
             if lead:
                 req["strata_prefix"] = {"messages": lead}
@@ -5491,7 +5496,7 @@ class Service:
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
             if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
-        if (thinking and not budget and self.answer_room and self.family == "deepseek41"
+        if (thinking and not budget and self.answer_room and self.family in ("deepseek41", "deepseek4")
                 and max_new and DS41_SMALL_CAP_MIN <= max_new < ANSWER_ROOM_MIN_CAP):
             # DeepSeek-V4.1 only: a short max_tokens (/v1/messages and /v1/chat/completions with 200-600) was spent
             # entirely on the thinking, so no text block ever arrived.  With no budget of the client's own, the thinking
@@ -7304,6 +7309,10 @@ def make_handler(svc: Service):
                                records if request_id else {"requests": records, "retention": 100, "persistent": False,
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
+            if path in ("/v1/route_prior", "/route_prior"):
+                if self._authorized():
+                    self._json(200, {"route_prior": svc.shared.get("route_prior", 0.0)})
+                return
             if path == "/settings":
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
@@ -7418,6 +7427,22 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path in ("/v1/route_prior", "/route_prior"):
+                body = self._body()
+                try:
+                    data = json.loads(body or b"{}")
+                    val = float(data.get("route_prior", 0.0))
+                    svc.shared["route_prior"] = val
+                    if hasattr(svc.engine, "proc") and svc.engine.proc and svc.engine.proc.stdin:
+                        try:
+                            svc.engine.proc.stdin.write(f"ROUTE_PRIOR {val}\n")
+                            svc.engine.proc.stdin.flush()
+                        except Exception:
+                            pass
+                    self._json(200, {"status": "ok", "route_prior": val})
+                except Exception as ex:
+                    self._json(400, {"error": {"message": str(ex)}})
                 return
             if path == "/settings":
                 self._settings()
@@ -8505,9 +8530,12 @@ def clean_shared_defaults(d) -> dict:
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise ValueError("experimental_speed_projection: true or false")
+        elif key == "route_prior":
+            if not number or not 0 <= value <= 1.0:
+                raise ValueError("route_prior: 0..1")
         else:
             raise ValueError(f"unknown setting {key!r}")
-        out[key] = float(value) if key in ("temperature", "top_p") else value
+        out[key] = float(value) if key in ("temperature", "top_p", "route_prior") else value
     return out
 
 
@@ -8825,7 +8853,7 @@ def check_request_sampling(req) -> None:
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b",
-                      "deepseek41": "deepseek-v4.1-flash"}
+                      "deepseek41": "deepseek-v4.1-flash", "deepseek4": "deepseek-v4-flash"}
 
 
 # The sampling each model card recommends ("Best Practices"), used when neither the request, the Chat settings nor the
@@ -8838,8 +8866,9 @@ MODEL_CARD_SAMPLING = {
     # Qwen3.6-35B-A3B: the general-task sets (the card's precise-coding set is temperature 0.6, presence_penalty 0)
     "qwen35moe": {"thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
-    # DeepSeek-V4.1-Flash: temperature 1.0, top_p 1.0 for local use (thinking or not), no penalties
+    # DeepSeek-V4.1-Flash and DeepSeek-V4-Flash: temperature 1.0, top_p 1.0 for local use (thinking or not), no penalties
     "deepseek41": {"thinking": {"temperature": 1.0, "top_p": 1.0}, "instruct": {"temperature": 1.0, "top_p": 1.0}},
+    "deepseek4": {"thinking": {"temperature": 1.0, "top_p": 1.0}, "instruct": {"temperature": 1.0, "top_p": 1.0}},
 }
 
 
@@ -9291,7 +9320,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             delay_s=getattr(a, "script_delay", 0.0) or 0.0), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's
     tpl = tpath / "chat_template.jinja"
-    if (cfg.get("arch") or "") == "deepseek41":
+    if (cfg.get("arch") or "") in ("deepseek41", "deepseek4"):
         from serve import dsml
         tpl, swapped = dsml.pick_template(tpl)
         if swapped:
@@ -9302,8 +9331,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
-    if (cfg.get("arch") or "") == "deepseek41" and vision is None and a.engine == "strata":
-        # DeepSeek-V4.1 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
+    if (cfg.get("arch") or "") in ("deepseek41", "deepseek4") and vision is None and a.engine == "strata":
+        # DeepSeek-V4 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
         # `--vision off` in the config's args, or a pack without a tower, leaves svc.vision None: pictures are refused with the 400 as before.
         _dsp = DsPictures.from_config(cfg, tmp_dir=Path(cfg["log"]).parent / "ds-pictures" if cfg.get("log") else None)
         if _dsp is not None:
@@ -9314,7 +9343,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
         svc.model_arch = cfg.get("arch") or "qwen4exp"
-        svc.set_family(svc.model_arch if svc.model_arch == "deepseek41" else None)
+        svc.set_family(svc.model_arch if svc.model_arch in ("deepseek41", "deepseek4") else None)
         requested = cfg.get("parallel")
         if requested is None:
             args = cfg.get("args", [])
