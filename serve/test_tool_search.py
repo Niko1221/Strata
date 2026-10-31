@@ -128,6 +128,15 @@ class Route(unittest.TestCase):
         self.assertEqual(b["stop_reason"], "end_turn")
         self.assertEqual(b.get("strata_rejected_tool_calls"), [{"name": MCP, "reason": "undeclared"}])
 
+    def test_a_tool_the_conversation_called_is_a_call_without_tool_search(self):
+        # #4663 on /v1/messages: the history's tool_use blocks count as declared, as on the chat route
+        history = [{"role": "user", "content": "search"},
+                   {"role": "assistant", "content": [{"type": "tool_use", "id": "t0", "name": MCP, "input": {"queries": ["x"]}}]},
+                   {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "ok"}]}]
+        b = self.post({"model": "m", "max_tokens": 512, "tools": [SEARCH], "messages": history})
+        self.assertEqual(b["stop_reason"], "tool_use")
+        self.assertEqual([u["name"] for u in b["content"] if u["type"] == "tool_use"], [MCP])
+
     def test_the_loaded_tool_is_in_the_tool_result_not_the_tool_list(self):
         self.post({"model": "m", "max_tokens": 512, "tools": [SEARCH, PLACEHOLDER, LOADED], "messages": REFERENCE})
         prompt = self.tok.decode(self.engine.last_prompt)
