@@ -103,11 +103,12 @@ def engine_key(value):
 
 
 def validate_request(req, engine, vocab_size):
-    """Fail closed for old engines, unsupported backends and continuous batching."""
+    """Fail closed for old engines, unsupported backends and engines that cannot take a bias in batch slots."""
     normalized = normalize(req.get("logit_bias"), vocab_size)
     if normalized:
-        if getattr(engine, "info", {}).get("logit_bias") != 1:
+        info = getattr(engine, "info", {})
+        if info.get("logit_bias") != 1:
             raise ValueError("logit_bias: this engine does not support token biases; use a supporting CUDA/HIP build")
-        if getattr(engine, "batch", 0):
-            raise ValueError("logit_bias: continuous batching is not supported; run without --batch")
+        if getattr(engine, "batch", 0) and info.get("logit_bias_batch") != 1:
+            raise ValueError("logit_bias: this engine does not support it with continuous batching; run without --batch")
     return normalized
