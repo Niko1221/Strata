@@ -83,6 +83,7 @@ from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
+from serve import constrain  # noqa: E402   (constrained decoding: token masks, optional llguidance)
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
@@ -391,12 +392,17 @@ class MockEngine:
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
         self.last_embeddings = embeddings
+        self.last_sampling_constraint = (sampling or {}).get(constrain.KEY)
         if len(self.scripts) > 1:
             if self.cycle:
                 self.script = self.scripts[self.turns % len(self.scripts)]
             else:
                 self.script = self.scripts[min(self.turns, len(self.scripts) - 1)]
             self.turns += 1
+        c = (sampling or {}).get(constrain.KEY) if getattr(self, "supports_mask", False) else None
+        if c is not None:                                   # tests: MockEngine.supports_mask = True
+            yield from c.mock_replay(self.script, max_new, cancel, self.delay)
+            return
         for t in self.script[:max_new]:
             if cancel.is_set():
                 return
@@ -1420,6 +1426,22 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    @property
+    def supports_mask(self) -> bool:
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots.
+        token_mask=2 also means it can mask a whole MTP window (MQ with drafts -> MKN); the server answers both."""
+        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) in ("1", "2") \
+            and not getattr(self, "batch", 0)
+    def _mask_reply(self, c, line="MQ"):
+        # "MQ d1 d2 ..." (token_mask=2): the drafts become the multi-row lookahead (serve/constrain.py 1-2);
+        # a bare "MQ" is answered as before, so an older engine never sees MKN.
+        drafts = [int(w) for w in line.split()[1:] if w.lstrip("-").isdigit()]
+        line = "MF" if c is None else c.reply(drafts=drafts or None)
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
@@ -2345,6 +2367,9 @@ class StrataEngine:
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        if c is not None:
+            head += " mask=1"                               # the engine asks MQ before every window
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if embeddings or int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
@@ -2397,13 +2422,21 @@ class StrataEngine:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
+                
                 if stall_state:
                     stall_state.clear()
+                    
+                if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
+                    self._mask_reply(c, line)
+                    continue
+
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
                         return
                     t = int(line[2:])
+                    if c is not None:
+                        c.feed(t)
                     if want_lp:
                         # the engine writes the token and its `LP` line in one flush, so the line is
                         # here now; an engine without logprobs leaves the next line a normal one
@@ -2466,6 +2499,9 @@ class StrataEngine:
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
+                    if line is not None and line.startswith("MQ"):   # stopped: it still waits for an answer
+                        self._mask_reply(None)
+                        continue
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
@@ -4288,6 +4324,54 @@ class Service:
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
 
+    def mask_available(self) -> bool:
+        """The engine takes token masks and llguidance is importable: a JSON response format is worth
+        wiring even with tools (the answer|calls grammar masks the turn).  Bare test engines without
+        the INFO key fall back to the prompt directive and the validation after the turn."""
+        return bool(getattr(self.engine, "supports_mask", False)) and constrain.available()
+
+    def _with_constraint(self, sampling, tools, thinking, force=None):
+        """A JSON response format on an engine that takes token masks: the request's sampling with a fresh
+        serve/constrain.Constraint for this pass (the schema, and with tools also a tool call).  Anything else -
+        no format, an older engine, llguidance missing, a schema llguidance cannot compile - leaves it as it was:
+        the prompt directive and the validation after the turn."""
+        fmt = constrain.format_of(sampling) if isinstance(sampling, dict) else None
+        if fmt is None or force is not None:
+            # a forced tool_choice appends the call's opening tag to the prompt; the grammar starts at that
+            # tag and would wait for one that is already there - the directive and the validation stand in
+            return sampling
+        if not getattr(self.engine, "supports_mask", False):
+            constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
+                                "token_mask=1 or 2 in its INFO line is needed); JSON is validated after the turn")
+            return sampling
+        if not constrain.available():
+            constrain.note_once("constrained decoding off: python -m pip install llguidance to turn it on; JSON is "
+                                "validated after the turn")
+            return sampling
+        try:
+            vocab = self.__dict__.get("_llg_vocab")
+            if vocab is None:
+                vocab = self.__dict__.setdefault("_llg_vocab", constrain.Vocab(self.tok, self.stop_ids))
+            # T3a opt-in (default off): STRATA_TOOL_NAME_ENUM=1 enumerates the request's declared tool names
+            # in the grammar.  The names come from the very tools array this request rendered (the same
+            # template_tools()/openai_tools() result the route built) - never from a later routes() call.
+            names = constrain.safe_tool_names(tools) if os.environ.get("STRATA_TOOL_NAME_ENUM") == "1" else []
+            if fmt is None and os.environ.get("STRATA_TOOL_MASK") == "1" and tools:
+                # T6 (bare tool calls, opt-in): no JSON format but tools are offered - constrain the call
+                # itself: a tag (or '<tool_call' text) can only arrive through the calls branch, where the
+                # name sits behind the enum and the separator frees the turn; prose stays possible (it just
+                # cannot START with '<' - a '<' later in the text is free, measured).  The call body after
+                # the name stays the free REST (the parser reads it, v3 lesson); thinking turns are unarmed
+                # as with the format path.  A prose turn under the mask costs the valid-UTF-8 character set
+                # (a byte vocabulary's invalid single bytes stay masked - measured 82/263) until the EOS.
+                fmt = {"type": "bare"}                      # grammar(None, ...) = the bare-call grammar
+            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab, tool_names=names or None),
+                                     armed=not thinking, name_enum=bool(names))
+        except Exception as e:                           # noqa: BLE001 - an unsupported schema keyword, a vocab problem
+            constrain.note_once(f"constrained decoding off for a request: {str(e).splitlines()[0][:200]}")
+            return sampling
+        constrain.note_once("constrained decoding on: JSON answers are masked token by token (llguidance)")
+        return {**sampling, constrain.KEY: c}
     def set_family(self, family: str | None) -> None:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
         token, DSML tool calls, reasoning-effort words).  The others keep the defaults."""
@@ -5070,7 +5154,9 @@ class Service:
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+                                  "constrained_decoding": bool(getattr(self.engine, "supports_mask", False) and constrain.available()),
+                                  "tools_with_json": self.mask_available(),   # /v1/chat/completions takes tools + a JSON format together when the mask is on
+                                  "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -5534,7 +5620,8 @@ class Service:
                 out.append(ev)
             return out
         opening = []                                    # without thinking the prompt ends with the forced opening:
-        if force and not thinking:                      # the parser reads it as if the model had written it
+        forced = force                                  # a forced call keeps the mask unarmed even once the
+        if force and not thinking:                      # opening has been fed (see _with_constraint)
             opening, force = parser.feed(force), None
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
@@ -5651,6 +5738,7 @@ class Service:
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
+                    sampling = self._with_constraint(sampling, tools, thinking, force=forced)   # serve/constrain.py (or unchanged)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -5834,6 +5922,8 @@ class Service:
                                     for ev in evs:
                                         yield "event", ev
                                 prompt = prompt + seg + extra
+                                if (sampling or {}).get(constrain.KEY) is not None:
+                                    sampling[constrain.KEY].observe(extra)
                                 finish = "length"
                                 continue
                         if not (wrap or opens) or cancel.is_set():
@@ -5867,6 +5957,8 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                        if (sampling or {}).get(constrain.KEY) is not None:
+                            sampling[constrain.KEY].observe(extra)       # the wrap-up ends in </think>: the answer is constrained
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
@@ -6595,6 +6687,12 @@ def structured_chunks(chunks, validator):
                 yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
+        if choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+            # a turn that calls a tool is not the final answer: the schema validates the answer, not the
+            # call (the same reading as /v1/responses #782) - pass the call through as it came
+            for chunk in buffered:
+                yield chunk
+            return
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
         # logprobs: the entries spell what the model wrote, which this function replaces with the
         # canonical JSON.  `_structured_logprobs` gives back the form the tokens spell, or None.
@@ -7836,8 +7934,12 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))      # a bad value is a 400 before anything is sent
-            messages, validator = prepare_format(req.get("response_format"), messages)
-            if validator is not None and (tools or req.get("strata_mcp")):
+            wants_tools = bool(tools) or req.get("strata_mcp") is True
+            # a JSON format with tools: on an engine that takes token masks the answer|calls grammar masks
+            # the turn (the call goes through, the schema binds the final answer, as on /v1/responses #782);
+            # anywhere else the prompt directive cannot tell a call turn from an answer, so the old 400 stays
+            messages, validator = prepare_format(req.get("response_format"), messages, with_tools=wants_tools)
+            if validator is not None and wants_tools and not svc.mask_available():
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
