@@ -768,6 +768,46 @@ def without_profile_save(cfg: dict) -> tuple[dict, bool]:
     return ({**cfg, "args": out} if removed else cfg), removed
 
 
+# Two Windows clamps stand between this measurement and the engine's real speed: EcoQoS, which throttles a process
+# that looks like background work, and priority, which decides what the scheduler offers it at all. Both are
+# per-process, so lifting them here reaches the server started below too - and both have to go, or the report
+# measures Windows' restraint instead of the thing being benchmarked.
+HIGH_PRIORITY_CLASS = 0x00000080            # SetPriorityClass; the same flag serve/lifeline.py passes on spawn
+PROCESS_POWER_THROTTLING = 4                # PROCESSINFO_CLASS: ProcessPowerThrottling
+POWER_THROTTLING_STATE_VERSION = 1          # the only version of the struct there is
+THROTTLING_STATE_CONTROL = 1                # bit set in the mask = "this field is stated, not left alone"
+THROTTLING_STATE_NONE = 0                   # ... and what is stated about it: apply no throttling
+
+
+def disable_windows_throttling():
+    """Ask Windows not to throttle this process. Best effort by design: these classes arrived with Windows 10
+    2004, and a build that refuses the call is a build that was not throttling us."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        h = kernel32.GetCurrentProcess()
+        kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetPriorityClass.restype = wintypes.BOOL
+        kernel32.SetPriorityClass(h, HIGH_PRIORITY_CLASS)
+
+        class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
+            _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
+
+        state = PROCESS_POWER_THROTTLING_STATE()
+        state.Version = POWER_THROTTLING_STATE_VERSION
+        state.ControlMask = THROTTLING_STATE_CONTROL
+        state.StateMask = THROTTLING_STATE_NONE
+        kernel32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetProcessInformation.restype = wintypes.BOOL
+        kernel32.SetProcessInformation(h, PROCESS_POWER_THROTTLING, ctypes.byref(state), ctypes.sizeof(state))
+    except Exception:
+        pass                                  # no kernel32, no such class, older build: measure anyway
+
+
 def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
@@ -785,7 +825,8 @@ def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
     if gpu:
         cmd += ["--gpu", gpu]
     logf = open(log_path, "w", encoding="utf-8", errors="replace")
-    return subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf, stderr=subprocess.STDOUT)
+    creationflags = HIGH_PRIORITY_CLASS if os.name == "nt" else 0   # the server inherits no clamp from us either
+    return subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf, stderr=subprocess.STDOUT, creationflags=creationflags)
 
 
 def wait_ready(base: str, key: str, proc, timeout: float, log=print) -> bool:
@@ -1034,6 +1075,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ready-timeout", type=float, default=1800, help="seconds to wait for the model to load")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
+    disable_windows_throttling()
     say = (lambda *x, **k: None) if a.quiet else (lambda *x, **k: print(*x, **k, flush=True))
 
     if a.compare_only:
