@@ -140,6 +140,15 @@ gain of more than 5%, and the result is written into the launch's settings. Expe
 1 to 3 minutes); close other heavy programs first. If a run fails or the computer is too busy to tell, the standard settings stay and one plain line
 says so. The RAM store (`--ssd-cache`) sizes itself when the model starts, so the tuner does not touch it, and the context stays what you chose.
 
+### Experimental registered RAM store
+
+Developers testing the Linux CUDA RAM store can opt into huge-page backing with
+`DS4_STORE_ZC=1 DS4_STORE_HUGE_PAGES=1`. It keeps the existing zero-copy path and
+requests 2 MiB pages before registering each host-memory chunk. This is experimental,
+off by default, and does not guarantee huge pages or faster inference. See the
+[allocation details, historical PCIe measurements and validation gaps](benchmarks/dsv41-pcie-20261021/README.md)
+before testing it. Unset `DS4_STORE_HUGE_PAGES` to return to the original allocation.
+
 ## The engine package
 
 DeepSeek's engine, `strata-dsv41`, is a separate download from the Strata engine: when you choose DeepSeek, setup (or `strata launch`) fetches the

@@ -5444,6 +5444,13 @@ struct Model::Impl {
         // took which expert, the CPU lane's are the mmap path's byte for byte)
         const bool want_zc = std::getenv("DS4_STORE_ZC") && std::atoi(std::getenv("DS4_STORE_ZC")) != 0 && devs.size() == 1 &&
                              L[0].nm == 1;
+#if defined(__linux__) && !defined(STRATA_USE_HIP)
+        if (const char* pages = std::getenv("DS4_STORE_HUGE_PAGES")) {
+            cfg.huge_pages = want_zc && std::atoi(pages) != 0;
+            if (!want_zc && std::atoi(pages) != 0)
+                std::fprintf(stderr, "ds4: DS4_STORE_HUGE_PAGES needs the single-GPU DS4_STORE_ZC path; original allocator kept\n");
+        }
+#endif
         if (want_zc) {   // the arena's chunks registered for the GPU to read in place (zero-copy over PCIe)
             const int dev0 = devs[0].id;
             {   // (a unified-memory GPU whose budget the weights already fill: the registered store is the same RAM, past the budget the GPU faults)

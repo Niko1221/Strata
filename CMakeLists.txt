@@ -2737,6 +2737,12 @@ endif()
 
 if(STRATA_BUILD_TESTS)
   enable_testing()
+  # The page layout is portable; Linux also checks the RAM store without a GPU.
+  find_package(Threads REQUIRED)
+  add_executable(ds4_store_pages_test tests/dsv41/store_pages_test.cpp)
+  target_include_directories(ds4_store_pages_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+  target_link_libraries(ds4_store_pages_test PRIVATE Threads::Threads)
+  add_test(NAME ds4_store_pages_test COMMAND ds4_store_pages_test)
   # Model-level checks may be absent from source distributions.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tests)
