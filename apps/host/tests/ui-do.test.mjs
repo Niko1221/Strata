@@ -200,3 +200,23 @@ test('#4802 the new sentences are translated', async () => {
   }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4798
+test('#4798 while sharing is on, Serving shows the address on this computer and the one for other devices, with one sentence', () => {
+  const page = src('screens/Serving.tsx');
+  assert.match(page, /const twoAddresses = !!serving\.sharing\?\.active && !!serving\.sharing\.url && !!serving\.localUrl && serving\.localUrl !== serving\.sharing\.url;/);
+  assert.match(page, /Address for other devices/);
+  assert.equal((page.match(/Other devices use this address\./g) ?? []).length, 1);
+  const host = readFileSync(new URL('../server/serving.mjs', import.meta.url), 'utf8');
+  assert.match(host, /localUrl: baseUrl\(\),/);
+  assert.match(host, /baseUrl: sharing\.active \? sharing\.url : baseUrl\(\),/, 'the existing field keeps its meaning for the connection guide');
+});
+
+test('#4798 the three new Serving sentences are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  for (const l of languages.slice(1)) {
+    setTranslationLanguage(l);
+    for (const text of ['API base URL on this computer', 'Address for other devices', "Other devices use this address. It has its own port, separate from the one Strata's window uses, because only the model's API is shared on the network, not the app."]) assert.notEqual(tr(text), text, `${l}: ${text}`);
+  }
+  setTranslationLanguage('en');
+});

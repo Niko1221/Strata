@@ -5,5 +5,8 @@
  "ui04": "Strata konnte die Abstimmungsdaten dieses Modells nicht lesen, deshalb lässt sich die Abstimmung nicht starten. Schließe dieses Fenster und öffne es erneut.",
  "ui05": "Gespeicherte Abstimmungen werden geprüft…",
  "ui06": "Läuft noch seit {0}. Du musst nichts tun.",
- "ui07": "Die Schaltflächen unten warten, bis das fertig ist."
+ "ui07": "Die Schaltflächen unten warten, bis das fertig ist.",
+ "ui08": "API-Basis-URL auf diesem Computer",
+ "ui09": "Adresse für andere Geräte",
+ "ui10": "Andere Geräte verwenden diese Adresse. Sie hat einen eigenen Port, getrennt von dem des Strata-Fensters, weil im Netzwerk nur die API des Modells freigegeben wird, nicht die App."
 }

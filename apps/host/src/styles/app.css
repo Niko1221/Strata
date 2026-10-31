@@ -7544,3 +7544,5 @@ textarea {
 .native-progress__alive { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
 .native-wait-note { margin: 0; text-align: right; }
 @media (prefers-reduced-motion: reduce) { .native-progress__spin { animation: none; border-color: var(--st-accent); } }
+/* ---- Serving: the second address and the one line that says why it is not the same (#4798) ---- */
+.serving-two-addresses { margin: 6px 0 0; max-width: 60ch; }

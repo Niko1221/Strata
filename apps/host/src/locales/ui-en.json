@@ -5,5 +5,8 @@
  "ui04": "Strata could not read the tuning details for this model, so tuning cannot start. Close this window and open it again.",
  "ui05": "Checking for saved tunings…",
  "ui06": "Still working for {0}. You don't need to do anything.",
- "ui07": "The buttons below wait until this finishes."
+ "ui07": "The buttons below wait until this finishes.",
+ "ui08": "API base URL on this computer",
+ "ui09": "Address for other devices",
+ "ui10": "Other devices use this address. It has its own port, separate from the one Strata's window uses, because only the model's API is shared on the network, not the app."
 }

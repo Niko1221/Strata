@@ -5,5 +5,8 @@
  "ui04": "Strata no pudo leer los datos de ajuste de este modelo, así que el ajuste no puede empezar. Cierra esta ventana y ábrela de nuevo.",
  "ui05": "Comprobando los ajustes guardados…",
  "ui06": "Sigue trabajando desde hace {0}. No tienes que hacer nada.",
- "ui07": "Los botones de abajo esperan a que esto termine."
+ "ui07": "Los botones de abajo esperan a que esto termine.",
+ "ui08": "URL base de la API en este equipo",
+ "ui09": "Dirección para otros dispositivos",
+ "ui10": "Los demás dispositivos usan esta dirección. Tiene su propio puerto, distinto del que usa la ventana de Strata, porque en la red solo se comparte la API del modelo, no la aplicación."
 }

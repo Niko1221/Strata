@@ -5,5 +5,8 @@
  "ui04": "O Strata não conseguiu ler os dados de ajuste deste modelo, então o ajuste não pode começar. Feche esta janela e abra-a novamente.",
  "ui05": "Verificando os ajustes salvos…",
  "ui06": "Ainda trabalhando há {0}. Você não precisa fazer nada.",
- "ui07": "Os botões abaixo esperam até isto terminar."
+ "ui07": "Os botões abaixo esperam até isto terminar.",
+ "ui08": "URL base da API neste computador",
+ "ui09": "Endereço para outros dispositivos",
+ "ui10": "Os outros dispositivos usam este endereço. Ele tem a própria porta, separada da que a janela do Strata usa, porque só a API do modelo é compartilhada na rede, não o aplicativo."
 }

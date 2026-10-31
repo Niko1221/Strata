@@ -5,5 +5,8 @@
  "ui04": "Strata n’a pas pu lire les données d’optimisation de ce modèle, l’optimisation ne peut donc pas démarrer. Fermez cette fenêtre et rouvrez-la.",
  "ui05": "Vérification des optimisations enregistrées…",
  "ui06": "Toujours en cours depuis {0}. Vous n’avez rien à faire.",
- "ui07": "Les boutons ci-dessous attendent la fin de cette opération."
+ "ui07": "Les boutons ci-dessous attendent la fin de cette opération.",
+ "ui08": "URL de base de l’API sur cet ordinateur",
+ "ui09": "Adresse pour les autres appareils",
+ "ui10": "Les autres appareils utilisent cette adresse. Elle a son propre port, distinct de celui de la fenêtre de Strata, car seule l’API du modèle est partagée sur le réseau, pas l’application."
 }

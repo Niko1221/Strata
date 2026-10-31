@@ -355,6 +355,43 @@ cases.progress = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4798 */
+cases.serving = async () => {
+  const sessions = [chat('s1', 'Serving', [user('u1', 'Hi'), reply('a1', 'Hello there.')])];
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    // Sharing off: one address, no extra line. Sharing on: the app's own address and the one for other devices, with one sentence.
+    for (const sharing of [false, true]) {
+      const page = await open(scheme, w, h, sessions, { hash: '#/serving', before: async p => {
+        if (!sharing) return;
+        await p.route(/\/api\/serving$/, async route => {
+          if (route.request().method() !== 'GET') return route.continue();
+          const r = await route.fetch(); const j = await r.json();
+          return route.fulfill({ response: r, json: { ...j, localUrl: 'http://127.0.0.1:8079/v1', baseUrl: 'http://100.76.61.73:8080/v1', sharing: { active: true, url: 'http://100.76.61.73:8080/v1' } } });
+        });
+      } });
+      await page.getByText('API base URL', { exact: false }).first().waitFor({ timeout: 15000 });
+      await page.waitForTimeout(800);
+      const text = await page.locator('.serving-overview').innerText();
+      if (sharing) {
+        check(/API base URL on this computer/.test(text) && text.includes('http://127.0.0.1:8079/v1'), `${tag}: sharing on: the app's own address is shown`);
+        check(/Address for other devices/.test(text) && text.includes('http://100.76.61.73:8080/v1'), `${tag}: sharing on: and the address for other devices`);
+        check(await page.locator('.serving-two-addresses').count() === 1 && /its own port/.test(await page.locator('.serving-two-addresses').innerText()), `${tag}: sharing on: one sentence says why they differ`);
+        const t = page.getByRole('button', { name: 'Copy local network URL' });
+        await t.click(); await page.waitForTimeout(250);
+        check((await page.evaluate(() => navigator.clipboard.readText())) === 'http://100.76.61.73:8080/v1', `${tag}: sharing on: the copy button gives the network address`);
+        check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: sharing on: no sideways scroll`);
+        await page.locator('.serving-overview').scrollIntoViewIfNeeded();
+        await shot(page, `4798-${tag}-sharing`);
+      } else {
+        check(!/Address for other devices/.test(text) && await page.locator('.serving-two-addresses').count() === 0, `${tag}: sharing off: one address, no extra line`);
+      }
+      check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+      await page.context().close();
+    }
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {
