@@ -676,6 +676,13 @@ Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setu
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5
 minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md).
 
+## Experimental gfx12 grid padding
+
+Set `STRATA_GRID_PAD=1` before starting the engine to add empty workgroups to selected single-token (T=1)
+decode matvecs on gfx12 near full-die wave-slot boundaries. Padding is off by default; `=0` also disables it.
+T>1 launches, CUDA and other AMD architectures keep their original grid sizes, even with `=1`.
+Historic R9700 timings from #2492 are archival; they do not establish a speedup on a later revision or another card.
+
 ## Strix Halo: 8-bit hyper-connection weights (default on gfx1151)
 
 On Strix Halo (gfx1151) and gfx12 the hyper-connection down and up projections are read as Q8_0 by default (quantized at load
