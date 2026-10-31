@@ -37,7 +37,7 @@ too and cannot hold any of the model.
 | RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated. The #540 attention kernel is the default there (`STRATA_ATTN_PRE75=0` runs the standard kernel). See [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
 | RX 6700 XT | gfx1031 | setup (`--backend hip`), unvalidated; used daily by its reporter on one card |
 | RX 5500 XT (RDNA1) | gfx1012 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1012` (HIP 5.7 or 7) |
-| RX 5700 XT (RDNA1) | gfx1010 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1010` on ROCm 7.14's `gfx101X-dgpu` wheels; needs `ROCR_VISIBLE_DEVICES=0` on a PC that also has an AMD iGPU |
+| RX 5700 XT (RDNA1) | gfx1010 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1010` on ROCm 7.14's `gfx101X-dgpu` wheels; or setup with `STRATA_EXPERIMENTAL_GFX1010=1` (opt-in, same as gfx1103). With an AMD iGPU, setup sets `ROCR_VISIBLE_DEVICES` to the chosen card's HIP index |
 | RX 5700, 6 GB RX 5600 (RDNA1) | gfx1010 | as above; a 6 GB card leaves about 50 expert slots |
 | Radeon PRO V520 / Pro 5600M (RDNA1) | gfx1011 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1011`; builds with 0 errors, untested on hardware |
 | Instinct MI50 / MI60, Radeon VII | gfx906 (wave64) | built by hand: `-DSTRATA_HIP_GFX906=ON` |
