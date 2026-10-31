@@ -1299,9 +1299,15 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
                 proc = bench_standard.start_engine(a.profile, target, engine_log, log, a.load_timeout)
             elif a.profile:
                 log("using the server that is already running at this profile's address; it will not be stopped")
+                # #4492: keep the running engine's own log, from its newest start line to the end of this run
+                run_log = Path(str(plan["config"]["log"])).expanduser() if isinstance(plan["config"].get("log"), str) else None
+                start = bench_standard.engine_start_offset(run_log)
+                if start is not None:
+                    scratch = Path(tempfile.mkdtemp(prefix="strata-bench-"))
+                    engine_log, log_start = scratch / "engine.log", start
             doc, out_dir = bench_standard.run(target, out, out_root=out_root, optional_concurrency=a.optional_concurrency,
                                               declared=declared, plan=plan, engine_log=engine_log, command=command, log=log,
-                                              engine_run_log=(run_log, log_start) if proc is not None else None,
+                                              engine_run_log=(run_log, log_start) if engine_log is not None else None,
                                               started_engine=proc is not None, hash_model=not a.skip_model_hash)
     finally:
         stop_problem = bench_standard.stop_engine(proc)
