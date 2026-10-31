@@ -669,7 +669,8 @@ def _tool_references(content, deferred: dict):
     if not isinstance(content, list):
         return content
     return [{"type": "text", "text": "<tools>\n" + json.dumps(deferred[p.get("tool_name")], ensure_ascii=False) + "\n</tools>"}
-            if isinstance(p, dict) and p.get("type") == "tool_reference" and p.get("tool_name") in deferred else p
+            if isinstance(p, dict) and p.get("type") == "tool_reference" and isinstance(p.get("tool_name"), str)
+            and p["tool_name"] in deferred else p
             for p in content]
 
 
@@ -1156,6 +1157,13 @@ class OutputParser:
         for name in self.schemas:
             if isinstance(name, str) and "__" in name:
                 aliases.setdefault(name.replace("__", "_"), set()).add(name)
+        # #4751: a programmatic-tool-calling harness (the DeepSeek Harness's PTC mode) shows the model its tools as `tools.write(...)`
+        # inside code, and the model then writes the native call with that spelling (`tools.write`, also `functions.write`).  The
+        # prefix is not part of the declared name; the same unambiguous-alias rule applies, an exactly declared name always wins.
+        for name in self.schemas:
+            if isinstance(name, str) and name:
+                for prefix in ("tools.", "functions.", "default_api."):
+                    aliases.setdefault(prefix + name, set()).add(name)
         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
