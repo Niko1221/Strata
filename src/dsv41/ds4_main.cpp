@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <condition_variable>
 #include <csignal>
 #include <filesystem>
@@ -52,6 +53,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#include <cerrno>
+#endif
 
 namespace {
 
@@ -109,7 +116,8 @@ void usage() {
                  "           | --pack-info)\n");
 }
 
-// stdin lines on a thread, so a request can see STOP while it decodes
+// stdin lines on a thread, so a request can see STOP while it decodes.  read(2), not std::cin - glibc's exit()
+// flushes stdio and waits on stdin's lock, which getline holds while it waits for input (the GLM serve's pattern)
 struct Lines {
     std::mutex mu;
     std::condition_variable cv;
@@ -118,8 +126,32 @@ struct Lines {
     std::atomic<bool> stop{false};
     void start() {
         std::thread([this] {
-            std::string l;
-            while (std::getline(std::cin, l)) {
+            std::string l, buf;
+            char chunk[4096];
+            auto getline_fd = [&](std::string& out) -> bool {
+                for (;;) {
+                    const size_t nlpos = buf.find('\n');
+                    if (nlpos != std::string::npos) {
+                        out.assign(buf, 0, nlpos);
+                        buf.erase(0, nlpos + 1);
+                        return true;
+                    }
+#if defined(_WIN32)
+                    const int n = _read(0, chunk, (unsigned) sizeof chunk);
+#else
+                    const ssize_t n = ::read(0, chunk, sizeof chunk);
+                    if (n < 0 && errno == EINTR) continue;
+#endif
+                    if (n <= 0) {
+                        if (buf.empty()) return false;
+                        out.swap(buf);
+                        buf.clear();
+                        return true;
+                    }
+                    buf.append(chunk, (size_t) n);
+                }
+            };
+            while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
                 std::lock_guard<std::mutex> lk(mu);
                 if (l == "STOP" || l.rfind("STOP ", 0) == 0) {
@@ -284,6 +316,10 @@ struct Req {
                             // tools): the state at N is kept as a checkpoint, so another agent behind the same start
                             // goes back to it instead of reading it again
     float cum = -1.0f;      // dspark_cum=F: the cut on the product of the confidences (-1: the engine's, dspark_cum_default)
+    // the penalties (penalty_last_n / _repeat / _freq / _present, llama.cpp's): over the last pen_n tokens of the state
+    // (-1: the whole context, which the engine caps at its window; 0: none)
+    int pen_n = 0;
+    float pen_repeat = 1.0f, pen_freq = 0.0f, pen_present = 0.0f;
     std::string file;   // GENI: the pictures
     std::vector<int> ids;
 };
@@ -381,6 +417,10 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
         else if (k == "dspark_conf") r.conf = std::strtof(v.c_str(), nullptr);
         else if (k == "pin") r.pin = std::atoll(v.c_str());
         else if (k == "dspark_cum" || k == "spec_cum") r.cum = std::strtof(v.c_str(), nullptr);
+        else if (k == "penalty_last_n") r.pen_n = std::atoi(v.c_str());
+        else if (k == "penalty_repeat") r.pen_repeat = std::strtof(v.c_str(), nullptr);
+        else if (k == "penalty_freq") r.pen_freq = std::strtof(v.c_str(), nullptr);
+        else if (k == "penalty_present") r.pen_present = std::strtof(v.c_str(), nullptr);
     }
     return !r.ids.empty() && (!geni || !r.file.empty());
 }
@@ -396,6 +436,15 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     std::string line;
     unsigned long long counter = 0;
     std::vector<Pic> held;   // the pictures the state holds (start, hash, span)
+    // (DS4_SERVE_DUMP=<prefix>, tests: request i's logits - the prompt's last row, then every decode step's rows - into
+    //  <prefix>.<i>.f32, to compare a request's logits byte for byte across processes and histories)
+    const char* dump_prefix = std::getenv("DS4_SERVE_DUMP");
+    int n_req = 0;
+    std::vector<float> dump_lg;
+    std::FILE* dump_f = nullptr;
+    auto dump_rows = [&]() {
+        if (dump_f != nullptr && m.logits(dump_lg)) std::fwrite(dump_lg.data(), 4, dump_lg.size(), dump_f);
+    };
     SpanCache spans;
     const int img_tok = m.image_token();
     // CONVERSATION SLOTS: a request that does not continue the conversation in the model first sets that one aside
@@ -751,6 +800,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             std::fflush(stdout);
             continue;
         }
+        m.begin_request();   // (DISK_SKIP_AUTO: between requests only)
         const double t0 = now_ms();
         std::vector<Pic> pics;
         {
@@ -932,6 +982,16 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const long long limit = r.max_new > 0 ? r.max_new : m.max_context() - (long long) r.ids.size();
         long long d_off = 0, d_acc = 0;
         bool cool = false;
+        if (dump_prefix != nullptr) {
+            if (dump_f != nullptr) std::fclose(dump_f);
+            dump_f = std::fopen((std::string(dump_prefix) + "." + std::to_string(++n_req) + ".f32").c_str(), "wb");
+            dump_rows();
+        }
+        // this request's penalties (a repeat penalty of 0 or below, or a value that is not a number: neutral) for every
+        // pick of its answer, the drafts' verify included
+        m.set_penalties(r.pen_n < 0 ? INT_MAX : r.pen_n,
+                        std::isfinite(r.pen_repeat) && r.pen_repeat > 0.0f ? r.pen_repeat : 1.0f,
+                        std::isfinite(r.pen_freq) ? r.pen_freq : 0.0f, std::isfinite(r.pen_present) ? r.pen_present : 0.0f);
         int tok = m.sample(r.temperature, r.top_p, r.top_k, r.min_p, r.seed, counter++);
         std::vector<int> got;
         // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
@@ -943,14 +1003,19 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             const strata::ds4::Stats& s = m.stats();
             const double ms = now_ms() - t1;
             const double fed = (double) std::max<int64_t>(1, s.tokens - s_dec.tokens);
-            const double ex = (double) (s.experts - s_dec.experts), cx = (double) (s.cpu_experts - s_dec.cpu_experts);
+            const double ex = (double) (s.experts - s_dec.experts), cx = (double) (s.cpu_experts - s_dec.cpu_experts),
+                         sx = (double) (s.stream_experts - s_dec.stream_experts);
             std::string out = "STAT";
             char b[160];
             std::snprintf(b, sizeof b, " tok_s=%.2f ms_tok=%.2f vram_hit=%.4f cpu=%.3f ram=%.3f promo=%.3f engram_ms=%.3f",
                           ms > 0 ? 1000.0 * (double) produced / ms : 0.0, produced > 0 ? ms / (double) produced : 0.0,
-                          ex > 0 ? 1.0 - cx / ex : 1.0, cx / fed, (double) (s.ram_experts - s_dec.ram_experts) / fed,
+                          ex > 0 ? 1.0 - (cx + sx) / ex : 1.0, cx / fed, (double) (s.ram_experts - s_dec.ram_experts) / fed,
                           (double) (s.swaps - s_dec.swaps) / fed, (s.engram_ms - s_dec.engram_ms) / fed);
             out += b;
+            if (sx > 0) {   // (the PCIe lane: experts a token streamed to the GPU)
+                std::snprintf(b, sizeof b, " pcie=%.3f", sx / fed);
+                out += b;
+            }
             const long long io = io_read_bytes();
             if (io >= 0 && io_dec >= 0) {
                 std::snprintf(b, sizeof b, " disk_mb=%.3f", (double) (io - io_dec) / 1e6 / fed);
@@ -962,6 +1027,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             if (s.skipped > s_dec.skipped) {   // (STRATA_DS4_DISK_SKIP_W: experts left out a token)
                 std::snprintf(b, sizeof b, " skipped=%.3f", (double) (s.skipped - s_dec.skipped) / fed);
+                out += b;
+            }
+            if (s.skip_on >= 0) {   // (... _AUTO: skipping now)
+                std::snprintf(b, sizeof b, " skip_on=%d", s.skip_on);
                 out += b;
             }
             std::printf("%s\n", out.c_str());
@@ -999,10 +1068,12 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 d_acc += acc;
                 cool = try_spec && off == 0;
                 std::reverse(got.begin(), got.end());
+                dump_rows();
             }
             tok = got.back();
             got.pop_back();
         }
+        if (dump_f != nullptr) std::fflush(dump_f);
         // (a stop within accepted drafts leaves the state past it: the next prompt shares less with it, and goes back to
         //  the checkpoint at this prompt's end)
         stat_line();
@@ -1470,6 +1541,7 @@ int main(int argc, char** argv) {
     std::FILE* df = dump.empty() ? nullptr : std::fopen(dump.c_str(), "wb");
     std::vector<float> lg;
     if (window_given == 0) window = df != nullptr ? 16 : std::max(16, std::min(m.feed_unit(), 1 << 30));
+    m.begin_request();
     const double t0 = now_ms();
     for (size_t a = 0; a < ids.size();) {
         const int T = (int) std::min<size_t>((size_t) window, ids.size() - a);
@@ -1562,11 +1634,12 @@ int main(int argc, char** argv) {
     const double t2 = now_ms();
     const auto& s = m.stats();
     const double nt = std::max<double>(1.0, (double) (s.tokens - s0.tokens));
-    std::fprintf(stderr, "decode: %zu tokens in %.0f ms (%.2f tok/s); CPU lane: %lld of %lld experts; the cache moved %lld "
-                         "(%lld in all)\n", out.size(), t2 - t1,
+    std::fprintf(stderr, "decode: %zu tokens in %.0f ms (%.2f tok/s); CPU lane: %lld of %lld experts, streamed to the GPU: "
+                         "%lld; the cache moved %lld (%lld in all)\n", out.size(), t2 - t1,
                  out.size() > 1 ? 1000.0 * (double) (out.size() - 1) / (t2 - t1) : 0.0,
                  (long long) (s.cpu_experts - s0.cpu_experts), (long long) (s.experts - s0.experts),
-                 (long long) (s.swaps - s0.swaps), (long long) s.swaps);
+                 (long long) (s.stream_experts - s0.stream_experts), (long long) (s.swaps - s0.swaps),
+                 (long long) s.swaps);
     std::fprintf(stderr, "decode per token: layers %.2f ms (of it: routing waits %.2f, CPU lane %.2f, the rest host launches), "
                          "head wait %.2f, Engram reads %.2f\n",
                  (s.layer_ms - s0.layer_ms) / nt, (s.gpu_wait_ms - s0.gpu_wait_ms) / nt, (s.cpu_ms - s0.cpu_ms) / nt,
@@ -1600,6 +1673,9 @@ int main(int argc, char** argv) {
                      (long long) (s.store_fails - s0.store_fails), (double) (s.store_zc - s0.store_zc) / nt,
                      (long long) s.store_zc_visible);
     }
+    if (s.skip_on >= 0)
+        std::fprintf(stderr, "DISK_SKIP auto: %s at the end, %lld switches\n", s.skip_on ? "on" : "off",
+                     (long long) s.skip_switches);
     if (s.ahead_picks > s0.ahead_picks) {   // lookahead
         const double p = (double) (s.ahead_picks - s0.ahead_picks), c = (double) (s.ahead_cold - s0.ahead_cold);
         std::fprintf(stderr, "lookahead: the guesses a layer before held %.1f%% of the picks (their top k %.1f%%, two layers "

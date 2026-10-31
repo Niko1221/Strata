@@ -952,6 +952,25 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                                  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
       target_link_libraries(ds4_gg_bench PRIVATE strata_kernels_cpu Threads::Threads)
       target_compile_definitions(ds4_gg_bench PRIVATE STRATA_DSV41_TQ_CPU=1)
+      # the PCIe lane's cost model on this CPU (Project Maya #312's tests/ds4_lane_bench): no GPU, no model
+      add_executable(ds4_lane_bench tests/dsv41/ds4_lane_bench.cpp src/dsv41/ds4_gguf_cpu.cpp src/dsv41/ds4_iq_cpu.cpp
+                     src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+      target_include_directories(ds4_lane_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+      target_link_libraries(ds4_lane_bench PRIVATE strata_dsv41_kernels strata_kernels_cpu Threads::Threads)
+      target_compile_definitions(ds4_lane_bench PRIVATE STRATA_DSV41_TQ_CPU=1)
+    endif()
+    # the GGUF kernels against a double-precision reference, the PCIe lane's streamed experts against the VRAM ones' bit for
+    # bit (--lane), and the packed KV caches against the BF16 rows (needs a GPU, no model; built by name)
+    add_executable(ds4_gguf_test EXCLUDE_FROM_ALL tests/dsv41/ds4_gguf_test.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_gguf_cpu.cpp
+                   src/dsv41/ds4_iq.cu src/dsv41/ds4_iq_cpu.cpp src/dsv41/ds4_kernels.cu src/dsv41/ds4_tq.cu
+                   src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp)
+    target_include_directories(ds4_gguf_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories}
+                               ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill)
+    target_link_libraries(ds4_gguf_test PRIVATE strata_prefill strata_dsv41_kernels ${_strata_gpu_runtime_target} Threads::Threads)
+    if(STRATA_NATIVE_EXPERTS)
+      target_link_libraries(ds4_gguf_test PRIVATE strata_kernels_cpu)
+      target_compile_definitions(ds4_gguf_test PRIVATE STRATA_DSV41_TQ_CPU=1)
     endif()
     if(STRATA_NATIVE_EXPERTS)
       # the trellis experts (device kernels ds4_tq.cu, CPU lane ds4_tq_cpu.cpp) against a double reference; needs a GPU, no model
