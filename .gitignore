@@ -50,6 +50,7 @@ build-vision-cuda12.bat
 /engine/
 /engine-sycl/
 /engine-cuda12/
+/engine-feed/
 /build-release*/
 /dist/
 *.done
