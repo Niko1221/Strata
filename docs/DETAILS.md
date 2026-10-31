@@ -618,6 +618,11 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   On Windows allow the port in the firewall for private networks:
   `New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`
   (admin PowerShell).
+- **The app shares the model, not its own pages.** Strata's page and its controls stay on `127.0.0.1`; sharing is a second
+  listener of its own that answers only `/v1/models`, `/v1/chat/completions` and `/v1/messages`. In the app it is
+  Settings > Serving > "Local sharing", or from the start with the AppImage's `--lan` (also `STRATA_LAN=1`), which prints the
+  address to type on the other device. Without an API key Strata warns once and any device on your network can use the
+  model; set a key in the same page. Windows and macOS have the page, not the command-line option.
 - **From the internet:** put a tunnel in front, for example `cloudflared tunnel --url http://127.0.0.1:8080`. Set a key first.
   Several keys (one per client, so one can be withdrawn): `--api-key key1,key2`, `"api_key": "key1,key2"` or
   `"api_key": ["key1", "key2"]`. `STRATA_API_KEY` sets one too. Streamed answers carry `X-Accel-Buffering: no`. When you

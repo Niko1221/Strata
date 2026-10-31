@@ -8,7 +8,7 @@ import { openArtifact } from './artifacts.mjs';
 import { saveSnapshot } from './snapshot.mjs';
 import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.mjs';
-import { createLocalShare } from './local-share.mjs';
+import { createLocalShare, shareOnStartRequested, shareOnStartLine } from './local-share.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
@@ -2264,6 +2264,18 @@ server.listen(PORT, HOST, () => {
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.
   if (control && process.env.STRATA_PACKAGED === '1') control.cleanup().catch(() => {});
 });
+/* The desktop shell's `--lan` (or STRATA_LAN=1) shares the model with other devices on your network from this start, before any page
+   is open: the shell hands the host STRATA_SHARE_ON_START=1, and this brings up the second, inference-only listener
+   (local-share.mjs). Strata's own address above stays 127.0.0.1 - the share answers /v1 requests only, on its own port. Nothing is
+   shared when the switch is not given, and a share that cannot take its port leaves Strata running on this computer only. */
+if (shareOnStartRequested(process.env)) {
+  try {
+    console.log(shareOnStartLine(await localShare.start()));
+  } catch (e) {
+    console.error(`[strata] could not share on your network: ${e.message}`);
+    console.error('[strata] Strata is serving this computer only. Settings > Serving can share on the network.');
+  }
+}
 
 let stopping=false;
 const shutdown = async () => {
