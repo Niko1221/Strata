@@ -515,6 +515,30 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
     return plan, digest
 
 
+def _keep_dsv41_current(name: str) -> float:
+    """Before a start: a saved profile that runs the DeepSeek engine from an engine-dsv41/ folder gets the newest installed package of its kind, and the
+    signed feed is asked for a newer one at most every six hours (strata_control.dsv41_engine.keep_current: never fails a start, waits for a download at
+    most 90 s and then goes on with the installed engine).  Returns the seconds it took.  One line of what it did goes to the profile's host log."""
+    began = time.monotonic()
+    try:
+        from strata_control import dsv41_engine
+        profile, _ = profiles.load(name)
+        others = [p["source_config"] for p in profiles.list_profiles() if p.get("source_config") and p["id"] != name]
+        _, _, log_path = _paths(name)
+
+        def log(message: str) -> None:
+            try:
+                if log_path.parent.is_dir():
+                    with open(log_path, "ab") as stream:
+                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} engine: {message}\n".encode("utf-8"))
+            except OSError:
+                pass
+        dsv41_engine.keep_current(profile["source_config"], configs=others, log=log)
+    except Exception:                                    # noqa: BLE001 - a start never fails because of this
+        pass
+    return time.monotonic() - began
+
+
 MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB DeepSeek set on a slow disk needs more than 10 minutes (#3949)
 
 
@@ -546,6 +570,9 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
             not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source digest must be 64 lowercase hex characters")
+    spent = _keep_dsv41_current(name)
+    if spent > 1.0 and wait:
+        wait = max(5.0, wait - spent)                    # (what the engine check took is not taken from the model's own wait for the caller's timeout)
     plan, _ = _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
     _engine_preflight(plan)
     _, _, log_path = _paths(name)
