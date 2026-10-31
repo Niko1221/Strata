@@ -1,0 +1,72 @@
+# Added by hand (not written by tools/strata_bench.py): every line the engine wrote for the measured
+# session, from the install's own run log for this pack - the start at 10:50:05 to the end of the suite.
+# Paths are replaced the way the benchmark tool replaces them: <strata> is the Strata install folder,
+# <strata>-data the model folder beside it. Nothing else was changed. The suite discards its warm-up
+# requests (the 27, 247, 870 and 1031-token prompts); the 36 measured requests are the rest.
+
+[strata] 2026-10-31 10:50:05 engine started: <strata>/engine/strata-dsv41 --serve --pack <strata>-data/packs/deepseek-v4.1-flash-ist-das-1.75bpw --max-context 65536 --eos 1 --vision on --dspark auto --dspark-conf 0.65
+ds4: tensor parallel 2 -> 1: the experts' 256-value blocks split n_ff 2304 no other way (each GPU its own layers)
+ds4: DSpark not loaded: the routed experts (115 GB) are far more than the GPU holds (25 GB), where its verify rounds read 3.3x a token's bytes and gain nothing (--dspark on loads it anyway)
+ds4: the experts VRAM leaves over (~100.5 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (57.7 GB of RAM free to keep them: the most-routed 0.0 GB read ahead; prompts in chunks of 8192)
+ds4: RAM store: 55.7 GB of RAM free after the GPU's weights: store sized 43.7 GB, not 50.2
+ds4: RAM store: up to 5015 slots of 8.7 MB (43.7 GB), policy 0, 8 reader threads, unbuffered reads
+ds4: RAM store: 5015 of the profile's hottest experts read in (34.8 GB) in 10.8 s
+ds4: prompt path: the chunked pass from 96 tokens, windows of 16 below
+ds4: CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 14.48 GB (1896 of 15360 in VRAM), caches 0.06 GB, 568 MiB free
+ds4: 13464 routed experts on the CPU lane (100.8 GB, in place in the model's files), 20 threads
+maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT
+ds4 slots: folder <strata>/ds4-slots: 8 conversation(s) kept from earlier runs (0.11 GB)
+maya ds4 serve: prompt 27 tokens = 0 reused + 27 read in 5466 ms (4.9 tok/s), 24 generated in 1974 ms (12.16 tok/s); CPU lane 47.2% of the experts
+maya ds4 serve: prompt 247 tokens = 0 reused + 247 read in 8580 ms (28.8 tok/s), 1 generated in 0 ms (5417.59 tok/s); CPU lane 7.9% of the experts
+maya ds4 serve: prompt 870 tokens = 0 reused + 870 read in 8664 ms (100.4 tok/s), 1 generated in 0 ms (5895.57 tok/s); CPU lane 2.0% of the experts
+maya ds4 serve: prompt 1031 tokens = 0 reused + 1031 read in 7747 ms (133.1 tok/s), 8 generated in 658 ms (12.16 tok/s); CPU lane 1.2% of the experts
+ds4 slots: saved a 1038-token conversation (0.01 GB in RAM in 0.0 s); 1 in RAM, 8 in <strata>/ds4-slots
+maya ds4 serve: prompt 38 tokens = 0 reused + 38 read in 1986 ms (19.1 tok/s), 100 generated in 9078 ms (11.02 tok/s); CPU lane 4.2% of the experts
+maya ds4 serve: prompt 29 tokens = 0 reused + 29 read in 3857 ms (7.5 tok/s), 100 generated in 10012 ms (9.99 tok/s); CPU lane 7.2% of the experts
+maya ds4 serve: prompt 32 tokens = 0 reused + 32 read in 2008 ms (15.9 tok/s), 100 generated in 12565 ms (7.96 tok/s); CPU lane 10.1% of the experts
+maya ds4 serve: prompt 38 tokens = 0 reused + 38 read in 2628 ms (14.5 tok/s), 100 generated in 10608 ms (9.43 tok/s); CPU lane 12.0% of the experts
+maya ds4 serve: prompt 29 tokens = 0 reused + 29 read in 2173 ms (13.3 tok/s), 100 generated in 8361 ms (11.96 tok/s); CPU lane 13.6% of the experts
+maya ds4 serve: prompt 32 tokens = 0 reused + 32 read in 1514 ms (21.1 tok/s), 100 generated in 9719 ms (10.29 tok/s); CPU lane 15.4% of the experts
+maya ds4 serve: prompt 38 tokens = 0 reused + 38 read in 2366 ms (16.1 tok/s), 100 generated in 10088 ms (9.91 tok/s); CPU lane 16.7% of the experts
+maya ds4 serve: prompt 29 tokens = 0 reused + 29 read in 1883 ms (15.4 tok/s), 100 generated in 8115 ms (12.32 tok/s); CPU lane 17.8% of the experts
+maya ds4 serve: prompt 32 tokens = 0 reused + 32 read in 2142 ms (14.9 tok/s), 100 generated in 9992 ms (10.01 tok/s); CPU lane 19.0% of the experts
+maya ds4 serve: prompt 4125 tokens = 0 reused + 4125 read in 26821 ms (153.8 tok/s), 24 generated in 3263 ms (7.35 tok/s); CPU lane 9.6% of the experts
+ds4 slots: saved a 4148-token conversation (0.01 GB in RAM in 0.0 s); 2 in RAM, 8 in <strata>/ds4-slots
+maya ds4 serve: prompt 4125 tokens = 0 reused + 4125 read in 25062 ms (164.6 tok/s), 24 generated in 1724 ms (13.92 tok/s); CPU lane 6.5% of the experts
+ds4 slots: saved a 4148-token conversation (0.01 GB in RAM in 0.0 s); 3 in RAM, 8 in <strata>/ds4-slots
+maya ds4 serve: prompt 4125 tokens = 0 reused + 4125 read in 24835 ms (166.1 tok/s), 24 generated in 1327 ms (18.09 tok/s); CPU lane 5.0% of the experts
+ds4 slots: saved a 4148-token conversation (0.01 GB in RAM in 0.1 s); 4 in RAM, 8 in <strata>/ds4-slots
+maya ds4 serve: prompt 16562 tokens = 0 reused + 16562 read in 67892 ms (243.9 tok/s), 24 generated in 1169 ms (20.53 tok/s); CPU lane 3.0% of the experts
+ds4 slots: saved a 16585-token conversation (0.03 GB in RAM in 0.0 s); 4 in RAM, 9 in <strata>/ds4-slots
+maya ds4 serve: prompt 16562 tokens = 0 reused + 16562 read in 58674 ms (282.3 tok/s), 24 generated in 1178 ms (20.38 tok/s); CPU lane 2.1% of the experts
+ds4 slots: saved a 16585-token conversation (0.03 GB in RAM in 0.1 s); 4 in RAM, 10 in <strata>/ds4-slots
+maya ds4 serve: prompt 16562 tokens = 0 reused + 16562 read in 49767 ms (332.8 tok/s), 24 generated in 1475 ms (16.27 tok/s); CPU lane 1.7% of the experts
+ds4 slots: saved a 16585-token conversation (0.03 GB in RAM in 0.0 s); 4 in RAM, 11 in <strata>/ds4-slots
+maya ds4 serve: prompt 602 tokens = 0 reused + 602 read in 15284 ms (39.4 tok/s), 39 generated in 2769 ms (14.08 tok/s); CPU lane 1.8% of the experts
+maya ds4 serve: prompt 3340 tokens = 640 reused + 2700 read in 20464 ms (131.9 tok/s), 58 generated in 7011 ms (8.27 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 4851 tokens = 3397 reused + 1454 read in 19544 ms (74.4 tok/s), 59 generated in 3801 ms (15.52 tok/s); CPU lane 1.8% of the experts
+maya ds4 serve: prompt 7957 tokens = 4909 reused + 3048 read in 21511 ms (141.7 tok/s), 61 generated in 3358 ms (18.17 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 10038 tokens = 8017 reused + 2021 read in 18670 ms (108.2 tok/s), 52 generated in 3994 ms (13.02 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 12667 tokens = 10089 reused + 2578 read in 19015 ms (135.6 tok/s), 62 generated in 4384 ms (14.14 tok/s); CPU lane 1.7% of the experts
+ds4 slots: saved a 12728-token conversation (0.03 GB in RAM in 0.0 s); 4 in RAM, 12 in <strata>/ds4-slots
+maya ds4 serve: prompt 602 tokens = 0 reused + 602 read in 15448 ms (39.0 tok/s), 36 generated in 3438 ms (10.47 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 3337 tokens = 637 reused + 2700 read in 17682 ms (152.7 tok/s), 58 generated in 3411 ms (17.00 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 4848 tokens = 3394 reused + 1454 read in 15512 ms (93.7 tok/s), 62 generated in 3558 ms (17.43 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 7957 tokens = 4909 reused + 3048 read in 16731 ms (182.2 tok/s), 55 generated in 2798 ms (19.65 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 10032 tokens = 8011 reused + 2021 read in 17958 ms (112.5 tok/s), 52 generated in 3394 ms (15.32 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 12661 tokens = 10083 reused + 2578 read in 19213 ms (134.2 tok/s), 64 generated in 5928 ms (10.80 tok/s); CPU lane 1.7% of the experts
+ds4 slots: saved a 12724-token conversation (0.03 GB in RAM in 0.0 s); 4 in RAM, 13 in <strata>/ds4-slots
+maya ds4 serve: prompt 602 tokens = 0 reused + 602 read in 17133 ms (35.1 tok/s), 25 generated in 2495 ms (10.02 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 3326 tokens = 626 reused + 2700 read in 21189 ms (127.4 tok/s), 56 generated in 3826 ms (14.64 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 4835 tokens = 3381 reused + 1454 read in 15399 ms (94.4 tok/s), 61 generated in 4272 ms (14.28 tok/s); CPU lane 1.7% of the experts
+maya ds4 serve: prompt 7943 tokens = 4895 reused + 3048 read in 23193 ms (131.4 tok/s), 59 generated in 4970 ms (11.87 tok/s); CPU lane 1.6% of the experts
+maya ds4 serve: prompt 10022 tokens = 8001 reused + 2021 read in 19797 ms (102.1 tok/s), 55 generated in 4560 ms (12.06 tok/s); CPU lane 1.6% of the experts
+maya ds4 serve: prompt 12654 tokens = 10076 reused + 2578 read in 20592 ms (125.2 tok/s), 64 generated in 5172 ms (12.38 tok/s); CPU lane 1.6% of the experts
+ds4 slots: saved a 12717-token conversation (0.03 GB in RAM in 0.2 s); 4 in RAM, 14 in <strata>/ds4-slots
+maya ds4 serve: prompt 33126 tokens = 0 reused + 33126 read in 131082 ms (252.7 tok/s), 24 generated in 3179 ms (7.55 tok/s); CPU lane 1.3% of the experts
+ds4 slots: saved a 33149-token conversation (0.04 GB in RAM in 0.4 s); 4 in RAM, 15 in <strata>/ds4-slots
+maya ds4 serve: prompt 33126 tokens = 0 reused + 33126 read in 126672 ms (261.5 tok/s), 24 generated in 1951 ms (12.30 tok/s); CPU lane 1.1% of the experts
+ds4 slots: saved a 33149-token conversation (0.04 GB in RAM in 0.1 s); 4 in RAM, 16 in <strata>/ds4-slots
+maya ds4 serve: prompt 33126 tokens = 0 reused + 33126 read in 162687 ms (203.6 tok/s), 24 generated in 4049 ms (5.93 tok/s); CPU lane 1.0% of the experts
+ds4 slots: saved a 33149-token conversation as the engine ended (0.04 GB in RAM in 0.0 s); 4 in RAM, 17 in <strata>/ds4-slots
+ds4 slots: wrote 4 conversation(s) to <strata>/ds4-slots; 21 there in all
