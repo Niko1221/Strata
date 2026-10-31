@@ -3,6 +3,7 @@
 //
 //   expert_parity [--gu Q2_0] [--dn Q2_0] [--ntok 1..8] [--gucfg L,R,S] [--dncfg L,R,S]     parity (synthetic)
 //   expert_parity --bench [--gu ..] [--dn ..] [--ntok N] [--layers 8] [--reps 96] [--sweep]  speed
+//   EXPERT_F16=1 expert_parity [--ntok N] [--gucfg ..] [--dncfg ..]     the fp16 experts (STRATA_METAL_F16, Q2_0 only)
 //
 // Gyro (agentionai's trellis experts, TQ2_T / TQK6 / TQK7):
 //   expert_parity --gu TQK6 --dn TQK7 [--had-pack <pack dir>]       synthetic blocks; with a pack, the Hadamard rotation of
@@ -139,6 +140,9 @@ bool g_had_h = false;
 bool g_dn_prep = false;   // Q2_0 down: prepared h (an xprep dispatch) instead of the raw-x decoder
 const mtl::Buffer* g_xpx = nullptr;
 const mtl::Buffer* g_xph = nullptr;
+// EXPERT_F16=1: moe_gu16 / moe_down16 (STRATA_METAL_F16) - x from the half plane x * 4^-(i % 4), h handed down as half
+const bool g_f16 = std::getenv("EXPERT_F16") != nullptr;
+const mtl::Buffer* g_h16 = nullptr;
 
 void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::Buffer& W, size_t w_off,
                   const mtl::Buffer& x, const mtl::Buffer& h, const mtl::Buffer& ye, const mtl::Buffer& y,
@@ -158,6 +162,10 @@ void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::B
         d.p = &K.gu;
         d.args = {mtl::Arg::B(W, w_off), mtl::Arg::B(XPX, 4 * PLANE_X * xkind(g_gu_type)), mtl::Arg::B(h),
                   mtl::Arg::B(plan, plan_off), mtl::Arg::V(a), mtl::Arg::B(XPX, 4 * PLANE_X * 4)};
+        if (g_f16) {
+            d.args[1] = mtl::Arg::B(XPX, 4 * (4 * PLANE_X + PLANE_X / 16) + 2 * PLANE_X);
+            d.args.push_back(mtl::Arg::B(*g_h16));
+        }
         d.tg[0] = K.cgu.S * 32;
         d.indirect = &plan;
         d.ind_off = plan_off + P_IGU * 4;
@@ -182,6 +190,7 @@ void encode_layer(std::vector<mtl::Dispatch>& ds, const Kernels& K, const mtl::B
         d.args = {mtl::Arg::B(W, w_off),
                   dk ? mtl::Arg::B(XPH, 4 * PLANE_H * dk) : mtl::Arg::B(h), mtl::Arg::B(ye),
                   mtl::Arg::B(plan, plan_off), mtl::Arg::V(a), mtl::Arg::B(XPH, 4 * PLANE_H * 4)};
+        if (g_f16) d.args = {mtl::Arg::B(W, w_off), mtl::Arg::B(*g_h16), mtl::Arg::B(ye), mtl::Arg::B(plan, plan_off), mtl::Arg::V(a)};
         d.tg[0] = K.cdn.S * 32;
         d.indirect = &plan;
         d.ind_off = plan_off + P_IDN * 4;
@@ -265,7 +274,11 @@ int main(int argc, char** argv) {
         dn = td_->type;
     }
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"});
+    if (g_f16 && (gu != ref::Q2_0 || dn != ref::Q2_0 || g_dn_prep || !had_pack.empty())) {
+        std::fprintf(stderr, "EXPERT_F16: Q2_0 gate/up and down only, without --dn-prep and Hadamard\n");
+        return 2;
+    }
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"}, g_f16 ? "#define STRATA_METAL_F16 1\n" : "");
     const Layout L = layout(gu, dn);
     // Gyro: the pack's hadamard.txt (the signs of the widths 2560 and 640) -> the engine's CPU spec (the reference)
     mtl::Buffer hsx, hsh;
@@ -414,8 +427,8 @@ int main(int argc, char** argv) {
         K.plan = cx.pipeline(lib, "moe_plan");
         K.prep = cx.pipeline(lib, "xprep");
         K.comb = cx.pipeline(lib, "moe_combine");
-        K.gu = cx.pipeline(lib, kname("moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr));
-        K.dn = cx.pipeline(lib, kname("moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
+        K.gu = cx.pipeline(lib, kname(g_f16 ? "moe_gu16" : "moe_gu", gu, a), mtl::Constants().i(22, std::getenv("MOE_PROBE") ? std::atoi(std::getenv("MOE_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr));
+        K.dn = cx.pipeline(lib, kname(g_f16 ? "moe_down16" : "moe_down", dn == ref::Q2_0 && !g_dn_prep ? 142 : dn, b));
         K.cgu = a;
         K.cdn = b;
         if (std::getenv("PIPE_INFO"))
@@ -444,8 +457,10 @@ int main(int argc, char** argv) {
 
     mtl::Buffer x = cx.alloc(4 * 8 * N_EMBD), h = cx.alloc(4 * 8 * TOPK * N_FF), ye = cx.alloc(4 * 8 * TOPK * N_EMBD),
                 y = cx.alloc(4 * 8 * N_EMBD);
-    mtl::Buffer XPX = cx.alloc(4 * (4 * PLANE_X + PLANE_X / 16)), XPH = cx.alloc(4 * (4 * PLANE_H + PLANE_H / 16));
+    mtl::Buffer XPX = cx.alloc(4 * (4 * PLANE_X + PLANE_X / 16) + (g_f16 ? 2 * 3 * PLANE_X : 0)),
+                XPH = cx.alloc(4 * (4 * PLANE_H + PLANE_H / 16)), h16 = g_f16 ? cx.alloc(2 * 8 * TOPK * N_FF) : mtl::Buffer{};
     g_xpx = &XPX;
+    g_h16 = &h16;
     g_xph = &XPH;
     g_gu_type = gu;
     g_dn_type = dn;
@@ -465,7 +480,7 @@ int main(int argc, char** argv) {
         std::printf("x rotation on the GPU vs the CPU: %d of %d values differ\n", bad, 8 * N_EMBD);
     }
     {
-        mtl::Pipeline pp = cx.pipeline(lib, "xprep");
+        mtl::Pipeline pp = cx.pipeline(lib, "xprep", g_f16 ? mtl::Constants().b(25, true) : mtl::Constants());
         cx.run({prep_dispatch(pp, x, XPX, N_EMBD, 8)});
     }
 
@@ -557,7 +572,9 @@ int main(int argc, char** argv) {
             }
         }
         for (int i = 0; i < ntok * N_EMBD; ++i) ey.add(y.as<float>()[i], yref[i]);
-        const bool ok = plan_ok && eh.rel_l2() < 1e-5 && ey.rel_l2() < 1e-5 && eh.rel_max() < 1e-4 && ey.rel_max() < 1e-4;
+        // fp16: half products and h rounded to half on the way down - rel L2 ~1e-3 against double
+        const double tl2 = g_f16 ? 4e-3 : 1e-5, tmax = g_f16 ? 1e-2 : 1e-4;
+        const bool ok = plan_ok && eh.rel_l2() < tl2 && ey.rel_l2() < tl2 && eh.rel_max() < tmax && ey.rel_max() < tmax;
         std::printf("parity %s/%s ntok %d gu %d,%d,%d dn %d,%d,%d: plan %s (%d groups), h rel L2 %.2e max %.2e, "
                     "y rel L2 %.2e max %.2e  %s\n",
                     ref::type_name(gu), ref::type_name(dn), ntok, cgu.L, cgu.R, cgu.S, cdn.L, cdn.R, cdn.S,

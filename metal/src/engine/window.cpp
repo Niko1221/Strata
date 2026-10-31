@@ -112,6 +112,31 @@ bool metal_ctab() {
     }();
     return on;
 }
+// STRATA_METAL_F16=1 (opt-in): the decode windows' (resident model, with the head) dense GEMVs of Q2_0, the K-quants and IQ4_XS on the fp16 path -
+// the weights decoded into half, the window's x as half planes the writers of x add (function constant 25), the
+// products of a half unit summed in half, the scales and the units' sum in float (gemv.metal gemv16)
+bool metal_f16() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_METAL_F16"); return e && std::string(e) == "1"; }();
+    return on;
+}
+// the half plane a format reads: 0 raw, 1 x * 4^-(i % 4), 2 x * 2^-8 at odd i; -1 no fp16 decode
+int x16_kind(int ty) {
+    switch (ty) {
+        case ref::IQ4_XS: return 0;
+        case ref::Q2_0: return 1;
+        case ref::Q3_K: case ref::Q4_K: case ref::Q5_K: case ref::Q6_K: return 2;
+        default: return -1;
+    }
+}
+// the tiles gemv.metal instantiates gemv16 on (GV16_SET)
+bool gemv16_tile(int L, int R, int S, int K) {
+    static const std::array<int, 4> t16[] = {{32, 1, 4, 1}, {32, 2, 4, 1}, {16, 1, 4, 1}, {16, 2, 4, 1}, {8, 1, 4, 1}, {8, 2, 4, 1}, {4, 2, 4, 1},
+                                             {4, 1, 4, 1}, {32, 1, 8, 2}, {16, 1, 8, 4}, {2, 1, 4, 1}, {2, 2, 4, 1}, {1, 1, 4, 1}};
+    return std::find(std::begin(t16), std::end(t16), std::array<int, 4>{L, R, S, K}) != std::end(t16);
+}
+// the writers of the window's x: their pipelines with the half planes (function constant 25) under STRATA_METAL_F16
+mtl::Constants x16c(mtl::Constants c = {}) { return metal_f16() ? c.b(25, true) : c; }
+std::string x16k(const std::string& k) { return metal_f16() ? k + "#h" : k; }
 
 int xkind(int t) {
     switch (t) {
@@ -127,6 +152,7 @@ struct Act {
     mtl::Buffer b;
     int n = 0;
     size_t plane_bytes() const { return (size_t) 4 * MAXT * n; }
+    size_t x16_bytes() const { return plane_bytes() * 4 + plane_bytes() / 16; }   // the half planes' start (STRATA_METAL_F16)
 };
 
 double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -286,6 +312,7 @@ private:
         ysh_, sg_, qfull_, kcur_, vcur_, iqr_, ikr_, qcur_, qidx_, scores_, qids_, part_, cs_, lm_, apv_, api_, tokout_,
         emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_, keyn_, qn_, gated_, normW_, pleHist_;
     Act XA_, XF_, XY_, XQ_, XH_, XE_;
+    mtl::Buffer h16_;   // STRATA_METAL_F16: the routed gate/up's h as half, for the down
     int cur_inj_ = 0;
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
@@ -358,6 +385,7 @@ private:
         std::vector<std::pair<int, int>> qsa;   // (dispatch, kind): 0 QsaArgs n_tok = T, 1 the merge (MAXT), 2 the scores
     };
     std::map<int, Cached> wcache_;
+    bool f16_enc_ = false;   // STRATA_METAL_F16: a decode window is being encoded (the MTP layer stays fp32)
     std::vector<std::pair<int, int>>* rec_ = nullptr;
     // ---- SSD streaming (stream.h): the dense weights in W_, the routed experts in the arena
     std::unique_ptr<ExpertStream> st_;
@@ -579,7 +607,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     n_vocab_ = (int64_t) T("output.weight").shape[1];
     if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
-                         "glue.metal"});
+                         "glue.metal"}, metal_f16() ? "#define STRATA_METAL_F16 1\n" : "");
     rcounter_ = cx_->alloc(16);
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -619,8 +647,14 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     };
     if (bigs_ok_) { pleBig_ = A(st_ple_ * NSET); pleHist_ = view_of(pleBig_, 0, 4 * 9 * 10240); } else pleHist_ = A(4 * 9 * 10240);
     rinfo_ = A(4 * (8 + 4 * MAXT));
-    auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
+    auto act = [&](int n) {
+        Act a;
+        a.n = n;
+        a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16) + (metal_f16() ? (size_t) 2 * 3 * MAXT * n : 0));
+        return a;
+    };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
+    if (metal_f16()) h16_ = A(2 * (size_t) MAXT * TOPK * NFF);
     {   // Gyro (native_experts.txt v5 + hadamard.txt): the rotation's signs and the rotated gate/up input
         const auto& hs = strata::kernels::cpu::hadamard_spec();
         had_on_ = hs.any();
@@ -775,14 +809,17 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
             if (K == 1 || (L == 32 && K == 2)) Rr = 2;
         }
     }
-    const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
-                           std::to_string(S) + "_" + std::to_string(K);
+    const int k16 = f16_enc_ && x.n == n_in ? x16_kind(ty) : -1;
+    const bool f16 = k16 >= 0 && gemv16_tile(L, Rr, S, K);
+    const std::string fn = std::string(f16 ? "gemv16_" : "gemv_") + std::to_string(ty) + "_" + std::to_string(L) + "_" +
+                           std::to_string(Rr) + "_" + std::to_string(S) + "_" + std::to_string(K);
     const mtl::Pipeline* p = P(lib_, fn, mtl::Constants().i(0, ntok), fn + "#" + std::to_string(ntok));
     GemvArgs a{(uint32_t) n_in, (uint32_t) n_out, (uint32_t) ntok, (uint32_t) ref::row_bytes(t.type, n_in), (uint32_t) n_in,
                (uint32_t) y_stride};
     mtl::Dispatch d;
     d.p = p;
-    d.args = {mtl::Arg::B(wb ? *wb : W_, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
+    d.args = {mtl::Arg::B(wb ? *wb : W_, t.offset),
+              f16 ? mtl::Arg::B(x.b, x.x16_bytes() + (size_t) k16 * 2 * MAXT * n_in) : mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
               mtl::Arg::B(x.b, x.plane_bytes() * 4), mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
     const int rpt = (S / K) * (32 / L) * Rr;
     d.grid[0] = (n_out + rpt - 1) / rpt;
@@ -792,7 +829,7 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
 
 void Window::xprep(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const Act& out, int n) {
     mtl::Dispatch d;
-    d.p = P(lib_, "xprep", {}, "xprep");
+    d.p = P(lib_, "xprep", x16c(), x16k("xprep"));
     const uint32_t nn = n, nt = MAXT;
     d.args = {mtl::Arg::B(x), mtl::Arg::B(out.b), mtl::Arg::V(nn), mtl::Arg::V(nt)};
     d.tg[0] = 256;
@@ -838,7 +875,7 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     push(ds, d2);
     mtl::Dispatch d3;
     const char* up = q8 ? "gr_up_q8" : "gr_up";
-    d3.p = P(lib_, up, mtl::Constants().i(1, ntok), std::string(up) + "#" + std::to_string(ntok));
+    d3.p = P(lib_, up, x16c(mtl::Constants().i(1, ntok)), x16k(std::string(up) + "#" + std::to_string(ntok)));
     GrArgs au = a;
     au.n_tok = MAXT;   // the plane stride of the prepared activation
     d3.args = {mtl::Arg::B(*bu, ou), mtl::Arg::B(lo_), mtl::Arg::B(xn_), mtl::Arg::B(out.b), mtl::Arg::V(au)};
@@ -897,7 +934,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "ssm_beta.weight"), XA_, beL_, 48, ntok, o_ab);
         GdnArgs a{16, 48, 10240, cm, eps_, fuse_ ? (uint32_t) (MAXT * 6144) : 0u};
         mtl::Dispatch d;
-        d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
+        d.p = P(lgdn_, "gdn_step", x16c(mtl::Constants().i(2, ntok)), x16k("gdn_step#" + std::to_string(ntok)));
         const int hp = hp_;
         if (rows_) {   // each row is a different sequence: its own state, parity and conv history (rinfo_), one grid row each
             d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, 1).b(31, true), "gdn_step#rows");
@@ -999,7 +1036,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         push(ds, at);
         if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch m;
-        m.p = rw ? P(lqsa_, "qsa_merge", rc, "qsa_merge#rows") : P(lqsa_, "qsa_merge", {}, "qsa_merge");
+        m.p = rw ? P(lqsa_, "qsa_merge", rc, "qsa_merge#rows") : P(lqsa_, "qsa_merge", x16c(), x16k("qsa_merge"));
         QsaArgs am = a;
         am.n_tok = MAXT;   // the plane stride
         m.args = {mtl::Arg::B(part_), mtl::Arg::B(qfull_), mtl::Arg::B(XQ_.b), mtl::Arg::V(am)};
@@ -1067,6 +1104,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         const bool m4 = !m5_layout();
         const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
                   dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+        const bool m16 = f16_enc_ && !stream_ && tg_.type == ref::Q2_0 && dq2 && !had_gu(l) && !had_dn(l);
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
@@ -1089,7 +1127,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         {
             GlueArgs ga{NFF, MAXT, N, TOPK};
             mtl::Dispatch d;
-            d.p = P(lib_, "swiglu_prep", {}, "swiglu_prep");
+            d.p = P(lib_, "swiglu_prep", x16c(), x16k("swiglu_prep"));
             d.args = {mtl::Arg::B(gsh_), mtl::Arg::B(ush_), mtl::Arg::B(XH_.b), mtl::Arg::V(ga)};
             d.grid[0] = NFF / 16;
             d.grid[1] = ntok;
@@ -1097,10 +1135,10 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             nb_ = !rf;   // with router_route the shared GEMVs are not behind a barrier yet: this one waits for them
             push(ds, d);
         }
-        const std::string gun = "moe_gu_" + std::to_string(tg_.type) + "_" + std::to_string(gl) + "_" + std::to_string(gr) +
-                                "_" + std::to_string(gs);
-        const std::string dnn = "moe_down_" + std::to_string(dq2 ? 142 : td.type) + "_" + std::to_string(dl) + "_" +
-                                std::to_string(dr) + "_" + std::to_string(ds_);
+        const std::string gun = std::string(m16 ? "moe_gu16_" : "moe_gu_") + std::to_string(tg_.type) + "_" + std::to_string(gl) +
+                                "_" + std::to_string(gr) + "_" + std::to_string(gs);
+        const std::string dnn = std::string(m16 ? "moe_down16_" : "moe_down_") + std::to_string(dq2 ? 142 : td.type) + "_" +
+                                std::to_string(dl) + "_" + std::to_string(dr) + "_" + std::to_string(ds_);
         mtl::Dispatch g;
         const mtl::Buffer& EW = stream_ ? st_->chunk(0) : W_;
         // function constant 23 (QUANT_CTAB): the i-quant grids from constant memory, no threadgroup copy (same values)
@@ -1108,11 +1146,15 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         mtl::Constants ac = stream_ ? mtl::Constants().b(20, true) : mtl::Constants();
         ac.b(23, ct);
         const std::string ak = std::string(stream_ ? "#arena" : "") + (ct ? "#ct" : "");
-        g.p = P(lib_, gun, ac, gun + ak);
+        g.p = m16 ? P(lib_, gun, {}, gun) : P(lib_, gun, ac, gun + ak);
         const bool hg = had_gu(l), hd = had_dn(l);
         if (hg) had_rows(ds, lib_, "d:", XF_.b, 0, XR_, 0, ntok, N, hsx_.handle ? &hsx_ : nullptr, false);   // before the host's turn
         g.args = {mtl::Arg::B(EW, ebase), hg ? mtl::Arg::B(XR_) : mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_),
                   mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
+        if (m16) {   // x from the half plane x * 4^-(i % 4), h also as half
+            g.args[1] = mtl::Arg::B(XF_.b, XF_.x16_bytes() + (size_t) 2 * MAXT * N);
+            g.args.push_back(mtl::Arg::B(h16_));
+        }
         if (stream_)
             for (int c = -1; c < 3; ++c)
                 g.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
@@ -1125,8 +1167,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "ffn_down_shexp.weight"), XH_, ysh_, N, ntok);
         if (hd) had_rows(ds, lib_, "d:", h_, 0, h_, 0, ntok * TOPK, NFF, hsh_.handle ? &hsh_ : nullptr, false);   // H h, in place
         mtl::Dispatch dd;
-        dd.p = P(lib_, dnn, ac, dnn + ak);
+        dd.p = m16 ? P(lib_, dnn, {}, dnn) : P(lib_, dnn, ac, dnn + ak);
         dd.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
+        if (m16) dd.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(h16_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
         if (stream_)
             for (int c = -1; c < 3; ++c)
                 dd.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
@@ -1278,6 +1321,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     if (stream_ && !st_->ready() && !stream_arena(err)) return false;
     Cached& cw = wcache_[key];
     rec_ = &cw.qsa;
+    f16_enc_ = metal_f16() && head && !stream_ && !rows_;   // decode windows of one resident sequence: not the prompt's,
+                                                            // not streaming, not batch slots
     cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;
@@ -1347,6 +1392,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         push(ds, d2);
     }
     rec_ = nullptr;
+    f16_enc_ = false;
     cuts_ = nullptr;
     seg_T_ = Tn;
     const double r0 = now_ms();
@@ -2004,7 +2050,12 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
     mR_ = A(4 * MAXT * HC * N); memb_ = A(4 * MAXT * N); men_ = A(4 * MAXT * N); me2_ = A(4 * MAXT * N);
     mhn_ = A(4 * MAXT * HC * N); mh2_ = A(4 * HC * MAXT * N); midx_ = A(4 * MAXT * 640); mbo_ = A(4 * MAXT * N);
     minj_[0] = A(4 * MAXT * HC); minj_[1] = A(4 * MAXT * HC); mqids_ = A(4 * MAXT * 2051); mlm_ = A(4 * (size_t) n_vocab_);
-    auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
+    auto act = [&](int n) {
+        Act x;
+        x.n = n;
+        x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16) + (metal_f16() ? (size_t) 2 * 3 * MAXT * n : 0));
+        return x;
+    };
     XEn_ = act(N); XHn_ = act(N);
     mkq_.push_back(A((size_t) MAXC * 2 * 256)); mvq_.push_back(A((size_t) MAXC * 2 * 256));
     mksc_.push_back(A(2 * (size_t) MAXC * 2 * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));

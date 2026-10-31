@@ -160,6 +160,7 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
         raw[plane] = m * q2s[j & 7];
         raw[2 * plane] = m * p4s[j & 3];
         raw[3 * plane] = (j & 1) ? m * 0.00390625f : m;
+        if (xh16) put_x16(xp, plane, t * n + dd, j, m);
         msum[t][j] = m;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);

@@ -13,6 +13,21 @@
 // the fold of m accepted tokens is the same kernel with GDN_NTOK = m and commit).  The conv history is read from
 // `hist` and the committed one written to `hist_out` (ping-pong: the q/k channels are shared by three threadgroups).
 
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
+
 constant int GDN_NTOK [[function_constant(2)]];
 // GDN_ROWS (function constant 31, with GDN_NTOK = 1): the grid is (h_v, rows) and row y is a DIFFERENT sequence (a batch slot) with its own
 // state and conv history; rinfo as in qsa.metal (header [5] state stride, [6] history stride per slot and parity; row y at [8 + 4 y] =
@@ -159,6 +174,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
                 raw[a.plane] = yv * q2s[jj & 7];
                 raw[2 * a.plane] = yv * p4s[jj & 3];
                 raw[3 * a.plane] = (jj & 1) ? yv * 0.00390625f : yv;
+                if (xh16) put_x16(y, a.plane, t * hv * S + h * S + j, jj, yv);
                 ys[j] = yv;
             }
         }
