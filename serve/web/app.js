@@ -10,7 +10,25 @@ const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLo
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
-// the one reading-arc arithmetic: the engine's reported prompt_read is an inclusive position (the PP protocol counts the RESUME prefix), so the prefix is subtracted before the arc is drawn; with no reported chunk nothing is confirmed as read yet and the arc stays at 0 — it only ever grows with reported progress, never jumps down
+// one integer split feeds the legend column and the centre: rows rounded on their own would not sum (48 518 + 82 554 reads "49k" beside a "131k" centre); the residual goes on the biggest row; below 10k both sides fall back to plain kfmt
+const ksplitKs = (parts) => { const big = parts.map(v => (v === 0 || v >= 10000) ? Math.round(v / 1000) : -1); if (big.some(v => v < 0)) return null; const ks = big.slice(); const m = ks.indexOf(Math.max(...ks)); ks[m] += Math.round(parts.reduce((s, v) => s + v, 0) / 1000) - ks.reduce((s, v) => s + v, 0); return ks; };
+const ksplit = (parts) => { const ks = ksplitKs(parts); return ks ? ks.map((v, i) => v <= 0 ? kfmt(parts[i]) : `${fmt(v, 0)}k`) : parts.map((v) => kfmt(v)); };
+// an honest percentage, floored to a tenth: 99.977 -> "99.9", never a rounded-up false 100
+const pctFloor = (x) => `${(Math.floor(1000 * x + 1e-9) / 10).toFixed(1)}%`;
+// hover accuracy: a <title> child on each SVG arc
+const setSvgTitle = (el, text) => {
+  if (!el) return;
+  let t = el.querySelector("title");
+  if (!t) {
+    t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    el.appendChild(t);
+  }
+  t.textContent = text;
+};
+
+// the single deterministic legend lamp: a RESUME flash wins, then Reading, then Generating, else Free
+const kvLamp = (fsm, hasReuse, readingStarted, resumeFlash) => resumeFlash ? "reuse" : fsm.isReading ? (hasReuse && !readingStarted ? "reuse" : "prefill") : fsm.isGenerating ? "decode" : "free";
+// the one reading-arc arithmetic: the engine's prompt_read is an inclusive position (the PP protocol counts the RESUME prefix): subtract it; nothing is confirmed before the first reported chunk, the arc only grows
 const kvRead = (p, reused, read) => { const r = Math.min(reused || 0, p), rem = Math.max(0, p - r); return !read ? 0 : Math.min(Math.max(0, read - r), rem); };
 const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
 
@@ -415,40 +433,41 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-function renderKvDonut(live, eng, last) {
+// stage-latch: /metrics is sampled once per second and a sub-second RESUME can fall entirely between samples — the rising edge of live.reused latches the KV REUSE lamp for a short flash, so the task-to-task transition is shown even when the window was never sampled
+let resumeWasAnnounced = false, resumeFlashUntil = 0;
+let lastReusePct = "";   // the last honest % the running request showed; the merged quiet keeps quoting it while the cache is kept
+function renderKvDonut(fsm, live, eng, last, requests) {
   // context fill as a KV donut of N_ctx: REUSE is the RESUME prefix, READING shows the volume the prompt still has to read and extends with reported progress, GENERATING extends token by token, FREE is always the true remainder — if the engine reads or keeps less, the difference redraws on the next tick; on the quiet a finished request is one REUSE arc of the kept whole, the other rows zeroed (the per-request anatomy stays in the request history)
   const ctx = eng.max_context || 0;
-  // these are the ring's token counts, answering strictly to the engine state — prompt_tokens is set at admission, so p is the real prompt size in both phases and a real RESUME reuse is never zeroed; without a kept context the widget paints an empty ring, never claiming a cache it cannot see
-  let segReuse = 0, segRead = 0, segGen = 0, used = 0;
-  if (live.state === "reading") {
+  // these are the ring's token counts, answering strictly to the FSM — prompt_tokens is set at admission, so p is the real prompt size in both phases and a real RESUME reuse is never zeroed; without a kept context the widget paints an empty ring, never claiming a cache it cannot see
+  let segReuse = 0, segRead = 0, segGen = 0, used = 0, eff = 0, merged = false;
+  if (fsm.isReading) {
     const p = live.prompt_tokens || 0;
     segReuse = Math.min(live.reused || 0, p);                                        // the prefix already in VRAM
     segRead = kvRead(p, live.reused, live.prompt_read);                             // the prefix is not recounted; once the engine reports a chunk the arc extends with its real progress, from the first token after the prefix
     used = segReuse + segRead;
-  } else if (live.state === "generating") {
+    eff = p ? segReuse / p : 0;
+  } else if (fsm.isGenerating) {
     const p = live.prompt_tokens || 0;                       // prefill finished: the prompt is entirely in the ring
     segReuse = Math.min(live.reused || 0, p);
     segRead = Math.max(0, p - segReuse);
     segGen = Math.max(0, live.generated || 0);                                      // extends token by token, forward
     used = p + segGen;
-  } else if (live.state === "idle" && last) {
+    eff = p ? segReuse / p : 0;
+  } else if (fsm.isIdle) {
     // the quiet: what the slot keeps in VRAM is the kept context as a whole, one merged arc
-    used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
+    used = (last ? (last.prompt_tokens || 0) + (last.output_tokens || 0) : 0);
     segReuse = used;
+    merged = true;
   }
   const free = Math.max(0, ctx - used);
-  // when the request does not fit the window every segment shrinks by one scale = ctx/used — the ring stays an honest mirror; the anatomy stays in the legend and the request history
+  // a request larger than the window scales every segment by ctx/used — the ring stays an honest mirror
   const scale = ctx > 0 && used > ctx ? ctx / used : 1;
-  const R = 46.5;                                                       // golden band: 22 units at r 46.5 — paints a 155 px ring on the 157 px box; the markup carries the geometry, only the dash is computed here
+  const R = 46.5;                                                       // 22 units at r 46.5 paints a 155 px ring in the 157 px box; the markup carries the geometry, only the dash is computed
   const C = 2 * Math.PI * R;                                           // the whole circle: the four segments sum to it or to less
-  // shared seam bounds (2026-10-28): a seam is never written from a length rounded per segment plus an
-  // offset rounded per segment — independent rounding (toFixed on each segment separately) left every
-  // junction up to 0.1 units of overlap or gap (measured on the live widget: the surface-colored free arc
-  // overlapped the green decode tail by 0.131 px; the phase shifted every poll, so the arc head flickered —
-  // the "sparkle" during inference). Each junction is quantized exactly once: an arc ends at exactly the
-  // seam the next arc begins, in both attributes — the gap is zero by construction, and the ring still
-  // answers strictly to the engine state.
-  let edge = 0;                                                     // the raw running arc length in dash units; only the junctions are quantized, never a segment on its own
+  // shared seams: independent per-segment rounding (toFixed on each arc separately) left every junction up to 0.1 units of gap or overlap — measured live: the free arc overlapped the decode tail by 0.131 px, shifting every poll (the "sparkle" during inference).
+  // each junction is quantized exactly once: an arc ends at exactly the seam the next arc begins, in both attributes — zero gap by construction
+  let edge = 0;                                                     // the raw running arc length in dash units; only the junctions are quantized
   for (const [id, v] of [["kv-seg-reuse", segReuse], ["kv-seg-prefill", segRead], ["kv-seg-decode", segGen], ["kv-seg-free", free]]) {
     const seam = Math.round(edge * 1000) / 1000;                   // the single quantized number both sides of this junction read
     edge += ctx ? (v * scale / ctx) * C : 0;                       // no context reported: an empty ring, no NaN; with a scale the segments always sum to at most C
@@ -459,17 +478,55 @@ function renderKvDonut(live, eng, last) {
   }
   const usedPct = ctx ? Math.floor(100 * used / ctx) : 0;   // the centre count: the true share, rounded down — 131000 of 131072 is 99 %, not a false 100 %
   $("kv-pct").textContent = ctx ? `${usedPct}%` : "–";
-  // saturation warns before the eviction in the design system's own tokens; danger only on a real overflow,
-  // and an overflow is only real against a known window — a zero ctx is "no context reported", never an overflow (the scale guard above carries the same ctx > 0 condition)
+  // saturation tones from the kit's own tokens: warn at >= 85 %, danger only on a real overflow against a known window (a zero ctx is "no context reported", never an overflow)
   $("kv-pct").dataset.tone = ctx > 0 && used > ctx ? "danger" : usedPct >= 85 ? "warn" : "";
   $("kv-pct").title = ctx ? `${used.toLocaleString()} / ${ctx.toLocaleString()} tokens` : "";
-  $("kv-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
-  $("kv-leg-reuse").textContent = kfmt(segReuse);
-  $("kv-leg-prefill").textContent = kfmt(segRead);
-  $("kv-leg-decode").textContent = kfmt(segGen);
-  $("kv-leg-free").textContent = kfmt(free);
+  // with an integer split (every non-zero row ≥ 10k) the centre is exactly the sum of the three rows above it; without one both sides fall back to plain kfmt
+  const legKs = ksplitKs([segReuse, segRead, segGen, free]);
+  const usedShown = legKs ? kfmt((legKs[0] + legKs[1] + legKs[2]) * 1000) : kfmt(used);   // no integer split: the true count
+  $("kv-sub").textContent = ctx ? `${usedShown} / ${ctxfmt(ctx)}` : "–";
+  // exact counts live in the arc hover titles; the arcs are never dimmed — the phase story rides the legend rows' .dim and the lamp
+  // never a false 100 % while the tail is still being read: 100 % only for a strictly zero prefill, floored to a tenth otherwise
+  const effPct = (segRead === 0 && segReuse > 0) ? "100%"
+               : eff > 0 ? pctFloor(eff)
+               : "0%";
+  // the merged ring keeps no per-request eff — it says only what it knows for sure
+  setSvgTitle($("kv-seg-reuse"), ctx ? `Cached (prefix): ${segReuse.toLocaleString()} tokens${merged ? "" : ` (${effPct} of prompt)`}` : "");
+  setSvgTitle($("kv-seg-prefill"), ctx ? `Reading (prefill): ${segRead.toLocaleString()} tokens` : "");
+  setSvgTitle($("kv-seg-decode"), ctx ? `Generating (decode): ${segGen.toLocaleString()} tokens` : "");
+  setSvgTitle($("kv-seg-free"), ctx ? `Free headroom: ${free.toLocaleString()} tokens` : "");
+  // merged legend: the whole kept volume under REUSE, the rest 0; the percent cell shows only when the arc really holds the cache (the quiet keeps quoting the last honest number); a zero-reuse request clears it
+  if (!merged && segReuse > 0) lastReusePct = effPct;
+  if (segReuse === 0) lastReusePct = "";
+  // one split, four cells: the tok column and the centre agree by construction (see ksplit above)
+  const legVals = ksplit([segReuse, segRead, segGen, free]);
+  $("kv-leg-reuse").textContent = legVals[0];
+  // the quiet percent quotes the newest history record that really got a cached prefix; same arithmetic as effPct, browser memory only as fallback
+  const cachedHit = requests.find(r => (r.reused || 0) > 0 && (r.prompt_tokens || 0) > 0);
+  const quietPct = cachedHit ? (cachedHit.reused >= cachedHit.prompt_tokens ? "100%"
+                         : pctFloor(cachedHit.reused / cachedHit.prompt_tokens))
+                         : lastReusePct;
+  $("kv-leg-reuse-pct").textContent = segReuse > 0 ? (merged ? quietPct : effPct) : "";
+  $("kv-leg-prefill").textContent = legVals[1];
+  $("kv-leg-decode").textContent = legVals[2];
+  $("kv-leg-free").textContent = legVals[3];
+  // the legend rows are phase lamps in the engine's chronology: RESUME first (the rising edge latches a flash — a sub-second hit falls between samples), then Reading, Generating, Free in the quiet
+  const resumedVal = live.reused || 0;
+  if (resumedVal > 0 && !resumeWasAnnounced) resumeFlashUntil = Date.now() + 1500;
+  resumeWasAnnounced = resumedVal > 0;
+  const resumeFlash = Date.now() < resumeFlashUntil;
+  const lamp = kvLamp(fsm, segReuse > 0, !!live.prompt_read, resumeFlash);
+  for (const k of ["reuse", "prefill", "decode", "free"]) $(`kv-leg-${k}`).closest("li").classList.toggle("dim", k !== lamp);
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+  // Centralized FSM: the single descriptor of what the engine is doing — the phase widgets (the KV donut, the speed cards, the live request row) obey fsm, none reaches for live.state on its own; the model-state card keeps its own engine-start machinery (modelOp/imageNow/starting) outside the FSM. live.state carries exactly one of reading/generating/idle/unloaded, isQueued adds the queue counter's fact, and a failed fetch only reaches setPill (it maps its "error" form onto the queued pill) — neither enters fsm.state
+  const fsm = {
+    isIdle:       live.state === "idle" && !!last,
+    isReading:    live.state === "reading",
+    isGenerating: live.state === "generating",
+    isQueued:     live.state === "queued" || (live.queued > 0),
+    state:        live.state || "idle"
+  };
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
   const imageNow = imageLive(live);
@@ -560,7 +617,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
-  renderKvDonut(live, eng, last);
+  renderKvDonut(fsm, live, eng, last, requests);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";

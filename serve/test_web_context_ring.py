@@ -59,7 +59,8 @@ class ContextRingScript(unittest.TestCase):
     def test_the_monitor_draws_the_ring(self):
         src = APP.read_text(encoding="utf-8")
         monitor = src[src.index("function renderMonitor("):]
-        self.assertIn("renderKvDonut(live, eng, last);", monitor)
+        self.assertIn("renderKvDonut(fsm, live, eng, last, requests);", monitor,
+                      "the donut answers to the centralized FSM, with history for the quiet percent")
 
     def test_arcs_are_cut_at_shared_quantized_seams_in_growth_order(self):
         src = APP.read_text(encoding="utf-8")
@@ -73,14 +74,19 @@ class ContextRingScript(unittest.TestCase):
         self.assertIn("const end = Math.round(edge * 1000) / 1000;", loop)
         self.assertIn('el.setAttribute("stroke-dashoffset", `${(-seam).toFixed(3)}`)', loop)
 
-    def test_the_center_and_the_legend_quote_one_plain_formatting(self):
+    def test_the_center_and_the_legend_quote_one_split(self):
         src = APP.read_text(encoding="utf-8")
         ring = src[src.index("function renderKvDonut("):src.index("function renderMonitor(")]
-        self.assertIn('$("kv-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";', ring,
-                      "the total carries the page's own context format, as the removed gauge rendered it")
-        for var in ("segReuse", "segRead", "segGen", "free"):
-            cell = {"segReuse": "reuse", "segRead": "prefill", "segGen": "decode", "free": "free"}[var]
-            self.assertIn(f'$("kv-leg-{cell}").textContent = kfmt({var})', ring)
+        self.assertIn("const legKs = ksplitKs([segReuse, segRead, segGen, free]);", ring)
+        self.assertIn("const usedShown = legKs ? kfmt((legKs[0] + legKs[1] + legKs[2]) * 1000) : kfmt(used);", ring,
+                      "with an integer split the centre is exactly the sum of the rows above it; below it, the true count")
+        self.assertIn('const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));', src,
+                      "the context formatter is upstream's own ctxfmt, kept intact")
+        self.assertIn('$("kv-sub").textContent = ctx ? `${usedShown} / ${ctxfmt(ctx)}` : "–";', ring,
+                      "the context size is formatted as upstream formats it — ctxfmt is the kit's own helper")
+        for i, cell in enumerate(("reuse", "prefill", "decode", "free")):
+            self.assertIn(f'$("kv-leg-{cell}").textContent = legVals[{i}];', ring,
+                          "one ksplit call feeds the tok column, so it and the centre agree by construction")
 
 
 class ContextRingStyle(unittest.TestCase):
