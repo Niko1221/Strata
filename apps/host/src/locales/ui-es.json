@@ -3,5 +3,7 @@
  "ui02": "Esperando tu respuesta abajo",
  "ui03": "Strata todavía está comprobando si este modelo tiene ajustes guardados. Podrás empezar el ajuste en cuanto termine.",
  "ui04": "Strata no pudo leer los datos de ajuste de este modelo, así que el ajuste no puede empezar. Cierra esta ventana y ábrela de nuevo.",
- "ui05": "Comprobando los ajustes guardados…"
+ "ui05": "Comprobando los ajustes guardados…",
+ "ui06": "Sigue trabajando desde hace {0}. No tienes que hacer nada.",
+ "ui07": "Los botones de abajo esperan a que esto termine."
 }

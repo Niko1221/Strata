@@ -7536,3 +7536,11 @@ textarea {
 
 /* ---- why Start tuning is greyed out: one sentence in the dialog's footer, left of the button (#4804) ---- */
 .tune-why { flex: 1 1 200px; min-width: 0; margin: 0; align-self: center; text-align: left; }
+
+/* ---- the progress card of a download, load or tuning: it stands out from the page and shows that it is alive (#4802) ---- */
+.native-progress { border: 1.5px solid var(--st-accent); background: linear-gradient(var(--st-accent-tint), var(--st-accent-tint)), var(--st-surface); box-shadow: var(--st-sh-pop); }
+.native-progress > .section-toolbar > h2 { display: flex; align-items: center; gap: 10px; }
+.native-progress__spin { flex: none; width: 16px; height: 16px; border-color: var(--st-accent-tint); border-top-color: var(--st-accent); }
+.native-progress__alive { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+.native-wait-note { margin: 0; text-align: right; }
+@media (prefers-reduced-motion: reduce) { .native-progress__spin { animation: none; border-color: var(--st-accent); } }

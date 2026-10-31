@@ -318,6 +318,43 @@ cases.links = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4802 */
+cases.progress = async () => {
+  const t = await tuneHost();
+  await t.mode('ok');
+  const sessions = [chat('s1', 'Progress', [user('u1', 'Hi'), reply('a1', 'Hello there.')])];
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const page = await open(scheme, w, h, sessions, { hash: '#/models', origin: t.origin });
+    const started = new Date(Date.now() - (3 * 60 + 12) * 1000).toISOString();
+    await page.route(/\/api\/native(\?.*)?$/, async route => {
+      const r = await route.fetch(); const j = await r.json();
+      j.jobs = [...(j.jobs ?? []), { id: 'job-x', kind: 'install', model: 'iq2_xs', state: 'running', startedAt: started, summary: 'Preparing', error: null, result: { install: { step: '6/7', label: 'Preparing the model data for the engine (one time)', parts: [{ label: 'Model files', done_gb: 0.6, total_gb: 0.6, state: 'done' }], download: { file: 'model files', done_gb: 0.6, total_gb: 0.6, remaining_gb: 0, percent: 99 } } }, progress: null }];
+      return route.fulfill({ response: r, json: j });
+    });
+    await page.reload();
+    const card = page.locator('.native-progress');
+    await card.waitFor({ timeout: 20000 });
+    await page.waitForTimeout(1500);
+    check(await card.locator('.spinner').count() === 1, `${tag}: a spinner shows that it is working`);
+    const alive = () => card.locator('.native-progress__alive').innerText();
+    const a1 = await alive();
+    check(/^Still working for 3m \d+s\. You don't need to do anything\.$/.test(a1), `${tag}: it says how long and that nothing is needed`, a1);
+    await page.waitForTimeout(2200);
+    const a2 = await alive();
+    check(a1 !== a2, `${tag}: the time keeps counting`, `${a1} -> ${a2}`);
+    check(/The buttons below wait until this finishes/.test(await page.locator('.native-wait-note').innerText()), `${tag}: a sentence says why the buttons are greyed out`);
+    const border = await card.evaluate(el => getComputedStyle(el).borderTopColor);
+    const other = await page.locator('.st-card:not(.native-progress)').first().evaluate(el => getComputedStyle(el).borderTopColor);
+    check(border !== other, `${tag}: the card has its own border colour`, `${border} vs ${other}`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    await card.scrollIntoViewIfNeeded();
+    await shot(page, `4802-${tag}`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

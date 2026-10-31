@@ -3,5 +3,7 @@
  "ui02": "Wartet unten auf deine Antwort",
  "ui03": "Strata prüft dieses Modell noch auf gespeicherte Abstimmungen. Sobald das fertig ist, kannst du die Abstimmung starten.",
  "ui04": "Strata konnte die Abstimmungsdaten dieses Modells nicht lesen, deshalb lässt sich die Abstimmung nicht starten. Schließe dieses Fenster und öffne es erneut.",
- "ui05": "Gespeicherte Abstimmungen werden geprüft…"
+ "ui05": "Gespeicherte Abstimmungen werden geprüft…",
+ "ui06": "Läuft noch seit {0}. Du musst nichts tun.",
+ "ui07": "Die Schaltflächen unten warten, bis das fertig ist."
 }

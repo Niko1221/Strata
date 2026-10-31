@@ -170,3 +170,33 @@ test('#4721 only a website goes to the browser; a file keeps the side panel', as
   const chat = src('screens/Chat.tsx');
   assert.match(chat, /if \(item\.kind === 'website'\) \{\s*void openExternal\(url\);\s*return;\s*\}\s*openPreview\(item\);/);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4802
+test('#4802 the progress card has its own surface, a spinner and a clock while it runs, and a sentence about the buttons', () => {
+  const models = src('components/NativeModels.tsx');
+  assert.match(models, /className="spinner native-progress__spin"/);
+  assert.match(models, /Still working for \{0\}\. You don't need to do anything\./);
+  assert.match(models, /The buttons below wait until this finishes\./);
+  assert.match(models, /useElapsed\(job\.startedAt, job\.state === 'running'\)/);
+  const css = src('styles/app.css');
+  assert.match(css, /\.native-progress \{ border: 1\.5px solid var\(--st-accent\);/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{ \.native-progress__spin \{ animation: none/);
+});
+
+test('#4802 the elapsed time is counted from the job start and never goes below zero', async () => {
+  const hook = src('lib/use-elapsed.ts');
+  assert.match(hook, /Math\.max\(0, now - start\)/);
+  assert.match(hook, /setInterval\(\(\) => setNow\(Date\.now\(\)\), 1000\)/);
+  assert.match(hook, /return \(\) => clearInterval\(timer\)/);
+});
+
+test('#4802 the new sentences are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  for (const l of languages.slice(1)) {
+    setTranslationLanguage(l);
+    assert.notEqual(tr('The buttons below wait until this finishes.'), 'The buttons below wait until this finishes.', l);
+    const text = tr("Still working for {0}. You don't need to do anything.", ['3m 12s']);
+    assert.ok(text.includes('3m 12s') && text !== "Still working for 3m 12s. You don't need to do anything.", `${l}: ${text}`);
+  }
+  setTranslationLanguage('en');
+});

@@ -11,8 +11,9 @@ import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
 import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
 import { useKept } from '../lib/kept-state';
 import { DownloadParts } from './DownloadParts';
+import { useElapsed } from '../lib/use-elapsed';
 import { EngineWarning } from './EngineWarning';
-import { sizeGb } from '../lib/format';
+import { duration, sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
 import { api } from '../lib/client';
@@ -206,6 +207,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      </> : null)}
      <EngineWarning native={native}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
+     {tr(active ? <p className="small muted native-wait-note">{tr("The buttons below wait until this finishes.")}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}
      {selectedSize && installed?.ready ? <NativeTuneBadge model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
@@ -244,7 +246,7 @@ function installStepLabel(step?: string): string {
 export function NativeProgress({ job, label }: {
     job: NativeJob;
     label?: string;
-}) { const download = installProgress(job.result?.install); const detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n'); const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
+}) { const elapsed = useElapsed(job.startedAt, job.state === 'running'); const download = installProgress(job.result?.install); const detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n'); const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
     await nativeAction(`operations/${job.id}/cancel`);
 }
 catch (e) {
@@ -252,4 +254,4 @@ catch (e) {
 }
 finally {
     setStopping(false);
-} } return <section className="st-card native-progress" aria-live="polite"><div className="section-toolbar"><h2 className="h4">{tr(job.kind === 'install' ? (label ? tr('Preparing {0}', [label]) : 'Preparing your model') : job.kind === 'load' ? 'Loading model' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' || job.kind === 'autotune' || job.kind === 'recheck' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.label ?? (download && /^5\//.test(job.result?.install?.step ?? '') ? stageText(installStage(job.result?.install)) : installStepLabel(job.result?.install?.step))) : job.summary)}</p>{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file === 'picture reader' ? 'Picture reader' : download.file === 'checking files' ? 'Checking files' : download.file === 'MTP draft layer' ? 'Draft layer' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<DownloadParts parts={job.result?.install?.parts}/>{tr(detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }
+} } return <section className="st-card native-progress" aria-live="polite" data-state={job.state}><div className="section-toolbar"><h2 className="h4">{tr(job.state === 'running' ? <span className="spinner native-progress__spin" aria-hidden="true"/> : null)}{tr(job.kind === 'install' ? (label ? tr('Preparing {0}', [label]) : 'Preparing your model') : job.kind === 'load' ? 'Loading model' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' || job.kind === 'autotune' || job.kind === 'recheck' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.label ?? (download && /^5\//.test(job.result?.install?.step ?? '') ? stageText(installStage(job.result?.install)) : installStepLabel(job.result?.install?.step))) : job.summary)}</p>{tr(job.state === 'running' && elapsed !== null && elapsed >= 5000 ? <p className="xs muted native-progress__alive" aria-hidden="true">{tr("Still working for {0}. You don't need to do anything.", [duration(elapsed)])}</p> : null)}{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file === 'picture reader' ? 'Picture reader' : download.file === 'checking files' ? 'Checking files' : download.file === 'MTP draft layer' ? 'Draft layer' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<DownloadParts parts={job.result?.install?.parts}/>{tr(detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }

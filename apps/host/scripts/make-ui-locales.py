@@ -46,6 +46,26 @@ add(en="Checking for saved tunings\u2026",
     zh="正在检查已保存的调优\u2026", ja="保存済みチューニングを確認しています\u2026", de="Gespeicherte Abstimmungen werden geprüft\u2026", es="Comprobando los ajustes guardados\u2026",
     ru="Проверяем сохранённые настройки\u2026", pt="Verificando os ajustes salvos\u2026", ko="저장된 최적화를 확인하는 중\u2026", fr="Vérification des optimisations enregistrées\u2026")
 
+# #4802 the progress card
+add(en="Still working for {0}. You don't need to do anything.",
+    zh="仍在处理，已用时 {0}。你无需做任何操作。",
+    ja="処理中です（{0}経過）。操作は必要ありません。",
+    de="Läuft noch seit {0}. Du musst nichts tun.",
+    es="Sigue trabajando desde hace {0}. No tienes que hacer nada.",
+    ru="Всё ещё работает: {0}. От вас ничего не требуется.",
+    pt="Ainda trabalhando há {0}. Você não precisa fazer nada.",
+    ko="{0}째 작업 중입니다. 따로 할 일은 없습니다.",
+    fr="Toujours en cours depuis {0}. Vous n'avez rien à faire.")
+add(en="The buttons below wait until this finishes.",
+    zh="下方的按钮会在此操作完成后恢复可用。",
+    ja="この処理が終わるまで、下のボタンは使えません。",
+    de="Die Schaltflächen unten warten, bis das fertig ist.",
+    es="Los botones de abajo esperan a que esto termine.",
+    ru="Кнопки ниже подождут, пока это не закончится.",
+    pt="Os botões abaixo esperam até isto terminar.",
+    ko="아래 버튼은 이 작업이 끝날 때까지 기다립니다.",
+    fr="Les boutons ci-dessous attendent la fin de cette opération.")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

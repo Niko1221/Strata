@@ -3,5 +3,7 @@
  "ui02": "En attente de votre réponse ci-dessous",
  "ui03": "Strata vérifie encore si ce modèle a des optimisations enregistrées. Dès que c’est fini, vous pourrez lancer l’optimisation.",
  "ui04": "Strata n’a pas pu lire les données d’optimisation de ce modèle, l’optimisation ne peut donc pas démarrer. Fermez cette fenêtre et rouvrez-la.",
- "ui05": "Vérification des optimisations enregistrées…"
+ "ui05": "Vérification des optimisations enregistrées…",
+ "ui06": "Toujours en cours depuis {0}. Vous n’avez rien à faire.",
+ "ui07": "Les boutons ci-dessous attendent la fin de cette opération."
 }
