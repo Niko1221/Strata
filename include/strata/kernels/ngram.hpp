@@ -138,6 +138,13 @@ void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160);
 /// There is no scale, because BF16 values are the values.
 void bf16_dequant_row(const uint8_t* row, float* out160);
 
+/// #3602/#879: some rows of the on-disk PLE table are themselves non-finite or wildly implausible (one
+/// observed row decodes to a literal NaN straight from the file's own bytes; others into the hundreds of
+/// thousands to several million). A real PLE value is orders of magnitude under 1e5 - the threshold
+/// `PleTable::Impl::check_row` already uses to flag a bad row. Every decode() routes its output through
+/// this before returning it, so a rare bad row cannot poison every later layer with NaN/inf.
+void ple_sanitize_row(float* out160);
+
 /// How the table's rows are read (plan v0.3 P2). `Direct` is the default: unbuffered 4 KiB reads from the SSD,
 /// so the table never occupies RAM or the OS file cache. `Mmap` is the earlier memory-mapped path, kept as the
 /// A/B arm; it returns the same bytes.

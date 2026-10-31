@@ -155,6 +155,12 @@ void bf16_dequant_row(const uint8_t* row, float* out160) {
     }
 }
 
+// #3602/#879: see the declaration in ngram.hpp. Every decode() routes through this.
+void ple_sanitize_row(float* out160) {
+    for (int j = 0; j < PLE_HEAD_DIM; ++j)
+        if (!std::isfinite(out160[j]) || std::fabs(out160[j]) > 1e5f) out160[j] = 0.0f;
+}
+
 // NVIDIA's FP4-Local table: a row of 160 values is 80 bytes of E2M1 codes (element 2i in the low nibble, 2i+1 in the
 // high one) followed by 10 E4M3 block scales (one per 16 values, sign bit always 0); one F32 scales the whole table.
 // value = e2m1(code) * e4m3(block scale) * table scale, exactly what vLLM's nvfp4 PLE lookup computes.
@@ -244,7 +250,10 @@ struct PleTable::Impl {
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     float scale = 1.0f;               // the FP8 table's one scale
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
-    void decode(const uint8_t* row, float* out160) const { fmt->dequant(row, scale, out160); }
+    void decode(const uint8_t* row, float* out160) const {
+        fmt->dequant(row, scale, out160);
+        ple_sanitize_row(out160);
+    }
     // STRATA_PLE_CHECK=1 (a diagnostic for #3602, off by default): the file and the table's offset, to re-read a row whose decoded
     // values are not plausible and compare the bytes the direct reader delivered with the file's own
     std::string path;
