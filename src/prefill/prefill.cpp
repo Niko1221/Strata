@@ -1437,11 +1437,18 @@ bool fp16_bufs(const MmqPlan& mp) { return mp.fallback || pf_wmma(); }
 bool pf_group_scratch() {
     static const bool on = [] { const char* v = std::getenv("STRATA_PF_GROUP_SCRATCH"); return v != nullptr && std::atoi(v) != 0; }();
     if (!on) return false;
-    const MmqPlan& mp = mmq_plan();
-    if (!mp.any || fp16_bufs(mp)) return false;   // the FP16 path's or pf_wmma's buffers: not this layout
-    for (char c : mp.layer) if (!c) return false;
-    for (char c : mp.direct) if (c) return false;   // STRATA_MMQ_DIRECT's guard tables are per whole group
-    return true;
+    // decided once, with a line saying why when it stays off (recommend, never force: the switch is ignored, the prompt path is as before)
+    static const bool ok = [] {
+        const MmqPlan& mp = mmq_plan();
+        const char* why = nullptr;
+        if (!mp.any || fp16_bufs(mp)) why = "the prompt path runs the FP16 path or pf_wmma here, not MMQ";   // the FP16 path's or pf_wmma's buffers
+        else for (char c : mp.layer) if (!c) { why = "a layer does not take MMQ"; break; }
+        if (why == nullptr) for (char c : mp.direct) if (c) { why = "STRATA_MMQ_DIRECT is on for a layer (its guard tables are per whole group)"; break; }   // per whole group
+        if (why != nullptr)
+            std::fprintf(stderr, "strata prefill: STRATA_PF_GROUP_SCRATCH=1 is ignored: %s%s", why, "\n");
+        return why == nullptr;
+    }();
+    return ok;
 }
 // one MMQ product range: experts [a, b) of the layer's order, and its relative bounds' offset in the bounds table
 struct MoeRange { int32_t a, b, rel; };
@@ -1942,6 +1949,12 @@ bool Prefill::carve(size_t T, void* alloc) {
     take_stage(o, ss, s, m.stage, ok);
     m.T = (int64_t) T;
     m.group_cap = pf_group_scratch() && !m.fused_bufs ? group_cap_rows(T, m.g->n_expert) : 0;
+    if (m.group_cap > 0 || hcr) {   // activation evidence: once per layout (a chunk size), what the switches took
+        std::fprintf(stderr, "strata prefill: chunk %zu tokens:%s%s\n", T,
+                     m.group_cap > 0 ? (" STRATA_PF_GROUP_SCRATCH on (GU/H/Hq hold " + std::to_string(m.group_cap) + " rows, not " +
+                                        std::to_string((long long) (T * K)) + ");").c_str() : "",
+                     hcr ? " STRATA_PF_HC_REGION on (the hyper-connection read's scratch is in the shared region);" : "");
+    }
     return ok;
 }
 
