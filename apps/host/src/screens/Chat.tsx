@@ -30,7 +30,7 @@ import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
-import { askQuestion, askSub, askIcon } from '../lib/ask';
+import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -38,7 +38,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { copyText } from '../lib/clipboard';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
@@ -264,6 +264,8 @@ export function ChatScreen() {
                 el.scrollTop = el.scrollHeight;
         });
         ro.observe(inner);
+        // The scroller itself shrinks when a question appears above the message box (the approval dock): keep the end in view then too.
+        ro.observe(el);
         return () => ro.disconnect();
     }, [session?.id, session?.messages.length === 0]);
     const textarea = useRef<HTMLTextAreaElement>(null);
@@ -554,6 +556,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     return (<div className="composerwrap">
       <div className="composer">
         <div className="composer__inner">
+          <ApprovalDock sessionId={session?.id}/>
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
@@ -664,7 +667,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
@@ -709,41 +712,26 @@ function MessageMenu({ label, children }: {
     const trigger = useRef<HTMLButtonElement>(null);
     return <><button ref={trigger} className="st-btn st-btn--icon" aria-label={tr(label)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="ellipsis" size={16}/></button>{tr(open ? <FloatingMenu anchor={trigger.current} title={tr(label)} onClose={() => setOpen(false)}><div onClick={() => setOpen(false)}>{tr(children)}</div></FloatingMenu> : null)}</>;
 }
-const SCOPE: Record<ToolCall['scope'], {
-    label: string;
-    tone: 'plain' | 'info' | 'warn';
-}> = {
-    read: { label: 'Reads', tone: 'plain' },
-    write: { label: 'Writes', tone: 'warn' },
-    shell: { label: 'Runs a command', tone: 'warn' },
-    connected: { label: 'Connected tool', tone: 'info' },
-};
 /**
  * A tool call, with the grant it needs. Approvals are per action and per turn —
  * the model never gets standing permission.
  */
-function ToolCard({ messageId, tool: t }: {
-    messageId: string;
+function ToolCard({ tool: t }: {
     tool: ToolCall;
 }) {
     const scope = SCOPE[t.scope];
     const pending = t.state === 'proposed';
     if (!pending && t.state !== 'running')
         return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{tr(t.verb ?? t.name)}{t.target ? <><span>·</span><span className="tool-summary__target" title={t.target}>{t.target}</span></> : null}<span>·</span><Icon name={t.state === 'denied' || t.state === 'error' ? 'x' : 'check'} size={14}/>{tr(t.state === 'denied' ? 'Denied' : t.state === 'error' ? 'Failed' : t.live && t.state === 'done' && t.approved ? 'Approved' : 'Done')}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
-    if (pending && t.ask)
-        return <section className="askcard" data-state={t.state} aria-label={tr(askQuestion(t.ask))}>
-      <div className="askcard__top"><span className="askcard__icon"><Icon name={askIcon(t.ask)} size={18}/></span>
-        <div className="askcard__text"><p className="askcard__q">{askQuestion(t.ask)}</p>{askSub(t.ask) ? <p className="askcard__why" title={askSub(t.ask)}>{askSub(t.ask)}</p> : null}</div>
-        <div className="askcard__acts"><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div></div>
-      <details className="askcard__details"><summary><Icon name="chevron" size={11}/>{tr("Details")}</summary><pre>{t.preview}</pre></details>
-    </section>;
+    /* The question and its two buttons are in the dock above the message box (ApprovalDock), so a long reply cannot push them out of view (#4725). */
+    if (pending)
+        return <p className="approval-wait small muted" role="status"><Icon name="clock" size={14}/>{tr("Waiting for your answer below")}</p>;
     return <section className="toolcard toolcard--compact" data-state={t.state} aria-label={t.name}>
     <details className="toolcard__disclosure">
       <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{tr(t.verb ?? t.name)}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>
       <div className="toolcard__body"><code className="toolcard__preview">{t.preview}</code><p className="small muted">{tr(t.effect)}</p>{tr(t.result ? <p className="small">{t.result}</p> : null)}</div>
     </details>
-    {tr(pending && t.target ? <code className="toolcard__what" title={t.target}>{t.target}</code> : null)}
-    {tr(pending ? <div className="toolcard__quick-actions"><span className="xs muted">{tr("Needs your approval")}</span><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" icon="check" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div> : <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>)}
+    <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>
   </section>;
 }
 export { cx };

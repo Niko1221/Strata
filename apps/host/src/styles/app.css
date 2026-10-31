@@ -7522,3 +7522,8 @@ textarea {
 
 /* A message the person typed keeps its line breaks (#3720). */
 .st-bubble__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---- the approval dock: a question for the person stays above the message box while a long reply scrolls (#4725) ---- */
+.approvaldock { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 0 0 10px; }
+.approvaldock > .askcard, .approvaldock > .toolcard { margin: 0; flex: none; border-color: var(--st-accent); box-shadow: var(--st-sh-bar); }
+.approval-wait { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
