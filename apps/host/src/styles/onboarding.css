@@ -255,3 +255,6 @@
 .engine-warning p { margin: 0; }
 .engine-warning svg { flex: none; margin-top: 1px; }
 .engine-warning small { display: block; margin-top: 4px; }
+.onboard-language{margin-left:auto;min-width:132px}
+.guided-onboarding[data-step="1"] .onboard-language{position:relative;z-index:1}
+@media(max-width:700px){.guided-onboarding[data-step="1"] .onboard-header{justify-content:space-between}.guided-onboarding[data-step="1"] .onboard-header>.brand{position:static;transform:none}.onboard-language{min-width:120px}}

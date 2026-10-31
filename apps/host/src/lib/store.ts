@@ -1,4 +1,5 @@
 import { workspaceIdForSession } from './session-workspace';
+import { detectLanguage } from './language-detect';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { settleAgents, updateAgent } from './agents';
@@ -230,7 +231,9 @@ function loadPrefs(): Prefs {
       /* fall through to the next key */
     }
   }
-  return { ...PREFS_DEFAULTS };
+  // Nothing saved: a first start. It opens in the language of the computer; a choice made on the first screen is saved like any other.
+  const tags = typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
+  return { ...PREFS_DEFAULTS, language: detectLanguage(tags) ?? 'en' };
 }
 
 const prefs = loadPrefs();

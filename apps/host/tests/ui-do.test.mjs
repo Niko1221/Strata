@@ -232,3 +232,26 @@ test('#4722 paragraphs, lists and quotes share one measure; tables and code bloc
   assert.match(md, /ordered \? <ol key=\{key\}>\{tr\(items\)\}<\/ol> : <ul key=\{key\}>/);
   assert.doesNotMatch(md, /className="md-li"/);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #3723
+test('#3723 a first start opens in the first of the computer\'s languages that Strata has', async () => {
+  const { detectLanguage } = await withI18n('language-detect.ts');
+  assert.equal(detectLanguage(['zh-CN', 'en']), 'zh');
+  assert.equal(detectLanguage(['zh-TW']), 'zh');
+  assert.equal(detectLanguage(['pt-BR']), 'pt');
+  assert.equal(detectLanguage(['sv-SE', 'de-DE', 'en']), 'de', 'the first one that is offered, not the first one');
+  assert.equal(detectLanguage(['ja']), 'ja');
+  assert.equal(detectLanguage(['sv-SE', 'fi']), null);
+  assert.equal(detectLanguage([]), null);
+  assert.equal(detectLanguage(undefined), null);
+  assert.equal(detectLanguage(['KO_kr']), 'ko');
+});
+
+test('#3723 only a first start is detected: a saved language, even English, is kept; the first screens carry the choice', () => {
+  const store = src('lib/store.ts');
+  assert.match(store, /language: validLanguage\(parsed\.language\) \? parsed\.language : 'en'/, 'a saved value is read as before');
+  assert.match(store, /return \{ \.\.\.PREFS_DEFAULTS, language: detectLanguage\(tags\) \?\? 'en' \};/);
+  assert.match(src('components/EngineFirstRun.tsx'), /<FirstRunLanguage\/>/);
+  assert.match(src('components/GuidedSetup.tsx'), /step === 1 \? <FirstRunLanguage\/> : null/);
+  assert.match(src('components/FirstRunLanguage.tsx'), /setLanguage\(value as Language\)/);
+});

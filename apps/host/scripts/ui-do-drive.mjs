@@ -51,8 +51,8 @@ export const reply = (id, content, extra = {}) => ({ id, role: 'assistant', cont
 export const chat = (id, title, messages) => ({ id, title, defaultTitle: false, updatedAt: iso(9), createdAt: iso(0), messages, workspace: ws, tokensIn: 0, tokensOut: 0, preferences: { useTools: true, mode: 'manual', remoteModel } });
 
 /** A page with the given chats already in local storage. `prefs` are merged into the saved preferences. */
-export async function open(scheme, width, height, sessions, { hash = '#/chat', prefs = {}, origin = base, before = null } = {}) {
-  const context = await browser.newContext({ viewport: { width, height }, colorScheme: scheme, permissions: ['clipboard-read', 'clipboard-write'] });
+export async function open(scheme, width, height, sessions, { hash = '#/chat', prefs = {}, origin = base, before = null, locale = 'en-US', keepSetup = false } = {}) {
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme: scheme, locale, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   pages.push(page);
   const problems = [];
@@ -70,7 +70,7 @@ export async function open(scheme, width, height, sessions, { hash = '#/chat', p
   await page.goto(`${origin}/${hash}`);
   await page.waitForTimeout(1800);
   const skip = page.getByText('Go straight to the app');
-  if (await skip.count()) { await skip.click(); await page.waitForTimeout(600); }
+  if (!keepSetup && await skip.count()) { await skip.click(); await page.waitForTimeout(600); }
   return page;
 }
 export const shot = (page, name) => page.screenshot({ path: join(SHOTS, `${name}.png`) });
@@ -414,6 +414,45 @@ cases.width = async () => {
     await shot(page, `4722-${tag}`);
     await page.context().close();
   }
+};
+
+/* ------------------------------------------------------------------------------------------------------------------- #3723 */
+cases.firstrun = async () => {
+  const setupStep = dismissed => fetch(`${base}/api/setup/step`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step: 1, dismissed, flowVersion: 2 }) });
+  await setupStep(false);
+  // A computer set to a language Strata does not have: English.
+  const page = await open('light', 1280, 860, null, { hash: '#/setup', locale: 'sv-SE', keepSetup: true });
+  await page.locator('.onboard-language').waitFor({ timeout: 20000 });
+  check(/English/.test(await page.locator('.onboard-language').innerText()), 'Swedish computer: English');
+  await page.context().close();
+  // A first start (nothing saved) on a computer set to Chinese opens in Chinese, with a language choice on the first screen.
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const page = await open(scheme, w, h, null, { hash: '#/setup', locale: 'zh-CN', keepSetup: true });
+    await page.locator('.onboard-language').waitFor({ timeout: 20000 });
+    await page.waitForTimeout(500);
+    const pick = page.locator('.onboard-language [role=combobox], .onboard-language button').first();
+    const shown = await pick.innerText();
+    check(/中文/.test(shown), `${tag}: a computer set to Chinese starts in Chinese`, shown);
+    check(/[\u4e00-\u9fff]/.test(await page.locator('.guided-onboarding h1').first().innerText()), `${tag}: the first screen is in Chinese`);
+    const box = await page.locator('.onboard-language').boundingBox();
+    check(!!box && box.x >= 0 && box.x + box.width <= w && box.y >= 0, `${tag}: the choice is on screen`, JSON.stringify(box));
+    const brand = await page.locator('.guided-onboarding .onboard-header .brand').first().boundingBox();
+    check(!brand || box.x >= brand.x + brand.width - 1 || box.x + box.width <= brand.x + 1 || box.y >= brand.y + brand.height || box.y + box.height <= brand.y, `${tag}: the choice does not cover the logo`, JSON.stringify({ brand, box }));
+    await shot(page, `3723-${tag}-first-zh`);
+    // Choosing German changes the screen at once, and it is kept.
+    await pick.click();
+    await page.getByRole('option', { name: 'Deutsch' }).click();
+    await page.waitForTimeout(500);
+    check(/[A-Za-zäöü]/.test(await page.locator('.guided-onboarding h1').first().innerText()) && !/[\u4e00-\u9fff]/.test(await page.locator('.guided-onboarding h1').first().innerText()), `${tag}: choosing Deutsch changes the first screen`);
+    await shot(page, `3723-${tag}-first-de`);
+    await page.reload();
+    await page.locator('.onboard-language').waitFor({ timeout: 20000 });
+    check(/Deutsch/.test(await page.locator('.onboard-language').innerText()), `${tag}: the choice is kept after a restart, whatever the computer says`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+  await setupStep(true);
 };
 
 /* ------------------------------------------------------------------------------------------------------------------ run */
