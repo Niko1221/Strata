@@ -978,10 +978,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_link_libraries(ds4_tq_test_portable PRIVATE strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
       target_compile_definitions(ds4_tq_test_portable PRIVATE STRATA_DSV41_TQ_CPU=1 DS4_TQ_PORTABLE=1)
       if(STRATA_ENABLE_HIP)
-        target_compile_options(ds4_tq_test_portable PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+        target_compile_options(ds4_tq_test_portable PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
       endif()
       if(STRATA_ENABLE_HIP)
-        target_compile_options(ds4_tq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+        target_compile_options(ds4_tq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
       endif()
       # the i-quant experts (ds4_iq.cu) against ggml's own decode of the same blocks + a double reference, device and CPU
       # lane, for every type the device takes: the gate a new type (IQ2_XS ..) has to pass before the engine uses it
@@ -993,7 +993,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_link_libraries(ds4_iq_test PRIVATE strata_kernels_cpu ${_strata_gpu_runtime_target} Threads::Threads)
       target_compile_definitions(ds4_iq_test PRIVATE STRATA_DSV41_TQ_CPU=1)
       if(STRATA_ENABLE_HIP)
-        target_compile_options(ds4_iq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+        target_compile_options(ds4_iq_test PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
       endif()
       # the kept conversations' .meta file and prefix matching (ds4_slotmeta.hpp): no GPU, no model
       add_executable(ds4_slot_test tests/dsv41/slot_test.cpp)
@@ -1007,8 +1007,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_compile_features(ds4_pick_rule_test PRIVATE cxx_std_17)
     endif()
     if(STRATA_ENABLE_HIP)
+      # -include and its path must reach the compiler as one option: written "SHELL:-include <path>", CMake
+      # leaves it unquoted in the ninja file, where the space in the path splits it into "-include", the first
+      # piece of the path and the rest as a plain input file, which a -c -o build cannot take ("cannot specify
+      # -o when generating multiple output files").  One joined option is quoted and comes over whole;
+      # cmake/hip_backend.cmake:117-121 splits the flag and its path into two options for the same end.
       foreach(_t strata_dsv41_kernels strata-dsv41)
-        target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+        target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:HIP,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
       endforeach()
     endif()
   endif()
