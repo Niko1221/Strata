@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -6151,8 +6152,9 @@ int exp_mode() {
 #if defined(STRATA_HIP_GFX906)
     return kExpModeDefault;
 #else
-    // Volta (sm_70): mode 8, the grid and the group's activations in shared memory with SwiGLU + q8_1 fused
-    // (V100-SXM2, a verify window's VRAM call: 227 -> 159 us); every other CUDA card keeps the CUDA layout
+    // Mode 8 keeps the grid and the group's activations in shared memory with SwiGLU + q8_1 fused.  Volta can opt in;
+    // GB10 takes it with the sm_121 defaults (IQ3_S, fixed 512-token MTP workload, 8 balanced pairs: decode +11.7%
+    // paired median, 6/8 wins, identical output).  Every other CUDA card keeps the CUDA layout.
     static int per_dev[64];   // 0 unknown, else mode + 1
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return kExpModeDefault;
@@ -6171,12 +6173,15 @@ int exp_mode() {
         // IQ4_XS 328 -> 261 us, bitwise equal); STRATA_SM61_TABLE=0 keeps the CUDA layout
         const char* sm61 = std::getenv("STRATA_SM61_TABLE");
         const bool p40 = major == 6 && minor == 1 && (sm61 == nullptr || std::atoi(sm61) != 0);
+        const char* sm121 = std::getenv("STRATA_SM121_PERF");
+        const bool gb10 = major == 12 && minor == 1 && !strata::qwen_defaults_026() &&
+                          (sm121 == nullptr || std::atoi(sm121) != 0);
         // Turing (sm_75): mode 4 (native_expert_bench, real Q2_0 rows of Flash-Next, bitwise equal to mode 0 on an RTX
         // 2080 Ti: 10 experts x 1 entry 47.3 -> 41.4 us, 30 x 1 120.2 -> 100.2 us); the down projection keeps the CUDA
         // layout in windows of 4+ tokens (sm75_down_em below).  STRATA_SM75_EXP=0 keeps the CUDA layout.
         // (off unless STRATA_SM75_PERF=1; STRATA_SM75_EXP=0 / 1 forces it off / on)
         const bool turing = strata::sm75_switch("STRATA_SM75_EXP", major, minor);
-        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 ? 8 : turing ? 4 : kExpModeDefault);
+        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 || gb10 ? 8 : turing ? 4 : kExpModeDefault);
     }
     return per_dev[dev] - 1;
 #endif
