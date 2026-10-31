@@ -1,0 +1,66 @@
+{
+ "exe": "<install>/engine-cuda13/strata",
+ "args": [
+  "--pack",
+  "<strata-data>/packs/iq3_s",
+  "--native",
+  "<strata-data>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<strata-data>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "<install>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<strata-data>/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--pipeline-windows",
+  "2",
+  "--trim-stage-weights",
+  "--vision",
+  "--conversation-cache-min-tokens",
+  "4000"
+ ],
+ "cwd": "<install>",
+ "tokenizer": "<strata-data>/packs/iq3_s/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_s",
+ "log": "<install>/strata-iq3_s.log",
+ "lib_dirs": [
+  "/usr/bin",
+  "/usr/lib64"
+ ],
+ "port": 8087,
+ "cuda": 13,
+ "gpu": [
+  0,
+  1
+ ],
+ "gpus_asked": true,
+ "open_browser": false,
+ "layer_split": "24",
+ "env": {
+  "STRATA_SM75_PERF": "1",
+  "STRATA_EXP_MODE": "8",
+  "STRATA_BF16_TC": "1"
+ },
+ "sampling": {
+  "presence_penalty": 0
+ },
+ "vision": {
+  "exe": "<install>/engine-cuda13/strata-vision",
+  "mmproj": "<strata-data>/models/IQ3_S/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "<strata-data>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "gpu": false,
+  "max_tokens": 300,
+  "threads": 6
+ }
+}
