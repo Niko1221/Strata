@@ -13666,7 +13666,6 @@ int main(int argc, char** argv) {
                 strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V)
                 if (path.empty()) { refuse("missing path"); continue; }
                 if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
-                if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
                 if (!ver.wait_commit(err)) {
