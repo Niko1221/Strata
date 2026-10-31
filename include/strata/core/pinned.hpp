@@ -42,6 +42,13 @@ inline std::atomic<bool>& arena_uma_no_register_flag() {
 /// STRATA_ARENA_PIN_GIB to a number (STRATA_ARENA_PIN_GIB=0 registers the whole arena as before).
 bool arena_no_register();
 
+/// #3431 (Windows, HIP): the stack [lo, hi) of a thread that only waits while the arena is registered (the process's first thread
+/// when the engine runs on its own one); a GPU alias may cover it.  0, 0: none.
+void set_idle_thread_stack(uint64_t lo, uint64_t hi);
+/// #3431 (Windows, HIP): the start addresses of the address-space reservations main() keeps for the life of the process; a GPU
+/// alias inside one is clear, nothing can be placed there.
+void set_held_address_space(std::vector<uint64_t> bases);
+
 struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;
@@ -88,6 +95,8 @@ struct PinnedArena {
     void register_slices(std::atomic<int>& ready);
     std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
+    /// #3431 (Windows, HIP): the address-space reservations under the GPU aliases of the registered ranges, released after them
+    std::vector<void*> alias_claims;
     void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
     uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
     /// shared-file arena only: the load state word in the file's header (0: nobody has loaded it, a pid: that engine is

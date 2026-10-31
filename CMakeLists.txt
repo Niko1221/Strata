@@ -1647,6 +1647,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(pin_budget_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME pin_budget_test COMMAND pin_budget_test)
 
+  # #3431: the expert arena's registered ranges keep their GPU aliases clear of the process's own memory (Windows HIP; else skips)
+  add_executable(pinned_alias_test src/core/pinned_alias_test.cpp)
+  target_link_libraries(pinned_alias_test PRIVATE strata_core ${_strata_gpu_runtime_target})
+  add_test(NAME pinned_alias_test COMMAND pinned_alias_test)
+  set_tests_properties(pinned_alias_test PROPERTIES SKIP_RETURN_CODE 77)
+
   # #3350 / #3470: the conversation copy streams and events are pooled across short-lived threads (needs a device, else skips)
   add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp)
   target_include_directories(conversation_copy_streams_test PRIVATE include)
