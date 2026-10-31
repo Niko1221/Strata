@@ -1,0 +1,7 @@
+[strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (10812 experts, 24.38 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] note: 770 MiB of VRAM free with the model loaded. If this AMD card also drives your desktop and the desktop or apps crash after the start (the driver moves the expert cache to RAM and the OOM killer ends the session), keep more VRAM free: ./setup.sh --vram-reserve-mib 3072 (remembered; the expert cache gets 2.4 GB less, a few % of speed)
+[strata] image generation: qwen-image-2.1-turbo Q8_0 on hip (POST /v1/images/generations; GPU policy unload)
+ready: http://127.0.0.1:8013/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 131072 tokens, images on)
