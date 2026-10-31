@@ -172,7 +172,26 @@ static void set_default(const std::pair<std::string, std::string>& kv) {
 #endif
 }
 
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated) {
+std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!windows || batch_slots < 2 || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return t;
+    t = {
+        {"STRATA_CKPT_POOL", "1"},
+        {"STRATA_CKPT_POOL_READY", "4"},
+        {"STRATA_SLOT_CKPT_MOVE", "1"},
+        {"STRATA_SLOT_COPY_DIRECT", "1"},
+        {"STRATA_SLOT_COPY_BATCHSYNC", "1"},
+        {"STRATA_BATCH_GDN_GROUPS", "1"},
+        {"STRATA_BATCH_ATTN_ROWS", "1"},
+        {"STRATA_BATCH_SELF_COMMIT", "1"},
+        {"STRATA_QSA_SLOTS", "1"},
+    };
+    return t;
+}
+
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated, int batch_slots) {
     std::vector<std::string> set;
     for (const auto& kv : arch_default_env(gcn_arch)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
@@ -204,6 +223,23 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
 #endif
         std::fprintf(stderr, "\n");
         set.insert(set.end(), igpu.begin(), igpu.end());
+    }
+    std::vector<std::string> par;
+#if defined(_WIN32)
+    const bool win_host = true;
+#else
+    const bool win_host = false;
+#endif
+    for (const auto& kv : parallel_default_env(gcn_arch, win_host, batch_slots)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;
+        set_default(kv);
+        par.push_back(kv.first);
+    }
+    if (!par.empty()) {
+        std::fprintf(stderr, "strata: gfx1151 (Strix Halo): the exact parallel-request switches are on for %d batch slots (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): ", batch_slots);
+        for (size_t i = 0; i < par.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", par[i].c_str() + 7);
+        std::fprintf(stderr, "\n");
+        set.insert(set.end(), par.begin(), par.end());
     }
     return set;
 }
