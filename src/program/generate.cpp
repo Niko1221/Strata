@@ -4966,7 +4966,16 @@ int main(int argc, char** argv) {
             }
         }
     }
-    strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
+    // STRATA_SPLIT_COMMIT_ASYNC=1 (opt-in): a layer split commits without the host wait too, as one GPU does.  Each
+    // stage's commit runs on its own stream ahead of its next window, and every wait_commit below waits for all the
+    // stages.  Not with --batch (its admissions and the concurrent prompt read are not covered); STRATA_COMMIT_SYNC=1
+    // still makes every commit wait
+    {
+        const char* v = std::getenv("STRATA_SPLIT_COMMIT_ASYNC");
+        const bool split_async = v != nullptr && v[0] == '1' && o.batch <= 0;
+        strata::core::Verifier::set_commit_async(!multi_gpu || split_async);   // see Verifier::set_commit_async
+        strata::core::Verifier::set_split_commit_async(split_async);
+    }
     // --pipeline-windows (opt-in): one conversation's windows with the two stages of a layer split overlapped.  Decided
     // here, before any stage sizes its expert cache (the second verifier per stage and the snapshots are allocated
     // after the caches, so their room is kept out of them).  What it does not support turns it off, said once.
