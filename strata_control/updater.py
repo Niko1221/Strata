@@ -1008,16 +1008,36 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         shutil.rmtree(longpath.long_path(sandbox), ignore_errors=True)
 
 
-def _move_dir(source: Path, destination: Path) -> None:
+#: How long a folder rename is retried before the copy is used instead (seconds). A 950 MB engine that was just written is scanned by
+#: the virus scanner for longer than the old 8 seconds on a slow disk (#4853: unpacked and checked, then "the update didn't finish").
+MOVE_PATIENCE_S = 40.0
+
+
+def _move_dir(source: Path, destination: Path, *, patience: float = MOVE_PATIENCE_S, sleep=time.sleep, clock=time.monotonic) -> None:
+    """Put a checked folder where it belongs. A rename is the normal way; on Windows it is refused for as long as any program (the virus
+    scanner, the indexer, Explorer) holds one file inside the folder, so it is retried for `patience` seconds. If it is still refused,
+    the folder is copied instead: a copy needs only to read the files, and the caller checks the copy again (every file's hash is
+    verified when the engine is chosen), so a copy that is wrong is never used."""
     last = None
-    for attempt in range(6):                             # antivirus and indexers hold a fresh folder for a moment on Windows
+    deadline = clock() + patience
+    attempt = 0
+    while True:
         try:
             os.replace(source, destination)
             return
         except OSError as exc:
             last = exc
-            time.sleep(0.4 * (attempt + 1))
-    raise UpdateError(f"the new engine could not be moved into place ({last})", 6)
+            if clock() >= deadline:
+                break
+            attempt += 1
+            sleep(min(0.4 * attempt, 3.0))
+    try:
+        shutil.copytree(longpath.long_path(source), longpath.long_path(destination))
+    except OSError as exc:
+        shutil.rmtree(longpath.long_path(destination), ignore_errors=True)
+        raise UpdateError(f"the new engine could not be moved into place ({longpath.describe_oserror(last)}); copying it did not work "
+                          f"either ({longpath.describe_oserror(exc)})", 6) from None
+    shutil.rmtree(longpath.long_path(source), ignore_errors=True)         # the staging folder is removed again at the end; a held file waits
 
 
 def prune_engines(root: Path, keep: set[str]) -> list[str]:

@@ -20,8 +20,9 @@ export function looksOffline(error) {
 }
 export const OFFLINE_MESSAGE = "No internet connection. Try again when you're online.";
 
-/** { message, details, next } for an error thrown by Control's update calls (or the shell bridge). `subject` is "engine" or "Strata". */
-export function plainUpdateError(error, subject = 'engine') {
+/** { message, details, next } for an error thrown by Control's update calls (or the shell bridge). `subject` is "engine" or "Strata".
+ * `retry` names the button of a screen that has no Settings page yet (the first-run card's Continue): the next step then says that button. */
+export function plainUpdateError(error, subject = 'engine', retry = undefined) {
   const raw = String(error?.message ?? error ?? '');
   const code = error?.code ?? '';
   const exit = error?.exitCode ?? null;
@@ -43,9 +44,18 @@ export function plainUpdateError(error, subject = 'engine') {
   } else if (/could not be read|interrupted|timed out|timeout|ECONN|ENOTFOUND|fetch failed|could not reach|server answered|not answer within/i.test(raw)) {
     message = "Couldn't reach the update server.";
     next = `Check your internet connection, then press ${button} in Settings.`;
-  } else if (/free space|not enough/i.test(raw)) {
+  } else if (/free space|not enough|no space left|disk is full/i.test(raw)) {
     message = 'There is not enough free disk space for the update.';
     next = `Free some disk space, then press ${button} in Settings.`;
+  } else if (/could not be moved into place|could not be unpacked|not accepted after the switch/i.test(raw)) {
+    // The files were downloaded and checked; Windows or a virus scanner would not let Strata put them in place (#4853). Not a download problem.
+    const long = /longer than Windows allows|path.*too long/i.test(raw);
+    message = long
+      ? "The engine's folder is too deep for Windows, so it could not be put in place."
+      : 'The engine was downloaded and checked, but Windows or a security program would not let Strata put it in place.';
+    next = long
+      ? `Open Details, then follow the folder advice there, and press ${button} in Settings.`
+      : `Wait a minute, then press ${button} in Settings. If it happens again, pause your virus scanner's live scanning for a few minutes while it runs.`;
   } else if (/no engine for this PC|has no engine|no package/i.test(raw)) {
     message = "There isn't an engine for this PC's graphics card yet.";
     next = 'Check for updates again later.';
@@ -56,11 +66,12 @@ export function plainUpdateError(error, subject = 'engine') {
     message = `The update didn't pass its safety check, so it was not installed. ${keep}`;
     next = 'Try again later.';
   }
+  if (retry) next = next.split(`${button} in Settings`).join(retry).replace(/in Settings/g, '').replace(/ {2,}/g, ' ').replace(/ ([.,])/g, '$1');
   return { message: `${message} ${next}`.trim(), headline: message, next, details: raw || undefined };
 }
 
 /** An Error carrying the plain message and, behind it, the technical reason. */
-export function plainError(error, subject) {
-  const { message, details } = plainUpdateError(error, subject);
+export function plainError(error, subject, retry = undefined) {
+  const { message, details } = plainUpdateError(error, subject, retry);
   return Object.assign(new Error(message), { details, code: error?.code });
 }
