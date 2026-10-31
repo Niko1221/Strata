@@ -409,6 +409,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list and health | `GET /v1/models`, `GET /models`, `GET /health` |
+| One model's details (does this server have that id?) | `GET /v1/models/{model id}` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing now | `GET /status`, `GET /slots` (busy or idle, with `n_prompt_tokens`; one entry per slot with `--batch`) |
 | Save or restore the conversation to a file | `POST /slots/0?action=save\|restore` ([session files](#session-files-disk)) |
@@ -416,7 +417,47 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | The same for Prometheus with vLLM's metric names | `GET /metrics` with `Accept: text/plain` or `?format=prometheus` |
 | Request totals in llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
-| API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests` |
+
+`GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
+format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and
+request counters, `vllm:prefix_cache_queries_total` / `_hits_total` (prompt tokens read / reused),
+`vllm:spec_decode_num_draft_tokens_total` / `_accepted_tokens_total` (the MTP drafts), and the histograms
+`vllm:time_to_first_token_seconds`, `vllm:inter_token_latency_seconds` and `vllm:e2e_request_latency_seconds` - so the
+dashboards and alerts written for a vLLM server read this one. With an API key, the scraper sends it as a bearer
+token. Any other request keeps the JSON.
+
+The JSON's own facts that vLLM has no name for come in the same scrape under `strata:`, named after their JSON key,
+so a Monitor-tab panel and a Grafana panel read the same value: `strata:live_state{state="..."}`, `strata:live_tok_s`,
+`strata:live_prefill_tok_s_mean`, `strata:live_prompt_read`, `strata:engine_max_context`,
+`strata:totals_prompt_seconds_total` / `strata:totals_decode_seconds_total`, `strata:last_hit_rate` and
+`strata:last_decode_tok_s` (the last request's), and the hardware - `strata:gpu_util`, `strata:gpu_mem_used_bytes`,
+`strata:gpu_mem_total_bytes`, `strata:gpu_temp_celsius`, `strata:gpu_power_watts` (one sample per card, label
+`gpu`), `strata:cpu`, `strata:ram_used_bytes`, `strata:ram_total_bytes`. A value the server does not have (no GPU
+telemetry, an older engine) has no sample rather than a zero.
+
+Ready to use, in `docs/monitoring/`: `prometheus.yml` (a scrape config, the API key as a bearer token),
+`servicemonitor.yaml` (the same for the Prometheus Operator) and `grafana-strata.json`, a Grafana dashboard to
+import (it asks for the Prometheus data source): requests running and waiting, tokens per second, time to first
+token, time between tokens and request duration (p50 / p95), the prompt cache and MTP draft rates, and the engine's
+own panels (state, batch slots, rates, expert cache hit rate, GPU and RAM). Its first row uses only vLLM's names, so
+it also reads a vLLM server.
+
+`/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `GET /v1/models/{model id}` answers with the one entry the list has under that id - the same fields, plus OpenAI's `created` (when this server started) and `owned_by` (`strata`) - so a client that wants to know whether one id is really served here (an IDE's model picker, a launcher checking before it starts) asks for it directly instead of reading the whole list; an id this server does not have answers 404. Only the versioned path takes an id: llama.cpp's bare `/models` has never carried one, so `/models/{id}` is still the plain 404. Asking for a model never loads or unloads anything. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `/slots` uses llama.cpp's names: `n_ctx` and `n_prompt_tokens` (the running request's prompt size, kept after it ends: what a front-end's context meter divides by `n_ctx`). `total_slots` in `/props` is the number of `--batch` slots (1 without). `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
+
+`chat_template_caps` uses llama.cpp's field names. Strata checks them when loading the active template by rendering
+small requests; a rejected or omitted feature is `false`, and a template that fails a probe in any way only turns that
+feature off (the server still starts). `supports_tools` checks tool definitions and XML call
+instructions; `supports_tool_calls` checks that calls in the history use Strata's XML format and keep tool results.
+`supports_parallel_tool_calls` checks multiple calls in one assistant turn, and `supports_system_role` checks a
+leading system message. `supports_preserve_reasoning` means older assistant turns keep their `reasoning_content`
+in the rendered prompt. It does not describe whether a new reply returns reasoning. These are compatibility hints
+for clients, not a guarantee that the model will follow a request. Zed's llama.cpp provider reads this object to
+offer tools.
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+  "model": "strata", "messages": [{"role": "user", "content": "Write a haiku about GPUs."}], "max_tokens": 512 }'
+```
 
 ```python
 from openai import OpenAI
