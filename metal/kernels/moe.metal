@@ -199,9 +199,54 @@ static inline void gu_body(device const uchar* g0, device const uchar* u0, devic
         }
 }
 
+// NE >= 3: the gate rows' units, then the up rows' units, so only one of them is decoded at a time (M1 Max: the
+// joint body spills at 3-4 entries, 2.3x the 2-entry time for 15% more weight bytes)
+template <int F, int LPR, int NR, int NE>
+static inline void gu_body_seq(device const uchar* g0, device const uchar* u0, device const float* x,
+                               device const float* xs16, device float* h, device const int* etok, int c, int row0, int li,
+                               constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ag[NR][NE], au[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ag[r][t] = au[r][t] = 0.0f;
+    const int U = int(a.n_embd) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        {
+            float q[NR][UNIT];
+            float4 cq[NR];
+            for (int r = 0; r < NR; ++r) Dec<F>::run(g0 + r * a.gu_row, u, q[r], cq[r], tab);
+            for (int t = 0; t < NE; ++t) {
+                float xs[UNIT], xsum[2];
+                X<F>::load(x + etok[t] * int(a.n_embd), xs16 + etok[t] * int(a.n_embd / 16), u, xs, xsum);
+                for (int r = 0; r < NR; ++r) ag[r][t] += unit_combine<UNIT>(q[r], cq[r], xs, xsum);
+            }
+        }
+        {
+            float q[NR][UNIT];
+            float4 cq[NR];
+            for (int r = 0; r < NR; ++r) Dec<F>::run(u0 + r * a.gu_row, u, q[r], cq[r], tab);
+            for (int t = 0; t < NE; ++t) {
+                float xs[UNIT], xsum[2];
+                X<F>::load(x + etok[t] * int(a.n_embd), xs16 + etok[t] * int(a.n_embd / 16), u, xs, xsum);
+                for (int r = 0; r < NR; ++r) au[r][t] += unit_combine<UNIT>(q[r], cq[r], xs, xsum);
+            }
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float gv = lane_sum<LPR>(ag[r][t]), uv = lane_sum<LPR>(au[r][t]);
+            if (li == 0) h[(c + t) * int(a.n_ff) + row0 + r] = gv / (1.0f + exp(-gv)) * uv;
+        }
+}
+
 // bench probe (function constant 22): 1 = no table load (wrong values for the i-quants)
 constant int MOE_PROBE [[function_constant(22)]];
 constant int moe_probe = is_function_constant_defined(MOE_PROBE) ? MOE_PROBE : 0;
+// MOE_SEQ (function constant 25): the 3- and 4-entry groups take gu_body_seq. The host sets it only for windows of 3 or
+// more tokens, so the pipelines of 1- and 2-token windows compile without that path (with it in the same pipeline the
+// M1 Max ran 1 and 2 tokens 8-10% slower)
+constant bool MOE_SEQ [[function_constant(25)]];
+constant bool moe_seq = is_function_constant_defined(MOE_SEQ) && MOE_SEQ;
 
 template <int F, int LPR, int NR, int SG>
 kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[buffer(1)]],
@@ -230,12 +275,20 @@ kernel void moe_gu(device const uchar* W [[buffer(0)]], device const float* x [[
     switch (ne) {
         case 1: gu_body<F, LPR, NR, 1>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
         case 2: gu_body<F, LPR, NR, 2>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
-        case 3: gu_body<F, LPR, NR, 3>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
-        case 4: gu_body<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab); break;
+        case 3:
+            if (moe_seq) gu_body_seq<F, LPR, NR, 3>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab);
+            else gu_body<F, LPR, NR, 3>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab);
+            break;
+        case 4:
+            if (moe_seq) gu_body_seq<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab);
+            else gu_body<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok, c, row0, li, a, tab);
+            break;
         default:
             for (int k = 0; k < ne; k += 4) {
                 const int m = min(4, ne - k);
-                if (m == 4) gu_body<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
+                if (m == 4 && moe_seq) gu_body_seq<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
+                else if (m == 4) gu_body<F, LPR, NR, 4>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
+                else if (m == 3 && moe_seq) gu_body_seq<F, LPR, NR, 3>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
                 else if (m == 3) gu_body<F, LPR, NR, 3>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
                 else if (m == 2) gu_body<F, LPR, NR, 2>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
                 else gu_body<F, LPR, NR, 1>(g0, u0, x, xs16, h, etok + k, c + k, row0, li, a, tab);
