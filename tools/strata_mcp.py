@@ -1371,7 +1371,7 @@ class Strata:
         cards = list((hw or {}).get("gpus", []))
         if only:
             cards = [c for c in cards if int(c.get("index", -1)) in {int(i) for i in only}]
-        return dsv41_fit.plan(cards, (hw or {}).get("ram_gb"), disk_free, vendor=(hw or {}).get("engine_vendor"), model=model)
+        return dsv41_fit.plan(cards, (hw or {}).get("ram_gb"), disk_free, vendor=(hw or {}).get("engine_vendor"), model=model, named=bool(only))
 
     def dsv41_words(self, hw, model=None, installed: bool = False) -> str:
         """The catalog's `on_this_pc` text for DeepSeek-V4.1-Flash, with the disk it needs (download and preparation) beside the memory: a set that
