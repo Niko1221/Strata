@@ -84,4 +84,19 @@ inline bool conversation_memory_admit(std::optional<uint64_t> available,
     return available && *available >= floor && allocation <= *available - floor;
 }
 
+/// The RAM floor a DISK cache keeps free (MiB), park and restore alike.  `--conversation-cache-min-free-mib` sizes
+/// the resident RAM cache and the RESTORE protocol (parking a whole conversation in RAM, and reading a session file
+/// back whole, both want that much free to live and stay fast).  Neither disk direction is that: a park's only RAM is
+/// the transient snapshot of the running state and the deepest checkpoint (a few hundred MiB at the usual geometry;
+/// the K/V streams past in the 16 MiB write buffer), and a streaming restore's is the parsed meta plus the same 16 MiB
+/// staging block (no new host allocation of the conversation's size) - the 2560 floor's rationale was the full-file parse, which the
+/// streaming restore removed.  Demand the full floor before either and the disk cache refuses to work exactly when the
+/// box is full - the case it exists for.  Both keep the smaller of the operator's floor and this margin: enough free
+/// that the transient itself does not tip the box into reclaim, small enough that a nearly-full box still parks and
+/// restores.  The RAM cache and the RESTORE protocol keep the operator's full floor.
+inline constexpr int64_t DISK_CACHE_MIN_FREE_MIB = 512;
+inline int64_t disk_cache_floor_mib(int64_t min_free_mib) {
+    return min_free_mib < DISK_CACHE_MIN_FREE_MIB ? min_free_mib : DISK_CACHE_MIN_FREE_MIB;
+}
+
 } // namespace strata::core

@@ -701,6 +701,7 @@ system prompt with a billing header that changes on every request; the server pi
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
+| `--conversation-cache-disk-mib N` (opt-in) | Park conversations to disk, as session files under this total budget, instead of RAM copies; `--conversation-cache-mib` is then ignored. See below. |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
 
 The RAM figure the floor is checked against is the smallest of `MemAvailable`, the room under each cgroup limit visible to
@@ -721,9 +722,49 @@ Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. T
 are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
 allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
-stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
+stage. Parked snapshots are not kept across restarts; with the disk cache below a parked snapshot is one of the session files, so it persists too when the keep is on
+(`--conversation-cache-days N` above 0; the live conversation is then parked on a clean exit). `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
+
+**On disk (`--conversation-cache-disk-mib N`, opt-in).** The parked conversations become session files instead of
+host-RAM copies: N MiB is the whole budget across the files, and while it is on, `--conversation-cache-mib` is
+ignored (the engine says so). A park streams what the save endpoint writes - running state, the deepest checkpoint,
+every layer's K/V including the draft - to a new file in `--conversation-cache-dir` (default: a `conversation_cache`
+folder next to the pack), after which RAM keeps only the token and checkpoint index; the budget counts the file. A
+folder on RAM-backed storage (tmpfs, ramfs - a `/tmp` default is one) turns the disk cache off at startup and says so:
+parking files there parks conversations in RAM, and those pages belong to no process and outlive the engine. A
+parked write needs disk room for the whole file plus `--session-min-free-mib`, with an 8 GiB floor, and the host RAM
+admission gate can refuse the write's peak too - then the park is skipped like the other skip-park paths and the
+conversation is simply not parked. The request switch restores the same way in reverse: it parses only the running
+state and the deepest checkpoint into RAM (a few hundred MiB, the same transient a park costs) and streams the K/V
+through one 16 MiB block straight into the pools that hold them, so the restore allocates no host memory of the
+conversation's size - only the running state, the deepest checkpoint and the staging block. The same bounds and
+checks as `RESTORE` run first, but the RAM gate costs only that transient: in disk mode a park and a restore each
+keep the smaller of `--conversation-cache-min-free-mib` and 512 MiB free, and the full flag still sizes the RAM
+cache and gates `RESTORE` (below). A read that fails in the file itself (parse, checksum, read errors)
+drops the entry and its file and reads the prompt from scratch; a RAM refusal (the admission gate inside the read,
+or a failed allocation) and a limits preflight refusal drop the entry and keep the file for the next start's scan, and
+a snapshot bigger than the whole budget skips the park without writing it. The K/V lands in the session before the
+final integrity check, so a file that turns out corrupt mid-stream costs this request its current resume point too:
+the prompt is read again from scratch (the parked copies of other conversations are not lost). The files carry the
+same model and configuration identity as the session files below. At startup
+the folder is scanned: matching files are indexed oldest-first, so a returning client resumes from its file; files
+from another model or configuration are removed, and `--conversation-cache-days N` decides what outlives the
+engine: the default `0` keeps nothing - the next start empties the folder, a run without the disk cache on prunes
+it too (the engine logs `pruned N parked conversation file(s)`), and nothing is parked at exit; with N above 0
+the files survive restarts and ones unused for N days go at start. Survivors over the budget are
+evicted oldest-first and their files go with them, so the
+log line `folder ...: N conversation(s) kept from earlier runs` counts what survived. A pinned shared prefix (`pin=N`,
+above) is runtime-only: a restored conversation comes back un-pinned, and the next request pins it again. On QUIT,
+with the keep on, the
+live conversation is parked before the engine exits, so the current chat is there next start; the server gives the
+engine 20 s after
+QUIT before terminating it, so a park that needs longer is simply lost - the file is written under a temporary name
+and renamed once complete, so nothing corrupt is left, and the conversation reads from scratch next start. Images
+are matched by their keys as in RAM mode. With `--layer-split` the disk cache turns off and says so (one file per
+stage is not what this folder cache is); RAM parking continues under `--conversation-cache-mib`. `--batch` and the
+save/restore endpoints are unchanged.
 
 ### Session files (disk)
 
