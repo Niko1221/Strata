@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import io
 import json
@@ -2440,6 +2441,107 @@ class PcieShare(unittest.TestCase):
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
 
 
+class PcieBytes(unittest.TestCase):
+    """What the engine put on the link (the DONE line's pcie_bytes / staged_bytes fields, and the once-a-second
+    "PCIE" line): the Monitor shows it as a rate and a run total on a card whose driver has no PCIe traffic counter.
+    An engine that does not report the fields leaves the figure missing, never 0."""
+
+    def test_the_prompt_staging_is_counted_with_the_decode_reads(self):
+        """A prompt stages gigabytes before the first token; a figure that only watched the decode's reads would show
+        the link idle through all of it."""
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25 pcie_bytes=10485760 staged_bytes=5242880"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        row = svc.history[-1]
+        self.assertEqual((row["pcie_bytes"], row["staged_bytes"]), (10 * 2 ** 20, 5 * 2 ** 20))
+        self.assertEqual((svc.totals["pcie_bytes"], svc.totals["staged_bytes"]), (10 * 2 ** 20, 5 * 2 ** 20))
+        self.assertEqual(svc._pcie_total_mb(), 15.0)   # the run total is everything that crossed the link
+        self.assertEqual(svc.pcie_log[-1][2], 15 * 2 ** 20)   # ...and the rate window counts it in one go
+
+    def test_history_rows_and_the_run_total(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25 pcie_bytes=10485760",
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25 pcie_bytes=0",
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25"])       # an older engine: it does not say
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(3):
+                list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        self.assertEqual([r["pcie_bytes"] for r in svc.history], [10 * 2 ** 20, 0, None])
+        self.assertEqual(svc.totals["pcie_bytes"], 10 * 2 ** 20)
+        self.assertEqual(svc._pcie_total_mb(), 10.0)
+        self.assertEqual(len(svc.pcie_log), 2)        # the older engine's request is not in it
+
+    def test_the_rate_spreads_each_request_over_the_seconds_it_ran(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIsNone(svc._pcie_mb_s())           # nothing reported: missing, not idle
+        now = time.time()
+        svc.pcie_log.append((now - 10, now - 8, 2 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 1.0)       # 2 MiB over the 2 s that request ran
+        svc.pcie_log.append((now - 400, now - 390, 900 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 1.0)       # older than the window: not counted
+        svc.pcie_log.append((now - 4, now - 3, 0))    # a request that read nothing over the link
+        self.assertEqual(svc._pcie_mb_s(), 0.7)       # its seconds join the window, so the mean over 3 s is 0.7
+        svc.pcie_log.clear()
+        svc.pcie_log.append((now - 0.001, now, 2 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 8.0)       # a millisecond is no rate: its span is floored at 0.25 s
+
+    def test_the_once_a_second_line_makes_the_graph_follow_the_traffic(self):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "</think>\n\nok", max_context=CTX)
+        engine.pcie_live = collections.deque(maxlen=8)
+        engine.pcie_lock = threading.Lock()
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIsNone(svc._pcie_mb_s())           # nothing said yet: this card has no counter to read
+        now = time.monotonic()
+        engine.pcie_live.append((now - 3, 0))
+        engine.pcie_live.append((now - 2, 4 * 2 ** 20))
+        engine.pcie_live.append((now - 1, 9 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 4.5)       # 9 MiB over the 2 s between the first line and the last
+        engine.pcie_live.append((now - 0.5, 9 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 3.6)       # a second that put nothing on the link pulls the mean down
+        engine.pcie_live.clear()
+        engine.pcie_live.append((now - 60, 0))
+        engine.pcie_live.append((now - 40, 100 * 2 ** 20))
+        engine.pcie_live.append((now - 0.2, 100 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 0.0)       # ten seconds or more ago: the live window is short
+        engine.pcie_live.clear()
+        engine.pcie_live.append((now - 30, 9 * 2 ** 20))
+        self.assertEqual(svc._pcie_mb_s(), 0.0)       # the engine stopped saying: the request ended, the link is idle
+
+    def test_a_long_prompt_moves_the_graph_although_the_decode_has_not_started(self):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "</think>\n\nok", max_context=CTX)
+        engine.pcie_live = collections.deque(maxlen=8)
+        engine.pcie_lock = threading.Lock()
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        now = time.monotonic()
+        engine.pcie_live.append((now - 3, 0, 0))            # the request started: nothing has crossed yet
+        engine.pcie_live.append((now - 2, 0, 60 * 2 ** 20))  # the prompt staged 60 MiB; the decode has not run
+        self.assertEqual(svc._pcie_mb_s(), 60.0)
+        engine.pcie_live.append((now - 1, 0, 60 * 2 ** 20))
+        engine.pcie_live.append((now - 0.5, 10 * 2 ** 20, 60 * 2 ** 20))   # now the decode reads back over it
+        self.assertEqual(svc._pcie_mb_s(), 28.0)            # 70 MiB over the 2.5 s, prompt staging and decode alike
+
+    def test_an_old_engine_is_idle_between_requests_rather_than_missing(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "</think>\n\nok", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        now = time.time()
+        svc.pcie_log.append((now - 600, now - 590, 50 * 2 ** 20))
+        svc.pcie_reported = True                      # its DONE line reported the counter
+        self.assertEqual(svc._pcie_mb_s(), 0.0)       # nothing inside the window: idle, not "missing"
+        svc.pcie_reported = False
+        svc.pcie_log.clear()
+        self.assertIsNone(svc._pcie_mb_s())           # an engine that never said: the Monitor says so too
+
+
 class PeerDevice(unittest.TestCase):
     """#665: several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache
     tier, and the engine refuses it beside --layer-split: the server must not add one then."""
@@ -2953,6 +3055,15 @@ class CancelledRead(unittest.TestCase):
         StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=x other=1")
         self.assertNotIn("chunk", e.last)
         self.assertNotIn("other", e.last)
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=1536 "
+                                    "experts_streamed=3 pcie_bytes=10485760")
+        self.assertEqual((e.last["chunk"], e.last["experts_streamed"], e.last["pcie_bytes"]), (1536, 3, 10485760))
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=1536 "
+                                    "experts_streamed=3 pcie_bytes=10485760 staged_bytes=5242880")
+        self.assertEqual((e.last["pcie_bytes"], e.last["staged_bytes"]), (10485760, 5242880))
+        before = SimpleNamespace()
+        StrataEngine._parse_done(before, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2")
+        self.assertNotIn("pcie_bytes", before.last)
 
     def test_request_stats_chunk_fields(self):
         """Across a request's continuations the streamed blobs add up; the chunk is the request's own read's."""
@@ -2960,6 +3071,9 @@ class CancelledRead(unittest.TestCase):
                                {"prompt_ms": 2.0, "chunk": 64, "experts_streamed": 5}])
         self.assertEqual((stats["chunk"], stats["experts_streamed"], stats["prompt_ms"]), (1536, 105, 12.0))
         self.assertNotIn("chunk", request_stats([{"prompt_ms": 1.0}, {"prompt_ms": 1.0, "chunk": 64}]))
+        self.assertEqual(request_stats([{"prompt_ms": 1.0, "pcie_bytes": 2 * 2 ** 20},
+                                        {"prompt_ms": 1.0, "pcie_bytes": 3 * 2 ** 20}])["pcie_bytes"], 5 * 2 ** 20)
+        self.assertNotIn("pcie_bytes", request_stats([{"prompt_ms": 1.0}, {"prompt_ms": 1.0}]))
 
     def test_prompt_tokens_seen(self):
         last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}

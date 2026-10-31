@@ -36,6 +36,7 @@
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
+#include "strata/core/link_meter.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/uma_cache.hpp"
@@ -457,6 +458,43 @@ bool refill_blocking() {
 }
 
 using Clock = std::chrono::steady_clock;
+
+// Whether this run counts its own link bytes at all: the HIP build on the gfx1100 family (RX 7900 XTX / XT / GRE,
+// W7900 / W7800) - the card the figure was measured on - or any AMD card with STRATA_LINK_CHIPS=all.  Nothing
+// elsewhere: a CUDA / SYCL build and every other AMD part keep the last release's output, and an integrated Radeon
+// would count blobs that never cross a link (include/strata/core/link_meter.hpp).
+[[maybe_unused]] static bool link_meter_on() {
+#if defined(STRATA_USE_HIP)
+    static const bool on = [] {
+        int dev = 0;
+        cudaDeviceProp p{};
+        return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+               strata::core::link_meter_arch(p.gcnArchName, std::getenv("STRATA_LINK_CHIPS"));
+    }();
+    return on;
+#else
+    return false;
+#endif
+}
+
+// STRATA_LINK_STATS=1: while a request runs, say about once a second how many expert bytes have crossed the link so
+// far ("PCIE <read bytes> <staged bytes>", the running totals for this engine process: what the decode read back over
+// the link and what the prompt staged host -> device).  The server asks for it, so the Monitor's PCIe graph follows
+// the traffic as it happens instead of waiting for the request's DONE line.  Without the variable, or on a card
+// link_meter_on() refuses, the engine prints nothing extra: the same output as the last release.
+static void link_stat(uint64_t read_bytes, uint64_t staged_bytes, Clock::time_point& last) {
+    if (!link_meter_on())
+        return;
+    static const bool on = [] { const char* v = std::getenv("STRATA_LINK_STATS"); return v != nullptr && v[0] == '1'; }();
+    if (!on)
+        return;
+    const Clock::time_point t = Clock::now();
+    if (t - last < std::chrono::seconds(1))
+        return;
+    last = t;
+    std::printf("PCIE %llu %llu\n", (unsigned long long) read_bytes, (unsigned long long) staged_bytes);
+    std::fflush(stdout);
+}
 
 // --pipeline-windows: every STRATA_PIPELINE_* test and tuning variable (THETA, FORCE_MISS, SWITCH, LOG, TRACE, DOOM_SKIP,
 // LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP, SPEC_DEPTH) is read only with STRATA_PIPELINE_DEBUG=1; without it the
@@ -14109,6 +14147,8 @@ int main(int argc, char** argv) {
             tr("r0");
             strata::core::conversation_checkpoint_join(nullptr);   // STRATA_CKPT_ASYNC: the last save's copy has landed
             const int64_t streamed0 = sp.chain_experts_streamed();   // the DONE line's experts_streamed= is the difference
+            const int64_t staged0 = sp.chain_experts_streamed_bytes();   // ... and staged_bytes= (those blobs, in bytes)
+            Clock::time_point link_last{};                      // this request's last "PCIE" line (link_stat's beat)
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
             // exactly the start of this prompt - at most n - 1 of them, the last token is always the first window
             auto starts_with = [&](const std::vector<int32_t>& pre, const std::vector<ImgKey>& pre_imgs) -> bool {
@@ -15242,10 +15282,11 @@ int main(int argc, char** argv) {
                     bool run_ok;
                     if (!co_set.empty() && !co_tried && admit_slot >= 0 && req_imgs.empty()) {
                         co_tried = true;
-                        run_ok = co_run(q, r, e);
+                        run_ok = co_run(q, r, e);   // the co-read stages the chunk of every prompt it takes
                     } else {
                         run_ok = sp.run(ids.data() + q, r - q, q, e);
                     }
+                    link_stat(drive.d.pcie_bytes, sp.chain_experts_streamed_bytes(), link_last);   // the read staged a chunk
                     if (run_ok && q == 0 && sp.kva_floor() > 0) {   // KVA approximated the start of this prompt: remember which tokens
                         kva_floors.note(ids.data(), sp.kva_floor());
                         if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
@@ -16074,6 +16115,7 @@ int main(int argc, char** argv) {
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
+            const uint64_t pcie_bytes0 = drive.d.pcie_bytes;     // the decode's expert bytes over the link
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
             if (cancelled) finish = nf_hit ? "nonfinite" : "cancel";
             // ======== --pipeline-windows 2: the decode windows with the two cards overlapped ========
@@ -16597,6 +16639,7 @@ int main(int argc, char** argv) {
                         eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[(size_t) i]) != o.eos_ids.end();
                     }
                     std::fflush(stdout);
+                    link_stat(drive.d.pcie_bytes, sp.chain_experts_streamed_bytes(), link_last);   // ... and the decode
                     if (nf) finish = "nonfinite";
                     else if (eos) finish = "stop";
                     else if (stop_req.load()) finish = "cancel";
@@ -17054,6 +17097,7 @@ int main(int argc, char** argv) {
                     eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 }
                 std::fflush(stdout);
+                link_stat(drive.d.pcie_bytes, sp.chain_experts_streamed_bytes(), link_last);   // ... and the decode
                 ++rounds;
                 if (drive.d.fs) drive.d.fs->completed.fetch_add(1, std::memory_order_release);
                 const Clock::time_point tw2 = Clock::now();
@@ -17336,23 +17380,30 @@ int main(int argc, char** argv) {
             //                    not in [lookups])
             //      [lookup-chain accepted] [lookup-chain offered] [suffix accepted] [suffix offered] [windows]
             //      (only with --lookup-chain)
-            //      chunk=<tokens> experts_streamed=<blobs>   (key=value, last: the first chunk of the request's longest
-            //      batched segment, 0 when it read none; the expert blobs its prompt read copied host -> device on
-            //      every stage - not the CPU share's, the stage helper's or a --peer-device peer's)
+            //      chunk=<tokens> experts_streamed=<blobs>   (key=value: the first chunk of the request's longest
+            //      batched segment, 0 when it read none; the expert blobs its prompt read copied host -> device on every
+            //      stage - not the CPU share's, the stage helper's or a --peer-device peer's)
+            //      [pcie_bytes=<bytes> staged_bytes=<bytes>]   (gfx1100 HIP only: what its decode read back over the
+            //      link - one layer blob per PCIe expert fetch - and what those blobs crossed it with)
+            char link_txt[96] = "";   // the link keys: printed only where the engine counts its link (link_meter_on)
+            if (link_meter_on())
+                std::snprintf(link_txt, sizeof(link_txt), " pcie_bytes=%llu staged_bytes=%llu",
+                              (unsigned long long) (drive.d.pcie_bytes - pcie_bytes0),
+                              (unsigned long long) (sp.chain_experts_streamed_bytes() - staged0));
             char chain_txt[128] = "";
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
+                        "experts_streamed=%lld%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+                        (long long) (sp.chain_experts_streamed() - streamed0), link_txt);
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&

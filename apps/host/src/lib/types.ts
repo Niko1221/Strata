@@ -285,6 +285,9 @@ export interface MonitorState {
     powerW?: number | null;
     powerLimitW?: number | null;
     pcieRxMbs?: number | null;
+    /** True when that PCIe figure is what the engine put on the link (its own expert reads), not a driver counter:
+     *  the amdgpu and Xe drivers on Linux report the link's speed and width but no traffic counter. */
+    pcieEngineFigure?: boolean;
     /** CPU and SSD temperatures (only where this PC can give one) and the GPU energy used since the host started, in Wh (#3628). */
     cpuTempC?: number | null;
     ssdTempC?: number | null;

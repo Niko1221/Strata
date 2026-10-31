@@ -9,6 +9,15 @@ A background thread samples once a second and keeps the last 60 readings of each
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
+
+PCIe has two figures.  `gpu_pcie_rx_mb` / `gpu_pcie_tx_mb` are the driver's own link counters - NVIDIA's NVML gives
+them; the amdgpu driver and Intel's Xe driver give the link's speed and width but no traffic counter.  Where there is
+no counter the server adds `pcie_engine_mb` (and `pcie_engine_total_mb`): what Strata's engine put on the link itself -
+the expert blocks its prompt staged host -> device and its answer read back over the link.  While a request runs the
+engine says its running totals about once a second (STRATA_LINK_STATS), so the figure follows the traffic through the
+prompt as well as the answer; between requests it is 0, and it is absent - never 0 - when no engine here reports the
+counter (the engine counts it on an AMD gfx1100, where the driver has no counter; see docs/AMD_HIP.md).  It is labelled
+as the engine's figure wherever it is shown.
 """
 from __future__ import annotations
 
@@ -141,6 +150,16 @@ class _Amd:
     """#301: an AMD card's readings from the amdgpu driver's sysfs files (Linux; no ROCm library needed), with _Nvml's
     interface: load (gpu_busy_percent), VRAM (mem_info_vram_used / _total), and from its hwmon folder the temperature
     (temp1_input, the edge sensor, m°C), power (power1_average or power1_input, µW) and its cap (power1_cap)."""
+
+    # The link's speed and width come from the driver (current_link_speed / current_link_width); its traffic does not.
+    # The driver's `gpu_metrics` table has pcie_bandwidth_acc / pcie_bandwidth_inst fields, but on our RX 7900 GRE
+    # (gfx1100, device 0x744c, Arch, kernel 7.2.11-arch1-1, rocm-smi-lib 7.2.0-2) that table is 120 bytes and
+    # `rocm-smi --showmetrics` answers both with N/A: this card's firmware does not fill them.  So the PCIe figure the
+    # Monitor shows on such a card is what the engine itself put on the link (the server's pcie_engine_mb: the engine
+    # says its running total about once a second while a request runs, and says it again in the DONE line at the end),
+    # labelled as that rather than as a driver counter.  It is absent - never 0 - when the engine does not say.
+    note = ("the amdgpu driver has no PCIe traffic counter for this card, so the PCIe figure is what Strata's engine "
+            "moved over the link (its expert reads), not everything the link carried")
 
     def __init__(self, index=0, sysfs=None):
         self.dev = amd_device_dir(index, sysfs)
@@ -662,7 +681,7 @@ class Telemetry:
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                          "disk_read_mb", "tok_s", "prefill_tok_s_mean", "pcie_engine_mb"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
             self._stop.wait(1.0)

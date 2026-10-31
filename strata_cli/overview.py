@@ -143,6 +143,8 @@ def build(metrics: dict | None) -> dict | None:
                 "vram_hist": _series(history, "gpu_mem_used", GIB), "temp": _num(hw.get("gpu_temp")), "temp_hist": _series(history, "gpu_temp"),
                 "power": _num(hw.get("gpu_power")), "power_limit": _num(hw.get("gpu_power_limit")), "power_hist": _series(history, "gpu_power"),
                 "pcie_rx": _num(hw.get("gpu_pcie_rx_mb")), "pcie_hist": _series(history, "gpu_pcie_rx_mb"),
+                # the engine's own figure, for a card whose driver has no PCIe traffic counter (AMD and Intel on Linux)
+                "pcie_engine": _num(hw.get("pcie_engine_mb")), "pcie_engine_hist": _series(history, "pcie_engine_mb"),
                 "pcie_gen": gen if gen is not None else genmax, "pcie_width": width, "count": _num(static.get("gpu_count"))},
         "cpu": {"load": _num(hw.get("cpu_pct") if hw.get("cpu_pct") is not None else hw.get("cpu")), "hist": _series(history, "cpu"),
                 "cores": _num(static.get("cores")), "threads": _num(static.get("threads")), "sockets": _num(static.get("sockets")),
@@ -379,13 +381,19 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     c, d = model["cpu"], model["disk"]
     gen = f"Gen{int(g['pcie_gen'])}" if g["pcie_gen"] else "PCIe"
     link = f"{gen} x{int(g['pcie_width'])}" if g["pcie_width"] else gen
+    # the driver's counter where it exists (NVML); otherwise what Strata's engine put on the link, said plainly
+    pcie_from_engine = g["pcie_rx"] is None and g.get("pcie_engine") is not None
+    pcie_rx = g["pcie_rx"] if g["pcie_rx"] is not None else g.get("pcie_engine")
+    pcie_hist = g["pcie_engine_hist"] if pcie_from_engine else g["pcie_hist"]
+    pcie_sub = (f"staged to GPU {fmt(pcie_rx)} MB/s" if pcie_from_engine else
+                f"to GPU {fmt(pcie_rx)} MB/s" if pcie_rx is not None else "to GPU --")
     cpu_sub = (f"{int(c['sockets'])} CPUs · {int(c['cores'])} cores" if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
                f"{int(c['cores'])} cores · {int(c['threads'])} threads" if c["cores"] and c["threads"] else
                f"{int(c['threads'])} threads" if c["threads"] else "")
     tiles2 = [
         _tile("Power", f"{fmt(g['power'])} W", f"of {fmt(g['power_limit'])} W limit" if g["power_limit"] else "", spark(g["power_hist"], inner, glyphs, lo=0),
               tile_w, accent=accent, box_style=box_style),
-        _tile("PCIe", link, f"to GPU {fmt(g['pcie_rx'])} MB/s" if g["pcie_rx"] is not None else "to GPU --", spark(g["pcie_hist"], inner, glyphs, lo=0), tile_w,
+        _tile("PCIe", link, pcie_sub, spark(pcie_hist, inner, glyphs, lo=0), tile_w,
               accent=accent, box_style=box_style),
         _tile("CPU", f"{fmt(c['load'])} %", cpu_sub, spark(c["hist"], inner, glyphs, lo=0, hi=100), tile_w, accent=accent, box_style=box_style),
         _tile("Disk read", f"{fmt(d['read'], 1)} MB/s", f"write {fmt(d['write'], 1)} MB/s" if d["write"] is not None else "write --",

@@ -104,6 +104,22 @@ class Draw(unittest.TestCase):
                      "1-7 views", "b open in browser", "q quit"):
             self.assertIn(part, text, part)
 
+    def test_pcie_staged_by_the_engine_when_the_driver_has_no_traffic_counter(self):
+        """An AMD card on Linux gives its load, VRAM, temperature, power and the link's speed and width, but the
+        amdgpu driver has no PCIe traffic counter: the tile then shows - and says - what Strata staged onto the link."""
+        m = metrics("generating")
+        del m["hardware"]["gpu_pcie_rx_mb"], m["history"]["gpu_pcie_rx_mb"]
+        m["hardware"]["pcie_engine_mb"] = 412.5
+        m["history"]["pcie_engine_mb"] = [400.0, 412.5]
+        model = overview.build(m)
+        self.assertIsNone(model["gpu"]["pcie_rx"])
+        self.assertEqual(model["gpu"]["pcie_engine"], 412.5)
+        self.assertEqual(model["gpu"]["pcie_engine_hist"], [400.0, 412.5])
+        text = draw(model)
+        self.assertIn("Gen4 x16", text)                  # the link itself still comes from the driver
+        self.assertIn("staged to GPU 412 MB/s", text)
+        self.assertNotIn("to GPU 18,237", text)
+
     def test_without_connect_the_hint_says_six_views(self):
         text = draw(overview.build(metrics()), connect=False)
         self.assertIn("1-6 views", text)
