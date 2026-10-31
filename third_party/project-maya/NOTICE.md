@@ -22,3 +22,5 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
   Maya's `tests/ds4_marks_test.cpp`.
 - A1, the server side (`deepseek_restore_points`, `restore_point_settings`, `StrataEngine.restore_keys`,
   `serve/test_ds4_restore_points.py`): Project Maya #639 (needmorevram) and v1.1.37 / v1.1.39 (mw00).
+- A3, shared start across conversations (`prefix_keep` / `prefix_find` / `prefix_take` in `ds4_main.cpp`): Project Maya #607
+  (mw00, b2d4c30, v1.1.37).
