@@ -1529,6 +1529,7 @@ struct PlIoFns final : strata::pl::PlIo {
     std::function<bool(int, int, int, int&)> f_lookup_choose;
     std::function<bool(const strata::pl::PlOp&)> f_exec;
     std::function<bool(const strata::pl::PW&, int, const int32_t*, bool&)> f_verdict;
+    std::function<int(const strata::pl::PW&, int, const int32_t*)> f_emit_count;
     std::function<void(const strata::pl::PW&, int, double)> f_observe;
     std::function<double()> f_now;
     std::function<void(const char*, int, int, int)> f_trace;
@@ -1546,6 +1547,9 @@ struct PlIoFns final : strata::pl::PlIo {
     bool lookup_choose(int T, int k, int match, int& t) override { return f_lookup_choose(T, k, match, t); }
     bool exec(const strata::pl::PlOp& op) override { return f_exec(op); }
     bool verdict(const strata::pl::PW& w, int a, const int32_t* outp, bool& last) override { return f_verdict(w, a, outp, last); }
+    int emit_count(const strata::pl::PW& w, int a, const int32_t* outp) override {
+        return f_emit_count ? f_emit_count(w, a, outp) : a + 1;
+    }
     void observe(const strata::pl::PW& w, int a, double ms) override { f_observe(w, a, ms); }
     double now_ms() override { return f_now(); }
     void trace(const char* ev, int seq, int x0, int x1) override { f_trace(ev, seq, x0, x1); }
@@ -16318,6 +16322,17 @@ int main(int argc, char** argv) {
             // for this request, said once per reason, instead of ending the engine.
             bool pl_go = false;
             strata::pl::Config cfg;
+            // how many of a window's accepted tokens the reply keeps - the emission loops' own rule (a stop
+            // token is emitted and ends the reply; then max_new; a cancel still emits the whole window).  The commit
+            // keeps this many, so the session always ends exactly at the reply (PlIo::emit_count).
+            auto emit_keep = [&](int a, const int32_t* outp) -> int {
+                int n = 0;
+                while (n <= a && produced_n + n < max_new) {
+                    ++n;
+                    if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[n - 1]) != o.eos_ids.end()) break;
+                }
+                return n;
+            };
             if (pl_new && pl_serial == nullptr && !cancelled && produced_n < max_new) {
                 if (!pl_prepare(err)) {
                     std::printf("ERR %s\n", err.c_str());
@@ -16642,10 +16657,17 @@ int main(int argc, char** argv) {
                         for (int i = 0; i <= a; ++i) std::fprintf(stderr, " %d", (int) outp[i]);
                         std::fprintf(stderr, "\n");
                     }
-                    x = outp[a];
+                    x = outp[std::max(a, 0)];   // (a = -1: nothing was emitted, the request ends here)
                     p = w.p + a + 1;
                     pcie_auto_step(req_pcie_frac);   // the measured share, as the pw-2 loop takes it after each verdict
                     return true;
+                };
+                // how many of the window's a + 1 accepted tokens the reply really keeps - the emission loop's own
+                // rule (non-finite logits: none; then max_new; then a stop token; a cancel still emits the window).  The
+                // commit keeps exactly this many, so the state reaches the emitted end and no further.
+                io.f_emit_count = [&](const strata::pl::PW& w, int a, const int32_t* outp) -> int {
+                    if (SV(pl_nf, w.slot).nonfinite_row() >= 0) return 0;
+                    return emit_keep(a, outp);
                 };
                 io.f_observe = [&](const strata::pl::PW& w, int a, double ms) { policy.observe(w.sfx, w.T, a, w.sfx_match, ms); };
                 io.f_now = [&]() { return ms_now(); };
@@ -17259,7 +17281,11 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
-                    if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
+                    {   // keep only the rows the reply emits, so the session ends at the reply's last token
+                        const int ek = V1(A).nonfinite_row() >= 0 ? 0 : std::max(emit_keep(a, outp.data()), 0);
+                        if (const int keep = std::min(a + 1, ek + 1); keep < a + 1) a = keep - 1;
+                        if (a >= 0 && !V1(A).pl_commit_async(a + 1, err)) return die(err);
+                    }
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
                     draft_accepted += a;
@@ -17308,7 +17334,7 @@ int main(int argc, char** argv) {
                         for (int i = 0; i <= a; ++i) std::fprintf(stderr, " %d", (int) outp[(size_t) i]);
                         std::fprintf(stderr, "\n");
                     }
-                    x = outp[(size_t) a];
+                    x = outp[(size_t) std::max(a, 0)];
                     p = A.p + a + 1;
                     pcie_auto_step(req_pcie_frac);   // 0.1.44: the measured share in the pipelined loop too (STRATA_PCIE_AUTO_SPLIT=1 on a split)
                     if (!last && !ajob && !pl_adapt()) return die("an adaptive refill failed");
@@ -17682,6 +17708,13 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                // a reply that stops (max_new, or a stop token) inside this window keeps only the rows it emits
+                // (keep = ec, PlIo::emit_count), so the session ends exactly at the reply's last token
+                // (Sched::verdict does the same for the new pipelined loop)
+                if (!merged) {
+                    const int ek = std::max(emit_keep(a, outv.data()), 0);
+                    if (const int keep = std::min(a + 1, ek + 1); keep < a + 1) a = keep - 1;
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)

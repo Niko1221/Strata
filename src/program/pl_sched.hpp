@@ -172,6 +172,12 @@ public:
     virtual bool exec(const PlOp& op) = 0;   // false: an error (the engine has said why)
     // emit the window's picks outp[0..a] (up to max_new, EOS); `last` = EOS, max_new or a cancel
     virtual bool verdict(const PW& w, int a, const int32_t* outp, bool& last) = 0;
+    // How many of a window's a + 1 accepted tokens this request will really emit - the same rule the emission loop
+    // applies (max_new, then a stop token).  The commit keeps exactly this many, so the state's committed end is the
+    // emitted end, which is the serial loop's invariant by construction.  a request that stopped at max_new
+    // inside a window used to keep the whole window, and the next
+    // request reused a session 2 tokens longer than the reply it could see.  The default (a + 1) is the old rule.
+    virtual int emit_count(const PW& w, int a, const int32_t* outp) { (void) w; (void) a; (void) outp; return a + 1; }
     virtual void observe(const PW& w, int a, double ms) = 0;   // policy.observe (not for seq 0 or the last)
     virtual double now_ms() = 0;
     virtual void trace(const char* ev, int seq, int x0, int x1) = 0;
@@ -188,6 +194,7 @@ struct Stats {
     int64_t undo_jobs = 0, stage_waits = 0; double stage_wait_ms = 0;
     int64_t slot_waits = 0; double slot_wait_ms = 0;
     int64_t restage = 0, restage_spec = 0;
+    int64_t trim_commit = 0;         // verdicts whose commit was cut to what the request still emits
     int64_t chain_waits = 0; double chain_wait_ms = 0;
     int64_t chain_late = 0, chain_steps = 0, chain_launches = 0, chain_cancel = 0;
     int64_t chain_skip = 0;          // depth 3: chains not launched for want of room for D (a guard; never expected)

@@ -200,6 +200,7 @@ public:
     std::string err;                 // the first hard error
     std::vector<std::string> log;    // operations and events (with host times), when keep_log
     bool keep_log = false;
+    bool no_trim = false;            // (f) the pre-fix rule - the commit keeps the whole accepted window
     uint64_t progress = 0;           // anything happened this iteration (the harness skips idle time otherwise)
     double t = 0.0;                  // host time (ms)
     std::function<bool(uint64_t)> ever_doomed;
@@ -311,6 +312,20 @@ public:
         (void) a;
         (void) ms;
     }
+    // the engine's rule - a window whose emission stops at max_new keeps only what the reply keeps.  (A stop
+    // token inside the window keeps the whole window, as both of the engine's own loops do today.)
+    // no_trim reproduces the rule before the fix (keep the whole accepted window): (f) counts how many worlds that
+    // breaks, so the case is proven to catch the bug and not only to pass after it.
+    int emit_count(const PW& w, int a, const int32_t* outp) override {
+        (void) w;
+        if (no_trim) return a + 1;
+        int n = 0;   // the engine's rule: a stop token is emitted and ends the reply, then max_new
+        while (n <= a && produced + n < W_.max_new) {
+            ++n;
+            if (outp[n - 1] == kEos) break;
+        }
+        return n;
+    }
     bool verdict(const PW& w, int a, const int32_t* outp, bool& last) override {
         t += 0.01;
         ++progress;
@@ -328,18 +343,38 @@ public:
                 return hard("stage " + std::to_string(s) + " ran a verified window before the one verified before it");
             verified_order_[s] = it->order[s];
         }
+        const int a_full = a;   // the acceptance before any trim (no_trim: the pre-fix commit, the whole window)
+        int kept = 0;           // how many of this window's picks the reply really takes
         for (int i = 0; i <= a && !eos && produced < W_.max_new; ++i) {
             const int64_t pos = w.p + 1 + i;
             if (outp[i] != W_.truth(pos))
                 return hard("an emitted token differs from the serial loop's at " + std::to_string(pos));
             emitted.push_back(outp[i]);
             ++produced;
+            ++kept;
             emit_end = pos + 1;
             if (outp[i] == kEos) eos = true;
         }
+        // the verdict must keep the rows the reply implies: `a` = min(T - 1, kept), because the commit keeps
+        // kept + 1 rows (the row at w.p was already there).  Before the fix the commit kept the whole accepted
+        // window, so a request that stopped at max_new or on a stop token inside a lookup tail's long window left the
+        // session rows the reply never had, and the next request matched a prefix the reply never had.
+        if (!no_trim && a != std::min(a_full, kept))   // keep = min(T, kept + 1) rows, so a = min(a_full, kept)
+            return hard("the verdict kept " + std::to_string(a + 1) + " rows but the reply takes " +
+                        std::to_string(kept) + " of the window's " + std::to_string(w.T - 1) + " picks (p " +
+                        std::to_string(w.p) + " produced " + std::to_string(produced) + " max_new " +
+                        std::to_string(W_.max_new) + ")");
+        last_end = w.p + (no_trim ? a_full : a) + 1;
+        // the state must end exactly at the reply's end - the sim's ends are one apart (a window's rows sit at
+        // p..p + a and the pick at p + a is the token at p + a + 1, so the state holds w.p + a + 1 tokens while the
+        // reply ends at emit_end).  A window that keeps more rows than the reply emits fails here.
+        if (last_end > emit_end)
+            return hard("the state ends at " + std::to_string(last_end) + " but the reply ends at " +
+                        std::to_string(emit_end) + " (p " + std::to_string(w.p) + " a " + std::to_string(a) +
+                        " kept " + std::to_string(kept) + " of " + std::to_string(w.T - 1) + " picks: rows the reply "
+                        "never had)");
         last = eos || produced >= W_.max_new || (W_.cancel_at >= 0 && verdicts >= W_.cancel_at);
         ++verdicts;
-        last_end = w.p + a + 1;
         return true;
     }
     bool exec(const PlOp& o) override;
@@ -1385,7 +1420,10 @@ int OldLoop::step(PlIo& io) {
     chain_kind = 0;
     int a = 0;
     while (a < A.T - 1 && A.tok[a + 1] == outp[a]) ++a;
-    {
+    // the same rule as Sched::verdict - row k sits at p + k, pick k is the token at p + k + 1, so the reply's
+    // last token takes ec + 1 rows: keep = min(T, ec + 1)
+    if (const int ek = std::max(io.emit_count(A, a, outp), 0); ek < a) a = ek;   // keep = ec + 1 rows
+    if (a >= 0) {
         PlOp m = op(Op::Commit, c_.n_front, A);
         m.keep = a + 1;
         m.p = A.p;
@@ -2899,10 +2937,12 @@ struct RunResult {
     int64_t end = 0;
 };
 
-RunResult run_model(const World& w, const Config& c, const Timing& tm, bool keep_log, bool old) {
+RunResult run_model(const World& w, const Config& c, const Timing& tm, bool keep_log, bool old,
+                    bool no_trim = false) {
     RunResult R;
     Sim sim(w, c, tm);
     sim.keep_log = keep_log;
+    sim.no_trim = no_trim;
     std::unordered_set<uint64_t> doomed_ever;
     sim.ever_doomed = [&](uint64_t u) { return doomed_ever.count(u) > 0; };
     Sched s;
@@ -3014,6 +3054,7 @@ struct Tally {
         st.slot_wait_ms += s.slot_wait_ms;
         st.restage += s.restage;
         st.restage_spec += s.restage_spec;
+        st.trim_commit += s.trim_commit;
         st.chain_waits += s.chain_waits;
         st.chain_wait_ms += s.chain_wait_ms;
         st.chain_late += s.chain_late;
@@ -3410,11 +3451,72 @@ int main(int argc, char** argv) {
         std::printf("  [%.1f s]\n", secs());
     }
 
+    // ---- (f) a request that stops at max_new in the middle of a window.  The state must end where the reply ends
+    // (the session used to run past it, and the next request reused a prefix the reply never had).  B0 and B.
+    if (only.empty() || only == "f") {
+        std::printf("(f) stop at max_new inside a window: random worlds, %lld verdicts per mode\n",
+                    (long long) random_target);
+        Tally tf[3];
+        int64_t req = 0, pre_fix[3] = {0, 0, 0}, pre_runs[3] = {0, 0, 0};   // the pre-fix rule, per mode
+        for (uint64_t k = 0; tf[2].verdicts < random_target && k < (uint64_t) random_target; ++k, ++req) {
+            RandomCase rc = make_random(seed * 9000011u + k);
+            Rng r(seed * 37u + k);
+            Config& c0 = rc.c;
+            c0.suffix = true;
+            c0.S = 8;
+            if (rc.w.lookup_t <= 0) rc.w.lookup_t = 4;
+            for (size_t i = 0; i < rc.w.lk.size(); ++i) rc.w.lk[i] = rc.w.lk[i] || r.p(0.05);
+            // short limits: 1..24 tokens, so most requests stop inside a window instead of at one's end; a high draft
+            // acceptance (def_ok) so the windows are long and the last one usually crosses the limit
+            rc.w.max_new = 1 + r.i(24);
+            rc.w.def_ok = 0.95;
+            // windows of the drafter's full depth, no gate: every window has S_mtp - 1 rows to accept, so the last
+            // one usually crosses the limit (with the gates on, the worlds stop at T = 1 windows and nothing overhangs)
+            c0.S_mtp = 4;
+            c0.S = 8;
+            c0.spec_min_p = 0.0;
+            c0.theta = 0.0f;
+            c0.theta3 = 0.0f;
+            rc.w.eos_pos = -1;   // no stop token: the trim is the only thing that can cut a window here
+            for (int m = 1; m < 3; ++m) {
+                Config c = c0;
+                c.mode = kModes[m];
+                if (kModes[m] == Mode::B && c.n_front < 2) c.n_front = 2;
+                const RunResult rr = run_model(rc.w, c, rc.tm, false, false);
+                tf[m].add(rr);
+                if (!rr.ok && tf[m].fails <= 3)
+                    std::printf("    max_new #%llu (max_new %lld) %s: %s\n", (unsigned long long) k,
+                                (long long) rc.w.max_new, mode_name(kModes[m]), rr.err.c_str());
+                // the same world under the pre-fix rule: the commit keeps the whole accepted window, so the state runs
+                // past the reply.  This is the bug, reproduced symbolically; it must be seen here, not after the fix.
+                const RunResult rp = run_model(rc.w, c, rc.tm, false, false, true);
+                if (!rp.ok && rp.err.find("but the reply ends at") != std::string::npos) ++pre_fix[m];
+                ++pre_runs[m];
+            }
+        }
+        for (int m = 1; m < 3; ++m) {
+            print_tally("max_new", kModes[m], tf[m]);
+            const Stats& s = tf[m].st;
+            std::printf("    windows cut to the reply's end %lld\n", (long long) s.trim_commit);
+            check(tf[m].fails == 0, std::string("(f) stop at max_new, mode ") + mode_name(kModes[m]));
+            check(s.trim_commit > 0, std::string("(f) stop at max_new, mode ") + mode_name(kModes[m]) +
+                                         ": no window was ever cut (the case is not exercised)");
+            // the same worlds under the pre-fix rule: the bug must show up, or (f) proves nothing
+            std::printf("    pre-fix (the commit keeps the whole window): %lld of %lld runs left the state past the "
+                        "reply\n", (long long) pre_fix[m], (long long) pre_runs[m]);
+            check(pre_fix[m] > 0, std::string("(f) stop at max_new, mode ") + mode_name(kModes[m]) +
+                                      ": the pre-fix rule passes too (the case does not catch the bug)");
+        }
+        std::printf("  %lld requests [%.1f s]\n", (long long) req, secs());
+    }
+
     // ---- (d) N2 against the old loop (on the worlds of (a), the first 3000 of (b), and part of (c))
-    std::printf("(d) N2 against the old loop: %lld worlds, %lld the same line for line, %lld differ\n",
-                (long long) cmp.runs, (long long) cmp.same, (long long) cmp.diff);
-    if (!cmp.first.empty()) std::printf("  first difference: %s", cmp.first.c_str());
-    check(cmp.diff == 0 && cmp.same > 0, "(d) N2 is the old loop");
+    if (only.empty() || only == "d") {
+        std::printf("(d) N2 against the old loop: %lld worlds, %lld the same line for line, %lld differ\n",
+                    (long long) cmp.runs, (long long) cmp.same, (long long) cmp.diff);
+        if (!cmp.first.empty()) std::printf("  first difference: %s", cmp.first.c_str());
+        check(cmp.diff == 0 && cmp.same > 0, "(d) N2 is the old loop");
+    }
 
     // ---- coverage of the verdict cases, per mode (over every input)
     if (only.empty()) {
