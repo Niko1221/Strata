@@ -344,6 +344,75 @@ __global__ void __launch_bounds__(WARPS * 32) gemm8_kernel(Df2Segs segs, const i
         }
 }
 
+// ---- Q4_0 variant of the same GEMM (opt-in drafter pack, dtype "q4_0"; a weight is 4 bits, the activations stay int8)
+//
+// Same tiling as the Q8 plane: a group of 8 rows is a unit and a step is 512 values of the reduction axis.  A row's 512 values are 256 bytes in the
+// step (2 KB for the group), lane = block * 2 + half takes 8 bytes = 16 values as two words.  Word 0 holds values 0-3 in its four low nibbles and
+// 4-7 in its four high nibbles, word 1 holds 8-11 and 12-15, so (w & 0x0F0F0F0F) and ((w >> 4) & 0x0F0F0F0F) are the int8 words dp4a wants, as
+// unsigned q = 0..15 (value = (q - 8) * d, ggml Q4_0).  sum((q - 8) x) = sum(q x) - 8 sum(x): the sum of the lane's 16 activations is one more dp4a
+// per word and column, shared by the 8 rows.  The fp16 block scales follow the nibble plane (n_out * n_in / 2 bytes) in the Q8 plane's order.
+template <int WARPS, int UNR = 2>
+__global__ void __launch_bounds__(WARPS * 32) gemm4_kernel(Df2Segs segs, const int8_t* __restrict__ xq, const float* __restrict__ xd, int n_in, int ncols) {
+    constexpr int R = 8;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row_g = (blockIdx.x * WARPS + warp) * R;
+    int si = 0;
+    while (si + 1 < segs.n && row_g >= segs.s[si + 1].row0) ++si;
+    const Df2Seg sg = segs.s[si];
+    const int row0 = row_g - sg.row0;
+    const int nb = n_in / 32, steps = nb / 16;
+    const uint2* wq = reinterpret_cast<const uint2*>(sg.q + (size_t) row0 * (n_in / 2)) + lane;
+    const __half* wd = sg.d + (size_t) row0 * nb + (lane >> 1);
+    const int4* xv = reinterpret_cast<const int4*>(xq) + lane;
+    float acc[R][8];
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) acc[r][c] = 0.0f;
+#pragma unroll UNR
+    for (int st = 0; st < steps; ++st) {
+        int4 w[R];
+        float dw[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            const uint2 raw = wq[(size_t) st * 256 + r * 32];   // 8 rows x 32 lanes x 8 bytes = 2 KB a step
+            w[r] = make_int4((int) (raw.x & 0x0F0F0F0Fu), (int) ((raw.x >> 4) & 0x0F0F0F0Fu), (int) (raw.y & 0x0F0F0F0Fu), (int) ((raw.y >> 4) & 0x0F0F0F0Fu));
+            dw[r] = __half2float(wd[(size_t) st * 128 + r * 16]);
+        }
+        float xs[8];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            const int4 x = xv[(size_t) c * (n_in / 16) + st * 32];
+            int xsum = STRATA_DP4A(0x01010101, x.x, 0);
+            xsum = STRATA_DP4A(0x01010101, x.y, xsum);
+            xsum = STRATA_DP4A(0x01010101, x.z, xsum);
+            xsum = STRATA_DP4A(0x01010101, x.w, xsum);
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                int isum = STRATA_DP4A(w[r].x, x.x, 0);
+                isum = STRATA_DP4A(w[r].y, x.y, isum);
+                isum = STRATA_DP4A(w[r].z, x.z, isum);
+                isum = STRATA_DP4A(w[r].w, x.w, isum);
+                acc[r][c] = fmaf(dw[r] * xs[c], (float) (isum - 8 * xsum), acc[r][c]);
+            }
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            float v = acc[r][c];
+            v += __shfl_xor_sync(0xffffffffu, v, 16);
+            v += __shfl_xor_sync(0xffffffffu, v, 8);
+            v += __shfl_xor_sync(0xffffffffu, v, 4);
+            v += __shfl_xor_sync(0xffffffffu, v, 2);
+            v += __shfl_xor_sync(0xffffffffu, v, 1);
+            if (lane == 0 && c < ncols) sg.y[(size_t) c * sg.n_out + row0 + r] = v;
+        }
+}
+
 // quantize one 32-block of one row to the planar activation layout (a warp: lane = element)
 __device__ __forceinline__ void quant_block(float v, int blk, int col, int K, int8_t* __restrict__ xq, float* __restrict__ xd) {
     const int lane = threadIdx.x & 31;
@@ -517,6 +586,35 @@ __global__ void q8_tile_kernel(const uint8_t* __restrict__ blocks, int8_t* __res
     dpl[(g * 8 * nb) + (int64_t) st * 128 + r * 16 + bi] = __ushort_as_half(dh);
     int8_t* o = qs + g * 8 * n_in + (int64_t) st * 4096 + r * 512 + bi * 32;
     for (int i = 0; i < 32; ++i) o[i] = (int8_t) src[2 + i];
+}
+
+// ggml Q4_0 blocks (18 bytes: fp16 d, 16 bytes with value i in the low nibble of byte i and value i + 16 in the high nibble) of a [n_out][n_in] matrix -> the
+// nibble plane (n_out * n_in / 2 bytes, the layout above) and the tiled d plane; one thread per block
+__global__ void q4_tile_kernel(const uint8_t* __restrict__ blocks, uint8_t* __restrict__ qs, __half* __restrict__ dpl, int n_in, int64_t count) {
+    const int64_t b = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= count) return;
+    const int nb = n_in / 32;
+    const int64_t row = b / nb;
+    const int blk = (int) (b % nb);
+    const int64_t g = row / 8;
+    const int r = (int) (row % 8), st = blk / 16, bi = blk % 16;
+    const uint8_t* src = blocks + b * 18;
+    const uint16_t dh = (uint16_t) src[0] | ((uint16_t) src[1] << 8);
+    dpl[(g * 8 * nb) + (int64_t) st * 128 + r * 16 + bi] = __ushort_as_half(dh);
+    for (int half = 0; half < 2; ++half) {   // values half * 16 .. +15 of the block
+        uint32_t wd[2];
+        for (int w = 0; w < 2; ++w) {   // word w holds values w * 8 .. w * 8 + 7 of the half: byte p = (value w*8+p, value w*8+4+p) as (low, high) nibble
+            uint32_t v = 0;
+            for (int p = 0; p < 4; ++p) {
+                const uint8_t b_lo = src[2 + w * 8 + p], b_hi = src[2 + w * 8 + 4 + p];
+                const uint32_t q_lo = half == 0 ? (b_lo & 15u) : (b_lo >> 4), q_hi = half == 0 ? (b_hi & 15u) : (b_hi >> 4);
+                v |= (q_lo | (q_hi << 4)) << (p * 8);
+            }
+            wd[w] = v;
+        }
+        uint8_t* o = qs + g * 8 * (n_in / 2) + (int64_t) st * 2048 + r * 256 + (bi * 2 + half) * 8;
+        *reinterpret_cast<uint2*>(o) = make_uint2(wd[0], wd[1]);
+    }
 }
 
 // ---- top-16
@@ -730,13 +828,20 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
     int rows = 0;
     for (int i = 0; i < n; ++i) {
         if (mats[i].n_out % 16 != 0) throw std::invalid_argument("df2_gemm: n_out must be a multiple of 16");
+        if (mats[i].q4 != mats[0].q4) throw std::invalid_argument("df2_gemm: one launch, one weight format");
         const int8_t* q = static_cast<const int8_t*>(mats[i].w);
-        segs.s[i] = Df2Seg{q, reinterpret_cast<const __half*>(q + (size_t) mats[i].n_out * n_in), mats[i].y, mats[i].n_out, rows};
+        segs.s[i] = Df2Seg{q, reinterpret_cast<const __half*>(q + (size_t) mats[i].n_out * n_in / (mats[i].q4 ? 2 : 1)), mats[i].y, mats[i].n_out, rows};
         rows += mats[i].n_out;
     }
     segs.n = n;
     const int8_t* xqp = static_cast<const int8_t*>(xq);
     cudaStream_t st = (cudaStream_t) stream;
+    if (mats[0].q4) {   // the Q4_0 pack: 4 warps a block when the rows allow, else 2
+        if (rows % 32 == 0) gemm4_kernel<4><<<rows / 32, 128, 0, st>>>(segs, xqp, xd, n_in, ncols);
+        else gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols);
+        check("gemm4");
+        return;
+    }
     const int variant = g_gemm_variant != 0 ? g_gemm_variant : (rows % 32 == 0 ? 1 : 2);
     switch (variant) {
         case 3: gemm8_kernel<2, false><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
@@ -750,6 +855,12 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
         default: gemm8_kernel<4, true><<<rows / 32, 128, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
     }
     check("gemm8");
+}
+
+void df2_q4_tile(const void* blocks, void* qs, void* dpl, int n_in, int64_t count, void* stream) {
+    q4_tile_kernel<<<(unsigned) ((count + 255) / 256), 256, 0, (cudaStream_t) stream>>>(static_cast<const uint8_t*>(blocks), static_cast<uint8_t*>(qs),
+                                                                                         static_cast<__half*>(dpl), n_in, count);
+    check("q4_tile");
 }
 
 void df2_quant_rows(const float* x, int K, int ncols, void* xq, float* xd, void* stream) {
