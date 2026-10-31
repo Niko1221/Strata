@@ -7550,3 +7550,8 @@ textarea {
 
 /* ---- Context memory: the one line under the chosen format (#3723) ---- */
 .native-kv-hint { display: block; margin-top: 6px; line-height: 1.5; }
+
+/* ---- a message for one helper, under its row (#4749) ---- */
+.subagent-row__reply { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.subagent-row__reply .st-input { flex: 1; min-width: 0; }
+.subagent-row__copy p.subagent-row__note { white-space: normal; margin: 6px 0 0; }

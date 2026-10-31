@@ -13,5 +13,9 @@
  "ui12": "Q4 braucht etwa halb so viel Speicher wie INT8, ist aber bei sehr langen Dokumenten weniger genau.",
  "ui13": "K8 / V4 braucht etwa ein Viertel weniger Speicher als INT8 und ist genauer als Q4. Prompts sind 2 bis 5 % langsamer.",
  "ui14": "Das Modell hat nicht in den Speicher deiner Grafikkarte gepasst.",
- "ui15": "Verkleinere den Gesprächskontext oder stelle in den Experteneinstellungen „Kontextspeicher“ auf Q4 und versuche es erneut."
+ "ui15": "Verkleinere den Gesprächskontext oder stelle in den Experteneinstellungen „Kontextspeicher“ auf Q4 und versuche es erneut.",
+ "ui16": "Diesem Helfer schreiben",
+ "ui17": "Nachricht an {0}",
+ "ui18": "An {0} schreiben…",
+ "ui19": "An {0} gesendet."
 }

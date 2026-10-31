@@ -287,3 +287,40 @@ test('#3723 the new sentences are translated in every language', async () => {
   setTranslationLanguage('en');
   void plainFailure;
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4749
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
+
+test('#4749 a message for a helper is checked before anything is sent, and an agent that is not running says so', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-helper-msg-'));
+  try {
+    const bridge = createAgentBridge({ dataDir: dir, localInstances: () => [], connections: () => [], env: process.env });
+    const code = async args => { try { await bridge.messageHelper(args); return 'sent'; } catch (e) { return e.code; } };
+    assert.equal(await code({ chatId: 'c', helperId: 'child-1', text: '   ' }), 'helper-empty');
+    assert.equal(await code({ chatId: 'c', helperId: '', text: 'hi' }), 'helper-unknown');
+    assert.equal(await code({ chatId: 'c', helperId: 'a b; rm -rf /', text: 'hi' }), 'helper-unknown');
+    assert.equal(await code({ chatId: 'c', helperId: 'child-1', text: 'use ISO dates' }), 'helper-idle', 'no running agent, no live parent');
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); }
+});
+
+test('#4749 the bridge uses the Harness own subagents/prompt with the documented request, steer for a working helper, queue for a finished one', () => {
+  const bridge = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(bridge, /rt\.gw\.rpc\('subagents\/prompt', \{ request: \{ requestId: `helper-\$\{randomUUID\(\)\}`, parentSessionId: parent, childSessionId: String\(helperId\), mode: 'continuable', delivery: delivery === 'steer' \? 'steer' : 'queue', content: \[\{ type: 'text', text: clean \}\] \} \}\)/);
+  const index = readFileSync(new URL('../server/index.mjs', import.meta.url), 'utf8');
+  assert.match(index, /path === '\/api\/chat\/helper' && method === 'POST'/);
+  const row = src('components/SubagentRow.tsx');
+  assert.match(row, /delivery: a\.status === 'working' \? 'steer' : 'queue'/);
+  assert.match(row, /sessionId && a\.status !== 'queued' && a\.status !== 'cancelled'/);
+  assert.match(src('components/ChatToolbar.tsx'), /sessionId=\{session && !session\.showcase \? session\.id : undefined\}/, 'the example chat has no real helpers to write to');
+});
+
+test('#4749 the helper strings are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  for (const l of languages.slice(1)) {
+    setTranslationLanguage(l);
+    for (const [text, values] of [['Message this helper'], ['Message to {0}', ['X']], ['Write to {0}…', ['X']], ['Sent to {0}.', ['X']]]) { const out = tr(text, values); assert.notEqual(out, text.replace('{0}', 'X'), `${l}: ${text}`); }
+  }
+  setTranslationLanguage('en');
+});

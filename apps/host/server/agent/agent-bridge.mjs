@@ -1096,6 +1096,29 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     delete sessionMap[chatId]; persist();
   }
 
+  // -- a message for a helper ---------------------------------------------------------------------------------
+
+  /**
+   * The person's own words for one helper (#4749), through the Harness's `subagents/prompt`: it delivers one browser-authored message to a
+   * continuable child through its live parent. "steer" reaches a working helper at its next step; "queue" gives a helper that has finished
+   * (or is between steps) a new turn. The Harness refuses a helper that cannot take messages (a one-shot one) and a parent that is not live;
+   * either comes back as a plain sentence.
+   */
+  async function messageHelper({ chatId, helperId, text, delivery = 'queue' }) {
+    const clean = String(text ?? '').trim().slice(0, 8000);
+    if (!clean) throw new AgentUnavailable('Type a few words for the helper.', 'helper-empty');
+    if (!/^[\w.:@-]{1,160}$/.test(String(helperId ?? ''))) throw new AgentUnavailable('That helper is not known.', 'helper-unknown');
+    const parent = sessionMap[chatId]?.sessionId;
+    if (!parent || !rt?.hp.running) throw new AgentUnavailable('The assistant is not running in this chat, so it cannot pass a message on. Send a message in the chat first.', 'helper-idle');
+    try {
+      const receipt = await rt.gw.rpc('subagents/prompt', { request: { requestId: `helper-${randomUUID()}`, parentSessionId: parent, childSessionId: String(helperId), mode: 'continuable', delivery: delivery === 'steer' ? 'steer' : 'queue', content: [{ type: 'text', text: clean }] } });
+      return { ok: true, messageId: receipt?.messageId ?? null, delivery: delivery === 'steer' ? 'steer' : 'queue' };
+    } catch (e) {
+      log(`agent · message for a helper refused: ${String(e?.message ?? e).slice(0, 200)}`);
+      throw new AgentUnavailable(/continuable|one-shot|not.*(found|live|open)|unavailable|closed|ended/i.test(String(e?.message ?? '')) ? 'This helper cannot take a message any more. Ask the assistant in the chat to start a new one.' : 'The message could not be delivered right now. Try again in a moment.', 'helper-refused');
+    }
+  }
+
   // -- messages typed while a goal runs ----------------------------------------------------------------------
 
   /** Queue a message for the running goal. It is delivered between steps, or handed back to the page when the goal ends or pauses. */
@@ -1333,7 +1356,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, messageHelper, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

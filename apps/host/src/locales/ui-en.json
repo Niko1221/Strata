@@ -13,5 +13,9 @@
  "ui12": "Q4 uses about half the memory of INT8, but is less precise on very long documents.",
  "ui13": "K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.",
  "ui14": "The model did not fit in your graphics card’s memory.",
- "ui15": "Lower the conversation context, or set Context memory to Q4 in Expert settings, then try again."
+ "ui15": "Lower the conversation context, or set Context memory to Q4 in Expert settings, then try again.",
+ "ui16": "Message this helper",
+ "ui17": "Message to {0}",
+ "ui18": "Write to {0}…",
+ "ui19": "Sent to {0}."
 }

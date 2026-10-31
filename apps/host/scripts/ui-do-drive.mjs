@@ -498,6 +498,50 @@ cases.kv = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4749 */
+cases.helper = async () => {
+  const agents = [
+    { id: 'child-1', name: 'Check the tests', description: 'All 12 tests pass.', status: 'completed', durationMs: 42000, tokens: 1800, updatedAt: Date.now() },
+    { id: 'child-2', name: 'Write the notes', description: 'Could not write notes.txt', status: 'failed', durationMs: 9000, tokens: 400, updatedAt: Date.now() },
+  ];
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const sessions = [{ ...chat('s1', 'Helpers', [user('u1', 'Do two things'), reply('a1', 'Both helpers are on it.')]), agents }];
+    const posts = []; let refuse = false;
+    const page = await open(scheme, w, h, sessions, { before: async p => {
+      await p.route('**/api/chat/helper', async r => { posts.push(r.request().postDataJSON()); if (refuse) return r.fulfill({ status: 409, json: { error: 'This helper cannot take a message any more. Ask the assistant in the chat to start a new one.' } }); return r.fulfill({ json: { ok: true, messageId: 'm1' } }); });
+    } });
+    await page.getByRole('button', { name: /Subagents/ }).first().click();
+    const rows = page.locator('.subagent-row');
+    await rows.first().waitFor({ timeout: 15000 });
+    // The finished helper: queue.
+    await rows.nth(0).getByRole('button', { name: 'Message this helper' }).click();
+    const input = rows.nth(0).getByRole('textbox', { name: 'Message to Check the tests' });
+    await input.fill('use ISO dates in the file you just wrote');
+    await shot(page, `4749-${tag}-writing`);
+    await input.press('Enter');
+    await rows.nth(0).getByRole('status').waitFor({ timeout: 5000 });
+    check(JSON.stringify(posts[0]) === JSON.stringify({ sessionId: 's1', helperId: 'child-1', message: 'use ISO dates in the file you just wrote', delivery: 'queue' }), `${tag}: a finished helper gets the message as a new turn (queue)`, JSON.stringify(posts[0]));
+    check(/Sent to Check the tests\./.test(await rows.nth(0).innerText()) && await input.inputValue() === '', `${tag}: the row says it was sent and the box is empty again`);
+    // A second helper (a failed one is listed too).
+    await rows.nth(1).getByRole('button', { name: 'Message this helper' }).click();
+    await rows.nth(1).getByRole('textbox').fill('also add the date');
+    await rows.nth(1).getByRole('button', { name: 'Send' }).click();
+    await rows.nth(1).getByRole('status').waitFor({ timeout: 5000 });
+    check(posts[1]?.delivery === 'queue' && posts[1]?.helperId === 'child-2', `${tag}: the message goes to the helper that was chosen`, JSON.stringify(posts[1]));
+    // A refusal says so in plain words.
+    refuse = true;
+    await rows.nth(0).getByRole('textbox').fill('one more thing');
+    await rows.nth(0).getByRole('button', { name: 'Send' }).click();
+    await rows.nth(0).getByRole('alert').waitFor({ timeout: 5000 });
+    check(/cannot take a message any more/.test(await rows.nth(0).getByRole('alert').innerText()), `${tag}: a refused message says why in plain words`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    await shot(page, `4749-${tag}-sent`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

@@ -130,6 +130,20 @@ add(en="Lower the conversation context, or set Context memory to Q4 in Expert se
     ko="대화 컨텍스트를 줄이거나 전문가 설정에서 ‘컨텍스트 메모리’를 Q4로 바꾼 뒤 다시 시도하세요.",
     fr="Réduisez le contexte de la conversation, ou réglez « Mémoire de contexte » sur Q4 dans Réglages experts, puis réessayez.")
 
+# #4749 a message for a helper
+add(en="Message this helper",
+    zh="给这个助手发消息", ja="このヘルパーにメッセージを送る", de="Diesem Helfer schreiben", es="Escribir a este ayudante",
+    ru="Написать этому помощнику", pt="Enviar mensagem a este ajudante", ko="이 도우미에게 메시지 보내기", fr="Écrire à cet assistant")
+add(en="Message to {0}",
+    zh="发给 {0} 的消息", ja="{0} へのメッセージ", de="Nachricht an {0}", es="Mensaje para {0}",
+    ru="Сообщение для {0}", pt="Mensagem para {0}", ko="{0}에게 보낼 메시지", fr="Message pour {0}")
+add(en="Write to {0}\u2026",
+    zh="写给 {0}\u2026", ja="{0} に書く\u2026", de="An {0} schreiben\u2026", es="Escribe a {0}\u2026",
+    ru="Напишите {0}\u2026", pt="Escreva para {0}\u2026", ko="{0}에게 쓰기\u2026", fr="Écrire à {0}\u2026")
+add(en="Sent to {0}.",
+    zh="已发给 {0}。", ja="{0} に送りました。", de="An {0} gesendet.", es="Enviado a {0}.",
+    ru="Отправлено: {0}.", pt="Enviado para {0}.", ko="{0}에게 보냈습니다.", fr="Envoyé à {0}.")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
