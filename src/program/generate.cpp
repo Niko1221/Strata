@@ -5225,7 +5225,7 @@ int main(int argc, char** argv) {
     // a cache from, or --no-prefill-borrow - do the buffers take a reserve, and then this estimate stands in
     // for buffers that cannot be priced exactly yet because the sessions do not exist.  `plan_lend` uses the
     // exact `Prefill::bytes_needed` as soon as it can.
-    const bool pf_borrow = !o.no_prefill_borrow && !o.expert_profile.empty();
+    bool pf_borrow = !o.no_prefill_borrow && !o.expert_profile.empty();   // (0.2.9.1: the auto cache sizing below can clear it, see AUTO NO-BORROW)
     // (#340: the estimate predates the streamed ring: from 1024-token chunks the prompt path also holds a ring of
     // whole expert blobs, which a split without borrowing sizes at 96 (Prefill::set_ring_override below) and books
     // here - without it a `--no-prefill-borrow` split filled the cards and the draft head no longer fit)
@@ -7116,6 +7116,40 @@ int main(int argc, char** argv) {
                                  "(layer, expert) pair lifts it - tools/make_profile.py)\n", o.expert_cache,
                          profile.size(), o.expert_profile.c_str(), profile.size());
         o.expert_cache = (int) sized_slots.size();
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
+        // ---- AUTO NO-BORROW (0.2.9.1).  With batch slots on one NVIDIA card the prompt path lent cache slots to its own
+        // buffers, and every lent slot's expert was read again from the host during each chunk.  When the card holds EVERY
+        // expert of the profile and still has room for the path's own buffers (the chunk the loan would have used, 8192)
+        // plus kNoBorrowKeepMib, the loan only costs time: the buffers are allocated instead, the chunk stays what it was, and
+        // the arithmetic is the same (QUAL-PAR2: 12/12 identical, KL 0).  A card that cannot hold all experts keeps the loan -
+        // its cache is worth more than the buffers (a 16 GB A4000 lost 2.5x on a long prompt and ran out of memory with them).
+        // Not with an explicit --prefill N, a split, helper caches, STRATA_PREFILL_BORROW=1 or STRATA_AUTO_NOBORROW=0.
+        if (auto_cache && pf_borrow && o.prefill_auto && o.batch >= 2 && !multi_gpu && stages.empty() && !profile.empty() &&
+            sized_slots.size() == profile.size() && std::none_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(), [](int n) { return n > 0; })) {
+            const char* e1 = std::getenv("STRATA_AUTO_NOBORROW");
+            const char* e2 = std::getenv("STRATA_PREFILL_BORROW");
+            if (!(e1 != nullptr && e1[0] == '0') && !(e2 != nullptr && e2[0] == '1')) {
+                constexpr int64_t kNoBorrowChunk = 8192, kNoBorrowKeepMib = 3072;
+                uint64_t used_b = 0;
+                for (const int64_t sb : sized_slots) used_b += (uint64_t) strata::core::ExpertCache::slot_stride(sb, slot_guard);
+                const int64_t chunk = std::min<int64_t>(kNoBorrowChunk, std::max<int64_t>(256, o.prefill_auto_max));
+                const int64_t own_mib = ((int64_t) strata::prefill::Prefill::bytes_needed_owned(g, ss, chunk, srcp != nullptr) >> 20) + 64;
+                const size_t fb = strata::core::device_free_bytes();
+                const int64_t room_mib = fb > used_b ? (int64_t) ((fb - used_b) >> 20) - o.vram_reserve_mib - (int64_t) (pipe_first >> 20) : 0;
+                const bool fits = room_mib >= own_mib + kNoBorrowKeepMib;
+                std::fprintf(stderr, "strata generate: every expert fits the cache; the prompt path's own buffers (%lld MiB for a %lld-token chunk) %s "
+                                     "(%lld MiB left beside the %d MiB reserve, %lld MiB kept free)%s\n",
+                             (long long) own_mib, (long long) chunk, fits ? "fit" : "do not fit", (long long) room_mib, o.vram_reserve_mib,
+                             (long long) kNoBorrowKeepMib, fits ? ": no loan of cache slots" : ": the loan stays");
+                if (fits) {
+                    o.no_prefill_borrow = true;
+                    pf_borrow = false;
+                    o.prefill_auto = false;
+                    o.prefill_chunk = chunk;
+                }
+            }
+        }
+#endif
     }
     // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,
     // no helper caches, serve mode: anything else keeps the one cudaMalloc, said once.

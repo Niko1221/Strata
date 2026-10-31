@@ -1394,10 +1394,26 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
 #ifndef STRATA_USE_HIP
-    // STRATA_PF_W16_CACHE_MIB=N: the FP16 weight kept on the device after its first dequant (same values, same product)
+    // The FP16 weight kept on the device after its first dequant (same values, same product: bit-exact).  0.2.9.1: on by
+    // default (Linux CUDA) and sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
+    // cached while the card keeps kW16AutoReserve free afterwards (the MTP prompt capture, the batch windows and a long
+    // prompt's buffers are allocated later, out of that room; a replica with 309 MiB free ran out of memory at 14K tokens),
+    // so a card whose expert cache fills it caches nothing and a card with room (all experts resident) caches what the
+    // prompt path uses (~6 GB for Qwen3.8).  STRATA_PF_W16_CACHE_MIB=N is an explicit budget (2 GiB kept free, as before),
+    // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        w16_budget_ = v ? (int64_t) std::atoll(v) * (1ll << 20) : 0;
+        if (v != nullptr) {
+            w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
+            w16_reserve_ = 2ll << 30;
+        } else {
+#if defined(_WIN32)
+            w16_budget_ = 0;   // never run on Windows NVIDIA: off until a box has measured it
+#else
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+#endif
+        }
     }
     if (w16_budget_ > 0 && !side_scratch_) {
         const int64_t bytes = N * K * 2;
@@ -1406,7 +1422,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             if (e.p == W_blocks && e.type == ggml_type && e.n == N && e.k == K) { cw = e.d; break; }
         if (cw == nullptr && w16_used_ + bytes <= w16_budget_) {
             size_t fb = 0, tb = 0;
-            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (2ull << 30) &&
+            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (size_t) w16_reserve_ &&
                 cudaMalloc((void**) &cw, (size_t) bytes) == cudaSuccess) {
                 strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, cw, stream_);
                 w16_.push_back({W_blocks, ggml_type, N, K, cw});
@@ -1414,6 +1430,11 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             } else {
                 (void) cudaGetLastError();
                 cw = nullptr;
+                if (w16_budget_ > 0 && !w16_logged_) {
+                    w16_logged_ = true;
+                    std::fprintf(stderr, "strata prefill: FP16 weight cache %lld MiB (the card keeps %lld MiB free; STRATA_PF_W16_CACHE_MIB=0 turns it off)\n",
+                                 (long long) (w16_used_ >> 20), (long long) (w16_reserve_ >> 20));
+                }
                 w16_budget_ = w16_used_ > 0 ? w16_used_ : 0;   // out of room: stop trying
             }
         }
