@@ -541,7 +541,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     }
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     const auto p1 = now();
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
+    captured.cvec = view.cvec; captured.lora = view.lora; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
     if (moved != nullptr)
         for (auto& c : *moved) {
             conversation_checkpoint_join(c.gdn.data());
@@ -627,7 +627,7 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    captured.cvec = view.cvec; captured.lora = view.lora; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     // STRATA_CKPT_ASYNC: the caller writes `meta` to the session file at once, so the running state's copy lands first
     conversation_checkpoint_join(captured.live.gdn.data());
@@ -681,7 +681,7 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     // an image holds exactly one carve's running state and K/V: same layer range or nothing
     if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
         return fail(error, "snapshot from another session layer range");
-    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
+    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec, image.lora};
     if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
     const size_t layers = owned_qsa(ss);
     if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");

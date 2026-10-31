@@ -95,3 +95,4 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+.DS_Store
