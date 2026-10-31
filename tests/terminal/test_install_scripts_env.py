@@ -97,10 +97,9 @@ class InstallShFailsVisibly(unittest.TestCase):
             fakes = Path(d) / "fakes"
             fakes.mkdir()
             for name, body in (("nvidia-smi", nvidia_smi), ("lspci", lspci)):
-                if body is not None:
-                    (fakes / name).write_text("#!/bin/sh"+chr(10)+body+chr(10), encoding="utf-8", newline=chr(10))
-                    (fakes / name).chmod(0o755)
-            path = os.pathsep.join([str(fakes)] + [x for x in os.environ["PATH"].split(os.pathsep) if not (Path(x) / "nvidia-smi").exists() and not (Path(x) / "lspci").exists()])
+                (fakes / name).write_text("#!/bin/sh" + chr(10) + (body if body is not None else "exit 1") + chr(10), encoding="utf-8", newline=chr(10))
+                (fakes / name).chmod(0o755)
+            path = str(fakes) + os.pathsep + os.environ["PATH"]     # the fakes win over any real tool
             r, _ = self.run_sh(SH.read_text(encoding="utf-8"), STRATA_FEED="http://127.0.0.1:9", PATH=path)
             return next((l for l in r.stdout.splitlines() if "This computer:" in l), r.stdout + r.stderr)
 

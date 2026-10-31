@@ -8689,7 +8689,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if (exe is None and not getattr(a, "dsv41_package", None) and not dsv41_engine_pending(eng) and not local_feed(getattr(a, "feed", None))
         and not github_reachable()):
         fail("Strata can't reach GitHub to download the DeepSeek engine.",
-             "Check the internet connection" + proxy_hint() + ", and run the same command again. " + dsv41_manual_steps(eng))
+             "Check the internet connection and run the same command again. " + proxy_hint()[2:3].upper() + proxy_hint()[3:] + ". " + dsv41_manual_steps(eng))
     if exe is None and not getattr(a, "build", False):
         get_dsv41_engine(eng, hip, getattr(a, "dsv41_package", None), getattr(a, "feed", None),
                          archs=[c.get("arch") for c in cards if c.get("arch")] if hip else None)
