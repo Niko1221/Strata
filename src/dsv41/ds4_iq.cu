@@ -1369,7 +1369,10 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
     // to the staged buffer (kb - kb0), which is exactly equivalent because kb0 is a multiple of the 8 sub-blocks in a block.
     constexpr int kQKv = kQK<T>;
     constexpr int kSpan = (kQKv == 32 ? 32 : 4) * Ty<T>::B;      // bytes of a warp's 32 sub-blocks
-    constexpr bool kCanStage = Ty<T>::TAB == 0;                  // (a codebook table already fills shared for the i-quants)
+    // (a codebook table already fills shared for the i-quants.  The staging buffer is 44 uint4 a warp (704 bytes) and is read as uint4:
+    // Q6_K's 4 blocks are 840 bytes, which overflowed it into the next warp's and gave NaN rows on a gfx11 device (UD-IQ1_S, whose dense
+    // attention is Q6_K: garbage on every chunked prompt) - a type whose span does not fit or is not 16-byte sized reads its own blocks)
+    constexpr bool kCanStage = Ty<T>::TAB == 0 && kSpan <= 44 * 16 && kSpan % 16 == 0;
     const bool staged = (nsb % 32 == 0) && kCanStage;
     __shared__ uint4 sin4[kCanStage ? (kThreads / 32) * 44 : 1];
     const int lane32 = threadIdx.x & 31, wq = threadIdx.x >> 5;
