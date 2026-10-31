@@ -176,6 +176,7 @@ MtpDrafter::~MtpDrafter() {
     }
     if (owns_draft_head_ && dvocab_) cudaFree(dvocab_);
     if (ev_chain_) cudaEventDestroy(ev_chain_);
+    if (ev_src_) cudaEventDestroy(ev_src_);
     for (cudaEvent_t e : ev_step_) if (e) cudaEventDestroy(e);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_, h_force_, h_floor_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
@@ -410,13 +411,16 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
-    const uint64_t R2 = 2 * T;   // step/pos rows: T catch-up rows + up to T-2 chain steps
+    // step/pos rows: T catch-up rows, chain steps 1..T-1 at rows T..2T-2, output 0 at 2T-1, then chain steps
+    // T..kChainMax-1 (step_row): 2T + 3 rows at T = 8
+    const uint64_t R2 = std::max<uint64_t>(2 * T, T + (uint64_t) kChainMax);
+    const uint64_t n_outs = std::max<uint64_t>(T, 16);   // a chain's outputs (kChainMax), or a round's drafts
     bool ok = mapped(T * 4 + 64, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(R2 * 4 * 4 + 64, (void**) &h_step_, (void**) &m_step_) &&
               mapped(R2 * NH * 4 + 64, (void**) &h_pos_, (void**) &m_pos_) &&
               mapped(64, (void**) &h_row_, (void**) &m_row_) &&
-              mapped(T * 4 + 64, (void**) &h_out_, (void**) &m_out_) &&
-              mapped(T * 4 + 64, (void**) &h_prob_, (void**) &m_prob_) &&
+              mapped(n_outs * 4 + 64, (void**) &h_out_, (void**) &m_out_) &&
+              mapped(n_outs * 4 + 64, (void**) &h_prob_, (void**) &m_prob_) &&
               (!force_on_ || mapped(64, (void**) &h_force_, (void**) &m_force_));
     if (!ok) { err = "mtp: mapped staging failed"; return false; }
     if (h_force_ != nullptr) for (int j = 0; j < 16; ++j) h_force_[j] = -1;
@@ -1364,14 +1368,16 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
     return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
 }
 
-// Chain step j (1..max_t-2): one row at the cell staged in step row `max_t + j - 1`, from the previous step's
-// residual and token (left in Rin_[0] / tok_[0] by mtp_select); draft j and its probability to the mapped outputs.
+// Chain step j (1..max_t-2 for draft(); up to kChainMax-1 for chains): one row at the cell staged in step row
+// `step_row(j)` (max_t + j - 1 below j = max_t), from the previous step's residual and token (left in Rin_[0] / tok_[0]
+// by mtp_select); draft j and its probability to the mapped outputs.
 bool MtpDrafter::capture_step(int j, bool coupled, std::string& err) {
+    if (j < 1 || j >= (coupled ? max_t_ - 1 : kChainMax)) { err = "mtp: chain step out of range"; return false; }
     cudaGraphExec_t& exec = coupled ? step_exec_c_[j] : step_exec_[j];
     if (exec) return true;
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
-    const int row = max_t_ + j - 1;
+    const int row = step_row(j);
     g_mp.init();
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
 #if defined(STRATA_USE_HIP)
@@ -1600,6 +1606,23 @@ struct DraftTiming {
 DraftTiming g_dt;
 }  // namespace
 
+namespace {
+// Diagnosis only (STRATA_DRAFT_KV_LOG): one line per round / chain launch naming the cells the drafter's
+// K/V is about to be written at and with which token's shift, so a difference between two window depths can be read off
+// the log instead of guessed.  Off unless the variable is set; it neither changes a launch nor allocates.
+bool draft_kv_log_on() {
+    static const bool on = std::getenv("STRATA_DRAFT_KV_LOG") != nullptr;
+    return on;
+}
+void draft_kv_log(const char* what, int64_t p, int a, int T, int n_out, const int32_t* tokens) {
+    if (!draft_kv_log_on()) return;
+    std::fprintf(stderr, "strata draft kv: %s p=%lld a=%lld T=%d round=[%lld,%lld) steps=[%lld,%lld) tok0=%d tok_a=%d tok_last=%d\n",
+                 what, (long long) p, (long long) a, T, (long long) p, (long long) (p + T),
+                 (long long) (p + a + 1), (long long) (p + a + n_out), (long long) (tokens ? tokens[0] : -1),
+                 (long long) (tokens && a < T ? tokens[a] : -1), (long long) (tokens && T > 0 ? tokens[T - 1] : -1));
+}
+}  // namespace
+
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts, DraftResult* result) {
     if (result) { *result = {}; if (n_drafts) *n_drafts = 0; }
@@ -1647,6 +1670,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     for (int j = 1; j < max_steps; ++j)
         put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+    draft_kv_log("round", p, a, T, max_steps, tokens);
     for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
@@ -1807,11 +1831,18 @@ bool MtpDrafter::stage_source_R(int T, std::string& err) {
 bool MtpDrafter::prepare_chain(std::string& err) {
     const OnDevice on_device(device_);
     if (!force_on_ || h_force_ == nullptr) { err = "mtp: chains need set_force_capture before load"; return false; }
+    if (chain_max() < 1) { err = "mtp: chains need max_t >= 2"; return false; }
     for (int T = 1; T <= max_t_; ++T)
         if (!capture_round(T, false, err)) return false;
-    for (int j = 1; j <= max_t_ - 2; ++j)
+    // steps 1..max_t-2 as before; set_chain_max past max_t - 1 adds the rest, after them (the earlier captures are
+    // unchanged)
+    for (int j = 1; j <= std::max(max_t_ - 2, chain_max() - 1); ++j)
         if (!capture_step(j, false, err)) return false;
     if (ev_chain_ == nullptr && cudaEventCreateWithFlags(&ev_chain_, cudaEventDisableTiming) != cudaSuccess) {
+        err = "mtp: event creation failed";
+        return false;
+    }
+    if (ev_src_ == nullptr && cudaEventCreateWithFlags(&ev_src_, cudaEventDisableTiming) != cudaSuccess) {
         err = "mtp: event creation failed";
         return false;
     }
@@ -1824,18 +1855,27 @@ bool MtpDrafter::prepare_chain(std::string& err) {
 }
 
 bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force,
-                              int n_out, int n_early, std::string& err) {
+                              int n_out, int n_early, std::string& err, int n_queue) {
     const OnDevice on_device(device_);
     if (chain_live_) { err = "mtp: a chain is already in flight"; return false; }
     if (!force_on_ || ev_chain_ == nullptr) { err = "mtp: chains need prepare_chain"; return false; }
-    if (T < 1 || T > max_t_ || a < 0 || a >= T || n_out < 1 || n_out > max_t_ - 1 || n_force < 0 || n_force > n_out ||
+    if (T < 1 || T > max_t_ || a < 0 || a >= T || n_out < 1 || n_out > chain_max() || n_force < 0 || n_force > n_out ||
         n_force > 16) {
         err = "mtp: chain arguments out of range";
         return false;
     }
+    // the cells the steps write, p + a + 1 .. p + a + n_out - 1, stay below max_cells - 1 (an 11-output chain at the
+    // end of the context: its later outputs are drafts past the end and never verified).  Only for the chains
+    // set_chain_max allows past max_t - 1: a chain of up to max_t - 1 outputs is staged exactly as before
+    if (const int64_t room = st_.max_cells - (p + a) - 1; chain_max() > max_t_ - 1 && room < n_out) {
+        n_out = (int) std::max<int64_t>(1, room);
+        n_force = std::min(n_force, n_out);
+    }
+    const int n_q = n_queue <= 0 || n_queue >= n_out ? n_out : n_queue;   // the outputs queued now
     if (round_exec_[T] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
     for (int j = 1; j < n_out; ++j)
         if (step_exec_[j] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+    draft_kv_log("chain", p, a, T, n_out, tokens);
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {
@@ -1850,16 +1890,20 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
         put(t, p + t);
     }
     put(2 * max_t_ - 1, p + a);                                      // output 0's cell
-    for (int j = 1; j < n_out; ++j) put(max_t_ + j - 1, p + a + j);  // every step's cell, staged at once
+    for (int j = 1; j < n_out; ++j) put(step_row(j), p + a + j);     // every step's cell, staged at once
     for (int j = 0; j < 16; ++j) h_force_[j] = j < n_force ? force[j] : -1;
     h_row_[0] = a;
     h_row_[1] = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (!stage_source_R(T, err)) return false;
+    if (src_done_on_ && ev_src_ != nullptr && cudaEventRecord(ev_src_, cs_) != cudaSuccess) {
+        err = std::string("mtp chain: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
     chain_early_ = std::max(0, std::min(n_early, n_out));
     bool ok = cudaGraphLaunch(round_exec_[T], cs_) == cudaSuccess;
     if (ok && chain_early_ >= 1) ok = cudaEventRecord(ev_step_[0], cs_) == cudaSuccess;
-    for (int j = 1; ok && j < n_out; ++j) {
+    for (int j = 1; ok && j < n_q; ++j) {
         ok = cudaGraphLaunch(step_exec_[j], cs_) == cudaSuccess;
         if (ok && j < chain_early_) ok = cudaEventRecord(ev_step_[j], cs_) == cudaSuccess;
     }
@@ -1870,16 +1914,41 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
     (void) cudaStreamQuery(cs_);   // WDDM: submit now
     steps_seen_ = 0;
     chain_live_ = true;
-    chain_n_ = n_out;
+    chain_n_ = n_q;
+    chain_cap_ = n_out;
+    chain_open_ = n_q < n_out;
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
 }
 
+int MtpDrafter::chain_extend(int k, std::string& err) {
+    if (!chain_live_ || !chain_open_) return chain_n_;
+    const int want = std::min(std::max(k, 0) + 1, chain_cap_);   // through output k: one step ahead of the host
+    if (want <= chain_n_) return chain_n_;
+    const OnDevice on_device(device_);
+    const Clock::time_point t0 = Clock::now();
+    bool ok = true;
+    for (int j = chain_n_; ok && j < want; ++j) {
+        ok = cudaGraphLaunch(step_exec_[j], cs_) == cudaSuccess;
+        if (ok && j < chain_early_) ok = cudaEventRecord(ev_step_[j], cs_) == cudaSuccess;
+    }
+    if (!ok || cudaEventRecord(ev_chain_, cs_) != cudaSuccess) {   // the chain's end moves to its last step
+        chain_open_ = false;
+        err = std::string("mtp chain: ") + cudaGetErrorString(cudaGetLastError());
+        return -1;
+    }
+    (void) cudaStreamQuery(cs_);   // WDDM: submit now
+    chain_n_ = want;
+    if (chain_n_ >= chain_cap_) chain_open_ = false;
+    ms_draft += ms_since(t0);
+    return chain_n_;
+}
+
 int MtpDrafter::chain_outputs_ready(std::string& err) {
     if (!chain_live_) return chain_n_;
     const OnDevice on_device(device_);
-    while (steps_seen_ < chain_early_) {
+    while (steps_seen_ < std::min(chain_early_, chain_n_)) {   // (an open chain: only the steps queued so far)
         const cudaError_t q = cudaEventQuery(ev_step_[steps_seen_]);
         if (q == cudaErrorNotReady) break;
         if (q != cudaSuccess) { err = std::string("mtp chain: ") + cudaGetErrorString(q); return -1; }
@@ -1892,6 +1961,7 @@ int MtpDrafter::chain_outputs_ready(std::string& err) {
 
 int MtpDrafter::chain_poll(std::string& err) {
     if (!chain_live_) return 1;
+    if (chain_open_) return 0;   // an open chain ends only once it is closed (or extended to its n_out)
     const OnDevice on_device(device_);
     const cudaError_t q = cudaEventQuery(ev_chain_);
     if (q == cudaErrorNotReady) return 0;
@@ -1901,7 +1971,7 @@ int MtpDrafter::chain_poll(std::string& err) {
         chain_tok_[j] = ((volatile int32_t*) h_out_)[j];
         chain_prob_[j] = ((volatile float*) h_prob_)[j];
     }
-    for (int j = chain_n_; j < 8; ++j) { chain_tok_[j] = 0; chain_prob_[j] = 0.0f; }
+    for (int j = chain_n_; j < kChainMax + 1; ++j) { chain_tok_[j] = 0; chain_prob_[j] = 0.0f; }
     return 1;
 }
 
