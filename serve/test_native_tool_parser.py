@@ -1,4 +1,5 @@
 """Native tool parsing regressions; no model or GPU required."""
+import json
 import unittest
 from serve.frontend import OutputParser
 
@@ -6,6 +7,23 @@ CALL = "<tool_call>\n<function=mcp__files__read>\n<parameter=path>\n123\n</param
 TOOLS = [{"name": "mcp__files.read", "parameters": {"properties": {"path": {"type": "string"}}}}]
 
 class NativeTools(unittest.TestCase):
+    def test_a_large_streamed_string_does_not_keep_one_growing_buffer(self):
+        tools = [{"name": "write", "parameters": {"properties": {"content": {"type": "string"}}}}]
+        value = ("x" * 5000 + " literal </parameter> and </function> and </tool_call> " + "y" * 5000)
+        parser = OutputParser(thinking=False, tools=tools, stream_tools=True, recover=True)
+        opening = "<tool_call><function=write><parameter=content>\n"
+        events = parser.feed(opening + value)
+        self.assertTrue(parser._scan_parts)       # consumed text is chunked instead of recopied on every next token
+        self.assertFalse(parser.clean)
+        closing = "\n</parameter></function></tool_call>"
+        for i in range(0, len(closing), 3):
+            events += parser.feed(closing[i:i + 3])
+        events += parser.finish()
+        calls = [event.call for event in events if event.kind == "tool_call"]
+        self.assertEqual([(call.name, call.arguments) for call in calls], [("write", {"content": value})])
+        streamed = "".join(event.text for event in events if event.kind == "tool_args")
+        self.assertEqual(json.loads(streamed), {"content": value})
+
     def test_unclosed_think_call_and_split_tags(self):
         for streaming in (False, True):
             for step in (1, 7, 4096):
