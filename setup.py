@@ -978,6 +978,9 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
                 Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve()):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
                                                  + " ".join(argv[:2]))
+    gguf_py = (env or {}).get("STRATA_GGUF_PY")
+    if gguf_py and not Path(gguf_py).is_dir() and Path(gguf_py).parent == home() / "third_party" / "llama.cpp":
+        get_llama_cpp()                                # the preparation tools read GGUF files with it: fetched now (the one place github.com is needed)
     say("  > " + " ".join(str(c) for c in cmd))
     env = dict(os.environ if env is None else env)
     env.setdefault("STRATA_EXIT_WITH_PARENT", "1")     # tools/mtp_fetch.py ends when setup ends (#3257: a cancel left it writing)
@@ -1017,18 +1020,52 @@ def out(cmd):
         return ""
 
 
+def _kept_mark(path: Path) -> Path | None:
+    """Where the finish mark of a file in a folder Strata cannot write to is kept instead: marks/<hash>.done under Strata's own folder.  The hash is of
+    the file's full path, size and modification time, so a file that changed (or a different file at the same place) has no mark."""
+    try:
+        st = path.stat()
+        key = f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        return None
+    return ROOT / "marks" / (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:24] + ".done")
+
+
+def mark_text(path: Path) -> str | None:
+    """The text of the finish mark of `path` (beside it, else the kept one), or None when it has none."""
+    for m in (path.with_name(path.name + ".done"), _kept_mark(path)):
+        try:
+            if m is not None and m.exists():
+                return m.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    return None
+
+
 def done(path: Path) -> bool:
     """A step's finish mark: <path>.done exists (written only after the step completed)."""
-    return path.with_name(path.name + ".done").exists()
+    return mark_text(path) is not None
 
 
 def mark(path: Path, text=""):
-    """Write the finish mark.  A folder that cannot be written (--gguf-dir on a read-only share, #570) only costs the
-    mark: setup says so and goes on (the step is repeated on the next run), it does not stop."""
+    """Write the finish mark.  A folder that cannot be written (--gguf-dir on a read-only share, #570, a read-only model disk) keeps the mark
+    in Strata's own folder instead (marks/), so a 110 GB Engram is hashed once, not on every launch; only when that cannot be written either
+    does setup say so and go on (the step is repeated on the next run), it does not stop."""
+    text = text or time.strftime("%Y-%m-%d %H:%M")
     try:
-        path.with_name(path.name + ".done").write_text(text or time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+        path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
+        return
     except OSError as e:
-        warn(f"the finish mark of {path.name} cannot be written ({e}): the next run does this step again")
+        beside = e
+    kept = _kept_mark(path)
+    try:
+        if kept is not None:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            kept.write_text(text, encoding="utf-8")
+            return
+    except OSError:
+        pass
+    warn(f"the finish mark of {path.name} cannot be written ({beside}): the next run does this step again")
 
 
 # ------------------------------------------------------------------------------------------------ the PC
@@ -3025,6 +3062,15 @@ def download(url, dst: Path, what=None):
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
         return
+    pin_here = file_pin(url) if url.startswith(("http://", "https://")) else None
+    if pin_here and dst.is_file() and dst.stat().st_size == pin_here[0] and not dst.with_name(dst.name + ".part").exists():
+        # a file copied in by hand (or whose mark was lost) that is the pinned size: check it here, no network, so a PC with every file
+        # but no internet can start
+        say(f"  checking {dst.name} (SHA-256) ...")
+        if _hash_file(dst, pin_here[0]) == pin_here[1]:
+            mark(dst, f"sha256 {pin_here[1]}")
+            ok(f"{what or dst.name} is already here (checked)")
+            return
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3234,7 +3280,8 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
     piece by piece and only the damaged pieces are written again, then it is checked a second time.
     `also`: other SHA-256 values that are the same file for Strata's purposes (the Engram ISTA-DASLab converted in place on 2026-10-27, DSV41_SHA_ALSO)."""
     m = s.with_name(s.name + ".done")
-    if m.exists() and any(f"sha256 {x}" in m.read_text(encoding="utf-8", errors="replace") for x in (sha, *also)):
+    kept = mark_text(s)
+    if kept is not None and any(f"sha256 {x}" in kept for x in (sha, *also)):
         return
     have = s.stat().st_size if s.exists() else -1
     if own and have > 0 and have != size and own_gguf_is_whole(s):
@@ -3327,9 +3374,8 @@ def ready_paths(model: str, models_dir: Path) -> dict:
 
 def ready_verified(p: Path, sha: str) -> bool:
     """Downloaded whole and checked: its finish mark holds the pinned SHA-256 (verify_sha256)."""
-    m = p.with_name(p.name + ".done")
     try:
-        return p.is_file() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace")
+        return p.is_file() and f"sha256 {sha}" in (mark_text(p) or "")
     except OSError:
         return False
 
@@ -3472,6 +3518,17 @@ def check_shards(shards):
             # damaged or wrong file that the engine would refuse at start ("PLE table size mismatch")
             fail(f"{s.name} is longer than its tensor: {have:,} bytes, {need:,} expected ({have - need:,} extra)",
                  f"delete {s.name} and its .done mark and run setup again")
+
+
+def llama_cpp_if_here():
+    """The llama.cpp source folder, fetched only when a model has to be prepared (run() fetches it then): a PC with every file and no internet
+    starts a model that is already prepared without reaching github.com."""
+    llama = home() / "third_party" / "llama.cpp"
+    if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
+        ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
+    else:
+        say("  llama.cpp source: only needed to prepare a model; it is downloaded then, if that is needed")
+    return llama
 
 
 def get_llama_cpp():
@@ -7752,8 +7809,7 @@ def control_engine_step(gpu, vision):
     names "component:strata-engine" and the engine is looked up when the model is loaded. llama.cpp's source zip is fetched
     for gguf-py only (the preparation tools), as setup always did: no git, no compiler."""
     from strata_control import engine_component as EC
-    llama = get_llama_cpp()
-    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
+    llama = llama_cpp_if_here()
     try:
         found = EC.resolve(full=False)
         eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local"}
@@ -8583,7 +8639,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     else:
         say("  Nothing to download: the files are already here.")
     unchecked = [f for f in [*shards, *shared] if f.exists() and not any(
-        f"sha256 {x}" in (f.with_name(f.name + ".done").read_text(encoding="utf-8", errors="replace") if done(f) else "")
+        f"sha256 {x}" in (mark_text(f) or "")
         for x in (fam['sha256'][f.name][1], *DSV41_SHA_ALSO.get(f.name, ())))]
     if unchecked:
         gb = sum(fam["sha256"][f.name][0] for f in unchecked) / 1e9
@@ -8922,7 +8978,7 @@ def mac_control_setup(a) -> int:
 
     step(4, "the Strata engine (Metal)")
     from strata_control import engine_component as EC
-    llama = get_llama_cpp()                            # gguf-py for the preparation tools only: no git, no compiler
+    llama = llama_cpp_if_here()                        # gguf-py for the preparation tools only (fetched when one runs): no git, no compiler
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
     try:
