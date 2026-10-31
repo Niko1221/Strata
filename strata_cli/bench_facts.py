@@ -399,11 +399,20 @@ def git_commit(folder: Path = ROOT) -> str | None:
     return text if HEX40.match(text) else None
 
 
-def engine_build_runtime(exe: str | None) -> dict | None:
+def engine_build_runtime(exe: str | None, cfg: dict | None = None) -> dict | None:
     """The GPU runtime a release engine was built with, from its engine-component.json (build_id "a7bdbfdabc9a+cuda12.9"):
-    {"name": "cuda", "version": "12.9"}. None for a source build or an engine without that file."""
+    {"name": "cuda", "version": "12.9"}. None for a source build or an engine without that file.
+
+    `exe` may be the run config's `component:strata-engine` reference (what setup writes): it is resolved to the
+    installed engine the server would start (`cfg` carries its backend) before the manifest is read."""
     if not exe:
         return None
+    from strata_control import engine_component
+    if engine_component.is_reference(exe):
+        try:
+            exe = engine_component.expand(exe, cfg, full=False)
+        except (engine_component.EngineMissing, engine_component.ComponentProblem, OSError):
+            return None
     try:
         record = json.loads((Path(exe).parent / "engine-component.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):

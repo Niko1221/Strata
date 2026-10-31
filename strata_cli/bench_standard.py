@@ -814,7 +814,9 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                                                    declared_background=list(declared.get("background") or []))
     software_block = facts.software(why, machine_facts, engine_version=engine_version,
                                     build_options=declared.get("build_options"),
-                                    engine_build=facts.engine_build_runtime(plan.get("engine_exe")))
+                                    engine_build=facts.engine_build_runtime(
+                                        plan.get("engine_exe"),
+                                        plan.get("config") if isinstance(plan.get("config"), dict) else None))
     model_block = facts.model(why, props=props, status=status, files=files, declared=declared, log=log)
     template_ref = {"path": "provenance/chat_template.jinja", "sha256": facts.sha256_text(template_text)} if template_text else None
     configuration_block, other_options = facts.configuration(
