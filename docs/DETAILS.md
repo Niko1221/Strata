@@ -698,7 +698,7 @@ system prompt with a billing header that changes on every request; the server pi
 | `"strata_checkpoint": false` (per request) | A one-shot request that no later request continues saves no checkpoints and keeps no session. |
 | `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). |
 | `--conversation-cache-mib N`, `--conversation-cache-slots N` | Park conversations in a bounded host-RAM cache so alternating requests (controller and worker histories, sub-agents) reuse their prompts. Without `--conversation-cache-mib` the budget is 40% of the RAM left above `--conversation-cache-min-free-mib` once the model is loaded, at most 8192 MiB in steps of 256, off when under 1024; the engine log says which. `0` turns it off. It preserves histories; it does not run requests at once. |
-| `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
+| `--conversation-cache-min-tokens WRITE[,READ]` | Save outgoing conversations of at least WRITE tokens. Automatically look up parked RAM/disk candidates only when the complete prompt, including cached history, has at least READ tokens. READ does not limit active-session, checkpoint or batch-slot reuse, nor eligible outgoing saves. A single value means `WRITE,0`; default `0,0` (no minimum). |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
@@ -724,6 +724,79 @@ allocation failures fall back to ordinary prompt processing. With `--layer-split
 stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
+
+**Disk tier for parked conversations (opt-in).** Set `--conversation-cache-spill-dir DIR` to keep a parked conversation
+when RAM pressure or `--conversation-cache-slots` evicts it. A later matching request, including one after a restart,
+can read it back. `--conversation-cache-disk-mib N` limits this model's spill files (default 8192 MiB; `0` disables the
+disk tier). The index holds at most 256 conversations. Use a separate private directory per model and configuration.
+The directory is created with mode 0700; POSIX session and sidecar files use mode 0600 and exclusive creation.
+
+A spilled conversation is a `.sess` file plus a bounded metadata sidecar. The sidecar lets a request compare token and
+image prefixes without reading the K/V. `--conversation-cache-similarity F` and `--conversation-cache-n-min N` set the
+usual candidate thresholds, both defaulting to 0. The READ threshold above can skip this lookup altogether. A restore
+into the RAM cache still needs room in that budget and above `--conversation-cache-min-free-mib`. The disk tier keeps
+the existing single-GPU parking limit; `--layer-split` disables it.
+
+Cache identity includes the engine version, sampled model inputs and the resolved configuration that changes the saved
+bytes. Files from another identity stay on disk, are not indexed and do not count toward the disk budget; startup warns
+about them. They are never deleted automatically. Delete obsolete files yourself only after checking their identity and
+keeping any backups you need. Feature switches for REF and RHT do not enter this identity. Older binaries do not know
+the newer formats, so rollback compatibility is limited.
+
+**Disk-only conversations (opt-in).** `--conversation-cache-disk-only` uses the spill directory without a parked RAM
+budget. Switching away writes the outgoing conversation's running state and deepest checkpoint, streaming K/V directly
+from its pools. Returning uses two passes: validate the complete file, then apply K/V through bounded 16 MiB blocks
+instead of materializing it in RAM. Metadata and running-state admission checks still apply. The outgoing WRITE
+threshold also gates these saves and the clean-shutdown flush. Disk-only mode requires one GPU, without `--batch`,
+`--peer-device` or layer split.
+
+Disk-only saves can also retain shared **prefix entries**. They reuse a shared opening across conversations and
+restarts instead of reading that opening again. Prefix entries are not removed as superseded; the disk budget evicts
+ordinary conversations first. The Monitor reports disk saves, restores, usage, prefixes and refused operations.
+
+**Delta chains (opt-in).** `--conversation-cache-disk-delta`, with disk-only mode, appends changed K/V and running state
+to a `.dlog` instead of rewriting every base `.sess`. A manifest records the committed length, and the sidecar records
+the chain and last-use information for LRU eviction. An interrupted append is cut back to that committed length before
+the next write. Publication validates the last record against the sidecar, so a crash cannot mix states from two saves.
+A failed write preserves the previously committed chain for a later retry.
+
+`--conversation-cache-disk-delta-percent N` sets the compaction threshold as a percentage of the base file (default 40;
+range 1..100, with a 64 MiB minimum). It does not enable delta mode. At 40 the original two-fifths calculation is kept.
+For another percentage, a proposed record that is at least as large as a full snapshot also triggers a full write.
+A changed K/V prefix compacts too; prefix entries always write whole files. Restore validates the base and every
+committed record before applying them, then streams the records in order. Memory is bounded by metadata and I/O blocks,
+not by the log's total length. Delta-off writes retain the original v1 sidecar behavior; existing v1 sidecars remain
+readable.
+
+**Lossless prefix state references (opt-in).** `--conversation-cache-disk-state-ref` compares all five running-state
+arrays in a prefix checkpoint with the live state, byte for byte. If all match, a v2 file stores local references rather
+than a second copy. Any difference leaves that checkpoint as ordinary data; no match keeps the v1 bytes unchanged.
+Restoring a reference makes an independent RAM copy. REF applies only to prefix saves, not ordinary conversations,
+delta records, RAM-eviction spills or slot SAVE.
+
+**RHT+INT16 running-state codec (opt-in, lossy).** `--conversation-cache-disk-state-codec-rht` encodes recurrent GDN
+rows in ordinary disk-only base and delta files using a normalized Hadamard transform, per-row INT16 values and FP32
+scales. Runtime state remains FP32 and convolution state remains RAW. Prefix entries do not use this codec. Unsupported
+geometry, a size mismatch or non-finite input falls back to RAW. RHT changes stored state values: it is not lossless,
+and state-fidelity checks alone do not establish generation quality. It is a separate switch from REF and is off by
+default, so existing writes keep their previous format.
+
+**Background state writes (opt-in).** `--conversation-cache-disk-background-state` applies only to ordinary disk-only
+base and delta saves. It selects a v3 K/V-first layout. After the last K/V source read, the running session can continue
+while one owned task encodes state and writes through two bounded 16 MiB buffers. At most one task is unfinished.
+A later cache lookup, destructive operation, prefix or slot operation, or shutdown first joins and publishes it at a
+safe boundary. Prefix saves, slot SAVE/RESTORE, RAM-history parking and RAM-eviction spills keep their previous paths.
+
+The log separates request `blocked` time until source release, complete `save` time, and the later `boundary`
+join/publication time. Background work is moved out of the blocked interval, not eliminated. If a delta fails after
+source release, Strata does not reread the active K/V to fabricate a base: it keeps the old committed chain. A failure
+before source release can still use the frozen capture for a base.
+
+**Session formats.** Default writes keep the v1 state-first layout. v2 adds RAW/REF/RHT state descriptors; v3 adds the
+opt-in K/V-first layout used by background writes. The reader accepts all three versions, including mixed-version delta
+chains. A v3 apply pass fully decodes state during the read pass and consumes the later state section hash-only while
+applying K/V. The trailing payload hash protects both. Corruption found after K/V has changed device state fails stop
+rather than continuing from partial state.
 
 ### Session files (disk)
 
@@ -752,6 +825,12 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
   tier are not in it. Do not change model files while their sessions are kept. The hash detects accidental corruption and does
   not authenticate a file: restore only files this engine wrote.
+RESTORE also uses two passes: validate the file and running state first, then copy K/V into the pools in bounded
+16 MiB blocks. The K/V payload is not materialized as one host image. Before the first applied block, a clean refusal
+leaves the current session intact; corruption or transfer failure after that point fails stop. Linux uses `O_DIRECT`
+when the filesystem supports it, with buffered I/O as the fallback or when `STRATA_SESSION_BUFFERED=1`; Windows uses
+buffered I/O.
+
 - Errors: `501` without `--slot-save-path` or with parallel requests; `400` for a slot other than 0, an unknown action, a refused
   file name or an invalid file; `404` for a missing file; `503` when the model is not loaded or RAM is short; `507` when the disk has
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new

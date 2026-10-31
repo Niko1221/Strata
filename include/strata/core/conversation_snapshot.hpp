@@ -23,6 +23,10 @@ bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& 
 // No CUDA calls or destination writes. Used for whole-session prevalidation.
 bool conversation_kv_validate(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                               int64_t upto, bool include_index, std::string& error);
+// The streaming form: the image holds headers only (its K/V buffers are empty; the bytes are still on disk), so the
+// geometry, the extent and the target pools are checked, not buffer sizes.
+bool conversation_kv_validate_meta(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
+                                   int64_t upto, bool include_index, std::string& error);
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                              int64_t upto, bool include_index, std::string& error);
 // conversation_kv_save(from) + conversation_kv_restore(to) without a host image, for two states of the same layout.
@@ -37,6 +41,25 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
 // restore followed by a rewind to a checkpoint.
 bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                                     int64_t captured, int64_t upto, bool include_index, std::string& error);
+// One K/V layer of a streaming restore (conversation_file.hpp): conversation_kv_targets binds every layer's
+// authoritative pool after validating its header; `apply` copies one block into it (cudaMemcpyDefault, so a device
+// pool and a device-mapped host pool both work), in offset order; `finish` refills what the layer's K/V mode keeps
+// in VRAM (the streaming window, or the resident ring) - without it attention reads stale slots while the pool
+// bytes are right.  The image and the session must outlive the targets.
+struct ConversationKvTarget {
+    const QsaState* state = nullptr;
+    const ModelGeometry* geometry = nullptr;
+    int64_t upto = 0;
+    bool index = false;
+    std::array<uint8_t*, 5> pool{};
+    std::array<uint64_t, 5> sizes{};
+    bool apply(size_t part, uint64_t offset, const void* data, size_t n, std::string& error) const;
+    bool finish(std::string& error) const;
+};
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                             const QsaState* draft, std::vector<ConversationKvTarget>& targets, std::string& error);
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                             const QsaState& draft, std::vector<ConversationKvTarget>& targets, std::string& error);
 // Diagnostic read-back after a synchronized restore. Uses 64 KiB of stack
 // workspace, compares authoritative bytes and resident draft-ring pages, and
 // fingerprints the authoritative payload only. Never changes model state.
@@ -134,11 +157,37 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
 // Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
-// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
-// synchronized and must not run the session until the file is written.
+// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft. Caller has
+// synchronized and must not run the session until the file writer's sources-released notification (or its failure
+// exit). The old synchronous callers wait for the whole file. If move_checkpoints is non-null it must be
+// &view.checkpoints: after a successful capture those checkpoints are moved into meta instead of copied again;
+// the source vector is empty. A failed capture does not move them.
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
-                                   const ModelGeometry& g, const QsaState& draft, std::string& error);
+                                   const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                   std::vector<ConversationCheckpoint>* move_checkpoints = nullptr);
+// The same with `draft == nullptr`: the sources hold the session's own QSA layers only, no draft layer - the shape a
+// run with no drafter saves, and the one such a run restores (conversation_kv_targets with a null draft).
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error,
+                                   std::vector<ConversationCheckpoint>* move_checkpoints = nullptr);
+// --conversation-cache-disk-delta: the same sources, but each keeps its part's full size and starts at the first
+// page (or indexer row) at or after `unchanged_tokens`, the tokens whose K/V still matches the state the record's
+// base already holds (the same keep rule conversation_kv_save applies; the per-part arithmetic is
+// session_delta_first_bytes, host-testable).  The draft's moving cell is always refreshed, so it keeps one token
+// less.  The caller has synchronized and must not run the session until the record is written.
+bool conversation_snapshot_sources_delta(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                         const ConversationView& view, const SessionState& session,
+                                         const ModelGeometry& g, const QsaState& draft, int64_t unchanged_tokens,
+                                         std::string& error);
+// The offset half of the same operation, for a capture conversation_snapshot_sources already produced: sets each
+// source's first_bytes exactly as conversation_snapshot_sources_delta would, without touching the session again.
+// `upto` is the capture's token count.  The caller has synchronized and must not run the session until the record
+// is written; a full base write ignores first_bytes, so the same sources can be reused for a base fallback.
+bool conversation_snapshot_delta_offsets(std::vector<SessionKvSource>& sources, const SessionState& session,
+                                         const ModelGeometry& g, int64_t upto, int64_t unchanged_tokens,
+                                         std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 /// #2409: true when a restore (or a copy) on CUDA device `device` from the calling thread creates no copy stream: this
@@ -157,6 +206,12 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
                                                           SessionState& session, const ModelGeometry& g,
                                                           const QsaState& draft, std::string& error);
+
+// The streaming form of the same checks: the image's K/V is a set of headers (conversation_file.hpp), so every
+// layer is checked by conversation_kv_validate_meta.  As strict otherwise: geometry, layer range, the live state and
+// every checkpoint are validated without any CUDA call or device write.
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& session,
+                                         const ModelGeometry& g, const QsaState& draft, std::string& error);
 
 // The same with `draft == nullptr`: an image WITHOUT the draft layer's K/V (kv holds the session's own QSA layers
 // only).  A layer split's later stages park this way; the draft ring is saved once, with the first stage's image.
@@ -178,6 +233,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 std::vector<ConversationCheckpoint>* moved = nullptr);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& session,
+                                         const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,

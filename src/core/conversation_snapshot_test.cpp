@@ -196,6 +196,47 @@ void full_session(int fmt, int mode, int experts) {
         auto empty_ids=std::vector<int32_t>{};
         const ConversationView none{empty_ids,images,checkpoints,true};
         check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
+        {
+            // the delta offsets applied to an existing capture must equal the combined delta capture's, for every
+            // layer, part and unchanged prefix - generate.cpp reuses one capture for the delta record and a base
+            std::vector<SessionKvSource> adjusted = sources;
+            for (int64_t unchanged : std::array<int64_t,7>{0, 1, 3, 4, 17, 64, (int64_t) ids.size()}) {
+                SavedConversation dmeta;
+                std::vector<SessionKvSource> combined;
+                check(conversation_snapshot_sources_delta(dmeta,combined,view,ss,g,draft.state,unchanged,err),
+                      "delta capture for the offset equivalence");
+                check(conversation_snapshot_delta_offsets(adjusted,ss,g,(int64_t) ids.size(),unchanged,err),
+                      "delta offsets on the existing capture");
+                check(adjusted.size()==combined.size(),"offset equivalence: one layer each");
+                for (size_t i = 0; i < adjusted.size(); ++i)
+                    for (size_t part = 0; part < 5; ++part)
+                        check(adjusted[i].first_bytes[part]==combined[i].first_bytes[part] &&
+                              adjusted[i].sizes[part]==combined[i].sizes[part],
+                              "delta offsets equal the combined delta capture's first_bytes");
+            }
+            check(!conversation_snapshot_delta_offsets(adjusted,ss,g,(int64_t) ids.size(),-1,err) &&
+                  !conversation_snapshot_delta_offsets(adjusted,ss,g,(int64_t) ids.size(),
+                                                     (int64_t) ids.size()+1,err),
+                  "delta offsets refuse an unchanged prefix outside the capture");
+        }
+        {
+            // The opt-in background capture moves the already admitted deepest checkpoint instead of duplicating it.
+            std::vector<ConversationCheckpoint> owned = checkpoints;
+            const uint8_t* owned_gdn = owned.front().gdn.data();
+            const ConversationView moved_view{ids,images,owned,true};
+            SavedConversation moved;
+            std::vector<SessionKvSource> moved_sources;
+            check(conversation_snapshot_sources(moved,moved_sources,moved_view,ss,g,draft.state,err,&owned) &&
+                  owned.empty() && moved.checkpoints.size()==checkpoints.size(),
+                  "background capture moves the checkpoint and still captures the sources");
+            check(moved.checkpoints.front().gdn.data()==owned_gdn &&
+                  moved.checkpoints.front().ids==checkpoints.front().ids && moved.live.gdn==meta.live.gdn,
+                  "background capture preserves the checkpoint allocation and the live state");
+            std::vector<ConversationCheckpoint> wrong_owner = checkpoints;
+            check(!conversation_snapshot_sources(moved,moved_sources,view,ss,g,draft.state,err,&wrong_owner) &&
+                  wrong_owner.size()==checkpoints.size(),
+                  "background capture refuses a checkpoint vector outside its view without moving it");
+        }
     }
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");
     auto bad=a; bad.kv.back().k.pop_back();
