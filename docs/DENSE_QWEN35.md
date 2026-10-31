@@ -1,6 +1,6 @@
 # Dense `qwen35` (Qwen3.5 / Qwen3.8 4B) — port plan
 
-Status: **M0 + M1 done, greedy parity with llama.cpp** (guard, geometry, layout tables, family switch; 37/37 unit checks, and the real
+Status: **M0 + M1 done; greedy and chunked-prefill parity; PR candidate** (guard, geometry, layout tables, family switch; 37/37 unit checks, and the real
 `Qwen3.8-4B-Q4_K_M` header reads as 32+1 MTP layers, 0 experts, FF 9216). Fork of `niko1221/strata` (upstream stays
 `origin`; this fork is `fork`).
 
@@ -99,12 +99,33 @@ What the port needed, beyond M0's tables:
   the attention-score buffer starts at 16 MB instead of 256 MB. **The ceiling is ~2K cells** (ctx 2048: 0.02 GiB free,
   ctx 4096: OOM) — the weights are 2.59 GiB of the card.
 
-Two open items, both found by the parity run and neither fixed:
+### The one real bug the port had: `sk_part` was sized for a router
 
-1. **`warmup()` leaves state that `reset()` does not clear**: token 760 gives 89342 after a warm-up and 2614 from a clean
-   start. The warm-up is therefore off for the dense family (`run()`), which is a correctness workaround, not a fix — the
-   same `reset()` runs between two sequences, so this is a multi-turn/reuse item.
-2. **CUDA graph capture** was suspected first and is not the cause (same logits with and without); the graph stays on.
+A prompt longer than one decode window came out as garbage, and a 300-token prompt hit an illegal memory access. The
+cause was one line in `init()`: the split-K partials of the F32 projections are `[kSplitK][T][n_out]` and were sized
+`kSplitK * T * (n_expert + 1)` — 257 columns for a MoE **file's router** and **1** for a dense family, while the GDN
+alpha / beta projections the same buffer serves have `ssm_v_heads` (32) rows. So every chunked prompt wrote 32 rows per
+row past the end, over whatever the allocator had put next. The fix sizes it by
+`max(n_expert + 1, ssm_v_heads)`.
+
+Everything that looked like two separate bugs was this one:
+
+- `warmup()` "poisoning `reset()`" — the warm-up is a 512-row prompt chunk, so it was the overwrite itself. The warm-up
+  and the CUDA graph capture are both **on** now; the earlier workarounds are gone (the graph was never the cause: same
+  logits with and without capture).
+- Long prompts: 300 and 700 tokens (the second crossing the 512-row chunk boundary) now agree with `strata-q36ref`,
+  which reads one token at a time and has no chunked path at all.
+
+Validation on this machine (GTX 1650 4 GB, CUDA 13.4, ctx 1024, chunk 512, warm-up and capture on):
+
+| prompt | strata | reference |
+|---|---|---|
+| `The` (1 token) | `2614` | llama.cpp `2614` |
+| `The capital of France is` (5) | `11751 13 561 6511 314 9564 369 19241` = " Paris. The capital of Germany is Berlin." | llama.cpp: identical 16 tokens |
+| ×60 repeated (300) | `760 6511 314 9338` | `strata-q36ref`: `760` |
+| ×140 repeated (700, two chunks) | `760 6511 314` | `strata-q36ref`: `760` |
+
+Prefill on the MMVQ-only path (no room for the prompt GEMM's scratch): 700 tokens in 7.2 s, ~97 tok/s.
 
 Measured here (GTX 1650 4 GB, ctx 1024, chunk 512, prompt GEMM off): decode **37.5 tok/s**, prompt **87-91 tok/s**
 (the GEMM path would raise prefill; there is no room for its scratch on a 4 GB card).

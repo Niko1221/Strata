@@ -1002,6 +1002,11 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     return d;
 }
 
+// the last load's weight total and the free VRAM right after it: the budget line at the end of init() reports
+// what the card holds (measured, not modelled)
+static double vram_w_gib = 0, vram_tot_gib = 0;
+static size_t vram_fr_after_weights = 0;
+
 bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     const auto t0 = Clock::now();
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
@@ -1174,6 +1179,13 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
                  "experts are placed after the engine's buffers)\n", path.c_str(), checked, (double) bytes / (1 << 30),
                  ms_since(t0) / 1000.0);
+    vram_w_gib = (double) bytes / (1 << 30);
+    {
+        size_t fr = 0, tot = 0;
+        CK(cudaMemGetInfo(&fr, &tot));
+        vram_fr_after_weights = fr;
+        vram_tot_gib = (double) tot / (1 << 30);
+    }
     return true;
 }
 
@@ -1444,7 +1456,9 @@ struct Engine {
         // shrinks it the same way); a dense family holds every weight on the card already, so it starts at 64 MB
         if (strata::model_family_dense_ffn(g.family)) kAttScoreFloats = (size_t) 4 << 20;   // 16 MB: a chunk of 512 rows over 8K cells
         att_s = dalloc(kAttScoreFloats);
-        sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
+        // the split-K partials are [kSplitK][T][n_out]: the router's n_expert rows in a MoE file, but the GDN alpha /
+        // beta projections' ssm_v_heads rows in every family - a dense one has no router at all (n_expert + 1 = 1)
+        sk_part = dalloc((size_t) kSplitK * T * (size_t) std::max<int64_t>(g.n_expert + 1, g.ssm_v_heads));
         att_p16 = dalloc_t<__half>(kAttScoreFloats);
         k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
@@ -1598,6 +1612,9 @@ struct Engine {
         CK(cudaMemGetInfo(&fr, &tot));
         std::fprintf(stderr, "strata-q36: context %d cells, prompt chunk %d%s, %.2f GiB of VRAM free\n", ctx, tmax,
                      m->has_mtp ? ", MTP block loaded" : "", (double) fr / (1 << 30));
+        std::fprintf(stderr, "strata-q36: VRAM: weights %.2f GiB, cache+state+buffers %.2f GiB, free %.2f of %.2f GiB\n",
+                     vram_w_gib, (double) (vram_fr_after_weights - fr) / (1 << 30), (double) fr / (1 << 30),
+                     vram_tot_gib);
     }
 
     /// The recurrent state and the cache to a fresh sequence.
@@ -2203,23 +2220,10 @@ struct Engine {
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(x, d_img, d_map, N);   // a picture's cells take its rows
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
-        static FILE* dump_l = nullptr;
-        static bool dump_init = false;
-        if (!dump_init) {
-            dump_init = true;
-            if (const char* dp = std::getenv("STRATA_Q36_DUMP_LAYERS")) dump_l = std::fopen(dp, "wb");
-        }
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
             layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
                   last ? hmain : h);
-            if (dump_l) {   // the residual after each layer, for a layer-by-layer A/B against strata-q36ref
-                std::vector<float> buf((size_t) T * (size_t) g.n_embd);
-                CK(cudaStreamSynchronize(st));
-                CK(cudaMemcpy(buf.data(), x, (size_t) T * (size_t) g.n_embd * 4, cudaMemcpyDeviceToHost));
-                std::fwrite(buf.data(), 4, buf.size(), dump_l);
-                std::fflush(dump_l);
-            }
         }
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
     }
@@ -3932,11 +3936,7 @@ int strata::qwen35::run(int argc, char** argv) {
         return 1;
     }
     Engine E;
-    // TODO(dense): the captured graphs replay the MoE layer; a dense family's logits come out wrong under capture
-    // (verified: token 760 -> 89342 with the graph, 2614 without, while llama.cpp and strata-q36ref both say 2614), so
-    // the dense path runs one launch per kernel until the capture is re-checked
-    E.use_graph = graph && !strata::model_family_dense_ffn(m.g.family);
-    std::fprintf(stderr, "strata-q36: graph %s (command line graph %d)\n", E.use_graph ? "on" : "off", (int) graph);
+    E.use_graph = graph;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
@@ -4013,7 +4013,7 @@ int strata::qwen35::run(int argc, char** argv) {
     // TODO(dense): the warm-up leaves state that the next reset() does not clear, and the first real prompt after it comes
     // out wrong (token 760 -> 89342 instead of 2614).  Off for the dense family until that gap is found; the same reset
     // runs between two sequences, so this is a correctness item, not only a warm-up one.
-    if (warm && !strata::model_family_dense_ffn(m.g.family)) E.warmup();
+    if (warm) E.warmup();
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
