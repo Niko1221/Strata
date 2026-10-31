@@ -787,6 +787,12 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 std::fprintf(stderr, "strata mtp: the draft head on the Pascal Q8_0 GEMV (STRATA_MTP_Q8_SM60=1)\n");
         }
     }
+    if (q4_head_ && dhead_ == nullptr) {
+        err = "mtp: --mtp-q4 head/all requantizes the draft head's subset, but no subset is installed - "
+              "rt/draft_vocab.bin (or --mtp-draft-vocab FILE) is absent or empty, or STRATA_MTP_FULL_HEAD=1 "
+              "excludes it; install one (tools/draft_vocab.py) or use --mtp-q4 proj";
+        return false;
+    }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
     return true;
 }
