@@ -1,0 +1,98 @@
+{
+  "report": "2026-10-31-community-rx6900xt-windows-rdna2",
+  "not_the_standard_protocol": true,
+  "engine": {
+    "version": "0.1.54",
+    "source": "prebuilt",
+    "backend": "hip",
+    "platform": "windows-x64",
+    "archs": [
+      "gfx1030",
+      "gfx1031"
+    ],
+    "rocm": "10.2.0a20260930",
+    "commit": "8c1aea4bca1b",
+    "system_rocm_installed": false
+  },
+  "hardware": {
+    "gpu": "AMD Radeon RX 6900 XT 16 GB",
+    "arch": "gfx1030",
+    "vram_mib_seen_by_engine": 16368,
+    "windows_budget_mib": 15570,
+    "driver": "32.0.21045.16010",
+    "cpu": "AMD Ryzen 9 5950X 16C/32T, no AVX-512",
+    "ram_gib": 127.92,
+    "os": "Windows 11 Pro for Workstations build 26300"
+  },
+  "model": {
+    "name": "Qwen3.8-Flash-Next IQ3_S",
+    "quantization": "IQ3_S",
+    "shards": 2,
+    "size_gb": 83.6,
+    "native_pack": true,
+    "mtp_draft_layer": true
+  },
+  "env": {
+    "STRATA_HIP_PROMPT_F16": "1",
+    "STRATA_HC_PERSIST": "1",
+    "STRATA_ROUTE_TAIL_SKIP": "7",
+    "STRATA_SELECT_SIMT": "1",
+    "STRATA_ROUTE_PRIOR": "0.5",
+    "STRATA_PREFILL_LEND_PCT": "70",
+    "STRATA_DENSE_MMQ": "1",
+    "STRATA_HIP_ADAPT_KERNEL_COPY": "1",
+    "STRATA_IO_THREADS": "32",
+    "STRATA_KV_PREFETCH": "1",
+    "STRATA_ROCBLAS_TUNING": "<local>/tools/hip"
+  },
+  "args": [
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto:16384",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.7",
+    "--max-context",
+    "262144",
+    "--kv",
+    "k8v4",
+    "--kv-resident",
+    "32768",
+    "--prompt-cache",
+    "2",
+    "--conversation-cache-mib",
+    "8192",
+    "--conversation-cache-slots",
+    "32",
+    "--expert-profile",
+    "<local>/data/expert-profile.bin",
+    "--expert-profile-save",
+    "<local>/data/expert-profile-learned-iq3_s.bin",
+    "--mtp",
+    "<data>/mtp/rt"
+  ],
+  "startup": {
+    "ready_seconds_approx": 54,
+    "ple_table_gib": 26.8,
+    "ple_lock_seconds": 26.5,
+    "expert_cache_slots": 3369,
+    "expert_cache_gib": 6.45,
+    "kv_cells_in_vram": 32768,
+    "kv_cells_total": 262144,
+    "kv_pinned_ram_gib": 2.39,
+    "pcie_gbs": 28.0,
+    "large_pages": "refused, VirtualAlloc error 1314, 4 KB pages used"
+  },
+  "measurements": {
+    "date": "2026-10-31",
+    "prefill_tps": 869.0,
+    "prefill_prompt_tokens": 9699,
+    "decode_tps": 68.5,
+    "decode_tokens": 400,
+    "mtp_accept_pct": 78.6,
+    "temperature": 0.0,
+    "runs": 1
+  }
+}

@@ -1,0 +1,33 @@
+Engine 0.1.54, windows-x64, backend hip, prebuilt package (archs gfx1030/gfx1031, ROCm 10.2.0a20260930).
+Startup of 2026-10-31 06:47:37 local, verbatim from the server log with local paths shortened.
+Not the full log: request lines and per-request statistics are omitted.
+
+[strata] 2026-10-31 06:47:37 engine started: <local>\engine\strata.exe --serve --pack <data>\packs\iq3_s --native <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile <local>\data\expert-profile.bin --expert-cache auto --prefill auto:16384 --spec 4 --spec-min-p 0.7 --mtp <data>\mtp\rt --max-context 262144 --kv k8v4 --kv-resident 32768 --prompt-cache 2 --conversation-cache-mib 8192 --conversation-cache-slots 32 --expert-profile-save <local>\data\expert-profile-learned-iq3_s.bin
+strata: WARNING --prefill auto:16384: prompt chunks of 8192 tokens or more crashed the engine on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, #1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at 6144
+strata generate: PCIe probe: 28.0 GB/s host->device (best of 28.0 27.9 27.9 27.9) -> pcie_frac 0.55 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: <data>\packs\iq3_s experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.4 s)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 3.0 s
+strata generate: --ple-io ram chosen by the residency policy (the table is 26.8 GiB, the expert arena still to fill 46.8 GiB and 118.2 GiB of RAM is available; STRATA_PLE_AUTO_RAM=0 keeps the direct reads, --ple-io direct forces them)
+strata generate: PLE table locked in RAM (--ple-io ram chosen by the residency policy) in 26.5 s
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 2.39 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 0.23 s (3362 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.5 s
+strata generate: HIP runtime <local>\engine\amdhip64_7.dll
+prefill gemm: rocBLAS tuning enabled (112 rows, 65 with a solution, gfx1030, rocBLAS 5.8.0.efafc1c1)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 554 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: expert arena read unbuffered (1 of 16 probe reads from the file cache; 41.5 GiB available, 51.1 GiB of files)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 50295996416 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 46.84 GiB at 4.51 GiB/s
+strata generate: CPU pool tasks/phase: 48 (automatic), participating threads: 16
+strata generate: CPU pool: 15 workers by default (16 physical cores, 32 logical processors; bounded by every physical core but the host's)
+strata: Windows budgets 15570 of this card's 16368 MiB for this process; free VRAM is counted within that (STRATA_WDDM_BUDGET=0: off)
+strata generate: expert cache auto: Windows keeps 2560 MiB free after the cache on a card this size (the default 700 MiB left 323 MiB on a 20 GB card and Windows paged, #1376); --vram-reserve-mib N sets it
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache auto: 9.42 GiB free, 2560 MiB reserved (+218 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 2601 slots
+strata generate: expert cache 3369 slots, 6.45 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 3369 resident experts, decided on the device
+prefill gemm: rocBLAS tuning enabled (112 rows, 65 with a solution, gfx1030, rocBLAS 5.8.0.efafc1c1)
+strata serve: expert profile saved to <local>\data\expert-profile-learned-iq3_s.bin (periodic)

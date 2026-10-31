@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-31",
+  "protocol": "none - not strata bench run; one prompt and one completion against a warm server",
+  "command": "tools/strata-speed.py --repeats 1 --decode-tokens 400 (temperature 0)",
+  "samples": [
+    {
+      "kind": "prefill",
+      "prompt_tokens": 9699,
+      "tok_per_s": 869.0,
+      "runs": 1
+    },
+    {
+      "kind": "decode",
+      "completion_tokens": 400,
+      "tok_per_s": 68.5,
+      "mtp_accept_pct": 78.6,
+      "runs": 1
+    }
+  ],
+  "caveats": [
+    "single run each, no repetition, no ABBA pairing",
+    "server was already warm; prompt-prefix reuse and a warm expert cache are not excluded",
+    "an earlier day reported 1026 tok/s prompt at 11470 prompt tokens; different prompt length on a different day, not a regression"
+  ]
+}
