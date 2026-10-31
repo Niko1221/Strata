@@ -639,6 +639,8 @@ function setAsks(sessionId: string, list: AgentAsk[]) {
 /** The agent asked the person something (a frame of the host), or the question ended without an answer. */
 export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
   const ask = readAsk(frame);
+  // A /loop runs without anyone there: the question is skipped at once, so the loop never waits for an answer.
+  if (ask && loopScheduler.isRunning(sessionId)) { void answerAgentAsk(sessionId, ask.callId, null).catch(() => {}); return; }
   if (ask) setAsks(sessionId, [...(state.agentAsks[sessionId] ?? []).filter(a => a.callId !== ask.callId), ask]);
 }
 export function removeAgentAsk(sessionId: string, callId?: string) {

@@ -443,7 +443,7 @@ test('#4244 the tool is offered again, as the group "Questions for you", and the
   assert.match(catalog, /id: 'questions'[^\n]*plugins: \['tool-ask-user'\]/);
   const bridge = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
   assert.match(bridge, /await rt\.gw\.answerEvent\(\{ clientId: entry\.clientId \?\? rt\.clientId, eventId: entry\.eventId, outcome \}\);/);
-  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/, 'a helper question, a stopping chat or an empty request is still declared unanswerable');
+  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| turn\.goalRun \|\| turn\.plan \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/, 'a helper question, a stopping chat or an empty request is still declared unanswerable');
   const gateway = readFileSync(new URL('../server/agent/gateway-client.mjs', import.meta.url), 'utf8');
   assert.match(gateway, /const wire = outcome === 'next' \? \{ kind: 'next' \} : \{ kind: 'result', value: outcome \};/, 'a structured answer travels as the result value');
   assert.match(src('components/ApprovalCard.tsx'), /asks\.map\(a => <QuestionCard key=\{a\.callId\} sessionId=\{sessionId!\} ask=\{a\}\/>\)/);
@@ -462,4 +462,10 @@ test('#3818 the transcript lets go of the newest token while the reader has word
   assert.match(chat, /function readerHasSelection\(scroller: HTMLElement\): boolean \{\s*const sel = window\.getSelection\(\);\s*return !!sel && !sel\.isCollapsed && !!sel\.anchorNode && scroller\.contains\(sel\.anchorNode\) && sel\.toString\(\)\.trim\(\)\.length > 0;/);
   assert.match(chat, /if \(pinned\.current && readerHasSelection\(el\)\) \{\s*\/\/[^\n]*\n\s*pinned\.current = false;\s*setAwayFromBottom\(distanceFromBottom\(el\) > PILL_DISTANCE\);\s*\}\s*if \(pinned\.current\)\s*el\.scrollTop = el\.scrollHeight;/, 'the observer that follows a growing reply');
   assert.match(chat, /if \(pinned\.current && !sent && readerHasSelection\(el\)\) \{\s*pinned\.current = false;/, 'and the effect that follows each token; sending a message still brings the reader to it');
+});
+
+test('#4244 a goal, a plan step and a loop run without anyone there, so a question is declined at once instead of waiting', () => {
+  const bridge = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| turn\.goalRun \|\| turn\.plan \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/);
+  assert.match(src('lib/store.ts'), /if \(ask && loopScheduler\.isRunning\(sessionId\)\) \{ void answerAgentAsk\(sessionId, ask\.callId, null\)\.catch\(\(\) => \{\}\); return; \}/);
 });

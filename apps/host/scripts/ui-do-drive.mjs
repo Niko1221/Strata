@@ -634,6 +634,7 @@ cases.quote = async () => {
     await page.locator('textarea').first().fill('SCRIPT:echo thanks for the quote');
     await page.keyboard.press('Enter');
     await page.locator('.sent-quote').first().waitFor({ timeout: 15000 });
+    await page.waitForTimeout(300);
     const sent = await page.locator('.st-msg--user').last().innerText();
     check(/Second point: nothing has to be uploaded/.test(sent) && /SCRIPT:echo thanks for the quote/.test(sent) && !/Quoting:/.test(sent) && !/「/.test(sent), `${tag}: the sent message shows the quote apart from the reply, without the markup`, sent.replace(/\n+/g, ' | ').slice(0, 160));
     const got = worker.requests.at(-1)?.raw ?? '';
@@ -703,6 +704,18 @@ cases.ask = async () => {
     await page.waitForFunction(() => document.querySelectorAll('.askq').length === 0, null, { timeout: 8000 });
     check((await asked()).slice(before).at(-1)?.skip === true, `${tag}: Skip is sent as a skip`);
     check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+  // A /loop runs without anyone there: the question is skipped at once, no card, and the loop is not left waiting.
+  {
+    const before = (await asked()).length;
+    const page = await open('light', 1280, 860, [chat('s1', 'Loop', [])], { origin: t.origin });
+    await page.locator('textarea').first().fill('/loop 10m Build me a page stop after 1 answer');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(async () => (await (await fetch('/__fixture/asked')).json()).length > 0, null, { timeout: 15000 }).catch(() => {});
+    const got = (await asked()).slice(before).at(-1);
+    check(got?.skip === true && got?.callId === 'call-ask-1', 'a loop: the question is skipped at once', JSON.stringify(got));
+    check(await page.locator('.askq').count() === 0, 'a loop: no question card is shown');
     await page.context().close();
   }
   await fetch(`${t.origin}/__fixture/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: false }) });

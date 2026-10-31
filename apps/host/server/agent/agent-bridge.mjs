@@ -278,14 +278,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (!r.callId) return;
       pending.set(`${value.agentId}:${r.callId}`, { eventId: value.eventId, sessionId: value.agentId, callId: r.callId, tool: r.toolName, reason: r.reason ?? null, at: Date.now(), clientId: runtime.clientId });
     } else if (value.type === 'waterfall' && value.event === 'user-questions/request') {
-      // The agent of a chat that is running asks the person: the question goes to the page (the question card above the message box) and the
+      // The agent of a chat that is running in front of the person asks the person: the question goes to the page (the question card above the message box) and the
       // Harness waits for the answer. Anything else (a helper's question, a chat that is stopping, a request with nothing to show) is declared
       // unanswerable, which makes the tool return an error the model reads and carries on from, instead of a turn that waits forever.
       const r = value.request ?? {};
       const chatId = chatOfSession(value.agentId);
       const turn = chatId ? chats.get(chatId)?.turn : null;
       const items = parseQuestions(r.questions);
-      if (!turn || turn.finished || turn.stopping || !turn.announceQuestion || !items.length) {
+      // A goal or a plan step runs without anyone there: a question would stall it, so it is declined at once (the model reads "could not be answered" and goes on).
+      if (!turn || turn.finished || turn.stopping || turn.goalRun || turn.plan || !turn.announceQuestion || !items.length) {
         void runtime.gw.answerEvent({ clientId: runtime.clientId, eventId: value.eventId, outcome: 'next' }).catch(() => {});
       } else {
         const callId = String(r.wait?.callId ?? value.eventId);
