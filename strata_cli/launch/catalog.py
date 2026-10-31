@@ -377,7 +377,9 @@ class Catalog:
         for fam_name, fam_d in families.items():       # DeepSeek-V4.1-Flash's size is not one of setup's MODELS
             if fam_d.get("multi_file"):
                 names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
-        match = next((n for n in names if n.lower() == model.lower()), None)
+        import re
+        wanted = re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", model)     # the set's name on screen is ISTA-DAS; its ids keep the first spelling
+        match = next((n for n in names if n.lower() == wanted.lower()), None)
         if match is None:
             near = S.closest(model, names)
             raise ValueError(f"There is no model called '{model}'." + (f" Did you mean '{near}'?" if near else "")

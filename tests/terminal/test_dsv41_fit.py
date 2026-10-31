@@ -1,4 +1,4 @@
-"""strata_control/dsv41_fit.py: the memory plan of the official DeepSeek-V4.1-Flash sets (IST-DAS 1.75 / 2.00 / 2.25 bpw), and its
+"""strata_control/dsv41_fit.py: the memory plan of the official DeepSeek-V4.1-Flash sets (ISTA-DAS 1.75 / 2.00 / 2.25 bpw), and its
 unified-memory branch for a Ryzen AI Max "Strix Halo" (gfx1151) PC, where the graphics memory is the RAM and is counted once.
 
 The numbers of the 64 GB box are the measured ones (Windows, Adrenalin 26.10.1, engine 0.1.51): 2.00 bpw, Faster mode (5 experts),

@@ -1,4 +1,4 @@
-"""The official DeepSeek-V4.1-Flash GGUF sets (IST-DAS 1.75 / 2.00 / 2.25 bpw), recognised by their pinned file names and sizes.
+"""The official DeepSeek-V4.1-Flash GGUF sets (ISTA-DAS 1.75 / 2.00 / 2.25 bpw), recognised by their pinned file names and sizes.
 
 The Terminal's setup downloads them (setup.py MULTI_FILE_FAMILIES, DSV41_ISTA_FILES) and accepts the files the first release was downloaded as
 (DSV41_LEGACY_FILES: model-2.00bpw-0000N-of-00004.gguf, engram-IQ4_NL.gguf). The app's "I already have the model" preview used to know only the
@@ -42,7 +42,7 @@ def tables() -> dict | None:
             ista = {**ista, **getattr(module, "DSV41_UD_FILES", {})}
             shards = {name: ista[name][0] for name in entry["shards"]}
             old = {renamed[name]: legacy[renamed[name]][0] for name in entry["shards"] if name in renamed and renamed[name] in legacy}
-            alt = entry.get("engram_shard")             # Unsloth's UD-IQ1 sets: shard 5 is the Engram (the same data as IST-DAS's file)
+            alt = entry.get("engram_shard")             # Unsloth's UD-IQ1 sets: shard 5 is the Engram (the same data as ISTA-DAS's file)
             result["sets"][model] = {"label": entry.get("label", model), "shards": shards, "legacy": old,
                                      "engram_alt": {alt: ista[alt][0]} if alt else {},
                                      "new1": {name: new1[name][0] for name in entry["shards"] if name in new1},
