@@ -913,7 +913,8 @@ void mtp_list_nodes(cudaGraph_t graph, const char* what) {
 
 bool mtp_qfuse_hc_on() {
     static const int env = [] {
-        if (const char* v = std::getenv("STRATA_QFUSE")) return std::atoi(v) != 0 ? 1 : 0;
+        // only STRATA_QFUSE_HC (not STRATA_QFUSE, which the gfx1151 table sets): the draft layer's q8_1 images from the hyper-connection
+        // read were run on gfx1201 only (#3264), so every other target keeps the separate quantize unless asked
         if (const char* v = std::getenv("STRATA_QFUSE_HC")) return std::atoi(v) != 0 ? 1 : 0;
         return -1;
     }();
