@@ -20,6 +20,8 @@ MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
     "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
     "IQ3_S": {"shard1_gb": 54.8, "tested": True},
+    # ISTA-DASLab's Coder: half the experts (256), shard 1 is the 48-layer model, shard 2 is the n-gram table
+    "IQ1_M": {"shard1_gb": 29.6, "tested": True, "family": "coder"},
     # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
@@ -61,6 +63,7 @@ GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are dec
 CONTEXTS = [8192, 32768, 65536, 131072]
 MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
+             "IQ1_M": "Coder ~3.5-bit (half experts, code/agentic focus)",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
              "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)",
              "Gyro-S": "agentionai's trellis experts, the smallest (58 GB download, the n-gram table is inside it)",
@@ -193,6 +196,17 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
     Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
+    if profile is None:
+        profile = "data/expert-profile.bin"
+    is_coder = any("coder" in str(s).lower() for s in shards) or (pack and "coder" in str(pack).lower())
+    if is_coder and str(profile).endswith("expert-profile.bin"):
+        pname = "expert-profile-coder.bin"
+        if isinstance(profile, Path):
+            profile = profile.parent / pname
+        elif "/" in str(profile):
+            profile = str(Path(profile).parent / pname)
+        else:
+            profile = pname
     mtp = stream_mtp(stream, ram_gb)
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF

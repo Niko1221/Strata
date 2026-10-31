@@ -32,23 +32,25 @@ def plan(gguf: Path):
     first data offset."""
     rd = R.Reader(gguf)
     tab = {t["name"]: t for t in rd.tensors}
+    g0 = tab.get("blk.0.ffn_gate_exps.weight")
+    ne = g0["dims"][-1] if (g0 and len(g0["dims"]) > 1) else NE
     lay = []
     for l in range(NL):
         g, u, d = (tab[f"blk.{l}.ffn_{k}_exps.weight"] for k in ("gate", "up", "down"))
-        lay.append((g, u, d, g["bytes"] // NE, u["bytes"] // NE, d["bytes"] // NE))
+        lay.append((g, u, d, g["bytes"] // ne, u["bytes"] // ne, d["bytes"] // ne))
     head_len = 64 + NL * 32
     data0 = (head_len + ALIGN - 1) // ALIGN * ALIGN
     offs, at = [], data0
     for g, u, d, gs, us, ds in lay:
         offs.append(at)
-        at += NE * (gs + us + ds)
+        at += ne * (gs + us + ds)
         at = (at + ALIGN - 1) // ALIGN * ALIGN
-    return rd, lay, offs, at, data0
+    return rd, lay, offs, at, data0, ne
 
 
 def size_bytes(gguf: Path) -> int:
     """The size the file for this GGUF will have (setup checks the free disk with it)."""
-    rd, _, _, at, _ = plan(gguf)
+    rd, _, _, at, _, _ = plan(gguf)
     rd.f.close()
     return at
 
@@ -60,8 +62,8 @@ def main() -> int:
     ap.add_argument("--verify", action="store_true")
     a = ap.parse_args()
     out = a.out or a.gguf.with_name(a.gguf.name + ".experts")
-    rd, lay, offs, at, data0 = plan(a.gguf)
-    head = struct.pack("<4sIIIQ", b"STRX", 1, NL, NE, os.path.getsize(a.gguf)).ljust(64, b"\0")
+    rd, lay, offs, at, data0, ne = plan(a.gguf)
+    head = struct.pack("<4sIIIQ", b"STRX", 1, NL, ne, os.path.getsize(a.gguf)).ljust(64, b"\0")
     for (g, u, d, gs, us, ds), o in zip(lay, offs):
         head += struct.pack("<QQQQ", o, gs, us, ds)
     tmp = out.with_name(out.name + ".part")
@@ -73,7 +75,7 @@ def main() -> int:
             src.seek(u["abs"]); U = src.read(u["bytes"])
             src.seek(d["abs"]); D = src.read(d["bytes"])
             f.seek(o)
-            f.write(b"".join(G[e * gs:(e + 1) * gs] + U[e * us:(e + 1) * us] + D[e * ds:(e + 1) * ds] for e in range(NE)))
+            f.write(b"".join(G[e * gs:(e + 1) * gs] + U[e * us:(e + 1) * us] + D[e * ds:(e + 1) * ds] for e in range(ne)))
             print(f"\r  layer {l + 1} / {NL}", end="", flush=True)
         f.truncate(at)
     print()
@@ -85,14 +87,14 @@ def main() -> int:
                     src.seek(t["abs"])
                     h1.update(src.read(t["bytes"]))
                 f.seek(o)
-                blob = f.read(NE * (gs + us + ds))
+                blob = f.read(ne * (gs + us + ds))
                 step = gs + us + ds
                 for part, size, base in ((0, gs, 0), (1, us, gs), (2, ds, gs + us)):
-                    h2.update(b"".join(blob[e * step + base:e * step + base + size] for e in range(NE)))
+                    h2.update(b"".join(blob[e * step + base:e * step + base + size] for e in range(ne)))
                 if h1.digest() != h2.digest():
                     tmp.unlink()
                     sys.exit(f"verify FAILED at layer {l} (output removed)")
-        print(f"verify: {NL} layers x {NE} experts identical to the GGUF")
+        print(f"verify: {NL} layers x {ne} experts identical to the GGUF")
     os.replace(tmp, out)
     print(f"{out}: {at / 2**30:.2f} GiB")
     return 0

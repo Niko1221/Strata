@@ -2,6 +2,7 @@
 //   mpp_mm<T, TM, TN, SG>   Metal 4 MetalPerformancePrimitives matmul2d (the M5's neural accelerators), a TM x TN
 //                           tile of C per threadgroup, K dynamic, A and B straight from device memory
 //   sg_mm<T>                simdgroup_matrix 8x8, a 32 x 32 tile per simdgroup (4 x 4 accumulators), 4 simdgroups
+#if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 
@@ -29,6 +30,9 @@ MPP(half, 64, 16, 2) MPP(half, 64, 16, 4) MPP(half, 128, 16, 4) MPP(half, 128, 3
 MPP(half, 32, 32, 2) MPP(half, 16, 32, 1) MPP(half, 16, 16, 1) MPP(half, 128, 48, 4) MPP(half, 64, 48, 4)
 MPP(float, 64, 32, 4) MPP(float, 64, 64, 4) MPP(float, 128, 64, 4)
 MPP(bfloat, 64, 64, 4) MPP(bfloat, 128, 64, 4)
+#else
+struct MmArgs { int M, N, K; };
+#endif
 
 // simdgroup_matrix: threadgroup tile 64 x 64 (4 simdgroups x 32 x 32), K in steps of 8, operands from device memory
 template <typename T>
@@ -53,6 +57,7 @@ template [[host_name("sg_mm_half")]] kernel decltype(sg_mm<half>) sg_mm<half>;
 template [[host_name("sg_mm_float")]] kernel decltype(sg_mm<float>) sg_mm<float>;
 
 
+#if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 // the element layout of single-simdgroup matmul2d cooperative tensors (right input, left input, destination) for a
 // TM x TN x TK descriptor: out[((which * 32 + lane) * 128 + i) * 4 + (0, 1)] = the two indices, [2] = capacity
 template <int TM, int TN, int TK>
@@ -83,3 +88,4 @@ template [[host_name("coop_layout_16_32_16")]] kernel decltype(coop_layout<16, 3
 template [[host_name("coop_layout_32_32_16")]] kernel decltype(coop_layout<32, 32, 16>) coop_layout<32, 32, 16>;
 template [[host_name("coop_layout_16_64_32")]] kernel decltype(coop_layout<16, 64, 32>) coop_layout<16, 64, 32>;
 template [[host_name("coop_layout_16_32_32")]] kernel decltype(coop_layout<16, 32, 32>) coop_layout<16, 32, 32>;
+#endif

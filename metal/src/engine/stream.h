@@ -57,6 +57,7 @@ public:
     // the arena's buffers (at most 4, each within the device's maxBufferLength): chunk(i) for i >= count is chunk 0
     const mtl::Buffer& chunk(int i) const { return chunks_[(size_t) i < chunks_.size() ? (size_t) i : 0]; }
     const mtl::Buffer& smap() const { return smap_; }
+    int n_expert() const { return ne_; }
     uint64_t up_in_slot(int l) const { return lay_[(size_t) l].gs; }
     uint64_t down_in_slot(int l) const { return lay_[(size_t) l].gs + lay_[(size_t) l].us; }
     // The host's turn at layer l: ids = the window's T x topk routed ids; pred = T x 512 router logits of layer l + 1
@@ -118,6 +119,7 @@ private:
     bool stop_ = false;
     int outstanding_ = 0;
     int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
+    int ne_ = 512;
     bool prefetch_ = true, fake_ = false, pre_mru_ = false;
     // stats
     uint64_t stamp_ = 1;   // the handshake count: slots pinned with the current one are in use on the GPU
