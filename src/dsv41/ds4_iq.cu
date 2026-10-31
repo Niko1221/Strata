@@ -1277,6 +1277,28 @@ bool light_set(const SetArgs& a, bool gu, cudaStream_t s) {
 template <int T>
 void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     const dim3 grid((unsigned) ((max_n + kWarps - 1) / kWarps), (unsigned) nj);
+#if defined(STRATA_USE_HIP)
+    // gfx12 (HIP), Q2_K: the 1-column and the 4/16-column instantiations of this GEMV round a column one ulp apart on some outputs
+    // (ds4_gguf_test --rows on p620 and r9700: about 0.4% of the outputs on random data; it depends on the call's column count class
+    // only - not on the neighbours, the column's place, nor the int8 rounding of the activations; cause not found).  Every Q2_K call
+    // therefore runs the 4-column kernel, in slices of 4 columns beyond that, so a column's result is the same whatever the rows
+    // beside it (--parallel's multi step against a decode token).  No pack we ship or test has a Q2_K tensor.
+    if constexpr (T == kQ2_K) {
+        for (int c0 = 0; c0 < std::max(1, max_c); c0 += 4) {
+            Jobs K = J;
+            for (int j = 0; j < nj; ++j) {
+                MvJob& b = K.j[j];
+                const int nsb = b.k / 32;
+                b.ncol = std::max(0, std::min(4, J.j[j].ncol - c0));
+                b.xq += (size_t) c0 * b.k;
+                b.xd += (size_t) c0 * nsb;
+                b.y += (size_t) c0 * b.ycs;
+            }
+            strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, K);
+        }
+        return;
+    }
+#endif
     if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
     else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
     else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
