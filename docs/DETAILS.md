@@ -837,7 +837,7 @@ endpoints are refused with an error that says so.
 | `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the config's `reasoning_effort`, else the model's default |
 | `max_output_tokens` | The output cap, thinking included. Running out ends the response `incomplete`. `0` and `-1` (or leaving it out) mean no cap, as for `max_tokens`; anything below `-1` is a 400 |
-| `text.format` | `json_schema` and `json_object` use the JSON formats above (checked, not constrained) |
+| `text.format` | `json_schema` and `json_object` use the JSON formats above (checked, not constrained). An answer cut short (by `max_output_tokens`, a full context or the repeat stop) is not checked: the response ends `incomplete` with the text so far, which may not be whole JSON. `/v1/chat/completions` still returns 502 there. |
 | `client_metadata["x-codex-turn-metadata"]` thread-title request | Opt-in `"codex_thread_titles": true`: answered without the engine as `{"title": "<the user's line, cut to 36 characters>"}` so the conversation keeps the prompt cache |
 
 The final event (`response.completed` or `response.incomplete`) and a non-streaming reply carry the same top-level `timings` object as
