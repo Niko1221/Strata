@@ -1,0 +1,10 @@
+Change only the function name add to sum_pair and return the complete file.
+```python
+def add(a, b):
+    return a + b
+
+def multiply(a, b):
+    return a * b
+
+assert add(2, 3) == 5
+```

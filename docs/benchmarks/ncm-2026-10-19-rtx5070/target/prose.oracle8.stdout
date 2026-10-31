@@ -1,0 +1,14 @@
+speculation              9 rounds of 8, drafts accepted 56 of 56 (1.000), 7.22 tokens per round
+accepted per round       0:1 1:0 2:0 3:0 4:0 5:0 6:0 7:8
+verify window            wait for rings 17.069  pool 162.941  host 0.073  commit 0.015 ms/round; CPU experts 22.21 distinct / 44.15 routed per layer
+pool multi               gate/up 28.765  quantize 0.566  down 11.548 ms/round; 38.1 GB/s over the rows phases; CPU pool call 162.732 ms/round
+dispatch                 plan 0.235  activation quantize 0.251  jobs 121.121  run 40.893 ms/round
+adaptive tier            192 experts swapped into the VRAM tier (every 4 rounds, 2.907 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 14017.0 MB read from the files (1557.45 MB/round, 155.3 ms/round of reading, 10.03 GB/s per reading thread) (the GGUF in place); prompt copies 4587.9 MB
+routing prefetch         9676 experts warmed, 6542 of the file tier's 0 blob reads had been warmed (0.0%); predictor 26.1 ms/round on its thread, 0 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+routing dumped           $OUT/prose.oracle8.routing.bin (432 records of layer, k, ids, weights)
+prompt  : 248045 846 198 814 20139 1204 264 33828 25710 23086 303 2250 2716 41228 13 248046 198 248045 74455 198 248068 271 248069 271
+output  : 32 33828 25710 23086 15048 4016 310 279 64610 55488 2376 314 1141 36609 21992 13 1577 279 21992 16424 11 781 1791 19697 22546 421 577 1612 4203 310 836 16234 11 13057 14912 1040 264 25349 4694 5176 421 13205 279 12591 46966 13 1061 6745 24057 8346 5190 279 33828 494 68776 888 948 6992 4487 11 7984 264 5629 13250
+decode                   64 tokens in 1676.3 ms  ->  38.18 tok/s
+prefill                  23 tokens in 721.5 ms  ->  31.88 tok/s  (time to first token 1556.7 ms)
