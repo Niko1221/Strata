@@ -1661,6 +1661,11 @@ class SamplingKeys(unittest.TestCase):
         self.assertIn("spec_min_p=0.7", k)
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
+        k = self.keys(temperature=0, strata_tune={"spec_p_cum": 0.9, "spec_p_cum_deep": 0.3})
+        self.assertIn("spec_p_cum=0.9", k)
+        self.assertIn("spec_p_cum_deep=0.3", k)
+        bad = self.keys(strata_tune={"spec_p_cum": 1.5, "spec_p_cum_deep": False})
+        self.assertFalse([x for x in bad if x.split("=")[0] in ("spec_p_cum", "spec_p_cum_deep")])
 
     def test_tune_prefill_pipe(self):
         self.assertIn("pipe=1536.0", self.keys(temperature=0, strata_tune={"prefill_pipe": 1536}))

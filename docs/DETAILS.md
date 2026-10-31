@@ -544,6 +544,13 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `STRATA_SPEC_GUMBEL=1` raise the accepted-draft rate on some machines; `STRATA_SPEC_PROB=1` is speculative rejection
   sampling. `STRATA_SPEC_DEPTH=1` prints acceptance by draft depth and `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting
   to hotter requests. Try them on your own card before relying on them.
+- `STRATA_SPEC_PCUM=base[,deep[,d0,d1]]` (opt-in, serial decode) also ends an MTP window where the product of the drafted
+  tokens' top-1 probabilities falls below a threshold: `base` up to position `d0`, `deep` from `d1` (16384 and 49152 by
+  default), a straight line between. The drafter stops at the same token, so it drafts nothing the window drops. Every
+  token is still verified: with a fixed expert placement (`--adapt-swaps 0 --prompt-cache 0`, `pcie_frac` 0) the greedy
+  text was byte-identical with the rule off, at 0.6 and at 0.75. Per request, `strata_tune` takes `spec_p_cum` (base and
+  deep) and `spec_p_cum_deep`. It is meant for cards where a verify token gets expensive deep in the context; measured
+  results are [below](#opt-in-switches-measured-and-left-off-0141-and-later).
 - **logprobs: how likely each token was (CUDA/HIP).** `"logprobs": true` with `"top_logprobs": 0..20` on
   `/v1/chat/completions`, streamed or not, adds `choices[0].logprobs.content[]` to the reply (`token`, `logprob`,
   `bytes`, `top_logprobs`); with thinking on, the thinking's entries come under `reasoning_content` instead. The
@@ -1443,6 +1450,7 @@ with `--batch 2` at 262,144 context saw 538 MiB at the free line become 395 MiB 
 | `--prefill-head-alias` | 8 GB RTX PRO 2000 Laptop, Windows, IQ3_XXS, 590 MiB reserve, 29,854-token prompt | Prefill 292.5 -> 667.1 tok/s (2,048-token chunks instead of 512); reads of up to 512 fresh tokens cost 0.6-0.75 s more; 0 MiB free while decoding |
 | `STRATA_EMB_REUSE_ACCOUNT=1` | RTX 3060, IQ3_XXS | Chunk 6400 -> 6656 tokens, 1652 -> 1670 borrowed slots, prompt about +3.9% |
 | `STRATA_SPEC_COUPLED` / `STRATA_SPEC_GUMBEL` | Ryzen AI Max+ 395 (Radeon 8060S, Linux, ROCm 7.14.1), UD-Q4_K_XL, `--spec 4 --mtp`, temperature 1.0, 12-13 requests per arm | Drafts accepted 52.8% -> 59.9%, output 41.1 -> 44.9 tok/s (+9%). RTX 3060 IQ3_XXS, 12 interleaved pairs: 62.1% -> 66.9% -> 68.0% accepted, decode 43.3 vs 42.8 tok/s, inside the run-to-run spread |
+| `STRATA_SPEC_PCUM` | 2x RX 5700 XT 8 GB (gfx1010, layer split), i7-3770, Qwen3.8-Flash-Next Q2_0, `--spec 4 --spec-min-p 0.8`, 256-token answers | Greedy: 31.0 -> 31.3 tok/s at best (noise); 31K tokens deep 33.5 -> 33.7 and 101K deep 32.6 -> 32.5 with `0.9`. Sampled (temperature 1.0, 9 runs an arm): 29.9 / 30.0 -> 30.4 with `0.9` (+1.5%, 7 of 9 pairs faster), drafts accepted 74% -> 84% |
 | `STRATA_SPEC_COUPLED` / `STRATA_SPEC_PROB` (0.1.40.2) | RTX 3060 IQ3_XXS, 200-token answers, 10 pairs | Median tok/s at temperature 0.3 / 0.7 / 1.0: default 42.4 / 43.2 / 43.3, coupled 40.6 / 42.4 / 43.3, rejection sampling 41.0 / 42.6 / 42.6 |
 | `STRATA_STAGER_SLEEP=1` | Ryzen 9 7940HS laptop, RTX 4070, IQ3_S, 64K (issue #1101) | Prompts of 5,914 and 22,305 tokens read 5-6% slower; whole-machine CPU use 77-90% -> 21-25%. An RTX 5070 read an 8K Q2_0 prompt 1.2% faster with spinning |
 | Stager threads for a GGUF read in place | Big-RAM box, 124K-token Q8 prompt | 57 -> 350-410 tok/s with the 4-thread RAM profile instead of the 32-thread SSD profile (#1353) |
