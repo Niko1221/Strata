@@ -107,6 +107,12 @@ expert outside the cache), but I have not run a fault-injection test of these tw
 
 ## The image encoder on demand
 
+For a CPU encoder, set `"gpu": false` and `"elastic": true` in the existing `"vision"` section. It starts with the
+first picture and stops after `"elastic_idle_s"` (default 120) without one, between requests. Text requests do not
+start it. CPU on-demand loading needs no `"vram_elastic"`, reserves no VRAM and leaves the expert cache alone.
+The next picture pays the encoder's load time again; unloading ends its process, but the OS may keep reclaimable
+file-cache pages. Without `"elastic": true`, startup is unchanged.
+
 With `"elastic": true` in the config's `"vision"` section (and `"vram_elastic": true`; without it the server says so
 and starts the encoder with the model, as before) the GPU encoder is not started with the server or with a load:
 

@@ -965,6 +965,10 @@ every turn, is encoded once.
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500
 (about 5% of decode). `--vision gpu` is kept with a note.
 
+For a CPU encoder (`"gpu": false`), `"elastic": true` uses the same on-demand start and idle stop without
+`"vram_elastic"` or any VRAM reserve; text requests leave it unloaded. See the configuration in
+[VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand).
+
 ### Sending a picture
 
 Terminal chat: type `/image <path>`, press Enter, then type your question. OpenAI API: an `image_url` part (a `data:` URL, an
