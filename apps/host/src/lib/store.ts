@@ -2,6 +2,7 @@ import { workspaceIdForSession } from './session-workspace';
 import { detectLanguage } from './language-detect';
 import { validWhileBusy, type WhileBusy } from './while-busy';
 import { addToQuotes, type Quote } from './quotes';
+import { readAsk, type AgentAnswer, type AgentAsk } from './agent-ask';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { settleAgents, updateAgent } from './agents';
@@ -126,6 +127,8 @@ export interface AppState {
   parked: Record<string, string[]>;
   /** The passages quoted into the message being written, by chat, in the order they were quoted (#4785). */
   quotes: Record<string, Quote[]>;
+  /** The questions the agent asked the person and is waiting for, by chat (#4244). */
+  agentAsks: Record<string, AgentAsk[]>;
   /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
   liveChats: number;
   toasts: Toast[];
@@ -279,6 +282,7 @@ let state: AppState = {
   whileBusy: prefs.whileBusy,
   parked: {},
   quotes: {},
+  agentAsks: {},
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -627,6 +631,26 @@ export function parkMessage(sessionId: string, text: string) {
   if (!clean) return;
   set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
 }
+function setAsks(sessionId: string, list: AgentAsk[]) {
+  const next = { ...state.agentAsks };
+  if (list.length) next[sessionId] = list; else delete next[sessionId];
+  set({ agentAsks: next });
+}
+/** The agent asked the person something (a frame of the host), or the question ended without an answer. */
+export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
+  const ask = readAsk(frame);
+  if (ask) setAsks(sessionId, [...(state.agentAsks[sessionId] ?? []).filter(a => a.callId !== ask.callId), ask]);
+}
+export function removeAgentAsk(sessionId: string, callId?: string) {
+  const rest = callId === undefined ? [] : (state.agentAsks[sessionId] ?? []).filter(a => a.callId !== callId);
+  if ((state.agentAsks[sessionId]?.length ?? 0) !== rest.length) setAsks(sessionId, rest);
+}
+/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words. */
+export async function answerAgentAsk(sessionId: string, callId: string, answers: AgentAnswer[] | null) {
+  await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
+  removeAgentAsk(sessionId, callId);
+}
+
 /** Puts a turn or a selected passage above the message box. */
 export function addQuote(sessionId: string, text: string, messageId: string, role: 'user' | 'assistant') {
   const list = state.quotes[sessionId] ?? [];
@@ -1923,6 +1947,10 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
           if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
+        } else if (type === 'agent-question') {
+          addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
+        } else if (type === 'agent-question-end') {
+          removeAgentAsk(sessionId, String(frame.callId ?? ''));
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -2012,6 +2040,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
+    removeAgentAsk(sessionId);
     const next = releasedMessages.get(sessionId)?.shift();
     if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }

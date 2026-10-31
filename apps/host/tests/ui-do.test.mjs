@@ -399,3 +399,59 @@ test('#4785 the new words are translated', async () => {
   for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4244
+test('#4244 the question of the Harness is read into something the card can draw, and what cannot be shown is left out', async () => {
+  const { parseQuestions, buildAnswer } = await import(new URL('../server/agent/user-questions.mjs', import.meta.url));
+  const raw = [
+    { id: 'q1', question: ' Which colour? ', detail: 'Why', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: '' }, { label: 'Blue' }] },
+    { id: '', question: 'no id' }, { id: 'q3', question: '' }, null, 'x',
+    { id: 'q2', question: 'Extras?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
+  ];
+  const items = parseQuestions(raw);
+  assert.deepEqual(items.map(q => q.id), ['q1', 'q2']);
+  assert.deepEqual(items[0].options, [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: undefined }]);
+  assert.equal(items[0].question, 'Which colour?'); assert.equal(items[1].multiSelect, true); assert.equal(items[0].multiSelect, false);
+  assert.deepEqual(parseQuestions(undefined), []);
+  assert.equal(parseQuestions(Array.from({ length: 20 }, (_, i) => ({ id: `q${i}`, question: 'x' }))).length, 6);
+  // The answer is checked against what was asked, and has the shape of AskUserQuestionAnswer.
+  assert.deepEqual(buildAnswer(items, [{ id: 'q1', selected: ['Blue'] }, { id: 'q2', selected: ['A', 'B', 'A'] }]), { answers: [{ id: 'q1', selected: ['Blue'] }, { id: 'q2', selected: ['A', 'B'] }] });
+  assert.deepEqual(buildAnswer(items, [{ id: 'q1', selected: [], custom: ' my own ' }, { id: 'q2', selected: ['B'], custom: 'and more' }]), { answers: [{ id: 'q1', selected: [], custom: 'my own' }, { id: 'q2', selected: ['B'], custom: 'and more' }] });
+  assert.throws(() => buildAnswer(items, [{ id: 'q1', selected: ['Blue'] }]), /Answer every question/, 'one question left open');
+  assert.throws(() => buildAnswer(items, [{ id: 'q1', selected: ['Green'] }, { id: 'q2', selected: ['A'] }]), /Answer every question/, 'a label that was not offered is no answer');
+  assert.throws(() => buildAnswer(items, [{ id: 'q1', selected: ['Red', 'Blue'] }, { id: 'q2', selected: ['A'] }]), /one answer/, 'single-select takes one');
+});
+
+test('#4244 the page side: the card needs every question answered, and sends the offered labels and the own words', async () => {
+  const { readAsk, answerComplete, toAnswers } = await load('lib/agent-ask.ts');
+  const ask = readAsk({ callId: 'c1', questions: [{ id: 'q1', question: 'Colour?', options: [{ label: 'Red' }], multiSelect: false }, { id: 'q2', question: 'Extras?', options: [{ label: 'A' }], multiSelect: true }, { id: '', question: 'bad' }] });
+  assert.equal(ask.questions.length, 2);
+  assert.equal(readAsk({ callId: '', questions: [{ id: 'q', question: 'x' }] }), null);
+  assert.equal(readAsk({ callId: 'c', questions: [] }), null);
+  assert.equal(answerComplete(ask.questions, {}), false);
+  assert.equal(answerComplete(ask.questions, { q1: { selected: ['Red'], custom: '' } }), false);
+  assert.equal(answerComplete(ask.questions, { q1: { selected: [], custom: '  ' }, q2: { selected: ['A'], custom: '' } }), false);
+  assert.equal(answerComplete(ask.questions, { q1: { selected: [], custom: 'mine' }, q2: { selected: ['A'], custom: '' } }), true);
+  assert.deepEqual(toAnswers(ask.questions, { q1: { selected: [], custom: ' mine ' }, q2: { selected: ['A'], custom: '' } }), [{ id: 'q1', selected: [], custom: 'mine' }, { id: 'q2', selected: ['A'] }]);
+});
+
+test('#4244 the tool is offered again, as the group "Questions for you", and the bridge answers through the Harness result', () => {
+  const preset = readFileSync(new URL('../server/agent/preset.mjs', import.meta.url), 'utf8');
+  assert.match(preset, /export const REMOVED_PLUGIN_IDS = \['tool-schedule', 'planning'\];/);
+  assert.match(preset, /\{ id: 'tool-ask-user', name: '@deepseek-ai\/dsh-tool-ask-user' \}/);
+  const catalog = readFileSync(new URL('../server/agent/tools-catalog.mjs', import.meta.url), 'utf8');
+  assert.match(catalog, /id: 'questions'[^\n]*plugins: \['tool-ask-user'\]/);
+  const bridge = readFileSync(new URL('../server/agent/agent-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(bridge, /await rt\.gw\.answerEvent\(\{ clientId: entry\.clientId \?\? rt\.clientId, eventId: entry\.eventId, outcome \}\);/);
+  assert.match(bridge, /if \(!turn \|\| turn\.finished \|\| turn\.stopping \|\| !turn\.announceQuestion \|\| !items\.length\) \{\s*void runtime\.gw\.answerEvent\(\{ clientId: runtime\.clientId, eventId: value\.eventId, outcome: 'next' \}\)/, 'a helper question, a stopping chat or an empty request is still declared unanswerable');
+  const gateway = readFileSync(new URL('../server/agent/gateway-client.mjs', import.meta.url), 'utf8');
+  assert.match(gateway, /const wire = outcome === 'next' \? \{ kind: 'next' \} : \{ kind: 'result', value: outcome \};/, 'a structured answer travels as the result value');
+  assert.match(src('components/ApprovalCard.tsx'), /asks\.map\(a => <QuestionCard key=\{a\.callId\} sessionId=\{sessionId!\} ask=\{a\}\/>\)/);
+});
+
+test('#4244 the new words are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  const lines = ['The assistant has a question for you', 'Type your own answer', 'Send answer', 'Skip', 'Questions for you', 'Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision.'];
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
+  setTranslationLanguage('en');
+});

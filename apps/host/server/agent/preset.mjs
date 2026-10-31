@@ -11,8 +11,8 @@
  *     reminder tools would run behind its back.
  *   - `web_search` removed (tool-web with `search:false`): every search backend the Harness has needs a service key
  *     the app does not have, so the tool could only fail. `web_fetch` stays. (`searchProvider` can switch it back on.)
- *   - `tool-ask-user` removed: the app has no place to show the agent's own questions, so the tool could only fail;
- *     the agent asks in plain text instead.
+ *   - `tool-ask-user` stays (it is the group "Questions for you" in Settings -> Tools): the app shows the agent's own questions in a card above
+ *     the message box and sends the answer back (#4244). Switched off, the tool is not offered and the agent asks in plain text.
  *   - the `planning` group (Harness plan mode and `exit_plan_mode`) removed: the app's Plan mode is the permission
  *     preset (nothing can change); the Harness's plan mode needs an interactive review the app does not have.
  *   - `tool-bash` / `tool-pwsh`: exactly one, by operating system (the Harness chooses the same at load).
@@ -29,7 +29,7 @@ export const STANDARD_PLUGIN_IDS = [
   'tool-ask-user', 'tool-todo', 'tool-web', 'present', 'tool-plugin-manager',
 ];
 /** What we leave out of it. */
-export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning'];
+export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'planning'];
 /** Plugins removed from inside the `delegation` group (the group stays: helper agents are a feature). */
 export const REMOVED_DELEGATION_IDS = [];
 
@@ -88,6 +88,7 @@ export function standardPreset({ platform = process.platform, search = false, of
         { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
       ],
     },
+    { id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' },
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
     { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: !off.has('fetch'), search: search && !off.has('search'), searchTimeoutMs: 60000 } },
     { id: 'present', name: '@deepseek-ai/dsh-tool-present' },

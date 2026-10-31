@@ -33,5 +33,11 @@
  "ui32": "Dieses Zitat entfernen",
  "ui33": "Zur zitierten Nachricht springen",
  "ui34": "Zitiert",
- "ui35": "Rest des Zitats ein- oder ausblenden"
+ "ui35": "Rest des Zitats ein- oder ausblenden",
+ "ui36": "Überspringen",
+ "ui37": "Der Assistent hat eine Frage an dich",
+ "ui38": "Eigene Antwort eingeben",
+ "ui39": "Antwort senden",
+ "ui40": "Fragen an dich",
+ "ui41": "Der Assistent kann anhalten und dir eine Frage mit Antworten zur Auswahl stellen, wenn er deine Entscheidung braucht."
 }

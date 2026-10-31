@@ -203,6 +203,31 @@ add(en="Show or hide the rest of the quote",
     zh="显示或隐藏引用的其余部分", ja="引用の続きを表示または非表示", de="Rest des Zitats ein- oder ausblenden", es="Mostrar u ocultar el resto de la cita",
     ru="Показать или скрыть остальную часть цитаты", pt="Mostrar ou ocultar o resto da citação", ko="인용의 나머지 부분 보기 또는 숨기기", fr="Afficher ou masquer la suite de la citation")
 
+# #4244 the agent's own questions
+add(en="Skip",
+    zh="跳过", ja="スキップ", de="Überspringen", es="Omitir",
+    ru="Пропустить", pt="Pular", ko="건너뛰기", fr="Passer")
+add(en="The assistant has a question for you",
+    zh="助手有一个问题要问你", ja="アシスタントからの質問があります", de="Der Assistent hat eine Frage an dich", es="El asistente tiene una pregunta para ti",
+    ru="У ассистента есть вопрос к вам", pt="O assistente tem uma pergunta para você", ko="어시스턴트가 질문이 있습니다", fr="L'assistant a une question pour vous")
+add(en="Type your own answer",
+    zh="输入你自己的回答", ja="自分の答えを入力", de="Eigene Antwort eingeben", es="Escribe tu propia respuesta",
+    ru="Введите свой ответ", pt="Digite a sua própria resposta", ko="직접 답변 입력", fr="Saisissez votre propre réponse")
+add(en="Send answer",
+    zh="发送回答", ja="回答を送る", de="Antwort senden", es="Enviar respuesta",
+    ru="Отправить ответ", pt="Enviar resposta", ko="답변 보내기", fr="Envoyer la réponse")
+add(en="Questions for you",
+    zh="向你提问", ja="あなたへの質問", de="Fragen an dich", es="Preguntas para ti",
+    ru="Вопросы к вам", pt="Perguntas para você", ko="내게 하는 질문", fr="Questions pour vous")
+add(en="Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision.",
+    zh="当助手需要你做决定时，可以暂停并向你提问，并给出可选的答案。", ja="アシスタントがあなたの判断を必要とするとき、選択肢つきで質問できるようにします。",
+    de="Der Assistent kann anhalten und dir eine Frage mit Antworten zur Auswahl stellen, wenn er deine Entscheidung braucht.",
+    es="Permite que el asistente se detenga y te haga una pregunta, con respuestas para elegir, cuando necesita tu decisión.",
+    ru="Позволяет ассистенту остановиться и задать вам вопрос с вариантами ответа, когда ему нужно ваше решение.",
+    pt="Permite que o assistente pare e faça uma pergunta, com respostas para escolher, quando precisa da sua decisão.",
+    ko="어시스턴트가 결정이 필요할 때 멈추고 고를 수 있는 답과 함께 질문할 수 있게 합니다.",
+    fr="Permet à l'assistant de s'arrêter et de vous poser une question, avec des réponses à choisir, quand il a besoin de votre décision.")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

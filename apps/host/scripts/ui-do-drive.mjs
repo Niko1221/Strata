@@ -648,6 +648,66 @@ cases.quote = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4244 */
+cases.ask = async () => {
+  const t = await tuneHost();
+  await t.mode('ok');
+  const asked = () => fetch(`${t.origin}/__fixture/asked`).then(r => r.json());
+  await fetch(`${t.origin}/__fixture/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: true }) });
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const before = (await asked()).length;
+    const page = await open(scheme, w, h, [chat('s1', 'Ask', [])], { origin: t.origin });
+    await page.locator('textarea').first().fill('Build me a page');
+    await page.keyboard.press('Enter');
+    const card = page.locator('.askq');
+    await card.waitFor({ timeout: 15000 });
+    const text = await card.innerText();
+    check(/Which colour should the page be\?/.test(text) && /Which extras do you want\?/.test(text) && /Warm and strong/.test(text) && /It sets the whole theme/.test(text), `${tag}: the question, its detail and the option descriptions are shown`);
+    check(await page.locator('.askcard').count() === 1 && await page.locator('.approvaldock').count() === 1, `${tag}: it is one card in the dock above the box`);
+    const send = page.getByRole('button', { name: 'Send answer' });
+    check(await send.isDisabled(), `${tag}: Send answer waits until every question has an answer`);
+    await page.getByRole('radio', { name: /Red/ }).click();
+    await page.getByRole('radio', { name: /Blue/ }).click();
+    check(await page.getByRole('radio', { name: /Red/ }).getAttribute('aria-checked') === 'false' && await page.getByRole('radio', { name: /Blue/ }).getAttribute('aria-checked') === 'true', `${tag}: a single-select question takes one choice`);
+    await page.getByRole('checkbox', { name: 'Dark mode' }).click();
+    await page.getByRole('checkbox', { name: 'Animations' }).click();
+    check(await send.isEnabled(), `${tag}: Send answer works once every question has an answer`);
+    await page.waitForTimeout(300);
+    const sb = await send.boundingBox();
+    const top = await page.evaluate(({ x, y }) => { const e = document.elementFromPoint(x, y); return e?.closest('button')?.textContent ?? ''; }, { x: sb.x + sb.width / 2, y: sb.y + sb.height / 2 });
+    check(sb.y >= 0 && sb.y + sb.height <= h && /Send answer/.test(top), `${tag}: the answer buttons are in view and reachable without scrolling the card`, JSON.stringify(sb));
+    await shot(page, `4244-${tag}`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    const box = await page.locator('.approvaldock').boundingBox();
+    check(!!box && box.y >= 0 && box.y + box.height <= h + 1, `${tag}: the dock with the card is inside the window`, JSON.stringify(box));
+    await send.click();
+    await page.waitForFunction(() => document.querySelectorAll('.askq').length === 0, null, { timeout: 8000 });
+    const got = (await asked()).slice(before);
+    check(JSON.stringify(got.at(-1)) === JSON.stringify({ sessionId: 's1', callId: 'call-ask-1', answers: [{ id: 'q1', selected: ['Blue'] }, { id: 'q2', selected: ['Dark mode', 'Animations'] }] }), `${tag}: the answer goes to the host as chosen`, JSON.stringify(got.at(-1)));
+    check(await page.locator('.askq').count() === 0, `${tag}: the card goes away, and the turn ends`);
+    // The person's own words, and a skip.
+    await page.locator('textarea').first().fill('Again');
+    await page.keyboard.press('Enter');
+    await card.waitFor({ timeout: 15000 });
+    await page.getByRole('textbox', { name: 'Type your own answer' }).first().fill('Green, like the logo');
+    await page.getByRole('checkbox', { name: 'Animations' }).click();
+    await send.click();
+    await page.waitForFunction(() => document.querySelectorAll('.askq').length === 0, null, { timeout: 8000 });
+    const own = (await asked()).slice(before).at(-1);
+    check(JSON.stringify(own?.answers) === JSON.stringify([{ id: 'q1', selected: [], custom: 'Green, like the logo' }, { id: 'q2', selected: ['Animations'] }]), `${tag}: the person's own words are sent as such`, JSON.stringify(own));
+    await page.locator('textarea').first().fill('Once more');
+    await page.keyboard.press('Enter');
+    await card.waitFor({ timeout: 15000 });
+    await page.getByRole('button', { name: 'Skip' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.askq').length === 0, null, { timeout: 8000 });
+    check((await asked()).slice(before).at(-1)?.skip === true, `${tag}: Skip is sent as a skip`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+  await fetch(`${t.origin}/__fixture/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: false }) });
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

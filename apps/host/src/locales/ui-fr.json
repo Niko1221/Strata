@@ -33,5 +33,11 @@
  "ui32": "Retirer cette citation",
  "ui33": "Aller au message cité",
  "ui34": "Cité",
- "ui35": "Afficher ou masquer la suite de la citation"
+ "ui35": "Afficher ou masquer la suite de la citation",
+ "ui36": "Passer",
+ "ui37": "L’assistant a une question pour vous",
+ "ui38": "Saisissez votre propre réponse",
+ "ui39": "Envoyer la réponse",
+ "ui40": "Questions pour vous",
+ "ui41": "Permet à l’assistant de s’arrêter et de vous poser une question, avec des réponses à choisir, quand il a besoin de votre décision."
 }

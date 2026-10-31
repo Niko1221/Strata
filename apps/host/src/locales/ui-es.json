@@ -33,5 +33,11 @@
  "ui32": "Quitar esta cita",
  "ui33": "Ir al mensaje citado",
  "ui34": "Citado",
- "ui35": "Mostrar u ocultar el resto de la cita"
+ "ui35": "Mostrar u ocultar el resto de la cita",
+ "ui36": "Omitir",
+ "ui37": "El asistente tiene una pregunta para ti",
+ "ui38": "Escribe tu propia respuesta",
+ "ui39": "Enviar respuesta",
+ "ui40": "Preguntas para ti",
+ "ui41": "Permite que el asistente se detenga y te haga una pregunta, con respuestas para elegir, cuando necesita tu decisión."
 }

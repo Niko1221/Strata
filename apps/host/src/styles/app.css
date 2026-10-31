@@ -7572,3 +7572,20 @@ textarea {
 .sent-quote { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border: 0; border-left: 3px solid var(--st-accent); border-radius: var(--st-r-sm); background: var(--st-surface-2); color: var(--st-ink-soft); font: inherit; text-align: left; cursor: pointer; }
 .sent-quotes[data-open] .sent-quote__text { -webkit-line-clamp: unset; line-clamp: unset; display: block; }
 .quote-selection { position: fixed; z-index: var(--layer-popover, 100); padding: 6px 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-pill); background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-pop); font: 600 var(--st-fs-sm) var(--st-font); cursor: pointer; }
+
+/* ---- the agent's own question: the approval card with options (#4244) ---- */
+.askq { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; }
+.approvaldock > .askq { border-color: var(--st-accent); box-shadow: var(--st-sh-bar); margin: 0; flex: none; }
+.askq__item { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 6px 0; }
+.askq__item + .askq__item { border-top: 1px solid var(--st-line-soft); padding-top: 8px; }
+.askq__detail { margin: 2px 0 0; }
+.askq__opts { display: flex; flex-direction: column; gap: 6px; margin-left: 44px; }
+.askq__opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); color: var(--st-ink); font: inherit; text-align: left; cursor: pointer; }
+.askq__opt[data-on] { border-color: var(--st-accent); background: var(--st-accent-tint); }
+.askq__opt:disabled { opacity: .6; cursor: default; }
+.askq__own { margin-left: 44px; width: calc(100% - 44px); }
+.askq__problem { margin: 0 14px 0 44px; }
+/* The answer buttons stay in view while the questions scroll inside the dock. */
+.askq__acts { display: flex; gap: 8px; justify-content: flex-end; position: sticky; bottom: 0; margin: 0; padding: 8px 14px 0 44px; background: var(--st-surface); }
+.approvaldock:has(.askq) { max-height: 56vh; }
+@media (max-width: 560px) { .askq__opts, .askq__own, .askq__problem { margin-left: 0; } .askq__acts { padding-left: 14px; } .askq__own { width: 100%; } .askq__item { padding-right: 0; } }

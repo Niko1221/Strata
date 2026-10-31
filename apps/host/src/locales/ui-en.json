@@ -33,5 +33,11 @@
  "ui32": "Remove this quote",
  "ui33": "Go to the quoted message",
  "ui34": "Quoted",
- "ui35": "Show or hide the rest of the quote"
+ "ui35": "Show or hide the rest of the quote",
+ "ui36": "Skip",
+ "ui37": "The assistant has a question for you",
+ "ui38": "Type your own answer",
+ "ui39": "Send answer",
+ "ui40": "Questions for you",
+ "ui41": "Lets the assistant stop and ask you a question, with answers to pick from, when it needs your decision."
 }

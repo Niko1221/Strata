@@ -5,8 +5,11 @@ import { Btn, Icon } from './ui';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { resolveTool, useStore } from '../lib/store';
 import { pendingApprovals } from '../lib/approvals';
+import { QuestionCard } from './QuestionCard';
+import type { AgentAsk } from '../lib/agent-ask';
 import type { ToolCall } from '../lib/types';
 
+const NO_ASKS: AgentAsk[] = [];
 export const SCOPE: Record<ToolCall['scope'], {
     label: string;
     tone: 'plain' | 'info' | 'warn';
@@ -50,9 +53,11 @@ export function ApprovalDock({ sessionId }: {
 }) {
     const session = useStore(s => s.sessions.find(x => x.id === sessionId));
     const items = useMemo(() => pendingApprovals(session), [session]);
-    if (!items.length)
+    const asks = useStore(s => (sessionId ? s.agentAsks[sessionId] : undefined)) ?? NO_ASKS;
+    if (!items.length && !asks.length)
         return null;
     return <section className="approvaldock" role="group" aria-label={tr("Waiting for your answer")} data-count={items.length}>
+      {asks.map(a => <QuestionCard key={a.callId} sessionId={sessionId!} ask={a}/>)}
       {items.map(({ messageId, tool }) => <ApprovalCard key={tool.id} messageId={messageId} tool={tool}/>)}
     </section>;
 }
