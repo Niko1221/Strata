@@ -6872,7 +6872,8 @@ struct Model::Impl {
         sqs.assign((size_t) n, SeqState{});
         std::vector<size_t> before(devs.size());
         for (size_t di = 0; di < devs.size(); ++di) before[di] = devs[di].caches;
-        for (int s = 0; s < n; ++s) {
+        // one conversation's buffers (conversation 0's are the model's own)
+        const auto build = [&](int s) {
             SeqState& q = sqs[(size_t) s];
             q.win.assign((size_t) nmem, nullptr);
             q.c_kv.assign((size_t) nmem, nullptr);
@@ -6909,13 +6910,51 @@ struct Model::Impl {
                     if (sr.ik[di] != nullptr && !dalloc(d, q.ik[j][di], (size_t) sr.cap * ik_rb(), err, &d.caches))
                         return false;
                 }
+            return true;
+        };
+        // recommend, never force: a card that cannot hold all n conversations' buffers runs as many as it can hold
+        // (the ones built so far; the failed one's partial buffers are freed), said in one line
+        int built = n;
+        for (int s = 0; s < n; ++s) {
+            std::vector<size_t> na0, sc0, ca0;
+            for (Dev& d : devs) {
+                na0.push_back(d.allocs.size());
+                sc0.push_back(d.scratch);
+                ca0.push_back(d.caches);
+            }
+            if (build(s)) continue;
+            for (size_t di = 0; di < devs.size(); ++di) {
+                Dev& d = devs[di];
+                cudaSetDevice(d.id);
+                while (d.allocs.size() > na0[di]) {
+                    cudaFree(d.allocs.back());
+                    d.allocs.pop_back();
+                }
+                d.scratch = sc0[di];
+                d.caches = ca0[di];
+            }
+            built = s;
+            break;
+        }
+        if (built < n) {
+            std::fprintf(stderr, "ds4: --parallel %d: the graphics memory holds the buffers of %d conversation%s (%s): "
+                                 "running %d at once; a smaller --max-context or --reserve-mib brings the others back\n",
+                         n, std::max(1, built), built == 1 ? "" : "s", err.c_str(), std::max(1, built));
+            err.clear();
+            o.seqs = std::max(1, built);
+            if (built <= 1) {   // one conversation: the plain model (no --parallel)
+                sqs.clear();
+                sq_base.clear();
+                return true;
+            }
+            sqs.resize((size_t) built);
         }
         for (Dev& d : devs)
             if (!dalloc(d, d.mstage, (size_t) kWin * (ckv_rb() + ik_rb()), err)) return false;
         double more = 0;
         for (size_t di = 0; di < devs.size(); ++di) more += (double) (devs[di].caches - before[di]);
         std::fprintf(stderr, "ds4: --parallel %d: %d conversations at once, each its own rings and KV (%.2f GB more "
-                             "VRAM for the other %d, from the experts' room)\n", n, n, more / 1e9, n - 1);
+                             "VRAM for the other %d, from the experts' room)\n", o.seqs, o.seqs, more / 1e9, o.seqs - 1);
         return true;
     }
     int seq_count() const { return sqs.empty() ? 1 : (int) sqs.size(); }
