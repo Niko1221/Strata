@@ -1,0 +1,2663 @@
+gdbg accept tok=-1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=40 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=599
+gdbg accept tok=599 words=7760 allowed=159330 first_open=0
+gdbg accept tok=10933 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4543
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1048 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1716
+gdbg accept tok=5964 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1716
+gdbg accept tok=9845 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16753
+gdbg accept tok=16753 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6227
+gdbg accept tok=6227 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=61
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3336
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9964 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=462 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28000
+gdbg accept tok=28000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7947
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11857
+gdbg accept tok=11857 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=258
+gdbg accept tok=46 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=47993 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16753
+gdbg accept tok=7960 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=874
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7
+gdbg accept tok=7 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=311
+gdbg accept tok=11540 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=286
+gdbg accept tok=4334 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=94441 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11540
+gdbg accept tok=1901 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1446
+gdbg accept tok=1446 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=67
+gdbg accept tok=4430 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=271
+gdbg accept tok=7054 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=42903 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1331
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1446
+gdbg accept tok=3101 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6
+gdbg accept tok=4546 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2200
+gdbg accept tok=2200 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3817
+gdbg accept tok=8240 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6570
+gdbg accept tok=6570 words=7760 allowed=159330 first_open=0
+gdbg accept tok=288 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1685
+gdbg accept tok=1685 words=7760 allowed=159330 first_open=0
+gdbg accept tok=714 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=81726 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6297
+gdbg accept tok=6297 words=7760 allowed=159330 first_open=0
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=73756
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3101 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=43
+gdbg accept tok=9363 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg accept tok=42728 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13007
+gdbg accept tok=9764 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=12204 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=264
+gdbg accept tok=264 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23311 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3010
+gdbg accept tok=3010 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=378
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=33 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1558
+gdbg accept tok=1558 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=304 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14208 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=12756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=436 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=38
+gdbg accept tok=43 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=77244
+gdbg accept tok=77244 words=7760 allowed=159330 first_open=0
+gdbg accept tok=12 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=12 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=33 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=14208
+gdbg accept tok=1167 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=14208
+gdbg accept tok=14208 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=81726
+gdbg accept tok=81726 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14208 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=469
+gdbg accept tok=469 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45938 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=12756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg accept tok=81726 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6297
+gdbg accept tok=6297 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3817
+gdbg accept tok=3817 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23985
+gdbg accept tok=348 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=307 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=93720
+gdbg accept tok=93720 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25257 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=348
+gdbg accept tok=348 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12756
+gdbg accept tok=4885 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5255
+gdbg accept tok=5255 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12954
+gdbg accept tok=12954 words=7760 allowed=159330 first_open=0
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=37799
+gdbg accept tok=48804 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12954
+gdbg accept tok=12954 words=7760 allowed=159330 first_open=0
+gdbg accept tok=52562 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=30
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1987
+gdbg accept tok=2332 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=42
+gdbg accept tok=42 words=7760 allowed=159330 first_open=0
+gdbg accept tok=10885 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3835 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18295
+gdbg accept tok=18295 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2844
+gdbg accept tok=7179 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=271
+gdbg accept tok=1690 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=380 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16522
+gdbg accept tok=16522 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=2083 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=469
+gdbg accept tok=469 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45938 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1590
+gdbg accept tok=1590 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5639 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8152 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=52562
+gdbg accept tok=52562 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1788
+gdbg accept tok=1788 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=32645
+gdbg accept tok=10092 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2381
+gdbg accept tok=2381 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=304 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=348
+gdbg accept tok=348 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4546
+gdbg accept tok=4546 words=7760 allowed=159330 first_open=0
+gdbg accept tok=348 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2200 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2985
+gdbg accept tok=79762 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14208 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11069
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5255
+gdbg accept tok=5255 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12954
+gdbg accept tok=12954 words=7760 allowed=159330 first_open=0
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=48804
+gdbg accept tok=48804 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6000
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1076 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3655
+gdbg accept tok=2942 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12954
+gdbg accept tok=12954 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8240
+gdbg accept tok=8240 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11990
+gdbg accept tok=11990 words=7760 allowed=159330 first_open=0
+gdbg accept tok=61911 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1528
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=87 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18722 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15029
+gdbg accept tok=288 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1685
+gdbg accept tok=1685 words=7760 allowed=159330 first_open=0
+gdbg accept tok=714 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9764
+gdbg accept tok=44712 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=426 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1537
+gdbg accept tok=1537 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19797 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=1690 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=440
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=506
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6000
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=1167 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=42
+gdbg accept tok=42 words=7760 allowed=159330 first_open=0
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=51
+gdbg accept tok=51 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=61
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13535
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11807 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11069
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1901 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=2702 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=71
+gdbg accept tok=45 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4885
+gdbg accept tok=13535 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=71
+gdbg accept tok=71 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=45
+gdbg accept tok=45 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=67
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4885 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1690 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4885 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=6391 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=426
+gdbg accept tok=426 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1537 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19797
+gdbg accept tok=19797 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6000
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=426 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1537
+gdbg accept tok=1537 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19797 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1690
+gdbg accept tok=27345 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20952
+gdbg accept tok=94441 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4416
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28
+gdbg accept tok=58251 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=67
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=68
+gdbg accept tok=12388 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4941
+gdbg accept tok=4941 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1590 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1901 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6391
+gdbg accept tok=31629 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=31629
+gdbg accept tok=6 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6391
+gdbg accept tok=6391 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4546
+gdbg accept tok=4546 words=7760 allowed=159330 first_open=0
+gdbg accept tok=49682 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2200
+gdbg accept tok=2200 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11069
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=68
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1076 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=1042 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12204
+gdbg accept tok=12204 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=68
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20952 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1901
+gdbg accept tok=1901 words=7760 allowed=159330 first_open=0
+gdbg accept tok=26 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2942
+gdbg accept tok=2942 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=29397
+gdbg accept tok=50 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9802
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=629
+gdbg accept tok=1799 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=26 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=791
+gdbg accept tok=2942 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14208 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6000
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=26 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2942
+gdbg accept tok=2942 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=49040 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=211614
+gdbg accept tok=211614 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=87 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7441 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23024 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=310
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=91613
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1558
+gdbg accept tok=12 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=51319
+gdbg accept tok=51319 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11540 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=286
+gdbg accept tok=4334 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=11767 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=864
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4880
+gdbg accept tok=48162 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9146
+gdbg accept tok=11249 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3022
+gdbg accept tok=3022 words=7760 allowed=159330 first_open=0
+gdbg accept tok=919 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=74468 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=31629 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1901
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=864
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=351
+gdbg accept tok=351 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23
+gdbg accept tok=23 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=24
+gdbg accept tok=24 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6000
+gdbg accept tok=6000 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=68
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=791 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13224 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1987
+gdbg accept tok=20818 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=24806 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7441 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6820
+gdbg accept tok=13007 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5020
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=46768
+gdbg accept tok=46768 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1406 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=1332 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=76436
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=8772 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22330
+gdbg accept tok=22330 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=835 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=16757 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1891 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=47993
+gdbg accept tok=47993 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1304 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5972
+gdbg accept tok=5972 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=38516 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4035
+gdbg accept tok=4035 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5972 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1760 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1690
+gdbg accept tok=1690 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4416 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1676
+gdbg accept tok=2336 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4941
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=283
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=30
+gdbg accept tok=283 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=46768 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=2094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=211614 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8535 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4384
+gdbg accept tok=29100 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=440
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16753 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=66983
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=46768
+gdbg accept tok=46768 words=7760 allowed=159330 first_open=0
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1691
+gdbg accept tok=4918 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=337 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=37744
+gdbg accept tok=37744 words=7760 allowed=159330 first_open=0
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=10885
+gdbg accept tok=10885 words=7760 allowed=159330 first_open=0
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=271
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13007 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6088
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9826 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=628 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3057
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2433 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21998
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=628 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=914
+gdbg accept tok=914 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=77754 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=513
+gdbg accept tok=513 words=7760 allowed=159330 first_open=0
+gdbg accept tok=423 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9455
+gdbg accept tok=9455 words=7760 allowed=159330 first_open=0
+gdbg accept tok=82 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2502 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1048
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=760
+gdbg accept tok=3710 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=16888 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=520
+gdbg accept tok=520 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22815 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2885
+gdbg accept tok=2885 words=7760 allowed=159330 first_open=0
+gdbg accept tok=27345 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59930
+gdbg accept tok=59930 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14502 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7285
+gdbg accept tok=30 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4961
+gdbg accept tok=4961 words=7760 allowed=159330 first_open=0
+gdbg accept tok=23325 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2721
+gdbg accept tok=2721 words=7760 allowed=159330 first_open=0
+gdbg accept tok=59930 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=9144 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=61485
+gdbg accept tok=61485 words=7760 allowed=159330 first_open=0
+gdbg accept tok=54476 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=760 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12157
+gdbg accept tok=44413 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=89 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17039
+gdbg accept tok=17039 words=7760 allowed=159330 first_open=0
+gdbg accept tok=60277 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=55010
+gdbg accept tok=4961 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18267 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13453 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=26 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=760
+gdbg accept tok=8780 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=13854 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=520 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2279
+gdbg accept tok=2279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13094
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4961
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=277 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=55
+gdbg accept tok=55 words=7760 allowed=159330 first_open=0
+gdbg accept tok=340 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7054
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=421 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=25899 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=310
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7054
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13007
+gdbg accept tok=9764 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4570 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13854
+gdbg accept tok=13854 words=7760 allowed=159330 first_open=0
+gdbg accept tok=478 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=264
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1172 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59178
+gdbg accept tok=59178 words=7760 allowed=159330 first_open=0
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=54476
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=10442 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1443
+gdbg accept tok=8657 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=805
+gdbg accept tok=805 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=248069 words=7760 allowed=34 first_open=198
+gdbg draft t=1 tok=271
+gdbg accept tok=271 words=7760 allowed=159331 first_open=0
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg draft t=1 tok=2817
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=14344 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13854
+gdbg accept tok=13854 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4021 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6999
+gdbg accept tok=63276 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=73756
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=54476
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=771
+gdbg accept tok=771 words=7760 allowed=159330 first_open=0
+gdbg accept tok=55 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=340
+gdbg accept tok=340 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg draft t=1 tok=2817
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg draft t=1 tok=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23129
+gdbg accept tok=23129 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6227
+gdbg accept tok=6227 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=462
+gdbg accept tok=462 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28000 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=61
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=380
+gdbg accept tok=380 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=510
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=510
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg draft t=1 tok=248059
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198
+gdbg accept tok=-1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6820 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=353
+gdbg accept tok=353 words=7760 allowed=159330 first_open=0
+gdbg accept tok=599 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3213
+gdbg accept tok=1603 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3558
+gdbg accept tok=91469 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1048 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5964
+gdbg accept tok=11298 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=264 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2612
+gdbg accept tok=2612 words=7760 allowed=159330 first_open=0
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=16753 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=66983
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3682 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22373
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20243 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1354
+gdbg accept tok=1354 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=874
+gdbg accept tok=874 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1954
+gdbg accept tok=1954 words=7760 allowed=159330 first_open=0
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=5979 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=13392 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=13001 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=378
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1331
+gdbg accept tok=8390 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=54476
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=579
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9241
+gdbg accept tok=51139 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2022
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=54476
+gdbg accept tok=54476 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7054
+gdbg accept tok=7054 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=51319 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=45918 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=17638 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13094
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1908 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12
+gdbg accept tok=4516 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26572
+gdbg accept tok=37138 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3158
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=303
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1719
+gdbg accept tok=6737 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6020
+gdbg accept tok=6020 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1778 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=444
+gdbg accept tok=444 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=13839 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17907
+gdbg accept tok=4465 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=45551
+gdbg accept tok=26734 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=27345 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59930
+gdbg accept tok=77754 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59930
+gdbg accept tok=93687 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=391
+gdbg accept tok=391 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5875 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6027
+gdbg accept tok=4516 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6288
+gdbg accept tok=6288 words=7760 allowed=159330 first_open=0
+gdbg accept tok=42418 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=553
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=635 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=264
+gdbg accept tok=799 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=777
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9201 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=1331 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66571 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8390 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1908
+gdbg accept tok=74849 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=56768
+gdbg accept tok=16724 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2022
+gdbg accept tok=2022 words=7760 allowed=159330 first_open=0
+gdbg accept tok=487 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=51319 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18725
+gdbg accept tok=45918 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3158
+gdbg accept tok=3158 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13007
+gdbg accept tok=13007 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=33625 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15579
+gdbg accept tok=4562 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=632 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=63471
+gdbg accept tok=37183 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=45345
+gdbg accept tok=45345 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11069 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3349
+gdbg accept tok=53442 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1144
+gdbg accept tok=1144 words=7760 allowed=159330 first_open=0
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=47096
+gdbg accept tok=47096 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4431
+gdbg accept tok=65 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=14300
+gdbg accept tok=6013 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=20979
+gdbg accept tok=20979 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=593
+gdbg accept tok=4831 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9764
+gdbg accept tok=9764 words=7760 allowed=159330 first_open=0
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1048
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=364
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=22054 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=888
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=1331 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=8390 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66571 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9201 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=888 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4516
+gdbg accept tok=4516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=37138 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=310 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=615
+gdbg accept tok=37027 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=248069
+gdbg accept tok=248069 words=7760 allowed=34 first_open=198
+gdbg accept tok=271 words=7760 allowed=159331 first_open=0
+gdbg draft t=1 tok=248058
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg draft t=1 tok=10400
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=22054 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9201
+gdbg accept tok=9201 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=1331 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=8390 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66571 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=888 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4516
+gdbg accept tok=4516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=37138 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3057
+gdbg accept tok=3057 words=7760 allowed=159330 first_open=0
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg draft t=1 tok=2817
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg draft t=1 tok=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=23129
+gdbg accept tok=23129 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6227
+gdbg accept tok=6227 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4779
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7947
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=293
+gdbg accept tok=380 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20243 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1354
+gdbg accept tok=1354 words=7760 allowed=159330 first_open=0
+gdbg accept tok=524 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3558
+gdbg accept tok=3558 words=7760 allowed=159330 first_open=0
+gdbg accept tok=537 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=830 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=443
+gdbg accept tok=443 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5979
+gdbg accept tok=5979 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198
+gdbg accept tok=-1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=40 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=599
+gdbg accept tok=599 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1603 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3558
+gdbg accept tok=91469 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1048 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5964
+gdbg accept tok=7440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=16753 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=66983
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=593
+gdbg accept tok=16935 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6227
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=1331 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=4947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=10451 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22054
+gdbg accept tok=74849 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=44
+gdbg accept tok=44 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2193 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=81726 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6297
+gdbg accept tok=6297 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3010
+gdbg accept tok=27204 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7054 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13392 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=12415 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9826
+gdbg accept tok=30744 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=2961 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=628 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=635
+gdbg accept tok=36213 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1248
+gdbg accept tok=2503 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1528
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4831
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9201 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=68
+gdbg accept tok=68 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1257 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2487
+gdbg accept tok=2487 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=760
+gdbg accept tok=8692 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=382
+gdbg accept tok=382 words=7760 allowed=159330 first_open=0
+gdbg accept tok=513 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15129
+gdbg accept tok=423 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9455
+gdbg accept tok=9455 words=7760 allowed=159330 first_open=0
+gdbg accept tok=82 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4774 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=424
+gdbg accept tok=4581 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2022
+gdbg accept tok=81259 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=681 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=321 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3110 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=944
+gdbg accept tok=9826 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=39
+gdbg accept tok=1860 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16888 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12415
+gdbg accept tok=1861 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=8218 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=314
+gdbg accept tok=314 words=7760 allowed=159330 first_open=0
+gdbg accept tok=27345 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59930
+gdbg accept tok=77754 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=487 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22054 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4021 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=635
+gdbg accept tok=635 words=7760 allowed=159330 first_open=0
+gdbg accept tok=4581 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=54476
+gdbg accept tok=54476 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=4831 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7054 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=328
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg accept tok=74849 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=524 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=264
+gdbg accept tok=76436 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7285
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6380
+gdbg accept tok=6380 words=7760 allowed=159330 first_open=0
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16753
+gdbg accept tok=16753 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1892 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6227
+gdbg accept tok=6227 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=496
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=28495
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg accept tok=67 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=14
+gdbg accept tok=28495 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9964
+gdbg accept tok=9964 words=7760 allowed=159330 first_open=0
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=271
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg accept tok=40 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1683
+gdbg accept tok=599 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3213
+gdbg accept tok=3213 words=7760 allowed=159330 first_open=0
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=264
+gdbg accept tok=264 words=7760 allowed=159330 first_open=0
+gdbg accept tok=45332 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4087
+gdbg accept tok=4087 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6558
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1048
+gdbg accept tok=1048 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1716 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3110 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1528
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2961 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=383
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9826 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=593
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=378
+gdbg accept tok=378 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1257 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2487
+gdbg accept tok=2487 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=623
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3978 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=64179
+gdbg accept tok=417 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=12705 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1892 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3404
+gdbg accept tok=421 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=579
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=18705 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2581
+gdbg accept tok=2581 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=50
+gdbg accept tok=92055 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=277
+gdbg accept tok=1597 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1463
+gdbg accept tok=1463 words=7760 allowed=159330 first_open=0
+gdbg accept tok=10923 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=14 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=92055 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1597
+gdbg accept tok=1597 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1463 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7869
+gdbg accept tok=33436 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=8755 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=73756
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=632 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=63471
+gdbg accept tok=63471 words=7760 allowed=159330 first_open=0
+gdbg accept tok=303 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4779
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3433
+gdbg accept tok=2984 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=1345 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=73756
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2468 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg accept tok=59056 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2844 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=579
+gdbg accept tok=579 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9468 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=310
+gdbg accept tok=310 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=95940
+gdbg accept tok=4670 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9375
+gdbg accept tok=8240 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=32368
+gdbg accept tok=32368 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5548 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3158
+gdbg accept tok=3158 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6558 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5964 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9845
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=421
+gdbg accept tok=421 words=7760 allowed=159330 first_open=0
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=5346
+gdbg accept tok=5346 words=7760 allowed=159330 first_open=0
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=38
+gdbg accept tok=38 words=7760 allowed=159330 first_open=0
+gdbg accept tok=639 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=30285
+gdbg accept tok=30285 words=7760 allowed=159330 first_open=0
+gdbg accept tok=59930 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3158
+gdbg accept tok=3158 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13007
+gdbg accept tok=50821 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=11
+gdbg accept tok=1042 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=728
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg accept tok=635 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1330
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=25628 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=310 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=381
+gdbg accept tok=381 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5902 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=383 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg accept tok=59930 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2091
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3978
+gdbg accept tok=3978 words=7760 allowed=159330 first_open=0
+gdbg accept tok=417 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=12705
+gdbg accept tok=12705 words=7760 allowed=159330 first_open=0
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=73756
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=632
+gdbg accept tok=26079 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1528
+gdbg accept tok=2193 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2984
+gdbg accept tok=2984 words=7760 allowed=159330 first_open=0
+gdbg accept tok=9826 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26
+gdbg accept tok=26 words=7760 allowed=159330 first_open=0
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13094
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=1528 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=8390
+gdbg accept tok=8390 words=7760 allowed=159330 first_open=0
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=66571 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=18516
+gdbg accept tok=18516 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13001 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=593
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=321
+gdbg accept tok=11540 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4334
+gdbg accept tok=4334 words=7760 allowed=159330 first_open=0
+gdbg accept tok=14835 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2074
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9764
+gdbg accept tok=8839 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25
+gdbg accept tok=25 words=7760 allowed=159330 first_open=0
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=771
+gdbg accept tok=771 words=7760 allowed=159330 first_open=0
+gdbg accept tok=85679 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=850 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=328 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=18 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=19
+gdbg accept tok=19 words=7760 allowed=159330 first_open=0
+gdbg accept tok=16 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=22 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=494 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2624 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2961
+gdbg accept tok=1067 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=5686 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1040
+gdbg accept tok=1040 words=7760 allowed=159330 first_open=0
+gdbg accept tok=264 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=67102 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=6454 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2881
+gdbg accept tok=2881 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1676 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=639
+gdbg accept tok=639 words=7760 allowed=159330 first_open=0
+gdbg accept tok=2937 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=318
+gdbg accept tok=318 words=7760 allowed=159330 first_open=0
+gdbg accept tok=26631 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=220
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=21
+gdbg accept tok=21 words=7760 allowed=159330 first_open=0
+gdbg accept tok=553 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2844
+gdbg accept tok=353 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1220
+gdbg accept tok=1220 words=7760 allowed=159330 first_open=0
+gdbg accept tok=381 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=16097
+gdbg accept tok=16097 words=7760 allowed=159330 first_open=0
+gdbg accept tok=440 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=31104
+gdbg accept tok=31104 words=7760 allowed=159330 first_open=0
+gdbg accept tok=424 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=353 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=3172
+gdbg accept tok=3172 words=7760 allowed=159330 first_open=0
+gdbg accept tok=37027 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=424
+gdbg accept tok=424 words=7760 allowed=159330 first_open=0
+gdbg accept tok=32298 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=466
+gdbg accept tok=364 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=279
+gdbg accept tok=24209 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=261
+gdbg accept tok=261 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3874 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1892
+gdbg accept tok=11 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=466
+gdbg accept tok=864 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg accept tok=5902 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=271 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9764
+gdbg accept tok=9764 words=7760 allowed=159330 first_open=0
+gdbg accept tok=728 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=635
+gdbg accept tok=635 words=7760 allowed=159330 first_open=0
+gdbg accept tok=279 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1330
+gdbg accept tok=25628 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=13
+gdbg accept tok=13 words=7760 allowed=159330 first_open=0
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=248069
+gdbg accept tok=248069 words=7760 allowed=34 first_open=198
+gdbg accept tok=271 words=7760 allowed=159331 first_open=0
+gdbg draft t=1 tok=248058
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg draft t=1 tok=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg draft t=1 tok=10400
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=369
+gdbg accept tok=369 words=7760 allowed=159330 first_open=0
+gdbg accept tok=3978 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=417
+gdbg accept tok=417 words=7760 allowed=159330 first_open=0
+gdbg accept tok=12705 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1
+gdbg accept tok=1 words=7760 allowed=159330 first_open=0
+gdbg accept tok=73756 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=6326
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg accept tok=13094 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=26079
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=59056
+gdbg accept tok=2193 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2984
+gdbg accept tok=2984 words=7760 allowed=159330 first_open=0
+gdbg accept tok=26079 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9826
+gdbg accept tok=49428 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=1597
+gdbg accept tok=1597 words=7760 allowed=159330 first_open=0
+gdbg accept tok=1463 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=18705 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=2581
+gdbg accept tok=2581 words=7760 allowed=159330 first_open=0
+gdbg accept tok=220 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=15 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=20 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248058 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=27 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=4 first_open=28
+gdbg accept tok=28 words=7760 allowed=9 first_open=69
+gdbg draft t=1 tok=2817
+gdbg accept tok=2817 words=7760 allowed=7 first_open=62
+gdbg accept tok=10400 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg draft t=1 tok=27
+gdbg accept tok=27 words=7760 allowed=6 first_open=79
+gdbg accept tok=15704 words=7760 allowed=3 first_open=28
+gdbg accept tok=76478 words=7760 allowed=1 first_open=29
+gdbg draft t=1 tok=29
+gdbg accept tok=29 words=7760 allowed=34 first_open=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=25148
+gdbg accept tok=23129 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=66983
+gdbg accept tok=66983 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6227 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=22373
+gdbg accept tok=22373 words=7760 allowed=159330 first_open=0
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7947
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=17
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg accept tok=293 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=61
+gdbg accept tok=61 words=7760 allowed=159330 first_open=0
+gdbg accept tok=17 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=9964
+gdbg accept tok=593 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=380
+gdbg accept tok=380 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4779
+gdbg accept tok=4779 words=7760 allowed=159330 first_open=0
+gdbg accept tok=496 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=7947
+gdbg accept tok=7947 words=7760 allowed=159330 first_open=0
+gdbg accept tok=8 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=4581
+gdbg accept tok=4581 words=7760 allowed=159330 first_open=0
+gdbg accept tok=6326 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=21966 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=159330 first_open=0
+gdbg accept tok=510 words=7760 allowed=159330 first_open=0
+gdbg draft t=1 tok=15704
+gdbg accept tok=15704 words=7760 allowed=159132 first_open=0
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=2 first_open=27
+gdbg accept tok=510 words=7760 allowed=5 first_open=69
+gdbg draft t=1 tok=1628
+gdbg accept tok=1628 words=7760 allowed=1 first_open=29
+gdbg accept tok=29 words=7760 allowed=1 first_open=198
+gdbg draft t=1 tok=198
+gdbg accept tok=198 words=7760 allowed=3 first_open=27
+gdbg accept tok=248059 words=7760 allowed=2 first_open=198

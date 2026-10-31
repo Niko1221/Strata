@@ -1,0 +1,3 @@
+root ::= reason "x" answer
+reason ::= [^y] reason | ""
+answer ::= "z"

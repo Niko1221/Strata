@@ -1,0 +1,38 @@
+def tools_suite(base, n, base_totals):
+    ok, bad = 0, 0
+    fails = []
+    for j, prompt in enumerate(TOOL_PROMPTS[:n]):
+        print(f"  tool {j + 1}/{len(TOOL_PROMPTS[:n])} ...", end=" ", flush=True)
+        t0 = time.time()
+        r = post(base, {"messages": [{"role": "user", "content": prompt}], "tools": TOOLS,
+                        "tool_choice": "required", "max_tokens": 1200, "reasoning_effort": "low", "temperature": 0.6}, timeout=420)
+        el = time.time() - t0
+        if r.status_code != 200:
+            bad += 1
+            fails.append((j, f"http {r.status_code}: {r.text[:200]}"))
+            continue
+        d = r.json()
+        ch = d["choices"][0]
+        calls = ch["message"].get("tool_calls") or []
+        names = {t["function"]["name"] for t in TOOLS}
+        good = ch.get("finish_reason") == "tool_calls" and len(calls) >= 1
+        for c in calls:
+            fn = c.get("function") or {}
+            if fn.get("name") not in names:
+                good = False
+            try:
+                json.loads(fn.get("arguments") or "")
+            except Exception:
+                good = False
+        if good:
+            ok += 1
+        else:
+            bad += 1
+            fails.append((j, f"finish={ch.get('finish_reason')} calls={str(calls)[:200]}"))
+        print(f"{'ok' if good else 'FAIL: ' + fails[-1][1][:140]} {el:.0f}s", flush=True)
+    totals = requests.get(base + "/metrics", timeout=30).json()["totals"]
+    rescued = totals.get("tool_calls_from_reasoning", 0) - base_totals.get("tool_calls_from_reasoning", 0)
+    return {"n": len(TOOL_PROMPTS[:n]), "parsed": ok, "parse_failures": bad,
+            "rescued_from_reasoning_delta": rescued, "fails": fails[:20]}
+
+

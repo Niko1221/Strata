@@ -1,0 +1,54 @@
+{
+ "schema_version": 2,
+ "id": "strata-engine",
+ "name": "strata-engine",
+ "version": "0.1.50",
+ "platform": "windows-x86_64",
+ "backend": "cuda",
+ "archs": [
+  "sm_75",
+  "sm_86",
+  "sm_89",
+  "sm_120",
+  "compute_120"
+ ],
+ "min_driver": {
+  "nvidia": "580.65"
+ },
+ "build_id": "1de0d0486a59",
+ "entrypoint": "strata.exe",
+ "files": [
+  {
+   "path": "strata.exe",
+   "sha256": "05add5470ace5d387756093f68371f3e5567dae2e7abe79fae05526047d4dd37",
+   "bytes": 206069248
+  },
+  {
+   "path": "BUILD.json",
+   "sha256": "63552030cd5dfcf36efbad46f39ae0e06770f66b5ec1a5838345d0cb812f3e55",
+   "bytes": 39
+  },
+  {
+   "path": "strata-vision.exe",
+   "sha256": "e760644755b4613f5a83fde204a1cb2f292e2731b1029eed21890d5fd2b9e5cc",
+   "bytes": 109314560
+  },
+  {
+   "path": "strata_kq.dll",
+   "sha256": "0de8ea512c49b203f81a18a9dc8caf85bbe9484205c46a68e38d2ebdc3039ed4",
+   "bytes": 34388480
+  },
+  {
+   "path": "cublas64_13.dll",
+   "sha256": "b181c4ffb454840a49f802169d8826617841875607a2e2ba14ef9650e348c456",
+   "bytes": 51571824
+  },
+  {
+   "path": "cublasLt64_13.dll",
+   "sha256": "182baf9b1846630c2462cccdae744367b8ff4d2965651deb41a2beefb53f1de5",
+   "bytes": 453003888
+  }
+ ],
+ "signature": null,
+ "variant": "cuda13"
+}

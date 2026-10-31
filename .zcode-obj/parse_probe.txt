@@ -1,0 +1,10 @@
+answer-root ::= "a" | "b"
+reason ::= [^<] reason | "<" reason-1 | ""
+reason-1 ::= [^/] reason | "/" reason-2 | ""
+reason-2 ::= [^t] reason | "t" reason-3 | ""
+reason-3 ::= [^h] reason | "h" reason-4 | ""
+reason-4 ::= [^i] reason | "i" reason-5 | ""
+reason-5 ::= [^n] reason | "n" reason-6 | ""
+reason-6 ::= [^k] reason | "k" reason-7 | ""
+reason-7 ::= [^>] reason | ""
+root ::= reason "\n</think>\n\n" answer-root

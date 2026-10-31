@@ -1,0 +1,17 @@
+Free reasoning with normal English letters: the model thinks about h, i, t, n, o, s and j.
+The quick brown fox jumps over the lazy dog; 2 + 2 = 4, and "quotes" too.
+# banned: the think closer spelled mid-reasoning must throw at the final >
+</think>
+# banned: the fenced-JSON habit must throw at the final n
+```json
+# the wrap-up prose the serve injects, then the closer, then the answer: must fit end to end
+
+I have thought about this long enough; time to give my answer.
+</think>
+
+{"city": "Tokyo", "temp_c": 24}
+# the fenced alternative in the answer: must fit end to end
+
+```json
+{"books": [{"title": "Pride", "year": 1813}]}
+```
