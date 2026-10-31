@@ -815,10 +815,13 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
 
 #if !defined(STRATA_USE_HIP)
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 namespace wm = nvcuda::wmma;
+#endif
 constexpr int kLdT = 40;
 template <int T, bool GATE_UP>
 __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_6x pass of a multi-arch build has no nvcuda::wmma (tc_ok() never launches these there)
     struct Tiles {
         __half x[BM][kLdT], wg[BN][kLdT], wu[GATE_UP ? BN : 1][kLdT];
     };
@@ -899,6 +902,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
         if (GATE_UP) a.h[lr * a.ldo + c0 + c] = __half_as_ushort(__float2half_rn(swiglu(O.g[r][c], O.u[r][c], a.limit)));
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
+#endif
 }
 #endif
 

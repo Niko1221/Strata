@@ -785,10 +785,13 @@ __global__ void __launch_bounds__(kThreads) mx_set_kernel(const SetK a) {
 // the same on the tensor cores: a block BM rows x BN outputs, 8 warps each 16 rows x 32 outputs (2 fragments, gate and
 // up: 4), a 32-value MXFP4 block of K a step (2 WMMA k-steps), the tiles in shared memory as F16
 #if !defined(STRATA_USE_HIP)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 namespace wm = nvcuda::wmma;
+#endif
 constexpr int kLdT = 40;   // halves a tile row (32 + 8: WMMA wants a multiple of 8; the pad spreads the banks)
 template <bool GATE_UP>
 __global__ void __launch_bounds__(kThreads) mx_set_tc_kernel(const SetK a) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_6x pass of a multi-arch build has no nvcuda::wmma (tc_ok() never launches these there)
     struct Tiles {
         __half x[BM][kLdT], wg[BN][kLdT], wu[GATE_UP ? BN : 1][kLdT];
     };
@@ -875,6 +878,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_tc_kernel(const SetK a) {
         if (GATE_UP) a.h[lr * a.ldo + c0 + c] = __float2half_rn(swiglu(O.g[r][c], O.u[r][c], a.limit));
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
+#endif
 }
 #endif
 #if defined(STRATA_USE_HIP)
