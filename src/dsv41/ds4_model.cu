@@ -8153,7 +8153,8 @@ struct Model::Impl {
                 const Layer& x = member(l, 0);
                 cudaSetDevice(devs[(size_t) x.dev].id);
                 cudaStream_t cs = copy_st[(size_t) x.dev];
-                const bool got = cudaMemcpyAsync(dst, x.vram_base + (size_t) l.slot[(size_t) sw.out] * unit(l), l.blob, cudaMemcpyDeviceToHost, cs) ==
+                // (sat: a slot past the main arena lies in the lent tail region, where vram_base + slot * unit points past the allocation)
+                const bool got = cudaMemcpyAsync(dst, sat(l, x, l.slot[(size_t) sw.out], unit(l)), l.blob, cudaMemcpyDeviceToHost, cs) ==
                                      cudaSuccess &&
                                  cudaStreamSynchronize(cs) == cudaSuccess;
                 store->put_done(l.il, sw.out, got);
@@ -12770,7 +12771,7 @@ struct Model::Impl {
                 if (l.slot[(size_t) e] < 0) continue;
                 std::vector<uint8_t> want(l.blob, 0);
                 read_mx_file(l, e, want.data());
-                const uint8_t* have = (const uint8_t*) strata::gpu::host_view(l.vram_base + (size_t) l.slot[(size_t) e] * unit(l));
+                const uint8_t* have = (const uint8_t*) strata::gpu::host_view(sat(l, l, l.slot[(size_t) e], unit(l)));
                 size_t bad = 0, first = 0;
                 for (size_t i = 0; i < l.blob; ++i)
                     if (want[i] != have[i]) { if (!bad) first = i; ++bad; }
