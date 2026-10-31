@@ -1,7 +1,9 @@
-# EXPDEC: the verify window's routed experts with the group's activations in shared memory (`STRATA_EXPDEC=1`, opt-in)
+# EXPDEC: the verify window's routed experts with the group's activations in shared memory (`STRATA_EXPDEC`)
 
-Opt-in: `STRATA_EXPDEC=1`. Unset (or `0`) the engine launches exactly the kernels it launched before. CUDA only; the
-output is bitwise the default kernels' (see "Bit for bit" below; `expdec_bench` checks it).
+Supported on CUDA and HIP. On RDNA4 HIP (`gfx1200`/`gfx1201`), EXPDEC is enabled by default for gate/up and the `Q2_0`
+down projection (`STRATA_EXPDEC=0` turns EXPDEC off and `STRATA_EXPDEC_DOWN=0` keeps the default down kernel). On CUDA
+and other HIP targets it is opt-in via `STRATA_EXPDEC=1` (unset or `0` launches the default kernels). The output is
+bitwise the default kernels' (see "Bit for bit" below; `expdec_bench` checks it).
 
 ## What it changes
 
@@ -29,9 +31,11 @@ Q2_0 at n_ff 640; IQ4_NL with `STRATA_EXPDEC_D20=1`) instead:
   default kernels; `2` allows 128).
 
 Formats outside the list keep the default kernel for that role; `STRATA_OLD_IQ_MMVQ=1` turns EXPDEC off as it turns
-the multi kernels off. The down is behind `STRATA_EXPDEC_DOWN=1`: in the engine the Q2_0 down with EXPDEC was about
-10% slower than the default kernel although the micro-bench alone had it at 0.78x (the default down already keeps the
-group's h rows in shared memory), so by default EXPDEC takes the gate/up only.
+the multi kernels off. The `Q2_0` down projection is controlled by `STRATA_EXPDEC_DOWN`: on `gfx12` (RDNA4) it defaults
+to `1` (`STRATA_EXPDEC_DOWN=0` disables it); on CUDA and other HIP targets it defaults to `0` (`STRATA_EXPDEC_DOWN=1`
+enables it, since in an RTX 2080 Ti 131k decode the `Q2_0` down with EXPDEC was about 10% slower than the default
+kernel although the micro-bench alone had it at 0.78x). The `IQ4_NL` down projection remains opt-in (`STRATA_EXPDEC_D20=1`)
+on all architectures.
 
 The first time `STRATA_EXPDEC=1` meets a (role, format) the engine writes one line, e.g.
 `strata expdec: CUDA1 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph`

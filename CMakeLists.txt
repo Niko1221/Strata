@@ -1413,8 +1413,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(shared_expert_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME shared_expert_parity COMMAND shared_expert_parity --selftest)
-  # the split / batched verify-window kernels (from eddoursul's fork), bitwise vs the kernels they replace; CUDA only
-  if(STRATA_ENABLE_CUDA)
+  # the split / batched verify-window kernels (from eddoursul's fork), bitwise vs the kernels they replace
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(verify_parity src/kernels/verify_parity.cpp)
     target_include_directories(verify_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(verify_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -2581,13 +2581,11 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(q8_gemv_bench src/kernels/q8_gemv_bench.cpp)
     target_include_directories(q8_gemv_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(q8_gemv_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-    if(STRATA_ENABLE_CUDA)
-      # EXPDEC (docs/EXPERTDEC.md): the grouped experts' default kernels against STRATA_EXPDEC=1 at T = 1..4, bit for bit
-      # and in microseconds, on synthetic blobs read cold from DRAM
-      add_executable(expdec_bench EXCLUDE_FROM_ALL src/kernels/expdec_bench.cpp)
-      target_include_directories(expdec_bench PRIVATE ${_strata_gpu_include_directories})
-      target_link_libraries(expdec_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-    endif()
+    # EXPDEC (docs/EXPERTDEC.md): the grouped experts' default kernels against STRATA_EXPDEC=1 at T = 1..4, bit for bit
+    # and in microseconds, on synthetic blobs read cold from DRAM
+    add_executable(expdec_bench EXCLUDE_FROM_ALL src/kernels/expdec_bench.cpp)
+    target_include_directories(expdec_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(expdec_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
       # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
       # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float.
