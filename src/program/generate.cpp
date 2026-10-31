@@ -2978,15 +2978,17 @@ int main(int argc, char** argv) {
         break;
     }
 #if defined(STRATA_HAVE_QWEN35)
-    // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) runs on its own engine path
-    // (src/qwen35), decided here from the file's header before any of this engine's state exists; every other file
-    // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
+    // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) and a dense Qwen3.5 / Qwen3.8 4B
+    // file (qwen35) run on their own engine path (src/qwen35), decided here from the file's header before any of this
+    // engine's state exists; every other file goes on below exactly as before.  Only the architecture string is read
+    // (the header of --native's shard).
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
         bool qwen35 = false;
         try {
             const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
-            qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+            const strata::ModelFamily fam = strata::model_family(meta);
+            qwen35 = fam == strata::ModelFamily::Qwen35Moe || fam == strata::ModelFamily::Qwen35;
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }

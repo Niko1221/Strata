@@ -457,6 +457,7 @@ struct Model {
         }
         return it->second;
     }
+    bool has(const std::string& n) const { return t.count(n) != 0; }
     const float* F(const std::string& n) const {
         auto it = f32.find(n);
         if (it == f32.end()) {
@@ -480,8 +481,8 @@ bool load(const std::string& path, Model& m, std::string& err) {
     const auto t0 = std::chrono::steady_clock::now();
     const strata::GgufModel gm = strata::GgufModel::open(path);
     if (!strata::core::geometry_from_gguf(gm.meta(), m.g, m.top_k, err)) return false;
-    if (m.g.family != strata::ModelFamily::Qwen35Moe) {
-        err = "this reference path is for Qwen3.6-35B-A3B (qwen35moe) only";
+    if (m.g.family != strata::ModelFamily::Qwen35Moe && !strata::model_family_dense_ffn(m.g.family)) {
+        err = "this reference path is for Qwen3.6-35B-A3B (qwen35moe) and dense qwen35 only";
         return false;
     }
     size_t checked = 0;
@@ -652,6 +653,17 @@ void forward(const Model& m, State& s, int tok, float* layers) {
         CK(cudaGetLastError());
         k_add<<<(N + B - 1) / B, B>>>(s.x, s.y, N);
         k_rms<<<1, kThreads>>>(s.x, m.F(L(l, "post_attention_norm.weight")), s.h, N, m.eps);
+        if (g.n_expert == 0) {
+            // dense qwen35: one MLP per layer, no router, no gate - the case the A/B harness needs to see
+            gemv(m.W(L(l, "ffn_gate.weight")), s.h, s.sg);
+            gemv(m.W(L(l, "ffn_up.weight")), s.h, s.su);
+            k_swiglu<<<(FS + B - 1) / B, B>>>(s.sg, s.su, s.sh, FS);
+            gemv(m.W(L(l, "ffn_down.weight")), s.sh, s.sy);
+            k_add<<<(N + B - 1) / B, B>>>(s.x, s.sy, N);
+            CK(cudaGetLastError());
+            if (layers) CK(cudaMemcpy(layers + (size_t) l * N, s.x, (size_t) N * 4, cudaMemcpyDeviceToHost));
+            continue;
+        }
         // router: softmax over every expert, top-k, renormalised (host side: exact and simple)
         gemv(m.W(L(l, "ffn_gate_inp.weight")), s.h, s.router);
         if (g_strata && strata::kernels::native_router_topk_supported((int) g.n_expert, K)) {
@@ -700,7 +712,7 @@ void forward(const Model& m, State& s, int tok, float* layers) {
         if (layers) CK(cudaMemcpy(layers + (size_t) l * N, s.x, (size_t) N * 4, cudaMemcpyDeviceToHost));
     }
     k_rms<<<1, kThreads>>>(s.x, m.F("output_norm.weight"), s.h, N, m.eps);
-    gemv(m.W("output.weight"), s.h, s.logits);
+    gemv(m.W(g.n_expert == 0 && !m.has("output.weight") ? "token_embd.weight" : "output.weight"), s.h, s.logits);
     CK(cudaDeviceSynchronize());
     ++s.pos;
 }

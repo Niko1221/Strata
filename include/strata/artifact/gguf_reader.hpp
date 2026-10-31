@@ -664,6 +664,33 @@ inline std::string check_architecture_qwen35moe(const GgufFile& g) {
     return {};
 }
 
+/// The dense sibling of qwen35moe: `qwen35` (Qwen3.5-4B, Qwen3.8-4B distills) carries the same trunk keys and one
+/// dense MLP per layer instead of the routed experts, so the expert keys are absent by design and `nextn` is optional
+/// (the official Qwen3.5-4B file has no MTP block; a distill may).
+inline std::string check_architecture_qwen35(const GgufFile& g) {
+    static const char* const keys[] = {
+        "qwen35.block_count", "qwen35.embedding_length", "qwen35.feed_forward_length",
+        "qwen35.attention.head_count", "qwen35.attention.head_count_kv", "qwen35.attention.key_length",
+        "qwen35.attention.value_length", "qwen35.ssm.conv_kernel", "qwen35.ssm.state_size",
+        "qwen35.ssm.group_count", "qwen35.ssm.time_step_rank", "qwen35.ssm.inner_size",
+        "qwen35.full_attention_interval",
+    };
+    for (const char* k : keys) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+    }
+    const MetaValue* nl = g.get("qwen35.block_count");
+    const MetaValue* mtp = g.get("qwen35.nextn_predict_layers");
+    if (mtp && !mtp->is_num()) return "qwen35.nextn_predict_layers is not a number";
+    if (mtp && mtp->u >= nl->u) return "qwen35.nextn_predict_layers is not smaller than qwen35.block_count";
+    if (g.get("qwen35.full_attention_interval")->u < 2)
+        return "qwen35.full_attention_interval must be at least 2 (the GDN / attention pattern)";
+    if (g.get("qwen35.attention.key_length")->u != g.get("qwen35.attention.value_length")->u)
+        return "qwen35.attention.key_length != qwen35.attention.value_length";
+    return {};
+}
+
 // ---- the model's geometry from its metadata, and the architecture guard (P1.S2).  The engine runs ONE
 // architecture, qwen4exp.  Its dimensions are read from the file (llama.cpp's key names under the arch prefix)
 // and then checked against the shape the kernels are compiled for (core/geometry.hpp), so a file of another
@@ -851,6 +878,7 @@ inline std::string check_architecture(const GgufFile& f) {
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::Qwen35) return check_architecture_qwen35(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);
