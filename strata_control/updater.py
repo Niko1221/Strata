@@ -554,7 +554,7 @@ def make_guard(ctx: Context) -> str | None:
     may go on."""
     hw = ctx.hardware
     want = hw.get("backend")
-    if want not in GPU_MAKES or hw.get("backend_source") in ("environment", "requested", "installed engine"):
+    if want not in GPU_MAKES or hw.get("backend_source") in ("environment", "requested", "installed engine", "saved choice"):
         return None
     have = installed_gpu_makes(ctx.components, hw.get("platform"))
     if not have or want in have:
@@ -1049,7 +1049,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         return result
     root = ctx.components
     have_makes = installed_gpu_makes(root, pkg.platform)
-    if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested"):
+    if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested", "saved choice"):
         raise UpdateError(f"the {pkg.label} engine is for another make of graphics card than the installed one; nothing was staged", 5)
     _warn_if_deep(ctx, ec.engine_dir(root) / folder_name(pkg), longpath.LONGEST_IN_PACKAGE.get(pkg.backend, longpath.LONGEST_IN_PACKAGE_DEFAULT) + 1)
     _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "engine")

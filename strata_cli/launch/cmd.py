@@ -110,6 +110,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "of graphics memory or less), full uses all 6")
     g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--backend", metavar="nvidia|amd|intel|auto",
+                   help="which make of graphics card the engine uses on a PC that has cards of more than one make (default: auto = NVIDIA first, "
+                        "then AMD, then Intel). Your choice is remembered for the next launch, update and app; 'auto' forgets it")
     g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
                    "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
@@ -747,6 +750,27 @@ def run_launch(a: argparse.Namespace) -> int:
                     return fail(f"No model set up by setup.py matches '{a.model}' and has an API key, and no launch is running.", 5)
             return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME, or a model set up by setup.py with --model NAME."), 5)
 
+        backend_note = None
+        if getattr(a, "backend", None):
+            from strata_control import engine_component as _ec
+            word = str(a.backend).strip().lower()
+            if word in ("auto", "default", "none"):
+                if not a.plan:
+                    _ec.save_backend(None)
+                os.environ.pop(_ec.ENV_BACKEND, None)
+                backend_note = "The engine make is chosen by the PC again (NVIDIA first, then AMD, then Intel)." if not a.plan else None
+            else:
+                family = _ec.clean_backend_name(word)
+                if not family:
+                    return fail(f"'{a.backend}' is not a make of graphics card Strata knows. Use nvidia, amd, intel or auto.", 2)
+                os.environ[_ec.ENV_BACKEND] = family          # this launch and everything it starts
+                made = _ec.MAKE_NAMES[family]
+                if a.plan:
+                    backend_note = f"With --backend {word} the engine for {made} cards is used. Nothing is remembered by --plan."
+                else:
+                    _ec.save_backend(family)
+                    backend_note = (f"The engine for {made} cards is used, now and next time. "
+                                    "`strata launch --backend auto` goes back to the PC's own choice.")
         try:
             catalog = Catalog()
         except CatalogUnavailable as e:
@@ -754,6 +778,8 @@ def run_launch(a: argparse.Namespace) -> int:
             if a.model or a.model_path:
                 return fail(str(e), 5)
         s, notices = settings_from_args(a, catalog)
+        if backend_note:
+            notices.append(S.Notice("warn", backend_note, ""))
         if not machine:
             _interrupted_move_notice()
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))

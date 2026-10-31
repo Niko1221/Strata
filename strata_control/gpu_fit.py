@@ -95,6 +95,18 @@ def other_vendor_note(cards: list[dict], vendor: str | None) -> str | None:
     others = [c for c in others if _vendor(c) and not _shares_memory(c)]
     if not others:
         return None
+    intel = [c for c in others if _vendor(c) == "intel"]
+    if intel:
+        # Intel Arc cards beside another make: always said (the engine for one make runs at a time; the person chooses which), never refused
+        total = sum(float(c.get("vram_gb") or 0) for c in intel)
+        cards = (f"{len(intel)} Intel Arc cards ({total:.0f} GB together)" if len(intel) > 1
+                 else f"an {_short_name(intel[0], 'intel')} ({total:.0f} GB)")
+        return (f"This computer also has {cards}. Strata uses the {VENDOR_NAME.get(vendor, vendor)} card; to use the Intel card"
+                f"{'s' if len(intel) > 1 else ''} instead, add --backend intel (it is remembered; --backend auto goes back).")
+    if vendor == "intel":
+        names = ", ".join(sorted({_short_name(c, _vendor(c)) for c in others}))
+        return (f"This computer also has {names}. Strata uses the Intel cards; --backend auto goes back to the PC's own choice "
+                "(NVIDIA first).")
     best = max(others, key=lambda c: float(c.get("vram_gb") or 0))
     mine_best = max((float(c.get("vram_gb") or 0) for c in mine), default=0.0)
     if float(best.get("vram_gb") or 0) <= mine_best:
