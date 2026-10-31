@@ -248,6 +248,10 @@ void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long
               cudaStream_t s);
 /// Waits (one thread, on the device) until *seq_ptr == seq.
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s);
+/// True once if the router (route / route_publish) had no pick to make on this device since the last call - every score it was
+/// given NaN (a non-finite gate input) - and clears it; it took a stand-in expert so nothing read out of bounds, but the layer's
+/// output is garbage.  Waits for the stream: call it where the host has the stream's results anyway, not per kernel.
+bool router_nonfinite_take(cudaStream_t s);
 /// A chunk's routed experts as sorted rows: the picks (t, i < k) of T tokens (idx rows kPicks apart) by the virtual
 /// slot vs[expert] (n_vs of them: the VRAM slots, then the experts streamed in), each slot's rows in token order:
 /// bounds[n_vs + 1], row_tok[r], pos[t][i] (the pick's sorted row, rows kPicks apart).

@@ -511,7 +511,13 @@ __global__ void __launch_bounds__(kThreads) gemv_f32_kernel(const float* __restr
 // illegal memory access; #4825).  The lowest expert not picked yet instead - a valid index, so nothing reads outside its tables;
 // the weights stay NaN, the layer's output is garbage as it was, and the host-routed path says so (its picks are checked there).
 // Only reached by a kernel's one thread when a pick is missing, so a finite router pays one compare a pick.
+#if !defined(STRATA_METAL)
+__device__ int g_router_bad = 0;   // set by the fallback below, read and cleared by router_nonfinite_take (once a few tokens, not a token)
+#endif
 __device__ __forceinline__ int route_fallback_pick(const int* pick, int r, int n) {
+#if !defined(STRATA_METAL)
+    g_router_bad = 1;
+#endif
     int ix = 0;
     for (bool again = true; again;) {   // (the picks are few and unsorted: start over when one of them is the candidate)
         again = false;
@@ -2160,6 +2166,23 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
 #endif
     if (req != nullptr && m > 0 && T > 0 && n <= 1024 && off + m <= kAhead)
         strata_ds4_launch(route_ahead_kernel, T, 512, 0, s, logits, bias, n, m, req, off);
+}
+bool router_nonfinite_take(cudaStream_t s) {
+#if defined(STRATA_METAL)
+    (void) s;
+    return false;
+#else
+    int v = 0;
+    if (cudaStreamSynchronize(s) != cudaSuccess || cudaMemcpyFromSymbol(&v, g_router_bad, sizeof v) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    if (v != 0) {
+        const int zero = 0;
+        if (cudaMemcpyToSymbol(g_router_bad, &zero, sizeof zero) != cudaSuccess) (void) cudaGetLastError();
+    }
+    return v != 0;
+#endif
 }
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s) {
 #if defined(STRATA_METAL)

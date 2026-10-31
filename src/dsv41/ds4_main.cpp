@@ -1365,8 +1365,19 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         auto stat_line = [&]() {
             std::printf("%s\n", stat_text(t1, s_dec, io_dec, produced, d_off, d_acc).c_str());
         };
+        bool nan_stop = false;
         for (;;) {
             if (in.stop.load()) {
+                finish = "cancel";
+                break;
+            }
+            // (the router had no pick to make: every score it met was NaN, so the model's numbers are gone and what follows is
+            //  nonsense: said once in the log by the model, here the request ends with an error instead of streaming it.  Polled at
+            //  the first token and every 8 - one small copy from the device, not a per-token sync)
+            if ((produced == 0 || produced % 8 == 0) && m.router_nonfinite()) {
+                std::printf("ERR the model's numbers went non-finite (NaN reached the router), so the answer would be nonsense: the request is stopped and the conversation dropped\n");
+                std::fflush(stdout);
+                nan_stop = true;
                 finish = "cancel";
                 break;
             }
@@ -1426,6 +1437,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      s.experts ? 100.0 * (double) s.cpu_experts / (double) s.experts : 0.0);
         if (d_off > 0) std::fprintf(stderr, "maya ds4 serve: drafts %lld of %lld kept; %s\n", d_acc, d_off,
                                     per_position(s_dec, s).c_str());
+        if (nan_stop) {   // (its state holds the NaNs: the next request starts from nothing)
+            m.reset();
+            held.clear();
+        }
         m.save_profile();
     }
     // ---- SEVERAL CONVERSATIONS AT ONCE (--parallel <n>: READY ... multi=<n>).  GEN lines carry rid=<id>, and every

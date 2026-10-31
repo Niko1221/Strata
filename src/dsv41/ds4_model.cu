@@ -8645,6 +8645,23 @@ struct Model::Impl {
     // ends, the swaps go in while it runs its tool, and the next turn's answer finds them.  Interrupting costs one round (a
     // swap of ~9 MB, a millisecond or two) because cancel is tested between rounds, and cache_tick_swaps is the same call the
     // prompt path makes, so the state it leaves is the state a decode window already handles.
+    // a device's router that had no pick to make (every score NaN: the gate's input went non-finite) since the last call: the
+    // kernels took a stand-in expert so nothing read out of bounds, and this is how the request hears of it (ds4_main polls
+    // it a few tokens apart) - once per device in the log, and the caller ends the request with an error
+    bool router_nonfinite() {
+        bool bad = false;
+        for (Dev& d : devs) {
+            cudaSetDevice(d.id);
+            if (router_nonfinite_take(d.st)) {
+                static std::atomic<bool> said{false};
+                if (!said.exchange(true))
+                    std::fprintf(stderr, "ds4: WARNING: the router met scores that are not numbers (NaN) on CUDA%d - the model's "
+                                         "activations went non-finite; its picks are stand-ins and the answer is not reliable\n", d.id);
+                bad = true;
+            }
+        }
+        return bad;
+    }
     void cache_settle_idle(const std::atomic<bool>& cancel) {
         if (!o.expert_cache || cache_ths.empty()) return;
         static const double budget = env_f("DS4_SETTLE_IDLE_MS", 6000.0f);
@@ -14852,6 +14869,7 @@ bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::str
 }
 std::string Model::slot_identity() const { return p_->slot_identity(); }
 void Model::settle_idle(const std::atomic<bool>& cancel) { p_->cache_settle_idle(cancel); }
+bool Model::router_nonfinite() { return p_->router_nonfinite(); }
 void Model::save_profile() const { p_->save_profile(); }
 const Stats& Model::stats() const {
     Stats& st = p_->st;
