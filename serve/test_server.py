@@ -1647,6 +1647,15 @@ class SamplingKeys(unittest.TestCase):
     def keys(self, **sampling):
         return StrataEngine.sampling_keys(sampling).split()
 
+    def test_seed(self):
+        self.assertIn("seed=42", self.keys(temperature=0.7, seed=42))
+        seeds = {[k for k in self.keys(temperature=0.7) if k.startswith("seed=")][0] for _ in range(5)}
+        self.assertGreater(len(seeds), 1)
+        for s in seeds:
+            self.assertTrue(0 < int(s[5:]) < 2 ** 63)
+        for greedy in ({}, {"temperature": 0}, {"temperature": 0.0, "top_k": 20}):
+            self.assertFalse([k for k in self.keys(**greedy) if k.startswith("seed=")], greedy)
+
     def test_top_k(self):
         self.assertIn("top_k=10", self.keys(temperature=0.7, top_k=10))
         self.assertIn("top_k=64", self.keys(temperature=0.7, top_k=64))

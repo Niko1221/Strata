@@ -39,6 +39,7 @@ import math
 import os
 import queue
 import re
+import secrets
 import select
 import signal
 import socket
@@ -1456,8 +1457,12 @@ class StrataEngine:
             else:
                 keys += " penalty_last_n=64"
         seed = sampling.get("seed")
-        if isinstance(seed, int) and seed > 0:
+        if isinstance(seed, int) and not isinstance(seed, bool) and seed > 0:
             keys += f" seed={seed}"
+        elif " temperature=" in keys:
+            # the engine samples only with a Philox seed (--seed / seed=N, greedy otherwise): a sampled request without
+            # one gets a fresh 63-bit seed, so temperature takes effect and two identical requests differ
+            keys += f" seed={secrets.randbelow(2 ** 63 - 1) + 1}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
