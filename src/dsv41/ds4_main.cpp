@@ -28,6 +28,7 @@
 #include "ds4_model.hpp"
 #include "ds4_experts_rule.hpp"
 #include "ds4_os.hpp"
+#include "strata/platform/io_priority.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
 
@@ -1283,6 +1284,7 @@ int spec_eval(strata::ds4::Model& m, const std::string& ids_path, int n, int win
 #endif
 int main(int argc, char** argv) {
     strata::ds4::os::fine_timer();
+    strata::platform::restore_normal_io_priority();   // #4733
 #if defined(STRATA_METAL)
     if (argc > 1 && std::string(argv[1]) == "--sampler-test") return sampler_stat::run(argc - 1, argv + 1);   // (the sampler's statistics harness)
 #endif
