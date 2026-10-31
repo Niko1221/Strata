@@ -628,7 +628,7 @@ Tables in `tools/hip`:
 | `gfx1201-hipblaslt-100202.txt` | R9700, for hipBLASLt 1.2.2 | 24 of the gfx1100 table's 26 shapes |
 | `gfx1201-hipblaslt-100500.txt` | R9700, ROCm 10.2.0a20260914 (`gfx120X-all` nightly) | 32 rows. The engine can check only the version number, so recalibrate for a different 1.5.0 build. |
 | `gfx1200-hipblaslt-100202.txt` | RX 9060 XT | See [Community-validated cards](#community-validated-cards) |
-| `gfx1151-hipblaslt-100400.txt`, `-100401.txt`, `-100500.txt` | Radeon 8060S (Strix Halo) | 100400 is for the 7.14.0a wheels setup installs; 90 rows. Used by default on Strix Halo. |
+| `gfx1151-hipblaslt-100202.txt`, `-100400.txt`, `-100401.txt`, `-100500.txt` | Radeon 8060S (Strix Halo) | 100400 is for the 7.14.0a wheels setup installs, 100202 for a system ROCm 7.2.4 (which setup takes over the wheels); 90 rows. Used by default on Strix Halo. |
 | `gfx1150-hipblaslt-100401.txt`, `-100500.txt` | Radeon 890M | Setup does not use it; point `STRATA_HIPBLASLT_TUNING` at it |
 | `gfx1103-hipblaslt-100401.txt` | Radeon 780M | 143 rows. Setup installs for gfx1103 only with `STRATA_EXPERIMENTAL_GFX1103=1`. [Report](../bench/results/2026-10-12-community-gfx1103/README.md). |
 
@@ -642,6 +642,7 @@ Tables in `tools/hip`:
 | `gfx1201-hipblaslt-100202.txt` | R9700, full IQ3_XXS, `--kv int8 --kv-resident 32768` | 32K prompt 638 -> 1,177 tok/s; 7K prompt 656 -> 1,164 tok/s |
 | `gfx1201-hipblaslt-100500.txt` | One R9700, 4,210-token prompts | 1,531 -> 1,590 tok/s (+3.9%) |
 | `gfx1151-hipblaslt-100400.txt` | Strix Halo | 3.1x to 14.1x faster per GEMM (median 6.2x); whole-model prompt speed not measured |
+| `gfx1151-hipblaslt-100202.txt` | Strix Halo (Ryzen AI Max+ 395, 128 GB), system ROCm 7.2.4, UD-Q4_K_XL, `--resident-budget-gib 71` | 59K prompt 247 -> 471 tok/s; with the [opt-in prompt set](STRIX_HALO.md#5-what-is-not-on-by-default-it-changes-bits) 808 -> 1,107; 232K prompt 228 -> 1,034 with it ([Report](../bench/results/2026-10-27-community-gfx1151-hipblaslt-100202/README.md)) |
 | `gfx1103-hipblaslt-100401.txt` | Radeon 780M, Q2_0, 4K prompt, 32K context, MTP | 90 -> 187 tok/s; 277 with the WMMA opt-ins |
 
 Tuning on the R9700 with hipBLASLt 1.2.0 or 1.4.1 gave 0 to 3% end to end (within noise), so no table ships for those and
