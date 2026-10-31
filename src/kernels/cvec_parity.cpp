@@ -198,6 +198,72 @@ int main() {
         check(worst < 1e-4, "on, pending write: the write, then the projection");
     }
 
+    // ---- 5. measure (the conditional gate's prefill pass): flag 2 stores the dots, subtracts nothing
+    std::printf("measure\n");
+    {
+        const int64_t tgt = 2;
+        k::cvec_measure_reset();
+        k::cvec_measure_set_target(tgt);
+        k::cvec_set_enabled(2);
+        check(!k::cvec_enabled(), "cvec_enabled() is only flag 1");
+        up(dR, R);
+        k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr, 0);
+        ck(cudaDeviceSynchronize(), "measure");
+        {
+            check(std::memcmp(down(dR, R.size()).data(), R.data(), R.size() * 4) == 0,
+                  "flag 2 leaves R untouched (nothing is subtracted)");
+            std::vector<float> dots;
+            check(k::cvec_measure_read(dots) && dots.size() == (size_t) L * HC, "cvec_measure_read returns n_layers * hc");
+            double worst = 0.0;
+            bool others_zero = true;
+            const float* v = dir.data() + kLayer * N;   // s = 1 here: the stored value is the plain dot
+            for (int64_t l = 0; l < L; ++l)
+                for (int64_t c = 0; c < HC; ++c) {
+                    const float got = dots[(size_t) (l * HC + c)];
+                    if (l == kLayer) {
+                        double want = 0.0;
+                        const float* h = R.data() + tgt * D + c * N;
+                        for (int64_t j = 0; j < N; ++j) want += (double) h[j] * v[j];
+                        worst = std::fmax(worst, std::fabs(got - (float) want));
+                    } else if (got != 0.0f) others_zero = false;
+                }
+            std::printf("    measure: max |dot - ref| %.3g\n", worst);
+            check(worst < 1e-3, "the measured token's dots match the host reference per stream");
+            check(others_zero, "a slot never measured reads back 0");
+        }
+        // with a pending write: R is the write alone (bitwise the off-with-write result), the dots are of the WRITTEN row
+        float* dR2 = dalloc<float>(R.size());
+        k::cvec_measure_reset();
+        k::cvec_set_enabled(2);
+        up(dR, R);
+        k::cvec_apply(dR, kLayer, T, D, dbo, N, dinj, HC, true, nullptr, 0);
+        k::cvec_set_enabled(0);
+        up(dR2, R);
+        k::cvec_apply(dR2, kLayer, T, D, dbo, N, dinj, HC, true, nullptr, 0);
+        ck(cudaDeviceSynchronize(), "measure+write");
+        {
+            check(std::memcmp(down(dR, R.size()).data(), down(dR2, R.size()).data(), R.size() * 4) == 0,
+                  "flag 2 with a pending write: bitwise the stock write");
+            std::vector<float> dots;
+            k::cvec_measure_read(dots);
+            const std::vector<float> written = down(dR2, R.size());   // the written residual (named: down() returns a temporary)
+            const float* w = written.data();
+            double worst = 0.0;
+            const float* v = dir.data() + kLayer * N;
+            for (int64_t c = 0; c < HC; ++c) {
+                double want = 0.0;
+                const float* h = w + tgt * D + c * N;
+                for (int64_t j = 0; j < N; ++j) want += (double) h[j] * v[j];
+                worst = std::fmax(worst, std::fabs(dots[(size_t) (kLayer * HC + c)] - (float) want));
+            }
+            std::printf("    measure+write: max |dot - ref| %.3g\n", worst);
+            check(worst < 1e-3, "the dots are of the written row (what the steer would have removed)");
+        }
+        cudaFree(dR2);
+        k::cvec_measure_set_target(-1);
+        k::cvec_set_enabled(1);   // back to the steered default the add section expects
+    }
+
     // ---- 2. add
     std::printf("add\n");
     for (int64_t j = 0; j < N; ++j) dir[(size_t) (kLayer * N + j)] *= 0.1f;   // d = 0.1 v, s = 1
@@ -217,6 +283,11 @@ int main() {
                 }
         check(same, "add is h + d in every stream (bitwise)");
     }
+    k::cvec_set_enabled(2);
+    up(dR, R);
+    k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr);
+    ck(cudaDeviceSynchronize(), "add, flag 2");
+    check(std::memcmp(down(dR, R.size()).data(), R.data(), R.size() * 4) == 0, "flag 2 in add mode does nothing");
 
     std::printf(g_fail ? "cvec_parity: %d FAILED\n" : "cvec_parity: all passed\n", g_fail);
     return g_fail ? 1 : 0;
