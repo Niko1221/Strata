@@ -1088,7 +1088,8 @@ struct Model::Impl {
     std::vector<std::unique_ptr<EgBatch>> eg_win;
     // Engram layer li's embed rows, as the pack stores them: 0 MXFP8 ([scale, 32 codes] blocks, 33 bytes a 32), 1
     // ggml Q6_K (210 bytes a 256), 2 ggml IQ4_NL (18 bytes a 32: an fp16 d and 16 nibble bytes), 3 an old pack's FP8
-    // codes with their E8M0 scales in a tensor of their own (see eg_issue)
+    // codes with their E8M0 scales in a tensor of their own, 4 ggml Q5_K (176 bytes a 256: an fp16 d and dmin, 12
+    // scale bytes, 32 of high bits, 128 of low nibbles) - see eg_issue
     std::vector<uint8_t> eg_fmt;
     std::atomic<int64_t> eg_rows_n{0}, eg_hits_n{0}, eg_reads_n{0}, eg_wait_ns{0}, eg_io_ns{0};
     uint16_t* h_emb = nullptr;        // the window's embedding rows
@@ -2905,18 +2906,20 @@ struct Model::Impl {
                     fmt = 1;
                 } else if (tw->dtype == "IQ4_NL") {
                     fmt = 2;
+                } else if (tw->dtype == "Q5_K") {
+                    fmt = 4;   // (3 is the old two-tensor FP8 pack, below)
                 } else if (pk.get("layers." + id + ".engram.embed.scale") != nullptr) {
                     fmt = 3;   // (an old pack: FP8 codes in one tensor, their E8M0 scales in another)
                 } else {
                     std::fprintf(stderr,
                                  "ds4: Engram layer %s: engram.embed.weight type %s is not one the Engram reader handles "
-                                 "(MXFP8, Q6_K, IQ4_NL)\n",
+                                 "(MXFP8, Q6_K, Q5_K, IQ4_NL)\n",
                                  id.c_str(), tw->dtype.c_str());
                     std::exit(2);
                 }
-                if (fmt == 1 && pk.eg_hd % 256 != 0) {
-                    err = "Engram layer " + id + ": Q6_K rows of " + std::to_string(pk.eg_hd) +
-                          " values (not whole superblocks of 256)";
+                if ((fmt == 1 || fmt == 4) && pk.eg_hd % 256 != 0) {
+                    err = "Engram layer " + id + ": " + (fmt == 1 ? "Q6_K" : "Q5_K") + " rows of " +
+                          std::to_string(pk.eg_hd) + " values (not whole superblocks of 256)";
                     return false;
                 }
                 if (fmt == 2 && pk.eg_hd % 32 != 0) {
@@ -6287,6 +6290,7 @@ struct Model::Impl {
         const bool mx8 = fmt == 0;   // (a GGUF: the scales between the codes, one per 32)
         const bool q6k = fmt == 1;   // (a GGUF: one Q6_K superblock a 256 values, its scales inside)
         const bool iq4 = fmt == 2;   // (a GGUF: 18-byte blocks a 32 values, d and 16 nibble bytes, no scales)
+        const bool q5k = fmt == 4;   // (a GGUF: one Q5_K superblock a 256 values, d, dmin and the scales inside)
         std::unordered_map<uint64_t, int> first;   // a row this batch reads already -> its read
         int64_t hits = 0;
         {
@@ -6336,8 +6340,8 @@ struct Model::Impl {
                             r.mx8 = true;
                             r.n = (uint32_t) (hd / 32 * 33);
                             r.off = tw->off + (uint64_t) id * r.n;
-                        } else if (q6k || iq4) {   // (into the row's code bytes; its scale bytes unused)
-                            r.n = (uint32_t) (q6k ? hd / 256 * 210 : hd / 32 * 18);
+                        } else if (q6k || q5k || iq4) {   // (into the row's code bytes; its scale bytes unused)
+                            r.n = (uint32_t) (q6k ? hd / 256 * 210 : q5k ? hd / 256 * 176 : hd / 32 * 18);
                             r.off = tw->off + (uint64_t) id * r.n;
                         } else {
                             r.n = (uint32_t) hd;
