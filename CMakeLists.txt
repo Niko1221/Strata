@@ -471,7 +471,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/elementwise.cu
                           src/kernels/cuda/bf16_gemv.cu
                           src/kernels/cuda/native_mmvq.cu
-                          src/kernels/cuda/dense_tc.cu
                           src/kernels/cuda/native_bf16.cu
                           src/kernels/cuda/native_gr_norm.cu
                           src/kernels/cuda/native_moe.cu
@@ -1219,12 +1218,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
-    # BW-DENSE P2.1: the sm_120 INT8 tensor-core projections against a scalar reference of their arithmetic contract (skips on
-    # other cards); --bench times them against the path the engine takes today
-    add_executable(dense_tc_parity src/kernels/dense_tc_parity.cpp)
-    target_include_directories(dense_tc_parity PRIVATE ${_strata_gpu_include_directories})
-    target_link_libraries(dense_tc_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-    add_test(NAME dense_tc_parity COMMAND dense_tc_parity)
     # sm_89's opt-in tables (#3453, STRATA_MMVQ_IL_89=1): the table check only (no case matches MMVQ_IL_ONLY)
     add_test(NAME mmvq_il_parity_89table COMMAND mmvq_il_parity)
     set_tests_properties(mmvq_il_parity_89table PROPERTIES ENVIRONMENT "STRATA_MMVQ_IL_89=1;MMVQ_IL_ONLY=no-such-case")
