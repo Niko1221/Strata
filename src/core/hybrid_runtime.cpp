@@ -17,6 +17,26 @@
 #include <unordered_set>
 #include <vector>
 
+// CUDA 13 dropped the versioned cudart symbols and carries the _v2/_v3
+// signatures under the plain names. The shim pairs and the --wrap list in
+// cmake/hybrid.cmake flip on the same switch; the CUDA-side callers follow
+// the same idiom already used in src/core/verify.cpp.
+#if CUDART_VERSION >= 13000
+#define strata_real_getDeviceProperties __real_cudaGetDeviceProperties
+#define strata_wrap_getDeviceProperties __wrap_cudaGetDeviceProperties
+#define strata_real_graphGetEdges __real_cudaGraphGetEdges
+#define strata_wrap_graphGetEdges __wrap_cudaGraphGetEdges
+#define strata_real_streamGetCaptureInfo __real_cudaStreamGetCaptureInfo
+#define strata_wrap_streamGetCaptureInfo __wrap_cudaStreamGetCaptureInfo
+#else
+#define strata_real_getDeviceProperties __real_cudaGetDeviceProperties_v2
+#define strata_wrap_getDeviceProperties __wrap_cudaGetDeviceProperties_v2
+#define strata_real_graphGetEdges __real_cudaGraphGetEdges_v2
+#define strata_wrap_graphGetEdges __wrap_cudaGraphGetEdges_v2
+#define strata_real_streamGetCaptureInfo __real_cudaStreamGetCaptureInfo_v3
+#define strata_wrap_streamGetCaptureInfo __wrap_cudaStreamGetCaptureInfo_v3
+#endif
+
 extern "C" __attribute__((tls_model("initial-exec"))) thread_local int strata_hybrid_on_hip;
 
 namespace {
@@ -202,7 +222,11 @@ void fill_prop(cudaDeviceProp* out, int hip_i) {
     out->warpSize = devs[hip_i].warp;
     out->multiProcessorCount = devs[hip_i].sms;
     out->maxThreadsPerBlock = devs[hip_i].max_threads;
+#if CUDART_VERSION < 13000
+    // CUDA 13 removed cudaDeviceProp::clockRate. fill_prop memsets the
+    // struct, and no CUDA-side consumer in this tree reads a clock field.
     out->clockRate = devs[hip_i].clock_khz;
+#endif
     out->l2CacheSize = devs[hip_i].l2;
     out->integrated = devs[hip_i].integrated;
     out->pciBusID = devs[hip_i].pci_bus;
@@ -338,11 +362,11 @@ extern "C" cudaError_t __wrap_cudaGetDevice(int* d) {
     *d = g_device;
     return cudaSuccess;
 }
-extern "C" cudaError_t __real_cudaGetDeviceProperties_v2(cudaDeviceProp*, int);
-extern "C" cudaError_t __wrap_cudaGetDeviceProperties_v2(cudaDeviceProp* p, int d) {
+extern "C" cudaError_t strata_real_getDeviceProperties(cudaDeviceProp*, int);
+extern "C" cudaError_t strata_wrap_getDeviceProperties(cudaDeviceProp* p, int d) {
     ensure();
     if (p == nullptr) return cudaErrorInvalidValue;
-    if (!hip_ordinal(d)) return __real_cudaGetDeviceProperties_v2(p, d);
+    if (!hip_ordinal(d)) return strata_real_getDeviceProperties(p, d);
     fill_prop(p, d - g_cuda_count);
     return cudaSuccess;
 }
@@ -637,12 +661,12 @@ extern "C" cudaError_t __wrap_cudaStreamIsCapturing(cudaStream_t s, cudaStreamCa
     if (!hip_stream(s) && !on_hip()) return __real_cudaStreamIsCapturing(s, st);
     return Ce(hh_stream_is_capturing(s, reinterpret_cast<int*>(st)));
 }
-extern "C" cudaError_t __real_cudaStreamGetCaptureInfo_v3(cudaStream_t, cudaStreamCaptureStatus*, unsigned long long*,
+extern "C" cudaError_t strata_real_streamGetCaptureInfo(cudaStream_t, cudaStreamCaptureStatus*, unsigned long long*,
                                                          cudaGraph_t*, const cudaGraphNode_t**, const cudaGraphEdgeData**, size_t*);
-extern "C" cudaError_t __wrap_cudaStreamGetCaptureInfo_v3(cudaStream_t s, cudaStreamCaptureStatus* st, unsigned long long* id,
+extern "C" cudaError_t strata_wrap_streamGetCaptureInfo(cudaStream_t s, cudaStreamCaptureStatus* st, unsigned long long* id,
                                                          cudaGraph_t* graph, const cudaGraphNode_t** deps,
                                                          const cudaGraphEdgeData** edges, size_t* ndeps) {
-    if (!hip_stream(s) && !on_hip()) return __real_cudaStreamGetCaptureInfo_v3(s, st, id, graph, deps, edges, ndeps);
+    if (!hip_stream(s) && !on_hip()) return strata_real_streamGetCaptureInfo(s, st, id, graph, deps, edges, ndeps);
     if (edges) *edges = nullptr;
     void* g = nullptr;
     const void** d = nullptr;
@@ -750,10 +774,10 @@ extern "C" cudaError_t __wrap_cudaGraphGetNodes(cudaGraph_t g, cudaGraphNode_t* 
     if (!has(g_hip_graph, g)) return __real_cudaGraphGetNodes(g, nodes, n);
     return Ce(hh_graph_nodes(g, reinterpret_cast<void**>(nodes), n));
 }
-extern "C" cudaError_t __real_cudaGraphGetEdges_v2(cudaGraph_t, cudaGraphNode_t*, cudaGraphNode_t*, cudaGraphEdgeData*, size_t*);
-extern "C" cudaError_t __wrap_cudaGraphGetEdges_v2(cudaGraph_t g, cudaGraphNode_t* from, cudaGraphNode_t* to,
+extern "C" cudaError_t strata_real_graphGetEdges(cudaGraph_t, cudaGraphNode_t*, cudaGraphNode_t*, cudaGraphEdgeData*, size_t*);
+extern "C" cudaError_t strata_wrap_graphGetEdges(cudaGraph_t g, cudaGraphNode_t* from, cudaGraphNode_t* to,
                                                   cudaGraphEdgeData* edges, size_t* n) {
-    if (!has(g_hip_graph, g)) return __real_cudaGraphGetEdges_v2(g, from, to, edges, n);
+    if (!has(g_hip_graph, g)) return strata_real_graphGetEdges(g, from, to, edges, n);
     int e = hh_graph_edges(g, reinterpret_cast<void**>(from), reinterpret_cast<void**>(to), n);
     if (e == 0 && edges && n) std::memset(edges, 0, sizeof(cudaGraphEdgeData) * (*n));
     return Ce(e);

@@ -290,6 +290,17 @@ set(_wraps
   cudaStreamQuery cudaStreamSynchronize cudaStreamWaitEvent
   cublasCreate_v2 cublasDestroy_v2 cublasGemmEx cublasGemmStridedBatchedEx
   cublasSetMathMode cublasSetStream_v2 cublasSetWorkspace_v2 cublasSgemm_v2)
+if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13)
+  # CUDA 13 exports only the plain cudaGetDeviceProperties, cudaGraphGetEdges,
+  # and cudaStreamGetCaptureInfo, with the signatures CUDA 12 kept on the
+  # _v2/_v3 names. The wrap name must match the name the link references,
+  # and the shim pairs in src/core/hybrid_runtime.cpp flip on the same
+  # switch. cmake 4 no longer knows the bare list(REPLACE), so the swap
+  # uses the TRANSFORM form with anchored patterns.
+  list(TRANSFORM _wraps REPLACE "^cudaGetDeviceProperties_v2$" "cudaGetDeviceProperties")
+  list(TRANSFORM _wraps REPLACE "^cudaGraphGetEdges_v2$" "cudaGraphGetEdges")
+  list(TRANSFORM _wraps REPLACE "^cudaStreamGetCaptureInfo_v3$" "cudaStreamGetCaptureInfo")
+endif()
 set(_wrap_flags "-Wl,--export-dynamic")
 foreach(_w IN LISTS _wraps)
   list(APPEND _wrap_flags "-Wl,--wrap=${_w}")
