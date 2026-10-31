@@ -49,20 +49,21 @@ inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160:
 inline constexpr int PLE_ROW_BYTES_Q5_1 = (PLE_HEAD_DIM / 32) * 24;     // 120: a Q5_1 row (a Q5_K_M finetune)
 inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;     // 170: a Q8_0 row (UD-Q6_K_XL, Swift-1.5 Q4_K_L)
 inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;             // 320: a BF16 row, two bytes a value
+inline constexpr int PLE_ROW_BYTES_NVFP4 = PLE_HEAD_DIM / 2 + PLE_HEAD_DIM / 16;   // 90: 80 B of E2M1 codes + 10 E4M3 block scales
 inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format in `ple_formats()` has
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
 /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
 /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
 /// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats.
-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16 };
+enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4 };
 
 struct PleFormatInfo {
     PleFormat id;
     const char* name;          ///< what `PleTable::format()` returns
     const char* gguf_type;     ///< `TensorInfo::type_name()` of the table tensor ("I8" for F8_E4M3: GGUF has no FP8 type)
     uint32_t row_bytes;        ///< bytes of one 160-value row in the file
-    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`), F8_E4M3 only
+    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`): F8_E4M3 and NVFP4
     void (*dequant)(const uint8_t* row, float scale, float* out160);
 };
 
@@ -186,6 +187,10 @@ public:
     /// as ONE reader request - page dedupe and sort across the whole batch, the reader's full queue depth.  Not
     /// while a single-token `issue` is pending.  The mapped mode gathers row by row.
     bool gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err);
+    /// STRATA_PLE_COMPACT: the same rows as their raw IQ4_NL bytes (n_tokens x 16 rows of PLE_ROW_BYTES; a row past the
+    /// table: scale 0 and code 8 everywhere, which decode to the +0.0f gather_batch writes) for ple_iq4nl_dequant on the device.  False (nothing
+    /// written) unless the table is in memory (--ple-io ram / mmap) and IQ4_NL.
+    bool gather_raw_iq4nl(const uint32_t* rows, size_t n_tokens, uint8_t* out) const;
 
     /// Fault injection (Direct mode): every row read completes no earlier than `us` after issue.
     void set_injected_delay_us(double us);
@@ -200,7 +205,14 @@ public:
     bool is_open() const;
     /// True when `PleIoOptions::lock` was asked for and the OS lock succeeded (false: pages only pre-touched).
     bool locked() const;
+    /// Gives a resident lock back (Mmap mode): the pages stay mapped and cached, but the OS may reclaim them again, so the RAM counts as
+    /// available.  False when the table was not locked.  Used by the residency policy when the table's lock would leave the
+    /// conversation cache no room (#4518).
+    bool unlock();
     uint64_t rows() const;
+    /// Bytes of the whole table (rows x row bytes) while open; 0 when closed.  The residency policy in
+    /// generate.cpp sizes the table with this before it decides to keep it in RAM.
+    uint64_t table_bytes() const;
     /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
     const char* format() const;
 

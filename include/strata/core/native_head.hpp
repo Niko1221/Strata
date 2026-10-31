@@ -43,7 +43,8 @@ private:
 
 /// Plan v0.3 P6: `token_embd.weight` in its GGUF form (the IQ model files), in mapped pinned host memory: a row
 /// is read over PCIe per token, so the table costs no VRAM.  `embed_row`, the verify window and the MTP drafter
-/// use it instead of the canonical table when it is set (`set_native_embed`).
+/// use it instead of the canonical table when it is set (`set_native_embed`).  `STRATA_EMBED_VRAM=1` places the
+/// same bytes in VRAM instead (slow PCIe links); the gathers read `dev_` either way.
 class NativeEmbed {
 public:
     NativeEmbed() = default;
@@ -57,6 +58,8 @@ public:
     void gather_one(int64_t token, float* out, void* stream) const;
     uint64_t bytes() const { return bytes_; }
     int type() const { return type_; }
+    /// The table was placed in VRAM (STRATA_EMBED_VRAM=1, or the pinned / alias fallbacks) rather than mapped.
+    bool in_vram() const { return dev_ != nullptr && host_ == nullptr; }
 
 private:
     void* host_ = nullptr;

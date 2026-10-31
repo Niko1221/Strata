@@ -22,11 +22,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
-                          request_timings, serve, start_failure_hint)
+                          request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +74,8 @@ class MaxTokens(unittest.TestCase):
             return s, b, u.get("prompt_tokens"), u.get("completion_tokens")
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
-        return s, b, u.get("input_tokens"), u.get("output_tokens")
+        prompt = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return s, b, prompt if u else None, u.get("output_tokens")
 
     def test_anthropic_thinks_only_when_asked(self):
         # #278: Anthropic's thinking is opt-in; "thinking", an effort or a reasoning_budget_tokens (#123) asks for it
@@ -137,14 +138,84 @@ class MaxTokens(unittest.TestCase):
                 self.assertEqual(self.engine.last_max_new, want)
                 self.assertEqual(ct, want)
 
-    def test_explicit_budget_over_the_context_is_rejected(self):
-        for api in ("openai", "anthropic"):
+    def responses(self, text="hi", **budget):
+        """-> (status, body, prompt tokens, completion tokens) for /v1/responses."""
+        s, b = self.post("/v1/responses", {"model": "m", "input": text, **budget})
+        u = b.get("usage", {}) if isinstance(b, dict) else {}
+        return s, b, u.get("input_tokens"), u.get("output_tokens")
+
+    def call_any(self, api, text="hi", **budget):
+        """The three dialects; `budget` is given in the chat/messages spelling (max_tokens)."""
+        if api == "responses":
+            if "max_tokens" in budget:
+                budget["max_output_tokens"] = budget.pop("max_tokens")
+            return self.responses(text, **budget)
+        return self.call(api, text, **budget)
+
+    def test_explicit_budget_over_the_context_is_shortened_to_the_room_left(self):
+        # Claude Code asks for max_tokens 32000 on every request: a prompt that fits must be answered, with the output
+        # cap cut to what the context has left (less CTX_SLACK), not refused.
+        for api in ("openai", "anthropic", "responses"):
             with self.subTest(api=api):
-                s, b, _, _ = self.call(api, max_tokens=CTX)
-                self.assertEqual(s, 400)
-                self.assertIn("exceeds the context", b["error"]["message"])
-                self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
-                self.assertRegex(b["error"]["message"], r"at most \d+ here")
+                s, b, pt, ct = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, CTX - CTX_SLACK - pt)
+                self.assertLessEqual(pt + ct, CTX - CTX_SLACK)
+
+    def test_budget_that_fits_exactly_or_less_is_untouched(self):
+        for api in ("openai", "anthropic", "responses"):
+            _, _, pt, _ = self.call_any(api, max_tokens=1)
+            room = CTX - CTX_SLACK - pt
+            for budget in (50, room):
+                with self.subTest(api=api, budget=budget):
+                    s, b, _, _ = self.call_any(api, max_tokens=budget)
+                    self.assertEqual(s, 200, b)
+                    self.assertEqual(self.engine.last_max_new, budget)       # exactly what the client asked for
+            with self.subTest(api=api, budget="room + 1"):
+                s, b, _, _ = self.call_any(api, max_tokens=room + 1)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, room)             # one over: cut by one
+
+    def test_a_prompt_that_alone_does_not_fit_is_still_a_400(self):
+        _, _, pt0, _ = self.call("openai", max_tokens=1)
+        overhead = pt0 - len("hi")
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                s, b, _, _ = self.call_any(api, text="y" * (CTX - overhead + 50), max_tokens=CTX)
+                self.assertEqual(s, 400, b)
+                self.assertIn("exceeds the context window", b["error"]["message"])
+                self.assertIn("no room to answer", b["error"]["message"])
+                self.assertIn("never truncated", b["error"]["message"])
+
+    def test_thinking_budget_follows_the_shortened_cap(self):
+        # answer_room: thinking gets 3/4 of the cap; with the cap cut to the room left the budget is cut with it
+        import contextlib
+        import io
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    s, b, pt, _ = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                room = CTX - CTX_SLACK - pt
+                text = out.getvalue()
+                self.assertIn(f"shortened to {room}", text)
+                if api != "anthropic":          # Anthropic thinks only when asked (#278)
+                    cap = room - min(max(ANSWER_RESERVE_MIN, room // 4), room // 2)
+                    self.assertIn(f"thinking limited to {cap} of max_tokens {room}", text)
+
+    def test_strict_mode_keeps_the_llama_cpp_400(self):
+        self.svc.fit_max_tokens = False
+        try:
+            for api in ("openai", "anthropic", "responses"):
+                with self.subTest(api=api):
+                    s, b, _, _ = self.call_any(api, max_tokens=CTX)
+                    self.assertEqual(s, 400)
+                    self.assertIn("exceeds the context", b["error"]["message"])
+                    self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
+                    self.assertRegex(b["error"]["message"], r"at most \d+ here")
+        finally:
+            self.svc.fit_max_tokens = True
 
     def test_unset_budget_with_a_near_full_prompt(self):
         _, _, pt0, _ = self.call("openai", max_tokens=1)
@@ -1055,7 +1126,7 @@ class ToolCallTagInProse(unittest.TestCase):
 
 
 class ToolCallRecovery(unittest.TestCase):
-    """Opt-in ("tool_call_recovery": true): the model sometimes writes a call in a form next to the template's.  These
+    """On by default in the server since 0.2.8 (config "tool_call_recovery": false turns it off): the model sometimes writes a call in a form next to the template's.  These
     shapes are from a corpus of 1,462 agent turns (Qwen3.8 under Claude Code, signalnine/q27): with the switch on, a
     declared tool's call in one of them is the call; anything else stays content, verbatim."""
     SCHEMA = ToolCallTerminators.SCHEMA
@@ -1116,9 +1187,10 @@ class ToolCallRecovery(unittest.TestCase):
 
     def test_bare_function_without_the_wrapper(self):
         # corpus 395efd4c / 6e71eed4 (x5 each): <function=...> with no <tool_call> around it
-        self.check(f"Writing it now.\n\n<function=write>\n{self.PARAMS}", [("write", self.CALL)], "Writing it now.")
-        self.check(f"<function=write>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
-        self.check(f"<function=write>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
+        for name in ("write", " write ", "\twrite\t"):
+            self.check(f"Writing it now.\n\n<function={name}>\n{self.PARAMS}", [("write", self.CALL)], "Writing it now.")
+            self.check(f"<function={name}>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
+            self.check(f"<function={name}>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
 
     def test_two_calls_in_one_wrapper(self):
         # corpus 0912870b / 51b155c9: a batch inside one <tool_call> - the second call's parameters were merged into
@@ -1137,6 +1209,9 @@ class ToolCallRecovery(unittest.TestCase):
         self.check(inline, [], inline)
         unknown = "<function=format_disk>\n<parameter=x>\n1\n</parameter>\n</function>"
         self.check(unknown, [], unknown)
+        for text in (fenced, inline, unknown):
+            padded = text.replace("<function=write>", "<function= write >").replace("<function=format_disk>", "<function= format_disk >")
+            self.check(padded, [], padded)
 
 
 class ToolCallRecoveryOff(unittest.TestCase):
@@ -1179,6 +1254,29 @@ class ToolCallRecoverySwitch(unittest.TestCase):
     def test_switch(self):
         self.assertEqual(self.run_reply(False), [])
         self.assertEqual(self.run_reply(True), [ToolCallRecovery.CALL])
+
+    def test_on_by_default_and_the_config_turns_it_off(self):
+        """0.2.8: a server that is told nothing reads these calls; "tool_call_recovery": false is the off switch."""
+        from serve.server import tool_call_recovery_setting
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIs(svc.tool_call_recovery, True)
+        self.assertIs(tool_call_recovery_setting({}), True)
+        self.assertIs(tool_call_recovery_setting({"model": "x"}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": True}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": False}), False)
+        for bad in ("false", 0, 1, None, "off"):
+            with self.assertRaises(SystemExit):
+                tool_call_recovery_setting({"tool_call_recovery": bad})
+
+    def test_a_fresh_service_reads_the_call_without_being_told(self):
+        tok = ByteTokenizer()
+        script = "</think>\n\n<function=write>\n" + ToolCallRecovery.PARAMS
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            evs = [x for kind, x in svc.run(tok.encode("hi"), True, ToolCallRecovery.SCHEMA, 3000, {},
+                                            threading.Event()) if kind == "event"]
+        self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [ToolCallRecovery.CALL])
 
 
 class UnfinishedToolCall(unittest.TestCase):
@@ -1258,12 +1356,28 @@ class UnfinishedToolCall(unittest.TestCase):
             ("anthropic", False): ("end_turn", []),                      # call out: it has no arguments to give
             ("anthropic", True): ("end_turn", cut)})
 
+    def test_quoted_incomplete_wrapper_is_not_a_call(self):
+        text = "Format: " + self.WHOLE[len("</think>\n\n"):].removesuffix("</tool_call>") + "and then I explain it."
+        answers = self.answers("</think>\n\n" + text)
+        for api, stop in (("openai", "stop"), ("anthropic", "end_turn")):
+            self.assertEqual(answers[api, False], (stop, []))
+            self.assertEqual(answers[api, True][0], stop)
+            with self.assertRaises(ValueError):
+                json.loads(answers[api, True][1])
+
     def test_a_call_cut_at_the_token_limit(self):
         """The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
         out in both APIs."""
-        a = self.answers(self.CUT + "rest of the file, never reached" * 40, max_tokens=len(self.CUT))
-        self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
-        self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+        cases = ((self.CUT + "rest of the file, never reached" * 40, len(self.CUT)),
+                 (self.WHOLE, len(self.WHOLE) - len("</tool_call>")))
+        for script, limit in cases:
+            with self.subTest(limit=limit):
+                a = self.answers(script, max_tokens=limit)
+                self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
+                self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+                for api in ("openai", "anthropic"):
+                    with self.assertRaises(ValueError):
+                        json.loads(a[api, True][1])
 
     def test_collect_keeps_calls_whose_arguments_parse(self):
         from serve.server import openai_collect
@@ -1548,6 +1662,13 @@ class SamplingKeys(unittest.TestCase):
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
 
+    def test_tune_prefill_pipe(self):
+        self.assertIn("pipe=1536.0", self.keys(temperature=0, strata_tune={"prefill_pipe": 1536}))
+        self.assertIn("pipe=0.0", self.keys(temperature=0, strata_tune={"prefill_pipe": 0}))
+        for bad in (-1, True, "800", 1e9):
+            self.assertFalse([x for x in self.keys(temperature=0, strata_tune={"prefill_pipe": bad})
+                              if x.startswith("pipe=")], bad)
+
     def test_tune_aux_cpus(self):
         for val, want in ((True, "aux_cpus=1"), (1, "aux_cpus=1"), (False, "aux_cpus=0"), (0, "aux_cpus=0"),
                           (1.0, "aux_cpus=1"), (0.0, "aux_cpus=0")):
@@ -1648,6 +1769,19 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_card_note_ties_the_engines_numbering_to_the_persons(self):
+        """The engine counts the cards it is given from 0, so GPU 1 reads "GPU 0 / CUDA0" in its log: one line says which is which."""
+        from serve.server import card_note, child_env
+        one = {"gpu": 1, "args": []}
+        self.assertIn("GPU 1", card_note(one, child_env(one)))
+        self.assertIn("GPU 0 / CUDA0", card_note(one, child_env(one)))
+        both = {"gpu": [1, 0], "args": [], "gpu_order": "as_given"}
+        line = card_note(both, child_env(both))
+        self.assertIn("GPU 1, then GPU 0", line)
+        self.assertIn("CUDA0, CUDA1", line)
+        for same in ({"gpu": 0, "args": []}, {"gpu": [0, 1], "args": [], "gpu_order": "as_given"}, {"args": []}, {"gpu": 1, "backend": "hip"}):
+            self.assertIsNone(card_note(same, child_env(same)), same)       # the numbers agree, or no card was chosen, or AMD (its own numbering)
+
     def test_card_order(self):
         """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
         measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""
@@ -1681,6 +1815,71 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 
+    def test_igpu_is_never_the_last_stage(self):
+        """Strix Halo (gfx1151, BIOS carve-out up to 96 GB) beside an R9700 (gfx1201, 32 GB): the #1576 memory guard used to keep the
+        iGPU LAST (head, draft layer, verify).  Built-in graphics goes first, the cards with memory of their own follow."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "backend": "hip", "args": []}
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        speeds = {0: 80 * 2900.0, 1: 128 * 2350.0}
+        self.assertEqual(ordered_gpus(cfg, speeds, {0: 65536, 1: 32768}, arch), [0, 1])           # carve-out 64 GB > 32 GB: still first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, {0: 65536, 1: 32768}, arch), [0, 1])   # given R9700 first: iGPU moves first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, None, arch), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "gpu_order": "as_given"}, speeds, None, arch), [1, 0])   # the person's order stays
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "layer_split": "24"}, speeds, None, arch), [1, 0])
+        # two cards of their own plus the iGPU: iGPU first, then the two by speed (faster last)
+        three = {"gpu": [1, 0, 2], "backend": "hip", "args": []}
+        arch3 = {0: "gfx1151", 1: "gfx1201", 2: "gfx1100"}
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 20.0}, None, arch3), [0, 2, 1])
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 30.0}, None, arch3), [0, 1, 2])   # equal cards keep their order
+        # no integrated chip, or only integrated chips: the old rule
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 1.0, 1: 2.0}, None, {0: "gfx1201", 1: "gfx1201"}), [0, 1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 2.0, 1: 1.0}, None, {0: "gfx1151", 1: "gfx1151"}), [1, 0])
+
+    def test_igpu_split_warning(self):
+        from serve.server import igpu_split_warning
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        line = igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, arch)
+        self.assertIn("GPU 0 is built-in graphics", line)
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1]}, arch))              # one card
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0]}, arch))
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1, 2]}, {1: "gfx1201", 2: "gfx1201"}))
+        self.assertIsNone(igpu_split_warning({"backend": "cuda", "gpu": [0, 1]}, arch))          # NVIDIA: not this rule
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, {0: "gfx1151", 1: "gfx1103"}))   # only integrated chips
+
+    def test_kfd_archs_and_engine_nice(self):
+        import tempfile
+        from serve.server import engine_nice, hip_gpu_archs
+        with tempfile.TemporaryDirectory() as d:
+            for n, simd, ver in ((0, 0, 0), (1, 80, 110501), (2, 128, 120001)):
+                os.makedirs(os.path.join(d, str(n)))
+                with open(os.path.join(d, str(n), "properties"), "w") as f:
+                    f.write(f"simd_count {simd}\nmax_engine_clk_fcompute 2000\ngfx_target_version {ver}\n")
+            self.assertEqual(hip_gpu_archs(root=d), {0: "gfx1151", 1: "gfx1201"})
+        self.assertIsNone(hip_gpu_archs(root="/nonexistent/kfd"))
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        self.assertEqual(engine_nice({}, arch, "linux"), 5)                            # built-in Radeon on the PC
+        self.assertEqual(engine_nice({}, {0: "gfx1201"}, "linux"), 0)                  # cards only: unchanged
+        self.assertEqual(engine_nice({}, arch, "win32"), 0)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "0"}, arch, "linux"), 0)   # the off switch
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "9"}, {0: "gfx1201"}, "linux"), 9)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "x"}, arch, "linux"), 0)
+
+    def test_picture_reader_not_on_the_igpu(self):
+        """The picture reader runs on the first visible card; with a split that starts on the iGPU it must use a card of its own."""
+        from serve.server import vision_env
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        cfg = {"backend": "hip", "gpu": [0, 1], "vision": {"exe": "v"}}
+        env = {"HIP_VISIBLE_DEVICES": "0,1", "PATH": "x"}
+        self.assertEqual(vision_env(cfg, env, arch)["HIP_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["HIP_VISIBLE_DEVICES"], "0,1")                            # the engine's own environment is not touched
+        self.assertEqual(vision_env({**cfg, "vision": {"exe": "v", "cuda_device": 0}}, env, arch)["HIP_VISIBLE_DEVICES"], "0")   # asked: kept
+        for e in ({"HIP_VISIBLE_DEVICES": "1"}, {"HIP_VISIBLE_DEVICES": "0"}, {}):
+            self.assertIs(vision_env(cfg, e, arch), e)                                 # one card: unchanged
+        two = {"HIP_VISIBLE_DEVICES": "0,1"}
+        self.assertIs(vision_env(cfg, two, {0: "gfx1201", 1: "gfx1201"}), two)         # no integrated chip
+        self.assertIs(vision_env(cfg, two, {0: "gfx1151", 1: "gfx1103"}), two)         # nothing with memory of its own
+
     def test_kfd_scores(self):
         """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
         import tempfile
@@ -1693,6 +1892,66 @@ class GpuChoice(unittest.TestCase):
             sc = hip_speed_scores([0, 1, 2], root=d)
             self.assertEqual(sc, {0: 128 * 2350.0, 1: 64 * 2000.0, 2: 128 * 2350.0})
             self.assertIsNone(hip_speed_scores([0, 1, 2, 3], root=d))      # a card the topology does not have
+
+    DEVICES_MINI_PC = (
+        "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: GPU 0 (AMD Radeon 760M Graphics, gfx1103) is not an "
+        "architecture this Strata engine was compiled for (gfx1200,gfx1201); compile it\n"
+        "device 1: AMD Radeon RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+
+    def test_automatic_card_skips_what_the_engine_cannot_run(self):
+        """#3203: a mini PC's Radeon 760M is HIP's device 0 and has no code in the engine; Automatic must run on the card behind it."""
+        from serve.server import hip_auto_devices, parse_hip_devices, pick_hip_devices
+        devices = parse_hip_devices(self.DEVICES_MINI_PC)
+        self.assertEqual([(d["index"], d["arch"], d["integrated"], bool(d["cannot_run"])) for d in devices],
+                         [(0, "gfx1103", True, True), (1, "gfx1201", False, False)])
+        self.assertEqual(pick_hip_devices(devices), ([1], None))
+        # an integrated chip that does have code loses to a card of its own; the card of its own wins even when it is device 1
+        both = parse_hip_devices("device 0: Radeon 890M\n  arch gfx1150, 16.0 GiB, wave32\ndevice 1: RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(both), ([1], None))
+        # an integrated chip alone stays the choice; device 0 already right: nothing is changed
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: Radeon 8060S\n  arch gfx1151, 64.0 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: R9700\n  arch gfx1201, 31.9 GiB, wave32\ndevice 1: R9700\n  arch gfx1201, 31.9 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices([]), (None, None))
+        # the engine's own flag for an integrated chip is honoured as well
+        flagged = parse_hip_devices("device 0: X\n  arch gfx1300, 8.0 GiB, wave32, integrated\ndevice 1: Y\n  arch gfx1201, 4.0 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(flagged), ([1], None))
+        # nothing runnable: the plain line names the cards, what the engine is built for and, for the RX 6800 XT, that no package exists
+        nothing = parse_hip_devices(
+            "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: x is not an architecture this Strata engine was compiled for "
+            "(gfx1200,gfx1201); y\ndevice 1: AMD Radeon RX 6800 XT\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: z compiled for (gfx1200,gfx1201); y\n")
+        picked, problem = pick_hip_devices(nothing)
+        self.assertIsNone(picked)
+        self.assertIn("none of this computer's graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201)", problem)
+        self.assertIn("AMD Radeon RX 6800 XT (gfx1030)", problem)
+        self.assertIn("760M Graphics (gfx1103, integrated)", problem)
+        # through the engine's own program, and never over a card the config or the environment names
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / ("strata.exe" if os.name == "nt" else "strata")
+            probe = Path(d) / ("strata-device.exe" if os.name == "nt" else "strata-device")
+            exe.write_text("")
+            probe.write_text("")
+            cfg = {"backend": "hip", "exe": str(exe), "args": []}
+            done = SimpleNamespace(returncode=0, stdout=self.DEVICES_MINI_PC)
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(hip_auto_devices(cfg, {}), [1])
+                self.assertEqual(run.call_args[0][0], [str(probe), "--list-devices"])
+                self.assertIn("automatic GPU choice: GPU 1", out.getvalue())
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run:
+                self.assertIsNone(hip_auto_devices({**cfg, "gpu": 0}, {}))
+                self.assertIsNone(hip_auto_devices({**cfg, "hip_ordinal": 2}, {}))
+                self.assertIsNone(hip_auto_devices(cfg, {"HIP_VISIBLE_DEVICES": "0"}))
+                self.assertIsNone(hip_auto_devices({**cfg, "backend": "cuda"}, {}))
+                run.assert_not_called()
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="")):
+                self.assertIsNone(hip_auto_devices(cfg, {}))                         # a probe that fails changes nothing
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=(
+                            "device 0: A\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: compiled for (gfx1200)\n"))):
+                with self.assertRaises(SystemExit) as stop:
+                    hip_auto_devices(cfg, {})
+                self.assertIn("none of this computer's graphics cards", str(stop.exception))
+            exe.unlink()
+            probe.unlink()
+            self.assertIsNone(hip_auto_devices(cfg, {}))                            # no probe next to the engine: as before
 
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
@@ -1769,6 +2028,144 @@ class RecordingPrompt(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_ids = list(ids)
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+
+
+class IncrementalPrompts(unittest.TestCase):
+    """The prompt encoder: every request's ids are those of a full encode, and a turn reuses the previous one's."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = RecordingPrompt(tok, "Thinking.\n</think>\n\nThe answer.", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    post = ClientShapes.post
+
+    def test_turns(self):
+        self.assertIsNotNone(self.svc.prompts)
+        full = Service(self.engine, self.svc.tok, self.svc.template)
+        full.prompts = None                                  # the reference: the same prompt, encoded in full
+        msgs = [{"role": "system", "content": "Be brief."}]
+        for turn in range(6):
+            msgs.append({"role": "user", "content": f"question {turn} <|im_end|> é你 " * (turn + 1)})
+            status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 64, "messages": msgs})
+            self.assertEqual(status, 200, b)
+            prompt = self.svc.template.render(msgs)
+            self.assertEqual(self.engine.last_ids, full.encode_prompt(msgs, None, {}))
+            if turn:
+                self.assertGreater(self.svc.prompts.last_reused, len(prompt) // 3)
+            msgs.append({"role": "assistant", "content": b["choices"][0]["message"]["content"]})
+
+    def conversation(self, n):
+        """Messages of the n-th conversation: distinct from every other one from the number on."""
+        return [{"role": "user", "content": f"conversation {n} says: " + f"topic {n} sentence {n} " * 20}]
+
+    def service(self, **info):
+        engine = RecordingPrompt(self.svc.tok, "The answer.", max_context=CTX)
+        engine.info = info
+        return Service(engine, self.svc.tok, self.svc.template)
+
+    def test_the_kept_prompts_follow_the_engines_conversation_slots(self):
+        svc = self.service(conversation_cache_slots=8)
+        texts = []
+        for n in range(8):
+            msgs = self.conversation(n)
+            svc.encode_prompt(msgs, None, {})
+            texts.append(svc.render_prompt(msgs, None, {}))
+        self.assertEqual(len(svc.prompts.entries), 8)
+        self.assertEqual(sorted(e[0] for e in svc.prompts.entries), sorted(texts))
+        msgs = self.conversation(8)
+        svc.encode_prompt(msgs, None, {})
+        kept = sorted(e[0] for e in svc.prompts.entries)
+        self.assertEqual(len(kept), 8)
+        self.assertEqual(kept, sorted(texts[1:] + [svc.render_prompt(msgs, None, {})]))
+
+    def lazy_service(self, args, **info):
+        """A Service over the real StrataEngine class started lazily: no process yet, so no INFO line either."""
+        engine = StrataEngine("strata", args, lazy=True)
+        engine.info.update(info)
+        return Service(engine, self.svc.tok, self.svc.template)
+
+    def test_a_lazy_engine_keeps_the_prompts_its_arguments_ask_for(self):
+        svc = self.lazy_service(["--conversation-cache-slots", "8"])
+        for n in range(10):
+            svc.encode_prompt(self.conversation(n), None, {})
+        self.assertEqual(len(svc.prompts.entries), 8)
+
+    def test_the_slot_argument_wins_over_the_info_line_and_a_bad_one_falls_back(self):
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots", "6"], conversation_cache_slots=3)
+                         .prompts.keep, 6)
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots", "x"], conversation_cache_slots=3)
+                         .prompts.keep, 3)
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots"]).prompts.keep, 4)
+        self.assertEqual(self.lazy_service([]).prompts.keep, 4)
+
+    def test_without_a_slot_setting_four_prompts_are_kept(self):
+        svc = self.service()
+        for n in range(6):
+            svc.encode_prompt(self.conversation(n), None, {})
+        self.assertEqual(len(svc.prompts.entries), 4)
+
+    def test_counting_tokens_leaves_the_kept_prompts_alone(self):
+        svc = self.service(conversation_cache_slots=2)
+        httpd = serve(svc, port=0)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        main = self.conversation(0)
+        status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 8, "messages": main})
+        self.assertEqual(status, 200, b)
+        before = list(svc.prompts.entries)
+        full = self.service()
+        full.prompts = None
+        for n in range(1, 6):
+            other = self.conversation(n)
+            status, b = self.post("/v1/messages/count_tokens", {"model": "m", "messages": other})
+            self.assertEqual(status, 200, b)
+            self.assertEqual(b["input_tokens"], len(full.encode_prompt(other, None, {})))
+        self.assertTrue(svc.prompts.entries == before, "the count wrote into the kept prompts")
+        main.append({"role": "assistant", "content": "ok"})
+        main.append({"role": "user", "content": "and then?"})
+        svc.encode_prompt(main, None, {})
+        self.assertGreater(svc.prompts.last_reused, len(svc.render_prompt(main, None, {})) // 2)
+
+    def test_same_ids_as_a_full_encode_on_varied_conversations(self):
+        import random
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_strata_tokenizer import conversation_prompts, load_tokenizer
+        toks = [("byte", ByteTokenizer())]
+        qwen = load_tokenizer()
+        if qwen is not None:
+            toks.append(("qwen35", qwen))
+        for name, tok in toks:
+            svc = Service(self.engine, tok, self.svc.template)
+            for seed in range(3):
+                for what, prompt in conversation_prompts(self.svc.template, random.Random(seed)):
+                    with self.subTest(tokenizer=name, seed=seed, what=what):
+                        self.assertEqual(svc.prompts.encode(prompt), tok.encode(prompt, parse_special=True))
+
+    def test_a_tokenizer_without_resume_points_encodes_in_full(self):
+        class Plain:
+            """ByteTokenizer without the resume points."""
+            def __init__(self):
+                self.base = ByteTokenizer()
+
+            def __getattr__(self, name):
+                if name in ("encode_marked", "max_special_len"):
+                    raise AttributeError(name)
+                return getattr(self.base, name)
+        svc = Service(self.engine, Plain(), self.svc.template)
+        self.assertIsNone(svc.prompts)
+        msgs = [{"role": "user", "content": "hi"}]
+        self.assertEqual(svc.encode_prompt(msgs, None, {}),
+                         ByteTokenizer().encode(svc.render_prompt(msgs, None, {}), parse_special=True))
 
 
 class DyingEngine(MockEngine):
@@ -1988,6 +2385,39 @@ class PrometheusMetrics(unittest.TestCase):
         self.assertEqual((m["llamacpp:requests_processing"], m["llamacpp:requests_deferred"]), (0, 0))
         self.assertEqual((m["strata:requests_total"], m["strata:drafts_offered_total"],
                           m["strata:drafts_accepted_total"]), (2, 17, 10))
+
+    def test_throughput_gauges_cover_the_window_between_scrapes(self):
+        """#2341: llama.cpp reads these two from a bucket it resets on every scrape, so a scrape that saw no
+        traffic reports 0 - not the lifetime average, which froze at the last request's speed."""
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX,
+                                done_lines=["DONE 4 20 400.0 200.0 stop 7 12 5"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def scrape():
+            with urllib.request.urlopen(base + "/metrics/prometheus", timeout=10) as r:
+                return {line.split()[0]: float(line.split()[1])
+                        for line in r.read().decode().splitlines() if not line.startswith("#")}
+
+        try:
+            body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+            with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                               headers={"Content-Type": "application/json"}),
+                                        timeout=30) as r:
+                self.assertEqual(r.status, 200)
+            first = scrape()
+            self.assertGreater(first["llamacpp:prompt_tokens_seconds"], 0)
+            self.assertGreater(first["llamacpp:predicted_tokens_seconds"], 0)
+            idle = scrape()                       # nothing ran since the scrape above, so the window is empty
+            self.assertEqual((idle["llamacpp:prompt_tokens_seconds"],
+                              idle["llamacpp:predicted_tokens_seconds"]), (0, 0))
+            self.assertEqual(idle["llamacpp:tokens_predicted_total"],         # counters stay cumulative
+                             first["llamacpp:tokens_predicted_total"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 class PcieShare(unittest.TestCase):
@@ -2507,6 +2937,30 @@ class CancelledRead(unittest.TestCase):
         StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0")
         self.assertNotIn("prompt_read", e.last)
 
+    def test_parse_done_chunk_fields(self):
+        """The prompt's first chunk and its streamed expert blobs come as key=value fields after the positional ones,
+        with or without the five --lookup-chain fields; an older line has neither."""
+        e = SimpleNamespace()
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=1536 "
+                                    "experts_streamed=24576")
+        self.assertEqual((e.last["chunk"], e.last["experts_streamed"], e.last["offloaded"]), (1536, 24576, 2))
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 1 2 3 4 5 chunk=8192 "
+                                    "experts_streamed=0")
+        self.assertEqual((e.last["chunk"], e.last["experts_streamed"]), (8192, 0))
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2")
+        self.assertNotIn("chunk", e.last)
+        self.assertNotIn("experts_streamed", e.last)
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=x other=1")
+        self.assertNotIn("chunk", e.last)
+        self.assertNotIn("other", e.last)
+
+    def test_request_stats_chunk_fields(self):
+        """Across a request's continuations the streamed blobs add up; the chunk is the request's own read's."""
+        stats = request_stats([{"prompt_ms": 10.0, "chunk": 1536, "experts_streamed": 100},
+                               {"prompt_ms": 2.0, "chunk": 64, "experts_streamed": 5}])
+        self.assertEqual((stats["chunk"], stats["experts_streamed"], stats["prompt_ms"]), (1536, 105, 12.0))
+        self.assertNotIn("chunk", request_stats([{"prompt_ms": 1.0}, {"prompt_ms": 1.0, "chunk": 64}]))
+
     def test_prompt_tokens_seen(self):
         last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}
         self.assertEqual(prompt_tokens_seen(98179, last), 3000)
@@ -2820,6 +3274,46 @@ class ConfigReasoningEffort(unittest.TestCase):
         cfg = {"args": ["--ctx", "4096"]}
         lift_reasoning_effort_arg(cfg)
         self.assertEqual(cfg, {"args": ["--ctx", "4096"]})
+
+
+class JoinedEngineArgs(unittest.TestCase):
+    """#2267: "--ple-io mmap" written as one element of the config's args reached the engine as one argument."""
+
+    def split(self, args):
+        from serve.server import split_joined_args
+        cfg = {"args": list(args)}
+        with mock.patch("builtins.print") as pr:
+            split_joined_args(cfg)
+        return cfg["args"], pr.called
+
+    def test_one_element_becomes_flag_and_value(self):
+        self.assertEqual(self.split(["--spec", "4", "--ple-io mmap"]), (["--spec", "4", "--ple-io", "mmap"], True))
+        self.assertEqual(self.split(["--ple-io=mmap", "--kv int8"]), (["--ple-io", "mmap", "--kv", "int8"], True))
+
+    def test_proper_args_are_untouched(self):
+        args = ["--ple-io", "mmap", "--native", "/data/My Models/a b.gguf", "--max-context", "131072", "--vision"]
+        self.assertEqual(self.split(args), (args, False))
+        # a value in a flag's value place stays whole, whatever it looks like
+        args = ["--system-prompt", "--be brief please"]
+        self.assertEqual(self.split(args), (args, False))
+
+    def test_no_args(self):
+        from serve.server import split_joined_args
+        cfg = {}
+        split_joined_args(cfg)
+        self.assertEqual(cfg, {})
+
+    def test_bad_json_names_the_place(self):
+        import tempfile
+        from serve.server import read_config
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.json"
+            p.write_text('{"args": ["--ple-io" "mmap"]}', encoding="utf-8")
+            with self.assertRaises(SystemExit) as cm:
+                read_config(p)
+            self.assertIn("line 1", str(cm.exception))
+            p.write_text('﻿{"args": ["--ple-io", "mmap"]}', encoding="utf-8")
+            self.assertEqual(read_config(p), {"args": ["--ple-io", "mmap"]})
 
 
 class SharedSettings(unittest.TestCase):
@@ -3337,10 +3831,25 @@ class UsageAndStatus(unittest.TestCase):
         self.assertEqual(last["usage"]["prompt_tokens_details"]["cached_tokens"], ClockedEngine.REUSED)
         self.assertEqual(last["timings"]["cache_n"], ClockedEngine.REUSED)
 
+    def test_responses(self):
+        # /v1/responses carries the same top-level timings as /v1/chat/completions
+        body = {"model": "x", "max_output_tokens": 20, "input": "hi"}
+        status, raw = self.request("/v1/responses", body)
+        self.assertEqual(status, 200)
+        r = json.loads(raw)
+        self.assertEqual(r["timings"]["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(r["timings"]["predicted_n"], r["usage"]["output_tokens"])
+        status, raw = self.request("/v1/responses", {**body, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")][-1]
+        self.assertIn(last["type"], ("response.completed", "response.incomplete"))
+        self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
+
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
-        self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], len(self.engine.last_prompt))
+        self.assertEqual(u["input_tokens"], 1)                     # what was read now is kept: written to the cache
+        self.assertEqual(u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"],
+                         len(self.engine.last_prompt))
         self.assertGreater(u["output_tokens"], 0)
 
     def test_v1_status(self):
@@ -3756,6 +4265,17 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
 
+    def test_llama_cpp_thinking_budget_tokens_is_the_same_budget(self):
+        """llama.cpp's name (pi-llama-cpp sends it): the same wrap-up; reasoning_budget_tokens wins when both are set."""
+        from serve.server import REASONING_WRAP_UP
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        code, b = self.openai(thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap)
+        code, b = self.openai(reasoning_budget_tokens=10, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:10] + wrap)
+
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""
         code, b = self.openai(reasoning_budget_tokens=20, stop=["answer is"])
@@ -3775,6 +4295,45 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(thinking, ThinkingEngine.THOUGHT[:30] + REASONING_WRAP_UP.split("</think>")[0])
         self.assertEqual(text, ThinkingEngine.ANSWER)
         self.assertEqual(evs[-2]["delta"]["stop_reason"], "end_turn")
+
+    def test_a_cap_that_the_thinking_would_eat_leaves_room_to_answer(self):
+        """0.1.45: max_tokens counts the thinking; a thinking that would fill it gets closed with a quarter left (the
+        agent harness sends max_completion_tokens 8192; the pagoda's thinking took all of it and no answer came)."""
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40    # 1,800 reasoning tokens
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024,
+                                                     "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        self.assertLess(len(msg["reasoning_content"]), 1024 - 256)
+        self.assertEqual(len(self.engine.prompts), 2)              # the wrap-up continuation
+
+    def test_the_answer_room_has_its_limits(self):
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 300,        # below the floor: as before
+                                                     "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(b["choices"][0]["finish_reason"], "length")
+        self.assertFalse(b["choices"][0]["message"]["content"])
+        self.svc.answer_room = False                               # the config's "answer_room": false
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024,
+                                                     "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(b["choices"][0]["finish_reason"], "length")
+        self.svc.answer_room = True
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024, "reasoning_effort": "none",
+                                                     "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(len(self.engine.prompts), 3)              # thinking off: no budget, one prompt each
+
+    def test_anthropic_thinking_budget_tokens_is_a_budget(self):
+        """0.1.45: thinking {type: enabled, budget_tokens: N} closes the thinking after N tokens (it was only a level)."""
+        from serve.server import REASONING_WRAP_UP
+        code, b = self.post("/v1/messages", {"model": "m", "max_tokens": 400, "thinking": {"type": "enabled", "budget_tokens": 30},
+                                             "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(code, 200, b)
+        thinking = "".join(c.get("thinking", "") for c in b["content"] if c["type"] == "thinking")
+        self.assertEqual(thinking, ThinkingEngine.THOUGHT[:30] + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual("".join(c.get("text", "") for c in b["content"] if c["type"] == "text"), ThinkingEngine.ANSWER)
+        self.assertEqual(len(self.engine.prompts), 2)
 
     def test_a_budget_the_thinking_stays_under(self):
         code, b = self.openai(reasoning_budget_tokens=10_000)
@@ -3972,6 +4531,109 @@ class ForcedToolChoice(unittest.TestCase):
                 args[tc["index"]] = args.get(tc["index"], "") + tc["function"].get("arguments", "")
             finish = c["choices"][0]["finish_reason"] or finish
         return finish, [(names[i], json.loads(args[i])) for i in sorted(names)], reasoning
+
+    def says(self, answer):
+        """The engine answers `answer` after an empty thought."""
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            self.engine.prompts.append(list(ids))
+            yield from self.tok.encode("</think>\n\n" + answer) + self.tok.encode("<|im_end|>", parse_special=True)
+        self.engine.generate = generate
+
+    def test_a_call_the_request_never_offered_stays_text(self):
+        """#3075: the model goes on writing the format it was shown; a request that offered no such tool gets text."""
+        from serve.frontend import CALL_END, CALL_START
+        answer = ("I will check that.\n" + CALL_START + "\n<function=lookup>\n<parameter=q>\n2+2\n</parameter>\n"
+                  "</function>\n" + CALL_END + "\nHere is the report.")
+        self.says(answer)
+        for label, extra in {"nothing declared": {"tools": []}, "tool_choice none": {"tool_choice": "none"},
+                             "other tools": {}}.items():
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream, **extra)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("stop", []), b)
+                    if not stream:
+                        content = b["choices"][0]["message"]["content"] or ""
+                        self.assertIn("Here is the report.", content)
+                        self.assertIn("<function=lookup>", content)
+
+    def _undeclared_call_answer(self, name="lookup"):
+        from serve.frontend import CALL_END, CALL_START
+        return ("I will check that.\n" + CALL_START + f"\n<function={name}>\n<parameter=q>\n2+2\n</parameter>\n"
+                "</function>\n" + CALL_END)
+
+    def _rejected_of(self, b, stream):
+        """The strata_rejected_tool_calls of a whole reply or of a streamed one (None when the reply has none)."""
+        if not stream:
+            return b.get("strata_rejected_tool_calls")
+        found = [json.loads(line[6:]).get("strata_rejected_tool_calls") for line in b.splitlines() if line.startswith("data: {")]
+        found = [f for f in found if f]
+        self.assertLessEqual(len(found), 1, "sent once, with the last chunk")
+        return found[0] if found else None
+
+    def test_an_undeclared_call_is_named_in_the_response(self):
+        """#3796: the call stays text and finish_reason stays "stop"; the response also lists the names the model wrote
+        (strata_rejected_tool_calls), so a client can tell this from an ordinary answer and answer the model."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                before = self.svc.totals.get("tool_calls_unread", 0)
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("stop", []), b)
+                self.assertEqual(self._rejected_of(b, stream), [{"name": "execute_gdscript", "reason": "undeclared"}])
+                self.assertEqual(self.svc.totals["tool_calls_unread"], before + 1)         # /metrics counts it
+                if not stream:
+                    self.assertIn("<function=execute_gdscript>", b["choices"][0]["message"]["content"])   # the text is untouched
+
+    def test_no_marker_when_nothing_was_rejected(self):
+        """An ordinary answer and a declared call carry no extra field: the API is what it was."""
+        from serve.frontend import CALL_END, CALL_START
+        for label, answer in (("text", "The answer is 4."),
+                              ("declared call", CALL_START + "\n<function=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)):
+            self.says(answer)
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream)
+                    self.call_of(code, b, stream)
+                    self.assertIsNone(self._rejected_of(b, stream))
+                    if stream:
+                        self.assertNotIn("strata_rejected_tool_calls", b)
+
+    def test_a_collapsed_mcp_name_is_a_call_not_a_rejection(self):
+        """#3796: `mcp_playwright_browser_navigate` for the declared `mcp__playwright__browser_navigate`."""
+        from serve.frontend import CALL_END, CALL_START
+        tools = [{"type": "function", "function": {"name": "mcp__playwright__browser_navigate", "description": "open a page",
+                                                   "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}}]
+        self.says(CALL_START + "\n<function=mcp_playwright_browser_navigate>\n<parameter=q>\nx\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream, tools=tools)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("mcp__playwright__browser_navigate", {"q": "x"})]))
+                self.assertIsNone(self._rejected_of(b, stream))
+
+    def test_the_anthropic_reply_names_the_rejected_call_too(self):
+        self.says(self._undeclared_call_answer("bash"))
+        body = {"model": "m", "max_tokens": 400, "messages": [{"role": "user", "content": "2+2?"}],
+                "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            msg = json.loads(r.read().decode())
+        self.assertEqual(msg["stop_reason"], "end_turn")
+        self.assertEqual(msg["strata_rejected_tool_calls"], [{"name": "bash", "reason": "undeclared"}])
+        self.assertFalse([c for c in msg["content"] if c["type"] == "tool_use"])
+
+    def test_a_call_with_a_dropped_function_keyword_is_still_the_call(self):
+        """#3441: `<=search>` for `<function=search>`, as a model under a large tool surface writes it."""
+        from serve.frontend import CALL_END, CALL_START
+        self.says(CALL_START + "\n<=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]), b)
 
     def test_required_and_named_after_the_thinking(self):
         for choice in ("required", self.NAMED):
@@ -4481,6 +5143,84 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
+IOREG_FIXTURE = '''
+  +-o AGXAcceleratorG13X  <class AGXAcceleratorG13X, id 0x100000428, registered, matched, active, busy 0 (0 ms), retain 41>
+    {
+      "IOClass" = "AGXAcceleratorG13X"
+      "model" = "Apple M1 Max"
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=22991831040,"Tiler Utilization %"=36,"recoveryCount"=44,"lastRecoveryTime"=216970984728,"Renderer Utilization %"=35,"TiledSceneBytes"=1671168,"Device Utilization %"=76,"SplitSceneCount"=0,"Allocated PB Size"=76152832,"In use system memory"=13384105984}
+      +-o IOUserClientCreator  <class IOUserClientCreator, id 0x100000429, registered, matched, active, busy 0 (0 ms), retain 5>
+        {
+          "IOUserClientCreator" = "pid 402, WindowServer"
+        }
+    }
+
+  +-o AGXAccelerator  <class AGXAccelerator, id 0x10000042a, registered, matched, active, busy 0 (0 ms), retain 12>
+    {
+      "IOClass" = "AGXAccelerator"
+      "model" = "Apple M2 Ultra"
+      "PerformanceStatistics" = {"Renderer Utilization %"=3,"Tiler Utilization %"=2,"In use system memory"=1234567890}
+    }
+'''
+
+WORKING_SET = 26800603136          # bytes; the M1 Max's device in the fixture above
+
+
+class MacTelemetry(unittest.TestCase):
+    """The macOS (Metal backend) reader: IOKit's IOAccelerator nodes and the device's Metal working set."""
+
+    def _reader(self, index=0, text=IOREG_FIXTURE):
+        from serve import telemetry
+        return telemetry._Metal(index, run=lambda: text)
+
+    def test_readings(self):
+        g = self._reader()
+        self.assertTrue(g.ok())
+        self.assertEqual(g.name(), "Apple M1 Max")
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g.read(), {"util": 76, "mem_used": 13384105984, "mem_total": WORKING_SET})
+        # the second accelerator is index 1: the older chips' renderer/tiler-only utilization is the fallback
+        g1 = self._reader(1)
+        self.assertTrue(g1.ok())
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g1.read()["util"], 3)          # the renderer, the higher of the two
+            self.assertEqual(g1.name(), "Apple M2 Ultra")
+        self.assertFalse(self._reader(5).ok())
+
+    def test_no_registry(self):
+        g = self._reader(text="")
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+        self.assertIsNone(g.name())
+
+    def test_bad_process(self):
+        from serve import telemetry
+        g = telemetry._Metal(0, run=lambda: (_ for _ in ()).throw(OSError("no ioreg")))
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+
+    def test_note_reaches_the_monitor(self):
+        from serve import telemetry
+        t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+        try:
+            with mock.patch.object(telemetry, "gpu_reader", lambda index=0, amd=False: self._reader()):
+                t2 = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+                try:
+                    self.assertEqual(t2.static["gpu_name"], "Apple M1 Max")
+                    self.assertIn("powermetrics", t2.static["gpu_note"])
+                    with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+                        s = t2.sample()
+                    self.assertEqual(s["gpu_util"], 76)
+                    self.assertEqual(s["gpu_mem_used"], 13384105984)
+                    self.assertEqual(s["gpu_mem_total"], WORKING_SET)
+                    self.assertIsNone(s.get("gpu_temp"))       # no reading without root; the cards show a dash
+                    self.assertIsNone(s.get("gpu_pcie_gen"))
+                finally:
+                    t2.close()
+        finally:
+            t.close()
+
+
 class TelemetryNoDisks(unittest.TestCase):
     """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
     off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left
@@ -4555,6 +5295,29 @@ class SilentEngine(unittest.TestCase):
                 f.write("strata verify trace: dump\n" * 1500)
             engine.proc.poll.return_value = -6
             self.assertIn("a hang it caught", engine.death_note())
+
+    def test_death_note_names_a_finite_rttime_limit_on_signal_9(self):
+        # #3238: a hard RLIMIT_RTTIME of 0 (PipeWire without rtkit) kills with -9 and no OOM; say so, not "out of RAM"
+        import sys
+        import tempfile
+        from unittest import mock
+        engine = self.bare(0.3)
+        fake = mock.MagicMock()
+        fake.RLIMIT_RTTIME = 15
+        fake.RLIM_INFINITY = -1
+        fake.getrlimit.return_value = (0, 0)
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(sys.modules, {"resource": fake}):
+            engine.log_path = os.path.join(d, "e.log")
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = -9
+            note = engine.death_note()
+            self.assertIn("RLIMIT_RTTIME", note)
+            self.assertIn("rtkit", note)
+            fake.getrlimit.return_value = (-1, -1)               # unlimited: the old RAM hint stays
+            self.assertIn("running out of RAM", engine.death_note())
+            fake.getrlimit.return_value = (0, 0)
+            engine.proc.poll.return_value = -11                  # another signal: not this cause
+            self.assertIn("running out of RAM", engine.death_note())
 
     def test_prompt_chunks_set_the_wait(self):
         # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
@@ -5173,7 +5936,7 @@ class VisionArgs(unittest.TestCase):
             seen.append(args)
             return Proc()
 
-        with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server.subprocess, "Popen", popen):
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
         return seen[0]
 
@@ -5289,7 +6052,7 @@ class LazyVision(unittest.TestCase):
             started.append(p)
             return p
 
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v = server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf"}, lazy=True)
             self.addCleanup(lambda: shutil.rmtree(v.dir, ignore_errors=True))
             return v, started, popen
@@ -5302,7 +6065,7 @@ class LazyVision(unittest.TestCase):
     def test_restart_starts_it_and_close_ends_it(self):
         import serve.server as server
         v, started, popen = self.make()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v.restart()
         self.assertTrue(v.alive())
         self.assertEqual(len(started), 1)
@@ -5324,7 +6087,7 @@ class LazyVision(unittest.TestCase):
                     return 0
             started.append(P)
             return P()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             with self.assertRaises(RuntimeError):
                 v.restart()
         self.assertTrue(started[-1].killed)
@@ -5532,7 +6295,7 @@ class UntimedReads(unittest.TestCase):
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))
         try:
-            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "contain"),                     mock.patch.object(server, "VISION_READY_S", 0.3):
+            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "VISION_READY_S", 0.3):
                 with self.assertRaises(RuntimeError) as cm:
                     v._start()
             self.assertIn("did not start", str(cm.exception))

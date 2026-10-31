@@ -15,9 +15,11 @@ emoji (4-byte), combining marks, whitespace runs, and C0 control bytes.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import pathlib
 import sys
+import threading
 
 import regex
 
@@ -64,6 +66,37 @@ QWEN35_PATTERN = (
 )
 
 
+# The `deepseek-v3` pre-tokenizer (DeepSeek-V3 / V4.1; llama.cpp LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM, the same regex list as
+# JoyAI and Hunyuan-dense).  UNLIKE the single-pattern families it is a SEQUENCE: each pattern splits the pieces the
+# one before it left (a span a pattern does not match stays a piece of its own), so digits (runs of 1..3) and CJK
+# runs are cut out before the general word / punctuation / whitespace pattern sees the rest.
+DEEPSEEK3_PATTERNS = (
+    r"\p{N}{1,3}",
+    "[一-龥぀-ゟ゠-ヿ]+",
+    r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+"
+    r"| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
+)
+
+
+def _sequence_findall(patterns, text: str) -> list[str]:
+    """llama.cpp's unicode_regex_split: the pieces of `text` after each pattern in turn splits every piece into its
+    matches and the unmatched spans between them."""
+    pieces = [text]
+    for pat in patterns:
+        nxt = []
+        for piece in pieces:
+            pos = 0
+            for m in pat.finditer(piece):
+                if m.start() > pos:
+                    nxt.append(piece[pos:m.start()])
+                nxt.append(m.group())
+                pos = m.end()
+            if pos < len(piece):
+                nxt.append(piece[pos:])
+        pieces = nxt
+    return pieces
+
+
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None):
@@ -86,7 +119,12 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        if str(pre).startswith("deepseek"):
+            seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
+            self._split = lambda text: _sequence_findall(seq, text)
+        else:
+            self._re = regex.compile(QWEN35_PATTERN)
+            self._split = self._re.findall
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -115,6 +153,8 @@ class Tokenizer:
         # through __dict__.setdefault on each encoded segment or decoded token.
         self._piece_ids: dict[str, list[int]] = {}
         self._bytes_cache: dict[int, bytes] = {}
+        # How far a special-token match can look ahead of where it starts (PromptEncoder's margin).
+        self.max_special_len = max((len(t) for t in self.special_tokens), default=1)
 
     @staticmethod
     def _alt(literals: list[str]):
@@ -219,7 +259,7 @@ class Tokenizer:
         # A piece's ids depend on the piece alone, so repeated pieces (most of a resent conversation) are looked up
         # instead of merged again.  The ids are the ones _bpe gives: this only skips the work.
         cache = self._piece_ids
-        for piece in self._re.findall(text):
+        for piece in self._split(text):
             got = cache.get(piece)
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
@@ -234,13 +274,16 @@ class Tokenizer:
             out.extend(got)
         return out
 
-    def _encode_matching(self, text: str, pat, plain=()) -> list[int]:
+    def _encode_matching(self, text: str, pat, plain=(), marks: list | None = None) -> list[int]:
         """Encode `text`, emitting any literal `pat` matches as single tokens and BPE-ing the rest.
 
         The split happens on the RAW text, before the byte mapping, because a special token's string is a
         literal to match rather than bytes to decompose.  Everything between the matches is tokenized
         normally - which is why a near-miss like `<|im_star` still costs ordinary tokens.  A match that starts
         inside one of the `plain` (start, end) spans is left to the text around it (#537).
+
+        `marks`, when given, receives (end of the match in `text`, ids so far) for every match: the points where
+        the encoding of a longer text with the same beginning can resume (PromptEncoder).
         """
         if pat is None:
             return self._encode_plain(text)
@@ -269,6 +312,8 @@ class Tokenizer:
                 out.extend(self._encode_plain(text[pos:start]))
             out.append(self.special_tokens[m.group(0)])
             pos = m.end()
+            if marks is not None:
+                marks.append((pos, len(out)))
         if pos < len(text):
             out.extend(self._encode_plain(text[pos:]))
         return out
@@ -283,6 +328,11 @@ class Tokenizer:
         """
         return self._encode_matching(text, self._special_re if parse_special else self._always_re, plain)
 
+    def encode_marked(self, text: str, parse_special: bool = False, plain=()) -> tuple[list[int], list[tuple[int, int]]]:
+        """encode() and its resume points: (end offset in `text`, ids so far) after every special-token match."""
+        marks: list[tuple[int, int]] = []
+        return self._encode_matching(text, self._special_re if parse_special else self._always_re, plain, marks), marks
+
     def token_bytes(self, i: int) -> bytes:
         """The raw bytes of one token (a multi-byte character can be split across tokens)."""
         cache = self._bytes_cache
@@ -290,6 +340,11 @@ class Tokenizer:
         if b is None:
             if i < 0 or i >= len(self.tokens):
                 raise IndexError("token id %d is outside the vocabulary (%d)" % (i, len(self.tokens)))
+            if self.token_types and i < len(self.token_types) and self.token_types[i] in (3, 4):
+                # a special token's string is the literal text (DeepSeek's `<｜User｜>`, `｜DSML｜` hold characters outside
+                # the byte alphabet); for Qwen's ASCII specials it is the same bytes the alphabet would give
+                b = cache[i] = self.tokens[i].encode("utf-8")
+                return b
             raw = bytearray()
             for ch in self.tokens[i]:
                 v = UNICODE_TO_BYTE.get(ch)
@@ -301,6 +356,111 @@ class Tokenizer:
 
     def decode(self, ids: list[int], errors: str = "replace") -> str:
         return b"".join(self.token_bytes(i) for i in ids).decode("utf-8", errors=errors)
+
+
+# ------------------------------------------------------------------ incremental prompts (#567)
+def common_prefix_len(a: str, b: str) -> int:
+    """Length of the longest common prefix, by slices (C speed) rather than a loop over characters."""
+    n = min(len(a), len(b))
+    lo, step = 0, 4096
+    while lo < n:                                       # whole chunks first, doubling
+        hi = min(n, lo + step)
+        if a[lo:hi] != b[lo:hi]:
+            break
+        lo, step = hi, min(step * 2, 1 << 20)
+    else:
+        return n
+    while hi - lo > 1:                                  # the first difference is in [lo, hi): bisect it
+        mid = (lo + hi) // 2
+        if a[lo:mid] == b[lo:mid]:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def plain_agree_until(a, b, limit: int) -> int:
+    """The first position below `limit` where the `plain` spans (#537) of two texts differ - a position inside a
+    span in one and not in the other - or `limit`.  Spans are (start, end), sorted and disjoint."""
+    def clip(spans):
+        return [(x, min(y, limit)) for x, y in spans if x < limit and y > x]
+    ca, cb = clip(a), clip(b)
+    for (xa, ya), (xb, yb) in zip(ca, cb):
+        if (xa, ya) != (xb, yb):
+            return min(xa, xb) if xa != xb else min(ya, yb)
+    if len(ca) != len(cb):
+        return (ca if len(ca) > len(cb) else cb)[min(len(ca), len(cb))][0]
+    return limit
+
+
+class PromptEncoder:
+    """`tok.encode(text, parse_special=True, plain=...)` for chat prompts, reusing the ids of an earlier prompt.
+
+    A chat client sends the whole conversation every turn, and the rendered prompt of turn n+1 starts with most of
+    turn n's.  Running BPE over all of it again costs hundreds of milliseconds at 100K tokens, even when the engine
+    reuses the whole prefix.  So the ids up to a SPECIAL-TOKEN BOUNDARY both prompts share are taken as they were,
+    and only the rest is encoded.
+
+    WHY THAT IS EXACT.  Encoding splits the text at special-token matches and BPE-encodes each stretch between two
+    matches on its own (`_encode_matching`): nothing crosses a match.  Whether a match is taken at position q
+    depends only on text[q : q + max_special_len] and on whether q lies inside a `plain` span (#537: a </think>
+    quoted in a message is text).  So if the two texts agree up to L and their plain spans agree below L, every
+    decision the scan makes at a position before c = the end of some match, with c + max_special_len - 1 <= L, is
+    the same for both - the same matches, the same stretches, the same ids up to c - and from c the scan starts
+    afresh, exactly as it does on text[c:] with the spans shifted by c.  Hence encode(new) == ids_old[:ids at c] +
+    encode(new[c:]).  The margin matters only for a vocabulary where a literal overlaps another's end; it costs
+    re-encoding one short stretch.
+
+    A few recent prompts are kept (one per conversation: a prompt replaces the one it continues, that is, one whose
+    text it reuses for more than half; a prompt that shares only the template's head with every entry is a new
+    entry), so a second client does not evict the first.  `encode(..., store=False)` reads the kept prompts without
+    writing one (a token count is not a conversation's turn).  The tokenizer needs `encode_marked` and
+    `max_special_len`.
+    """
+
+    def __init__(self, tok, keep: int = 4):
+        self.tok, self.keep = tok, keep
+        # (text, plain spans, ids, mark ends, mark counts)
+        self.entries: list[tuple[str, tuple, list[int], list[int], list[int]]] = []
+        self.lock = threading.Lock()
+        self.last_reused = 0                            # characters taken from an earlier prompt (for tests)
+
+    def encode(self, text: str, plain=(), store: bool = True) -> list[int]:
+        plain = tuple(sorted(plain))
+        with self.lock:
+            entries = self.entries                      # replaced, never changed in place
+        margin = self.tok.max_special_len - 1
+        src, cut_k = None, -1
+        for e in entries:
+            same = plain_agree_until(e[1], plain, common_prefix_len(e[0], text))
+            k = bisect.bisect_right(e[3], same - margin) - 1   # the last boundary c with c <= same - margin
+            if k >= 0 and (src is None or e[3][k] > src[3][cut_k]):
+                src, cut_k = e, k
+        if src is None:
+            ids, marks = self.tok.encode_marked(text, parse_special=True, plain=plain)
+            ends, counts = [m[0] for m in marks], [m[1] for m in marks]
+            self.last_reused = 0
+        else:
+            c, n = src[3][cut_k], src[4][cut_k]
+            rest = tuple((max(x - c, 0), y - c) for x, y in plain if y > c)
+            tail, marks = self.tok.encode_marked(text[c:], parse_special=True, plain=rest)
+            ids = src[2][:n] + tail
+            ends = src[3][:cut_k + 1] + [c + m[0] for m in marks]
+            counts = src[4][:cut_k + 1] + [n + m[1] for m in marks]
+            self.last_reused = c
+        if not store:
+            return ids
+        # every rendered prompt starts with the template's header, so sharing a special boundary does not make two
+        # prompts one conversation: only the entry whose text is mostly reused is replaced
+        old = src if src is not None and 2 * src[3][cut_k] > len(src[0]) else None
+        with self.lock:
+            self.entries = [(text, plain, ids, ends, counts)] + [e for e in self.entries if e is not old][:self.keep - 1]
+        return list(ids)
+
+    def forget(self, ids: list[int]) -> None:
+        """The prompt with these ids was refused: it is not kept."""
+        with self.lock:
+            self.entries = [e for e in self.entries if e[2] != ids]
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory

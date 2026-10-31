@@ -39,9 +39,9 @@
 
 namespace strata::core {
 
-/// --spec-min-p gates a further draft on the drawn token's probability under q (as the coupled drafter does).
-/// STRATA_SPEC_PROB_GATE=top gates on q's top probability instead: measured on the RTX 3060 it drafts longer windows
-/// whose later guesses are kept less often, and decodes slower.
+/// The default confidence gate tests the drawn token. gated_proposal.hpp carries its admitted
+/// mass and a NULL outcome to the verifier; a failed gate is still a proposal attempt.
+/// Explicit `top` tests q's largest probability before the draw and uses the normalized-q path.
 inline bool spec_gate_pick() {
     static const bool on = [] {
         const char* e = std::getenv("STRATA_SPEC_PROB_GATE");

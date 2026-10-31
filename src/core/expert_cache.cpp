@@ -7,6 +7,8 @@
 #define STRATA_EC_NO_VMM 1
 #endif
 
+#include <thread>
+#include <mutex>
 #include <cuda_runtime.h>
 #if !defined(STRATA_EC_NO_VMM)
 #include <cuda.h>   // #533: the virtual memory management types (the functions come through the runtime's entry points)
@@ -20,7 +22,75 @@
 #include <utility>
 #include <cstring>
 
+// (not in a SYCL build: its CUDA names are a compatibility layer without the PCI ids NVML is matched by)
+#if defined(_WIN32) && !defined(STRATA_EC_NO_VMM) && !defined(SYCL_LANGUAGE_VERSION)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#define STRATA_EC_NVML_FREE 1
+#endif
+
 namespace strata::core {
+
+#if defined(STRATA_EC_NVML_FREE)
+namespace {
+
+// STRATA_VRAM_FREE=device (opt-in, Windows + NVIDIA).  Under WDDM cudaMemGetInfo answers for THIS process: memory
+// another process holds on the card (the image encoder, a browser, another engine) is not in its free figure.
+// Measured on an RTX 5090, driver 610.88: with 6 GiB written by another process, cudaMemGetInfo in a second process
+// still read 30,994 MiB free where NVML read 24,348.  NVML (nvml.dll, installed with every driver) counts the whole
+// card.  The library is loaded from the system directory only, at first use; false when it cannot answer.
+bool nvml_device_free(size_t& out) {
+    struct Memory { unsigned long long total, free, used; };
+    typedef int (*InitFn)(void);
+    typedef int (*ByBusFn)(const char*, void**);
+    typedef int (*MemFn)(void*, Memory*);
+    struct Lib {
+        ByBusFn by_bus = nullptr;
+        MemFn mem = nullptr;
+        Lib() {
+            HMODULE h = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (h == nullptr) return;
+            const auto init = (InitFn) (void*) GetProcAddress(h, "nvmlInit_v2");
+            const auto bus = (ByBusFn) (void*) GetProcAddress(h, "nvmlDeviceGetHandleByPciBusId_v2");
+            const auto m = (MemFn) (void*) GetProcAddress(h, "nvmlDeviceGetMemoryInfo");
+            if (init == nullptr || bus == nullptr || m == nullptr || init() != 0) return;
+            by_bus = bus;
+            mem = m;
+        }
+    };
+    static const Lib lib;
+    if (lib.mem == nullptr) return false;
+    int dev = 0;
+    cudaDeviceProp prop{};
+    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return false;
+    char bus[32];
+    std::snprintf(bus, sizeof bus, "%08X:%02X:%02X.0", (unsigned) prop.pciDomainID, (unsigned) prop.pciBusID,
+                  (unsigned) prop.pciDeviceID);
+    void* handle = nullptr;
+    Memory m{};
+    if (lib.by_bus(bus, &handle) != 0 || lib.mem(handle, &m) != 0) return false;
+    out = (size_t) m.free;
+    return true;
+}
+
+}  // namespace
+#endif
+
+namespace {
+// STRATA_EXPERT_NIBBLE: a write into a sealed cache (see ExpertCache::seal).  Says which call and stops: the slots hold
+// 4-bit codes the GGUF bytes would overwrite, or a GGUF expert where a 4-bit one is expected - a wrong reply, not an error.
+[[noreturn]] void sealed_write(const char* call, int32_t slot) {
+    std::fprintf(stderr, "strata: STRATA_EXPERT_NIBBLE: ExpertCache::%s(slot %d) after the cache was sealed - a GGUF "
+                         "blob would be written into the 4-bit expert slots: stopping\n", call, (int) slot);
+    std::fflush(stderr);
+    std::abort();
+}
+}  // namespace
 
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
@@ -64,6 +134,27 @@ size_t device_free_bytes() {
             const unsigned long long avail = kb << 10;
             if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
         }
+    }
+#endif
+#if defined(STRATA_EC_NVML_FREE)
+    static const bool device_wide = [] {
+        const char* v = std::getenv("STRATA_VRAM_FREE");
+        return v != nullptr && std::strcmp(v, "device") == 0;
+    }();
+    if (device_wide) {
+        size_t nvml_b = 0;
+        const bool got = nvml_device_free(nvml_b);
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true)) {
+            if (got)
+                std::fprintf(stderr, "strata generate: STRATA_VRAM_FREE=device: free VRAM is read for the whole card "
+                                     "(NVML: %lld MiB now; CUDA's figure for this process alone: %lld MiB)\n",
+                             (long long) (nvml_b >> 20), (long long) (free_b >> 20));
+            else
+                std::fprintf(stderr, "strata generate: STRATA_VRAM_FREE=device: NVML did not answer (nvml.dll); free "
+                                     "VRAM stays CUDA's figure for this process\n");
+        }
+        if (got) free_b = std::min(free_b, nvml_b);
     }
 #endif
     return free_b;
@@ -564,8 +655,9 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     int64_t mx = 0;
     std::vector<uint64_t> off(slot_bytes.size() + 1, 0);
     for (size_t i = 0; i < slot_bytes.size(); ++i) {
-        // 256-byte aligned slots, so every blob starts where the kernels' vector loads expect it
-        off[i + 1] = off[i] + ((uint64_t) slot_bytes[i] + 255) / 256 * 256;
+        // 256-byte aligned slots, so every blob starts where the kernels' vector loads expect it (and the
+        // STRATA_MMQ_DIRECT guard after each blob, 0 by default)
+        off[i + 1] = off[i] + (uint64_t) slot_stride(slot_bytes[i], guard_req_);
         mx = slot_bytes[i] > mx ? slot_bytes[i] : mx;
     }
     // one allocation of the summed size, through the uniform path's checks: n "slots" of 1 byte
@@ -574,6 +666,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     live_slots_ = slots_;
     blob_ = mx;
     off_ = std::move(off);
+    guard_ = guard_req_;
 #if defined(STRATA_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
@@ -598,6 +691,7 @@ void ExpertCache::close() {
     blocking_staging_bytes_ = 0;
 #endif
     off_.clear();
+    guard_ = 0;
     if (!segs_.empty()) {
         release_segmented();
     } else if (vmm_) {
@@ -616,6 +710,7 @@ void ExpertCache::close() {
     next_free_ = 0;
     fills_ = 0;
     admitted_ = 0;
+    sealed_ = false;
     layer_next_.clear();
 }
 
@@ -636,6 +731,7 @@ int32_t ExpertCache::slot_of(int64_t layer, int64_t expert) const {
 }
 
 int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
+    if (sealed_) return kNotResident;   // STRATA_EXPERT_NIBBLE: nothing is admitted (and so filled) after the startup fill
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
     const size_t at = (size_t) (layer * n_expert_ + expert);
     if (residency_[at] != kNotResident) return residency_[at];
@@ -668,6 +764,7 @@ const uint8_t* ExpertCache::device_slot(int32_t slot) const {
 }
 
 bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
@@ -690,6 +787,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
 }
 
 bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot_blocking", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
@@ -721,6 +819,7 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
 }
 
 bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot_queued", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr || host_blob == nullptr) {
@@ -732,6 +831,31 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot_queued: ") + cudaGetErrorString(e);
         return false;
+    }
+    ++fills_;
+    return true;
+}
+
+bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err) {
+    if (sealed_) sealed_write("fill_slot_queued_parts", slot);
+    uint8_t* dst = device_slot(slot);
+    if (dst == nullptr || parts == nullptr || n <= 0) {
+        err = "ExpertCache::fill_slot_queued_parts: slot outside the arena or no pieces";
+        return false;
+    }
+    uint64_t total = 0;
+    for (int i = 0; i < n; ++i) total += parts[i].n;
+    if (total > (uint64_t) blob_) {
+        err = "ExpertCache::fill_slot_queued_parts: the pieces are larger than a slot";
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        const cudaError_t e = cudaMemcpyAsync(dst + parts[i].at, parts[i].p, (size_t) parts[i].n, cudaMemcpyHostToDevice,
+                                              (cudaStream_t) 0);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slot_queued_parts: ") + cudaGetErrorString(e);
+            return false;
+        }
     }
     ++fills_;
     return true;

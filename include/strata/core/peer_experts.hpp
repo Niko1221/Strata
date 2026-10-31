@@ -98,6 +98,8 @@ private:
     void* h_meta_ = nullptr; void* d_meta_ = nullptr; // groups: ptr | start | dst | tok | count
     uint8_t* d_q8_ = nullptr;
     void* d_scratch_ = nullptr;
+    const float* d_sx_ = nullptr;                     // APR: device sign vectors (x: H, h: FF); nullptr = identity
+    const float* d_sh_ = nullptr;
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;

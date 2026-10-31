@@ -20,7 +20,17 @@ QUESTIONS = [
     "Explain how a transformer's attention works, step by step.",
     "Donne une recette de tarte aux pommes, etape par etape.",
     "Describe the life cycle of a star like the Sun.",
+    "Erklaere ausfuehrlich, wie ein Dieselmotor funktioniert.",
+    "Write a Rust function that parses a CSV line with quoted fields, then explain it.",
+    "What were the main consequences of the invention of the printing press?",
+    "Explique le theoreme de Pythagore avec trois demonstrations differentes.",
+    "Describe how the immune system responds to a viral infection.",
+    "Explain the difference between processes and threads in an operating system.",
+    "Beschreibe die Geschichte des Roemischen Reiches in Grundzuegen.",
+    "How does public-key cryptography work? Give an example with RSA.",
 ]
+# more than 16 slots: the same questions again, asked to answer in German
+QUESTIONS = QUESTIONS + [q + " Answer in German." for q in QUESTIONS]
 
 
 def tokenizer(path):
@@ -78,6 +88,12 @@ def main():
     ap.add_argument("--long-tokens", type=int, default=0,
                     help="the LAST prompt is read from about this many tokens of filler text first: its chunks run "
                          "beside the earlier slots' windows (the prompt path lends experts then)")
+    ap.add_argument("--co", action="store_true",
+                    help="PAR-H: before the first BGEN send BCO lines for the other prompts, so the engine reads every prompt "
+                         "in one layer-major pass (the engine needs STRATA_PREFILL_LM_FORCE=1 for prompts this short to be "
+                         "layer-major in the arm without --co)")
+    ap.add_argument("--seq", action="store_true", help="PAR-H: admit the prompts one at a time, each run to its end (no batch composition)")
+    ap.add_argument("--pad", type=int, default=0, help="PAR-H: every prompt gets about this many tokens of its own filler text first")
     ap.add_argument("--mt-min", default="1", help="STRATA_IQ_MT_MIN for the engine (1: exact; empty: the default)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
@@ -90,6 +106,13 @@ def main():
                     "risks, and asked the staff to report back next quarter. ")
             per = max(1, len(tok.encode(para % 100)))
             filler = "".join(para % i for i in range(a.long_tokens // per + 1))
+            text = f"<|im_start|>user\n{filler}\n\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        if a.pad:
+            para = ("Note %d-%d: the survey team measured the northern ridge, logged the readings of station %d, and sent the "
+                    "figures to the office, where a clerk filed the sheets under reference %d. ")
+            qi = QUESTIONS.index(q)
+            per = max(1, len(tok.encode(para % (qi, 100, 100, 100))))
+            filler = "".join(para % (qi, i, (i * 7 + qi) % 97, i * 13 + qi) for i in range(a.pad // per + 1))
             text = f"<|im_start|>user\n{filler}\n\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         prompts.append(tok.encode(text, parse_special=True))
     env = {"STRATA_DECODE_TIMING": "1", **({"STRATA_VERIFY_PROFILE": "1"} if os.environ.get("PROF") else {})}
@@ -116,6 +139,10 @@ def main():
     done = {}
     t_admit = time.time()
     first_bt = None
+    if a.co:
+        for i, ids in enumerate(prompts):
+            if i >= 1:
+                eng.send(f"BCO {i} " + ",".join(map(str, ids)))
     for i, ids in enumerate(prompts):
         eng.send(" ".join(x for x in ("BGEN", str(i), str(a.max_new), a.keys, ",".join(map(str, ids))) if x))
         for line in out:
@@ -134,8 +161,19 @@ def main():
                 if line.split()[2] == "0":
                     done[i] = line
                 break
+        if a.seq and i not in done:   # one prompt at a time: this slot runs to its end before the next is admitted
+            for line in out:
+                if line.startswith("BT "):
+                    _, s, y = line.split()
+                    got[int(s)].append(int(y))
+                elif line.startswith("BDONE "):
+                    done[int(line.split()[1])] = line
+                    break
+                elif line.startswith("ERR"):
+                    print("batch:", line)
+                    return 1
     t_admitted = time.time()
-    for line in out:
+    for line in (out if len(done) < len(prompts) else []):
         if line.startswith("BT "):
             _, s, y = line.split()
             got[int(s)].append(int(y))

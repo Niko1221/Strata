@@ -11,6 +11,8 @@
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/prefill/kernels.hpp"
 
@@ -51,3 +53,12 @@ void nvfp4_512_rows(const uint8_t*, size_t, int, const void* const*, int, float*
     strata::metal_engine::missing("strata::kernels::cpu::nvfp4_512_rows");
 }
 }  // namespace strata::kernels::cpu
+
+// STRATA_QSA_SLOTS (PR #2364): the one-launch-over-the-rows QSA launchers have no Metal kernel; false = "run the per-row calls",
+// which is what Verifier::record_window does on a decline.
+namespace strata::kernels {
+bool qsa_block_scores_slots(const float* const*, const float* const*, const float*, const int32_t*, int64_t, int64_t,
+                            const QsaShapes&, float*, void*) { return false; }
+bool qsa_decode_attn_slots(const float*, const QsaAttnSlotPools&, const int32_t*, const int32_t*, int64_t, const QsaShapes&,
+                           float*, float*, int64_t, void*) { return false; }
+}  // namespace strata::kernels

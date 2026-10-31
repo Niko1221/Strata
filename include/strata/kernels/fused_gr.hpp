@@ -17,6 +17,8 @@
 // must be different buffers (every block reads the former while one block writes the latter).
 #pragma once
 
+#include "strata/kernels/window_limits.hpp"
+
 #include <cstdint>
 
 namespace strata::kernels {
@@ -45,9 +47,15 @@ struct FusedGrArgs {
     /// bytes native_quantize_q8_1 would write); q8_cnt = n_embd / 32 zeroed counters owned by the caller (token 0's)
     uint8_t* q8_mixed = nullptr;
     unsigned* q8_cnt = nullptr;
+    /// STRATA_HC_Q8: non-null when w_down / w_up hold int8 codes (same [row][col] layout) with one fp32 scale per
+    /// 32 contiguous values here ([row][col / 32]).  w_inject stays bf16.
+    const float* s_down = nullptr;
+    const float* s_up = nullptr;
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
+/// STRATA_HC_Q8: n int8 codes with one fp32 scale per 32 -> bf16 (the prompt path's GEMMs take bf16).
+void hc_q8_to_bf16(const void* codes, const float* scales, uint16_t* out, long long n, void* stream);
 void fused_gr_read(const FusedGrArgs& a, void* stream);
 /// STRATA_HC_Q8 on a bf16 pack: `out` (n_blocks * 34 bytes) = the Q8_0 blocks (fp16 d = amax / 127, round(x / d), ggml's
 /// reference rounding) of `n_blocks * 32` bf16 values on the device.
@@ -60,6 +68,9 @@ void fused_gr_quantize_q8_0(const uint16_t* bf16, uint8_t* out, int64_t n_blocks
 /// weight pointers and eps must be the same for every t); `xn_scratch` is n_tok * hc * n_embd floats.  Every
 /// token's outputs are bitwise `fused_gr_read(a[t])`.
 constexpr int kFusedGrMaxT = 8;
+/// A window of more than kFusedGrMaxT tokens is read in slices of at most kFusedGrMaxT (every token's outputs are
+/// strictly its own, so the slices are bitwise the one read); `a` and `xn_scratch` hold up to kFusedGrWideT tokens.
+constexpr int kFusedGrWideT = kWindowMaxT;
 /// Returns true when it also wrote the q8_1 images (every token's q8_mixed set and this read supports it).
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
                          unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
@@ -78,5 +89,13 @@ void fused_gr_set_fast(int on);
 /// plain read unless STRATA_HC_SPLIT=1 or 2 names a variant.
 void fused_gr_check();
 int fused_gr_variant();
+
+/// Opt-in STRATA_HC_PERSIST=1 (HIP): the multi read as one persistent kernel (80 resident blocks, the down projection
+/// split by column slices, two grid barriers).  Another summation order (not bitwise).
+/// `fused_gr_persist_init` checks residency and the result against the default read once per card (Verifier::init);
+/// `fused_gr_read_persist` returns false when it did not run (off, too many tokens, a Q8 / QFUSE read) - then the caller
+/// runs `fused_gr_read_multi`.  Only for reads on a stream no other persistent read runs on concurrently (the verifier's).
+void fused_gr_persist_init();
+bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
 
 }  // namespace strata::kernels

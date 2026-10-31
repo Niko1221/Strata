@@ -7,6 +7,9 @@
 #   STRATA_SYCL_IMAGE  the runtime image                      (default: strata-sycl-dev)
 #   STRATA_SYCL_BIN    the engine binary, relative to the repo (default: build-sycl-aot/strata)
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
+#   STRATA_SYCL_SHM    1 (default): the host's /dev/shm is the container's /dev/shm. Pictures: the server (on the host) writes the
+#                      image embeddings of a request into /dev/shm and names that file on the engine's GENI line, so the engine in
+#                      the container must see the same file. 0: the container keeps a private /dev/shm.
 # Passed into the container: every variable of this script's environment that starts with STRATA_ (the config's
 # "env" block arrives that way: the server puts it in the engine's environment), ONEAPI_ (level_zero:* for a
 # two-card split, #423), UR_, IGC_, SYCL_ or ZES_. The port's own defaults (below) are overridden the same way,
@@ -34,9 +37,12 @@ for k in "${!setting[@]}"; do
     # the engine tests the switches by presence: a value of 0 (or empty) means "not set", so it is not passed on
     case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
 done
+shm=()
+if [ "${STRATA_SYCL_SHM:-1}" != 0 ] && [ -d /dev/shm ]; then shm=(-v /dev/shm:/dev/shm); fi
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
     --ulimit memlock=-1 \
     -v "$root:/work" \
+    "${shm[@]}" \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
     "cd $repo_in && exec ${STRATA_SYCL_BIN:-build-sycl-aot/strata}$args"

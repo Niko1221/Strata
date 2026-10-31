@@ -5,7 +5,9 @@
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
+#include "strata/kernels/window_start.hpp"  // KVA: the draft layer's window floor
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/pdl.hpp"
 
@@ -90,7 +92,7 @@ __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __
     hist[c * 3 + 2] = seq[2];
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
@@ -141,7 +143,7 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
     }
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
@@ -276,7 +278,7 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
-    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const float d = q8_1_finite(q81_div(amax, 127.0f));   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit (#3948: and its division)
     const int8_t q = q8_1_quant(xi, d, amax);
     xq[idx / 32].qs[idx % 32] = q;
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
@@ -291,7 +293,18 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
                                                                      const float* __restrict__ gamma, float eps,
                                                                      float* __restrict__ y, int h_k, int h_v, int T,
                                                                      const int32_t* __restrict__ n_keep, int t_out_begin,
-                                                                     GdnQ81* __restrict__ xq) {
+                                                                     GdnQ81* __restrict__ xq, GdnGroups grp = {}) {
+    if (grp.n > 0) {   // group blockIdx.y - its slot's state and its rows of the window's buffers
+        const int gi = blockIdx.y, f = grp.first[gi];
+        state = grp.state[gi];
+        hbuf += (size_t) f * C;
+        gate += (size_t) f * h_v;
+        beta += (size_t) f * h_v;
+        z += (size_t) f * S * h_v;
+        y += (size_t) f * S * h_v;
+        T = grp.ntok[gi];
+        n_keep = grp.keep[gi];
+    }
     __shared__ float sk[2][S], sq[2][S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -569,6 +582,29 @@ __global__ void broadcast_streams_kernel(const float* __restrict__ x, float* __r
     R[(size_t) t * n * hc + i] = x[(size_t) t * n + i % n];
 }
 
+__global__ void hc_mean_streams_kernel(const float* __restrict__ R, float* __restrict__ out, int64_t n, int hc) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float s = 0.0f;
+    for (int c = 0; c < hc; ++c) s += R[(size_t) c * n + i];
+    out[i] = s / (float) hc;
+}
+
+__global__ void route_marginal_stats_kernel(const int32_t* __restrict__ ids, int n, int k, unsigned long long* acc) {
+    const int r = threadIdx.x;
+    if (r >= n) return;
+    int fresh = 0;
+    for (int j = 0; j < k; ++j) {
+        const int32_t e = ids[r * k + j];
+        bool seen = false;
+        for (int j2 = 0; j2 < j && !seen; ++j2) seen = ids[r * k + j2] == e;
+        for (int r2 = 0; r2 < r && !seen; ++r2)
+            for (int j2 = 0; j2 < k && !seen; ++j2) seen = ids[r2 * k + j2] == e;
+        if (!seen) ++fresh;
+    }
+    atomicAdd(acc + r, (unsigned long long) fresh);
+}
+
 __global__ void copy_indexed_kernel(float* __restrict__ dst, const float* __restrict__ src, int64_t stride,
                                     const int32_t* __restrict__ index, int64_t n) {
     const int idx = *index;
@@ -585,6 +621,10 @@ __global__ void fetch_blobs_kernel(const unsigned long long* __restrict__ src, c
         const long long k = i / per, off = i - k * per;
         dst[i] = ((const uint4*) src[k])[off];
     }
+}
+
+__global__ void res_patch_kernel(int32_t* __restrict__ table, const volatile int32_t* pairs, int n) {
+    for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < n; k += gridDim.x * blockDim.x) table[pairs[2 * k]] = pairs[2 * k + 1];
 }
 
 __global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes) {
@@ -680,6 +720,12 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
     if (blob_bytes % 16 != 0) { std::fprintf(stderr, "fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
     fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16));
     check("fetch_blobs");
+}
+
+void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
+    if (n <= 0) return;
+    res_patch_kernel<<<(n + 255) / 256 < 64 ? (n + 255) / 256 : 64, 256, 0, (cudaStream_t) stream>>>(table, pairs, n);
+    check("res_patch");
 }
 
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {
@@ -938,11 +984,15 @@ bool argmax_rows_wanted() {
 #if defined(__HIPCC__)
     return false;
 #else
-    // sm_80 to sm_89: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
+    // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
         int dev = 0, major = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess)
             return false;
+        if (major == 7) {   // STRATA_ARGMAX_ROWS_SM70=1: opt-in on Volta (measured on sm_70 only)
+            const char* e = std::getenv("STRATA_ARGMAX_ROWS_SM70");
+            return e != nullptr && std::atoi(e) != 0;
+        }
         return major == 8;
     }();
     return want && multi_block_head_ops();
@@ -966,6 +1016,30 @@ __global__ void window_ids_kernel(int32_t* steps, int window, int32_t* ids, long
 void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, void* stream) {
     window_ids_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride);
     check("window_ids");
+}
+
+namespace {
+// window_ids with a floor read from (mapped) memory when the kernel RUNS: the captured graph keeps the pointer, the
+// value changes between sessions.  A floor of 0 gives window_ids' selection exactly (strata::kernels::window_start).
+__global__ void window_ids_floor_kernel(int32_t* steps, int window, int32_t* ids, long long stride,
+                                        const volatile int32_t* floor_cell) {
+    const int q = blockIdx.y;
+    int32_t* st = steps + q * 4;
+    const int n_kv = st[1];
+    const int start = strata::kernels::window_start(n_kv, window, *floor_cell);
+    const int width = n_kv - start;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < width; j += gridDim.x * blockDim.x)
+        ids[q * stride + j] = start + j;
+    __syncthreads();
+    if (blockIdx.x == 0 && threadIdx.x == 0) st[3] = width;
+}
+}  // namespace
+
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream) {
+    window_ids_floor_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride,
+                                                                                    floor_cell);
+    check("window_ids_floor");
 }
 
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
@@ -1005,6 +1079,7 @@ void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv
         case 4: gdn_conv_ab_kernel<4, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 5: gdn_conv_ab_kernel<5, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 6: gdn_conv_ab_kernel<6, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 7: case 8: gdn_conv_ab_kernel<kVerifyNarrowT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         default: gdn_conv_ab_kernel<kVerifyMaxT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_conv_ab_multi");
@@ -1054,9 +1129,34 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
         case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 7: case 8: gdn_ab_multi_kernel<kVerifyNarrowT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_ab_multi");
+}
+
+void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_channels, const float* gate, const float* beta,
+                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, bool commit,
+                          void* stream) {
+    if (groups.n < 1 || groups.n > 8 || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k) {
+        std::fprintf(stderr, "gdn_step_norm_groups: invalid arguments\n");
+        std::exit(1);
+    }
+    for (int i = 0; i < groups.n; ++i)
+        if (!groups.state[i] || groups.ntok[i] < 1 || groups.ntok[i] > kVerifyMaxT || (commit && !groups.keep[i])) {
+            std::fprintf(stderr, "gdn_step_norm_groups: invalid group %d\n", i);
+            std::exit(1);
+        }
+    const dim3 g1((unsigned) h_v, (unsigned) groups.n), b1(S, RG);
+    // the kernel gdn_step_norm_multi picks for these calls: a window's rows (all outputs, no keep) or a commit of
+    // one-row groups (keep, t_out_begin 0)
+    if (commit)
+        gdn_step_norm_multi_kernel<false, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    else
+        gdn_step_norm_multi_kernel<true, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    check("gdn_step_norm_groups");
 }
 
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
@@ -1074,8 +1174,12 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
     if (split && (t_out_begin >= n_tok || n_tok - t_out_begin >= 2)) {
         const dim3 grid((unsigned) h_v, S / GS_COLS), block(GS_COLS, RG);
         if (t_out_begin >= n_tok) {   // no outputs (the commit): the state only
-            gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
-                state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            if (n_tok > kVerifyNarrowT)
+                gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            else
+                gdn_state_replay_kernel<kVerifyNarrowT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
         } else {
             gdn_step_split_kernel<true><<<grid, block, 0, (cudaStream_t) stream>>>(
                 state, h, conv_channels, gate, beta, y, h_k, h_v, n_tok, n_keep, t_out_begin);
@@ -1121,23 +1225,107 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
 }
+
+// the GPU's clock in ns (the same sources as gpu_stamp_kernel)
+__device__ __forceinline__ unsigned long long strata_now_ns() {
+    unsigned long long t;
+#if defined(STRATA_HIP_GFX906)
+    t = wall_clock64() * 40ull;
+#elif defined(__HIPCC__)
+    t = wall_clock64() * 10ull;
+#else
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+#endif
+    return t;
+}
+
+// the overlapped split's hand-off wait, bounded: spin until *flag >= value, or give up after timeout_ns (0: never),
+// marking *err = 1 (mapped) so the host fails the window instead of using a stale hand-off.  The window's later
+// kernels still run (on whatever the hand-off buffer holds) so the graph completes and no stream is left hanging.
+__global__ void wait_handoff_kernel(const volatile uint32_t* flag, uint32_t value, uint32_t* err,
+                                    unsigned long long timeout_ns) {
+    const unsigned long long t0 = timeout_ns ? strata_now_ns() : 0ull;
+    while (*flag < value) {
+        strata_spin_pause();
+        if (timeout_ns && strata_now_ns() - t0 > timeout_ns) {
+            *(volatile uint32_t*) err = 1u;
+            __threadfence_system();
+            return;
+        }
+    }
+    __threadfence_system();
+}
+
+__global__ void handoff_publish_kernel(float* dst, const float* __restrict__ a, int64_t na, const float* __restrict__ b,
+                                       int64_t nb, const float* __restrict__ c, int64_t nc, uint32_t* counter,
+                                       uint32_t* flag, const volatile uint32_t* drop) {
+    const int64_t n = na + nb + nc;
+    volatile float* const out = dst;
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
+        out[i] = i < na ? a[i] : i < na + nb ? b[i - na] : c[i - na - nb];
+    __threadfence_system();   // this thread's stores reach host memory before the block counts itself done
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        const uint32_t prev = atomicAdd(counter, 1u);
+        if (prev == gridDim.x - 1) {   // every block's payload is out: raise the next stage's flag
+            *(volatile uint32_t*) counter = 0u;
+            __threadfence_system();
+            if (drop == nullptr || *drop == 0u) {   // test hook (STRATA_TEST_HANDOFF_DROP): a lost publish
+                *(volatile uint32_t*) flag = 1u;
+                __threadfence_system();
+            }
+        }
+    }
+}
+
+// wait_flag_ge, with the GPU's clock as it arrives (t_in) and as it leaves (t_out), either may be null
+__global__ void wait_flag_ge_stamped_kernel(const volatile uint32_t* flag, uint32_t value, volatile unsigned long long* t_in,
+                                            volatile unsigned long long* t_out) {
+    if (t_in != nullptr) *t_in = strata_now_ns();
+    while (*flag < value) strata_spin_pause();
+    __threadfence_system();
+    if (t_out != nullptr) *t_out = strata_now_ns();
+}
 }  // namespace
 
+void wait_handoff(const uint32_t* flag, uint32_t value, uint32_t* err, unsigned long long timeout_ns, void* stream) {
+    wait_handoff_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, err, timeout_ns);
+    check("wait_handoff");
+}
+
+void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int64_t nb, const float* c, int64_t nc,
+                     uint32_t* counter, uint32_t* flag, void* stream, const uint32_t* drop) {
+    const int64_t n = na + nb + nc;
+    if (n <= 0 || dst == nullptr || counter == nullptr || flag == nullptr) {
+        std::fprintf(stderr, "handoff_publish: invalid arguments\n");
+        std::exit(1);
+    }
+    const int64_t nb256 = (n + 255) / 256;
+    const int blocks = (int) (nb256 < 64 ? nb256 : 64);
+    handoff_publish_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(dst, a, na, b, nb, c, nc, counter, flag, drop);
+    check("handoff_publish");
+}
+
 namespace {
-// one thread per window entry: up to kVerifyMaxT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
-// 7+ tokens lost its last entries)
-constexpr int kResidentPlanMax = 128;
+// one thread per window entry: up to kVerifyNarrowT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
+// 7+ tokens lost its last entries).  A window of 9..16 rows (up to 160 entries) runs the same kernel on 256 threads;
+// one block size per window class, so a narrow window launches exactly the 128-thread kernel it always did.
+constexpr int kResidentPlanNarrow = 128;
+constexpr int kResidentPlanMax = kVerifyMaxT > kVerifyNarrowT ? 256 : kResidentPlanNarrow;
+static_assert(kVerifyNarrowT * 10 <= kResidentPlanNarrow, "resident_plan: one thread per entry");
 static_assert(kVerifyMaxT * 10 <= kResidentPlanMax, "resident_plan: one thread per entry");
-// the parallel scan keeps one partial sum per warp in s_wsum[4] and packs (entries << 16 | groups) in an int
-static_assert(kResidentPlanMax <= 128 && kResidentPlanMax % 32 == 0, "resident_plan: at most 4 warps");
+// the parallel scan keeps one partial sum per warp in s_wsum[NT / 32] and packs (entries << 16 | groups) in an int
+static_assert(kResidentPlanMax <= 256 && kResidentPlanMax % 32 == 0, "resident_plan: at most 8 warps");
 static_assert(kResidentPlanMax < 32768, "resident_plan: the packed entry count must stay below 2^15");
-__global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
+template <int NT>
+__global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
                                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
                                      long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
                                      uint32_t ring, volatile uint32_t* plan_err) {
-    __shared__ int32_t s_ids[kResidentPlanMax];
-    __shared__ int32_t s_excl[kResidentPlanMax];
-    __shared__ int32_t s_wsum[4];
+    constexpr int NW = NT / 32;
+    __shared__ int32_t s_ids[NT];
+    __shared__ int32_t s_excl[NT];
+    __shared__ int32_t s_wsum[NW];
     __shared__ int s_bad;
     const int tid = threadIdx.x;
     if (tid == 0) s_bad = 0;
@@ -1201,7 +1389,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
     if (is_first) {
         int tot = s_excl[tid];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < warp) tot += s_wsum[w];
         }
         const int grp_idx = tot & 0xffff;
@@ -1213,7 +1401,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < fj_warp) fj_tot += s_wsum[w];
         }
         const int out_idx = (fj_tot >> 16) + rank_in_group;
@@ -1221,7 +1409,14 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        const int groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;
+        int groups;
+        if constexpr (NW == 4) groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;   // (the 128-thread kernel as it was)
+        else {
+            groups = 0;
+#pragma unroll
+            for (int w = 0; w < NW; ++w) groups += s_wsum[w];
+            groups &= 0xffff;
+        }
         start[groups] = n;
         start2[0] = n;
         counts[0] = groups;
@@ -1319,8 +1514,18 @@ __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile flo
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
-    resident_plan_kernel<<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+    if (n_entries > kResidentPlanNarrow) {   // a 9..16-row window (kResidentPlanMax == 256 only in a wide build)
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
+        else {
+            std::fprintf(stderr, "resident_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                              blob, plan, capx, skip, ring, plan_err);
+    }
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
@@ -1365,6 +1570,12 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     check("wait_flag_ge");
 }
 
+void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
+                          void* stream) {
+    wait_flag_ge_stamped_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, t_in, t_out);
+    check("wait_flag_ge_stamped");
+}
+
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,
                           int n_tok, int64_t n, int code_bits, int code_bias, int group_elems, uint64_t row_codes,
                           uint64_t row_groups, float* out, void* stream) {
@@ -1378,6 +1589,16 @@ void broadcast_streams(const float* x, float* R, int64_t n_embd, int hc, int n_t
     broadcast_streams_kernel<<<dim3((unsigned) ((n_embd * hc + 255) / 256), (unsigned) n_tok), 256, 0,
                                (cudaStream_t) stream>>>(x, R, n_embd, hc);
     check("broadcast_streams");
+}
+
+void hc_mean_streams(const float* R, float* out, int64_t n_embd, int hc, void* stream) {
+    hc_mean_streams_kernel<<<(unsigned) ((n_embd + 255) / 256), 256, 0, (cudaStream_t) stream>>>(R, out, n_embd, hc);
+    check("hc_mean_streams");
+}
+
+void route_marginal_stats(const int32_t* ids, int n, int k, unsigned long long* acc, void* stream) {
+    route_marginal_stats_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(ids, n, k, acc);
+    check("route_marginal_stats");
 }
 
 void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* index, int64_t n, void* stream) {

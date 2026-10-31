@@ -34,6 +34,12 @@ class Policy(unittest.TestCase):
         self.assertIsNone(G.judge("strata::kernels::cpu::(anonymous namespace)::gu_rows<18, 1>(int)", None, "", False,
                                   False, True))
 
+    def test_trellis_rows_entry_point_is_fine(self):
+        """#3358: tq_avx512.cpp's rows function is behind cpu_avx512_ok() like the other wide kernels."""
+        name = "strata::kernels::cpu::tq_detail::tq_rows_avx512(int, unsigned char const*, unsigned long, int)"
+        self.assertIsNone(G.judge(name, "tq_avx512.cpp.o", "", False, False, True))
+        self.assertIsNotNone(G.judge(name, "tq_cpu.cpp.o", "", False, False, True))      # the same code elsewhere is not
+
     def test_listed_public_entry_point_is_fine(self):
         self.assertIsNone(G.judge("?act_quant_q8_1@cpu@kernels@strata@@YAXPEBMHAEAUActQ@123@@Z",
                                   "strata_kernels_cpu:expert.cpp.obj", "", False, False, False))

@@ -130,6 +130,7 @@ class EffortPaths(unittest.TestCase):
                                                      "thinking": {"type": "enabled", "budget_tokens": 20000}}), "xhigh")
         self.assertEqual(self.level("/v1/responses", {"input": "hello", "reasoning": {"effort": "high"}}), "xhigh")
         self.assertEqual(self.level("/v1/chat/completions", {"messages": MSG, "reasoning_effort": "none"}), "none")
+        self.assertEqual(self.level("/v1/chat/completions", {"messages": MSG, "reasoning_effort": False}), "none")
 
     def test_the_chat_settings_shared_with_apps_beat_the_config(self):
         self.svc.config_effort = "low"
@@ -166,6 +167,27 @@ class EffortPaths(unittest.TestCase):
         for given, want in (("low", "low"), ("medium", "medium"), ("none", "none")):
             with self.subTest(given=given):
                 self.assertEqual(self.level("/v1/chat/completions", {"messages": history, "reasoning_effort": given}), want)
+
+
+    def test_the_agents_request_shape_with_thinking_off(self):
+        """The app's agent (Harness) sends no reasoning_effort when Thinking is Off, only chat_template_kwargs {enable_thinking: false}, with tools, a
+        system message, earlier reasoning and a token cap. That one flag must reach the template as the empty think block, whatever else is in the
+        request or configured (a thinking model that went on reasoning with the menu on Off was this request form).  The same body with
+        enable_thinking true / an effort keeps thinking."""
+        tools = [{"type": "function", "function": {"name": "pwsh", "description": "d", "parameters": {"type": "object", "properties": {}}}}]
+        history = [{"role": "developer", "content": "You are a helpful assistant."}, {"role": "user", "content": "first"},
+                   {"role": "assistant", "content": "ok", "reasoning_content": "earlier thoughts"}, {"role": "user", "content": "now?"}]
+        agent = {"model": "m", "messages": history, "tools": tools, "stream": True, "stream_options": {"include_usage": True},
+                 "max_completion_tokens": 4096}
+        for config in (None, "high", "low"):
+            self.svc.config_effort = config
+            with self.subTest(config=config):
+                self.assertEqual(self.level("/v1/chat/completions", {**agent, "chat_template_kwargs": {"enable_thinking": False}}), "none")
+        self.svc.config_effort = None
+        self.assertEqual(self.level("/v1/chat/completions", {**agent, "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "low"}}), "low")
+        self.assertEqual(self.level("/v1/chat/completions", {**agent, "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "high"}}), "xhigh")
+        # the same flag in the plain (no tools) body the direct chat sends alongside a budget
+        self.assertEqual(self.level("/v1/chat/completions", {"messages": MSG, "chat_template_kwargs": {"enable_thinking": False}, "reasoning_effort": "none"}), "none")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 // only falls back to the unrestricted best when no such placement can start the prompt path.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -33,6 +34,57 @@ inline int64_t smallest_stage(const std::vector<int64_t>& cuts, int64_t n_layers
 /// True when some stage owns fewer than kMinStageLayers layers.
 inline bool has_tiny_stage(const std::vector<int64_t>& cuts, int64_t n_layers) {
     return smallest_stage(cuts, n_layers) < kMinStageLayers;
+}
+
+// ---- #2644: the #1616 floor must not starve a card.  On an asymmetric pair (RTX 4060 Ti 16 GB + RTX 3060 12 GB, 48
+// layers, IQ3_S) the predicted decode window prefers almost every layer on the faster card, the first pick was K=2, and the
+// #1616 retry (every stage at least kMinStageLayers) landed on the edge of that restriction: K=3, the 3060 with 3 layers,
+// 12 GB idle, 452 tok/s of prefill against 802 at 28 layers (the prompt flows through the stages as a pipeline, so one
+// busy card is the whole rig).  So before that retry, a two-stage rig is asked for a placement in which each stage owns at
+// least its share of the layers by its room for experts; the three-layer rule stays the second try, and the first pick
+// the last.
+
+/// Per stage, the fewest layers the share-of-room retry accepts: floor(n_layers x room_i / sum of rooms), at least
+/// kMinStageLayers, and (when the floors would not fit) trimmed from the largest back toward kMinStageLayers until
+/// they do.  Rooms <= 0 count as 0; no room anywhere gives every stage kMinStageLayers.
+inline std::vector<int64_t> share_floors(const std::vector<int64_t>& room, int64_t n_layers) {
+    std::vector<int64_t> floors(room.size(), kMinStageLayers);
+    double total = 0.0;
+    for (const int64_t r : room) total += r > 0 ? (double) r : 0.0;
+    if (total <= 0.0) return floors;
+    int64_t sum = 0;
+    for (size_t i = 0; i < room.size(); ++i) {
+        const double share = (room[i] > 0 ? (double) room[i] : 0.0) / total * (double) n_layers;
+        floors[i] = std::max<int64_t>(kMinStageLayers, (int64_t) share);   // truncated: the floors sum to <= n_layers
+        sum += floors[i];
+    }
+    while (sum > n_layers) {   // only through the kMinStageLayers lift of a small share
+        size_t big = 0;
+        for (size_t i = 1; i < floors.size(); ++i)
+            if (floors[i] > floors[big]) big = i;
+        if (floors[big] <= kMinStageLayers) break;
+        --floors[big];
+        --sum;
+    }
+    return floors;
+}
+
+/// True when some stage of `cuts` owns fewer layers than its floor.
+inline bool below_floors(const std::vector<int64_t>& cuts, int64_t n_layers, const std::vector<int64_t>& floors) {
+    int64_t prev = 0;
+    for (size_t i = 0; i <= cuts.size() && i < floors.size(); ++i) {
+        const int64_t end = i < cuts.size() ? cuts[i] : n_layers;
+        if (end - prev < floors[i]) return true;
+        prev = end;
+    }
+    return false;
+}
+
+/// The share-of-room retry is worth running when some floor is above the plain three-layer rule's.
+inline bool floors_exceed_minimum(const std::vector<int64_t>& floors) {
+    for (const int64_t f : floors)
+        if (f > kMinStageLayers) return true;
+    return false;
 }
 
 // ---- #1440: headroom among (near-)ties.  The search scores a placement by its predicted window time alone, so on two

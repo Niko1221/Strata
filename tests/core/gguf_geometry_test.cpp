@@ -223,6 +223,18 @@ int main(int argc, char** argv) {
         const fixture::Kv mx = fixture::u32s(p + "attention.compress_ratios", mixed);
         check(has(run(d.path, with(full_keys(), mx.key, &mx)).read_err, "compress_ratios[7] = 8"),
               "two pooling blocks in one model are refused");
+        // #2396: 48 zeros are a converter's placeholder (orcarouter's Uncensored GGUFs): read as absent, the compiled block stays
+        const fixture::Kv zeros = fixture::u32s(p + "attention.compress_ratios", std::vector<uint64_t>(48, 0));
+        const Result z = run(d.path, with(full_keys(), zeros.key, &zeros));
+        check(z.read_err.empty() && z.guard.empty() && z.g.idx_block == 4, "an all-zero compress_ratios list is treated as absent");
+        const fixture::Kv zshort = fixture::u32s(p + "attention.compress_ratios", std::vector<uint64_t>(40, 0));
+        check(has(run(d.path, with(full_keys(), zshort.key, &zshort)).read_err, "one entry for each of the 48"),
+              "an all-zero list of another length is still refused");
+        std::vector<uint64_t> one_set(48, 0);
+        one_set[3] = 4;                      // a real (but partial) list: layer 7 would be full attention with a 0
+        const fixture::Kv partial = fixture::u32s(p + "attention.compress_ratios", one_set);
+        check(has(run(d.path, with(full_keys(), partial.key, &partial)).read_err, "compress_ratios[7] = 0"),
+              "a list with one non-zero entry is checked in full");
         const fixture::Kv fl = fixture::f32(p + "block_count", 48.0f);
         check(has(run(d.path, with(full_keys(), fl.key, &fl)).read_err, "is not an integer"),
               "a float where a count belongs is refused");

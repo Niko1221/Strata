@@ -19,6 +19,7 @@
 #include "strata/kernels/f16_bits.hpp"
 
 #include "strata/kernels/quantize_act.hpp"
+#include "strata/kernels/fuse_decode.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_fp16.h>
@@ -161,6 +162,9 @@ __global__ void gu_kernel(const uint8_t* __restrict__ blob_base, const int32_t* 
     gate_up[base + (size_t) r] = s;
 }
 
+// `silu(gate) * up` lives in `strata/kernels/swiglu.cuh` (the fused kernels call it in their epilogues);
+// the standalone pass it replaced is gone.  The scratch layout is unchanged: `[0, n_pairs)` ends up holding
+// the products, `[n_pairs, 2*n_pairs)` the raw up rows.
 /// `silu(gate) * up`, in place, over a GATE-MAJOR buffer: `[0, n_pairs)` is every hit's gate and
 /// `[n_pairs, 2*n_pairs)` is every hit's up, so hit `h`'s row `r` meets itself at `h*FF + r`.
 ///
@@ -629,20 +633,30 @@ void moe_hit_grouped_s2(const uint8_t* blob_base, const int32_t* slot_index, con
                       0, cs);
         check("moe_hit_grouped_s2/gu", stream);
     }
-    // 2. silu(gate) * up.
+    // 2+3. silu(gate) * up, then the intermediate's own contract - ONE kernel where two ran.  The products
+    //    land in the gate half exactly as `swiglu_kernel` left them (the parity test compares that scratch),
+    //    and the q8_0 blocks are the same bytes `quantize_q8_0` produced.  `swilu_kind` 1 is this file's
+    //    `swiglu_kernel` expression (see `strata/kernels/swiglu.cuh`).
+    //    The down weight is Q2_0, whose `vec_dot_type` is Q8_0 - `ggml_mul_mat`'s rule, not a choice.  With
+    //    `x_scales` the intermediate takes the CPU's contract (`quantize_q8_0_scaled`), R4.2h.
     {
         const long long pairs = n_hits * (long long) FF;
+#if defined(STRATA_EXPERIMENTAL_SM60)
+        if (strata::kernels::fuse_decode()) {
+        if (x_scales != nullptr)
+            swilu_quantize_q8_0_scaled(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, h_scales, stream);
+        else
+            swilu_quantize_q8_0(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, stream);
+        } else
+#endif
+        {
         const unsigned blocks = (unsigned) ((pairs + THREADS - 1) / THREADS);
         swiglu_kernel<<<blocks, THREADS, 0, cs>>>(gate_up, pairs);
         check("moe_hit_grouped_s2/swiglu", stream);
+        if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, n_hits * (int64_t) FF, stream);
+        else quantize_q8_0(gate_up, h_q8_0, n_hits * (int64_t) FF, stream);
+        }
     }
-    // 3. the intermediate's own contract, which is `ggml_mul_mat`'s rule and NOT a choice: the down weight is
-    //    Q2_0, whose `vec_dot_type` is Q8_0.  `gate_up` holds the pairs; the product went into the first half.
-    //    **R4.2h: the CPU quantizes this intermediate into `a2` with fp32 scales too** (`expert.cpp:232`), so
-    //    when the caller supplies `x_scales` the intermediate gets the CPU's contract as well - otherwise the
-    //    down projection would keep the very disagreement the gate/up projection just had removed.
-    if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, n_hits * (int64_t) FF, stream);
-    else quantize_q8_0(gate_up, h_q8_0, n_hits * (int64_t) FF, stream);
     // 4. down.
     {
         launch_hit_down(fast, blob_base, slot_index, dst_index, blob_bytes, h_q8_0,
@@ -730,13 +744,25 @@ void moe_hit_grouped_s2_dev(const uint8_t* blob_base, const int32_t* slot_index,
                       cs);
         check("moe_hit_grouped_s2_dev/gu", stream);
     }
+    // silu + intermediate quantization in one kernel (same full-capacity range as the two kernels it replaces,
+    // sentinel rows included - the parity test compares that scratch).
     {
         const long long pairs = cap * (long long) FF;
+#if defined(STRATA_EXPERIMENTAL_SM60)
+        if (strata::kernels::fuse_decode()) {
+        if (x_scales != nullptr)
+            swilu_quantize_q8_0_scaled(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, h_scales, stream);
+        else
+            swilu_quantize_q8_0(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, stream);
+        } else
+#endif
+        {
         swiglu_kernel<<<(unsigned) ((pairs + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate_up, pairs);
         check("moe_hit_grouped_s2_dev/swiglu", stream);
+        if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap * (int64_t) FF, stream);
+        else quantize_q8_0(gate_up, h_q8_0, cap * (int64_t) FF, stream);
+        }
     }
-    if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap * (int64_t) FF, stream);
-    else quantize_q8_0(gate_up, h_q8_0, cap * (int64_t) FF, stream);
     {
         launch_hit_down(fast, blob_base, slot_index, dst_index, blob_bytes, h_q8_0,
                         x_scales != nullptr ? h_scales : nullptr, out, cap, d_count, cs);
@@ -769,11 +795,21 @@ void moe_hit_grouped_s2_multi(const uint8_t* blob_base, const int32_t* slot_inde
     }
     {
         const long long pairs = cap * (long long) FF;
+#if defined(STRATA_EXPERIMENTAL_SM60)
+        if (strata::kernels::fuse_decode()) {
+        if (x_scales != nullptr)
+            swilu_quantize_q8_0_scaled(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, h_scales, stream);
+        else
+            swilu_quantize_q8_0(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, stream);
+        } else
+#endif
+        {
         swiglu_kernel<<<(unsigned) ((pairs + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate_up, pairs);
         check("moe_hit_grouped_s2_multi/swiglu", stream);
+        if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap * (int64_t) FF, stream);
+        else quantize_q8_0(gate_up, h_q8_0, cap * (int64_t) FF, stream);
+        }
     }
-    if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap * (int64_t) FF, stream);
-    else quantize_q8_0(gate_up, h_q8_0, cap * (int64_t) FF, stream);
     {
         launch_hit_down(fast, blob_base, slot_index, dst_index, blob_bytes, h_q8_0,
                         x_scales != nullptr ? h_scales : nullptr, out, cap, d_count, cs);
@@ -788,9 +824,14 @@ namespace {
 // hit kernel's.
 constexpr int GU_CHUNKS = (H / 32 + 31) / 32;   // 3: chunks of a gate/up row per lane (80 chunks / 32 lanes)
 constexpr int GMAX = 8;                          // entries per group (tokens routed to one expert in a window)
-// a group holds one entry per token of the window routed to its expert, and the kernels below keep at
-// most GMAX of them (`min(..., GMAX)`): a longer window would drop entries without a word.
-static_assert(GMAX >= kVerifyMaxT, "a verify window's group can exceed GMAX entries");
+// a group holds one entry per token of the window routed to its expert, and a kernel keeps at most GMAX of them
+// (`min(..., GMAX)`): a longer group would drop entries without a word.  A window of 9..16 rows can route more tokens
+// than that to one expert, so `moe_grouped_s2` takes the window's largest group and runs the kernel again with
+// SKIP = GMAX over the entries from the GMAX-th on (the staging is GMAX entries wide in shared memory: 51 KB at 16
+// would not compile on CUDA, whose static limit is 48 KB).  Every entry's output is its own dot products, so the
+// passes are bitwise the one wide pass; SKIP = 0 is the kernel as it was.
+constexpr int kGroupPasses = (kVerifyMaxT + GMAX - 1) / GMAX;
+static_assert(kGroupPasses * GMAX >= kVerifyMaxT, "a verify window's group can exceed the passes' entries");
 constexpr int GU_ROWS = 32;                      // gate/up rows per block: 4 per warp
 constexpr int D_ROWS = 64;                       // down rows per block: 8 per warp
 
@@ -814,6 +855,7 @@ __device__ __forceinline__ float chunk_dot(uint2 cb, const int* xw, float dw, fl
 // Gate/up: a block = GU_ROWS rows of ONE group.  The group's activations (each entry's token row of x_q8_0 and
 // its fp32 scales) are staged once into shared memory as aligned words; each warp then walks its rows, loading
 // each lane's code chunks once and dotting them with every entry.
+template <int SKIP>
 __global__ void __launch_bounds__(256) gu_grouped_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                          const int32_t* __restrict__ grp_start,
                                                          const int32_t* __restrict__ n_groups,
@@ -825,7 +867,8 @@ __global__ void __launch_bounds__(256) gu_grouped_kernel(const unsigned long lon
     __shared__ float xs_d[GMAX][H / 32];
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
-    const int e0 = grp_start[g], ne = min(grp_start[g + 1] - e0, GMAX);
+    const int e0 = grp_start[g] + SKIP, ne = min(grp_start[g + 1] - e0, GMAX);
+    if (SKIP > 0 && ne <= 0) return;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     for (int i = t; i < ne * (H / 32); i += blockDim.x) {
         const int k = i / (H / 32), c = i - k * (H / 32);
@@ -876,6 +919,7 @@ __global__ void __launch_bounds__(256) gu_grouped_kernel(const unsigned long lon
 
 // Down: a block = D_ROWS rows of ONE group; the entries' quantized intermediates staged once.  A down row is 20
 // chunks, so lanes 0..19 each hold one chunk, as in the per-entry kernel.
+template <int SKIP>
 __global__ void __launch_bounds__(256) down_grouped_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                            const int32_t* __restrict__ grp_start,
                                                            const int32_t* __restrict__ n_groups,
@@ -887,7 +931,8 @@ __global__ void __launch_bounds__(256) down_grouped_kernel(const unsigned long l
     __shared__ float hs_d[GMAX][FF / 32];
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
-    const int e0 = grp_start[g], ne = min(grp_start[g + 1] - e0, GMAX);
+    const int e0 = grp_start[g] + SKIP, ne = min(grp_start[g + 1] - e0, GMAX);
+    if (SKIP > 0 && ne <= 0) return;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     for (int i = t; i < ne * (FF / 32); i += blockDim.x) {
         const int k = i / (FF / 32), c = i - k * (FF / 32);
@@ -949,6 +994,7 @@ __device__ __forceinline__ void stage_chunk(const uint8_t* __restrict__ xb, floa
     xs_dh[i] = make_int2(__float_as_int(dx), hx);
 }
 
+template <int SKIP>
 __global__ void __launch_bounds__(256) gu_grouped_t_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                            const int32_t* __restrict__ grp_start,
                                                            const int32_t* __restrict__ n_groups,
@@ -961,7 +1007,8 @@ __global__ void __launch_bounds__(256) gu_grouped_t_kernel(const unsigned long l
     __shared__ int2 xs_dh[GMAX * NC];            // 5 KB: (dx as bits, hx)
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
-    const int e0 = grp_start[g], ne = min(grp_start[g + 1] - e0, GMAX);
+    const int e0 = grp_start[g] + SKIP, ne = min(grp_start[g + 1] - e0, GMAX);
+    if (SKIP > 0 && ne <= 0) return;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     for (int i = t; i < ne * NC; i += blockDim.x) {
         const int k = i / NC, c = i - k * NC;
@@ -1015,6 +1062,7 @@ __global__ void __launch_bounds__(256) gu_grouped_t_kernel(const unsigned long l
     }
 }
 
+template <int SKIP>
 __global__ void __launch_bounds__(256) down_grouped_t_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                              const int32_t* __restrict__ grp_start,
                                                              const int32_t* __restrict__ n_groups,
@@ -1027,7 +1075,8 @@ __global__ void __launch_bounds__(256) down_grouped_t_kernel(const unsigned long
     __shared__ int2 hs_dh[GMAX * NC];
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
-    const int e0 = grp_start[g], ne = min(grp_start[g + 1] - e0, GMAX);
+    const int e0 = grp_start[g] + SKIP, ne = min(grp_start[g + 1] - e0, GMAX);
+    if (SKIP > 0 && ne <= 0) return;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     for (int i = t; i < ne * NC; i += blockDim.x) {
         const int k = i / NC, c = i - k * NC;
@@ -1130,10 +1179,18 @@ void moe_group_resident(const int32_t* ids, int n, int k_per_tok, const uint8_t*
     check("moe_group_resident", stream);
 }
 
-void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
-                    const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
-                    const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream) {
+static void grouped_s2_impl(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                            const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
+                            const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream,
+                            int max_group) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (max_group < 1 || max_group > kGroupPasses * GMAX) {
+        std::fprintf(stderr, "moe_grouped_s2: a group of %d entries, at most %d\n", max_group, kGroupPasses * GMAX);
+        std::exit(1);
+    }
+    // a group of more than GMAX entries (a window of 9..16 rows, wide builds only): the entries from the GMAX-th on, too
+    constexpr bool kWide = kGroupPasses > 1;
+    const bool second = kWide && max_group > GMAX;
     cudaStream_t cs = (cudaStream_t) stream;
     const uint64_t gu_bytes = ((uint64_t) cap_entries * (uint64_t) (2 * FF) * 4 + 15) & ~15ull;
     const uint64_t q8_bytes = ((uint64_t) cap_entries * (uint64_t) (FF / 32) * 34 + 15) & ~15ull;
@@ -1143,12 +1200,21 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
     const bool fast = new_grouped(x_q8_0, scratch);
     {
         const dim3 grid((unsigned) (2 * FF / GU_ROWS), (unsigned) cap_groups);
-        if (fast)
-            gu_grouped_t_kernel<<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales,
-                                                      gate_up, (int) cap_entries);
-        else
-            gu_grouped_kernel<<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales, gate_up,
-                                                    (int) cap_entries);
+        if (fast) {
+            gu_grouped_t_kernel<0><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales,
+                                                         gate_up, (int) cap_entries);
+            if constexpr (kWide)
+                if (second)
+                    gu_grouped_t_kernel<GMAX><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales,
+                                                                    gate_up, (int) cap_entries);
+        } else {
+            gu_grouped_kernel<0><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales, gate_up,
+                                                       (int) cap_entries);
+            if constexpr (kWide)
+                if (second)
+                    gu_grouped_kernel<GMAX><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_0, x_scales,
+                                                                  gate_up, (int) cap_entries);
+        }
         check("moe_grouped_s2/gu", stream);
     }
     // #783 PR-k (stuchapin909): SwiGLU and the scaled Q8_0 quantize of its result in one kernel (gate_up still gets the
@@ -1167,21 +1233,53 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
         check("moe_grouped_s2/swiglu_q8", stream);
     } else {
         const long long pairs = cap_entries * (long long) FF;
+#if defined(STRATA_EXPERIMENTAL_SM60)
+        if (strata::kernels::fuse_decode()) {
+        if (x_scales != nullptr)
+            swilu_quantize_q8_0_scaled(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, h_scales, stream);
+        else
+            swilu_quantize_q8_0(gate_up, gate_up + pairs, gate_up, pairs, 1, h_q8_0, stream);
+        } else
+#endif
+        {
         swiglu_kernel<<<(unsigned) ((pairs + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate_up, pairs);
         check("moe_grouped_s2/swiglu", stream);
         if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap_entries * (int64_t) FF, stream);
         else quantize_q8_0(gate_up, h_q8_0, cap_entries * (int64_t) FF, stream);
+        }
     }
     {
         const dim3 grid((unsigned) (H / D_ROWS), (unsigned) cap_groups);
         const float* hs = x_scales != nullptr ? h_scales : nullptr;
-        if (fast)
-            down_grouped_t_kernel<<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
-        else
-            down_grouped_kernel<<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
+        if (fast) {
+            down_grouped_t_kernel<0><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
+            if constexpr (kWide)
+                if (second) down_grouped_t_kernel<GMAX><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
+        } else {
+            down_grouped_kernel<0><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
+            if constexpr (kWide)
+                if (second) down_grouped_kernel<GMAX><<<grid, 256, 0, cs>>>(grp_ptr, grp_start, n_groups, ent_dst, h_q8_0, hs, out);
+        }
         check("moe_grouped_s2/down", stream);
     }
 }
+
+void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                    const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
+                    const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream) {
+    grouped_s2_impl(grp_ptr, grp_start, n_groups, ent_dst, ent_tok, cap_groups, cap_entries, x_q8_0, x_scales, scratch, out, stream,
+                    GMAX);
+}
+
+#if STRATA_VERIFY_MAX_T > 8
+void moe_grouped_s2_wide(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                         const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
+                         const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream,
+                         int max_group) {
+    grouped_s2_impl(grp_ptr, grp_start, n_groups, ent_dst, ent_tok, cap_groups, cap_entries, x_q8_0, x_scales, scratch, out, stream,
+                    max_group);
+}
+#endif
 
 void moe_hit_add(float* parts, const float* hit_out, const int32_t* dst, const int32_t* count, int64_t cap,
                  int64_t n_embd, void* stream) {

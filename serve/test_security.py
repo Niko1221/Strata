@@ -12,12 +12,13 @@ import json
 import socket
 import sys
 import unittest
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (ByteTokenizer, MockEngine, Service, allowed_hosts_of, host_allowed,  # noqa: E402
+from serve.server import (ByteTokenizer, MockEngine, Server, Service, allowed_hosts_of, host_allowed,  # noqa: E402
                           host_name, host_names_for, origin_allowed, serve)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,41 @@ class HostNames(unittest.TestCase):
             names = host_names_for("127.0.0.1", ["strata.example.com", "*"], ["https://chat.example.net"])
             self.assertTrue({"strata.example.com", "chat.example.net"} <= names)
             self.assertNotIn("*", names)
+
+
+class ListenAddress(unittest.TestCase):
+    def test_ipv4_address_family(self):
+        with Server(("127.0.0.1", 0), BaseHTTPRequestHandler, bind_and_activate=False) as s:
+            self.assertEqual(s.address_family, socket.AF_INET)
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 is not available")
+    def test_ipv6_loopback(self):
+        for host in ("::1", "2001:db8::7"):
+            try:
+                with Server((host, 0), BaseHTTPRequestHandler, bind_and_activate=False) as s:
+                    self.assertEqual(s.address_family, socket.AF_INET6)
+            except OSError as e:
+                self.skipTest(f"IPv6 socket is not available: {e}")
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "</think>\n\nok", max_context=4096), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        try:
+            httpd = serve(svc, host="::", port=0)
+        except OSError as e:
+            self.skipTest(f"IPv6 loopback is not available: {e}")
+        try:
+            self.assertEqual(httpd.address_family, socket.AF_INET6)
+            c = http.client.HTTPConnection("::1", httpd.server_address[1], timeout=10)
+            try:
+                c.request("GET", "/health")
+                r = c.getresponse()
+                self.assertEqual(r.status, 200)
+                r.read()
+            finally:
+                c.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 class HostCheck(unittest.TestCase):
@@ -237,6 +273,55 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                   {**headers, "Authorization": "Bearer s3cret"})[0], 200)
 
+    def test_terminal_telemetry_requires_the_existing_key(self):
+        self.start(api_key="s3cret")
+        self.assertEqual(self.req("GET", "/v1/telemetry")[0], 401)
+        code, body, _ = self.req("GET", "/v1/telemetry", headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["schema_version"], 1)
+        self.assertNotIn("input", json.dumps(body))
+
+    def test_read_only_telemetry_key_does_not_authorize_inference_or_management(self):
+        self.start(api_key="inference-secret", telemetry_key="read-secret")
+        header = {"Authorization": "Bearer read-secret"}
+        self.assertEqual(self.req("GET", "/v1/telemetry", headers=header)[0], 200)
+        self.assertEqual(self.req("GET", "/metrics", headers=header)[0], 401)
+        self.assertEqual(self.req("GET", "/v1/models", headers=header)[0], 401)
+        self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
+                                  {**header, "Content-Type": "application/json"})[0], 401)
+        self.assertEqual(self.req("POST", "/unload", {},
+                                  {**header, "Content-Type": "application/json"})[0], 401)
+
+    def test_read_only_key_gets_bounded_redacted_request_activity(self):
+        self.start(api_key="inference-secret", telemetry_key="read-secret")
+        prompt = "DO_NOT_LEAK_PROMPT_ACTIVITY"
+        request = {**self.chat_body(), "messages": [{"role": "user", "content": prompt}]}
+        self.assertEqual(self.req("POST", "/v1/chat/completions", request,
+                                  {"Authorization": "Bearer inference-secret",
+                                   "Content-Type": "application/json"})[0], 200)
+        code, body, _ = self.req("GET", "/v1/telemetry",
+                                 headers={"Authorization": "Bearer read-secret"})
+        self.assertEqual(code, 200)
+        activity = body["activity"]
+        self.assertEqual(activity["last_seq"], len(activity["events"]))
+        self.assertLessEqual(len(activity["events"]), 32)
+        self.assertEqual(activity["events"][0]["event"], "queued")
+        self.assertEqual(activity["events"][-1]["event"], "finished")
+        self.assertEqual([e["seq"] for e in activity["events"]],
+                         list(range(1, activity["last_seq"] + 1)))
+        self.assertEqual(len({e["request_id"] for e in activity["events"]}), 1)
+        serialized = json.dumps(activity)
+        for secret in (prompt, "inference-secret", "read-secret", "</think>"):
+            self.assertNotIn(secret, serialized)
+        with self.svc.status_lock:
+            for i in range(140):
+                self.svc._terminal_event_locked(f"{i:012x}", "queued")
+        bounded = self.req("GET", "/v1/telemetry",
+                           headers={"Authorization": "Bearer read-secret"})[1]["activity"]
+        self.assertEqual(len(self.svc.terminal_events), 128)
+        self.assertEqual(len(bounded["events"]), 32)
+        self.assertEqual(bounded["events"][-1]["seq"], bounded["last_seq"])
+
     # --- /unload and /load
     def test_control_body_arrives_before_the_operation_and_reply(self):
         self.start()
@@ -293,6 +378,25 @@ class OverHttp(unittest.TestCase):
                                                            "Origin": f"http://127.0.0.1:{self.port}"})[0], 501, path)
         self.assertEqual(self.req("POST", "/slots/0?action=save", body, {"Content-Type": "application/json"},
                                   host="rebind.example.com")[0], 403)
+
+
+class NoApiKey(unittest.TestCase):
+    """A key is recommended on a network, never required (owner decision 2026-10-20)."""
+
+    def test_none_means_no_key_on_purpose(self):
+        from serve.server import explicit_no_key
+        for v in ("none", " None ", "NONE"):
+            self.assertTrue(explicit_no_key(v))
+        for v in ("", None, "sk-none", ["none"], "none,x"):
+            self.assertFalse(explicit_no_key(v))
+
+    def test_the_warning_is_plain(self):
+        from serve.server import open_server_warning
+        w = open_server_warning(8080)
+        self.assertIn("anyone who can reach port 8080 can use the model", w)
+        self.assertNotIn("tools", w)
+        self.assertIn("and its tools", open_server_warning(8080, tools=True))
+        self.assertIn("public internet", open_server_warning(8080, public=True))
 
 
 if __name__ == "__main__":
