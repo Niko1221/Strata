@@ -367,7 +367,7 @@ class HipVision(unittest.TestCase):
         for asked in (None, "yes", "gpu"):            # pictures are on by default; the engine folder's readers settle gpu vs cpu
             self.assertEqual(quiet(setup.hip_vision, asked), ("gpu", ""))
 
-    def build(self, meta, vision, vexe=False):
+    def build(self, meta, vision, vexe=False, floor=""):
         """build_engine_hip with an engine that is already built: only the encoder can be missing."""
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -377,7 +377,8 @@ class HipVision(unittest.TestCase):
             if vexe:
                 (eng / setup.VEXE).write_bytes(b"vision")
             src, vsrc = "S", "V"
-            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "archs": ["gfx1201"], "src": src, **meta}))
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "archs": ["gfx1201"], "src": src,
+                                                       **({"isa_floor": floor} if floor else {}), **meta}))
             built = []
 
             def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
@@ -386,6 +387,10 @@ class HipVision(unittest.TestCase):
                 (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
 
             with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "cpu_info", lambda: ("test CPU", not floor, False)), \
+                    mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": floor}), \
+                    mock.patch.object(setup, "rocm_root", side_effect=AssertionError("cached engine needs no ROCm")), \
+                    mock.patch.object(setup, "run", side_effect=AssertionError("test must not run external commands")), \
                     mock.patch.object(setup, "source_hash", lambda paths: vsrc if paths == setup.VISION_SOURCES else src):
                 quiet(setup.build_engine_hip, {"arch": "gfx1201"}, "llama", vision)
             return built, json.loads((eng / "BUILD.json").read_text()), (eng / setup.VEXE).exists()
@@ -405,6 +410,15 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+    def test_an_older_cpu_keeps_its_matching_engine(self):
+        for floor in ("avx", "none"):
+            for vision in ("cpu", "none"):
+                with self.subTest(floor=floor, vision=vision):
+                    built, meta, have = self.build({}, vision, floor=floor)
+                    self.assertEqual([t for t, _ in built], ["strata-vision"] if vision == "cpu" else [])
+                    self.assertEqual(have, vision == "cpu")
+                    self.assertEqual(meta["isa_floor"], floor)
 
 
 class RotationalDisk(unittest.TestCase):
@@ -592,13 +606,14 @@ class CudaVision(unittest.TestCase):
     """#411: the image encoder setup compiles beside the CUDA engine is built for this PC, not portable."""
 
     def test_the_encoder_is_built_native(self):
-        for vision in ("gpu", "cpu"):
-            with self.subTest(vision), tempfile.TemporaryDirectory() as d:
+        for vision, floor in ((v, f) for v in ("gpu", "cpu") for f in ("", "avx", "none")):
+            with self.subTest(vision=vision, floor=floor), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 eng = root / "engine"
                 eng.mkdir()
                 (eng / setup.EXE).write_bytes(b"engine")                 # the engine is built: only the encoder
-                (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "S"}))
+                (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "S",
+                                                           **({"isa_floor": floor} if floor else {})}))
                 built = []
 
                 def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
@@ -607,6 +622,9 @@ class CudaVision(unittest.TestCase):
                     (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
 
                 with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                        mock.patch.object(setup, "cpu_info", lambda: ("test CPU", not floor, False)), \
+                        mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": floor}), \
+                        mock.patch.object(setup, "run", side_effect=AssertionError("test must not run external commands")), \
                         mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
                         mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
                         mock.patch.object(setup, "source_version", lambda: "test"):
