@@ -189,7 +189,7 @@ the card's name, its architecture and the build's list.
 
 - If CMake cannot find the HIP compiler, add `-DCMAKE_HIP_COMPILER=/path/to/rocm/llvm/bin/clang++`. Use the compiler and
   libraries from the same ROCm installation.
-- Do not enable both GPU backends in one build.
+- Do not enable both GPU backends in one build; the one opt-in source-build exception is the hybrid build below.
 - CMake fetches the pinned llama.cpp revision. For an offline build, point `STRATA_GGML_DIR` at a checkout of that exact
   revision.
 - Linux engine packages: `VARIANT=rx6000 packaging/build_hip_linux.sh`.
@@ -200,6 +200,30 @@ the card's name, its architecture and the build's list.
   `STRATA_HIPBLASLT_TUNING` at the file in `tools/hip/` (`gfx1151-hipblaslt-100401.txt` for hipBLASLt 1.4.1), or copy it into a
   `tuning/` folder next to the `strata` binary. The start log then has the line `prefill gemm: hipBLASLt tuning enabled (N rows,
   gfx1151, version 100401)`; without it, no table was taken.
+
+## CUDA and AMD cards in one process (opt-in hybrid build)
+
+`STRATA_HYBRID=ON` compiles the shared kernels for CUDA and for HIP and dispatches every call by the device it
+belongs to, so one engine process uses NVIDIA and AMD cards together.  It is opt-in and a source build: no
+ready-made package ships with it.
+
+```sh
+cmake -S . -B build-hybrid \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_CUDA=ON -DSTRATA_HYBRID=ON \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1100
+cmake --build build-hybrid --target strata -j2
+```
+
+Requirements: Linux x86-64, the CUDA setup plus the ROCm development files (hip, hipBLAS, rocBLAS; hipBLASLt
+optional, as in the HIP build).  `STRATA_ENABLE_HIP` stays off - the hybrid machinery adds the HIP devices
+itself - and `CMAKE_HIP_ARCHITECTURES` is required.  gfx906 is refused (its wave64 backend stays separate); the
+accepted architectures are the HIP backend's wave32 list above.  The AMD devices keep one numbering with the CUDA
+ones: NVIDIA cards first (`0..n-1`), AMD cards after them (`n..n+m-1`, at most 8); `--gpu` and the config use the
+combined numbers.  `strata --hip-probe` prints a short check that both halves of the binary are alive and names
+the AMD cards and their architectures.  An attached AMD card can hold the expert cache as the helper GPU of
+[MULTI_GPU.md](MULTI_GPU.md); a HIP primary on gfx1200 / gfx1201 takes the same prompt defaults as the pure-HIP
+builds.
 
 Run the registered checks with:
 

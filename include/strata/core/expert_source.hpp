@@ -216,6 +216,9 @@ public:
     /// Plan v0.3 P5: whether `blob(layer, expert)` lies in page-locked, CUDA-registered memory, so an
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// Bytes already in a host copy (a resident complement, or an arena that is not a demand-paged
+    /// file mapping). A file or mmap miss is false. The tail skip asks only while a helper is attached.
+    virtual bool host_copy(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
@@ -775,6 +778,16 @@ public:
     uint64_t resident_bytes() const { return complement_bytes_; }
     bool complement_pinned() const { return complement_pinned_; }
     bool complement_ready() const { return complement_ready_; }
+#if defined(STRATA_HYBRID)
+    static constexpr int kHybridHip = 8;
+    /// Device pointer for HIP device `hip_index`, or null when that device cannot see the row.
+    const uint8_t* apu_blob(int hip_index, int64_t layer, int64_t expert) const;
+    bool apu_ready() const {
+        for (const uint8_t* p : complement_apu_)
+            if (p != nullptr) return true;
+        return false;
+    }
+#endif
     uint64_t locked_bytes() const { return complement_locked_; }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
     int64_t resident_lent_slots() const { return complement_lent_slots_; }
@@ -916,6 +929,7 @@ public:
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
     uint64_t release(int64_t layer, int64_t expert) override;
     bool pinned(int64_t layer, int64_t expert) const override;
+    bool host_copy(int64_t layer, int64_t expert) const override { return has_resident(layer, expert); }
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
@@ -1205,6 +1219,10 @@ private:
     void* complement_arena_ = nullptr;
     const uint8_t* complement_host_ = nullptr;
     const uint8_t* complement_device_ = nullptr;
+#if defined(STRATA_HYBRID)
+    /// One hipHostGetDevicePointer per HIP device. A null slot keeps those rows off that device.
+    const uint8_t* complement_apu_[kHybridHip] = {};
+#endif
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
@@ -1282,6 +1300,7 @@ public:
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
     int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
+    bool host_copy(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
     bool pcie_layer(int64_t layer) const override;

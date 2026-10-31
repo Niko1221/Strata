@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-let selected = null, detail = null, pane = "input", records = [], state = null, operating = false, stamp = "", actionError = "";
+let selected = null, detail = null, pane = "input", records = [], state = null, operating = false, stamp = "", actionError = "", controlLabel = "";
 let apiKey = sessionStorage.getItem("strata.monitor.key") || "";
 document.documentElement.dataset.theme = localStorage.getItem("strata.theme") || "dark";
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
@@ -80,8 +80,11 @@ async function refresh() {
     }
     const inflight = Math.max(status.activity.in_flight, records.filter(active).length);
     const loading = records.some(r => r.state === "loading");
-    text("loaded", loading ? "Loading…" : inflight ? "In use" : status.loaded ? "Loaded" : "Unloaded");
-    $("model-state").className = `value ${inflight || loading ? "busy" : status.loaded ? "loaded" : ""}`;
+    text("loaded", controlLabel || (loading ? "Loading…" : inflight ? "In use" : status.loaded ? "Loaded" : "Unloaded"));
+    // The pill's colour follows the same guard as the label above: while a control request is in flight the
+    // live status still says "loaded" (the engine is only gone when the unload answers), and a green pill
+    // under an "Unloading…" label contradicts it - so a control in flight renders the busy state.
+    $("model-state").className = `value ${controlLabel || inflight || loading ? "busy" : status.loaded ? "loaded" : ""}`;
     text("model", status.model); text("count", records.length);
     text("active", inflight ? `${inflight} active / queued` : status.auto_load ? "Loads automatically on the next request" : "No active requests");
     const last = records.find(r => !active(r));
@@ -95,10 +98,13 @@ async function refresh() {
 async function control(load) {
   actionError = "";
   operating = true; $("load").disabled = $("unload").disabled = true;
-  text("loaded", load ? "Loading…" : "Unloading…");
-  try { await api(load ? "/load" : "/unload", {}); notice(""); }
+  controlLabel = load ? "Loading…" : "Unloading…"; text("loaded", controlLabel);
+  // ?wait=240 (not ?wait=1, which means the server's 300 s UNLOAD_WAIT_S default): the polite window is
+  // strictly under a browser's ~300 s fetch timeout, so a pathologically busy turn answers the readable
+  // 409 JSON the page can show instead of dying as a browser-level timeout.
+  try { await api(load ? "/load" : "/unload?wait=240", {}); notice(""); }
   catch (error) { actionError = error.message; notice(actionError); }
-  finally { operating = false; await refresh(); }
+  finally { controlLabel = ""; operating = false; await refresh(); }
 }
 $("load").onclick = () => control(true); $("unload").onclick = () => control(false);
 $("key").onclick = () => { $("auth").hidden = !$("auth").hidden; if (!$("auth").hidden) $("api-key").focus(); };
