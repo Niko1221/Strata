@@ -1057,6 +1057,61 @@ class RuntimeTests(unittest.TestCase):
             runtime.start("local", wait=0, shutdown_timeout=2)
         self.assertTrue(state_path.exists())
 
+    def test_killed_host_before_launch_recovers_only_explicit_no_child_marker(self):
+        # The owner publishes its no-child marker before its state. Hold it in
+        # planning, kill it at that exact boundary, then recover without ever
+        # launching a server or trusting an unrecorded PID.
+        code = ("from strata_control import runtime\n"
+                "import time\n"
+                "runtime.Host._plan = lambda self: time.sleep(120)\n"
+                "runtime.Host('local', shutdown_timeout=2).serve()\n")
+        owner = subprocess.Popen([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
+                                 env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        state_path, _, _ = runtime._paths("local")
+        try:
+            deadline = time.monotonic() + 12
+            while not state_path.exists() and owner.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(state_path.exists(), "owner did not publish its state")
+            state = runtime._read_state("local")
+            marker = runtime._child_marker("local", state["token"])
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")),
+                             {"host_token": state["token"], "phase": "no_child"})
+            owner.kill()
+            owner.wait(timeout=5)
+            # TerminateProcess can complete before Windows releases the file lease.
+            deadline = time.monotonic() + 5
+            while runtime._host_lease_active("local") and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(runtime._host_lease_active("local"))
+            self.assertTrue(runtime._recover_stale("local", wait=0))
+            self.assertFalse(state_path.exists())
+            self.assertFalse(marker.exists())
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
+
+    def test_missing_marker_still_refuses_recovery(self):
+        state_path, socket_path, _ = runtime._paths("local")
+        state = {"schema_version": 1, "profile": "local",
+                 "socket": "tcp:127.0.0.1:50000" if WINDOWS else str(socket_path),
+                 "token": "a" * 64, "host_pid": 999999}
+        lease = runtime._write_new(state_path, (json.dumps(state) + "\n").encode())
+        runtime._unlock_file(lease)
+        os.close(lease)
+        with self.assertRaisesRegex(profiles.ProfileError, "no valid child ownership record"):
+            runtime._recover_stale("local", wait=0)
+        self.assertTrue(state_path.exists())
+
+    def test_no_child_marker_failure_never_publishes_host_state(self):
+        host = runtime.Host("local", shutdown_timeout=2)
+        with mock.patch.object(host, "_mark_child", side_effect=OSError("marker unavailable")):
+            with self.assertRaisesRegex(OSError, "marker unavailable"):
+                host.serve()
+        self.assertFalse(host.state_path.exists())
+
     # ---- owner transport, attach and identity (POSIX socket and Windows loopback alike)
 
     def _stale_host(self, child_pid, *, started=None, token="a" * 64):

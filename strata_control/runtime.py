@@ -315,28 +315,37 @@ def _recover_stale(name: str, *, wait: float) -> bool:
             child = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise ProfileError("lost host has no valid child ownership record; inspect before recovery", 6) from None
-        if not isinstance(child, dict) or child.get("host_token") != state["token"] or \
-                child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
+        if not isinstance(child, dict) or child.get("host_token") != state["token"]:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
-        deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        written = details.st_mtime
-        while _child_present(child, written) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        if _child_present(child, written):
-            raise ProfileError("lost host child is still present; retry after it exits", 6)
-        if not isinstance(child.get("ready"), str):
-            raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
-        ready = Path(child["ready"])
-        if ready.parent != runtime_dir() or not ready.name.startswith(name + "-") or \
-                not ready.name.endswith(".ready.json"):
-            raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
-        try:
-            details = ready.lstat()
-            if not stat.S_ISREG(details.st_mode) or not _is_private(details, ready):
-                raise ProfileError("lost host ready file is invalid; inspect before recovery", 6)
-            ready.unlink()
-        except FileNotFoundError:
-            pass
+        prelaunch = child.get("phase") == "no_child"
+        if prelaunch:
+            # Written before the state file. This exact record proves that this
+            # owner had not yet reached the server launch path. An absent marker
+            # cannot make that claim and still blocks recovery.
+            if set(child) != {"host_token", "phase"}:
+                raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
+        else:
+            if child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
+                raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
+            deadline = time.monotonic() + min(45.0, max(5.0, wait))
+            written = details.st_mtime
+            while _child_present(child, written) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if _child_present(child, written):
+                raise ProfileError("lost host child is still present; retry after it exits", 6)
+            if not isinstance(child.get("ready"), str):
+                raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
+            ready = Path(child["ready"])
+            if ready.parent != runtime_dir() or not ready.name.startswith(name + "-") or \
+                    not ready.name.endswith(".ready.json"):
+                raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
+            try:
+                details = ready.lstat()
+                if not stat.S_ISREG(details.st_mode) or not _is_private(details, ready):
+                    raise ProfileError("lost host ready file is invalid; inspect before recovery", 6)
+                ready.unlink()
+            except FileNotFoundError:
+                pass
         if not owner_transport.WINDOWS:
             # POSIX: the endpoint is a filesystem socket, so it can be inspected directly. A socket
             # that is still accepting means a live owner, and nothing may be recovered over it.
@@ -362,6 +371,8 @@ def _recover_stale(name: str, *, wait: float) -> bool:
         # inspect and none to clean up. Recovery rests on the state file, the owner pid and the
         # token, all of which the caller has already validated.
         snapshots = list(runtime_dir().glob(f"{name}-{state['token']}-*.rollback.json"))
+        if prelaunch and snapshots:
+            raise ProfileError("lost host prelaunch state has config snapshots; inspect before recovery", 6)
         if len(snapshots) > 64:
             raise ProfileError("too many lost-host config snapshots; inspect before recovery", 6)
         for snapshot in snapshots:
@@ -1279,6 +1290,7 @@ class Host:
             signal.signal(signal.SIGINT, shutdown)
             if hasattr(signal, "SIGBREAK"):      # Windows: the signal a console Ctrl+Break / a closing console sends
                 signal.signal(signal.SIGBREAK, shutdown)
+            self._mark_child("no_child")
             self.state_fd = _write_new(self.state_path, (json.dumps({"schema_version": 1, "profile": self.name,
                                                                      "socket": bound_address, "token": self.token,
                                                                      "host_pid": os.getpid()}) + "\n").encode())
