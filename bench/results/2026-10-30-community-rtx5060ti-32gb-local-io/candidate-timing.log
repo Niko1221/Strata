@@ -1,0 +1,15 @@
+# short-code
+strata decode CPU phases: gate/up 11.938, quantize 0.128, down 6.366 ms/window
+strata decode direct I/O: submit 3.769, completion wait 17.962, copy 3.506 ms/window; 16.64 calls/window, 0.0 MB/window read directly into the destination, 0.00 registered batches/window (thread sums, may overlap)
+strata decode timing: 110 windows, avg T 2.69, 2.33 tokens/window, 58.34 ms/window = adapt wait 1.47 + verify 54.73 (GPU-reach wait 12.94 + per-layer host 40.59 [plan 0.09 actq 0.15 jobs 20.97 CPU 18.44] + stage 0.91) + commit/emit 0.02 + draft 2.11 + adapt join 0.00 + other 0.01; per layer-window: CPU experts 7.40 (9.13 entries), VRAM hits 17.14, PCIe 0.64; 23.6 swaps/window
+strata serve: prompt 29 tokens = 0 reused + 29 read in 726 ms (40.0 tok/s), 256 generated in 6418 ms (39.9 tok/s), drafts accepted 146 of 186, 1 checkpoints
+# long-code-0
+strata decode CPU phases: gate/up 12.161, quantize 0.123, down 6.776 ms/window
+strata decode direct I/O: submit 2.510, completion wait 27.924, copy 29.695 ms/window; 12.18 calls/window, 0.0 MB/window read directly into the destination, 0.00 registered batches/window (thread sums, may overlap)
+strata decode timing: 112 windows, avg T 2.45, 2.29 tokens/window, 99.56 ms/window = adapt wait 1.50 + verify 95.30 (GPU-reach wait 14.35 + per-layer host 79.60 [plan 0.08 actq 0.12 jobs 57.79 CPU 19.07] + stage 2.53) + commit/emit 0.28 + draft 2.46 + adapt join 0.00 + other 0.02; per layer-window: CPU experts 5.02 (5.69 entries), VRAM hits 18.43, PCIe 0.34; 23.1 swaps/window
+strata serve: prompt 130433 tokens = 0 reused + 130433 read in 200100 ms (651.8 tok/s), 256 generated in 11151 ms (23.0 tok/s), drafts accepted 144 of 162, 3 checkpoints
+# long-code-1
+strata decode CPU phases: gate/up 6.665, quantize 0.060, down 3.738 ms/window
+strata decode direct I/O: submit 1.646, completion wait 7.769, copy 1.645 ms/window; 8.08 calls/window, 0.0 MB/window read directly into the destination, 0.00 registered batches/window (thread sums, may overlap)
+strata decode timing: 115 windows, avg T 2.37, 2.23 tokens/window, 39.83 ms/window = adapt wait 0.29 + verify 37.19 (GPU-reach wait 14.90 + per-layer host 21.10 [plan 0.07 actq 0.11 jobs 9.88 CPU 10.47] + stage 0.56) + commit/emit 0.02 + draft 2.32 + adapt join 0.00 + other 0.01; per layer-window: CPU experts 4.37 (4.92 entries), VRAM hits 18.54, PCIe 0.27; 23.1 swaps/window
+strata serve: prompt 130433 tokens = 130426 reused + 7 read in 416 ms (16.8 tok/s), 256 generated in 4581 ms (55.9 tok/s), drafts accepted 143 of 158, 3 checkpoints

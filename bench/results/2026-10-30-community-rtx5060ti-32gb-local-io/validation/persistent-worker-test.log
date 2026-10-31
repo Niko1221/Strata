@@ -1,0 +1,1 @@
+PASS: worker reuse, TLS lifetime, completion visibility and shutdown

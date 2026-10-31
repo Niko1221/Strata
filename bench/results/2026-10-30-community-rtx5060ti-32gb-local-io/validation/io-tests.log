@@ -1,0 +1,8 @@
+FileExpertSource: direct destination reads: tested alignment 512 bytes (0: scratch only)
+FileExpertSource: direct read-ahead enabled: 2 workers, 4 MiB/window; at most 64 MiB of unconsumed predictions in the stage pool
+FileExpertSource: direct read-ahead enabled: 2 workers, 32 MiB/window; at most 64 MiB of unconsumed predictions in the stage pool
+direct destination: alignment 512, bytes 12441600: PASS
+io prefetch: 0 read ahead, 0 used, 300 skipped, pread 0 B: bytes PASS
+direct read-ahead: 32 read ahead, 2 used, 0 skipped, pread 0 B: bytes PASS
+direct startup: 256 reusable buffers: PASS
+file_expert_source_test: PASS

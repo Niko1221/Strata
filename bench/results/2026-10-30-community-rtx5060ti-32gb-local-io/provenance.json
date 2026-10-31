@@ -1,0 +1,120 @@
+{
+  "contributor": "dhsgud",
+  "upstream_bases": {
+    "0.1.52": "5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d",
+    "0.1.54": "870aedd9e1ebe1c91f94da93b59af17729f6c5c0"
+  },
+  "evidence_repository": "https://github.com/dhsgud/Strata",
+  "evidence_commits": {
+    "0.1.52": "1138fb7f3e4367c112752a0c3c1fb79ceee2f325",
+    "0.1.54": "3a47337a3cf6d3d8211c473c3205f2f208e37b41"
+  },
+  "binary_sha256": {
+    "0.1.52": "6f9597981b68c9d0f4af1a8a8efa1c444db16eb428413eaaa6ac0bc2124fd44d",
+    "0.1.54": "d6bc91df6aaf9cd75858c6f18af6309845286be54db234b2c934e06694203f86"
+  },
+  "llama_cpp_pin": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "build": "Release; CUDA 13.1.115; GCC 15.2.0; sm_120; native CPU; native experts ON; DSV41 OFF",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5060 Ti",
+    "vram_MiB": 16311,
+    "cpu": "Intel Core i7-13700",
+    "logical_cpus": 24,
+    "installed_RAM_GB": 32,
+    "MemTotal_KiB": 32047516,
+    "storage": "NVMe, NTFS3, rw/noatime/prealloc",
+    "os": "Ubuntu 26.04; Linux 7.0.0-38-generic",
+    "nvidia_driver": "595.91.07",
+    "active_pcie_link_during_runs": null,
+    "power_and_temperature_during_runs": null,
+    "peak_memory_during_runs": null
+  },
+  "model": {
+    "repository": "loscrossos/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+    "revision": "2828d17d8bc5128e9fa8c8eb329f7a041d37787d",
+    "quant": "IQ3_XXS",
+    "shards_previously_verified": [
+      {
+        "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "size": 39785790560,
+        "sha256": "e66b543e5b89f039c81e5d74c31d2410de60e3cb84a7b89aec1f2ce11fdd9830"
+      },
+      {
+        "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+        "size": 36180282560,
+        "sha256": "d219681902f80f677b200d6bbb30387010de6cea51f6cc14ef90d873a5357a85"
+      }
+    ],
+    "original_finetune_revision": null,
+    "vision": false
+  },
+  "mtp": {
+    "repository": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    "expert_quant": "q2_0",
+    "tools": [
+      "tools/mtp_fetch.py",
+      "tools/mtp_pack.py",
+      "tools/mtp_rt.py"
+    ]
+  },
+  "runtime_assets_hashes_captured_after_runs": [
+    {
+      "file": "mtp/rt/dense.bin",
+      "size": 116099072,
+      "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
+    },
+    {
+      "file": "mtp/rt/dense.txt",
+      "size": 1851,
+      "sha256": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd"
+    },
+    {
+      "file": "mtp/rt/draft_vocab.bin",
+      "size": 425196,
+      "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
+    },
+    {
+      "file": "mtp/rt/experts.bin",
+      "size": 707788800,
+      "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+    },
+    {
+      "file": "pack/tokenizer/chat_template.jinja",
+      "size": 8952,
+      "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+    },
+    {
+      "file": "pack/tokenizer/merges.txt",
+      "size": 3353258,
+      "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
+    },
+    {
+      "file": "pack/tokenizer/token_type.json",
+      "size": 744960,
+      "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+    },
+    {
+      "file": "pack/tokenizer/tokenizer.json",
+      "size": 541,
+      "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
+    },
+    {
+      "file": "pack/tokenizer/vocab.json",
+      "size": 5737005,
+      "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+    }
+  ],
+  "profile": {
+    "file": "expert-profile-long-trained.bin",
+    "bytes": 196632,
+    "sha256": "b9fddd8889e82c2a4113663b72b193030fab6b6f86746074e6cb27591fef60ab"
+  },
+  "packed_bytes_verification": {
+    "all_expert_bytes_identical": true,
+    "experts_checked": 24576,
+    "expert_bytes": 42912972800,
+    "dense_bytes_identical": true,
+    "dense_sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13"
+  }
+}

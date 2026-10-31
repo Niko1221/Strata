@@ -1,0 +1,592 @@
+{
+  "measured_date": "2026-10-30",
+  "run_order": [
+    "baseline",
+    "candidate",
+    "baseline-fresh",
+    "integrated"
+  ],
+  "kind": "custom nonstandard single-run checks",
+  "arms": {
+    "baseline": {
+      "summary": {
+        "quality_passed": 12,
+        "rows": [
+          {
+            "case": "short-code",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.784,
+            "total_s": 6.816,
+            "prompt_tokens": 29,
+            "reused_tokens": 0,
+            "read_tokens": 29,
+            "generated_tokens": 256,
+            "prompt_tps": 41.4,
+            "prompt_tps_source": "engine",
+            "decode_tps": 42.3,
+            "decode_tps_source": "engine",
+            "prompt_ms": 700.1,
+            "decode_ms": 6052.5,
+            "drafts_offered": 184,
+            "drafts_accepted": 146
+          },
+          {
+            "case": "long-code-0",
+            "ok": true,
+            "err": null,
+            "ttft_s": 181.68,
+            "total_s": 186.955,
+            "prompt_tokens": 130433,
+            "reused_tokens": 0,
+            "read_tokens": 130433,
+            "generated_tokens": 256,
+            "prompt_tps": 722.1,
+            "prompt_tps_source": "engine",
+            "decode_tps": 48.3,
+            "decode_tps_source": "engine",
+            "prompt_ms": 180633.7,
+            "decode_ms": 5298.7,
+            "drafts_offered": 162,
+            "drafts_accepted": 143,
+            "needle_ok": true
+          },
+          {
+            "case": "long-code-1",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.28,
+            "total_s": 4.836,
+            "prompt_tokens": 130433,
+            "reused_tokens": 130426,
+            "read_tokens": 7,
+            "generated_tokens": 256,
+            "prompt_tps": 75.3,
+            "prompt_tps_source": "engine",
+            "decode_tps": 56.0,
+            "decode_tps_source": "engine",
+            "prompt_ms": 93.0,
+            "decode_ms": 4572.4,
+            "drafts_offered": 157,
+            "drafts_accepted": 146,
+            "needle_ok": true
+          }
+        ]
+      },
+      "quality": {
+        "passed": 12,
+        "total": 12,
+        "corpus_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+        "rows": [
+          {
+            "case": "sanity-I1",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I2",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I3",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I4",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R1",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R2",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R3",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R4",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-T1",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T2",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T3",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T4",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          }
+        ]
+      }
+    },
+    "candidate": {
+      "summary": {
+        "quality_passed": 12,
+        "rows": [
+          {
+            "case": "short-code",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.76,
+            "total_s": 7.159,
+            "prompt_tokens": 29,
+            "reused_tokens": 0,
+            "read_tokens": 29,
+            "generated_tokens": 256,
+            "prompt_tps": 40.0,
+            "prompt_tps_source": "engine",
+            "decode_tps": 39.9,
+            "decode_tps_source": "engine",
+            "prompt_ms": 725.7,
+            "decode_ms": 6417.6,
+            "drafts_offered": 186,
+            "drafts_accepted": 146
+          },
+          {
+            "case": "long-code-0",
+            "ok": true,
+            "err": null,
+            "ttft_s": 201.606,
+            "total_s": 212.735,
+            "prompt_tokens": 130433,
+            "reused_tokens": 0,
+            "read_tokens": 130433,
+            "generated_tokens": 256,
+            "prompt_tps": 651.8,
+            "prompt_tps_source": "engine",
+            "decode_tps": 23.0,
+            "decode_tps_source": "engine",
+            "prompt_ms": 200100.2,
+            "decode_ms": 11151.1,
+            "drafts_offered": 162,
+            "drafts_accepted": 144,
+            "needle_ok": true
+          },
+          {
+            "case": "long-code-1",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.647,
+            "total_s": 5.208,
+            "prompt_tokens": 130433,
+            "reused_tokens": 130426,
+            "read_tokens": 7,
+            "generated_tokens": 256,
+            "prompt_tps": 16.8,
+            "prompt_tps_source": "engine",
+            "decode_tps": 55.9,
+            "decode_tps_source": "engine",
+            "prompt_ms": 416.4,
+            "decode_ms": 4580.9,
+            "drafts_offered": 158,
+            "drafts_accepted": 143,
+            "needle_ok": true
+          }
+        ]
+      },
+      "quality": {
+        "passed": 12,
+        "total": 12,
+        "corpus_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+        "rows": [
+          {
+            "case": "sanity-I1",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I2",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I3",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I4",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R1",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R2",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R3",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R4",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-T1",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T2",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T3",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T4",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          }
+        ]
+      }
+    },
+    "baseline-fresh": {
+      "summary": {
+        "quality_passed": 12,
+        "rows": [
+          {
+            "case": "short-code",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.776,
+            "total_s": 6.982,
+            "prompt_tokens": 29,
+            "reused_tokens": 0,
+            "read_tokens": 29,
+            "generated_tokens": 256,
+            "prompt_tps": 39.8,
+            "prompt_tps_source": "engine",
+            "decode_tps": 41.1,
+            "decode_tps_source": "engine",
+            "prompt_ms": 728.9,
+            "decode_ms": 6221.4,
+            "drafts_offered": 187,
+            "drafts_accepted": 148
+          },
+          {
+            "case": "long-code-0",
+            "ok": true,
+            "err": null,
+            "ttft_s": 185.848,
+            "total_s": 191.578,
+            "prompt_tokens": 130433,
+            "reused_tokens": 0,
+            "read_tokens": 130433,
+            "generated_tokens": 256,
+            "prompt_tps": 702.6,
+            "prompt_tps_source": "engine",
+            "decode_tps": 44.5,
+            "decode_tps_source": "engine",
+            "prompt_ms": 185630.4,
+            "decode_ms": 5754.9,
+            "drafts_offered": 161,
+            "drafts_accepted": 138,
+            "needle_ok": true
+          },
+          {
+            "case": "long-code-1",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.281,
+            "total_s": 5.066,
+            "prompt_tokens": 130433,
+            "reused_tokens": 130426,
+            "read_tokens": 7,
+            "generated_tokens": 256,
+            "prompt_tps": 67.2,
+            "prompt_tps_source": "engine",
+            "decode_tps": 53.3,
+            "decode_tps_source": "engine",
+            "prompt_ms": 104.1,
+            "decode_ms": 4806.1,
+            "drafts_offered": 163,
+            "drafts_accepted": 145,
+            "needle_ok": true
+          }
+        ]
+      },
+      "quality": {
+        "passed": 12,
+        "total": 12,
+        "corpus_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+        "rows": [
+          {
+            "case": "sanity-I1",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I2",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I3",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I4",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R1",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R2",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R3",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R4",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-T1",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T2",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T3",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T4",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          }
+        ]
+      }
+    },
+    "integrated": {
+      "summary": {
+        "quality_passed": 12,
+        "rows": [
+          {
+            "case": "short-code",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.736,
+            "total_s": 6.989,
+            "prompt_tokens": 29,
+            "reused_tokens": 0,
+            "read_tokens": 29,
+            "generated_tokens": 256,
+            "prompt_tps": 40.6,
+            "prompt_tps_source": "engine",
+            "decode_tps": 40.8,
+            "decode_tps_source": "engine",
+            "prompt_ms": 714.8,
+            "decode_ms": 6270.1,
+            "drafts_offered": 184,
+            "drafts_accepted": 149
+          },
+          {
+            "case": "long-code-0",
+            "ok": true,
+            "err": null,
+            "ttft_s": 176.235,
+            "total_s": 181.708,
+            "prompt_tokens": 130433,
+            "reused_tokens": 0,
+            "read_tokens": 130433,
+            "generated_tokens": 256,
+            "prompt_tps": 741.0,
+            "prompt_tps_source": "engine",
+            "decode_tps": 46.6,
+            "decode_tps_source": "engine",
+            "prompt_ms": 176020.9,
+            "decode_ms": 5492.0,
+            "drafts_offered": 173,
+            "drafts_accepted": 150,
+            "needle_ok": true
+          },
+          {
+            "case": "long-code-1",
+            "ok": true,
+            "err": null,
+            "ttft_s": 0.175,
+            "total_s": 4.677,
+            "prompt_tokens": 130433,
+            "reused_tokens": 130426,
+            "read_tokens": 7,
+            "generated_tokens": 256,
+            "prompt_tps": 76.1,
+            "prompt_tps_source": "engine",
+            "decode_tps": 56.6,
+            "decode_tps_source": "engine",
+            "prompt_ms": 92.0,
+            "decode_ms": 4519.5,
+            "drafts_offered": 160,
+            "drafts_accepted": 146,
+            "needle_ok": true
+          }
+        ]
+      },
+      "quality": {
+        "passed": 12,
+        "total": 12,
+        "corpus_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+        "rows": [
+          {
+            "case": "sanity-I1",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I2",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I3",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-I4",
+            "category": "instruction",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R1",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R2",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R3",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the exact expected text"
+          },
+          {
+            "case": "sanity-R4",
+            "category": "retrieval",
+            "passed": true,
+            "reason": "the expected JSON value"
+          },
+          {
+            "case": "sanity-T1",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T2",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T3",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          },
+          {
+            "case": "sanity-T4",
+            "category": "tool_call",
+            "passed": true,
+            "reason": "the expected tool call"
+          }
+        ]
+      }
+    }
+  }
+}
