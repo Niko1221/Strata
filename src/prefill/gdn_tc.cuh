@@ -1,4 +1,5 @@
-// src/prefill/gdn_tc.cuh - the chunked DeltaNet recurrence's scan on the tensor cores (STRATA_GDN_TC=1), sm_80+.
+// src/prefill/gdn_tc.cuh - the chunked DeltaNet recurrence's scan on the tensor cores (STRATA_GDN_TC=1), sm_80+, and
+// sm_75 on the one-buffer plan (ONE).
 //
 // Included inside the anonymous namespace of src/prefill/kernels.cu and of src/prefill/gdn_rec_parity.cu, after
 // gdn_chunk_scan_kernel (the harness runs the engine's kernels verbatim: one text, included twice).  It uses S, HK, HV,
@@ -32,7 +33,13 @@
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 #define STRATA_GDN_TC_SM80 1
 #else
-#define STRATA_GDN_TC_SM80 0   // device code for older cards: the wrappers trap (gdn_rec_tc never launches there)
+#define STRATA_GDN_TC_SM80 0
+#endif
+// ldmatrix and the m16n8k8 mma are sm_75's: the Turing plan (ONE below) runs on them
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 750
+#define STRATA_GDN_TC_SM75 1
+#else
+#define STRATA_GDN_TC_SM75 0   // device code for older cards: the wrappers trap (gdn_rec_tc never launches there)
 #endif
 
 constexpr int GTC_KP = S + 8;     // f16 k / q rows: a 272-B stride puts the 8 rows of a ldmatrix 8x8 on 8 distinct 16-B lanes
@@ -54,6 +61,10 @@ static_assert(kTcScanSmemSplit == 97808, "gdn_tc.cuh: the split shared-memory pl
 // + the fused output norm's partial sums of squares [GTC_CW warps][GCH tokens] (SPLIT only): 98,832 B
 constexpr size_t kTcScanSmemSplitNorm = kTcScanSmemSplit + GTC_CW * GCH * 4;
 static_assert(kTcScanSmemSplitNorm == 98832, "gdn_tc.cuh: the split + norm shared-memory plan");
+// ONE (Turing, sm_75: 64 KB opt-in, no cp.async): every buffer single, the next chunk staged after this chunk's last read
+// (the state update), with plain copies: 62,480 B
+constexpr size_t kTcScanSmemOne = 4 * GCH * GTC_KP * 2 + GCH * GTC_VP * 4 + 4 * GCH * GTC_PP * 2 + GCH * 16 + 16;
+static_assert(kTcScanSmemOne == 62480, "gdn_tc.cuh: the one-buffer shared-memory plan");
 // the prep's scratch for a super-block (gdn_tc_scratch, one a device, 60.3 MB): the T images x 2^et as
 // [chunk][vh][2: hi, lo][GCH][GCH] f16 and their scales 2^-et as [chunk][vh], the token scalars as float4
 // [chunk][vh][GCH], the k and q images x 2^8 as [chunk][qh][4: k hi, k lo, q hi, q lo][GCH][S] and the P images x 2^8
@@ -121,7 +132,7 @@ __device__ __forceinline__ int gtc_scale_exp(float m) {
 //   ldmatrix m8n8.x4.b16: lanes 8m..8m+7 give the row addresses of matrix m; a lane gets (row gid, cols 2tig, 2tig+1)
 //                 of each matrix (the lower column in the low half), or with .trans (rows 2tig, 2tig+1; col gid)
 __device__ __forceinline__ void gtc_ldsm_x4(uint32_t (&r)[4], const void* smem) {
-#if STRATA_GDN_TC_SM80
+#if STRATA_GDN_TC_SM75
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
                  : "r"((unsigned) __cvta_generic_to_shared(smem)));
@@ -130,7 +141,7 @@ __device__ __forceinline__ void gtc_ldsm_x4(uint32_t (&r)[4], const void* smem) 
 #endif
 }
 __device__ __forceinline__ void gtc_ldsm_x4_trans(uint32_t (&r)[4], const void* smem) {
-#if STRATA_GDN_TC_SM80
+#if STRATA_GDN_TC_SM75
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
                  : "r"((unsigned) __cvta_generic_to_shared(smem)));
@@ -143,6 +154,14 @@ __device__ __forceinline__ void gtc_mma_f16(float (&c)[4], const uint32_t (&a)[4
     asm("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
         : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+#elif STRATA_GDN_TC_SM75
+    // no m16n8k16 before sm_80: the same product as two m16n8k8 steps, k 0..7 (a0, a1, b0) then k 8..15 (a2, a3, b1)
+    asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(b0));
+    asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[2]), "r"(a[3]), "r"(b1));
 #else
     (void) c; (void) a; (void) b0; (void) b1; __trap();
 #endif
@@ -189,7 +208,7 @@ __device__ __forceinline__ void gtc_split_store4(uint16_t* hi, uint16_t* lo, flo
 // a component each, and kept across them they cost 24 registers a thread
 __device__ __forceinline__ float4 gtc_lds128(const float4* p) {
     float4 v;
-#if STRATA_GDN_TC_SM80
+#if STRATA_GDN_TC_SM75
     asm volatile("ld.shared.v4.f32 {%0,%1,%2,%3}, [%4];"
                  : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w)
                  : "r"((unsigned) __cvta_generic_to_shared(p)));
@@ -438,7 +457,9 @@ __global__ void __launch_bounds__(256) gdn_tc_prep_kernel(const float* __restric
 // 8 warps, 2 a sub-partition, may have 255).
 // NORM (step 5: the output norm fused, the FP16 output written here) is not implemented yet; oc_out takes the FP32
 // output as gdn_chunk_scan_kernel writes it.
-template <bool NORM, bool SPLIT = false, int NP = 3, int NTL = 1>
+// ONE (SPLIT, Turing): the k / q images and the scalars single too (kTcScanSmemOne); the whole next chunk is staged after
+// this chunk's state update, so its load does not overlap the products.
+template <bool NORM, bool SPLIT = false, int NP = 3, int NTL = 1, bool ONE = false>
 __global__ void __launch_bounds__(GTC_CW * 32, 1)
 gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const uint16_t* __restrict__ tig_,
                    const float* __restrict__ teg, const float4* __restrict__ scg, const uint16_t* __restrict__ kqg,
@@ -454,20 +475,22 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
     // by every tile of the head; v only for its columns.  The fused output norm needs the whole head in one block: NORM => NTL == 1.
     static_assert(!NORM || NTL == 1, "gdn_tc_scan_kernel: the fused output norm needs a whole head in a block");
     static_assert(GTC_CW % NTL == 0, "gdn_tc_scan_kernel: tiles of whole warps");
+    static_assert(!ONE || (SPLIT && !NORM && NTL == 1), "gdn_tc_scan_kernel: the one-buffer plan is the split plan's, without the norm");
     constexpr int NT = (GTC_CW / NTL) * 32;
+    constexpr int NK = ONE ? 1 : 2;                                     // buffers of the k / q images and the scalars
     extern __shared__ __align__(16) unsigned char gtc_sm[];
-    uint16_t* kh = reinterpret_cast<uint16_t*>(gtc_sm);                 // [2][GCH][GTC_KP]  f16 of k x 2^8 (hi)
-    uint16_t* kl = kh + 2 * GCH * GTC_KP;                               // [2][GCH][GTC_KP]  what hi left out (lo)
-    uint16_t* qh = kl + 2 * GCH * GTC_KP;                               // q likewise
-    uint16_t* ql = qh + 2 * GCH * GTC_KP;
+    uint16_t* kh = reinterpret_cast<uint16_t*>(gtc_sm);                 // [NK][GCH][GTC_KP]  f16 of k x 2^8 (hi)
+    uint16_t* kl = kh + NK * GCH * GTC_KP;                              // [NK][GCH][GTC_KP]  what hi left out (lo)
+    uint16_t* qh = kl + NK * GCH * GTC_KP;                              // q likewise
+    uint16_t* ql = qh + NK * GCH * GTC_KP;
     constexpr int NV = SPLIT ? 1 : 2;                                   // buffers of v, T and P
-    float* sv = reinterpret_cast<float*>(ql + 2 * GCH * GTC_KP);        // [NV][GCH][GTC_VP]  v
+    float* sv = reinterpret_cast<float*>(ql + NK * GCH * GTC_KP);       // [NV][GCH][GTC_VP]  v
     uint16_t* th = reinterpret_cast<uint16_t*>(sv + NV * GCH * GTC_VP); // [NV][GCH][GTC_PP]  T x 2^et hi / lo
     uint16_t* tl = th + NV * GCH * GTC_PP;
     uint16_t* ph = tl + NV * GCH * GTC_PP;                              // [NV][GCH][GTC_PP]  P x 2^8 hi / lo
     uint16_t* pl = ph + NV * GCH * GTC_PP;
-    float4* sc = reinterpret_cast<float4*>(pl + NV * GCH * GTC_PP);     // [2][GCH]  (beta, exp(gamma), exp(gL - gamma), gamma)
-    float* ste = reinterpret_cast<float*>(sc + 2 * GCH);                // [2]  2^-et
+    float4* sc = reinterpret_cast<float4*>(pl + NV * GCH * GTC_PP);     // [NK][GCH]  (beta, exp(gamma), exp(gL - gamma), gamma)
+    float* ste = reinterpret_cast<float*>(sc + NK * GCH);               // [NK]  2^-et
     float* rss = ste + 2;                                               // NORM: [GTC_CW][GCH]  partial sums of squares
     const int vh = blockIdx.x / NTL, qhd = vh % HK, cb = (blockIdx.x % NTL) * (S / NTL);   // the tile's first column
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, gid = lane >> 2, tig = lane & 3;
@@ -523,12 +546,12 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
     stage(0, 0, 3);
     const float out_scale = rsqrtf((float) S);
     for (int ch = 0; ch < nch; ++ch) {
-        const int b = ch & 1;
+        const int b = ONE ? 0 : ch & 1;
         const int64_t c_t0 = t0 + (int64_t) ch * GCH;
         const int n = (int) min((int64_t) GCH, T - c_t0);
         gdn_cp_wait_all();   // this thread's pieces of chunk ch
         __syncthreads();     // every thread's: chunk ch's buffer complete; every read of the other one done
-        if (ch + 1 < nch) stage(ch + 1, b ^ 1, SPLIT ? 1 : 3);
+        if (!ONE && ch + 1 < nch) stage(ch + 1, b ^ 1, SPLIT ? 1 : 3);
         const uint16_t* bkh = kh + b * GCH * GTC_KP;
         const uint16_t* bkl = kl + b * GCH * GTC_KP;
         const uint16_t* bqh = qh + b * GCH * GTC_KP;
@@ -631,7 +654,7 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
                     if (t < n) oc_out[(c_t0 + t) * rs + (size_t) vh * S + ca + gid + 8 * (q >> 1)] = (ot[nt][q] * sOi) * out_scale;
                 }
         }
-        if (SPLIT) {   // v, T and P of this chunk are dead: every warp is past (d); the next chunk's land during (e)
+        if (SPLIT && !ONE) {   // v, T and P of this chunk are dead: every warp is past (d); the next chunk's land during (e)
             __syncthreads();
             if (ch + 1 < nch) stage(ch + 1, 0, 2);
         }
@@ -673,6 +696,10 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
         for (int j = 0; j < 16; ++j)
 #pragma unroll
             for (int q = 0; q < 4; ++q) s[j][q] *= sOi;
+        if (ONE && ch + 1 < nch) {   // every buffer of this chunk is dead: every warp is past (e)
+            __syncthreads();
+            stage(ch + 1, 0, 3);
+        }
     }
 #pragma unroll
     for (int j = 0; j < 16; ++j) {
