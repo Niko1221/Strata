@@ -1,6 +1,6 @@
 # Dense `qwen35` (Qwen3.5 / Qwen3.8 4B) — port plan
 
-Status: **M0 done** (guard, geometry, layout tables, family switch; 37/37 unit checks, and the real
+Status: **M0 + M1 done, greedy parity with llama.cpp** (guard, geometry, layout tables, family switch; 37/37 unit checks, and the real
 `Qwen3.8-4B-Q4_K_M` header reads as 32+1 MTP layers, 0 experts, FF 9216). Fork of `niko1221/strata` (upstream stays
 `origin`; this fork is `fork`).
 
@@ -72,6 +72,42 @@ The port touches none of this; the dense family inherits the same append-only, i
 conversation through `pi` must show `reused` > 0 on turns 2..N (the server prints `prompt N tokens = M reused + K
 read`); `tools/harness_reuse_probe.py` measures the interleaved-conversation case. The second-brain workload gets its
 own benchmark, separate from this gate.
+
+## Where it stands (M0+M1 done, first parity run)
+
+`empero-ai/Qwen3.8-4B-Distill-GGUF` (`Q4_K_M`, 2.78 GB, `qwen35`, 32 layers + 1 MTP, tied head) runs on the q36 engine
+path on the GTX 1650 (4 GB): **same tokens as llama.cpp**, greedy, from one prompt:
+
+| prompt | llama.cpp (`279MB` server, temp 0) | strata |
+|---|---|---|
+| `The capital of France is` (760,6511,314,9338,369) | `11751 13 561 6511 314 9564 369 19241 …` = " Paris. The capital of Germany is Berlin." | **identical 16 tokens** |
+| `The` (760) | top-1 `2614` | `2614` |
+
+What the port needed, beyond M0's tables:
+
+* loader: `ffn_gate/up/down.weight` into the shared-expert slot, no router/expert blobs, `router_ext` skipped; a tied head
+  (no `output.weight`) uses `token_embd.weight` as `m.head` (same `[n_embd, n_vocab]`, no second copy); `p` (the metadata
+  key prefix) follows the family's architecture string.
+* `f32()` (host) now dequantizes Q4_K/Q5_K/Q6_K/IQ4_* blocks through `strata/artifact/dequant.hpp` — the 4B distill stores
+  `ssm_alpha`/`ssm_beta` as Q4_K.
+* layer: a dense branch after `add_rms_post` (SwiGLU + `sh_down`, then the new `k_dense_out`: `x += mlp`,
+  `h = rms(x)·wn`); `k_moe_out` cannot serve it, it always reads its first expert's row.
+* `place_experts()` returns at once for `n_expert == 0` (it divided by the expert count: SIGFPE).
+* memory for a 4 GB card, all of it measured on the card: the auto-chunk rule budgets for expert weights that are not
+  there (it picked 2048 rows and OOMed), so the dense family takes chunk 512; the prompt GEMM's 45 MB dequant scratch is
+  not attempted below 640 MB free (`apply()`/`prep()` then read prompts on the native MMVQ — slower prefill, exact);
+  the attention-score buffer starts at 16 MB instead of 256 MB. **The ceiling is ~2K cells** (ctx 2048: 0.02 GiB free,
+  ctx 4096: OOM) — the weights are 2.59 GiB of the card.
+
+Two open items, both found by the parity run and neither fixed:
+
+1. **`warmup()` leaves state that `reset()` does not clear**: token 760 gives 89342 after a warm-up and 2614 from a clean
+   start. The warm-up is therefore off for the dense family (`run()`), which is a correctness workaround, not a fix — the
+   same `reset()` runs between two sequences, so this is a multi-turn/reuse item.
+2. **CUDA graph capture** was suspected first and is not the cause (same logits with and without); the graph stays on.
+
+Measured here (GTX 1650 4 GB, ctx 1024, chunk 512, prompt GEMM off): decode **37.5 tok/s**, prompt **87-91 tok/s**
+(the GEMM path would raise prefill; there is no room for its scratch on a 4 GB card).
 
 ## Risks
 

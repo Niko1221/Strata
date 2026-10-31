@@ -16,6 +16,7 @@
 //
 // Modes: --serve (serve/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
+#include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
 #include "strata/kernels/fused_gdn.hpp"
@@ -168,6 +169,25 @@ __global__ void k_moe_out(float* x, const float* parts, const int32_t* prow, con
         for (int k = 1; k < K_; ++k) acc = fmaf(wr[k], pk[k][i], acc);
         acc += gs * shared[(size_t) t * n + i];
         const float v = xr[i] + acc;
+        xr[i] = v;
+        s += v * v;
+    }
+    if (wn == nullptr) return;
+    s = block_sum(s, sh);
+    const float r = rsqrtf(s / (float) n + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) h[(size_t) t * n + i] = xr[i] * r * wn[i];
+}
+
+/// The dense FFN's end (Qwen3.5 / Qwen3.8 4B): there is no router and no gate, so the layer's one MLP is added as it
+/// is, then the next norm.  `k_moe_out` cannot serve: it always reads its first expert's row.
+__global__ void k_dense_out(float* x, const float* shared, const float* wn, float* h, int n, float eps) {
+    __shared__ float sh[kThreads];
+    const int t = blockIdx.x;
+    float* xr = x + (size_t) t * n;
+    const float* sr = shared + (size_t) t * n;
+    float s = 0.f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = xr[i] + sr[i];
         xr[i] = v;
         s += v * v;
     }
@@ -948,8 +968,33 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
             for (int j = 0; j < 32; ++j) h[b * 32 + j] = d * (float) (int8_t) q[2 + j];
         }
     } else {
-        std::fprintf(stderr, "strata-q36: %s is %s, expected F32, BF16, F16 or Q8_0\n", t.name.c_str(), t.type_name());
-        std::exit(1);
+        // a K-quant (the 4B distill stores ssm_alpha / ssm_beta as Q4_K): dequantized on the host by the artifact library
+        int el = 0, by = 0;
+        if (!strata::block_geometry(t.type, el, by) || el <= 0 || h.size() % (size_t) el != 0) {
+            std::fprintf(stderr, "strata-q36: %s is %s, expected F32, BF16, F16, Q8_0 or a K-quant\n",
+                         t.name.c_str(), t.type_name());
+            std::exit(1);
+        }
+        const size_t blocks = h.size() / (size_t) el;
+        for (size_t b = 0; b < blocks; ++b) {
+            const uint8_t* blk = src + b * (size_t) by;
+            float* out = h.data() + b * (size_t) el;
+            switch (t.type) {
+            case 2: strata::dequantize_q4_0(blk, out); break;
+            case 6: strata::dequantize_q5_0(blk, out); break;
+            case 7: strata::dequantize_q5_1(blk, out); break;
+            case 11: strata::dequantize_q3_K(blk, out); break;
+            case 12: strata::dequantize_q4_K(blk, out); break;
+            case 13: strata::dequantize_q5_K(blk, out); break;
+            case 14: strata::dequantize_q6_K(blk, out); break;
+            case 20: strata::dequantize_iq4_nl(blk, out); break;
+            case 23: strata::dequantize_iq4_xs(blk, out); break;
+            default:
+                std::fprintf(stderr, "strata-q36: %s is %s, which the reference dequantizers do not take\n",
+                             t.name.c_str(), t.type_name());
+                std::exit(1);
+            }
+        }
     }
     float* d = nullptr;
     CK(cudaMalloc(&d, h.size() * 4));
@@ -962,8 +1007,8 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
     const strata::GgufModel& gm = *m.file;
     if (!strata::core::geometry_from_gguf(gm.meta(), m.g, m.top_k, err)) return false;
-    if (m.g.family != strata::ModelFamily::Qwen35Moe) {
-        err = "strata-q36 runs Qwen3.6-35B-A3B (qwen35moe) files only";
+    if (m.g.family != strata::ModelFamily::Qwen35Moe && !strata::model_family_dense_ffn(m.g.family)) {
+        err = "strata-q36 runs Qwen3.6-35B-A3B (qwen35moe) and dense qwen35 (Qwen3.5 / Qwen3.8 4B) files only";
         return false;
     }
     size_t checked = 0;
@@ -973,7 +1018,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         err = "a geometry this driver's kernels do not take (head 256, state 128, conv 4, <= 512 experts, top-k <= 15)";
         return false;
     }
-    const std::string p = "qwen35moe.";
+    const std::string p = std::string(strata::model_family_arch(g.family)) + ".";
     if (const strata::MetaValue* v = gm.meta().get(p + "attention.layer_norm_rms_epsilon")) m.eps = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.freq_base")) m.rope_base = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.dimension_count")) m.n_rot = (int) v->u;
@@ -1053,7 +1098,14 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             y.q_norm = f32(L(l, "attn_q_norm.weight"));
             y.k_norm = f32(L(l, "attn_k_norm.weight"));
         }
-        y.router = f32(L(l, "ffn_gate_inp.weight"));
+        if (strata::model_family_dense_ffn(g.family)) {
+            // one dense MLP per layer: it IS the shared-expert slot the forward path already computes, and there is no
+            // router, no routed expert and no expert gate to load
+            y.sh_gate = mat(L(l, "ffn_gate.weight"));
+            y.sh_up = mat(L(l, "ffn_up.weight"));
+            y.sh_down = mat(L(l, "ffn_down.weight"));
+        } else {
+            y.router = f32(L(l, "ffn_gate_inp.weight"));
         y.sh_gate = mat(L(l, "ffn_gate_shexp.weight"));
         y.sh_up = mat(L(l, "ffn_up_shexp.weight"));
         y.sh_down = mat(L(l, "ffn_down_shexp.weight"));
@@ -1087,6 +1139,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         y.src_d = gm.shard(sd).tensor_data(*td);
         y.src_gsz = gsz;
         y.src_dsz = dsz;
+        }
     }
     if (m.has_mtp) {
         const int64_t l = g.n_layers;
@@ -1096,7 +1149,10 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         m.mtp_shnorm = f32(L(l, "nextn.shared_head_norm.weight"));
     }
     m.out_norm = f32("output_norm.weight");
-    m.head = mat("output.weight");
+    // a dense qwen35 file may tie its head: then the embedding tensor IS the head (same [n_embd, n_vocab] layout, and
+    // one copy on the device serves both)
+    const bool tied_head = gm.find("output.weight") == nullptr;
+    if (!tied_head) m.head = mat("output.weight");
     {
         size_t s = 0;
         const strata::TensorInfo* t = find("token_embd.weight", s);
@@ -1108,6 +1164,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
         m.embd = d;
         bytes += nb;
+        if (tied_head) {
+            m.head.d = m.embd;
+            m.head.type = m.embd_type;
+            m.head.n_in = (int) t->shape[0];
+            m.head.n_out = (int) t->shape[1];
+        }
     }
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
                  "experts are placed after the engine's buffers)\n", path.c_str(), checked, (double) bytes / (1 << 30),
@@ -1125,7 +1187,18 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
 // ------------------------------------------------------------------------------------------------ the engine
 float* dalloc(size_t n) {
     float* p = nullptr;
-    CK(cudaMalloc(&p, n * 4));
+    if (std::getenv("STRATA_Q36_ALLOC_DEBUG") && n * 4 > (8u << 20)) {
+        static int idx = 0;
+        size_t a = 0, b = 0;
+        cudaMemGetInfo(&a, &b);
+        std::fprintf(stderr, "  alloc #%d %.1f MiB (free %.0f MiB)\n", ++idx, (double) n * 4 / (1 << 20),
+                     (double) a / (1 << 20));
+    }
+    const cudaError_t e = cudaMalloc(&p, n * 4);
+    if (e != cudaSuccess)
+        std::fprintf(stderr, "strata-q36: dalloc(%zu floats = %.1f MiB) failed: %s\n", n, (double) n * 4 / (1 << 20),
+                     cudaGetErrorString(e));
+    CK(e);
     CK(cudaMemset(p, 0, n * 4));
     return p;
 }
@@ -1175,6 +1248,7 @@ struct Engine {
     std::vector<GSet> gsets;
     GSet& gs() { return gsets[(size_t) cur]; }
     strata::prefill::Gemm gemm;
+    bool gemm_ready = false;   // the prompt GEMM's scratch fit in VRAM (else a prompt chunk runs the native MMVQ in 8-column steps)
     cublasHandle_t blas = nullptr;
     float* att_s = nullptr;            // the prompt attention's scores / probabilities, kAttScoreFloats floats
     static constexpr int kSplitK = 16;
@@ -1344,6 +1418,7 @@ struct Engine {
         vision = vision_;
         tmax = std::max(tmax_, kVerify);
         const auto& g = m->g;
+        const bool dense = strata::model_family_dense_ffn(g.family);
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
@@ -1365,13 +1440,16 @@ struct Engine {
             std::fprintf(stderr, "strata-q36: cuBLAS handle failed\n");
             std::exit(1);
         }
+        // the prompt attention's score buffer: 256 MB when there is room, 64 MB when it is tight (the expert path
+        // shrinks it the same way); a dense family holds every weight on the card already, so it starts at 64 MB
+        if (strata::model_family_dense_ffn(g.family)) kAttScoreFloats = (size_t) 4 << 20;   // 16 MB: a chunk of 512 rows over 8K cells
         att_s = dalloc(kAttScoreFloats);
         sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
         att_p16 = dalloc_t<__half>(kAttScoreFloats);
         k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
-        use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
+        use_mmq = !dense && MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
             return MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) && MMQ::fits(L.L.gu_type, 2 * g.n_ff) &&
                    MMQ::fits(L.L.d_type, g.n_embd);
@@ -1407,18 +1485,30 @@ struct Engine {
                 take(m->mtp);
                 big = std::max<int64_t>(big, (int64_t) m->eh_proj.n_in * m->eh_proj.n_out);
             }
-            if (!gemm.init(st, big, gerr)) {
-                std::fprintf(stderr, "strata-q36: prompt GEMM: %s\n", gerr.c_str());
-                std::exit(1);
+            size_t fr0 = 0, tot0 = 0;
+            CK(cudaMemGetInfo(&fr0, &tot0));
+            // a dense family on a small card: the prompt GEMM's scratch (45 MB dequant + workspace) does not fit beside
+            // the weights, and a failed attempt leaves its allocation behind - so it is not attempted
+            if (strata::model_family_dense_ffn(g.family) && fr0 < ((size_t) 640 << 20)) {
+                gemm_ready = false;
+                std::fprintf(stderr, "strata-q36: prompt GEMM off (%.0f MiB free): a prompt chunk reads its projections "
+                             "on the native MMVQ in 8-column steps (slower, no extra VRAM)\n", (double) fr0 / (1 << 20));
+            } else {
+                gemm_ready = gemm.init(st, big, gerr);
+                if (!gemm_ready)
+                    std::fprintf(stderr, "strata-q36: prompt GEMM off (%s): a prompt chunk reads its projections on the "
+                                 "native MMVQ in 8-column steps (slower, no extra VRAM)\n", gerr.c_str());
             }
         }
-        CK(cudaMalloc(&escr, K::native_expert_scratch_bytes((int64_t) (T * Kp), (int64_t) FF)));
-        ids = dalloc_t<int32_t>(T * Kp);
-        grp_ptr = dalloc_t<unsigned long long>(std::min<size_t>(T * Kp, (size_t) g.n_expert) + 1);
-        grp_start = dalloc_t<int32_t>(std::min<size_t>(T * Kp, (size_t) g.n_expert) + 1);
-        n_groups = dalloc_t<int32_t>(1);
-        ent_dst = dalloc_t<int32_t>(T * Kp);
-        ent_tok = dalloc_t<int32_t>(T * Kp);
+        if (!dense) {   // the routed experts' prompt machinery: a dense family has none
+            CK(cudaMalloc(&escr, K::native_expert_scratch_bytes((int64_t) (T * Kp), (int64_t) FF)));
+            ids = dalloc_t<int32_t>(T * Kp);
+            grp_ptr = dalloc_t<unsigned long long>(std::min<size_t>(T * Kp, (size_t) g.n_expert) + 1);
+            grp_start = dalloc_t<int32_t>(std::min<size_t>(T * Kp, (size_t) g.n_expert) + 1);
+            n_groups = dalloc_t<int32_t>(1);
+            ent_dst = dalloc_t<int32_t>(T * Kp);
+            ent_tok = dalloc_t<int32_t>(T * Kp);
+        }
         tok = dalloc_t<int32_t>(T);
         pos0 = dalloc_t<int32_t>(1);
         pick = dalloc_t<int32_t>(kVerify);
@@ -1564,11 +1654,13 @@ struct Engine {
     /// blocks dequantized to FP16, the activations FP16); a decode batch on the native MMVQ (q8_1 activations).
     static constexpr int kGemmT = 8;
     void prep(const float* xin, int n, int T, void* q) {
-        if (T > kGemmT) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
+        // with the prompt GEMM off (a small card: no room for its scratch) a prompt chunk takes the decode path too, so
+        // the q8_1 image is always what apply() reads
+        if (T > kGemmT && gemm_ready) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
         else quant(xin, n, T, q);
     }
     void apply(const Mat& w, const void* q, float* out, int T) {
-        if (T > kGemmT) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
+        if (T > kGemmT && gemm_ready) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
         else mmq(w, q, out, T);
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
@@ -2000,6 +2092,27 @@ struct Engine {
             mm(L.wo, att, y, T);
         }
         add_rms_post(L, T);
+        if (strata::model_family_dense_ffn(g.family)) {
+            // one dense MLP: SwiGLU(h W1) W2 into the residual, no router, no gate, no expert combine
+            if (!xq_post) quant(h, N, T, xq);
+            if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
+            if (T <= kGemmT) {
+                if (!shared_gu(L, T)) {
+                    apply(L.sh_gate, xq, sg, T);
+                    apply(L.sh_up, xq, su, T);
+                    K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+                }
+                mmq(L.sh_down, q8, sy, T);
+            } else {
+                apply(L.sh_gate, xq, sg, T);
+                apply(L.sh_up, xq, su, T);
+                k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
+                mm(L.sh_down, shh, sy, T);
+            }
+            xq_ready = false;   // the next layer quantizes its own input
+            k_dense_out<<<T, kThreads, 0, st>>>(x, sy, wn, hout, N, m->eps);
+            return;
+        }
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
         // a decode batch of up to 8 rows takes the router and the shared expert's gate in one product too (rows of 257) when the fused
@@ -2090,10 +2203,23 @@ struct Engine {
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(x, d_img, d_map, N);   // a picture's cells take its rows
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
+        static FILE* dump_l = nullptr;
+        static bool dump_init = false;
+        if (!dump_init) {
+            dump_init = true;
+            if (const char* dp = std::getenv("STRATA_Q36_DUMP_LAYERS")) dump_l = std::fopen(dp, "wb");
+        }
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
             layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
                   last ? hmain : h);
+            if (dump_l) {   // the residual after each layer, for a layer-by-layer A/B against strata-q36ref
+                std::vector<float> buf((size_t) T * (size_t) g.n_embd);
+                CK(cudaStreamSynchronize(st));
+                CK(cudaMemcpy(buf.data(), x, (size_t) T * (size_t) g.n_embd * 4, cudaMemcpyDeviceToHost));
+                std::fwrite(buf.data(), 4, buf.size(), dump_l);
+                std::fflush(dump_l);
+            }
         }
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
     }
@@ -2801,6 +2927,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     const auto t0 = Clock::now();
     const auto& g = m.g;
     const int64_t ne = g.n_expert;
+    if (ne <= 0) return true;   // a dense family: no expert pool, no slot table, no CPU pool to place
     std::vector<Layer*> all;
     for (Layer& L : m.layers) all.push_back(&L);
     if (m.has_mtp) all.push_back(&m.mtp);
@@ -3805,7 +3932,11 @@ int strata::qwen35::run(int argc, char** argv) {
         return 1;
     }
     Engine E;
-    E.use_graph = graph;
+    // TODO(dense): the captured graphs replay the MoE layer; a dense family's logits come out wrong under capture
+    // (verified: token 760 -> 89342 with the graph, 2614 without, while llama.cpp and strata-q36ref both say 2614), so
+    // the dense path runs one launch per kernel until the capture is re-checked
+    E.use_graph = graph && !strata::model_family_dense_ffn(m.g.family);
+    std::fprintf(stderr, "strata-q36: graph %s (command line graph %d)\n", E.use_graph ? "on" : "off", (int) graph);
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
@@ -3823,7 +3954,11 @@ int strata::qwen35::run(int argc, char** argv) {
                                                                : (double) experts <= expert_vram * (double) (1ull << 30));
         chunk = fits ? 512 : 2048;
         const double GiB = (double) (1ull << 30);
-        if (fits && expert_vram < 0) {
+        if (strata::model_family_dense_ffn(m.g.family)) {
+            // a dense family holds every weight on the GPU before this point and nothing is placed afterwards, so the
+            // expert-budget rules below do not apply: the small chunk is what a 4 GB card can hold beside the weights
+            chunk = 512;
+        } else if (fits && expert_vram < 0) {
             // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
             // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
             // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 50 KB per cell and session.
@@ -3875,7 +4010,10 @@ int strata::qwen35::run(int argc, char** argv) {
     E.draft_n = std::max(0, draft_vocab);
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
     if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
-    if (warm) E.warmup();
+    // TODO(dense): the warm-up leaves state that the next reset() does not clear, and the first real prompt after it comes
+    // out wrong (token 760 -> 89342 instead of 2614).  Off for the dense family until that gap is found; the same reset
+    // runs between two sequences, so this is a correctness item, not only a warm-up one.
+    if (warm && !strata::model_family_dense_ffn(m.g.family)) E.warmup();
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
