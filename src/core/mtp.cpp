@@ -1600,6 +1600,12 @@ struct DraftTiming {
 DraftTiming g_dt;
 }  // namespace
 
+void MtpDrafter::profile_flush() const {
+    // both profilers are opt-in env-gated and no-ops when off; report() self-guards on rounds==0
+    g_dt.report();
+    g_mp.report();
+}
+
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts, DraftResult* result) {
     if (result) { *result = {}; if (n_drafts) *n_drafts = 0; }

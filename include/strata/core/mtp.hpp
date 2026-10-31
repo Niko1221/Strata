@@ -73,6 +73,9 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
+    /// STRATA_DRAFT_TIMING=1 / STRATA_MTP_PROFILE=1: flush the draft profilers' report now
+    /// (they auto-report only every 300 rounds; the summary site calls this so short runs see them).
+    void profile_flush() const;
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at

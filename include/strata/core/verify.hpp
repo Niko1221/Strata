@@ -390,6 +390,16 @@ public:
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
+    /// STRATA_HOST_TIMELINE=1 (Step 0): the host's own timeline, split per phase. All
+    /// zero when the env is off; host_timeline_report() prints and resets them.
+    double ht_adapt = 0, ht_slot = 0, ht_pool = 0, ht_remote = 0, ht_flags = 0, ht_bal = 0;
+    double ht_capture = 0, ht_stage = 0, ht_launch = 0;
+    int64_t ht_windows = 0, ht_layers = 0, ht_spins = 0;
+    double ht_spin_max = 0;
+    double ht_spin_hist[4] = {0, 0, 0, 0};   ///< spins <0.1ms, <1ms, <5ms, >=5ms
+    /// STRATA_HOST_TIMELINE: one human block per window (layer counts factored in);
+    /// empty when off or no windows captured. Resets the ht_* state.
+    std::string host_timeline_report();
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
     std::string profile_report();

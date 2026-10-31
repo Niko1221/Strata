@@ -305,6 +305,15 @@ const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
+static bool ht_enabled() { return env_on("STRATA_HOST_TIMELINE"); }
+static void ht_spin_bucket(double ms, int64_t& spins, double& smax, double hist[4]) {
+    ++spins;
+    if (ms > smax) smax = ms;
+    if (ms < 0.1) hist[0] += 1;
+    else if (ms < 1.0) hist[1] += 1;
+    else if (ms < 5.0) hist[2] += 1;
+    else hist[3] += 1;
+}
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 // STRATA_BATCH_SELF_COMMIT=1 (opt-in): a batch window whose rows are each another slot's one token keeps them itself,
@@ -2482,6 +2491,37 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     return true;
 }
 
+std::string Verifier::host_timeline_report() {
+    if (!ht_enabled() || ht_windows == 0) return std::string();
+    char buf[512];
+    std::string s;
+    snprintf(buf, sizeof buf, "host timeline per window (ms): capture %.3f  stage %.3f  launch %.3f\n",
+             ht_capture / (double) ht_windows, ht_stage / (double) ht_windows,
+             ht_launch / (double) ht_windows);
+    s += buf;
+    if (ht_layers > 0) {
+        const double pl = (double) ht_layers;
+        snprintf(buf, sizeof buf,
+                 "host timeline per layer  (ms): adapt %.4f  slot %.4f  pool %.4f  remote %.4f  flags %.4f  bal %.4f"
+                 "  (unaccounted in ms_pool: %.4f)\n",
+                 ht_adapt / pl, ht_slot / pl, ht_pool / pl, ht_remote / pl, ht_flags / pl, ht_bal / pl,
+                 (ms_pool - ht_adapt - ht_slot - ht_pool - ht_remote - ht_flags - ht_bal) / pl);
+        s += buf;
+        snprintf(buf, sizeof buf,
+                 "ring spins: n=%lld max=%.3f ms  hist <0.1ms %lld  <1ms %lld  <5ms %lld  >=5ms %lld\n",
+                 (long long) ht_spins, ht_spin_max,
+                 (long long) ht_spin_hist[0], (long long) ht_spin_hist[1],
+                 (long long) ht_spin_hist[2], (long long) ht_spin_hist[3]);
+        s += buf;
+    }
+    ht_adapt = ht_slot = ht_pool = ht_remote = ht_flags = ht_bal = 0;
+    ht_capture = ht_stage = ht_launch = 0;
+    ht_windows = ht_layers = ht_spins = 0;
+    ht_spin_max = 0;
+    for (int i = 0; i < 4; ++i) ht_spin_hist[i] = 0;
+    return s;
+}
+
 std::string Verifier::profile_by_t_report() {
     if (!prof_on_) return std::string();
     static const char* names[kProfPer] = {"-", "hc-read0", "qkv gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
@@ -3075,7 +3115,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (!pre) refresh_ar();
     // STRATA_SELECT_LONG: the select kernels this window's context pays off with (the same on every stage)
     sel_long_ = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;
+    const bool ht = ht_enabled();
+    const Clock::time_point ht_cap0 = ht ? Clock::now() : Clock::time_point();
     if (!capture(T, err) || !capture_commit(err)) return false;
+    if (ht) ht_capture += ms_since(ht_cap0);
     const bool chain = chain_overlap();
     if (chain) {   // capture the next stage's window here, on this thread, so the helper only stages and launches
         const OnDevice on_next(next_->device_);
@@ -3087,6 +3130,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const Clock::time_point t0 = Clock::now();
     if (!pre && !staged_) stage_inputs(T, tokens, pos0);
     staged_ = false;
+    if (ht) ht_stage += ms_since(t0);
     const bool do_ple = ss.ple.ready() && ple_stage();
     uint32_t ple_rows[kVerifyMaxT * PLE_N_HEADS];
     if (do_ple) {
@@ -3136,7 +3180,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
 #else
+        const Clock::time_point ht_l0 = ht ? Clock::now() : Clock::time_point();
         const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_);
+        if (ht) ht_launch += ms_since(ht_l0);
 #endif
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
         graph_launched = true;
@@ -3240,18 +3286,24 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         const Clock::time_point b = Clock::now();
         if (g_trace) trace_ev("RANG", k, l, (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
         VDBG("layer %lld rang\n", (long long) l);
+        const Clock::time_point ht_a0 = ht ? Clock::now() : Clock::time_point();
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && l >= 0 &&
             (size_t) l < adapt_gate_->has.size() && adapt_gate_->has[(size_t) l] != 0 &&
             !adapt_gate_wait((int32_t) l, err)) return false;
+        if (ht) ht_adapt += ms_since(ht_a0);
         cur_layer_ = want - 1;
+        const Clock::time_point ht_s0 = ht ? Clock::now() : Clock::time_point();
         set_plan_slot(grp);
+        if (ht) ht_slot += ms_since(ht_s0);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
+        const Clock::time_point ht_p0 = ht ? Clock::now() : Clock::time_point();
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
         if (remote_opt_) remote_opt_->end();
+        if (ht) { ht_remote += ms_since(ht_p0); ht_pool += ms_since(ht_p0); }
         VDBG("layer %lld served\n", (long long) l);
         if (g_trace) trace_ev(*(volatile uint32_t*) h_flagA_ == want ? "SERVED" : "SERVED-NO-PLAN-YET", k, l,
                               (int64_t) ms_since(b));   // aux: ms the CPU experts took
@@ -3265,6 +3317,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             bal_np_[bi] = bal_ok_[bi] ? sink_.counts[2] : 0;
             sink_.cpu_jobs = 0;
         }
+        const Clock::time_point ht_f0 = ht ? Clock::now() : Clock::time_point();
         if (*(volatile uint32_t*) h_flagA_ != want) {        // the pool did not publish a plan: an empty one
             sink_.counts[0] = 0;
             sink_.counts[1] = 0;
@@ -3275,6 +3328,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             *(volatile uint32_t*) h_flagA_ = want;
             raise_flag(h_flagB_, want);
         }
+        if (ht) ht_flags += ms_since(ht_f0);
         // Layer 1's pre(1, 0) copies h_ple_ -> ple_ after Layer 0's wait_flag_ge(m_flag_, 1).
         // By collecting PLE here at k == 0 (after publishing flagA/flagB for Layer 0 so the GPU can run
         // Layer 0's VRAM experts, and before raising *flag = 1), the NVMe PLE reads overlap with both
@@ -3287,9 +3341,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             ms_host += ms_since(tp);
         }
         if (!(test_stall && k + 1 == steps)) *flag = want;
-        if (h_bal_ != nullptr) bal_p_[(size_t) ((k / G) * 2 + grp)] = ms_since(b);
-        ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
+        if (h_bal_ != nullptr) { const Clock::time_point ht_b0 = ht ? Clock::now() : Clock::time_point();
+            bal_p_[(size_t) ((k / G) * 2 + grp)] = ms_since(b);
+            if (ht) ht_bal += ms_since(ht_b0); }
+        const double ht_spin_ms = std::chrono::duration<double, std::milli>(b - a).count();
+        ms_wait += ht_spin_ms;
         ms_pool += ms_since(b);
+        if (ht) { ++ht_layers; ht_spin_bucket(ht_spin_ms, ht_spins, ht_spin_max, ht_spin_hist); }
     }
     // (#646 staged the next stage's inputs here; 0.1.39b keeps the layer split's order: each stage stages its own)
     if (chain) {
@@ -3453,6 +3511,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     VDBG("window done\n");
     ++windows;
+    if (ht_enabled()) ++ht_windows;
     progress_at("decode");
     progress_beat();
     return true;
@@ -5078,6 +5137,15 @@ bool Verifier::pl_commit_async(int n_keep, std::string& err) {
 
 void Verifier::absorb_stats(Verifier& o) {
     ms_wait += o.ms_wait; ms_pool += o.ms_pool; ms_host += o.ms_host; ms_commit += o.ms_commit;
+    ht_adapt += o.ht_adapt; ht_slot += o.ht_slot; ht_pool += o.ht_pool; ht_remote += o.ht_remote;
+    ht_flags += o.ht_flags; ht_bal += o.ht_bal; ht_capture += o.ht_capture;
+    ht_stage += o.ht_stage; ht_launch += o.ht_launch;
+    ht_windows += o.ht_windows; ht_layers += o.ht_layers; ht_spins += o.ht_spins;
+    if (o.ht_spin_max > ht_spin_max) ht_spin_max = o.ht_spin_max;
+    for (int ht_i = 0; ht_i < 4; ++ht_i) ht_spin_hist[ht_i] += o.ht_spin_hist[ht_i];
+    o.ht_adapt = o.ht_slot = o.ht_pool = o.ht_remote = o.ht_flags = o.ht_bal = 0;
+    o.ht_capture = o.ht_stage = o.ht_launch = 0;
+    o.ht_windows = o.ht_layers = o.ht_spins = 0; o.ht_spin_max = 0;
     windows += o.windows;
     o.ms_wait = o.ms_pool = o.ms_host = o.ms_commit = 0;
     o.windows = 0;

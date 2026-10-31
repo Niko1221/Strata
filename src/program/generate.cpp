@@ -18788,6 +18788,10 @@ int main(int argc, char** argv) {
                         ver.ms_commit / rounds,
                         (double) (drive.d.multi_misses - misses0) / (double) (rounds * g.n_layers),
                         (double) (drive.d.multi_entries - entries0) / (double) (rounds * g.n_layers));
+        {   // STRATA_HOST_TIMELINE=1 (Step 0): the host's own per-phase split; empty when off
+            const std::string htl = ver.host_timeline_report();
+            if (!htl.empty()) std::printf("host timeline (STRATA_HOST_TIMELINE=1):\n%s", htl.c_str());
+        }
         if (rounds > 0)
             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
                         "CPU pool call %.3f ms/round", "pool multi", pool.ms_multi_gu / rounds,
@@ -18861,6 +18865,11 @@ int main(int argc, char** argv) {
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,
                         (double) mtp.vram_bytes() / 1048576.0);
+        if (use_mtp) mtp.profile_flush();   // STRATA_DRAFT_TIMING / STRATA_MTP_PROFILE: the summary-time flush
+    {   // v4: the GPU stage report (STRATA_VERIFY_PROFILE) - the batch path prints it, the one-shot path did not
+        const std::string pr = ver.profile_report();
+        if (!pr.empty()) std::fprintf(stderr, "per-stage (ms/window):%s\n", pr.c_str());
+    }
     }
 
     if (dump != nullptr && std::fclose(dump) != 0) {
