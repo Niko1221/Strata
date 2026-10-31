@@ -12,10 +12,10 @@ constexpr int THREADS = 256;
 constexpr int MAXK = 16;   // n_embd up to 4096, held in registers between the dot and the update
 
 Cvec g_cvec;                 // the description; its device pointers are the uploading device's
-bool g_on_host = false;
+int g_flag_host = 1;         // the last flag uploaded to every device: 0 stock, 1 steer, 2 measure
 // the tables on every device that holds them (a layer split applies the vector on several)
 constexpr int kDevices = 64;
-struct DevTables { float* dir = nullptr; float* s = nullptr; int* on = nullptr; };
+struct DevTables { float* dir = nullptr; float* s = nullptr; int* on = nullptr; float* measure = nullptr; };
 DevTables g_dev[kDevices];
 std::vector<float> g_dir_host, g_s_host;
 int cur_device() {
@@ -26,12 +26,14 @@ int cur_device() {
 bool upload_here(std::string& err) {
     DevTables& t = g_dev[cur_device()];
     if (t.dir != nullptr) return true;
-    const int flag = g_on_host ? 1 : 0;
+    const int flag = g_flag_host;
     if (cudaMalloc(&t.dir, g_dir_host.size() * sizeof(float)) != cudaSuccess ||
         cudaMalloc(&t.s, g_s_host.size() * sizeof(float)) != cudaSuccess || cudaMalloc(&t.on, sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&t.measure, g_s_host.size() * (size_t) g_cvec.hc * sizeof(float)) != cudaSuccess ||
         cudaMemcpy(t.dir, g_dir_host.data(), g_dir_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.s, g_s_host.data(), g_s_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
-        cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemset(t.measure, 0, g_s_host.size() * (size_t) g_cvec.hc * sizeof(float))) {
         err = "control vector: device allocation failed";
         t = DevTables{};
         return false;
@@ -42,17 +44,23 @@ bool upload_here(std::string& err) {
 // the fused hyper-connection read's gate (fused_gr.cu), so a write done here is bitwise the one it would have folded
 __device__ __forceinline__ float sigmoidf_(float x) { return 1.0f / (1.0f + __expf(-x)); }
 
-// one block per (stream, token): the pending write, then h . v over the stream, then the update
+// one block per (stream, token): the pending write, then h . v over the stream, then the update.
+// Flag 1 steers (subtract/add); flag 2 MEASURES: the same dot is computed and stored (per layer and hc stream,
+// only for the block whose absolute row t_base + t equals measure_t) with NO subtraction - the conditional
+// abliteration's measurement pass.  Flag 0 (or any other value) leaves R exactly as the stock engine writes it.
 __global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir, const float* __restrict__ s_l,
                             const int* __restrict__ on, int mode, int64_t layer, int n, int hc, int64_t r_ld,
                             const float* __restrict__ bo, int64_t bo_ld, const float* __restrict__ inj,
-                            int64_t inj_ld, int write) {
+                            int64_t inj_ld, int write, float* __restrict__ measure, int64_t measure_t,
+                            int64_t t_base) {
     const int c = blockIdx.x;
     const int64_t t = blockIdx.y;
     float* r = R + t * r_ld + (int64_t) c * n;
     const float s = s_l[layer];
-    const bool steer = *on != 0 && s != 0.0f;   // uniform over the block
-    if (!steer && !write) return;
+    const int flag = *on;   // uniform over the block
+    const bool steer = flag == 1 && s != 0.0f;
+    const bool meas = flag == 2 && measure != nullptr && s != 0.0f && mode == 0 && t_base + t == measure_t;
+    if (!steer && !meas && !write) return;
     const float* v = dir + layer * n;
     const float w = write ? 2.0f * sigmoidf_(inj[t * inj_ld + c] / (float) hc) : 0.0f;
     const float* b = write ? bo + t * bo_ld : nullptr;
@@ -65,10 +73,10 @@ __global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir
             float xv = r[d];
             if (write) xv = fmaf(b[d], w, xv);
             x[k] = xv;
-            if (steer && mode == 0) dot = fmaf(xv, v[d], dot);
+            if ((steer || meas) && mode == 0) dot = fmaf(xv, v[d], dot);
         }
     }
-    if (steer && mode == 0) {
+    if ((steer || meas) && mode == 0) {
         __shared__ float part[THREADS / 32];
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, o);
@@ -82,7 +90,9 @@ __global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir
         }
         __syncthreads();
         dot = part[0] * s;   // s (h . v)
+        if (meas && threadIdx.x == 0) measure[layer * hc + c] = dot;   // the gate reads these; nothing is subtracted
     }
+    if (!steer && !write) return;
 #pragma unroll
     for (int k = 0; k < MAXK; ++k) {
         const int d = threadIdx.x + k * THREADS;
@@ -111,17 +121,21 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
         cudaFree(g_dev[d].dir);
         cudaFree(g_dev[d].s);
         cudaFree(g_dev[d].on);
+        cudaFree(g_dev[d].measure);
         g_dev[d] = DevTables{};
     }
     cudaSetDevice(prev);
     g_dir_host = dir;
     g_s_host = s;
-    g_on_host = true;
+    g_flag_host = 1;
+    g_cvec.hc = hc;   // upload_here sizes the measure buffer with it: set before the upload, not after
     if (!upload_here(err)) return false;
     const DevTables& t = g_dev[cur_device()];
     g_cvec.dir = t.dir;
     g_cvec.s = t.s;
     g_cvec.on = t.on;
+    g_cvec.measure = t.measure;
+    g_cvec.measure_t = -1;
     g_cvec.mode = mode;
     g_cvec.first = first;
     g_cvec.last = last;
@@ -134,22 +148,49 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
 
 bool cvec_replicate(std::string& err) { return !g_cvec.loaded() || upload_here(err); }
 
-void cvec_set_enabled(bool on) {
-    if (!g_cvec.loaded() || on == g_on_host) return;
+void cvec_set_enabled(int flag) {
+    if (!g_cvec.loaded() || flag == g_flag_host) return;
     int prev = 0;
     cudaGetDevice(&prev);
-    const int v = on ? 1 : 0;
     for (int d = 0; d < kDevices; ++d) {
         if (g_dev[d].on == nullptr) continue;
         cudaSetDevice(d);
         cudaDeviceSynchronize();   // nothing in flight may still read the flag
-        cudaMemcpy(g_dev[d].on, &v, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(g_dev[d].on, &flag, sizeof(int), cudaMemcpyHostToDevice);
     }
     cudaSetDevice(prev);
-    g_on_host = on;
+    g_flag_host = flag;
 }
 
-bool cvec_enabled() { return g_cvec.loaded() && g_on_host; }
+bool cvec_enabled() { return g_cvec.loaded() && g_flag_host == 1; }
+
+// the measure pass of the conditional gate: zero the dots, name the absolute token row to record, read them back
+void cvec_measure_reset() {
+    if (!g_cvec.loaded()) return;
+    int prev = 0;
+    cudaGetDevice(&prev);
+    for (int d = 0; d < kDevices; ++d) {
+        if (g_dev[d].measure == nullptr) continue;
+        cudaSetDevice(d);
+        cudaMemset(g_dev[d].measure, 0, g_s_host.size() * (size_t) g_cvec.hc * sizeof(float));
+    }
+    cudaSetDevice(prev);
+}
+
+void cvec_measure_set_target(int64_t t) { g_cvec.measure_t = t; }
+
+bool cvec_measure_read(std::vector<float>& out) {
+    if (!g_cvec.loaded()) return false;
+    const DevTables& t = g_dev[cur_device()];
+    if (t.measure == nullptr) return false;
+    out.resize(g_s_host.size() * (size_t) g_cvec.hc);
+    return cudaMemcpy(out.data(), t.measure, out.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+float* cvec_measure_ptr() {
+    if (!g_cvec.loaded() || g_flag_host != 2) return nullptr;   // as in cvec_apply: a graph captured outside flag 2
+    return g_dev[cur_device()].measure;                          // bakes no target, and stores on the kernel's device
+}
 
 bool cvec_tables(const float** dir, const float** s, const int** on) {
     if (!g_cvec.loaded()) return false;
@@ -160,14 +201,16 @@ bool cvec_tables(const float** dir, const float** s, const int** on) {
 }
 
 void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* bo, int64_t bo_ld, const float* inj,
-                int64_t inj_ld, bool write, void* stream) {
+                int64_t inj_ld, bool write, void* stream, int64_t t_base) {
     if (!g_cvec.loaded() || T < 1) return;
     const DevTables& t = g_dev[cur_device()];
     if (t.dir == nullptr) throw std::runtime_error("cvec_apply: the control vector is not on this device (cvec_replicate)");
     const dim3 grid((unsigned) g_cvec.hc, (unsigned) T);
     cvec_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(R, t.dir, t.s, t.on, g_cvec.mode, layer,
                                                             (int) g_cvec.n_embd, (int) g_cvec.hc, r_ld, bo, bo_ld,
-                                                            inj, inj_ld, write ? 1 : 0);
+                                                            inj, inj_ld, write ? 1 : 0,
+                                                            g_flag_host == 2 ? t.measure : nullptr,
+                                                            g_cvec.measure_t, t_base);
     if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("cvec_apply: launch failed");
 }
 

@@ -25,7 +25,9 @@ namespace strata::kernels {
 struct Cvec {
     const float* dir = nullptr;   ///< device, n_layers * n_embd: project = the unit v_l, add = d_l; zero rows elsewhere
     const float* s = nullptr;     ///< device, n_layers: project = s_l, add = 1; 0 = the layer is not steered
-    const int* on = nullptr;      ///< device int: 0 = this request runs the stock model
+    const int* on = nullptr;      ///< device int: 0 = this request runs the stock model, 1 = steer, 2 = measure
+    float* measure = nullptr;     ///< device, n_layers * hc: flag 2 records the measured token's s_l (h . v_l) here, subtracting nothing
+    int64_t measure_t = -1;       ///< host: the absolute token row flag 2 records (-1 = none; captured graphs bake this)
     int mode = 0;                 ///< 0 = project, 1 = add
     int first = 0, last = -1;     ///< the steered layers, inclusive
     int64_t n_embd = 0, hc = 0;
@@ -48,9 +50,21 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
 bool cvec_replicate(std::string& err);
 
 /// The per-request switch, on every device that holds the vector.  Synchronizes them when it changes, so call it
-/// between requests.
-void cvec_set_enabled(bool on);
+/// between requests.  0 = stock, 1 = steer, 2 = measure (the conditional gate's prefill pass: the kernel computes
+/// the same dots but stores them instead of subtracting; only project mode measures).
+void cvec_set_enabled(int flag);
 bool cvec_enabled();
+
+/// The measure pass: `reset` zeroes the dots (call it with `set_enabled(2)` at the request's start),
+/// `set_target` names the absolute token row whose dots are recorded (`-1` = none; captured graphs bake it, so
+/// it must be -1 while decode graphs are captured), `read` pulls the current device's n_layers * hc floats
+/// (the `s_l (h . v_l)` of row `target` per stream; a slot never measured reads back 0).
+void cvec_measure_reset();
+void cvec_measure_set_target(int64_t t);
+bool cvec_measure_read(std::vector<float>& out);
+/// The CURRENT device's dot buffer under flag 2, else nullptr: the fused prefill twin must store through this,
+/// not the Cvec field, so a layer split writes into the device running the kernel.
+float* cvec_measure_ptr();
 
 /// The CURRENT device's tables (dir n_layers x n_embd, s n_layers, the request flag), for a caller that applies the
 /// vector inside its own kernel (the prompt path's STRATA_CVEC_FUSE).  False without a vector on this device.
@@ -59,7 +73,9 @@ bool cvec_tables(const float** dir, const float** s, const int** on);
 /// Layer `layer`'s vector on T tokens' residual stacks (`R + t * r_ld`, hc streams of n_embd).  With `write`, the
 /// pending FFN write `R += bo * 2 sigmoid(inj / hc)` (the fused read's arithmetic) is applied first, for callers
 /// whose writes are folded into the next layer's read; without it, R must already hold the layer's output.
+/// `t_base` is the absolute token row of launch row 0 (the measure pass's row match; launch-relative for callers
+/// whose buffer is already the window).
 void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* bo, int64_t bo_ld, const float* inj,
-                int64_t inj_ld, bool write, void* stream);
+                int64_t inj_ld, bool write, void* stream, int64_t t_base = 0);
 
 }  // namespace strata::kernels

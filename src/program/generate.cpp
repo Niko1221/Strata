@@ -925,6 +925,7 @@ struct Options {
     int cvec_first = -1, cvec_last = -1;   ///< llama.cpp's defaults: 1 .. the last layer
     int cvec_mode = 1;                     ///< 0 = project, 1 = add (llama.cpp's default)
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
+    float cvec_threshold = std::numeric_limits<float>::lowest();   ///< --cvec-threshold F: the cvec=2 (auto) gate - steer the decode when the measured mean falls to F or below (default = log only, never steer; this model refuses on the negative side)
 };
 
 void usage() {
@@ -1075,10 +1076,15 @@ void usage() {
                  "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P (default 0 = --spec-min-p)\n"
                  "  --draft-cap N        the widest verify window with --draft dflash2 (default by card: 5 on Strix Halo / iGPU, --spec as given elsewhere)\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
-                 "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
+                 "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1|2;\n"
+                  "                       2 = auto: measure during prefill, steer the decode at or below --cvec-threshold)\n"
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
                  "  --cvec-mode add|project  h += s v (default) or h -= s (h.v) v with v unit\n"
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
+                 "  --cvec-threshold F  with cvec=2 (auto): start steering when the mean of the measured refusal-\n"
+                 "                       direction dots (over the steered layers, on the last token prefill read) falls to\n"
+                 "                       F or below; this model refuses on the negative side, e.g. -0.9 (default = log\n"
+                 "                       only); a request may override it (GENI cvec_thresh=F, serve cvec_threshold)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
@@ -3317,6 +3323,13 @@ int main(int argc, char** argv) {
             if (d == "per-layer") o.cvec_single = -1;
             else if (d.rfind("single:", 0) == 0) o.cvec_single = std::atoi(d.c_str() + 7);
             else { std::fprintf(stderr, "--cvec-dir: per-layer or single:L, got '%s'\n", d.c_str()); return 2; }
+        }
+        else if (a == "--cvec-threshold") {   // the GENI cvec_thresh guard mirrored: a value with no digits is dropped (0.0 would silently steer nearly every request, whose mean is negative)
+            const char* vp = next("--cvec-threshold");
+            char* ve = nullptr;
+            const float tv = std::strtof(vp, &ve);
+            if (ve != vp) o.cvec_threshold = tv;
+            else std::fprintf(stderr, "strata: --cvec-threshold '%s' is not a number - keeping the log-only default\n", vp);
         }
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
@@ -13873,7 +13886,9 @@ int main(int argc, char** argv) {
             int req_penalty_last_n = 0;
             std::string req_bias_text;
             bool req_bias_present = false;
-            int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            int req_cvec = 1;   // cvec=0|1|2: a loaded control vector for this request (on when absent); 2 = auto (measure, then steer the decode at or below --cvec-threshold)
+            float req_cvec_thresh = 0.0f;   // GENI cvec_thresh=F: this request's own gate threshold (serve: the shared "cvec_threshold" cell)
+            bool req_cvec_thresh_set = false;
             // logprobs=K (0..20): after each "T id" an "LP logprob id:logprob ..." line.
             // -1 (absent) = no LP lines, so a server that never asks sees today's output.
             int req_logprobs = -1;
@@ -13917,6 +13932,12 @@ int main(int argc, char** argv) {
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "cvec_thresh") {   // the request's own gate; a value with no digits is dropped (0.0 would silently steer nearly everything)
+                        const char* vp = tok.c_str() + eq + 1;
+                        char* ve = nullptr;
+                        const float tv = std::strtof(vp, &ve);
+                        if (ve != vp) { req_cvec_thresh = tv; req_cvec_thresh_set = true; }
+                    }
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "prefill") req_prefill_only = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
@@ -14118,7 +14139,17 @@ int main(int argc, char** argv) {
                     if ((int32_t) ids[(size_t) i] != pre[(size_t) i]) return false;
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
-            const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            // [review] the conversation caches are keyed on the state their contents were computed in: an auto
+            // request's PREFILL ran stock, so auto keys as stock (== 1, not != 0) and its steer verdict lives only
+            // in the device flag, set at the prefill->decode seam and dropped when the request ends.
+            const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec == 1 : true;
+            bool cvec_auto = req_cvec == 2 && strata::kernels::cvec().loaded();
+            bool cvec_win_used = false;   // a prompt part read through the verify windows never measures (those
+                                          // graphs bake the measure target at capture): the gate stays stock
+            if (cvec_auto && o.batch > 1) {   // one device flag serves every slot: refuse, never silently steer
+                std::fprintf(stderr, "strata serve: cvec auto: batched -> stock\n");
+                cvec_auto = false;
+            }
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)
@@ -14618,7 +14649,18 @@ int main(int argc, char** argv) {
                 checks.clear();
                 cvec_cached = want_cvec;
             }
-            if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            if (strata::kernels::cvec().loaded()) {
+                if (cvec_auto) {
+                    // the measure pass: zero the dots and name the token the prefill will read last (n - 1 is the
+                    // first window's alone); the seam reads the dots and puts the flag at the verdict
+                    strata::kernels::cvec_measure_reset();
+                    strata::kernels::cvec_measure_set_target(n >= 2 ? n - 2 : -1);
+                    strata::kernels::cvec_set_enabled(2);
+                } else {
+                    strata::kernels::cvec_measure_set_target(-1);   // decode graphs must never bake a target
+                    strata::kernels::cvec_set_enabled(want_cvec ? 1 : 0);
+                }
+            }
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             auto off_path = [&](const ConvCheckpoint& c) {
@@ -14760,7 +14802,7 @@ int main(int argc, char** argv) {
             // read batched and its header still goes through the windows.  Picture rows need the batched path.
             // STRATA_CKPT_REREAD compares a restored checkpoint with a batched re-read, so it keeps every read batched.
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
-            int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
+            int64_t req_short_read = cvec_auto ? 0 : o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=); auto forces 0: it measures row n - 2 and the verify windows never measure, so the whole prompt must go batched
             if (short_read_off_once) {   // #3465: the request after non-finite logits in a prompt window
                 short_read_off_once = false;
                 req_short_read = 0;
@@ -15913,6 +15955,7 @@ int main(int argc, char** argv) {
                 if (to <= at) continue;
                 err.clear();
                 const bool win = windows_ok(at, to);
+                if (win) cvec_win_used = true;
                 if (win && !refill(err)) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
@@ -16011,6 +16054,47 @@ int main(int argc, char** argv) {
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
             std::fflush(stdout);
+            // ---- the cvec=2 (auto) gate: the dots the prefill measured on token n - 2 (the last one the batched
+            // prefill read; n - 1 is the first window's alone, and a prompt part read through the verify windows
+            // never measures).  At or below the threshold -> the whole decode runs steered (the flag flips before the
+            // first window, so token 1 is steered too); under it, the model never saw the vector.  The prefill
+            // itself was stock either way, so the caches keep their stock tag.
+            if (cvec_auto) {
+                float mean = 0.0f, mx = 0.0f;
+                bool have = false;
+                if (!cvec_win_used) {
+                    std::vector<float> dots;
+                    if (strata::kernels::cvec_measure_read(dots)) {
+                        const auto& st = strata::kernels::cvec().steered;
+                        const int64_t hc = strata::kernels::cvec().hc;
+                        double sum = 0.0;
+                        int cnt = 0;
+                        bool any_nonzero = false;   // an all-zero buffer means "never measured" (row n - 2 unread),
+                        for (size_t l = 0; l < st.size() && (int64_t) (l + 1) * hc <= (int64_t) dots.size(); ++l) {   // never a 0.0 verdict
+                            if (!st[l]) continue;
+                            double layer_sum = 0.0;   // the hc streams of the layer, fixed order: deterministic
+                            for (int64_t c = 0; c < hc; ++c) {
+                                const float dv = dots[l * hc + c];
+                                layer_sum += dv;
+                                if (dv != 0.0f) any_nonzero = true;
+                            }
+                            sum += layer_sum;
+                            ++cnt;
+                            if (cnt == 1 || layer_sum > mx) mx = (float) layer_sum;
+                        }
+                        if (cnt > 0 && any_nonzero) { mean = (float) (sum / cnt); have = true; }
+                    }
+                }
+                const float gate_thresh = req_cvec_thresh_set ? req_cvec_thresh : o.cvec_threshold;   // the request's cvec_thresh wins; the lowest() default is never reached: log only
+                const bool steer = have && (double) mean <= (double) gate_thresh;
+                strata::kernels::cvec_set_enabled(steer ? 1 : 0);
+                std::fprintf(stderr, "strata serve: cvec auto: %smean %.4f max %.4f thresh %.4f -> %s\n",
+                             cvec_win_used ? "windows, unmeasured: " : "", mean, mx,
+                             (double) gate_thresh, steer ? "steer" : "stock");
+                std::printf("CVECAUTO mean=%.4f max=%.4f thresh=%.4f -> %s\n", mean, mx,
+                            (double) gate_thresh, steer ? "steer" : "stock");
+                std::fflush(stdout);
+            }
             // the verify windows: the first holds the last prompt token alone (STRATA_ADMIT_MERGE_FIRST: the prompt
             // tokens from merge_at on, the last one's output its first token)
             const int merge_T = merge_at >= 0 && !cancelled ? (int) (n - merge_at) : 0;
@@ -17354,6 +17438,7 @@ int main(int argc, char** argv) {
                         (long long) req_offload, chain_txt, (long long) req_chunk,
                         (long long) (sp.chain_experts_streamed() - streamed0));
             std::fflush(stdout);
+            if (cvec_auto) strata::kernels::cvec_set_enabled(0);   // the verdict lived only for this request
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
