@@ -26,5 +26,12 @@
  "ui25": "Die Eingabetaste sendet sie, sobald die Antwort fertig ist.",
  "ui26": "Die Eingabetaste stoppt die Antwort hier und sendet die Nachricht sofort.",
  "ui27": "Wartet auf das Senden",
- "ui28": "Zurücknehmen"
+ "ui28": "Zurücknehmen",
+ "ui29": "Zitieren",
+ "ui30": "Zitat des Assistenten",
+ "ui31": "Zitat von dir",
+ "ui32": "Dieses Zitat entfernen",
+ "ui33": "Zur zitierten Nachricht springen",
+ "ui34": "Zitiert",
+ "ui35": "Rest des Zitats ein- oder ausblenden"
 }

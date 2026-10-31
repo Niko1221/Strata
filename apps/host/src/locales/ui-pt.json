@@ -26,5 +26,12 @@
  "ui25": "O Enter envia quando a resposta terminar.",
  "ui26": "O Enter para a resposta aqui e envia agora.",
  "ui27": "Aguardando envio",
- "ui28": "Desfazer"
+ "ui28": "Desfazer",
+ "ui29": "Citar",
+ "ui30": "Citando o assistente",
+ "ui31": "Citando você",
+ "ui32": "Remover esta citação",
+ "ui33": "Ir para a mensagem citada",
+ "ui34": "Citado",
+ "ui35": "Mostrar ou ocultar o resto da citação"
 }

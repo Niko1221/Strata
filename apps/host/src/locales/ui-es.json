@@ -26,5 +26,12 @@
  "ui25": "Intro lo envía cuando termina la respuesta.",
  "ui26": "Intro detiene la respuesta aquí y lo envía ahora.",
  "ui27": "Esperando para enviar",
- "ui28": "Retirar"
+ "ui28": "Retirar",
+ "ui29": "Citar",
+ "ui30": "Citando al asistente",
+ "ui31": "Citándote a ti",
+ "ui32": "Quitar esta cita",
+ "ui33": "Ir al mensaje citado",
+ "ui34": "Citado",
+ "ui35": "Mostrar u ocultar el resto de la cita"
 }

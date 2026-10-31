@@ -1,6 +1,7 @@
 import { workspaceIdForSession } from './session-workspace';
 import { detectLanguage } from './language-detect';
 import { validWhileBusy, type WhileBusy } from './while-busy';
+import { addToQuotes, type Quote } from './quotes';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { settleAgents, updateAgent } from './agents';
@@ -123,6 +124,8 @@ export interface AppState {
   streaming: boolean;
   /** Messages the person sent while an answer was being written, waiting to go when it ends (Send after, Interrupt), by chat (#4783). */
   parked: Record<string, string[]>;
+  /** The passages quoted into the message being written, by chat, in the order they were quoted (#4785). */
+  quotes: Record<string, Quote[]>;
   /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
   liveChats: number;
   toasts: Toast[];
@@ -275,6 +278,7 @@ let state: AppState = {
   approvalNotify: prefs.approvalNotify,
   whileBusy: prefs.whileBusy,
   parked: {},
+  quotes: {},
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -623,6 +627,25 @@ export function parkMessage(sessionId: string, text: string) {
   if (!clean) return;
   set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
 }
+/** Puts a turn or a selected passage above the message box. */
+export function addQuote(sessionId: string, text: string, messageId: string, role: 'user' | 'assistant') {
+  const list = state.quotes[sessionId] ?? [];
+  const next = addToQuotes(list, { text, messageId, role });
+  if (next.length !== list.length) set({ quotes: { ...state.quotes, [sessionId]: next } });
+}
+export function removeQuote(sessionId: string, id: string) {
+  const rest = (state.quotes[sessionId] ?? []).filter(q => q.id !== id);
+  const next = { ...state.quotes };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ quotes: next });
+}
+export function clearQuotes(sessionId: string) {
+  if (!state.quotes[sessionId]) return;
+  const next = { ...state.quotes };
+  delete next[sessionId];
+  set({ quotes: next });
+}
+
 /** The first parked message of a chat, taken out of the list (to send it, or to give it back to the box). */
 export function takeParked(sessionId: string, index = 0): string | undefined {
   const list = state.parked[sessionId] ?? [];

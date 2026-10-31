@@ -598,6 +598,56 @@ cases.busy = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4785 */
+cases.quote = async () => {
+  const long = 'First point: local models keep your files on your own computer. Second point: nothing has to be uploaded to a service. Third point: you can work without a network connection.';
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const page = await open(scheme, w, h, [chat('s1', 'Quote', [user('u1', 'Why run a model locally?'), reply('a1', long), user('u2', 'Thanks, one more question'), reply('a2', 'Ask away.')])]);
+    await page.locator('.st-msg--assistant').first().waitFor({ timeout: 15000 });
+    // A whole turn, from the message menu.
+    await page.locator('.st-msg--assistant').first().hover();
+    await page.locator('.st-msg--assistant').first().getByRole('button', { name: 'More response actions' }).click();
+    await page.getByRole('menuitem', { name: 'Quote' }).click();
+    await page.locator('.quote').first().waitFor({ timeout: 5000 });
+    check(/Quoting the assistant/.test(await page.locator('.quote').first().innerText()) && /First point/.test(await page.locator('.quote').first().innerText()), `${tag}: Quote in the message menu puts the turn above the box`);
+    // Just a passage: select the second sentence and quote it.
+    await page.evaluate(() => {
+      const p = document.querySelector('.st-msg--assistant .st-bubble p');
+      const node = p.firstChild; const at = node.textContent.indexOf('Second point'); const end = node.textContent.indexOf('Third point');
+      const r = document.createRange(); r.setStart(node, at); r.setEnd(node, end);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    });
+    await page.locator('.quote-selection').waitFor({ timeout: 5000 });
+    const sbox = await page.locator('.quote-selection').boundingBox();
+    check(!!sbox && sbox.x >= 0 && sbox.y >= 0 && sbox.x + sbox.width <= w, `${tag}: a Quote button appears by the selected words, on screen`, JSON.stringify(sbox));
+    await page.locator('.quote-selection').click();
+    check(await page.locator('.quote').count() === 2 && /^Second point: nothing has to be uploaded to a service\.$/.test((await page.locator('.quote .quote__text').nth(1).innerText()).trim()), `${tag}: the second quote is just the selected passage, listed after the first`);
+    check(await page.locator('.quote-selection').count() === 0, `${tag}: the button goes away`);
+    await shot(page, `4785-${tag}-quotes`);
+    // Remove one, quote it again, jump to the message.
+    await page.locator('.quote').first().getByRole('button', { name: 'Remove this quote' }).click();
+    check(await page.locator('.quote').count() === 1 && /Second point/.test(await page.locator('.quote').first().innerText()), `${tag}: one quote can be removed without touching the others`);
+    await page.locator('.quote__body').first().click();
+    await page.waitForTimeout(400);
+    // Send an answer: the model gets the fixed form, the transcript shows the quote apart from the reply.
+    await page.locator('textarea').first().fill('SCRIPT:echo thanks for the quote');
+    await page.keyboard.press('Enter');
+    await page.locator('.sent-quote').first().waitFor({ timeout: 15000 });
+    const sent = await page.locator('.st-msg--user').last().innerText();
+    check(/Second point: nothing has to be uploaded/.test(sent) && /SCRIPT:echo thanks for the quote/.test(sent) && !/Quoting:/.test(sent) && !/「/.test(sent), `${tag}: the sent message shows the quote apart from the reply, without the markup`, sent.replace(/\n+/g, ' | ').slice(0, 160));
+    const got = worker.requests.at(-1)?.raw ?? '';
+    check(got.includes('Quoting:\\n「Second point: nothing has to be uploaded to a service.」\\n→ Reply: SCRIPT:echo thanks for the quote'), `${tag}: the model receives the quote in its fixed form`, got.slice(-220));
+    check(await page.locator('.quote').count() === 0, `${tag}: the quotes are cleared after sending`);
+    await page.locator('.sent-quote').first().click();
+    check(await page.locator('.sent-quotes[data-open]').count() === 1, `${tag}: a click opens the rest of a sent quote`);
+    await shot(page, `4785-${tag}-sent`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

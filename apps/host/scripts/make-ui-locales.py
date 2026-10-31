@@ -180,6 +180,29 @@ add(en="Take back",
     zh="撤回", ja="取り消す", de="Zurücknehmen", es="Retirar",
     ru="Забрать обратно", pt="Desfazer", ko="되돌리기", fr="Reprendre")
 
+# #4785 quoting
+add(en="Quote",
+    zh="引用", ja="引用", de="Zitieren", es="Citar",
+    ru="Цитировать", pt="Citar", ko="인용", fr="Citer")
+add(en="Quoting the assistant",
+    zh="引用助手的话", ja="アシスタントの発言を引用", de="Zitat des Assistenten", es="Citando al asistente",
+    ru="Цитата ассистента", pt="Citando o assistente", ko="어시스턴트의 말을 인용", fr="Citation de l'assistant")
+add(en="Quoting you",
+    zh="引用你的话", ja="あなたの発言を引用", de="Zitat von dir", es="Citándote a ti",
+    ru="Ваша цитата", pt="Citando você", ko="내 말을 인용", fr="Citation de vous")
+add(en="Remove this quote",
+    zh="移除这条引用", ja="この引用を外す", de="Dieses Zitat entfernen", es="Quitar esta cita",
+    ru="Убрать эту цитату", pt="Remover esta citação", ko="이 인용 제거", fr="Retirer cette citation")
+add(en="Go to the quoted message",
+    zh="跳到被引用的消息", ja="引用元のメッセージへ移動", de="Zur zitierten Nachricht springen", es="Ir al mensaje citado",
+    ru="Перейти к цитируемому сообщению", pt="Ir para a mensagem citada", ko="인용한 메시지로 이동", fr="Aller au message cité")
+add(en="Quoted",
+    zh="引用", ja="引用", de="Zitiert", es="Citado",
+    ru="Цитата", pt="Citado", ko="인용됨", fr="Cité")
+add(en="Show or hide the rest of the quote",
+    zh="显示或隐藏引用的其余部分", ja="引用の続きを表示または非表示", de="Rest des Zitats ein- oder ausblenden", es="Mostrar u ocultar el resto de la cita",
+    ru="Показать или скрыть остальную часть цитаты", pt="Mostrar ou ocultar o resto da citação", ko="인용의 나머지 부분 보기 또는 숨기기", fr="Afficher ou masquer la suite de la citation")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

@@ -26,5 +26,12 @@
  "ui25": "Enter sends it when the answer is done.",
  "ui26": "Enter stops the answer here and sends it now.",
  "ui27": "Waiting to send",
- "ui28": "Take back"
+ "ui28": "Take back",
+ "ui29": "Quote",
+ "ui30": "Quoting the assistant",
+ "ui31": "Quoting you",
+ "ui32": "Remove this quote",
+ "ui33": "Go to the quoted message",
+ "ui34": "Quoted",
+ "ui35": "Show or hide the rest of the quote"
 }

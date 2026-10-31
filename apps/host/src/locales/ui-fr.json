@@ -26,5 +26,12 @@
  "ui25": "Entrée l’envoie quand la réponse est terminée.",
  "ui26": "Entrée arrête la réponse ici et l’envoie tout de suite.",
  "ui27": "En attente d’envoi",
- "ui28": "Reprendre"
+ "ui28": "Reprendre",
+ "ui29": "Citer",
+ "ui30": "Citation de l’assistant",
+ "ui31": "Citation de vous",
+ "ui32": "Retirer cette citation",
+ "ui33": "Aller au message cité",
+ "ui34": "Cité",
+ "ui35": "Afficher ou masquer la suite de la citation"
 }

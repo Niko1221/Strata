@@ -34,13 +34,14 @@ import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import { openExternal } from '../lib/open-external';
 import { busyPlan } from '../lib/while-busy';
+import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, parkMessage, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { addQuote, clearQuotes, removeQuote, createSubagentExample, parkMessage, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { CopyBtn, CopyMenuItem, MenuCloseContext } from '../components/CopyBtn';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
@@ -71,6 +72,25 @@ export function ChatScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id, messageCount, streaming]);
     const parked = useStore(s => (session ? s.parked[session.id] : undefined));
+    const quotes = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
+    // Selecting words in a message offers to quote just them (#4785).
+    const [selection, setSelection] = useState<{ text: string; messageId: string; role: 'user' | 'assistant'; x: number; y: number } | null>(null);
+    useEffect(() => {
+        const read = () => {
+            const sel = window.getSelection();
+            const el = scroller.current;
+            if (!sel || sel.isCollapsed || !sel.rangeCount || !el) { setSelection(null); return; }
+            const range = sel.getRangeAt(0);
+            const node = range.commonAncestorContainer;
+            const host = (node instanceof Element ? node : node.parentElement)?.closest('.st-msg');
+            const text = sel.toString().trim();
+            if (!host || !el.contains(host) || text.length < 2) { setSelection(null); return; }
+            const rect = range.getBoundingClientRect();
+            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(window.innerWidth - 96, Math.max(8, rect.left)), y: Math.max(8, rect.top - 40) });
+        };
+        document.addEventListener('selectionchange', read);
+        return () => document.removeEventListener('selectionchange', read);
+    }, [session?.id]);
     // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again.
     useEffect(() => {
         if (!session || streaming || !parked?.length)
@@ -408,15 +428,17 @@ export function ChatScreen() {
             if (!text || !session)
                 return;
             const plan = busyPlan(whileBusy);
+            const out = quotedMessage(quotes, text);
             // Interrupt: the answer stops where it is (what is written stays) and the message goes as soon as it has stopped (the effect below sends it).
             if (plan === 'interrupt') {
                 updateDraft('');
-                parkMessage(session.id, text);
+                clearQuotes(session.id);
+                parkMessage(session.id, out);
                 stopStreaming();
                 return;
             }
             updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (!ok) { if (plan === 'goal') { parkMessage(session.id, text); return; } updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void queueMessage(session.id, out).then(ok => { if (ok) { clearQuotes(session.id); return; } if (!ok) { if (plan === 'goal') { clearQuotes(session.id); parkMessage(session.id, out); return; } updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -430,7 +452,8 @@ export function ChatScreen() {
             if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
         }
         updateDraft('');
-        void sendMessage(text);
+        if (session) clearQuotes(session.id);
+        void sendMessage(session ? quotedMessage(quotes, text) : text);
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
@@ -453,6 +476,7 @@ export function ChatScreen() {
       </>);
     }
     return (<>
+      {tr(selection && session ? <button type="button" className="quote-selection" style={{ left: selection.x, top: selection.y }} onMouseDown={e => e.preventDefault()} onClick={() => { addQuote(session.id, selection.text, selection.messageId, selection.role); window.getSelection()?.removeAllRanges(); setSelection(null); }}>{tr("Quote")}</button> : null)}
       <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
@@ -542,6 +566,11 @@ function SlashMenu({ query, commands, cursor, onPick, onHover, }: {
     </div>);
 }
 const NO_PARKED: string[] = [];
+const NO_QUOTES: Quote[] = [];
+/** The message that goes out: the quoted passages in their fixed form, then the person's words. A command such as /plan goes out as typed. */
+function quotedMessage(quotes: readonly Quote[], text: string): string {
+    return quotes.length && !text.startsWith('/') ? composeQuoted(quotes.map(q => q.text), text) : text;
+}
 function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session, onPreview, textareaRef, }: {
     draft: string;
     setDraft: (v: string) => void;
@@ -557,6 +586,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
     const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
+    const quoteList = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
     const [fileError, setFileError] = useState('');
@@ -588,6 +618,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
+          {tr(quoteList.length ? <div className="quotes">{tr(quoteList.map(q => <div className="quote" key={q.id}><button type="button" className="quote__body" title={tr("Go to the quoted message")} onClick={() => document.querySelector(`[data-message-id="${CSS.escape(q.messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })}><span className="xs muted">{tr(q.role === 'user' ? "Quoting you" : "Quoting the assistant")}</span><span className="quote__text">{q.text}</span></button><IconBtn name="x" size={14} title={tr("Remove this quote")} onClick={() => removeQuote(session!.id, q.id)}/></div>))}</div> : null)}
           {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
@@ -676,9 +707,10 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
+    const sentQuote = m.role === 'user' ? parseQuoted(m.content) : null;
     if (m.role === 'user') {
-        return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
-        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink} imageSession={activeSession}/> : <span className="st-bubble__text">{m.content}</span>}</div>
+        return (<div className="st-msg st-msg--user" data-message-id={m.id} onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
+        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{sentQuote ? <><SentQuotes quotes={sentQuote.quotes}/><span className="st-bubble__text">{sentQuote.reply}</span></> : m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink} imageSession={activeSession}/> : <span className="st-bubble__text">{m.content}</span>}</div>
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
@@ -688,12 +720,12 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
                 if (prompt !== null)
                     onEditPrompt(prompt);
             }}/>
-            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
+            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => activeSession && addQuote(activeSession, m.content, m.id, 'user')}>{tr("Quote")}</button><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
           </span>
         </div>
       </div>);
     }
-    return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
+    return (<div className="st-msg st-msg--assistant" data-message-id={m.id} data-error={m.error ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
@@ -727,12 +759,18 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
             <MessageMenu label={tr("More response actions")}>
               {tr(!isLast ? <><CopyMenuItem text={m.content} label="Response">Copy response</CopyMenuItem><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
+              <button role="menuitem" className="menu__item" onClick={() => activeSession && addQuote(activeSession, m.content, m.id, 'assistant')}>{tr("Quote")}</button>
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
             </MessageMenu>
           </span>
         </div>) : null)}
     </div>);
+}
+/** The passages a sent message quoted, one or two lines each; a click shows the rest. */
+function SentQuotes({ quotes }: { quotes: string[] }) {
+    const [open, setOpen] = useState(false);
+    return <div className="sent-quotes" data-open={open || undefined}>{quotes.map((q, i) => <button type="button" key={i} className="sent-quote" aria-expanded={open} title={tr("Show or hide the rest of the quote")} onClick={() => setOpen(v => !v)}><span className="xs muted">{tr("Quoted")}</span><span className="sent-quote__text">{q}</span></button>)}</div>;
 }
 function MessageMenu({ label, children }: {
     label: string;

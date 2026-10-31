@@ -338,8 +338,8 @@ test('#4783 the three choices while an answer is written, as the web chat page h
 
 test('#4783 the composer acts on the choice, the default keeps today\'s behaviour, and the parked message is sent when the chat is quiet', () => {
   const chat = src('screens/Chat.tsx');
-  assert.match(chat, /if \(plan === 'interrupt'\) \{\s*updateDraft\(''\);\s*parkMessage\(session\.id, text\);\s*stopStreaming\(\);\s*return;\s*\}/);
-  assert.match(chat, /if \(plan === 'goal'\) \{ parkMessage\(session\.id, text\); return; \}/);
+  assert.match(chat, /if \(plan === 'interrupt'\) \{\s*updateDraft\(''\);\s*clearQuotes\(session\.id\);\s*parkMessage\(session\.id, out\);\s*stopStreaming\(\);\s*return;\s*\}/);
+  assert.match(chat, /if \(plan === 'goal'\) \{ clearQuotes\(session\.id\); parkMessage\(session\.id, out\); return; \}/);
   assert.match(chat, /pushToast\('info', tr\('The assistant is still answering'\)/, 'Wait still says so');
   assert.match(chat, /if \(!session \|\| streaming \|\| !parked\?\.length\)\s*return;\s*const next = takeParked\(session\.id\);/);
   const store = src('lib/store.ts');
@@ -351,6 +351,51 @@ test('#4783 the composer acts on the choice, the default keeps today\'s behaviou
 test('#4783 the new sentences are translated', async () => {
   const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
   const lines = ['While an answer is being written', 'What Enter does when you send a message while the assistant is still answering.', 'Wait for the answer', 'Send after the answer', 'Interrupt the answer', 'Enter sends it when the answer is done.', 'Enter stops the answer here and sends it now.', 'Waiting to send', 'Take back'];
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
+  setTranslationLanguage('en');
+});
+
+// ---------------------------------------------------------------------------------------------------------------------- #4785
+test('#4785 a quoted message carries the quotes in one fixed form and reads back the same, apart from the reply', async () => {
+  const { composeQuoted, parseQuoted, cleanQuote, addToQuotes, MAX_QUOTES, MAX_QUOTE_CHARS } = await load('lib/quotes.ts');
+  const out = composeQuoted(['The first passage.', 'A second\npassage.'], 'my answer');
+  assert.equal(out, 'Quoting:\n「The first passage.」\n「A second\npassage.」\n→ Reply: my answer');
+  assert.deepEqual(parseQuoted(out), { quotes: ['The first passage.', 'A second\npassage.'], reply: 'my answer' });
+  // A reply that itself looks like the form is still the reply.
+  assert.deepEqual(parseQuoted(composeQuoted(['q'], '」\n→ Reply: x')), { quotes: ['q'], reply: '」\n→ Reply: x' });
+  // A quote cannot end itself early.
+  assert.equal(cleanQuote('he said 「hi」'), 'he said 『hi』');
+  assert.deepEqual(parseQuoted(composeQuoted(['he said 「hi」'], 'ok')).quotes, ['he said 『hi』']);
+  assert.equal(composeQuoted([], 'plain'), 'plain');
+  assert.equal(composeQuoted(['   '], 'plain'), 'plain');
+  assert.equal(parseQuoted('hello'), null);
+  assert.equal(parseQuoted('Quoting:\nnothing'), null);
+  assert.ok(cleanQuote('x'.repeat(MAX_QUOTE_CHARS + 50)).length <= MAX_QUOTE_CHARS);
+  // The list: no empty one, no repeat of the same passage, no more than the limit.
+  let list = [];
+  list = addToQuotes(list, { text: 'a', messageId: 'm1', role: 'assistant' });
+  list = addToQuotes(list, { text: 'a', messageId: 'm1', role: 'assistant' });
+  list = addToQuotes(list, { text: '  ', messageId: 'm1', role: 'assistant' });
+  assert.equal(list.length, 1);
+  list = addToQuotes(list, { text: 'a', messageId: 'm2', role: 'user' });
+  assert.equal(list.length, 2, 'the same words from another message is another quote');
+  for (let i = 0; i < 20; i++) list = addToQuotes(list, { text: `n${i}`, messageId: 'm3', role: 'assistant' });
+  assert.equal(list.length, MAX_QUOTES);
+});
+
+test('#4785 quoting is wired: the menu, the selection, the box above the composer, the sending and the sent bubble', () => {
+  const chat = src('screens/Chat.tsx');
+  assert.equal((chat.match(/addQuote\(activeSession, m\.content, m\.id, '(user|assistant)'\)/g) ?? []).length, 2, 'a Quote item in the menu of both kinds of message');
+  assert.match(chat, /document\.addEventListener\('selectionchange', read\)/);
+  assert.match(chat, /data-message-id=\{m\.id\}/);
+  assert.match(chat, /return quotes\.length && !text\.startsWith\('\/'\) \? composeQuoted\(quotes\.map\(q => q\.text\), text\) : text;/, 'a command goes out as typed');
+  assert.match(chat, /void sendMessage\(session \? quotedMessage\(quotes, text\) : text\);/);
+  assert.match(chat, /const sentQuote = m\.role === 'user' \? parseQuoted\(m\.content\) : null;/);
+});
+
+test('#4785 the new words are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  const lines = ['Quote', 'Quoting the assistant', 'Quoting you', 'Remove this quote', 'Go to the quoted message', 'Quoted', 'Show or hide the rest of the quote'];
   for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
   setTranslationLanguage('en');
 });
