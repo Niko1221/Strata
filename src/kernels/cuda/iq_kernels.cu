@@ -8,6 +8,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
+#include "strata/core/dispatch_stats.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
@@ -6248,6 +6249,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
+    strata::dispatch::kernel(strata::dispatch::kExpert, 0, L.gu_type, (int) L.n_embd, (int) L.n_ff, L.d_type);   // BW-MEASURE: one grouped expert call
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
@@ -6365,6 +6367,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
             default: break;
         }
         if (gs_done) check("native_expert_grouped/gu+swiglu");
+    }
+    {   // BW-MEASURE: which gate/up form ran: 1 = fused gate/up/SwiGLU/q8_1 (em 8), 2 = GU_SWIGLU one launch, 3 = separate gate/up + SwiGLU launches
+#if STRATA_EXP_LAYOUTS
+        const int gu_form = fused_gu ? 1 : (gs_done ? 2 : 3);
+#else
+        const int gu_form = gs_done ? 2 : 3;
+#endif
+        strata::dispatch::kernel(strata::dispatch::kExpert, gu_form, L.gu_type, (int) L.n_embd, (int) L.n_ff, L.d_type);
     }
 #if STRATA_EXP_LAYOUTS
     if (g_exp_phase != 2 && !fused_gu && !gs_done) {
