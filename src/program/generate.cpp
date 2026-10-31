@@ -16868,6 +16868,13 @@ int main(int argc, char** argv) {
                         T = 1;
                         while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                     }
+#if defined(STRATA_HAVE_DFLASH2)
+                    if (use_df2 && o.draft_conf > 0.0 && !first_window) {   // --draft-conf in serve as in the CLI loop: the chance that every draft so far holds
+                        T = 1;
+                        double chain = 1.0;
+                        while (T < S_mtp && (chain *= (double) dprob[(size_t) T - 1]) >= o.draft_conf) ++T;
+                    }
+#endif
                     if (first_window) T = merge_T > 0 ? merge_T : 1;
                     // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
                     // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
