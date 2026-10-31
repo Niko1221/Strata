@@ -2622,6 +2622,70 @@ bool FileExpertSource::drop_mapping(std::string& why) {
 #endif
 }
 
+// --drop-file-cache (Linux): the mapped model files' cached pages, given back in one go once the startup reads are
+// done.  Every expert is in VRAM or in the RAM copy by then, and the file tier serves none of them, so the page cache
+// holds a third copy of the same bytes - the copy the kernel cannot take back cheaply, because the pages belong to
+// files this process still maps.  #1250 makes the same two calls when a page-locked complement needs the room; here
+// it is asked for by name.  madvise(MADV_DONTNEED) first unmaps the pages (posix_fadvise(DONTNEED) alone skips a
+// page that is still mapped) and posix_fadvise(DONTNEED) then drops them from the page cache (madvise alone leaves
+// them on the LRU): measured on this host, the pair took all 512 MiB of a probe file with mincore back at 0, and
+// either call alone took none.  The pages are clean and file-backed, so a later read faults them back in - the
+// prompt path's lend-region refill reads the drive once after this, and no answer changes.
+//
+// The whole mapping goes, with no lend-region exclusion: the loan is sized at request time (plan_lend, --prefill),
+// so there is no exclusion to compute here, and the bytes at stake are ~4 GiB of a ~55 GiB reclaim.
+uint64_t FileExpertSource::drop_file_cache(std::string& why) {
+    why.clear();
+#if !defined(__linux__)
+    why = "dropping the file cache is Linux only (Windows hands a VRAM expert's pages back per expert, "
+          "STRATA_FILE_RELEASE)";
+    return 0;
+#else
+    if (base_ == nullptr) { why = "the mapped experts are not open"; return 0; }
+    if (unmapped_) { why = "the mapped view of the experts is closed (drop_mapping)"; return 0; }
+    uint64_t bytes = 0;
+    int failures = 0;
+    auto drop = [&](const uint8_t* at, uint64_t len, int fd, const char* path) {
+        if (at == nullptr || len == 0) return;
+        if (madvise((void*) at, (size_t) len, MADV_DONTNEED) != 0) {
+            ++failures;
+            std::fprintf(stderr, "FileExpertSource: --drop-file-cache: madvise of %s failed (%s)\n", path,
+                         std::strerror(errno));
+            return;
+        }
+        bytes += len;
+        // Best effort, and the pages that were unmapped above are the ones it can take: the pages of a file someone
+        // else still maps, or a dirty one, stay (the caller's own check makes them redundant either way).
+        if (fd >= 0 && posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) != 0) {
+            ++failures;
+            std::fprintf(stderr, "FileExpertSource: --drop-file-cache: posix_fadvise of %s failed (%s)\n", path,
+                         std::strerror(errno));
+        }
+        // A/B arm for the window: STRATA_DROP_CACHE_RANDOM=1 also turns the file's readahead off, so every page the
+        // later reads bring back is faulted by the reading thread itself (readahead is submitted with the pages it
+        // fills, and whether those are accounted to the faulting thread is the one part of the mechanism this host
+        // has not measured at engine scale).  Off by default: readahead is what makes the refill read at SSD speed.
+        static const bool random_after = [] {
+            const char* v = std::getenv("STRATA_DROP_CACHE_RANDOM");
+            return v != nullptr && v[0] != '\0' && v[0] != '0';
+        }();
+        if (random_after && fd >= 0) (void) posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+    };
+    if (maps_.empty()) drop(base_, mapped_bytes_, fd_, "the mapped experts");
+    else
+        for (size_t i = 0; i < maps_.size(); ++i)
+            drop(maps_[i].closed ? nullptr : maps_[i].base, maps_[i].bytes, maps_[i].fd,
+                 i < paths_.size() ? paths_[i].c_str() : "a mapped file");
+    if (failures > 0) {
+        char note[96];
+        std::snprintf(note, sizeof note, "%d of the mapped file%s could not be advised", failures,
+                      failures == 1 ? "" : "s");
+        why = note;
+    }
+    return bytes;
+#endif
+}
+
 bool FileExpertSource::begin_startup_unbuffered(std::string& why) {
 #if defined(_WIN32)
     if (const char* v = std::getenv("STRATA_STARTUP_UNBUFFERED"); v != nullptr && v[0] != '\0' && std::atoi(v) == 0) {

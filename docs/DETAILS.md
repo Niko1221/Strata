@@ -289,6 +289,13 @@ is left, the drive class and the PCIe link. It prints `chunk 8192 -> 3840, ring 
 and on Windows. `STRATA_PREFILL_HOST_PLAN=0` turns it off; `STRATA_SSD_GBPS` overrides the drive speed;
 `--prefill N` and `STRATA_PREFILL_RING` always win.
 
+`--drop-file-cache` (off by default, Linux only) hands the page cache of the mapped model files back to the kernel
+once the startup reads are done. In the resident mode every expert is in VRAM or in the RAM copy by then, so the page
+cache holds a third copy of the same bytes (55 GiB on the 48-layer packs), and it is the copy the kernel cannot take
+back cheaply while this process maps the files. The pages are clean and file-backed: a later read faults them back in
+from the drive. The flag drops nothing when experts are still read from the files - there the page cache is the tier
+that serves them - and the log says which of the two applies.
+
 ### Reading the tiers
 
 With `--stats` the engine prints the tiers of the decode (`expert tiers`: blobs from the RAM copy, blobs and MB from the
