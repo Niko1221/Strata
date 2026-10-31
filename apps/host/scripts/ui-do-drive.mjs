@@ -283,6 +283,41 @@ cases.tune = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4721 */
+cases.links = async () => {
+  const sessions = () => [chat('s1', 'Links', [user('u1', 'Show links'), reply('a1', `Read [the docs](https://example.com/docs) or open [the logo](${base}/icons/sprite.svg).`)])];
+  for (const scheme of ['light', 'dark']) {
+    // A browser tab: the browser opens the address in a new tab; a file stays in the side panel.
+    let page = await open(scheme, 1280, 860, sessions());
+    await page.getByRole('link', { name: 'the docs' }).waitFor({ timeout: 15000 });
+    await page.evaluate(() => { window.__opened = []; window.open = (...a) => { window.__opened.push(a); return null; }; });
+    await page.getByRole('link', { name: 'the docs' }).click();
+    await page.waitForTimeout(300);
+    let opened = await page.evaluate(() => window.__opened);
+    check(JSON.stringify(opened) === JSON.stringify([['https://example.com/docs', '_blank', 'noopener,noreferrer']]), `${scheme}: a browser tab: a plain click on a web address opens it in a new tab`, JSON.stringify(opened));
+    check(await page.locator('.artifact-panel').count() === 0, `${scheme}: a browser tab: and no side panel opens`);
+    await page.getByRole('link', { name: 'the logo' }).click();
+    await page.locator('.artifact-panel').waitFor({ timeout: 8000 });
+    check((await page.evaluate(() => window.__opened)).length === 1, `${scheme}: a file link keeps the side panel and opens no tab`);
+    await shot(page, `4721-${scheme}-file`);
+    await page.context().close();
+    // The app window: the host hands the address to the default browser; window.open is not used.
+    const posts = [];
+    page = await open(scheme, 1280, 860, sessions(), { before: async p => {
+      await p.route('**/api/app/mode', r => r.fulfill({ json: { mode: 'window', reason: null, canQuit: true, appUpdate: 'unavailable' } }));
+      await p.route('**/api/artifacts/open', r => { posts.push(r.request().postDataJSON()); return r.fulfill({ json: { ok: true } }); });
+    } });
+    await page.getByRole('link', { name: 'the docs' }).waitFor({ timeout: 15000 });
+    await page.evaluate(() => { window.__opened = []; window.open = (...a) => { window.__opened.push(a); return null; }; });
+    await page.getByRole('link', { name: 'the docs' }).click();
+    await page.waitForTimeout(400);
+    check(JSON.stringify(posts) === JSON.stringify([{ action: 'open', url: 'https://example.com/docs' }]), `${scheme}: the app window: the host is asked to open it in the default browser`, JSON.stringify(posts));
+    check((await page.evaluate(() => window.__opened)).length === 0 && await page.locator('.artifact-panel').count() === 0, `${scheme}: the app window: nothing else happens`);
+    check(page.problems.length === 0, `${scheme}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

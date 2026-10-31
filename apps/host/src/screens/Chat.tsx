@@ -32,6 +32,7 @@ import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
 import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
+import { openExternal } from '../lib/open-external';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
@@ -185,8 +186,14 @@ export function ChatScreen() {
     function openTimeSkip(id: string) { selectPreview(timeSkipTabId(id)); }
     function openLink(url: string) {
         const item = artifactFromUrl(url);
-        if (item)
-            openPreview(item);
+        if (!item)
+            return;
+        // A web address opens in the person's own browser; only a file (a PDF, picture, table, code or Markdown) is shown in the side panel (#4721).
+        if (item.kind === 'website') {
+            void openExternal(url);
+            return;
+        }
+        openPreview(item);
     }
     /* The message list is memoised (#4640 family: Out of Memory in a long chat): a streamed token changes one message, so the others must not
        re-render. These handlers keep one identity for the life of the screen and always call the newest functions above. */

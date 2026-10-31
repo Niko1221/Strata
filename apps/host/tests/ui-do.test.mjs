@@ -138,3 +138,35 @@ test('#4804 the new sentences are translated, and the existing one is reused', a
   setTranslationLanguage('en');
 });
 
+// ---------------------------------------------------------------------------------------------------------------------- #4721
+test('#4721 a plain click on a web address goes to the default browser; the app window asks the host, a browser tab opens it itself', async () => {
+  const { openExternal } = await withI18n('open-external.ts');
+  const seen = [];
+  const deps = mode => ({ known: () => mode, load: async () => mode, post: async (...a) => { seen.push(['post', ...a]); }, open: u => seen.push(['open', u]) });
+  await openExternal('https://example.com/a?b=1', deps({ mode: 'window' }));
+  assert.deepEqual(seen.splice(0), [['post', '/api/artifacts/open', { action: 'open', url: 'https://example.com/a?b=1' }]]);
+  await openExternal('https://example.com/a', deps({ mode: 'browser' }));
+  assert.deepEqual(seen.splice(0), [['open', 'https://example.com/a']]);
+  await openExternal('https://example.com/a', deps({ mode: null }));
+  assert.deepEqual(seen.splice(0), [['open', 'https://example.com/a']], 'a host that does not say: the browser way');
+  // The answer has not arrived yet: the click waits for it, so the app window is not left with a window.open it drops.
+  let release;
+  const late = { known: () => null, load: () => new Promise(r => { release = () => r({ mode: 'window' }); }), post: async (...a) => { seen.push(['post', ...a]); }, open: u => seen.push(['open', u]) };
+  const pending = openExternal('https://example.com/late', late);
+  release();
+  await pending;
+  assert.equal(seen.splice(0)[0][0], 'post');
+  // The host cannot open it: the page tries too.
+  await openExternal('https://example.com/x', { ...deps({ mode: 'window' }), post: async () => { throw new Error('no'); } });
+  assert.deepEqual(seen.splice(0), [['open', 'https://example.com/x']]);
+});
+
+test('#4721 only a website goes to the browser; a file keeps the side panel', async () => {
+  globalThis.location = { origin: 'http://127.0.0.1:1' };
+  const { artifactFromUrl } = await withI18n('artifacts.ts');
+  for (const url of ['https://example.com/docs', 'https://github.com/Niko1221/Strata/issues/4721', 'http://localhost:3000/']) assert.equal(artifactFromUrl(url).kind, 'website', url);
+  for (const [url, kind] of [['https://example.com/a.pdf', 'pdf'], ['https://example.com/a.png', 'image'], ['https://example.com/a.csv', 'table'], ['https://example.com/a.ts', 'code'], ['https://example.com/readme.md', 'markdown']]) assert.equal(artifactFromUrl(url).kind, kind, url);
+  assert.equal(artifactFromUrl('javascript:alert(1)'), null);
+  const chat = src('screens/Chat.tsx');
+  assert.match(chat, /if \(item\.kind === 'website'\) \{\s*void openExternal\(url\);\s*return;\s*\}\s*openPreview\(item\);/);
+});
