@@ -356,16 +356,23 @@ bool sh_stream_on() {
 // the launch (the wait then passes at once); later launches keep the order that overlaps the read with layer 0 (reading
 // first costs about 1.4% decode on gfx1151).  Mode 0: never, 1: every launch, 2: the first launch of each graph.  Default:
 // 2 on HIP, 0 elsewhere (the CUDA path is unchanged).  STRATA_VERIFY_EARLY_PLE_FLAG=0 / 1 / 2 forces a mode.
-int early_ple_flag_mode() {
-    static const int mode = [] {
-        if (const char* v = std::getenv("STRATA_VERIFY_EARLY_PLE_FLAG")) return std::atoi(v) < 0 ? 0 : std::min(2, std::atoi(v));
-#if defined(STRATA_USE_HIP)
-        return 2;
-#else
-        return 0;
+// Hybrid (the opt-in CUDA+HIP build): 2 for a graph on a HIP ordinal - the same hang - 0 for a graph on a CUDA ordinal.
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
 #endif
+int early_ple_flag_mode(int device = -1) {
+    static const int forced = [] {
+        if (const char* v = std::getenv("STRATA_VERIFY_EARLY_PLE_FLAG")) return std::atoi(v) < 0 ? 0 : std::min(2, std::atoi(v));
+        return -1;
     }();
-    return mode;
+    if (forced >= 0) return forced;
+#if defined(STRATA_USE_HIP)
+    return 2;
+#elif defined(STRATA_HYBRID)
+    return device >= 0 && strata_hybrid_is_hip_device(device) != 0 ? 2 : 0;
+#else
+    return 0;
+#endif
 }
 
 // A one-token window always keeps its token, so its graph advances the sequence state itself (the GDN conv history
@@ -3101,7 +3108,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
     bool flag_raised = false;   // the PLE flag went up before the launch (early_ple_flag_mode)
     bool& graph_launched = ar_off_ ? launched_nr_[sel_long_][T] : launched_[sel_long_][T];
-    if (!pre && ar_on() && !test_stall && (early_ple_flag_mode() == 1 || (early_ple_flag_mode() == 2 && !graph_launched))) {
+    if (!pre && ar_on() && !test_stall && (early_ple_flag_mode(device_) == 1 || (early_ple_flag_mode(device_) == 2 && !graph_launched))) {
         if (do_ple) {
             const Clock::time_point tp = Clock::now();
             if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
@@ -3129,7 +3136,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
             return value != nullptr && value[0] == '1';
         }();
-        launch_o.emplace(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_, device_, threaded_launch,
+        bool threaded = threaded_launch;
+#if defined(STRATA_HYBRID)
+        // A graph on a HIP ordinal launches on its service thread: the hipGraphLaunch lock rule that keeps the pure-HIP
+        // builds off the side-thread launch (the pure-HIP gate above).  A CUDA ordinal keeps the CUDA behavior.
+        if (strata_hybrid_is_hip_device(device_) != 0) threaded = false;
+#endif
+        launch_o.emplace(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_, device_, threaded,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
 #else
