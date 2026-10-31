@@ -6689,6 +6689,66 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             yield "message_stop", {"type": "message_stop"}
 
 
+def anthropic_format(req, messages, tools):
+    """`output_config.format` as chat's response_format: the prompt and a validator.  (messages, None) without one."""
+    config = req.get("output_config")
+    fmt = config.get("format") if isinstance(config, dict) else None
+    if fmt is None:
+        return messages, None
+    if not isinstance(fmt, dict) or fmt.get("type") != "json_schema":
+        raise ValueError("output_config.format.type must be json_schema")
+    spec = {"type": "json_schema", "json_schema": {"name": "output", "schema": fmt.get("schema")}}
+    try:
+        return prepare_format(spec, messages, with_tools=bool(tools))
+    except ValueError as e:
+        raise ValueError(str(e).replace("response_format.json_schema", "output_config.format")
+                         .replace("response_format", "output_config.format")) from None
+
+
+def anthropic_structured(events, validator):
+    """Hold the events until the answer can be checked, as structured_chunks does.  A valid answer goes out as canonical
+    JSON.  A tool call or a max_tokens stop goes out as it is: Anthropic's stop_reason already says so.  A failed check
+    is a 200 with strata_structured_output_error, not a 5xx: on a 502 Claude Code asked again, a whole generation each
+    time, until its prompt hook timed out; the SDK's parse() checks the answer itself."""
+    buffered, heartbeat = [], time.monotonic()
+    try:
+        for item in events:
+            if item is not None:
+                buffered.append(item)
+            if item is None or time.monotonic() - heartbeat >= 1:
+                heartbeat = time.monotonic()
+                yield None
+        stop = next((e["delta"]["stop_reason"] for name, e in buffered if name == "message_delta"), None)
+        answer, failed, repeat = None, None, None
+        if stop not in ("tool_use", "max_tokens"):
+            text = "".join(e["delta"]["text"] for name, e in buffered
+                           if name == "content_block_delta" and e["delta"]["type"] == "text_delta")
+            try:
+                answer = validated_json(text, validator, "stop")
+            except StructuredOutputError as e:
+                failed = str(e)
+                print(f"[strata] output_config.format: {failed.partition(': ')[0]}", flush=True)   # not the model's output
+            thought = [e for name, e in buffered if name == "content_block_delta" and e["delta"]["type"] == "thinking_delta"]
+            if answer is not None and "".join(e["delta"]["thinking"] for e in thought).strip() == text.strip():
+                repeat = thought[0]["index"]       # no </think>: anthropic_collect drops this block, but only beside the raw text
+        for name, e in buffered:
+            if repeat is not None and "index" in e:
+                if e["index"] == repeat:
+                    continue
+                if e["index"] > repeat:
+                    e = {**e, "index": e["index"] - 1}
+            if answer is not None and name == "content_block_delta" and e["delta"]["type"] == "text_delta":
+                if not answer:                     # the whole answer went out in the first piece
+                    continue
+                e = {**e, "delta": {"type": "text_delta", "text": answer}}
+                answer = ""
+            if failed and name == "message_delta":
+                e = {**e, "strata_structured_output_error": failed}
+            yield name, e
+    finally:
+        events.close()
+
+
 def anthropic_collect(events) -> dict:
     msg, blocks = None, []
     for item in events:
@@ -6719,6 +6779,8 @@ def anthropic_collect(events) -> dict:
             msg["usage"].update(e["usage"])
             if e.get("strata_rejected_tool_calls"):
                 msg["strata_rejected_tool_calls"] = e["strata_rejected_tool_calls"]
+            if e.get("strata_structured_output_error"):
+                msg["strata_structured_output_error"] = e["strata_structured_output_error"]
     for i in range(len(blocks) - 1):    # a turn with no </think> (serve/dsml.py): the text is the answer; it is not also a thinking block
         a, b = blocks[i], blocks[i + 1]
         if a.get("type") == "thinking" and b.get("type") == "text" and a.get("thinking", "").strip() == b.get("text", "").strip():
@@ -8095,6 +8157,7 @@ def make_handler(svc: Service):
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, _ = anthropic_format(req, messages, tools)   # the schema is part of the prompt it reads
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
@@ -8107,6 +8170,7 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))        # "any" / {"type": "tool", "name": N}
+            messages, validator = anthropic_format(req, messages, tools)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
@@ -8116,6 +8180,8 @@ def make_handler(svc: Service):
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, force=force)
+            if validator is not None:
+                events = anthropic_structured(events, validator)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
                 return self._json(200, anthropic_collect(events))
