@@ -284,3 +284,76 @@ items: fixed 59, broke 21, **McNemar p = 2.5e-05**.
 
 That is the loop: **label ~100 items → fit on half → gate on the other half → deploy with
 a task tag → verify twice.**
+
+---
+
+## 10. Dynamic calibration — adapt the boundary from live traffic, without labels
+
+A static fit is right for the month it was fitted in. When the request mix shifts you need a
+new boundary, and waiting for a fresh labelled set means being wrong for however long the
+labelling takes. You do **not** need labels on the traffic to move the boundary.
+
+### What makes it possible
+
+Three things, two of which already exist:
+
+1. **A labelled dev set, once** → the confusion matrix `C[pred][y]`.
+2. **The live marginal of predictions** → the server already writes one row per answered
+   question to `calib/data/log-<mode>.jsonl`, each with `raw_p` (pre-calibration).
+3. **An assumption about the base rate** — that the traffic's true positive rate is stable
+   enough to balance against (or that you know it from the business).
+
+Then BBSE (black-box shift estimation) solves `C·π = q` for the traffic class prior, and you
+place the threshold where the predicted positive rate equals it. No traffic labels anywhere.
+
+### Measured (500 gold-labelled banking77 items; traffic labels used only for scoring)
+
+| boundary | accuracy on unseen traffic |
+|---|---|
+| shipped static fit (wrong task) | 0.664 |
+| identity — no calibration | 0.764 |
+| **BBSE prior-matched, NO traffic labels** | **0.816** |
+| oracle prior-matched (upper bound) | 0.816 |
+| labelled offline refit (needs 250 labels) | 0.816 |
+
+Estimated base rate from unlabelled marginals: **0.484** against a true 0.500. Streaming over
+five 50-item batches with shrinkage + EMA: **dynamic 0.828 vs static 0.764**. Per-batch BBSE
+is noisy (n=50: mean 0.488, sd 0.108) — shrink and smooth or the boundary jitters.
+
+On the real serving log (984 rows, this rig): estimated prior **0.493** (true 0.500) and a
+recommended `c_noul = -1.6186` against the hand-fitted `-1.5607` — the two agree to 0.06 from
+completely different information.
+
+### Running it
+
+```bash
+scripts/dynamic_calib.py estimate --log /cfg/.../calib/data/log-L.jsonl \
+    --dev-eval arms/dev-only.json            # what would the boundary be?
+scripts/dynamic_calib.py update --log ... --dev-eval ... \
+    --calib /cfg/.../calib-L.json --out /cfg/.../calib-L.json
+curl -X POST -H "Authorization: Bearer $STRATA_JEV_ADMIN_KEY" .../admin/calib   # hot reload
+```
+
+Deliberate design choices:
+
+- **It is a scheduled job, not an in-process control loop.** A serving process that silently
+  re-tunes its own boundary from live traffic, with no human-visible record, is a runaway
+  waiting to happen. This writes a file the existing reload path picks up, and stamps every
+  update into a `dynamic` block with `n`, the estimate, the threshold and `c_prev`→`c_new`.
+- **Bounded**: `--max-step` (default 0.5) caps the movement per update, so one bad log cannot
+  swing the boundary across the data.
+- **Shrunk**: `λ = n/(n+n0)` toward the prior (default n0=200), plus optional `--ema` across
+  successive updates.
+- **Alarmed**: if the estimate lands more than `--alarm` (default 0.45) from the expected
+  prior, it refuses to write — that is a distribution shift or broken logging, not drift.
+- **Singularity check**: if the readout never separates the classes at 0.5, `C` is not
+  invertible and BBSE refuses rather than inventing a prior.
+- **Needs a per-task dev set.** The confusion matrix is task-specific, exactly like the fit.
+
+### When NOT to use it
+
+- No labelled dev set at all → you have no confusion matrix; use the labelled refit (§3).
+- The readout is nearly binary (see the band table in §1) → the marginal carries little
+  information and BBSE estimates get unstable; prefer a periodic labelled refit.
+- Delayed feedback is available (a human eventually corrects answers) → prefer real labels
+  over an inferred prior; they are strictly more informative.
