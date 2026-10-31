@@ -234,6 +234,7 @@ if [ -n "$tune_mode" ] && [ "$tune_mode" != "skip" ]; then
     say "This preset is already tuned; keeping the tuned settings (set RETUNE=1 to tune again)."
   else
     set -- "$@" --tune "$tune_mode"; have=1
+    [ "${RETUNE:-0}" = "1" ] && set -- "$@" --retune     # without it the launcher sees a tuned preset and measures nothing (#4779)
     say "Tuning is on (TUNE=$tune_mode): the first start takes longer (up to about $([ "$tune_mode" = quick ] && echo 20 || echo 120) minutes), once."
   fi
 fi
