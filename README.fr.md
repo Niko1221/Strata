@@ -24,6 +24,37 @@
 
 **Gratuit, open source, et à vous de l'exécuter.** Utilisez Strata sur votre bureau ou avec vos outils de programmation préférés. Aucun compte nécessaire.
 
+> **Fork personnel (c-OOL-io/Strata-WebSearch).** Ce fork ajoute **la recherche web et la lecture complète des pages au chat intégré et au frontend serve** : la web app légère du terminal, où l'amont n'a pas de recherche (la recherche amont vit dans l'App). Construit comme le chat de Strata lui-même : **entièrement désactivé par défaut** (tant que vous ne l'activez pas, rien en rapport avec la recherche ne quitte le PC), **aucun token ajouté** pour les chats qui ne l'activent pas, et le texte de recherche est plafonné à une petite part de la fenêtre de contexte du modèle (les valeurs par défaut suivent `max_context`, les instances à petit contexte restent sûres).
+>
+> - **Moteurs :** DuckDuckGo par défaut (sans clé), SearXNG (votre instance auto-hébergée), Brave, Tavily, Serper (Google), Exa et Perplexity avec vos propres clés. Les clés restent dans le navigateur ; rien en rapport avec la recherche n'est stocké sur le serveur.
+> - **Optimiseur de requête :** une formulation conversationnelle est réécrite en une requête de recherche propre par un appel rapide à votre propre modèle local, dans la langue où vous avez écrit. En cas d'échec, le message brut est recherché à la place. Si ce qui a été cherché diffère de ce que vous avez tapé, la ligne Sources l'affiche.
+> - **Lecture des pages de résultats :** les meilleures pages de résultats sont récupérées et injectées en texte extrait (nav/pied/scripts retirés, `main`/`article` privilégiés), avec les modes de lecture Direct / Jina en repli / Jina pour toutes, et un avertissement explicite dès qu'un tiers pourrait voir vos URL.
+> - **Réponses auditable :** chaque réponse reçoit une ligne `Sources` (moteur, requête exacte, liens cliquables, badges `read`) qui suit l'export Markdown, et une recherche échouée laisse un avertissement nommé par cause (clé manquante, moteur injoignable, contrôle bot) au lieu d'échouer silencieusement.
+> - **Durci :** `/search` se trouve derrière la protection own-page de l'application (origines étrangères rejetées), contrôles d'URL http(s) uniquement pour que la lecture de pages ne puisse jamais devenir un lecteur de fichiers locaux, le texte web injecté est présenté comme non fiable, et le backend (`serve/websearch.py`) est stdlib uniquement, aucune nouvelle dépendance, Windows/Linux/macOS.
+> - **Nouveau dans cette mise à jour :** le globe du compositeur alterne désormais **Off → On → Auto** (Auto laisse le modèle décider par message, ou retombe sur une heuristique de mots-clés) ; un **brouillon du champ de message** optionnel, réservé au navigateur (désactivé par défaut), qui survit au rechargement et au changement de chat ; et une **interface en 14 langues** (de, es, fr, ja, ko, pt, ru, zh, hi, ar avec RTL, tr, it, pl) depuis les paramètres du chat. La liste des langues place l'anglais en premier, puis la langue de votre navigateur (si elle est prise en charge), puis le reste par ordre alphabétique, chaque entrée avec son code à deux lettres.
+>
+
+> Deux points avant tout téléchargement :
+>
+> 1. **Les liens de téléchargement ci-dessous sont l'app upstream d'origine** de Niko1221/Strata. Les binaires prêts à l'emploi **ne contiennent pas** la recherche de ce fork. La version avec recherche n'existe que dans le source : `git clone`, branche `web-search`, puis START-HERE.bat / setup.sh.
+> 2. **Ce fork convient aussi à la route Terminal économe en ressources** : ceux qui veulent seulement le serve/CLI léger sur un serveur headless (pas d'app, pas d'UI de chat) l'obtiennent de ce même source, avec la recherche intégrée au frontend serve.
+>
+> **Installation via CLI** (ce fork, branche `web-search`) : clonez et installez exactement comme Strata depuis le source, avec la recherche intégrée.
+> Le guide d'installation propre à ce fork (terminal / source, et mise à jour) est dans [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md) :
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
+> Les résultats de bench sur RTX 4080 SUPER / Ryzen 9 7950X3D sont dans `bench/`.
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Recherche web dans le chat Strata">
+  <img src="docs/media/web-search-settings.png" width="360" alt="Réglages de recherche web : moteurs et clés">
+</p>
+<p align="center"><sub>À gauche: chat répondu avec la ligne Sources sous la réponse (moteur utilisé, requête réellement cherchée), activable via le globe du composeur.<br>À droite: section Web search des réglages: activation, optimisation de la requête, choix du moteur (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), champ de clé, lecture des pages.</sub></p>
+
 ## Modèles
 
 Nous recommandons **d'abord ISTA-DASLab**, puis **Unsloth** et d'autres fournisseurs, lorsqu'un modèle compatible tient en mémoire.

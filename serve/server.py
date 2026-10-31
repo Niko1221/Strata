@@ -7331,6 +7331,7 @@ def make_handler(svc: Service):
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "lan_bound": getattr(svc, "lan_bound", False),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
@@ -7424,6 +7425,33 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/search":
+                # the web app's Web search: the request carries its own engine config (serve/websearch.py);
+                # nothing is stored here - keys stay in the browser that set them.  Like /settings and the slot
+                # files: JSON and no foreign Origin, so a page elsewhere cannot make this server search or fetch.
+                if not self._own_page("web search"):
+                    return
+                from serve import websearch
+                try:
+                    req = json.loads(self._body() or b"{}")
+                    if not isinstance(req, dict):
+                        raise ValueError("send a JSON object")
+                    q = str(req.get("query") or "").strip()
+                    if not q:
+                        raise ValueError("query (the text to look up) is required")
+                    cfg = {k: req.get(k) for k in ("engine", "url", "api_key", "max_results",
+                                 "read_pages", "read_max", "page_limit", "page_chars", "reader")}
+                    cfg["n_ctx"] = svc.reported_ctx()   # context-aware reading budget (serve/websearch.py)
+                    self._json(200, {"query": q, "results": websearch.search(q, cfg)})
+                except websearch.SearchError as e:
+                    self._json(502, {"error": {"message": str(e)}})
+                except ValueError as e:
+                    self._json(400, {"error": {"message": str(e)}})
+                except Exception as e:   # a bug must show as a readable error, not a dead connection
+                    print(f"web search failed: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    self._json(502, {"error": {"message": "Web search hit an unexpected error ("
+                                            + e.__class__.__name__ + ")"}})
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
@@ -8437,6 +8465,8 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
 
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
+    # bound beyond this PC (0.0.0.0, ::, a LAN address): the web app warns when web search starts on such a server
+    svc.lan_bound = bool(host) and host_name(host) not in LOOPBACK_NAMES
     svc.start_telemetry()
     httpd = Server((host, port), make_handler(svc))
     httpd.svc = svc

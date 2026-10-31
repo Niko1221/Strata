@@ -24,6 +24,29 @@
 
 **Bezpłatna, z otwartym kodem źródłowym i do uruchomienia u siebie.** Używaj Straty na swoim komputerze albo razem z ulubionymi narzędziami do programowania. Konto nie jest potrzebne.
 
+> **Fork osobisty (c-OOL-io/Strata-WebSearch).** Ten fork dodaje **wyszukiwanie w sieci i pełne czytanie stron** do wbudowanego czatu oraz frontendu serve: lekkiej aplikacji webowej terminala, gdzie upstream nie ma wyszukiwania (wyszukiwanie upstreama żyje w aplikacji). Zbudowany tak jak czat Straty: **całkowicie wyłączony domyślnie** (dopóki go nie włączysz, nic związanego z wyszukiwaniem nie opuszcza komputera), **bez dodatkowych tokenów** dla czatów, które go nie włączają, a tekst wyszukiwania jest ograniczony do niewielkiego wycinka okna kontekstu modelu (wartości domyślne skalują się z `max_context`, instancje o małym kontekście pozostają bezpieczne).
+>
+> - **Silniki:** domyślnie DuckDuckGo (bez klucza), SearXNG (własna instancja self-hosted), Brave, Tavily, Serper (Google), Exa i Perplexity z własnymi kluczami. Klucze pozostają w przeglądarce; nic związanego z wyszukiwaniem nie jest przechowywane na serwerze.
+> - **Optymalizator zapytań:** potoczna forma zostaje przepisana na czyste zapytanie przez jedno szybkie wywołanie twojego lokalnego modelu, w języku, w którym pisałeś. Jeśli się nie uda, szukana jest oryginalna wiadomość. Gdy to, co faktycznie wyszukano, różni się od wpisanego, pokazuje to linia Sources.
+> - **Czytanie stron wyników:** najlepsze strony wyników są pobierane i wstrzykiwane jako wyodrębniony tekst (nav/stopka/skrypty usunięte, preferowany `main`/`article`), z trybami Direct / Jina jako zapas / Jina dla wszystkich oraz jawnym ostrzeżeniem, gdy strona trzecia mogłaby zobaczyć twoje adresy URL.
+> - **Weryfikowalne odpowiedzi:** każda odpowiedź dostaje linię `Sources` (silnik, dokładne zapytanie, klikalne linki, odznaki `read`), która trafia też do eksportu Markdown, a nieudane wyszukiwanie zostawia nazwane ostrzeżenie z przyczyną (brak klucza, niedostępny silnik, kontrola bot) zamiast cichej porażki.
+> - **Utwardzony:** `/search` znajduje się za osłoną own-page aplikacji (obce origins odrzucane), kontrole URL tylko http(s), aby czytanie stron nigdy nie stało się lokalnym czytnikiem plików, wstrzykiwany tekst webowy jest traktowany jako niezaufany, a backend (`serve/websearch.py`) to tylko stdlib, bez nowych zależności, Windows/Linux/macOS.
+> - **Nowość w tej aktualizacji:** ikona globusa w kompozytorze przełącza teraz **Off → On → Auto** (Auto pozwala modelowi decydować o każdej wiadomości albo wraca do heurystyki słów kluczowych); opcjonalny, tylko w przeglądarce **szkic pola wiadomości** (wyłączony domyślnie), który przetrwa przeładowanie i zmianę czatu; oraz **interfejs w 14 językach** (de, es, fr, ja, ko, pt, ru, zh, hi, ar z RTL, tr, it, pl) z ustawień czatu. Lista języków ustawia angielski na pierwszym miejscu, potem język przeglądarki (jeśli jest obsługiwany), a resztę alfabetycznie, każdy z dwuliterowym kodem.
+>
+> Dwie rzeczy przed pobraniem:
+>
+> 1. **Linki do pobrania poniżej to oryginalna aplikacja upstream** z Niko1221/Strata. Gotowe pliki binarne **nie zawierają** wyszukiwania tego forka. Wersję z wyszukiwaniem można uruchomić tylko ze źródła: `git clone`, gałąź `web-search`, potem START-HERE.bat / setup.sh.
+> 2. **Ten fork jest też dla oszczędnej trasy Terminal**: kto chce tylko lekki serve/CLI na serwerze bez głowy (bez aplikacji, bez interfejsu czatu), otrzymuje go z tego samego źródła, z wyszukiwaniem wbudowanym we frontend serve.
+>
+> **Instalacja przez CLI** (ten fork, gałąź `web-search`): sklonuj i skonfiguruj dokładnie tak jak Stratę ze źródła, z wbudowanym wyszukiwaniem. Własny przewodnik instalacji tego forka (terminal / ze źródła oraz jak zaktualizować) znajduje się w [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md):
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # pierwsze uruchomienie: .venv, budowa silnika, model; potem serwuje
+> ```
+>
+> Wyniki testów porównawczych z RTX 4080 SUPER / Ryzen 9 7950X3D znajdują się w `bench/`.
+
 ## Modele
 
 Najpierw polecamy **ISTA-DASLab**, potem **Unsloth** i innych dostawców — o ile zgodny model mieści się w pamięci.

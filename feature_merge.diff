@@ -1,0 +1,2880 @@
+diff --git a/serve/server.py b/serve/server.py
+index 76b5a2c7..5614dbf1 100644
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -65,12 +65,14 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
+                             tool_choice_of, unmark_think_literals)
+ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+ from serve import runconfig  # noqa: E402
++from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
+ from strata_control import engine_component  # noqa: E402
+ from strata_control import tls  # noqa: E402
+ 
+ tls.install()       # #3722: image URLs and tool servers over HTTPS are checked against the operating system's certificates
+ from strata_control import hipblaslt_tuning  # noqa: E402
+ from strata_control import vision_reader  # noqa: E402
++from serve.ds_pictures import DsPictures  # noqa: E402
+ from strata_control import draft_layer  # noqa: E402
+ from strata_control import drafting  # noqa: E402
+ from strata_control import user_args  # noqa: E402
+@@ -80,7 +82,7 @@ from serve import owner_guard  # noqa: E402
+ from serve import launch_identity  # noqa: E402
+ from serve import logit_bias as bias_api  # noqa: E402
+ from serve import lifeline  # noqa: E402
+-from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
++from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
+ from serve import responses as responses_api  # noqa: E402
+ from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+ from serve import images as images_api  # noqa: E402
+@@ -126,17 +128,29 @@ def rttime_limit_note() -> str:
+             "systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...")
+ 
+ 
++LEFTOVER_SETTLE_S = 120.0       # #4051: how long an engine ended at a start is waited for to give its memory back
++
++
+ def end_leftover_engines(exe: str) -> None:
+     """Before an engine starts: end the ones a lost server left running (strata_control/procs.py). Only a process
+     this install recorded whose starter is gone, or an orphan of exactly this executable running --serve, and only
+-    after its PID, start time and command line are checked again at the moment of the signal. Never raises."""
++    after its PID, start time and command line are checked again at the moment of the signal. Never raises.
++    #4051: the new engine is not started while the old one still holds its memory (tens of GB take longer than the
++    10 s this used to wait): a 40 GiB arena loaded beside 50 GiB the old engine had not returned put a 60 GiB PC into
++    memory reclaim for good.  One still there after LEFTOVER_SETTLE_S is said in plain words, and the start goes on
++    (the engine waits for the RAM itself and warns; nothing is refused)."""
+     if os.environ.get("STRATA_KEEP_LEFTOVERS") == "1":
+         return
+     try:
+         from strata_control import procs
+         say = lambda text: print(text, flush=True)        # noqa: E731
+-        procs.end_leftovers(say=say)
+-        procs.end_orphans(exe, say=say)
++        stuck = [r["pid"] for r in procs.end_leftovers(say=say, settle=LEFTOVER_SETTLE_S)["stuck"]]
++        stuck += [r["pid"] for r in procs.end_orphans(exe, say=say, settle=LEFTOVER_SETTLE_S) if r["outcome"] == "stuck"]
++        if stuck:
++            print(f"[strata] WARNING: the engine from an earlier run (process {', '.join(map(str, stuck))}) was told to stop "
++                  f"but still holds its memory after {LEFTOVER_SETTLE_S:.0f} s. Starting the next one now can leave this PC "
++                  "short of RAM and very slow: wait until that process is gone (it is shown by `ps`/Task Manager), "
++                  "or restart the PC if it does not go.", flush=True)
+     except Exception as e:  # noqa: BLE001 - a failed check must not stop a start
+         print(f"[strata] could not check for engines left by an earlier run: {type(e).__name__}", flush=True)
+ 
+@@ -448,6 +462,11 @@ class GpuBusy(RuntimeError):
+         self.retry_after = retry_after
+ 
+ 
++# The page's only CSP directive: its preview frames (srcdoc) may not load any address. Other directives are left out
++# on purpose: a frame made from srcdoc inherits the page's policy, and the opt-in "run scripts" preview needs its own inline script.
++PAGE_CSP = "frame-src 'none'"
++
++
+ def unload_wait(value, default: float) -> float:
+     """#1997: the `wait` of POST /unload?wait=...: absent / 0 / false: 0 (answer "busy" at once, as before); 1 / true /
+     yes: `default` seconds; a number of seconds above 1: that long (at most an hour)."""
+@@ -1456,6 +1475,15 @@ class StrataEngine:
+             pn = prefix.get("tokens")
+             if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
+                 keys += f" pin={pn}"
++        # logprobs: the engine writes an `LP` line after each `T` line (an engine without them ignores
++        # the key, so an older engine answers exactly as it did).  Absent = no LP lines at all.
++        k = top_logprobs(sampling)
++        if k is not None:
++            keys += f" logprobs={k}"
++            ids = allowed_ids(sampling)
++            if ids:
++                # only these ids are printed; the engine's comma-separated list, renormalised below
++                keys += " allowed=" + ",".join(str(i) for i in ids)
+         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
+ 
+     @staticmethod
+@@ -1474,35 +1502,56 @@ class StrataEngine:
+         except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
+             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+ 
+-    def _control(self, cancel, on_token, stop_when=None, on_quiet=None):
++    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False):
+         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
+         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
+         true sends STOP once (the request is then read to its DONE).  `on_quiet()` runs whenever the engine has been
+-        quiet for half a second: between two PP lines of a read whose chunks take longer than that."""
++        quiet for half a second: between two PP lines of a read whose chunks take longer than that.
++
++        `want_lp`: a batch admission's token is the only one this reader ever sees with an `LP` line after it (a
++        slot's `BT` lines carry none), so a request asking for logprobs there is a `max_tokens` 1 one: read the
++        line here, for the request itself (its own lines: the engine's is shared by the slots' readers)."""
+         stopped = False
+         beat = time.monotonic()
++        held = NO_LINE                               # a line read while looking for a token's LP line
+         while True:
+-            try:
+-                # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
+-                # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
+-                line = self.lines.get(timeout=0.5)
+-            except queue.Empty:
+-                if cancel.is_set() and not stopped:
+-                    self._send("STOP")
+-                    stopped = True
+-                if on_quiet is not None:
+-                    on_quiet()
+-                if time.monotonic() - beat >= 10.0:
+-                    beat = time.monotonic()
+-                    yield None
+-                continue
++            if held is not NO_LINE:
++                line, held = held, NO_LINE
++            else:
++                try:
++                    # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
++                    # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
++                    line = self.lines.get(timeout=0.5)
++                except queue.Empty:
++                    if cancel.is_set() and not stopped:
++                        self._send("STOP")
++                        stopped = True
++                    if on_quiet is not None:
++                        on_quiet()
++                    if time.monotonic() - beat >= 10.0:
++                        beat = time.monotonic()
++                        yield None
++                    continue
+             beat = time.monotonic()
+             if line is None:
+                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+             if not line.startswith(("PP ", "INFO")):
+                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
+             if line.startswith("T "):
+-                on_token(int(line[2:]))
++                t = int(line[2:])
++                if want_lp:
++                    # the engine writes the token and its LP line in one flush: the next line is that one, or a
++                    # line this reader must still see (held for the next turn, as generate() does)
++                    try:
++                        held = self.lines.get(timeout=0.5)
++                    except queue.Empty:
++                        held = NO_LINE
++                    if isinstance(held, str) and held.startswith("LP "):
++                        own = getattr(cancel, "_strata_lp_lines", None)
++                        if own is not None:
++                            own.append((t, held))
++                        held = NO_LINE
++                on_token(t)
+                 if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
+                     self._send("STOP")
+                     stopped = True
+@@ -1779,6 +1828,12 @@ class StrataEngine:
+         self.progress, self.progress_ms, self.reused = None, 0, 0
+         born = self.gen                                 # the engine process this request is sent to
+         keys = self.sampling_keys(sampling or {})
++        # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
++        # server refuses these requests unless max_tokens is 1.  The lines go to the request itself, through its
++        # cancel Event: several requests read control lines at once, and the engine's lp_lines is one attribute.
++        want_lp = top_logprobs(sampling or {}) is not None
++        if want_lp:
++            cancel._strata_lp_lines = LPLines(cancel)
+         out: list[int] = []
+         pending: list[int] = []
+         prompt, left = list(ids), int(max_new)
+@@ -1833,7 +1888,8 @@ class StrataEngine:
+                                     self.slot_claims.add(reserved)
+                             if reserved is not None:
+                                 self._send(f"BYIELD {reserved}")
+-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
++                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way,
++                                           want_lp=want_lp):
+                         while pending:
+                             t = pending.pop(0)
+                             out.append(t)
+@@ -1961,7 +2017,8 @@ class StrataEngine:
+                         if self.progress and live["state"] == "reading":
+                             live["prompt_read"] = self.progress[0]
+                     try:
+-                        for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress())):
++                        for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress()),
++                                               want_lp=want_lp):
+                             while pending:
+                                 t = pending.pop(0)
+                                 out.append(t)
+@@ -2183,7 +2240,7 @@ class StrataEngine:
+                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
+         return view
+ 
+-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
++    def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
+         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
+         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
+         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
+@@ -2195,9 +2252,19 @@ class StrataEngine:
+             return
+         self.progress, self.progress_ms, self.reused = None, 0, 0
+         self.prefill_tok_s_mean = None
++        # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
++        # flush), read here before the token is yielded, so whoever takes the token finds its line in
++        # lp_lines.  Not asked for = the deque stays empty and nothing on this path changes.
++        want_lp = top_logprobs(sampling or {}) is not None
++        self.lp_lines = LPLines(cancel)
++        carry = NO_LINE                  # a line read for a token's LP line, held until it is used
+         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
+         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
+             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
++        if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
++            if embeddings or int(max_new) != 0:
++                raise ValueError("prefill_only is a text prompt and max_new 0")
++            head = "GEN 0 prefill=1"
+         try:
+             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
+             self.proc.stdin.flush()
+@@ -2222,7 +2289,10 @@ class StrataEngine:
+                         raise self._silent(f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
+                                            "the request")
+                 try:
+-                    line = self.lines.get(timeout=min(wait, 0.5))
++                    if carry is not NO_LINE:              # the line read after a token for its LP line
++                        line, carry = carry, NO_LINE
++                    else:
++                        line = self.lines.get(timeout=min(wait, 0.5))
+                 except queue.Empty:
+                     if cancel.is_set():
+                         return
+@@ -2249,7 +2319,18 @@ class StrataEngine:
+                     allow = silence
+                     if cancel.is_set():
+                         return
+-                    yield int(line[2:])
++                    t = int(line[2:])
++                    if want_lp:
++                        # the engine writes the token and its `LP` line in one flush, so the line is
++                        # here now; an engine without logprobs leaves the next line a normal one
++                        try:
++                            carry = self.lines.get(timeout=0.5)
++                        except queue.Empty:
++                            carry = NO_LINE
++                        if isinstance(carry, str) and carry.startswith("LP "):
++                            self.lp_lines.append((t, carry))
++                            carry = NO_LINE
++                    yield t
+                 elif line.startswith("PP "):
+                     f = line.split()
+                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+@@ -2292,9 +2373,12 @@ class StrataEngine:
+                 while True:
+                     left = allow - (time.monotonic() - heard) if allow > 0 else None
+                     try:
+-                        if left is not None and left <= 0:
++                        if carry is not NO_LINE:          # read already, after the last token
++                            line, carry = carry, NO_LINE
++                        elif left is not None and left <= 0:
+                             raise queue.Empty
+-                        line = self.lines.get(timeout=left)
++                        else:
++                            line = self.lines.get(timeout=left)
+                     except queue.Empty:
+                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
+                                            f"within {allow:.0f} s") from None
+@@ -3129,7 +3213,7 @@ def engine_args(cfg: dict) -> list[str]:
+     return learned_profile_args(cfg, args)
+ 
+ 
+-PARALLEL_MAX = 8      # the engine's batch window holds at most 8 rows (kVerifyMaxT); --batch-mtp waves more through it
++PARALLEL_MAX = 8      # without a layer split the engine's batch window holds at most 8 rows (kVerifyNarrowT); --batch-mtp waves more through it
+ 
+ 
+ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
+@@ -3147,7 +3231,10 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
+         return []
+     if n <= 1:
+         return []
+-    if n > PARALLEL_MAX and "--batch-mtp" not in args and os.environ.get("STRATA_BATCH_MTP", "0") in ("", "0"):
++    # (on a layer split the pipelined groups each hold up to 8 slots - 16 in a HIP engine with wide windows - so more than 8 is
++    # not a limit there: the engine says how many slots it runs, INFO batch_slots)
++    if (n > PARALLEL_MAX and "--batch-mtp" not in args and os.environ.get("STRATA_BATCH_MTP", "0") in ("", "0")
++            and not layer_split_of(cfg)):
+         print(f'[strata] "parallel": {n} - the engine runs at most {PARALLEL_MAX} requests together; it will use '
+               f"{PARALLEL_MAX}", flush=True)
+     return ["--batch", str(n)]
+@@ -3531,6 +3618,9 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
+         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+     if cfg.get("backend") == "hip":
+         hip_env_guard(env, cfg)
++        note = sh_stream_warning(env, cfg)
++        if note:
++            print(note, flush=True)
+         auto = hip_auto_devices(cfg, env)
+         if auto:
+             env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in auto)
+@@ -3545,6 +3635,20 @@ def _dir_writable(p: str) -> bool:
+         return False
+ 
+ 
++def sh_stream_warning(env: dict, cfg: dict) -> str | None:
++    """#3895: the shared-expert fork (STRATA_SH_STREAM=1) together with KV streaming (--kv-resident) made one Windows RX 6900 XT fail on the first
++    request ("verify: unspecified launch failure"); each alone, or Linux, did not. A warning, not a refusal: the person set the variable, the
++    engine runs as asked, and the line says what to take out."""
++    if os.name != "nt" or str(env.get("STRATA_SH_STREAM", "")).strip() in ("", "0"):
++        return None
++    args = [str(a) for a in cfg.get("args") or []]
++    if "--kv-resident" not in args:
++        return None
++    return ("[strata] WARNING: STRATA_SH_STREAM=1 with --kv-resident (KV streaming) failed on the first request on one Windows RX 6000 PC "
++            "(\"verify: unspecified launch failure\", #3895). If the engine stops that way, take STRATA_SH_STREAM out of the config's env "
++            "(AMD runs without it by default) or run without --kv-resident, and tell us the card and the driver.")
++
++
+ def hip_env_guard(env: dict, cfg: dict) -> list[str]:
+     """#654: two things in an AMD user's environment that crash the HIP runtime before it prints a line.  (1) HIP_PATH,
+     HIP_DEVICE_LIB_PATH or LLVM_PATH naming a folder that is gone (a ROCm build that was deleted): the bundled runtime
+@@ -3688,6 +3792,26 @@ class ByteTokenizer:
+         return raw.decode("utf-8", errors=errors)
+ 
+ 
++# ------------------------------------------------------------------------------------------------ end tokens
++def end_token_ids(tokenizer) -> set[int]:
++    """The ids that end a reply for a tokenizer whose family was not named (Service.set_family sets them for DeepSeek).
++
++    Qwen's <|im_end|> and <|endoftext|> end a reply only where each is ONE token.  A tokenizer without them (DeepSeek-V4.1's
++    splits "<|im_end|>" into '<', '|', 'im', '_end', '|', '>') would make every piece of them a stop id: the reply ended in front
++    of the first "|", ">", "end", "of", "text" or "im" it wrote, so "Nerazim" came out as "Neraz" (#4576, and a table's first
++    "|" in #4137).  Those ids are left out, and the end token the tokenizer names (special_ids "eos") ends the reply instead."""
++    ids: set[int] = set()
++    for marker in (IM_END, "<|endoftext|>"):
++        got = tokenizer.encode(marker, parse_special=True)
++        if len(got) == 1:
++            ids.add(int(got[0]))
++    if not ids:
++        eos = (getattr(tokenizer, "special_ids", None) or {}).get("eos")
++        if eos is not None:
++            ids.add(int(eos))
++    return ids
++
++
+ # ------------------------------------------------------------------------------------------------ core
+ class Detokenizer:
+     """Incremental decode: each token's bytes go through an incremental UTF-8 decoder, which emits the complete
+@@ -3720,6 +3844,40 @@ class Detokenizer:
+ OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
+ 
+ 
++def top_logprobs(req: dict):
++    """The K for the engine's logprobs=K, or None when the request did not ask.
++
++    OpenAI: "logprobs": true with "top_logprobs" 0..20; the legacy completions form,
++    "logprobs": N, is taken as N."""
++    lp = req.get("logprobs")
++    if lp is True:
++        k = req.get("top_logprobs")
++        return max(0, min(20, k)) if isinstance(k, int) and not isinstance(k, bool) else 0
++    if isinstance(lp, int) and not isinstance(lp, bool) and lp >= 0:
++        return min(20, lp)
++    return None
++
++
++def allowed_ids(req: dict) -> list:
++    """`allowed_token_ids`: the ids a caller named, or [] (vLLM's semantics, see LogprobEntries)."""
++    ids = req.get("allowed_token_ids")
++    if not isinstance(ids, (list, tuple)):
++        return []
++    return [x for x in ids if isinstance(x, int) and not isinstance(x, bool) and x >= 0]
++
++
++def batch_slots_on(engine) -> bool:
++    """Does this engine run requests in batch slots ("parallel", whose `BT` lines carry no LP lines)?
++
++    Asked of each engine behind a ReplicaEngine: its own `batch` is how many requests it can run at once, so it
++    counts a replica without slots as one (serve/replicas.py) -- a server with `--replicas 2` and no `--parallel`
++    has none, and reads every reply by the GEN path, which does write them."""
++    return any(int(getattr(e, "batch", 0) or 0) for e in (getattr(engine, "engines", None) or [engine]))
++
++
++NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
++
++
+ def stop_strings(req: dict) -> list[str]:
+     """The request's stop strings: OpenAI's `stop` (a string or a list of up to 4) or Anthropic's `stop_sequences`
+     (a list).  Empty strings are left out.  A bad value is a ValueError, so a 400 before anything is generated."""
+@@ -3918,11 +4076,10 @@ class Service:
+         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
+-        self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
++        self.tool_call_recovery = True                    # default on (0.2.8): tool calls in forms next to the template's; config "tool_call_recovery": false turns it off
+         self.images = None                                # serve/images.py's ImageGen when the config has "images"
+         self.restore_after_load = None                    # a session file an image job saved before it unloaded
+-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
+-                            tokenizer.encode("<|endoftext|>", parse_special=True))
++        self.stop_ids = end_token_ids(tokenizer)
+         self.family = None                              # the model family ("deepseek41"): set_family() below
+         self.parser_cls = OutputParser                  # reads the model's output (reasoning, content, tool calls)
+         # #567: a prompt re-encodes only what follows the last special token it shares with a recent prompt (the
+@@ -4202,7 +4359,10 @@ class Service:
+         if self.vision_held:
+             time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
+         free0, t0 = self.free_vram_mib(), time.time()
+-        v.restart()
++        try:
++            v.restart()
++        except Exception as e:      # a 503 as for a non-elastic encoder at a load, not a dropped connection
++            raise EngineDied(f"the image encoder failed to start: {e}") from e
+         free1 = self.free_vram_mib()
+         took = f", {free0 - free1} MiB of VRAM" if free0 is not None and free1 is not None else ""
+         print(f"[strata] images: the image encoder started in {time.time() - t0:.1f} s{took}", flush=True)
+@@ -4220,11 +4380,14 @@ class Service:
+             return "busy"
+         try:
+             v.unload()
++            back = ""
+             if self.vision_held and hasattr(self.engine, "vram") and self.loaded():
+                 out = self.engine.vram(self._engine_reserve())
+-                print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture; "
+-                      f"the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
+-                      f"{out.get('expert_cache_full_mib')} MiB)", flush=True)
++                back = (f"; the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
++                        f"{out.get('expert_cache_full_mib')} MiB)")
++            # also when the cache never made room (a layer split, an engine without --vram-elastic): the stop happened
++            print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture{back}",
++                  flush=True)
+             self.vision_held = False
+             return "down"
+         finally:
+@@ -4639,6 +4802,8 @@ class Service:
+                 live["state"] = "generating"
+         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
+             live["replicas"] = self.engine.replica_view()
++        if hasattr(self.engine, "split_view"):          # opt-in split serving: the hand-overs so far (serve/split.py)
++            live["split_serve"] = self.engine.split_view()
+         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
+                   **dict(getattr(self.engine, "info", {}) or {})}
+         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+@@ -4680,6 +4845,10 @@ class Service:
+             ("strata:requests_total", "counter", "Requests finished", t["requests"]),
+             ("strata:drafts_offered_total", "counter", "Speculative draft tokens offered", t["drafts_offered"]),
+             ("strata:drafts_accepted_total", "counter", "Speculative draft tokens accepted", t["drafts_accepted"]),
++            ("strata:tool_calls_unread_total", "counter", "<tool_call> blocks returned as text (an undeclared name or a form the template does not use)",
++             t.get("tool_calls_unread", 0)),
++            ("strata:tool_args_repaired_total", "counter", "Tool call arguments (a JSON array or object) that were damaged and read as written",
++             t.get("tool_args_repaired", 0)),
+             ("strata:model_loaded", "gauge", "1 while the model is loaded", int(self.loaded())),
+         ]
+         return "".join(f"# HELP {name} {help_}\n# TYPE {name} {kind}\n{name} {value}\n"
+@@ -4824,6 +4993,24 @@ class Service:
+         prompt; with thinking, Service.run writes it once the thinking is over."""
+         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
+         # between pictures and raise ClientGone
++        # Cached tool images are references in browser history, never arbitrary file paths or huge base64 strings.
++        for message in messages:
++            for part in message.get("content", []) if isinstance(message.get("content"), list) else []:
++                source = part.get("source", "") if isinstance(part, dict) else ""
++                if isinstance(part, dict) and part.get("type") == "image" and isinstance(source, str) and source.startswith("strata-tool-media:"):
++                    name = source[len("strata-tool-media:"):]
++                    if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name):
++                        raise ValueError("invalid tool image reference")
++                    # Clients resend old tool results. A removed cache or disabled feature must not poison
++                    # every later turn; keep the other text and replace only the unavailable picture.
++                    media_dir = self.mcp.media_dir if self.mcp is not None else None
++                    image = Path(media_dir) / name if media_dir is not None else None
++                    if image is None or not image.is_file():
++                        why = "tool image cache is disabled" if image is None else "cached tool image is no longer available"
++                        part.clear()
++                        part.update(type="text", text=f"[image omitted: {why}]")
++                    else:
++                        part["source"] = str(image)
+         fetched = self._note_unreadable_tool_images(messages, cancel)
+         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
+         if force and kwargs.get("enable_thinking", True) is False:
+@@ -4831,14 +5018,16 @@ class Service:
+         self.embeddings.path = None
+         self.embeddings.keys = None
+         images = images_of(messages)
++        ds_pics = False                                  # DeepSeek pictures (the engine's own tower): the file is already written
+         if images:
+             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
+                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+             if self.vision is None:
++                if self.family == "deepseek41":
++                    raise ValueError("this server was started without pictures for DeepSeek (--vision off, or a pack made without the "
++                                     "picture reader): run strata launch again without --vision off to read images")
+                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
+                                  "'vision'), so it cannot read images")
+-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+-            start = self.tok.encode(VISION_START, parse_special=True)[0]
+             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
+             # for as long as urlopen waited.
+             def fetch(src):
+@@ -4847,6 +5036,16 @@ class Service:
+                 return fetched[src] if src in fetched else Vision.download(src) \
+                     if src.startswith(("http://", "https://")) else src
+             images = [fetch(src) for src in images]
++            if isinstance(self.vision, DsPictures):
++                # DeepSeek-V4.1: the engine has its own vision tower.  The pictures go to it as raw RGB in the file of a GENI line
++                # (serve/ds_pictures.py); each template placeholder becomes the run of image tokens its picture takes.
++                ids, ds_file = self.vision.build(ids, [Vision.load(src) if isinstance(src, str) else src for src in images])
++                self.embeddings.path = ds_file
++                self.embeddings.keys = None
++                images, ds_pics = [], True
++        if images:
++            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
++            start = self.tok.encode(VISION_START, parse_special=True)[0]
+             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+             # run on the GPU at the same time - an encode during a running request left that request stuck at
+             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+@@ -4918,12 +5117,12 @@ class Service:
+             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
+             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
+             write_temporary(combined, [p for p, _ in encoded])
+-        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images:
++        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
+             lead = self.deepseek_shared_start(messages)
+             if lead:
+                 req["strata_prefix"] = {"messages": lead}
+         if req is not None and req.get("strata_prefix") is not None:
+-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
++            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
+         return ids, kwargs.get("enable_thinking", True) is not False, max_new
+ 
+     @staticmethod
+@@ -5596,11 +5795,25 @@ class Service:
+             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
+             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
+                   f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
++        if getattr(parser, "stray_think", 0):
++            # #4077: the model wrote a closing think tag while thinking; the reasoning after it was sent as the answer
++            self.totals["stray_think_closers"] = self.totals.get("stray_think_closers", 0) + parser.stray_think
++            print(f"[strata] {parser.stray_think} extra closing think tag(s) in the answer were dropped (the model wrote one "
++                  "while thinking, so the rest of its reasoning went out as the answer; a call after it still counts)", flush=True)
++        if getattr(parser, "notes", None):
++            self.totals["tool_args_repaired"] = self.totals.get("tool_args_repaired", 0) + len(parser.notes)
++            print(f"[strata] {len(parser.notes)} tool call argument(s) repaired: {'; '.join(sorted(set(parser.notes)))}", flush=True)
++        rejected = []
+         if parser.unread:
+             named = getattr(parser, "unread_names", None)
+             print(f"[strata] {parser.unread} <tool_call> block(s) in the answer did not read as a call of a declared "
+                   "tool and went back as text (a name the request did not declare, or a form the template does "
+-                  "not use)" + (f"; the names the model wrote: {', '.join(named)}" if named else ""), flush=True)
++                  "not use)" + (f"; the names the model wrote: {', '.join(named)}" if named else "")
++                  + "; the response carries them as strata_rejected_tool_calls, /metrics counts them", flush=True)
++            with self.status_lock:
++                self.totals["tool_calls_unread"] = self.totals.get("tool_calls_unread", 0) + parser.unread
++            # #3796: the same names for the client (a machine-readable marker next to the text, which stays as the model wrote it)
++            rejected = [{"name": nm, "reason": "undeclared"} for nm in named or []]
+         if stops is not None and stops.hit is None and stops.held:
+             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
+         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
+@@ -5608,6 +5821,8 @@ class Service:
+                 "reasoning_recoveries": recovery_count}
+         if stops is not None and stops.hit is not None:
+             done["stop_sequence"] = stops.hit
++        if rejected:
++            done["rejected_tool_calls"] = rejected
+         yield "done", done
+ 
+ 
+@@ -5719,13 +5934,15 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
+     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
+     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
+     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
+-    one ("done", ...) at the very end with the output tokens of every round.
++    one ("done", ...) at the very end with the output tokens of every round. After the last tool round, one final
++    reply uses the results already obtained, with no tools offered or executed.
+ 
+     `mcp_names`: the MCP tools this request offered; any other call is one of the request's own tools and ends the
+     turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
+     could not reach the model before the client's)."""
+     max_rounds = int(hub.settings["max_rounds"])
+     total, rounds, done = 0, 0, None
++    finalizing = False
+     messages = list(messages)
+     while True:
+         text, reasoning, calls, own_calls = [], [], [], 0
+@@ -5749,10 +5966,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
+                     reasoning.append(ev.text)
+             yield kind, x
+         total += done["completion_tokens"]
+-        run_them = calls and not own_calls and done["finish"] == "stop" and not cancel.is_set()
+-        if run_them and rounds >= max_rounds:
+-            yield "mcp", {"event": "limit", "max_rounds": max_rounds}
+-            run_them = False
++        run_them = calls and not own_calls and not finalizing and done["finish"] == "stop" and not cancel.is_set()
+         if not run_them:
+             for c in calls:                              # announced, never run: close them in the client's view
+                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
+@@ -5788,8 +6002,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
+             r = box["r"]
+             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
+                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
+-            results.append(r["text"])
+-            yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
++            results.append(r.get("model_content", r["text"]) if svc.vision is not None else r["text"])
++            yield "mcp", {"event": "result", "id": c.id,
++                          **({"images": r["images"], "vision": svc.vision is not None} if r.get("images") else {}),
++                          **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+         if cancel.is_set() or len(results) < len(calls):
+             done = {**done, "finish": "cancel"}
+             break
+@@ -5797,6 +6013,16 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
+                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
+                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
+         messages += [{"role": "tool", "content": r} for r in results]
++        if rounds >= max_rounds:
++            finalizing = True
++            tools = None
++            system_end = next((index for index, message in enumerate(messages)
++                               if message.get("role") not in ("system", "developer")), len(messages))
++            messages.insert(system_end, {"role": "system", "content":
++                f"The tool-use limit of {max_rounds} rounds has been reached. No tools are available for this final "
++                "reply. Answer the user's original request in their language using the results already obtained. "
++                "Explain any gaps in the available evidence. Do not request or emit further tool calls."})
++            yield "mcp", {"event": "limit", "max_rounds": max_rounds}
+         try:
+             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
+         except ClientGone:                                      # #1999: the client left while a picture was prepared
+@@ -5814,6 +6040,141 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
+ PP_DONE_TAIL = 64
+ 
+ 
++
++class LPLines(collections.deque):
++    """One request's LP lines, tagged with its cancel Event (one per request, handed unchanged from the handler
++    through Service.run to Engine.generate).  The last events of a request - the parser's and the stop strings'
++    tail - come after it has left the queue, when the next request may already have replaced the engine's lp_lines
++    with its own: LogprobEntries reads only the lines tagged with its own request's Event."""
++
++    def __init__(self, owner=None):
++        super().__init__()
++        self.owner = owner
++
++
++class LogprobEntries:
++    """The engine's LP lines as OpenAI's logprobs.content entries.
++
++    Each token's "token" is the text it completes (an incremental UTF-8 decode, as the reply's
++    text is made), so a character split across tokens lands in the token that finishes it and
++    the tokens, joined, spell the reply.  "bytes" are the token's own bytes.  The stop token
++    ends the reply and is not listed (OpenAI does not list it either).  Tokens that make no
++    text of the reply are left out, because spell() gives each piece of text the tokens that
++    spell it.
++
++    `allowed_token_ids`: only those ids are kept, and the logprobs are renormalised over them,
++    so a caller asking about specific candidates gets a distribution over exactly those instead
++    of a top-K list it has to hope contains them.  vLLM, which named the field, masks generation
++    with these ids instead (every other logit -inf before sampling) and reports the unmasked
++    distribution; here they filter what is reported, so the chosen token can be outside them.
++
++    On `--parallel`: only a `max_tokens` 1 request gets entries (an admission, decoded through the single-token path
++    that writes an LP line); the slot's `BT` lines carry none, so a longer reply is refused (400) before it starts.
++    """
++
++    def __init__(self, svc, allowed=(), owner=None):
++        self.tok, self.stop_ids = svc.tok, svc.stop_ids
++        self.allowed = [i for i in allowed]
++        self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace")
++        self.pending = []                          # entries read but not yet given to a piece of text
++        self.owner = owner                         # the request's cancel Event (LPLines)
++        self.lines = None                          # this request's current LPLines, kept once seen
++
++    def spell(self, eng, text: str) -> list:
++        """The entries whose tokens spell `text`, the next piece of the reply."""
++        self.pending += self.take(eng)
++        at = [0]
++        for e in self.pending:
++            at.append(at[-1] + len(e["token"]))
++        joined = "".join(e["token"] for e in self.pending)
++        i = joined.find(text)
++        while i >= 0 and text:
++            if i in at:
++                a = at.index(i)                    # the first token there
++                end = i + len(text)
++                b = next((j for j in range(a + 1, len(at)) if at[j] == end), None)
++                if b is not None:
++                    out, self.pending = self.pending[a:b], self.pending[b:]
++                    return out
++            i = joined.find(text, i + 1)
++        out, self.pending = self.pending, []
++        return out
++
++    def raw(self, t):
++        if hasattr(self.tok, "token_bytes"):
++            return self.tok.token_bytes(t)
++        return self.tok.decode([t]).encode("utf-8")
++
++    def take(self, eng) -> list:
++        # the engine's current lines are this request's only when they carry its Event (a later generate pass
++        # of the same request makes new ones: the old ones are read to the end first); another request's never are.
++        # A batch admission keeps its own lines on the request's cancel Event: the engine's is one attribute, and
++        # the next request to read control lines may already have replaced it.
++        own = getattr(self.owner, "_strata_lp_lines", None)
++        cur, old = (own if own is not None else getattr(eng, "lp_lines", None)), None
++        if cur is not self.lines and getattr(cur, "owner", None) is self.owner:
++            old, self.lines = self.lines, cur
++        out = []
++        for lines in (old, self.lines):
++            while lines:
++                t, line = lines.popleft()
++                if t in self.stop_ids:
++                    continue
++                f = line.split()
++                if len(f) < 2:
++                    continue
++                try:                               # "nan" (no head logits for that window row), "-nan(ind)"
++                    lp = float(f[1])               # (MSVC) or a cut line: no entry for that token
++                    alts = [(int(i), float(v)) for i, _, v in (x.partition(":") for x in f[2:])]
++                except ValueError:
++                    continue
++                if not math.isfinite(lp) or not all(math.isfinite(v) for _, v in alts):
++                    continue
++                b = self.raw(t)
++                e = {"token": self.inc.decode(b), "logprob": lp, "bytes": list(b),
++                     "top_logprobs": []}
++                if self.allowed:
++                    alts = [(i, v) for i, v in alts if i in self.allowed]
++                for i, v in alts:
++                    alt = self.raw(i)
++                    e["top_logprobs"].append({"token": alt.decode("utf-8", "replace"),
++                                              "logprob": v, "bytes": list(alt)})
++                if self.allowed:
++                    e = self._renormalise(e, t, lp)
++                out.append(e)
++        return out
++
++    def _renormalise(self, e, t, lp):
++        """Keep only the named ids and normalise over them, so they sum to 1.
++
++        The line carries the chosen token's own logprob on its head and the named ids after it, and never
++        repeats the chosen one among them.  So the chosen token is put back when the caller named it: with
++        `allowed_token_ids` naming only the token the model chose, that token is then the whole distribution,
++        at 1 (logprob 0), which is what vLLM's mask gives -- here it used to leave nothing to normalise over,
++        which returned None, the entry was appended all the same, and the reply failed on e["token"].  A line
++        that carries none of the named ids has nothing to normalise over either: the entry keeps the chosen
++        token and its own logprob, with no alternatives.  It is never None and never dropped, because the
++        reply's tokens have to keep spelling its text.
++        """
++        cand = e["top_logprobs"]
++        own = None
++        if t in self.allowed:                      # named, and not repeated on the line: it is a candidate
++            b = self.raw(t)
++            own = {"token": b.decode("utf-8", "replace"), "logprob": lp, "bytes": list(b)}
++            cand = [own] + cand
++        if not cand:
++            return e                               # no named id observed for this token: its own logprob, no top
++        mx = max(x["logprob"] for x in cand)
++        se = sum(math.exp(x["logprob"] - mx) for x in cand)
++        lse = mx + math.log(se)
++        for x in cand:
++            x["logprob"] -= lse
++        cand.sort(key=lambda x: -x["logprob"])     # most likely first, as the unfiltered top-k already is
++        e["top_logprobs"] = cand
++        if own is not None:                        # the chosen token is in the distribution: report its own value
++            e["logprob"] = own["logprob"]           # (it used to copy the first alternative's, another token's)
++        return e
++
+ def prompt_progress(svc: Service):
+     """The last PP line as llama.cpp's `prompt_progress`, so a client written for llama.cpp reads both servers: the
+     same four fields, `time_ms` elapsed since prompt reading started, and `processed` counting from token 0 so that a
+@@ -5847,6 +6208,13 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
+                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+ 
+     yield chunk({"role": "assistant", "content": ""})
++    lp = LogprobEntries(svc, allowed_ids(req), cancel) if top_logprobs(req) is not None else None
++
++    def with_lp(c, key):
++        got = lp.spell(svc.engine, c["choices"][0]["delta"][key]) if lp is not None else None
++        if got:
++            c["choices"][0]["logprobs"] = {key: got}
++        return c
+     calls = 0
+     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
+     finished = set()                               # ... and the ones whose final tool_call came (#211)
+@@ -5863,9 +6231,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
+         elif kind == "event":
+             ev: Event = x
+             if ev.kind == "reasoning" and ev.text:
+-                yield chunk({"reasoning_content": ev.text})
++                yield with_lp(chunk({"reasoning_content": ev.text}), "reasoning_content")
+             elif ev.kind == "content" and ev.text:
+-                yield chunk({"content": ev.text})
++                yield with_lp(chunk({"content": ev.text}), "content")
+             elif ev.kind == "tool_start":
+                 streamed[ev.call.id] = calls
+                 calls += 1
+@@ -5892,6 +6260,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
+                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
+             if x.get("timings"):
+                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
++            if x.get("rejected_tool_calls"):
++                last["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796: only when a call was refused as undeclared
+             yield last
+ 
+ 
+@@ -5905,11 +6275,14 @@ def _is_json(text: str) -> bool:
+ 
+ def openai_collect(chunks) -> dict:
+     content, reasoning, by_index, last, mcp = [], [], {}, None, []
++    lps = {}                                       # "content" / "reasoning_content" -> logprob entries
+     for c in chunks:
+         if c is None:                              # a heartbeat
+             continue
+         if c.get("strata_mcp"):
+             mcp.append(c["strata_mcp"])
++        for k, v in (c["choices"][0].get("logprobs") or {}).items():
++            lps.setdefault(k, []).extend(v)
+         d = c["choices"][0]["delta"]
+         content.append(d.get("content") or "")
+         reasoning.append(d.get("reasoning_content") or "")
+@@ -5936,8 +6309,79 @@ def openai_collect(chunks) -> dict:
+     out = {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
+            "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
+            "usage": last["usage"]}
++    if lps:
++        out["choices"][0]["logprobs"] = {"content": lps.get("content", []), "refusal": None, **(
++            {"reasoning_content": lps["reasoning_content"]} if lps.get("reasoning_content") else {})}
+     if last.get("timings"):
+         out["timings"] = last["timings"]
++    if last.get("strata_rejected_tool_calls"):
++        out["strata_rejected_tool_calls"] = last["strata_rejected_tool_calls"]
++    return out
++
++
++def logprob_span(text: str, part: str, entries: list):
++    """The entries whose tokens spell `part`, a piece of `text`, or None when the tokens do not
++    spell `text` or no token boundary falls at both ends of `part`."""
++    if "".join(e["token"] for e in entries) != text:
++        return None
++    start = text.find(part)
++    if start < 0:
++        return None
++    at, first = 0, None
++    for i, e in enumerate(entries):
++        if at == start and first is None:
++            first = i
++        if at == start + len(part) and first is not None:
++            return entries[first:i]
++        at += len(e["token"])
++    return entries[first:] if first is not None and at == start + len(part) else None
++
++
++def _same_json(a: str, b: str) -> bool:
++    """Are two strings the same JSON value (whitespace and key order aside)?  No -> False."""
++    try:
++        return json.loads(a) == json.loads(b)
++    except Exception:
++        return False
++
++
++def _structured_logprobs(choice: dict, content: str):
++    """`content`'s logprobs, and the content the tokens actually spell.
++
++    Returns `(content, logprobs)`: on failure `(the content as validated, None)`.
++
++    `structured_chunks` returns the canonical JSON the validator produced, which the model never
++    generated, so its tokens do not spell it.  Two honest outcomes:
++
++      1. a run of tokens spells what is being returned -> use it as it is;
++      2. the tokens spell the model's own JSON, which is the same JSON value (the fenced-with-spaces
++         case, the common one) -> return the model's form, so `''.join(token) == content` again.
++
++    Neither holds (a rearranged key order, or a reply that is not that JSON at all) and there are no
++    logprobs: a caller that joins the tokens must not silently get something that does not match.
++    """
++    lps = choice.get("logprobs")
++    if not lps or not lps.get("content"):
++        return content, None
++    raw = choice["message"]["content"] or ""
++    entries = lps["content"]
++    if raw == content:                          # not rewritten: the entries are already its
++        return content, _with_reasoning(lps, entries)
++    span = logprob_span(raw, content, entries)
++    if span is not None:
++        return content, _with_reasoning(lps, span)
++    inner = extract_json(raw)
++    if inner and _same_json(inner, content):
++        span = logprob_span(raw, inner, entries)
++        if span is not None:
++            return inner, _with_reasoning(lps, span)   # the model's own form: the tokens spell it
++    return content, None
++
++
++def _with_reasoning(lps: dict, entries: list) -> dict:
++    out = {"content": entries}
++    if lps.get("reasoning_content"):
++        out["reasoning_content"] = lps["reasoning_content"]
+     return out
+ 
+ 
+@@ -5956,12 +6400,23 @@ def structured_chunks(chunks, validator):
+         result = openai_collect(buffered)
+         choice = result["choices"][0]
+         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
++        # logprobs: the entries spell what the model wrote, which this function replaces with the
++        # canonical JSON.  `_structured_logprobs` gives back the form the tokens spell, or None.
++        content, logprobs = _structured_logprobs(choice, content)
+         yield buffered[0]
+         delta = {"content": content}
+         if choice["message"].get("reasoning_content"):
+             delta["reasoning_content"] = choice["message"]["reasoning_content"]
+-        yield {**buffered[0], "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+-        yield buffered[-1]
++        piece = {"index": 0, "delta": delta, "finish_reason": None}
++        if logprobs:
++            piece["logprobs"] = logprobs
++        yield {**buffered[0], "choices": [piece]}
++        end = buffered[-1]
++        if end["choices"][0].get("logprobs"):
++            # those entries went out in the piece above (or were dropped with it): the closing
++            # chunk must not carry a second copy
++            end = {**end, "choices": [{k: v for k, v in end["choices"][0].items() if k != "logprobs"}]}
++        yield end
+     finally:
+         chunks.close()
+ 
+@@ -6029,11 +6484,12 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
+             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
+             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
+             read_now = len(ids) - reused
+-            yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
+-                                                                       "stop_sequence": x.get("stop_sequence")},
+-                                    "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
+-                                              "cache_read_input_tokens": reused,
+-                                              "output_tokens": x["completion_tokens"]}}
++            delta_event = {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": x.get("stop_sequence")},
++                           "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
++                                     "cache_read_input_tokens": reused, "output_tokens": x["completion_tokens"]}}
++            if x.get("rejected_tool_calls"):
++                delta_event["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796
++            yield "message_delta", delta_event
+             yield "message_stop", {"type": "message_stop"}
+ 
+ 
+@@ -6065,6 +6521,8 @@ def anthropic_collect(events) -> dict:
+             msg["stop_reason"] = e["delta"]["stop_reason"]
+             msg["stop_sequence"] = e["delta"].get("stop_sequence")
+             msg["usage"].update(e["usage"])
++            if e.get("strata_rejected_tool_calls"):
++                msg["strata_rejected_tool_calls"] = e["strata_rejected_tool_calls"]
+     for i in range(len(blocks) - 1):    # a turn with no </think> (serve/dsml.py): the text is the answer; it is not also a thinking block
+         a, b = blocks[i], blocks[i + 1]
+         if a.get("type") == "thinking" and b.get("type") == "text" and a.get("thinking", "").strip() == b.get("text", "").strip():
+@@ -6372,6 +6830,28 @@ def make_handler(svc: Service):
+ 
+         def do_GET(self):
+             path = self.path.split("?")[0].rstrip("/")
++            if path.startswith("/tool-media/"):
++                if not self._authorized():
++                    return
++                name = path[len("/tool-media/"):]
++                hub = svc.mcp
++                if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name) or not hub or not hub.media_dir:
++                    self._json(404, {"error": {"message": "not found"}})
++                    return
++                file = Path(hub.media_dir) / name
++                if not file.is_file():
++                    self._json(404, {"error": {"message": "not found"}})
++                    return
++                body = file.read_bytes()
++                self.send_response(200)
++                self.send_header("Content-Type", {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[file.suffix])
++                self.send_header("Content-Length", str(len(body)))
++                self.send_header("X-Content-Type-Options", "nosniff")
++                self.send_header("Cache-Control", "private, max-age=86400")
++                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
++                self.end_headers()
++                self.wfile.write(body)
++                return
+             if path.startswith("/fonts/"):
+                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
+                 name = path[len("/fonts/"):]
+@@ -6387,6 +6867,21 @@ def make_handler(svc: Service):
+                 self.end_headers()
+                 self.wfile.write(body)
+                 return
++            sub = web_subtree_file(path)
++            if path.startswith(("/web/locales/", "/web/vendor/")):
++                # the page's translations (serve/web/locales/<lang>.json) and the vendored KaTeX (serve/web/vendor):
++                # only whitelisted names and types, never a path out of those folders
++                if sub is None:
++                    self._json(404, {"error": {"message": "not found"}})
++                    return
++                body = sub[0].read_bytes()
++                self.send_response(200)
++                self.send_header("Content-Type", sub[1])
++                self.send_header("Cache-Control", "no-cache")
++                self.send_header("Content-Length", str(len(body)))
++                self.end_headers()
++                self.wfile.write(body)
++                return
+             if path.startswith("/web/"):
+                 # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN
+                 name = path[len("/web/"):]
+@@ -6630,6 +7125,10 @@ def make_handler(svc: Service):
+                 body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+                 self.send_response(200)
+                 self.send_header("Content-Type", "text/html; charset=utf-8")
++                if not path:
++                    # the chat's svg/html preview is a sandboxed frame; this keeps it from navigating away to a web page
++                    # (a link or <meta refresh> inside a model's html), which no sandbox flag does (serve/web/preview.js)
++                    self.send_header("Content-Security-Policy", PAGE_CSP)
+                 self.send_header("Content-Length", str(len(body)))
+                 self.end_headers()
+                 self.wfile.write(body)
+@@ -7146,6 +7645,25 @@ def make_handler(svc: Service):
+                 raise ValueError("structured response_format with tools/MCP is not supported")
+             svc.load()
+             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
++            # No cap of our own on the reply's length when logprobs are asked for: the reply is already bounded by
++            # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
++            # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
++            # alternatives) until it ends, so a long one holds a lot: streaming hands each entry out with its chunk.
++            if top_logprobs(req) is not None and batch_slots_on(svc.engine) and max_req != 1:
++                # --parallel/--batch: a slot's "BT <slot> <id>" lines carry no LP line, and the batched loop never
++                # calls emit_lp_line (src/program/generate.cpp); an admission -- a max_tokens 1 request -- is read
++                # as GEN 1, which does write them.  Past that one token a reply would hold entries for a prefix
++                # only, which a client cannot tell from the model's own answer, so the longer one is refused.
++                raise ValueError('logprobs is available with "parallel" (batch slots) only for max_tokens 1; '
++                                 'run the server without "--parallel" for longer replies')
++            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
++            if top_logprobs(req) is not None and n_vocab:
++                # emit_lp_line indexes the logits row with each named id as given, so an id past the vocabulary
++                # would read out of bounds: refused here, before anything is sent
++                bad = [i for i in allowed_ids(req) if i >= n_vocab]
++                if bad:
++                    raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
++                                     f"(0..{n_vocab - 1})")
+             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
+             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
+@@ -7445,6 +7963,11 @@ class Server(ThreadingHTTPServer):
+     # (STRATA_HTTP_BACKLOG overrides it)
+     request_queue_size = max(5, int(os.environ.get("STRATA_HTTP_BACKLOG") or 256))
+ 
++    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
++        if ":" in server_address[0]:
++            self.address_family = socket.AF_INET6
++        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
++
+     def handle_error(self, request, client_address):
+         if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
+             super().handle_error(request, client_address)
+@@ -7883,6 +8406,8 @@ def apply_saved_tuning(cfg: dict, *, say=None) -> dict:
+             say(f"[strata] saved tuning '{applied['preset']['name']}' applied: "
+                 f"{' '.join(f'{k} {v}' for k, v in changes.items()) or 'the standard settings (nothing to change)'}"
+                 f"{'; ' + note if note and 'identical' not in note else ''}")
++            for warning in applied.get("warnings") or []:   # #3844: outside the range the tuner tries, kept
++                say(f"[strata] warning: {warning}")
+             if applied.get("state") == "soft":
+                 say("[strata] this PC or engine changed since it was saved (" + "; ".join(applied["reasons"]) +
+                     "): a short re-check is available (strata presets recheck)")
+@@ -8008,6 +8533,39 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
+     return rp.ReplicaEngine(engines, load_tokens=load)
+ 
+ 
++def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bool, *, offline: bool = False):
++    """Opt-in split serving (serve/split.py): a prefill engine and a decode engine, one card each, the same model and the
++    same session settings.  Started one after the other, so a shared expert arena is filled once; the SplitEngine in
++    front hands a long prompt from the first to the second."""
++    from serve import split as sp
++    sp.check_cfg(cfg, spec)
++    arena, arena_note = sp.arena_path(cfg, spec)
++    work = sp.session_dir(spec)
++    print(f"[strata] split serving: the prompt is read on card {spec['prefill_gpu']}, the answer is made on card "
++          f"{spec['decode_gpu']} (prompts with {spec['min_prompt_tokens']}+ new tokens are handed over); {arena_note}",
++          flush=True)
++    engines = {}
++    try:
++        for role in ("prefill", "decode"):
++            rc = sp.role_cfg(cfg, spec, role)
++            if arena:
++                rc["args"] = list(rc["args"]) + ["--shared-expert-arena", arena]
++            if role == "prefill":
++                warn_budget_over_ram(engine_args(rc) if "args" in rc else [])
++            engines[role] = StrataEngine(exe, engine_args(rc) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
++                                         env=child_env(rc, offline=offline), lazy=lazy)
++    except BaseException:
++        for e in engines.values():
++            try:
++                e.close()
++            except Exception:        # noqa: BLE001
++                pass
++        shutil.rmtree(work, ignore_errors=True)
++        raise
++    return sp.SplitEngine(engines["prefill"], engines["decode"], min_tokens=spec["min_prompt_tokens"], work_dir=work,
++                          arena_file=arena)
++
++
+ def check_request_sampling(req) -> None:
+     """A request's sampling field of the wrong JSON type ("temperature": "0.7", "top_k": 40.0, "seed": true) is a 400
+     that names the field, as the same value is through POST /settings or the run config.  Unchecked, the value
+@@ -8070,6 +8628,16 @@ def model_card_sampling(arch, thinking) -> dict:
+     return dict(sets["thinking" if thinking else "instruct"]) if sets else {}
+ 
+ 
++def arch_from_tokenizer(arch, pre) -> str | None:
++    """#4137: the model family a config that names none is served as.  A hand-written config (serve/server.py run on its own, a gateway) often leaves
++    "arch" out; for DeepSeek-V4.1 that meant the Qwen defaults: the stop ids of <|im_end|> (the DeepSeek tokenizer splits that into pieces, so a "|" or a
++    ">" in the reply ended it: `finish_reason: stop` at token 19 in front of a table), no end token (the raw <｜end▁of▁sentence｜> came out as text)
++    and no DSML tool calls.  The pack's tokenizer says what it is (its pre-tokenizer is "deepseek3"); an arch the config names is never changed."""
++    if arch:
++        return arch
++    return "deepseek41" if str(pre or "").startswith("deepseek") else None
++
++
+ def default_model_name(cfg: dict) -> str:
+     """The config's "model_name", else its family's name ("arch": qwen4exp, qwen35moe), else Flash-Next's."""
+     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
+@@ -8119,6 +8687,15 @@ def _component_exe(reference: str, cfg: dict) -> str:
+         raise SystemExit(e.exit_code) from None
+ 
+ 
++def tool_call_recovery_setting(cfg: dict) -> bool:
++    """The config's "tool_call_recovery" (see OutputParser's recover): ON when the config does not name it (since 0.2.8; 0.2.7 and before: off),
++    "tool_call_recovery": false turns it off. Anything but true or false stops the start."""
++    recovery = cfg.get("tool_call_recovery", True)
++    if not isinstance(recovery, bool):
++        raise SystemExit(f"[strata] config \"tool_call_recovery\" must be true or false, not {recovery!r}")
++    return recovery
++
++
+ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+     try:                                               # files made by a run as administrator still belong to the user
+         from strata_control import private_files as _pf
+@@ -8143,7 +8720,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+                                      "written by setup.py")
+     ap.add_argument("--host", default=None,
+                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
+-                         "on your network (set an API key); also \"host\" in the config")
++                         "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
+     ap.add_argument("--script-cycle", action="store_true",
+                     help="with --script given more than once: repeat the scripts by position instead of advancing "
+                          "to the last one and staying there, so extra requests a harness makes (a session title, "
+@@ -8211,6 +8788,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
+                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
+                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
++    ap.add_argument("--split-serve", default=None, metavar="PREFILL,DECODE",
++                    help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
++                         "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
++                         "{\"prefill_gpu\": 0, \"decode_gpu\": 1}; docs/SPLIT_SERVE.md)")
+     launch_args = list(sys.argv[1:] if argv is None else argv)
+     a = ap.parse_args(launch_args)
+     if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
+@@ -8284,6 +8865,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+     lift_reasoning_effort_arg(cfg)
+     if a.replicas is not None:
+         cfg["replicas"] = a.replicas
++    if a.split_serve is not None:
++        pair = [x.strip() for x in a.split_serve.split(",")]
++        if len(pair) != 2 or not all(x.isdecimal() for x in pair):
++            ap.error("--split-serve takes two card numbers: PREFILL,DECODE (for example 0,1)")
++        cfg["split_serve"] = {**(cfg.get("split_serve") if isinstance(cfg.get("split_serve"), dict) else {}),
++                              "prefill_gpu": int(pair[0]), "decode_gpu": int(pair[1])}
+     if a.gpu is not None:
+         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
+     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
+@@ -8310,6 +8897,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+     if cfg.get("tokenizer"):
+         a.tokenizer = cfg["tokenizer"]
+     tok = ByteTokenizer()
++    tcfg = {}
+     tpath = Path(a.tokenizer)
+     if a.engine == "strata" and not (tpath / "vocab.json").exists():
+         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
+@@ -8321,12 +8909,15 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+             tokens[i] = t
+         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
+         types = json.loads((tpath / "token_type.json").read_text())
+-        tcfg = {}
+         try:                                            # the pack's pre-tokenizer name and special ids (DeepSeek's differ)
+             tcfg = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8"))
+         except (OSError, ValueError):
+             pass
+         tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
++    if a.engine == "strata" and not cfg.get("arch") and arch_from_tokenizer(None, tcfg.get("pre")):
++        cfg["arch"] = arch_from_tokenizer(None, tcfg.get("pre"))
++        print(f"[strata] the config names no \"arch\" and this tokenizer is DeepSeek's: serving it as {cfg['arch']} (its end token, DSML tool "
++              f"calls and effort words); add \"arch\": \"{cfg['arch']}\" to the config to say it outright", flush=True)
+     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
+     if a.offline and (hub is not None or cfg.get("before_load") or a.before_load):
+         ap.error("--offline requires MCP servers and before_load commands to be disabled in this profile")
+@@ -8372,6 +8963,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
+                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
+                 vcfg["elastic"] = False
++            elif vcfg.get("elastic") is True and layer_split_of(cfg):
++                # the engine turns --vram-elastic off on a layer split (a cache per GPU): the encoder still starts
++                # with the first picture and stops when idle, but its VRAM has to be free already
++                print('[strata] images: on a layer split the expert cache cannot make room for the image encoder (the '
++                      'engine turns --vram-elastic off); keep its VRAM free with "--vram-reserve-mib" on the '
++                      "encoder's GPU, or the first picture may not get it", flush=True)
+             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
+                             env=vision_env(cfg, env), lazy=lazy)
+         print("model unloaded; the first request loads it ..." if lazy else
+@@ -8412,15 +9009,24 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+             groups = rp.gpu_groups(cfg)
+         except rp.ReplicaConfigError as e:
+             raise SystemExit(f"[strata] config {e}")
++        from serve import split as split_mod
++        try:
++            split = split_mod.split_spec(cfg)
++            if split:
++                split_mod.check_cfg(cfg, split)
++        except split_mod.SplitConfigError as e:
++            raise SystemExit(f"[strata] config {e}")
+         if groups:
+             engine = start_replicas(cfg, groups, exe, effort_end or [], lazy, offline=a.offline)
++        elif split:
++            engine = start_split(cfg, split, exe, effort_end or [], lazy, offline=a.offline)
+         else:
+             engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
+                                   env=env, lazy=lazy)
+         engine.silence_s = silence                      # an attribute of its own: restart() keeps it
+         warn_tight_ram(engine.info.get("arena_mib"))
+         note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
+-                                 linux_desktop()) if not groups else None
++                                 linux_desktop()) if not groups and not split else None
+         if note:                                        # #560 #516: before --open starts a browser on that card
+             print(note, flush=True)
+     else:
+@@ -8442,6 +9048,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+                   sampling_defaults=sampling_defaults,
+                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+     svc.launch_attestation = launch_attestation
++    if (cfg.get("arch") or "") == "deepseek41" and vision is None and a.engine == "strata":
++        # DeepSeek-V4.1 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
++        # `--vision off` in the config's args, or a pack without a tower, leaves svc.vision None: pictures are refused with the 400 as before.
++        _dsp = DsPictures.from_config(cfg, tmp_dir=Path(cfg["log"]).parent / "ds-pictures" if cfg.get("log") else None)
++        if _dsp is not None:
++            svc.vision = _dsp
++            print("[strata] pictures: on (DeepSeek-V4.1 reads them with the engine's own vision tower; --vision off turns them off)", flush=True)
+     svc.offline = a.offline
+     svc.max_queue = max_queue
+     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
+@@ -8551,10 +9164,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+     if mode not in ("model", "on_request"):
+         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
+     svc.anthropic_think_unasked = mode == "model"
+-    recovery = cfg.get("tool_call_recovery", False)     # opt-in: see OutputParser's recover
+-    if not isinstance(recovery, bool):
+-        raise SystemExit(f"[strata] config \"tool_call_recovery\" must be true or false, not {recovery!r}")
+-    svc.tool_call_recovery = recovery
++    svc.tool_call_recovery = tool_call_recovery_setting(cfg)
+     etu = cfg.get("env_to_user", False)                # opt-in: see frontend._env_to_user
+     if not isinstance(etu, bool):
+         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
+@@ -8588,8 +9198,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+         svc.gpu_indices = [c for g in groups for c in g]
+         svc.gpu_index = svc.gpu_indices[0]
+         svc.replica_gpu_groups = groups
++    if a.engine == "strata" and split:                  # split serving: the two cards (the prefill card first)
++        svc.gpu_indices = [split["prefill_gpu"], split["decode_gpu"]]
++        svc.gpu_index = split["decode_gpu"]
+     svc.terminal_visibility_order = visible_device_order(env, cfg.get("backend")) if a.engine == "strata" else []
+     svc.terminal_topology_mode = ("replicas (configured)" if a.engine == "strata" and groups
++                                  else "split serve (configured)" if a.engine == "strata" and split
+                                   else "layer split (configured)" if a.engine == "strata" and layer_split_of(cfg)
+                                   else "single GPU or CPU" if a.engine == "strata" else "mock")
+     svc.terminal_configured_split = (layer_split_value(cfg) if a.engine == "strata" and layer_split_of(cfg)
+@@ -8609,6 +9223,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+     if hub is not None:
+         import atexit
+         svc.mcp = hub
++        if hub.settings["image_results"]:
++            hub.media_dir = Path(a.config).with_suffix(".tool-media") if a.config else Path.cwd() / ".tool-media"
+         print(f"[strata] starting {len(hub.servers)} MCP server{'s' * (len(hub.servers) != 1)} for the web app's "
+               f"chat: {', '.join(hub.servers)}", flush=True)
+         hub.start()
+@@ -8617,18 +9233,19 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
+     svc.start_idle_unload()
+     svc.start_vision_idle()
+-    here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
++    here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
+     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
+           f"context {engine.max_context} tokens{', images on' if vision else ''}"
+           f"{', API key required' if svc.api_key else ''})", flush=True)
+     print(f"       open http://{here}:{bound_port}/ in a browser to chat; close this window to stop the model", flush=True)
+     if a.host not in ("127.0.0.1", "localhost", "::1"):
+         # issue #26: reachable from other devices - say at which address, and what can still block it
+-        ips = lan_addresses()
++        ips = [f"[{a.host}]"] if ":" in a.host and a.host != "::" else [] if a.host == "::" else lan_addresses()
+         for ip in ips:
+             print(f"       from other devices: http://{ip}:{bound_port}/   (API: http://{ip}:{bound_port}/v1)", flush=True)
+         if not ips:
+-            print("       from other devices: http://<this PC's IP address>:" + str(bound_port) + "/", flush=True)
++            address = "[<this PC's IPv6 address>]" if a.host == "::" else "<this PC's IP address>"
++            print(f"       from other devices: http://{address}:{bound_port}/", flush=True)
+         if not svc.api_key:
+             print("       WARNING: " + open_server_warning(bound_port, tools=svc.mcp is not None),
+                   flush=True)
+@@ -8642,7 +9259,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
+         # on its own thread: webbrowser.open waits for the browser launcher, which on Linux can run for as long as
+         # the browser does, and the main thread must be free to take Ctrl+C and SIGTERM (#1872)
+         threading.Thread(target=webbrowser.open, daemon=True, name="strata-open-browser",
+-                         args=(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{bound_port}/",)).start()
++                         args=(f"http://{here}:{bound_port}/",)).start()
+     if ready_path is not None or event_sink is not None:
+         ready_host = f"[{here}]" if ":" in here and not here.startswith("[") else here
+         record = {"schema_version": 1, "instance_id": svc.instance_id, "pid": os.getpid(),
+diff --git a/serve/web/app.css b/serve/web/app.css
+index f9bad8cc..18f1c906 100644
+--- a/serve/web/app.css
++++ b/serve/web/app.css
+@@ -11,16 +11,18 @@ main { flex: 1; min-height: 0; display: flex; }
+ .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
+ .st-header { position: relative; z-index: 2; flex: none; }
+ .st-header .st-tabs { margin-left: var(--st-s-4); }
++#unload-btn { flex: none; height: 32px; padding: 0 12px; min-width: 7.75rem; }
++.st-header--clip #pill-text { display: none; }
+ #drawer-close .st-icon { transform: rotate(-90deg); }
+ 
+ /* ---------------------------------------------------------------- chat */
+ .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+-.chat { max-width: 860px; margin: 0 auto; padding: var(--st-s-8) var(--st-s-6) var(--st-s-6); display: flex;
++.chat { max-width: min(100%, 1100px); margin: 0 auto; padding: var(--st-s-8) var(--st-s-6) var(--st-s-6); display: flex;
+         flex-direction: column; gap: var(--st-s-6); }
+ .chat-empty { margin: 12vh auto 0; text-align: center; }
+ .chat-empty__title { font-weight: var(--st-fw-black); font-size: var(--st-fs-display); line-height: var(--st-lh-tight);
+                      letter-spacing: -.02em; }
+-.chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
++.chat-empty__sub { overflow-wrap: anywhere; margin-top: var(--st-s-3); color: var(--st-ink-muted); }
+ .st-msg { width: 100%; }
+ .st-msg--assistant { align-self: flex-start; }
+ .st-msg--assistant .st-bubble { width: 100%; overflow-wrap: anywhere; }
+@@ -44,6 +46,7 @@ main { flex: 1; min-height: 0; display: flex; }
+ .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
+ .st-msg .st-collapse { width: 100%; }
+ .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
++.st-msg { min-width: 0; }
+ .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
+ .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
+ .cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
+@@ -66,7 +69,7 @@ main { flex: 1; min-height: 0; display: flex; }
+                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+ 
+ .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
+-.st-composer { max-width: 860px; margin: 0 auto; }
++.st-composer { max-width: min(100%, 1100px); margin: 0 auto; }
+ .st-composer textarea { max-height: 40vh; }
+ .st-btn--send { width: 42px; padding: 0; }
+ .composer-hint { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin-right: var(--st-s-2); font-variant-numeric: tabular-nums; }
+@@ -79,16 +82,17 @@ main { flex: 1; min-height: 0; display: flex; }
+ 
+ /* ---------------------------------------------------------------- monitor */
+ .view--monitor, .view--about { overflow-y: auto; }
+-.monitor, .about { max-width: 1240px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;
++.monitor, .about { max-width: min(100%, 1920px); width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;
+                    gap: var(--st-s-5); }
+ .state-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+ .state-card__head { display: flex; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
++.state-card, .metric-card, .req-card, .ctx-card, .cc-card, .mcp-card { min-width: 0; }
+ .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
+ .badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
+ .badges .st-badge.on { opacity: 1; }
+ .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
+                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
+-.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); }
++.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
+ .metric-card { padding: var(--st-s-4) var(--st-s-5); }
+ .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
+ .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
+@@ -100,10 +104,10 @@ main { flex: 1; min-height: 0; display: flex; }
+ .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
+ .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
+ .st-metric__spark[data-tone="info"] { color: var(--st-info); }
+-.monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
++.monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
+ .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
+-.ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
+-.ctx-gauge .st-gauge { width: 150px; height: 150px; }
++.ctx-gauge { position: relative; width: 150px; max-width: 100%; aspect-ratio: 1; height: auto; margin: var(--st-s-2) auto var(--st-s-3); }
++.ctx-gauge .st-gauge { width: 100%; height: 100%; }
+ .ctx-gauge .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }
+ .ctx-gauge__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                     font-size: var(--st-fs-xs); }
+@@ -128,9 +132,9 @@ main { flex: 1; min-height: 0; display: flex; }
+ .cc-note { margin: 0; }
+ .cc-note:empty { display: none; }
+ .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+-.cfg-form { display: grid; grid-template-columns: minmax(0, max-content) minmax(180px, 1fr); gap: var(--st-s-3) var(--st-s-4);
++.cfg-form { display: grid; grid-template-columns: minmax(min(180px, 100%), max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);
+             align-items: center; }
+-.cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); overflow-wrap: anywhere; }
++.cfg-form label { overflow-wrap: anywhere; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); }
+ .cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; }
+ .cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; min-width: 0; }
+ .cfg-actions { display: flex; align-items: center; gap: var(--st-s-3); }
+@@ -142,7 +146,7 @@ main { flex: 1; min-height: 0; display: flex; }
+ .mcp-note { margin: 0; }
+ 
+ /* ---------------------------------------------------------------- about */
+-.about { max-width: 860px; }
++.about { max-width: min(100%, 1100px); }
+ .about .st-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+ .about p { margin: 0; }
+ .facts { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 10px var(--st-s-6); margin: 0; font-size: var(--st-fs-md); }
+@@ -172,22 +176,58 @@ main { flex: 1; min-height: 0; display: flex; }
+ /* ---------------------------------------------------------------- narrow screens */
+ @media (max-width: 1000px) {
+   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+-  .monitor-row { grid-template-columns: 1fr; }
+   .cc-bars { grid-template-columns: 1fr; }
+   .cfg-form { grid-template-columns: 1fr; gap: 4px; }
+   .cfg-form .st-input { margin-bottom: var(--st-s-2); }
+ }
+-@media (max-width: 640px) {
++@media (max-width: 900px) {
++  .monitor-row { grid-template-columns: minmax(0, 1fr); }
++}
++/* The tab strip keeps a width it can scroll. The pill's text hides only when the header row overflows (fitHeader in app.js).
++   Load / Unload (PR #3550) sits in the row: 9rem of tabs plus its 7.75rem fit from 458px; below that the tighter floors keep
++   it and the theme button in the viewport. */
++@media (max-width: 955px) {
+   .st-header { padding: 0 var(--st-s-3); gap: var(--st-s-2); }
+-  .st-header .st-tabs { margin-left: 0; }
++  .st-header__brand, #theme-btn, #pill, #unload-btn { flex: none; }
++  .st-header .st-tabs { margin-left: 0; flex: 1 1 auto; min-width: 9rem; overflow-x: auto; }
+   .st-tab { padding: 0 10px; }
+   .st-tab .st-icon { display: none; }
+-  #pill-text { display: none; }
++}
++@media (max-width: 457px) {
++  #unload-btn { min-width: 0; padding: 0 8px; }
++  .st-header .st-tabs { min-width: 5.5rem; }
++}
++/* the name plus "Unloading…" still overflows at 374px in Firefox 158 */
++@media (max-width: 382px) {
++  .st-header__brand { display: none; }
++  .st-header .st-tabs { min-width: 4.75rem; }
++}
++@media (max-width: 640px) {
+   .chat { padding: var(--st-s-5) var(--st-s-4); }
+   .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
+   .monitor, .about { padding: var(--st-s-4); }
+   .facts { grid-template-columns: 1fr; gap: 2px; }
+   .facts dd { margin-bottom: var(--st-s-2); }
++  .cfg-form .st-input { max-width: none; }
++  .st-btn, .st-input, .seg button, .st-tab { min-height: 40px; }
++  .st-btn--icon, .st-composer__bar .st-btn--icon { width: 40px; height: 40px; }
++  .st-btn--send { width: 44px; }
++  .st-msg__meta .st-btn--icon, .facts .st-btn--icon { width: 40px; height: 40px; }
++  .st-composer__bar { flex-wrap: wrap; }
++  .tool-call__pre, .st-code pre, .table-wrap { max-width: 100%; }
++}
++@media (max-width: 560px) {
++  .metrics { grid-template-columns: minmax(0, 1fr); }
++}
++@media (max-width: 480px) {
++  .st-header { padding: 0 var(--st-s-2); gap: 6px; }
++  .st-header__brand { font-size: var(--st-fs-md); }
++  .st-tabs { gap: 2px; padding: 3px; }
++  .st-tab { padding: 0 8px; }
++  .composer-hint { display: none; }
++  .chat { padding: var(--st-s-4) var(--st-s-3); }
++  .monitor, .about { padding: var(--st-s-3); }
++  .st-bubble { padding: 10px 12px; }
+ }
+ /* Images tab (POST /v1/images/generations) */
+ .img-form{display:flex;flex-direction:column;gap:12px}
+@@ -197,3 +237,107 @@ main { flex: 1; min-height: 0; display: flex; }
+ .img-results figure{margin:0}
+ .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
+ .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
++
++/* Raster MCP results remain visible outside the collapsed tool details. */
++.tool-image { margin: 16px 0; max-width: 100%; }
++.tool-image img { display: block; width: 100%; max-width: 640px; height: auto; border-radius: var(--st-r-md); }
++.tool-image figcaption { margin-top: 10px; }
++.tool-image a:not([href]) { opacity: .5; pointer-events: none; }
++
++/* Math (serve/web/math.js): a formula never widens the chat; a long display formula scrolls inside its own box. */
++.chat-math { overflow-wrap: normal; }
++.chat-math--display { display: block; text-align: center; overflow-x: auto; max-width: 100%; margin: .6em 0; padding: .25em 0; }
++.chat-math--display > * { margin: 0 !important; }
++.chat-math[data-math-error] { white-space: pre-wrap; }
++.chat-math .katex { font-size: 1.08em; }
++
++/* svg/html preview (serve/web/preview.js): the frame is sandboxed and carries the page's colours, so it is transparent on the
++   theme's surface; the code and the preview swap places inside the same box. */
++.st-code__btns { display: flex; gap: 4px; }
++.st-code .st-btn--icon[aria-pressed="true"] { background: rgba(255, 255, 255, .12); color: #fff; }
++.st-code__preview { display: none; }
++.st-code[data-preview="true"] > pre { display: none; }
++.st-code[data-preview="true"] .st-code__preview { display: block; height: min(340px, 60vh); background: var(--st-surface-2); }
++.st-code [data-preview-scripts] { display: none; }
++.st-code[data-preview="true"] [data-preview-scripts] { display: inline-flex; }
++.st-code .st-btn--icon[data-preview-scripts][aria-pressed="true"] { background: var(--st-warn-tint); color: var(--st-warn-text); }
++.st-code--run .st-code__preview { outline: 2px solid var(--st-warn-text); outline-offset: -2px; }
++.st-code__preview iframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; }
++
++/* ---------------------------------------------------------------- chat history (chats-ui.js)
++   The saved-chats list (PR #1787 by Scotty-Hudson), edit / regenerate / rewind (PR #2615 by uppet) and the Chat settings button. */
++.view--chat { flex-direction: row; }
++.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
++.chat-sidebar { flex: none; width: 260px; display: flex; flex-direction: column; gap: var(--st-s-3);
++                padding: var(--st-s-4); background: var(--st-surface); border-right: 1px solid var(--st-line); }
++.sidebar-head { display: flex; align-items: center; gap: var(--st-s-2); }
++.sidebar-head .card-title { flex: 1; }
++#sidebar-toggle .st-icon { transform: rotate(90deg); transition: transform var(--st-dur) var(--st-ease); }
++.chat-sidebar[data-open="false"] { width: 60px; }
++.chat-sidebar[data-open="false"] .sidebar-head { flex-direction: column; }
++.chat-sidebar[data-open="false"] #sidebar-toggle .st-icon { transform: rotate(-90deg); }
++.chat-sidebar[data-open="false"] .sidebar-title, .chat-sidebar[data-open="false"] .sidebar-search,
++.chat-sidebar[data-open="false"] .sidebar-list, .chat-sidebar[data-open="false"] .sidebar-foot { display: none; }
++.sidebar-search { height: 36px; font-size: var(--st-fs-sm); }
++.sidebar-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
++.sidebar-group { margin: 0; padding: var(--st-s-3) 8px var(--st-s-1); font-size: var(--st-fs-xs);
++                 font-weight: var(--st-fw-bold); letter-spacing: .04em; text-transform: uppercase; color: var(--st-ink-muted); }
++.chat-item { display: flex; align-items: center; gap: 2px; border-radius: var(--st-r-md); }
++.chat-item.on { background: var(--st-surface-2); }
++.chat-item__title { flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer; text-align: left;
++                    padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
++                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.chat-item:hover .chat-item__title { color: var(--st-ink); }
++.chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
++.chat-item__actions { display: flex; gap: 2px; flex: none; opacity: 0; }          /* the buttons come up on hover or focus */
++.chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { opacity: 1; }
++.chat-item__actions .st-btn--icon { width: 30px; height: 30px; }
++.chat-item__actions .st-btn--icon .st-icon { width: 16px; height: 16px; }
++.chat-item__input { flex: 1; min-width: 0; height: 34px; font-size: var(--st-fs-sm); }
++.sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
++.sidebar-foot { margin: 0; }
++.chat-parent { display: flex; align-items: center; justify-content: center; gap: var(--st-s-3); flex-wrap: wrap; padding: var(--st-s-2) var(--st-s-4);
++               border-bottom: 1px solid var(--st-line-soft); font-size: var(--st-fs-sm); }
++.chat-parent .st-btn { height: 30px; padding: 0 12px; font-size: var(--st-fs-xs); }
++
++/* the buttons under a message, the open panel / editor, and the bars above the box (Undo, a waiting message) */
++.history-actions, .history-editor__actions, .history-undo, .pending { display: flex; flex-wrap: wrap; gap: var(--st-s-2); align-items: center; }
++.history-actions .st-btn, .history-undo .st-btn, .pending .st-btn, .history-panel .st-btn { height: 30px; padding: 0 10px; font-size: var(--st-fs-xs); }
++.history-actions { margin-top: var(--st-s-1); }
++.st-msg--user .history-actions { justify-content: flex-end; }
++.history-panel, .history-editor { width: 100%; display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3);
++                                  border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface-2); }
++.history-choice { display: flex; align-items: center; gap: var(--st-s-3); flex-wrap: wrap; }
++.history-choice > .muted { flex: 1 1 14rem; min-width: 0; }
++.history-panel > .st-btn { align-self: flex-start; }
++.history-editor textarea { width: 100%; min-height: 140px; max-height: 50vh; resize: vertical; font: inherit; height: auto; padding: 10px 14px; }
++.history-editor p, .history-panel p { margin: 0; }
++.st-msg[data-editing="true"] > .st-bubble { display: none; }
++.history-undo, .pending { max-width: min(100%, 1100px); margin: 0 auto var(--st-s-2); color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
++.pending { justify-content: space-between; padding: 6px 10px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); }
++.pending__text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--st-ink-soft); }
++.pending__actions { display: flex; gap: var(--st-s-2); }
++
++/* Chat settings: the button says what it is, and the drawer groups the chat switches */
++.chat-settings-button { height: 36px; padding: 0 10px; gap: 6px; white-space: nowrap; font-size: var(--st-fs-sm); }
++.chat-settings-short { display: none; }
++.drawer-group { display: flex; flex-direction: column; gap: var(--st-s-4); padding-top: var(--st-s-4); border-top: 1px solid var(--st-line); }
++.drawer-group__title { margin: 0; font-size: var(--st-fs-base); font-weight: var(--st-fw-bold); color: var(--st-ink); }
++.seg--3 { grid-template-columns: repeat(3, 1fr); }
++.seg--3 button { padding: 0 4px; }
++#lang { width: 100%; }
++@media (max-width: 640px) {
++  .chat-settings-label, .composer-hint { display: none; }
++  .chat-settings-short { display: inline; }
++  .st-btn--send { margin-left: auto; }
++}
++@media (max-width: 760px) {
++  /* the list is an overlay here: the chat keeps the whole width when it is closed to its rail */
++  .view--chat { position: relative; }
++  .chat-sidebar[data-open="true"] { position: absolute; top: 0; left: 0; bottom: 0; z-index: 30; box-shadow: var(--st-sh-pop); }
++  .chat-sidebar { padding: var(--st-s-3); }
++}
++
++/* a message may use the room a wide window gives the chat column (#3176 widened the column; the kit's 720px kept the messages narrow in it) */
++.st-msg { max-width: min(100%, 900px); }
++.st-toast .st-btn { white-space: nowrap; }
+diff --git a/serve/web/app.js b/serve/web/app.js
+index ac84f85d..6c7d5184 100644
+--- a/serve/web/app.js
++++ b/serve/web/app.js
+@@ -50,7 +50,7 @@ async function copyText(text, btn) {
+     use.setAttribute("href", `${SPRITE}#i-check`);
+     setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
+   }
+-  toast("success", "Copied to clipboard", "", 1800);
++  toast("success", tr("toast.copied", "Copied to clipboard"), "", 1800);
+ }
+ 
+ // ------------------------------------------------------------------ theme and tabs
+@@ -60,6 +60,7 @@ function setTheme(t, save) {
+   if (save) try { localStorage.setItem("strata.theme", t); } catch (e) { /* ignore */ }
+   $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
+   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
++  refreshPreviews();                                  // the preview frames carry the page's colours
+ }
+ const flipTheme = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+ $("theme-btn").onclick = flipTheme;
+@@ -107,12 +108,16 @@ $("api-key").oninput = () => saveApiKey();
+ $("api-key").onchange = () => saveApiKey(true);
+ 
+ let health = {model: "strata", images: false, max_context: 0};
++// the texts that depend on what this server offers: the empty chat's line and the attach button's hint
++function renderEmptyChat() {
++  $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
++                                        : tr("composer.attach", "Attach a text file (or drop it here)");
++  $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
++}
+ async function loadHealth() {
+   try {
+     health = await (await fetch("health")).json();
+-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
+-                                          : "Attach a text file (or drop it here)";
+-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
++    renderEmptyChat();
+     $("tab-btn-images").hidden = !health.image_generation;
+     if (location.hash === "#images" && health.image_generation) showTab("images");
+   } catch (e) {
+@@ -163,22 +168,38 @@ function setMetric(key, value, unit, sub) {
+ }
+ 
+ let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
++let metricsEpoch = 0;
++// After Load or Unload returns, a poll that started earlier can still say the opposite. Hold the POST's state until a later
++// poll agrees, or until the first poll that started after the POST arrives. (PR #3550 by sakuumomo)
++let metricsHold = null;
+ let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
++function metricsAgree(live, state) {
++  const s = (live && live.state) || "";
++  if (state === "unloaded") return s === "unloaded";
++  return s !== "" && s !== "unloaded";
++}
+ async function poll() {
++  const epoch = ++metricsEpoch;
+   try {
+     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
+     if (r.status === 401) {
+-      setPill("error", "API key needed");
+-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
++      setPill("error", tr("pill.keyNeeded", "API key needed"));
++      if (!keyWarned) { keyWarned = true; toast("warn", tr("pill.keyNeeded", "API key needed"), tr("toast.keyAbout", "This server needs a key: add it under About > Settings."), 6000); }
+     } else if (r.ok) {
+-      lastMetrics = await r.json();
++      const m = await r.json();
++      if (metricsHold && epoch <= metricsHold.after && !metricsAgree(m.live, metricsHold.state)) {
++        setTimeout(poll, 1000);
++        return;
++      }
++      if (metricsHold && (metricsAgree(m.live, metricsHold.state) || epoch > metricsHold.after)) metricsHold = null;
++      lastMetrics = m;
+       metricsFailures = 0;
+       render(lastMetrics);
+     } else {
+       throw new Error(`HTTP ${r.status}`);
+     }
+   } catch (e) {
+-    if (++metricsFailures === 3) setPill("error", "Server not reachable");
++    if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
+   }
+   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
+   setTimeout(poll, 1000);
+@@ -187,21 +208,164 @@ async function poll() {
+ function setPill(state, text) {
+   $("pill").dataset.state = state === "error" ? "queued" : state;
+   $("pill-text").textContent = text;
++  // a poll re-sets the sentence every second; refit only when its text changed
++  if (text !== lastPillText) { lastPillText = text; fitHeader(); }
++}
++let lastPillText = null;
++// The pill's sentence is the first thing the header row can spare when it runs out of room.
++function fitHeader() {
++  const header = document.querySelector(".st-header");
++  if (!header) return;
++  header.classList.remove("st-header--clip");
++  if (header.scrollWidth > header.clientWidth) header.classList.add("st-header--clip");
++}
++window.addEventListener("resize", fitHeader);
++
++// ------------------------------------------------------------------ Load / Unload (POST /load, /unload: the header button)
++// Metrics stay "unloaded" until the engine is READY, so a turn or an image job on this page has to paint Loading itself.
++// modelOp covers the button's own POST, which returns before the next poll can agree.
++let modelOp = null;
++let imageBusy = false;
++function pageBusy() { return busy != null || imageBusy; }
++// "generating an image" is the job a refresh can see. imageBusy is this page's POST before that phase is published. A chat
++// phase already on the metrics wins, because Stop still stops that reply.
++function imageLive(live) {
++  if (live && live.phase === "generating an image") return true;
++  const state = live && live.state;
++  if (state === "reading" || state === "generating") return false;
++  return imageBusy;
++}
++function paintLive() { if (lastMetrics) render(lastMetrics); }
++function turnBlocksUnload(live) {
++  const state = (live && live.state) || "";
++  return pageBusy() || state === "reading" || state === "generating" || (live && live.queued > 0);
++}
++function setModelButton(text, title, disabled) {
++  const btn = $("unload-btn");
++  btn.textContent = text; btn.title = title; btn.disabled = disabled;
++  fitHeader();
++}
++function modelButton(live) {
++  if (modelOp === "load") return setModelButton(tr("model.loading", "Loading…"), tr("model.loadingTitle", "The model is loading"), true);
++  if (modelOp === "unload") return setModelButton(tr("model.unloading", "Unloading…"), tr("model.unloadingTitle", "The model is unloading"), true);
++  const state = (live && live.state) || "";
++  const metricsBusy = state === "reading" || state === "generating" || (live && live.queued > 0);
++  const imageNow = imageLive(live);
++  const unload = tr("model.unload", "Unload");
++  if (state === "unloaded") {
++    if (imageNow) return setModelButton(tr("model.loading", "Loading…"), tr("model.imageLoading", "An image is already loading the model"), true);
++    if (pageBusy()) return setModelButton(tr("model.loading", "Loading…"), tr("model.replyLoading", "A reply is already loading the model"), true);
++    return setModelButton(tr("model.load", "Load"), tr("model.loadTitle", "Load the model now. A message also loads it."), false);
++  }
++  if (imageNow) return setModelButton(unload, tr("model.imageBusy", "An image is generating. It finishes on its own."), true);
++  if (!state) return setModelButton("…", tr("model.waiting", "Waiting for the server"), true);
++  if (metricsBusy || pageBusy()) return setModelButton(unload, tr("model.stopFirst", "Stop the reply, then unload"), true);
++  return setModelButton(unload, tr("model.unloadTitle", "Unload the model and free the GPU"), false);
+ }
++$("unload-btn").onclick = async () => {
++  if (modelOp) return;
++  const live = (lastMetrics && lastMetrics.live) || {};
++  const loading = live.state === "unloaded";
++  const busyCopy = (sample, stillLoading) => stillLoading
++    ? (imageLive(sample) ? tr("model.imageLoadingDot", "An image is already loading the model.") : tr("model.replyLoadingDot", "A reply is already loading the model."))
++    : (imageLive(sample) ? tr("model.imageBusy", "An image is generating. It finishes on its own.") : tr("model.stopFirstDot", "Stop the reply, then unload."));
++  if (loading ? pageBusy() : turnBlocksUnload(live)) {
++    toast("warn", tr("model.busy", "Model is busy"), busyCopy(live, loading));
++    return;
++  }
++  if (!loading && !confirm(tr("model.confirmUnload", "Unload the model and free the GPU? Load, or the next message, brings it back."))) return;
++  // confirm() blocks the poll. Yield so a sample that arrived during the dialog is applied. A confirmed Unload stays an unload.
++  if (!loading) {
++    modelOp = "unload";
++    modelButton(live);
++    await new Promise((resolve) => setTimeout(resolve, 0));
++  }
++  const now = (lastMetrics && lastMetrics.live) || {};
++  const loadingNow = loading;
++  if (loadingNow ? pageBusy() : turnBlocksUnload(now)) {
++    modelOp = null;
++    if (lastMetrics) render(lastMetrics); else modelButton(now);
++    toast("warn", tr("model.busy", "Model is busy"), busyCopy(now, loadingNow));
++    return;
++  }
++  modelOp = loadingNow ? "load" : "unload";
++  modelButton(now);
++  if (loadingNow) toast("info", tr("model.loadingToast", "Loading the model"), tr("model.fewMinutes", "This can take a few minutes."));
++  const remember = (state) => {
++    if (!lastMetrics) lastMetrics = {};
++    lastMetrics.live = Object.assign({}, lastMetrics.live, {state, queued: 0});
++    metricsHold = {state, after: metricsEpoch};
++  };
++  try {
++    const r = await fetch(loadingNow ? "load" : "unload", {method: "POST", headers: headers(true), body: "{}"});
++    let body = {};
++    try { body = await r.json(); } catch (e) { /* the connection dropped */ }
++    const status = body.status || "";
++    const msg = (body.error && body.error.message) ||
++                (r.status === 401 ? tr("toast.keyAbout2", "API key needed: add it under About > Settings.") : tr("toast.httpAnswer", "The server answered HTTP {code}.", {code: r.status}));
++    const failTitle = loadingNow ? tr("model.loadFailed", "Load failed") : tr("model.unloadFailed", "Unload failed");
++    if (loadingNow) {
++      if (r.ok && status === "loaded") {
++        remember("idle");
++        toast("success", tr("model.loaded", "Model loaded"), tr("model.gpuInUse", "The GPU is in use."));
++      } else {
++        toast("error", failTitle, msg);
++      }
++    } else if (status === "unloaded" || status === "not loaded") {
++      remember("unloaded");
++      toast(status === "unloaded" ? "success" : "info",
++            status === "unloaded" ? tr("model.unloaded", "Model unloaded") : tr("model.alreadyUnloaded", "Already unloaded"),
++            tr("model.gpuFree", "The GPU is free. Load, or the next message, brings it back."));
++    } else if (r.status === 409 || status === "busy") {
++      let sample = (lastMetrics && lastMetrics.live) || {};
++      try {
++        const mr = await fetch("metrics", {headers: headers()});
++        if (mr.ok) {
++          const m = await mr.json();
++          if (m && m.live) { sample = m.live; lastMetrics = m; }
++        }
++      } catch (e) { /* the 409 body has no phase */ }
++      toast("warn", tr("model.busy", "Model is busy"), imageLive(sample)
++        ? tr("model.imageBusy", "An image is generating. It finishes on its own.") : tr("model.stopFirstDot", "Stop the reply, then unload."));
++    } else if (status === "unsupported") {
++      toast("error", tr("model.unsupported", "Unload is not available"), "");
++    } else {
++      toast("error", failTitle, msg);
++    }
++  } catch (e) {
++    toast("error", loadingNow ? tr("model.loadFailed", "Load failed") : tr("model.unloadFailed", "Unload failed"), tr("model.noAnswer", "The server did not answer."));
++  } finally {
++    modelOp = null;
++    if (lastMetrics) render(lastMetrics); else modelButton({});
++  }
++};
+ 
+ function render(m) {
+   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
+   const last = (m.requests || [])[0];
+-  // the header pill
+-  if (live.state === "reading") {
++  // the header pill. modelOp and a local load win over "N queued": with parallel requests, queued stays up through
++  // ensure_loaded(), and metrics stay "unloaded" until the engine is READY. An image POST in that window is still a load.
++  const localLoad = live.state === "unloaded" && (busy != null || imageBusy);
++  if (modelOp === "load") {
++    setPill("idle", tr("model.loading", "Loading…"));
++  } else if (modelOp === "unload") {
++    setPill("idle", tr("model.unloading", "Unloading…"));
++  } else if (localLoad) {
++    setPill("idle", tr("model.loading", "Loading…"));
++  } else if (imageLive(live)) {
++    setPill("reading", tr("pill.image", "Generating image…"));
++  } else if (live.state === "reading") {
+     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
+-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
++    setPill("reading", pct != null ? tr("pill.readingPct", "Reading prompt · {pct}%", {pct}) : tr("pill.reading", "Reading prompt"));
+   } else if (live.state === "generating") {
+-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
++    setPill("generating", tr("pill.generating", "Generating · {rate} tok/s", {rate: fmt(live.tok_s, 1)}));
++  } else if (live.state === "unloaded") {
++    setPill("idle", tr("pill.unloaded", "Unloaded"));
+   } else {
+-    setPill("idle", "Idle");
++    setPill("idle", tr("pill.idle", "Idle"));
+   }
+-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
++  modelButton(live);
++  if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
+   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+   if (tab === "monitor") renderConvCache(m.conversation_cache);
+   if (tab === "about") renderAbout(eng, hw, st);
+@@ -251,11 +415,29 @@ function renderTotals(t) {
+ }
+ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+   // model state
+-  const on = live.queued > 0 ? "queued" : live.state;
+-  for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
++  // A local turn keeps metrics on "unloaded" for the whole engine start.
++  const imageNow = imageLive(live);
++  const starting = modelOp === "load" || imageNow || (busy != null && live.state === "unloaded");
++  const on = !modelOp && live.queued > 0 ? "queued" : live.state;
++  for (const b of document.querySelectorAll("#state-badges .st-badge")) {
++    const lit = (b.dataset.s === on || b.dataset.s === live.state) && !(starting && b.dataset.s === "unloaded");
++    b.classList.toggle("on", lit);
++  }
+   const prog = $("state-progress");
+   let label = "Waiting for a request", detail = "", pct = 0;
+-  if (live.state === "reading") {
++  if (modelOp === "load" || (busy != null && live.state === "unloaded" && !imageNow)) {
++    label = "Loading";
++    delete prog.dataset.tone;
++    detail = "The model is loading.";
++  } else if (imageNow && (live.state === "unloaded" || live.state === "reading" || live.state === "generating" || live.state === "idle")) {
++    label = live.state === "unloaded" ? "Loading" : "Generating image";
++    delete prog.dataset.tone;
++    detail = live.state === "unloaded" ? "The model is loading." : "An image is generating. It finishes on its own.";
++  } else if (modelOp === "unload") {
++    label = "Unloading";
++    delete prog.dataset.tone;
++    detail = "Freeing the GPU.";
++  } else if (live.state === "reading") {
+     label = "Reading prompt";
+     prog.dataset.tone = "info";
+     if (live.prompt_total) {
+@@ -269,6 +451,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+     delete prog.dataset.tone;
+     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
+     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
++  } else if (live.state === "unloaded") {
++    label = "Unloaded";
++    delete prog.dataset.tone;
++    detail = "Load brings it back. A message does too.";
+   } else if (last) {
+     delete prog.dataset.tone;
+     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+@@ -344,7 +530,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+     body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
+   } else {
+     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
+-                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
++                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
++                   timeout: ["st-badge--queued", "Timeout"]};
+     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
+       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+@@ -512,10 +699,36 @@ function inline(s) {
+     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
+ }
+-function codeBlock(lang, code) {
+-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
+-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
+-    `<pre><code>${esc(code)}</code></pre></div>`;
++// An ```svg or ```html block that is complete gets a Preview button (serve/web/preview.js): the block's own code in a sandboxed
++// frame, built when it is first opened and again when the theme changes. The state lives on the box (data-preview), so it
++// resets if the answer is rebuilt. A page (html) can also be run WITH scripts, after a warning, one block at a time.
++function pageTheme() {
++  const root = document.documentElement;
++  return {dark: root.dataset.theme === "dark", ink: getComputedStyle(root).getPropertyValue("--st-ink").trim()};
++}
++function fillPreview(fr, scripts, blank) {
++  const box = fr.closest(".st-code");
++  const doc = blank ? null : StrataPreview.previewDoc(fr.dataset.lang, box.querySelector("pre").textContent, scripts, pageTheme(), window);
++  const nf = StrataPreview.makeFrame(doc, {scripts, title: fr.title, lang: fr.dataset.lang});
++  fr.replaceWith(nf);
++  box.classList.toggle("st-code--run", !!(doc && scripts));
++  const rb = box.querySelector("[data-preview-scripts]");
++  if (rb) {
++    rb.setAttribute("aria-pressed", String(!!(doc && scripts)));
++    rb.setAttribute("aria-label", doc && scripts ? tr("preview.stopScripts", "Stop scripts") : tr("preview.runScripts", "Run scripts"));
++  }
++}
++function refreshPreviews() { for (const fr of document.querySelectorAll("iframe[data-opened]")) fillPreview(fr, fr.dataset.scripts === "1"); }
++function codeBlock(lang, code, complete) {
++  const ok = complete && StrataPreview.canPreview(lang || "", code);
++  const kind = ok ? StrataPreview.kindOf(lang) : null;
++  const label = kind === "svg" ? tr("preview.showSvg", "Preview the picture") : tr("preview.showPage", "Preview the page");
++  const head = `<div class="st-code__head"><span>${esc(lang || tr("code.label", "code"))}</span><span class="st-code__btns">` +
++    (kind === "page" ? `<button class="st-btn st-btn--icon" data-preview-scripts aria-label="${esc(tr("preview.runScripts", "Run scripts"))}" aria-pressed="false" title="${esc(tr("preview.runScripts", "Run scripts"))}">${icon("warning")}</button>` : "") +
++    (ok ? `<button class="st-btn st-btn--icon" data-preview-toggle data-preview-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}" aria-pressed="false">${icon("image")}</button>` : "") +
++    `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(tr("code.copy", "Copy code"))}">${icon("copy")}</button></span></div>`;
++  const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${esc(kind === "svg" ? tr("preview.titleSvg", "Picture preview") : tr("preview.titlePage", "Page preview"))}" data-lang="${esc(lang)}"></iframe></div>` : "";
++  return `<div class="st-code">${head}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
+ }
+ function blocks(text) {
+   const out = [], lines = text.split("\n");
+@@ -561,8 +774,8 @@ function markdown(text) {
+     html += blocks(rest.slice(0, m.index));
+     rest = rest.slice(m.index + m[0].length);
+     const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
+-    if (!end) { html += codeBlock(m[2].trim(), rest); break; }         // still streaming
+-    html += codeBlock(m[2].trim(), rest.slice(0, end.index));
++    if (!end) { html += codeBlock(m[2].trim(), rest, false); break; }  // still streaming: no preview of a half-written block
++    html += codeBlock(m[2].trim(), rest.slice(0, end.index), true);
+     rest = rest.slice(end.index + end[0].length);
+   }
+   return html;
+@@ -573,7 +786,8 @@ function markdown(text) {
+ // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
+ // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
+ // values untouched counts as "not set" too.
+-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
++const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
++                  chatList: false, chatEdit: false, whileBusy: "wait"};
+ const OLD_DEFAULT_TEMPERATURE = 0.6;
+ function samplingUntouched(s) {
+   const t = +s.temperature;
+@@ -581,14 +795,10 @@ function samplingUntouched(s) {
+ }
+ let settings = {...DEFAULTS, ...store.get("sampling", {})};
+ if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
+-let messages = store.get("chat", []);
++let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
+ let attachments = [];                 // {name, url}
+-let busy = null;                      // {controller, msg}
+-
+-function saveChat() {
+-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+-}
++let busy = null;                      // {controller, msg, cut, cutAfterTool}
++let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
+ function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+ 
+ function msgEl(m, i) {
+@@ -612,8 +822,8 @@ function msgEl(m, i) {
+       const wrap = document.createElement("div");
+       wrap.className = "msg-images";
+       for (const im of m.images) {
+-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
+-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
++        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || tr("chat.image", "image"); wrap.appendChild(img); }
++        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || tr("chat.image", "image")); wrap.appendChild(c); }
+       }
+       el.appendChild(wrap);
+     }
+@@ -623,31 +833,35 @@ function msgEl(m, i) {
+     el.appendChild(b);
+     const meta = document.createElement("div");
+     meta.className = "st-msg__meta";
+-    meta.textContent = `You · ${timeStr(m.time)}`;
++    meta.textContent = `${tr("chat.you", "You")} · ${timeStr(m.time)}`;
+     el.appendChild(meta);
+   } else {
+     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
+       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
+       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
+-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
++      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(tr("chat.copyAnswer", "Copy the answer"))}" title="${esc(tr("chat.copy", "Copy"))}">${icon("copy")}</button></div>`;
+     updateAssistant(el, m, false);
+   }
++  const actions = msgActions(m, i);                 // edit / regenerate / rewind (chats-ui.js), when switched on
++  if (actions) el.appendChild(actions);
+   return el;
+ }
+ // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
+ // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
+-const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
+-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
++const TOOL_STATE = {writing: ["st-badge--reading", () => tr("tool.writing", "Writing")], running: ["st-badge--generating", () => tr("tool.running", "Running")],
++                    done: ["", () => tr("tool.done", "Done")], error: ["st-badge--error", () => tr("tool.error", "Error")],
++                    skipped: ["st-badge--queued", () => tr("tool.skipped", "Not run")]};
+ function toolHtml(t, k) {
+-  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
++  const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
++  const label = labelOf();
+   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
+   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
+   let body = "";
+   if (t.open) {
+-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
++    body = `<div class="tool-call__label">${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
+     if (t.result != null) {
+-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
+-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
++      body += `<div class="tool-call__label">${esc(t.ok ? tr("tool.result", "Result") : tr("tool.error", "Error"))}${t.chars ? ` · ${esc(tr("tool.chars", "{n} characters", {n: fmt(t.chars)}))}` : ""}` +
++              `${t.truncated ? esc(tr("tool.cut", ", cut for the model")) : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+     }
+   }
+   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
+@@ -657,17 +871,53 @@ function toolHtml(t, k) {
+     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
+ }
++// Raster tool results are same-origin cached files; credentials stay in request headers.
++const mediaBlobs = new Map();
++let mediaEpoch = 0;
++function clearToolMedia() {
++  mediaEpoch++;
++  for (const pending of mediaBlobs.values()) pending.then((url) => URL.revokeObjectURL(url), () => {});
++  mediaBlobs.clear();
++}
++window.addEventListener("pagehide", clearToolMedia);
++window.addEventListener("pageshow", (event) => { if (event.persisted) hydrateToolImages(document); });
++function safeToolMedia(url) { return typeof url === "string" && /^tool-media\/[0-9a-f]{64}\.(png|jpg|webp)$/.test(url); }
++function toolImages(t) {
++  return (t.images || []).filter((im) => safeToolMedia(im.url)).map((im) =>
++    `<figure class="tool-image"><img data-tool-image="${esc(im.url)}" alt="Tool image" loading="lazy">` +
++    `<figcaption><a class="st-btn" data-tool-download="${esc(im.url)}" download="${esc(im.name || "generated-image.png")}">Download image</a></figcaption></figure>`).join("");
++}
++function hydrateToolImages(root) {
++  root.querySelectorAll("[data-tool-image]").forEach((img) => {
++    const url = img.dataset.toolImage, epoch = mediaEpoch;
++    if (!safeToolMedia(url)) return;
++    if (!mediaBlobs.has(url)) mediaBlobs.set(url, fetch(url, {headers: headers()}).then((r) => {
++      if (!r.ok) throw new Error("Image unavailable");
++      return r.blob();
++    }).then((b) => URL.createObjectURL(b)).catch((e) => {if (epoch === mediaEpoch) mediaBlobs.delete(url); throw e;}));
++    mediaBlobs.get(url).then((blob) => {
++      if (epoch !== mediaEpoch || !img.isConnected) return;
++      img.src = blob;
++      const a = img.closest("figure").querySelector("[data-tool-download]");
++      a.href = blob;
++    }).catch(() => { img.alt = "Image unavailable; try refreshing"; });
++  });
++}
+ // the answer's text with the tool blocks where the model called them
++// math (opt-in, serve/web/math.js): formulas become placeholders before the Markdown runs and are drawn after it
++function answerMarkdown(text) {
++  return settings.math ? StrataMath.markdown(text, markdown) : markdown(text);
++}
+ function answerHtml(m) {
+-  if (!m.tools || !m.tools.length) return markdown(m.text || "");
++  if (!m.tools || !m.tools.length) return answerMarkdown(m.text || "");
+   let html = "", pos = 0;
+   m.tools.forEach((t, k) => {
+     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
+-    if (at > pos) html += markdown(m.text.slice(pos, at));
++    if (at > pos) html += answerMarkdown(m.text.slice(pos, at));
+     pos = at;
+-    html += toolHtml(t, k);
++    html += toolHtml(t, k) + toolImages(t);
+   });
+-  return html + markdown(m.text.slice(pos));
++  return html + answerMarkdown(m.text.slice(pos));
+ }
+ // a tool event from the stream (the `strata_mcp` field of a chunk)
+ function onTool(m, x) {
+@@ -678,7 +928,7 @@ function onTool(m, x) {
+   if (x.event === "call") {
+     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
+   } else if (x.event === "result") {
+-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
++    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, images: x.images || [], vision: x.vision === true,
+                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
+   }
+ }
+@@ -687,8 +937,8 @@ function updateAssistant(el, m, streaming) {
+   if (m.reasoning) {
+     det.hidden = false;
+     const thinkingNow = streaming && !m.text;
+-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
+-      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
++    el.querySelector(".think-title").textContent = thinkingNow ? tr("think.now", "Thinking…") :
++      m.thinkSecs != null ? tr("think.for", "Thought for {s} s", {s: fmt(m.thinkSecs, 1)}) : tr("think.done", "Thoughts");
+     const body = el.querySelector(".thinking");
+     if (det.open || thinkingNow) body.textContent = m.reasoning;
+     else body.dataset.pending = "1";
+@@ -704,9 +954,11 @@ function updateAssistant(el, m, streaming) {
+     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+   } else {
+     bubble.innerHTML = answerHtml(m);
++    hydrateToolImages(bubble);
++    if (settings.math) StrataMath.hydrate(bubble);
+     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
+   }
+-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
++  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
+   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+ }
+ function renderChat() {
+@@ -714,14 +966,66 @@ function renderChat() {
+   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
+   $("chat-empty").hidden = messages.length > 0;
+   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
++  renderSidebar();
++  renderParent();
++  renderUndoBar();
+   scrollDown(true);
+ }
+-function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
+-function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
++// Follow the answer while the reader has not left (#4014). Asking "am I within 120 px of the bottom?" on every frame pulled
++// the view back after every wheel notch (a notch is about 100 px), so scrolling up during a long answer only worked by
++// dragging the scrollbar. Now the reader's own input lets go (wheel up, a finger or a key moving up, the scrollbar), and a
++// scroll back to the bottom follows again.
++let stickToBottom = true, lastReaderInput = 0;
++const FOLLOW_SLACK = 24, FAR_AWAY = 400, INPUT_WINDOW_MS = 400;
++function followAfterScroll(distance, wasFollowing, msSinceInput) {
++  if (distance <= FOLLOW_SLACK) return true;
++  if (msSinceInput <= INPUT_WINDOW_MS || distance > FAR_AWAY) return false;
++  return wasFollowing;
++}
++function scrollDown(force) {
++  const s = $("chat-scroll");
++  if (force) stickToBottom = true;
++  if (stickToBottom) s.scrollTop = s.scrollHeight;
++}
++(function watchReader() {
++  const s = $("chat-scroll");
++  const touch = () => { lastReaderInput = Date.now(); };
++  s.addEventListener("wheel", (e) => { touch(); if (e.deltaY < 0 && s.scrollTop > 0) stickToBottom = false; }, {passive: true});
++  s.addEventListener("touchmove", touch, {passive: true});
++  s.addEventListener("pointerdown", touch, {passive: true});
++  s.addEventListener("keydown", (e) => {
++    touch();
++    if (["PageUp", "ArrowUp", "Home"].includes(e.key) && e.target === s && s.scrollTop > 0) stickToBottom = false;
++  });
++  s.addEventListener("scroll", () => {
++    stickToBottom = followAfterScroll(s.scrollHeight - s.scrollTop - s.clientHeight, stickToBottom, Date.now() - lastReaderInput);
++  }, {passive: true});
++})();
+ 
+ $("chat").addEventListener("click", (e) => {
+   const cc = e.target.closest("[data-code-copy]");
+   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
++  // an svg/html block: flip between its code and its sandboxed preview. Closing the preview also turns scripts off.
++  const pv = e.target.closest("[data-preview-toggle]");
++  if (pv) {
++    const box = pv.closest(".st-code");
++    const on = box.dataset.preview === "true";
++    if (on) delete box.dataset.preview; else box.dataset.preview = "true";
++    pv.setAttribute("aria-pressed", String(!on));
++    pv.setAttribute("aria-label", on ? pv.dataset.previewLabel : tr("preview.showCode", "Show the code"));
++    const fr = box.querySelector("iframe");
++    if (on) fillPreview(fr, false, true);
++    else if (!fr.dataset.opened) fillPreview(fr, false);
++    return;
++  }
++  const rs = e.target.closest("[data-preview-scripts]");
++  if (rs) {
++    const fr = rs.closest(".st-code").querySelector("iframe");
++    const run = fr.dataset.scripts !== "1";
++    if (run && !confirm(tr("preview.confirm", "Run this code with scripts?\n\nIt runs in your browser, cut off from this chat and from the network, but it can still freeze the tab, and it is code the model wrote.\n\nOnly this block, and only until you close the preview."))) return;
++    fillPreview(fr, run);
++    return;
++  }
+   const mc = e.target.closest("[data-msg-copy]");
+   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
+@@ -776,7 +1080,12 @@ function assistantMessages(m) {
+     const at = Math.min(Math.max(pos, calls[0].at || 0), m.text.length);
+     out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
+               tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
+-    for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
++    for (const t of calls) {
++      const pictures = t.vision ? (t.images || []).filter((im) => safeToolMedia(im.url)) : [];
++      const content = pictures.length ? [{type: "text", text: t.result}, ...pictures.map((im) =>
++        ({type: "image_url", image_url: {url: "strata-tool-media:" + im.url.split("/").pop()}}))] : t.result;
++      out.push({role: "tool", tool_call_id: t.id, content});
++    }
+     pos = at;
+   }
+   const rest = m.text.slice(pos).trim();
+@@ -784,28 +1093,124 @@ function assistantMessages(m) {
+   return out;
+ }
+ 
++function busyHint() {
++  const mode = settings.whileBusy;
++  return mode === "queue" ? tr("composer.hintQueue", "Enter sends when the answer is done")
++       : mode === "interject" ? tr("composer.hintInterject", "Enter stops the answer here and sends now") : "";
++}
++// While an answer is written, Send is off ("wait", as always) or parks the message ("queue", "interject": Chat settings)
++const parksWhileBusy = () => settings.whileBusy === "queue" || settings.whileBusy === "interject";
+ function setBusy(on) {
+   $("stop-btn").hidden = !on;
+-  $("send-btn").disabled = on;
+-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
++  $("send-btn").disabled = (on && !parksWhileBusy()) || !!panel;
++  $("input").disabled = !!panel;
++  $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
++                                         : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
++  if (settings.chatEdit) syncActions();                 // the buttons follow the state: none under the answer being written
++  $("s-list").disabled = $("s-edit").disabled = !!busy || !!panel;      // they change the messages on the screen
++  renderUndoBar();
++  renderPending();
++}
++
++// A message sent while an answer is being written (#4004). "queue": it waits and goes when the answer is done. "interject": the
++// answer stops where it is (what is written stays, marked interrupted) and the message goes at once; if a tool is running, the
++// tool finishes first. Only one message waits. Off by default: with "wait" the page does nothing, as before.
++function park(p, own) {
++  if (!parksWhileBusy()) return;
++  if (pending) { toast("warn", tr("pending.one", "A message is already waiting"), tr("pending.oneText", "Take it back or wait until it is sent.")); return; }
++  pending = {...p, mode: settings.whileBusy};
++  if (own) { attachments = []; renderAttachments(); $("input").value = ""; autosize(); }
++  if (pending.mode === "interject") requestCut();
++  setBusy(!!busy);
++}
++function requestCut() {
++  if (!busy || busy.cut) return;
++  if ((busy.msg.tools || []).some((t) => t.state === "running")) { busy.cutAfterTool = true; return; }   // let the tool finish
++  busy.cut = true;
++  busy.controller.abort();
++}
++function renderPending() {
++  let el = $("pending");
++  if (!pending) { if (el) el.remove(); return; }
++  if (!el) {
++    el = node("div", "pending");
++    el.id = "pending";
++    el.setAttribute("role", "status");
++    el.innerHTML = "<span class=\"pending__text\"></span><span class=\"pending__actions\"><button type=\"button\" class=\"st-btn st-btn--secondary\" data-pending-now></button>" +
++      "<button type=\"button\" class=\"st-btn st-btn--secondary\" data-pending-back></button></span>";
++    el.querySelector("[data-pending-now]").onclick = pendingNow;
++    el.querySelector("[data-pending-back]").onclick = releasePending;
++    $("composer").before(el);
++  }
++  const quote = (pending.text || (pending.files[0] || pending.images[0] || {}).name || "").replace(/\s+/g, " ").slice(0, 70);
++  const text = !busy ? tr("pending.ready", "Not sent yet: “{text}”", {text: quote})
++    : pending.mode === "queue" ? tr("pending.queued", "Sends when this answer is done: “{text}”", {text: quote})
++    : busy.cutAfterTool ? tr("pending.afterTool", "Waiting for the tool to finish, then sending: “{text}”", {text: quote})
++    : tr("pending.cutting", "Stopping the answer, then sending: “{text}”", {text: quote});
++  el.querySelector(".pending__text").textContent = text;
++  const now = el.querySelector("[data-pending-now]");
++  now.textContent = busy ? tr("pending.sendNow", "Send now") : tr("pending.send", "Send");
++  now.hidden = !!busy && pending.mode === "interject";            // already on its way
++  el.querySelector("[data-pending-back]").textContent = tr("pending.takeBack", "Take back");
++}
++function pendingNow() {
++  if (!pending) return;
++  if (busy) { pending.mode = "interject"; requestCut(); setBusy(true); return; }
++  const p = pending;
++  pending = null;
++  setBusy(false);
++  send(p);
++}
++// the waiting message goes back into the message box (a chat switch or a new chat must not lose it)
++function releasePending() {
++  if (!pending) return;
++  const p = pending;
++  pending = null;
++  if (!$("input").value.trim()) $("input").value = p.text;
++  else $("input").value = `${p.text}\n\n${$("input").value}`;
++  attachments = [...p.images, ...p.files, ...attachments];
++  renderAttachments(); autosize();
++  setBusy(!!busy);
++}
++// after an answer: an interrupted one sends an interjection, a finished one sends a queued message
++function settlePending(cut, finished) {
++  if (!pending) return;
++  if ((pending.mode === "interject" && cut) || (pending.mode === "queue" && finished)) {
++    const p = pending;
++    pending = null;
++    setBusy(false);
++    send(p);
++  }
+ }
+ 
+-async function send() {
+-  const text = $("input").value.trim();
+-  if ((!text && !attachments.length) || busy) return;
+-  messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
+-                 files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
+-  attachments = [];
+-  renderAttachments();
+-  $("input").value = "";
+-  autosize();
++// the message box (or a parked message, `payload`) becomes a user turn and a reply is asked for
++async function send(payload) {
++  const own = !payload;
++  const p = payload || {text: $("input").value.trim(), images: attachments.filter((a) => a.kind !== "file"),
++                        files: attachments.filter((a) => a.kind === "file")};
++  if (!p.text && !p.images.length && !p.files.length) return;
++  if (panel) return;                                  // something is open above (an edit): finish it first
++  if (busy) { park(p, own); return; }
++  clearUndo();
++  messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
++  if (own) {
++    attachments = [];
++    renderAttachments();
++    $("input").value = "";
++    autosize();
++  }
++  return generateReply();
++}
++// an answer for the messages as they are: the last one is a user turn
++async function generateReply() {
+   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
+   messages.push(m);
+   renderChat();
+   const el = $("chat").lastElementChild;
+   const controller = new AbortController();
+-  busy = {controller, msg: m};
++  busy = {controller, msg: m, cut: false, cutAfterTool: false};
+   setBusy(true);
++  paintLive();
+ 
+   const body = {model: health.model, messages: apiMessages(), stream: true,
+                 reasoning_effort: settings.thinking};
+@@ -827,7 +1232,7 @@ async function send() {
+     if (!r.ok) {
+       let msg = `HTTP ${r.status}`;
+       try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
+-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
++      if (r.status === 401) msg = tr("toast.keyNeeded", "This server needs an API key: add it under About > Settings.");
+       throw new Error(msg);
+     }
+     const reader = r.body.getReader(), dec = new TextDecoder();
+@@ -845,9 +1250,13 @@ async function send() {
+         if (data === "[DONE]") continue;
+         let j;
+         try { j = JSON.parse(data); } catch (e) { continue; }
+-        if (j.error) throw new Error(j.error.message || "the engine reported an error");
++        if (j.error) throw new Error(j.error.message || tr("toast.engineError", "the engine reported an error"));
+         if (j.usage) usage = j.usage;
+-        if (j.strata_mcp) onTool(m, j.strata_mcp);
++        if (j.strata_mcp) {
++          onTool(m, j.strata_mcp);
++          // an interjection waited for a running tool: it has its result now, so the answer can stop
++          if (busy.cutAfterTool && !busy.cut && !(m.tools || []).some((t) => t.state === "running")) { busy.cut = true; controller.abort(); }
++        }
+         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
+         if (d.reasoning_content) {
+@@ -867,27 +1276,32 @@ async function send() {
+     }
+   } catch (e) {
+     if (e.name === "AbortError") m.stopped = true;
+-    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
++    else { m.error = e.message || String(e); toast("error", tr("toast.requestFailed", "The request failed"), m.error, 6000); }
+   }
++  const cut = busy.cut;                                      // an interjection ended it: kept as written, marked interrupted
++  if (cut) m.interrupted = true;
+   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
+   const n = usage ? usage.completion_tokens : null;
++  const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
+   if (n && firstAt) {
+     const secs = (performance.now() - firstAt) / 1000;
+-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
+-             (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
++    m.meta = tr("chat.tokens", "{n} tokens", {n: fmt(n)}) + (secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
++             (projectionLoaded() ? (settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
+   } else if (m.stopped) {
+-    m.meta = "Stopped";
++    m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
+   }
+   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
+   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
+-  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
+-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
++  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.toolCalls", {one: "{n} tool call", other: "{n} tool calls"}, {n: ran})}`;
++  if (m.limit) m.meta = `${m.meta || ""} · ${tr("chat.toolLimit", "stopped at the limit of {n} tool rounds (mcp.max_rounds)", {n: m.limit})}`;
+   busy = null;
+   setBusy(false);
++  paintLive();
+   if (frame) cancelAnimationFrame(frame);
+   updateAssistant(el, m, false);
+   saveChat();
+   scrollDown();
++  settlePending(cut, !m.stopped && !m.error);
+ }
+ 
+ $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
+@@ -898,17 +1312,25 @@ $("input").addEventListener("keydown", (e) => {
+ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
+ $("input").addEventListener("input", autosize);
+ 
++// one chat, as before: New chat clears it, with an Undo (with the saved-chats list on, its own New chat button does this job)
+ $("new-btn").onclick = () => {
+-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
++  if (busy) { stillWriting(); return; }
++  if (panel) { closePanel(); }
++  clearUndo();
++  releasePending();
+   if (!messages.length) return;
+   const backup = messages;
++  clearToolMedia();
+   messages = [];
+   saveChat();
+   renderChat();
+-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
++  toast("info", tr("chat.newToast", "New chat"), tr("chat.clearedToast", "The last one was cleared."), 6000, {label: tr("undo", "Undo"), run: () => {
++    if (busy || messages.length) return;                         // a new question since: the cleared chat is not put back over it
++    messages = backup; saveChat(); renderChat();
++  }});
+ };
+ $("export-btn").onclick = () => {
+-  if (!messages.length) { toast("info", "Nothing to save yet"); return; }
++  if (!messages.length) { toast("info", tr("export.nothing", "Nothing to save yet")); return; }
+   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
+     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
+     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
+@@ -931,19 +1353,20 @@ function isTextFile(f) {
+ function addFiles(files) {
+   for (const f of files) {
+     if (f.type.startsWith("image/")) {
+-      if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
+-      if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
++      if (!health.images) { toast("warn", tr("file.picturesOff", "Pictures are off"), tr("file.picturesOffText", "This model was set up for text only.")); continue; }
++      if (f.size > 20e6) { toast("warn", tr("file.pictureBig", "Picture too large"), tr("file.pictureBigText", "{name} is over 20 MB.", {name: f.name})); continue; }
+       const r = new FileReader();
+-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
++      r.onload = () => { attachments.push({kind: "image", name: f.name || tr("file.pasted", "pasted image"), url: r.result}); renderAttachments(); };
+       r.readAsDataURL(f);
+       continue;
+     }
+-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
+-    if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
++    if (!isTextFile(f)) { toast("warn", tr("file.notText", "Not a text file"), health.images ? tr("file.notTextPictures", "{name}: attach text files (code, notes, logs, data) or pictures.", {name: f.name})
++                                                              : tr("file.notTextOnly", "{name}: attach text files (code, notes, logs, data).", {name: f.name})); continue; }
++    if (f.size > MAX_TEXT_FILE) { toast("warn", tr("file.big", "File too large"), tr("file.bigText", "{name} is over 512 KB.", {name: f.name})); continue; }
+     const r = new FileReader();
+     r.onload = () => {
+       const text = String(r.result);
+-      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
++      if (text.includes("\u0000")) { toast("warn", tr("file.notText", "Not a text file"), tr("file.binaryText", "{name} looks like a binary file.", {name: f.name})); return; }
+       attachments.push({kind: "file", name: f.name, text});
+       renderAttachments();
+     };
+@@ -970,7 +1393,7 @@ function renderAttachments() {
+     c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
+     c.append(a.name);
+     const x = document.createElement("button");
+-    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
++    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", tr("file.remove", "Remove"));
+     x.innerHTML = icon("trash");
+     x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
+     c.appendChild(x);
+@@ -1002,22 +1425,28 @@ $("input").addEventListener("paste", (e) => {
+   if (files.length) { e.preventDefault(); addFiles(files); }
+ });
+ 
+-// ------------------------------------------------------------------ the sampling drawer
++// ------------------------------------------------------------------ the chat settings drawer
+ function openDrawer(open) {
+   $("drawer").dataset.open = String(open);
+   $("drawer").setAttribute("aria-hidden", String(!open));
+   $("scrim").hidden = !open;
+   if (open) { loadDrawer(); loadShared(); loadMcp(); }
+ }
++const checked = (id) => $(id).getAttribute("aria-checked") === "true";
++const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
+ function loadDrawer(s = settings) {
+   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
+   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
+   $("s-max").value = s.max; $("s-seed").value = s.seed;
++  $("s-math").setAttribute("aria-checked", String(!!s.math));
+   $("s-show").setAttribute("aria-checked", String(!!s.show));
+   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
+   $("esp-row").hidden = !projectionLoaded();
+   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
+   $("s-share").setAttribute("aria-checked", String(sharedOn));
++  $("s-list").setAttribute("aria-checked", String(!!s.chatList));
++  $("s-edit").setAttribute("aria-checked", String(!!s.chatEdit));
++  for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
+   outputs();
+ }
+ // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
+@@ -1055,55 +1484,99 @@ function projectionLoaded() {
+ }
+ function outputs() {
+   const t = +$("s-temp").value;
+-  $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
++  $("o-temp").textContent = t === 0 ? tr("drawer.greedy", "0 · greedy") : t.toFixed(2);
+   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
+   $("o-topk").textContent = $("s-topk").value;
+-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+-  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
++  const sel = segValue("s-thinking");
++  $("o-thinking").textContent = sel ? {none: tr("drawer.thinkNone", "answers right away"), low: tr("drawer.thinkLow", "short"),
++    medium: tr("drawer.thinkMedium", "medium"), high: tr("drawer.thinkHigh", "thorough (default)")}[sel] : "";
++  const busyMode = segValue("s-busy");
++  $("o-busy").textContent = {wait: tr("drawer.busyWaitNote", "Send is off until the answer is done, as before."),
++    queue: tr("drawer.busyQueueNote", "Your message waits and goes as soon as the answer is done."),
++    interject: tr("drawer.busyInterjectNote", "The answer stops where it is (what is written stays) and your message goes at once. A tool that is running finishes first.")}[busyMode] || "";
+   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
+ }
+ for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
++for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
+ for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+-$("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
+-$("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
+-$("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
+-$("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
++for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-edit"]) {
++  $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
++}
+ $("s-reset").onclick = () => loadDrawer(DEFAULTS);
+ $("s-apply").onclick = async () => {
+-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+-  settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
++  const prev = settings;
++  // the list and the edit controls change the messages on the screen: not while an answer is written or something is open
++  const locked = !!busy || !!panel;
++  settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
+               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+-              show: $("s-show").getAttribute("aria-checked") === "true",
+-              esp: $("s-esp").getAttribute("aria-checked") === "true",
+-              mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
++              math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
++              chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
++              whileBusy: segValue("s-busy") || "wait"};
+   store.set("sampling", settings);
+-  const share = $("s-share").getAttribute("aria-checked") === "true";
++  StrataMath.reset();                                  // math on or off: every answer is drawn again
++  if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
++  if (settings.chatEdit !== !!prev.chatEdit) { clearUndo(); syncActions(); }
++  if (settings.whileBusy === "wait" && pending) releasePending();    // "wait" parks nothing: a waiting message goes back to the box
++  setBusy(!!busy);
++  for (const el of $("chat").querySelectorAll(".st-msg--assistant")) {
++    const m = messages[+el.dataset.i];
++    updateAssistant(el, m, !!busy && busy.msg === m);  // the element send() holds stays the same while an answer streams
++  }
++  const share = checked("s-share");
+   openDrawer(false);
+   if (share || sharedOn) {
+     try {
+       await saveShared(share, settings);
+-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
+-                                               : "Other apps use their own settings again.");
++      toast("success", tr("drawer.saved", "Chat settings saved"), share ? tr("drawer.savedShared", "Other apps (omp, API clients) use these settings from their next request.")
++                                                                         : tr("drawer.savedOwn", "Other apps use their own settings again."));
+     } catch (e) {
+-      toast("error", "Saved here, but not for other apps", e.message, 6000);
++      toast("error", tr("drawer.savedHere", "Saved here, but not for other apps"), e.message, 6000);
+     }
+     return;
+   }
+-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
++  toast("success", tr("drawer.saved", "Chat settings saved"), settings.temperature === 0 ? tr("drawer.savedGreedy", "Greedy: the same question gives the same answer.") : "");
+ };
+ $("sampling-btn").onclick = () => openDrawer(true);
+ $("drawer-close").onclick = () => openDrawer(false);
+ $("scrim").onclick = () => openDrawer(false);
+ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
+ 
++// ------------------------------------------------------------------ language (serve/web/i18n.js)
++// The user's own choice, kept in this browser: English until they pick another. /?lang=de shows one for this visit only.
++const urlLang = new URLSearchParams(location.search).get("lang");
++$("lang").innerHTML = StrataI18n.LANGUAGES.map(([code, name]) => `<option value="${esc(code)}">${esc(name)}</option>`).join("");
++function showLanguage() {
++  $("lang").value = StrataI18n.lang;
++  renderEmptyChat();
++  setSidebar(sidebarOpen, false);
++  outputs();
++  renderChat();
++  setBusy(!!busy);
++  if (lastMetrics) render(lastMetrics);
++}
++$("lang").onchange = async () => {
++  store.set("lang", $("lang").value);
++  await StrataI18n.setLanguage($("lang").value);
++  showLanguage();
++};
++
+ // ------------------------------------------------------------------ start
+-setBusy(false);
+-renderChat();
+-const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
+-if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
+-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+-showTab(location.hash.slice(1) || "chat");
+-poll();
++async function start() {
++  await StrataI18n.setLanguage(urlLang || store.get("lang", "en"));
++  $("lang").value = StrataI18n.lang;
++  renderEmptyChat();
++  initChats();
++  if (settings.chatList) await setChatList(true, false);       // the saved-chats list is read before the first draw
++  setBusy(false);
++  renderChat();
++  const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
++  if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
++  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
++  showTab(location.hash.slice(1) || "chat");
++  poll();
++  requestAnimationFrame(fitHeader);
++}
++start();
+ 
+ // ------------------------------------------------------------------ images (POST /v1/images/generations)
+ $("img-form").onsubmit = async (ev) => {
+@@ -1112,7 +1585,9 @@ $("img-form").onsubmit = async (ev) => {
+   if (!prompt) return;
+   const body = {prompt, size: $("img-size").value, response_format: "b64_json"};
+   if ($("img-seed").value !== "") body.seed = Number($("img-seed").value);
++  imageBusy = true;
+   $("img-go").disabled = true;
++  paintLive();
+   const t0 = performance.now();
+   $("img-hint").textContent = "Generating\u2026 (a minute or more on a small GPU)";
+   try {
+@@ -1134,6 +1609,8 @@ $("img-form").onsubmit = async (ev) => {
+     $("img-hint").textContent = "";
+     toast("error", "No image", String(e.message || e), 8000);
+   } finally {
++    imageBusy = false;
+     $("img-go").disabled = false;
++    paintLive();
+   }
+ };
+diff --git a/serve/web/index.html b/serve/web/index.html
+index 0c7847f2..4de2fc44 100644
+--- a/serve/web/index.html
++++ b/serve/web/index.html
+@@ -20,56 +20,75 @@
+ <body>
+ <header class="st-header">
+   <span class="st-header__brand">Strata</span>
+-  <nav class="st-tabs" role="tablist" aria-label="Views">
++  <nav class="st-tabs" role="tablist" aria-label="Views" data-i18n-label="tab.views">
+     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
+-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
++      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg><span data-i18n="tab.chat">Chat</span></button>
+     <button class="st-tab" role="tab" id="tab-btn-images" aria-controls="view-images" aria-selected="false" data-tab="images" hidden>
+-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg>Images</button>
++      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg><span data-i18n="tab.images">Images</span></button>
+     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
+-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
++      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg><span data-i18n="tab.monitor">Monitor</span></button>
+     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
+-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
++      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg><span data-i18n="tab.about">About</span></button>
+   </nav>
+   <span class="st-header__spacer"></span>
+   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
+-    <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
+-  <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
++    <span class="st-pill__dot"></span><span id="pill-text" data-i18n="pill.connecting">Connecting&hellip;</span></span>
++  <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" disabled>&hellip;</button>
++  <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark" data-i18n-title="theme.title" data-i18n-label="theme.label">
+     <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
+ </header>
+ 
+ <main>
+   <!-- ============================ Chat ============================ -->
+   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+-    <div class="chat-scroll" id="chat-scroll">
+-      <div class="chat" id="chat">
+-        <div class="chat-empty" id="chat-empty">
+-          <div class="chat-empty__title">Ask anything</div>
+-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+-        </div>
++    <!-- the chats kept in this browser (Chat settings > Chats): the open one is the chat on the right -->
++    <aside class="chat-sidebar" id="sidebar" data-open="true" aria-label="Chats" data-i18n-label="sidebar.title" hidden>
++      <div class="sidebar-head">
++        <button class="st-btn st-btn--icon" id="sidebar-toggle" type="button" title="Collapse the chat list" aria-label="Collapse the chat list" aria-expanded="true">
++          <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
++        <span class="card-title sidebar-title" data-i18n="sidebar.title">Chats</span>
++        <button class="st-btn st-btn--icon" id="sidebar-new" type="button" title="New chat" aria-label="New chat" data-i18n-title="chat.new" data-i18n-label="chat.new">
++          <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+       </div>
+-    </div>
+-    <div class="composer-wrap">
+-      <form class="st-composer" id="composer">
+-        <div class="attachments" id="attachments" hidden></div>
+-        <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
+-        <div class="st-composer__bar">
+-          <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
+-            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
+-          <input type="file" id="file" multiple hidden>
+-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+-            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+-          <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
+-            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+-          <span class="spacer"></span>
+-          <span class="composer-hint" id="composer-hint"></span>
+-          <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
+-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
+-          <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
+-            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
++      <input class="st-input sidebar-search" id="sidebar-search" type="search" placeholder="Search chats"
++             autocomplete="off" aria-label="Search chats" data-i18n-placeholder="sidebar.search" data-i18n-label="sidebar.search">
++      <div class="sidebar-list" id="sidebar-list"></div>
++      <p class="muted small sidebar-foot" id="sidebar-foot"></p>
++    </aside>
++    <div class="chat-main">
++      <div class="chat-parent" id="chat-parent" hidden></div>
++      <div class="chat-scroll" id="chat-scroll">
++        <div class="chat" id="chat">
++          <div class="chat-empty" id="chat-empty">
++            <div class="chat-empty__title" data-i18n="chat.empty">Ask anything</div>
++            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
++          </div>
+         </div>
+-      </form>
++      </div>
++      <div class="composer-wrap">
++        <form class="st-composer" id="composer">
++          <div class="attachments" id="attachments" hidden></div>
++          <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message" data-i18n-placeholder="composer.placeholder" data-i18n-label="composer.message"></textarea>
++          <div class="st-composer__bar">
++            <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file" data-i18n-label="composer.attachLabel">
++              <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
++            <input type="file" id="file" multiple hidden>
++            <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat" data-i18n-title="chat.new" data-i18n-label="chat.new">
++              <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
++            <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat" data-i18n-title="composer.save" data-i18n-label="composer.saveLabel">
++              <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
++            <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
++              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
++              <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
++            <span class="spacer"></span>
++            <span class="composer-hint" id="composer-hint"></span>
++            <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
++              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg><span data-i18n="composer.stop">Stop</span></button>
++            <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send" data-i18n-label="composer.send">
++              <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
++          </div>
++        </form>
++      </div>
+     </div>
+   </section>
+ 
+@@ -102,6 +121,7 @@
+           <span class="card-title">Model state</span>
+           <span class="badges" id="state-badges">
+             <span class="st-badge" data-s="idle">Idle</span>
++            <span class="st-badge" data-s="unloaded">Unloaded</span>
+             <span class="st-badge st-badge--reading" data-s="reading">Reading</span>
+             <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
+             <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
+@@ -192,6 +212,11 @@
+           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
+           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+         </div>
++        <div class="st-field">
++          <label class="st-label" for="lang"><span data-i18n="settings.language">Language</span></label>
++          <select class="st-input" id="lang"></select>
++          <span class="muted small" data-i18n="settings.languageNote">Chat, its settings and the buttons above are translated. The Monitor, Images and About views are still in English.</span>
++        </div>
+         <div class="toggle-row"><span>Dark theme</span>
+           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
+         <p class="muted small">Chats, settings and the key are kept in this browser only.
+@@ -209,23 +234,23 @@
+   </section>
+ </main>
+ 
+-<!-- ============================ Sampling drawer ============================ -->
+-<aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
+-  <div class="st-drawer__head"><span class="card-title">Sampling</span>
+-    <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close">
++<!-- ============================ Chat settings drawer ============================ -->
++<aside class="st-drawer" id="drawer" data-open="false" aria-label="Chat settings" data-i18n-label="drawer.title" aria-hidden="true">
++  <div class="st-drawer__head"><span class="card-title" data-i18n="drawer.title">Chat settings</span>
++    <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close" data-i18n-label="close">
+       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
+   <div class="st-drawer__body">
+     <div class="st-field">
+-      <label class="st-label" for="s-thinking">Thinking <output id="o-thinking"></output></label>
+-      <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking">
+-        <button type="button" role="radio" data-v="none">Off</button><button type="button" role="radio" data-v="low">Low</button>
+-        <button type="button" role="radio" data-v="medium">Medium</button><button type="button" role="radio" data-v="high">High</button>
++      <label class="st-label" for="s-thinking"><span data-i18n="drawer.thinking">Thinking</span> <output id="o-thinking"></output></label>
++      <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking" data-i18n-label="drawer.thinking">
++        <button type="button" role="radio" data-v="none" data-i18n="drawer.off">Off</button><button type="button" role="radio" data-v="low" data-i18n="drawer.low">Low</button>
++        <button type="button" role="radio" data-v="medium" data-i18n="drawer.medium">Medium</button><button type="button" role="radio" data-v="high" data-i18n="drawer.high">High</button>
+       </div>
+     </div>
+     <div class="st-field">
+-      <label class="st-label" for="s-temp">Temperature <output id="o-temp"></output></label>
++      <label class="st-label" for="s-temp"><span data-i18n="drawer.temperature">Temperature</span> <output id="o-temp"></output></label>
+       <input class="st-slider" type="range" id="s-temp" min="0" max="1.5" step="0.05">
+-      <span class="muted small">0 = always the most likely word (exact, repeatable)</span>
++      <span class="muted small" data-i18n="drawer.temperatureNote">0 = always the most likely word (exact, repeatable)</span>
+     </div>
+     <div class="st-field">
+       <label class="st-label" for="s-topp">Top-p <output id="o-topp"></output></label>
+@@ -236,32 +261,61 @@
+       <input class="st-slider" type="range" id="s-topk" min="1" max="64" step="1">
+     </div>
+     <div class="st-field">
+-      <label class="st-label" for="s-max">Max tokens <output>empty = until done</output></label>
+-      <input class="st-input" id="s-max" type="number" min="1" step="1" placeholder="Until done">
++      <label class="st-label" for="s-max"><span data-i18n="drawer.maxTokens">Max tokens</span> <output data-i18n="drawer.maxTokensNote">empty = until done</output></label>
++      <input class="st-input" id="s-max" type="number" min="1" step="1" placeholder="Until done" data-i18n-placeholder="drawer.untilDone">
+     </div>
+     <div class="st-field">
+-      <label class="st-label" for="s-seed">Seed <output>empty = random</output></label>
+-      <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random">
++      <label class="st-label" for="s-seed"><span data-i18n="drawer.seed">Seed</span> <output data-i18n="drawer.seedNote">empty = random</output></label>
++      <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random" data-i18n-placeholder="drawer.random">
+     </div>
+-    <div class="toggle-row"><span>Show thinking<br><span class="muted small">expanded while it streams</span></span>
+-      <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking"></button></div>
+-    <div class="toggle-row" id="mcp-row" hidden><span>Use tools from MCP servers<br><span class="muted small"
++    <div class="toggle-row"><span><span data-i18n="drawer.showThinking">Show thinking</span><br><span class="muted small" data-i18n="drawer.showThinkingNote">expanded while it streams</span></span>
++      <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking" data-i18n-label="drawer.showThinking"></button></div>
++    <div class="toggle-row"><span><span data-i18n="drawer.math">Render math</span><br><span class="muted small"
++      data-i18n="drawer.mathNote">draw equations in answers as formulas (works offline)</span></span>
++      <button class="st-toggle" id="s-math" role="switch" aria-checked="false" aria-label="Render math" data-i18n-label="drawer.math"></button></div>
++    <div class="toggle-row" id="mcp-row" hidden><span><span data-i18n="drawer.mcp">Use tools from MCP servers</span><br><span class="muted small"
+       id="mcp-row-sub">the model may call them while it answers</span></span>
+-      <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers"></button></div>
++      <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers" data-i18n-label="drawer.mcp"></button></div>
+     <div class="toggle-row" id="esp-row" hidden><span>Experimental speed projection<br><span class="muted small">the
+       engine's control vector; off = the stock model. Switching reads the chat again once</span></span>
+       <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection"></button></div>
+-    <div class="toggle-row"><span>Use for other apps too<br><span class="muted small">omp and other API clients get
+-      these settings for anything they don't set themselves</span></span>
+-      <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too"></button></div>
++    <div class="toggle-row"><span><span data-i18n="drawer.share">Use for other apps too</span><br><span class="muted small" data-i18n="drawer.shareNote">omp and other API clients get
++      these settings for anything they do not set themselves</span></span>
++      <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too" data-i18n-label="drawer.share"></button></div>
++
++    <div class="drawer-group" role="group" aria-labelledby="g-chats">
++      <h3 class="drawer-group__title" id="g-chats" data-i18n="drawer.chats">Chats</h3>
++      <div class="toggle-row"><span><span data-i18n="drawer.list">Saved chats list</span><br><span class="muted small"
++        data-i18n="drawer.listNote">keeps every chat in a list on the left, in this browser only. Off: one chat, as before</span></span>
++        <button class="st-toggle" id="s-list" role="switch" aria-checked="false" aria-label="Saved chats list" data-i18n-label="drawer.list"></button></div>
++      <div class="toggle-row"><span><span data-i18n="drawer.edit">Edit and rewind messages</span><br><span class="muted small"
++        data-i18n="drawer.editNote">edit an answer, ask for a new one, or go back to an earlier message (with an Undo)</span></span>
++        <button class="st-toggle" id="s-edit" role="switch" aria-checked="false" aria-label="Edit and rewind messages" data-i18n-label="drawer.edit"></button></div>
++      <div class="st-field">
++        <label class="st-label" for="s-busy"><span data-i18n="drawer.busy">When you send while it is answering</span></label>
++        <div class="seg seg--3" id="s-busy" role="radiogroup" aria-label="When you send while it is answering" data-i18n-label="drawer.busy">
++          <button type="button" role="radio" data-v="wait" data-i18n="drawer.busyWait">Wait</button><button type="button" role="radio" data-v="queue" data-i18n="drawer.busyQueue">Send after</button>
++          <button type="button" role="radio" data-v="interject" data-i18n="drawer.busyInterject">Interrupt</button>
++        </div>
++        <span class="muted small" id="o-busy"></span>
++      </div>
++    </div>
++
+     <div class="drawer-actions">
+-      <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
+-      <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>
++      <button class="st-btn st-btn--secondary" id="s-reset" type="button" data-i18n="drawer.reset">Reset</button>
++      <button class="st-btn st-btn--primary" id="s-apply" type="button" data-i18n="drawer.apply">Apply</button>
+     </div>
+   </div>
+ </aside>
+ <div class="scrim" id="scrim" hidden></div>
+ <div class="st-toasts" id="toasts" aria-live="polite"></div>
++<script src="web/i18n.js"></script>
++<script src="web/preview.js"></script>
++<script src="web/math.js"></script>
++<script src="web/math-adapter.js"></script>
++<script src="web/history.js"></script>
++<script src="web/chatstore.js"></script>
++<script src="web/chats-ui.js"></script>
+ <script src="web/app.js"></script>
+ </body>
+ </html>
