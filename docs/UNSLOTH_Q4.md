@@ -200,6 +200,7 @@ same top 20 per position.
 | `STRATA_MMQ_KQ=1` | Multiplies the Q4_K / Q5_K / Q5_1 experts of a prompt with llama.cpp's MMQ kernels instead of dequantizing them to FP16. It rounds differently from the FP16 path, so it is opt-in for this file. On CUDA the kernels are a library next to the engine (`libstrata_kq.so` / `strata_kq.dll`), opened only then, so they take no VRAM from other models ([QUANTS.md](QUANTS.md)). |
 | `STRATA_KQ256=1` | Multi-token AVX2 kernels for the Q4_K / Q5_1 / Q8_0 experts. Bit-exact with ggml's, but measured no faster, so off. |
 | `STRATA_PARTIAL_PIN=1` | Registers the hottest part of the RAM budget (up to `STRATA_PARTIAL_PIN_GIB`, default 24) with the GPU driver, so the GPU computes a share of the misses over PCIe (`--pcie-frac`). Measured no faster, and it changes the numerics of those experts, so off. |
+| `STRATA_PARTIAL_PIN_SLICED=1` | With `STRATA_PARTIAL_PIN=1`, registers that prefix in slices of `STRATA_PARTIAL_PIN_SLICE_MIB` (default 1024), each cut at an expert boundary, instead of one block. Windows (WDDM) refuses one registration past a limit (~20 GiB on a 64 GB PC with two NVIDIA cards) but takes much more in slices, as the expert arena does. Set `STRATA_PARTIAL_PIN_GIB` to the budget to register all of it. |
 | `STRATA_FETCH_THREADS=N` | Threads that read the experts from the GGUF while it answers (default 8). The prompt path has its own: `STRATA_STAGER_THREADS` (default 32 here) and `STRATA_STAGER_RING` (128). |
 | `STRATA_RESIDENT_PIN=0` | Ordinary pageable memory for the RAM budget (see above). |
 
