@@ -616,6 +616,7 @@ def running_launches() -> list[dict]:
             prof, _rev = profiles.load(p["id"])
             ov = prof.get("overrides") or {}
         except Exception:                                      # noqa: BLE001
+            prof = {}
             ov = {}
         port = ov.get("port", S.DEFAULT_PORT)
         out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
