@@ -24,6 +24,7 @@
 #include "ds4_gguf_cpu.hpp"
 #include "ds4_kernels.cuh"
 #include "ds4_os.hpp"
+#include "ds4_path_policy.hpp"
 #include "ds4_pool.hpp"
 #include "ds4_store.hpp"
 #include "ds4_vision.cuh"
@@ -1010,10 +1011,8 @@ struct Model::Impl {
     struct PathModel {
         bool on = false;
         double dma = 0, copy = 0, disk = 0, cpu = 0, cpu_cold = 0;   // bytes/s (disk, cpu_cold 0: not measured)
-        // the flow's taken / predicted so far [0] by the prompt's size class (2-31, 32-127, 128-511, 512 tokens and
-        // more: a short one's fixed costs weigh more), and how many prompts set it ([1] unused)
-        double k[2][4] = {{1, 1, 1, 1}, {1, 1, 1, 1}};
-        int64_t kn[2][4] = {};
+        // the flow's taken / predicted so far by prompt-size class (a short one's fixed costs weigh more)
+        PathFlowCalibration flow;
         double win_s = 0;                                              // windows: seconds a window took, so far
         int64_t win_n = 0;
         int last_cls = 0, last_nw = 0;                                 // the last pick's size class, its windows
@@ -1147,7 +1146,7 @@ struct Model::Impl {
     // a window of one through moe_gate_up / moe_down (DS4_MOE_TOKEN=0: win_experts, whose down rows run
     // before the wait for the CPU lane - the same bits, no faster)
     bool moe_token_path = std::getenv("DS4_MOE_TOKEN") == nullptr || std::atoi(std::getenv("DS4_MOE_TOKEN")) != 0;
-    int async_max_t = std::getenv("DS4_ASYNC_T") ? std::atoi(std::getenv("DS4_ASYNC_T")) : 8;   // windows up to this
+    int async_max_t = std::getenv("DS4_ASYNC_T") ? std::atoi(std::getenv("DS4_ASYNC_T")) : 8;   // windows up to this (DS4_ASYNC_T=16 is Project Maya #608: windows of 9-16 rows on the async path too; not made the default - the logits test on p620 (phaseA-tests/maya-port/A2) still showed window-size dependence)
     // lookahead: while layer L runs, the device guesses the next layer's picks (its gate on L's FFN input, the same
     // choice) and publishes them with L's routing; the CPU lane asks for the guessed experts it will read from the files
     // at once (a thread of its own, os::prefetch), so the SSD reads them while L computes instead of on the next
@@ -2002,6 +2001,37 @@ struct Model::Impl {
 #endif
                 break;
             }
+        // a layer the CPU lane cannot compute used to answer zeros for every pick it got there (Project Maya #620).  One
+        // that has no GPU kernel can only be computed there: refuse it.  Any other may never reach the lane (all its
+        // experts in VRAM): a warning, and the lane stops the engine rather than answer zeros (cpu_experts_*)
+        std::string why;
+        if (!lane_fmt_ok(l, why)) {
+            const std::string msg = P + ": the CPU lane cannot compute experts of types " + gg::type_name(l.lay.K[0]) + " / " +
+                                    gg::type_name(l.lay.K[2]) + ": " + why;
+            if (l.cpu_only) {
+                err = msg;
+                return false;
+            }
+            static bool said_lane = false;
+            if (!said_lane) {
+                said_lane = true;
+                std::fprintf(stderr, "ds4: %s (fine while its experts stay in VRAM; the engine stops if one is routed to the CPU lane)\n",
+                             msg.c_str());
+            }
+        }
+        return true;
+    }
+    // cpu_experts_iq / cpu_experts_mx take this layer's experts (the checks they make before computing); `why` if not
+    bool lane_fmt_ok(const Layer& l, std::string& why) const {
+        const int E = g.dim, FF = g.ff;
+        if (gg::mx_experts(l.lay)) return true;   // (cpu_experts_mx's own kernels)
+        gg::IqCpu fm;
+        if (!gg::iq_cpu_fmt(gg::expert_type(l.lay, 0), gg::expert_type(l.lay, 2), E, FF, fm, why)) return false;
+        const size_t row = (size_t) E * 4;
+        if (fm.act_bytes > row || fm.h_bytes > row) {
+            why = "activation rows too large";
+            return false;
+        }
         return true;
     }
     const uint8_t* mx_mat(const Layer& l, int e, int r) const {   // expert e's matrix r: its RAM-tier slot, else the file's
@@ -6703,10 +6733,12 @@ struct Model::Impl {
         std::string ferr;
         if (!gg::iq_cpu_fmt(gg::expert_type(l.lay, 0), gg::expert_type(l.lay, 2), E, FF, fm, ferr) ||
             fm.act_bytes > (size_t) E * 4 || fm.h_bytes > (size_t) E * 4) {
-            static std::atomic<bool> said{false};
-            if (!said.exchange(true)) std::fprintf(stderr, "ds4: layer %d's CPU-lane experts: %s\n", l.il, ferr.c_str());
-            for (const Ent& en : ents) std::memset(c_yd.data() + (size_t) en.slot0 * E, 0, (size_t) en.n * E * 4);
-            return;
+            // (a layer that cannot be computed here and has no GPU kernel is refused at load: if one gets here anyway,
+            // stop rather than answer zeros; Project Maya #620)
+            std::fprintf(stderr, "ds4: layer %d's CPU-lane experts: %s (cannot compute them; aborting)\n", l.il,
+                         ferr.empty() ? "activation rows too large" : ferr.c_str());
+            std::fflush(stderr);
+            std::abort();
         }
         static double t_pre = 0, t_q1 = 0, t_r1 = 0, t_q2 = 0, t_r2 = 0; static long n_calls = 0; static bool reg = false;
         if (ds4_dbg("DS4_CPU_LOG") && !reg) { reg = true; std::atexit([] { std::fprintf(stderr, "cpu_experts_iq phases (ms over %ld calls): prefetch %.1f, quant1 %.1f, gate_up %.1f, quant2 %.1f, down %.1f\n", n_calls, t_pre, t_q1, t_r1, t_q2, t_r2); }); }
@@ -7991,6 +8023,26 @@ struct Model::Impl {
         return true;
     }
 
+    // the token sample_tokens left in d.tok; -1 on a CUDA error, printed here (the callers reject a -1; Project Maya #619)
+    int tok_back(Dev& d) {
+#if defined(STRATA_METAL)
+        ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
+#endif
+        int t = -1;
+        // (DS4_TEST_SAMPLE_FAIL=N: the Nth sample of the run fails as a CUDA error would - the test of #619's handling)
+        static const long fail_at = std::getenv("DS4_TEST_SAMPLE_FAIL") ? std::atol(std::getenv("DS4_TEST_SAMPLE_FAIL")) : 0;
+        static long calls = 0;
+        if (fail_at > 0 && ++calls == fail_at) {
+            std::fprintf(stderr, "ds4 sample: injected failure (DS4_TEST_SAMPLE_FAIL=%ld)\n", fail_at);
+            return -1;
+        }
+        cudaError_t e = cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
+        if (e == cudaSuccess) e = cudaStreamSynchronize(d.st);
+        if (e == cudaSuccess) return t;
+        std::fprintf(stderr, "ds4 sample: %s\n", cudaGetErrorString(e));
+        return -1;
+    }
+
     int sample_row(int row, float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter,
                    const float* bias) {
         Dev& d = devs[(size_t) head_dev];
@@ -8005,13 +8057,7 @@ struct Model::Impl {
         sp.counter = counter;
         sp.logit_bias = bias;
         strata::dsv41k::sample_tokens(d.logits + (size_t) row * g.vocab, 1, g.vocab, nullptr, 0, sp, d.tok, d.st);
-        int t = -1;
-#if defined(STRATA_METAL)
-        ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
-#endif
-        cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
-        cudaStreamSynchronize(d.st);
-        return t;
+        return tok_back(d);
     }
 
     // [y, drafts] at positions pos ..: the trunk's verdict, its next token, and the state back to what it kept.
@@ -9226,7 +9272,7 @@ struct Model::Impl {
         // experts' bytes are in RAM: the flow wins on every PC whose experts come from an SSD, where a wrong pick would
         // cost the most; windows win where they are all in RAM)
         const double res_share = f_res / std::max(1.0, f_res + f_cold);
-        const bool flow = !(pw < pf && (res_share >= kPickRes || 2.0 * pw <= pf));
+        const bool flow = should_use_flow_path(pf, pw, res_share, kPickRes);
         pm.last = flow ? 1 : 0;
         pm.last_cls = cls;
         pm.last_nw = n_win;
@@ -9239,16 +9285,11 @@ struct Model::Impl {
                          100.0 * res_share, (f_res + f_cold) / 1e9);
         return flow;
     }
-    // a prompt's size class for pm.k: 2-31, 32-127, 128-511, 512 tokens and more
-    static int pm_cls(int n) { return n < 32 ? 0 : n < 128 ? 1 : n < 512 ? 2 : 3; }
-    // the flow's time factor for size class c: its own, else its nearest class's, else 1 (never the windows': theirs
-    // is mostly the fixed costs a window pays again and again)
-    double pm_k(int c) const {
-        for (int dc = 0; dc < 4; ++dc)
-            for (int cc : {c - dc, c + dc})
-                if (cc >= 0 && cc < 4 && pm.kn[0][cc] > 0) return pm.k[0][cc];
-        return 1.0;
-    }
+    // a prompt's size class for pm.flow: 2-31, 32-127, 128-511, 512 tokens and more
+    static int pm_cls(int n) { return path_size_class(n); }
+    // The flow factor is learned only within the prompt's own size class; an unmeasured class stays at one (Project Maya
+    // #612: a slow tiny warm-up no longer slows a larger prompt's estimate).
+    double pm_k(int c) const { return pm.flow.factor_for_size_class(c); }
     // n tokens through windows of 16, the last one's logits_rows rows of logits
     bool feed_windows(const int* tokens, int n, int logits_rows, std::string& err) {
         logits_all = false;
@@ -9267,11 +9308,7 @@ struct Model::Impl {
             pm.win_s = pm.win_n == 0 ? w : 0.7 * pm.win_s + 0.3 * w;
             ++pm.win_n;
         } else {
-            const double ratio = std::min(8.0, std::max(0.25, ms / 1000.0 / pm.last_pred));
-            double& k = pm.k[0][pm.last_cls];
-            int64_t& n = pm.kn[0][pm.last_cls];
-            k = n == 0 ? ratio : 0.7 * k + 0.3 * ratio;
-            ++n;
+            pm.flow.observe_size_class(pm.last_cls, ms / 1000.0 / pm.last_pred);
         }
         pm.last = -1;
     }
@@ -10756,13 +10793,7 @@ struct Model::Impl {
         sp.counter = counter;
         strata::dsv41k::sample_tokens(d.logits + (size_t) std::max(0, n_logits - 1) * g.vocab, 1, g.vocab, nullptr, 0,
                                        sp, d.tok, d.st);
-        int t = -1;
-#if defined(STRATA_METAL)
-        ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
-#endif
-        cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
-        cudaStreamSynchronize(d.st);
-        return t;
+        return tok_back(d);
     }
 
     bool logits(std::vector<float>& out) {
@@ -10776,7 +10807,9 @@ struct Model::Impl {
 #if defined(STRATA_METAL)
         ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
 #endif
-        return cudaMemcpy(out.data(), d.logits, out.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess;
+        // (on d.st: the legacy stream is not ordered after the non-blocking d.st's head; Project Maya #619)
+        return cudaMemcpyAsync(out.data(), d.logits, out.size() * 4, cudaMemcpyDeviceToHost, d.st) == cudaSuccess &&
+               cudaStreamSynchronize(d.st) == cudaSuccess;
     }
 
     void save_profile() const {

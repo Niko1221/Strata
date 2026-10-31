@@ -415,6 +415,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     std::string line;
     unsigned long long counter = 0;
     std::vector<Pic> held;   // the pictures the state holds (start, hash, span)
+    // STRATA_DS4_RESTORE_TAIL_AUTO (1): the tail point is left out where its cost is measured higher than reading its
+    // tokens again; 0: kept on every read that reaches it
+    static const bool tail_auto = [] {
+        const char* v = std::getenv("STRATA_DS4_RESTORE_TAIL_AUTO");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    strata::ds4::TailCost tail_cost;
     SpanCache spans;
     const int img_tok = m.image_token();
     // CONVERSATION SLOTS: a request that does not continue the conversation in the model first sets that one aside
@@ -977,9 +984,30 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // read reaches, and leaves the prompt's last token to the usual end): the read stops at each and keeps the state
         std::vector<strata::ds4::MarkAt> cuts;
         size_t next_cut = 0;
+        // the tail point (tail=): only where the read reaches it, and - once two reads measured it - where its run costs
+        // no more than reading its tokens again (TailCost, ds4_marks.hpp; Maya #668: a 4-GPU split or experts outside
+        // VRAM make the stop cost 4-9x); one in 32 is still kept to measure again
+        int64_t tail_at = -1;
+        double ms_main = 0.0, ms_tail = 0.0;
         if (m.marks_cap() > 0) {
             std::vector<int64_t> asked = r.marks;
-            if (r.tail > (long long) from) asked.push_back(r.tail);
+            if (r.tail > (long long) from && r.tail < (long long) total - 1) {
+                const bool was = tail_cost.costly();
+                if (!tail_auto || tail_cost.keep()) {
+                    asked.push_back(r.tail);
+                    tail_at = r.tail;
+                }
+                static bool said_off = false;
+                if (tail_auto && was && !said_off) {
+                    std::fprintf(stderr, "ds4 serve: the tail restore point is left out on this PC: its read stop cost "
+                                         "%.1fx a long read's time a token (more than reading its tokens again: the last "
+                                         "tail run %zu tokens in %.0f ms, the long read %.2f ms a token); one in 32 still "
+                                         "keeps it, to measure again (STRATA_DS4_RESTORE_TAIL_AUTO=0 keeps it always)\n",
+                                 tail_cost.ratio, tail_cost.last_tail_tokens, tail_cost.last_tail_ms,
+                                 tail_cost.last_main_ms_token);
+                    said_off = true;
+                }
+            }
             const long long shared = r.shared >= 0 ? r.shared : (r.pin >= 256 ? r.pin : -1);
             if (!asked.empty() || shared >= 0) {
                 std::vector<std::pair<int64_t, int64_t>> spans;
@@ -1018,6 +1046,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             if (!inner.empty()) n = rest;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
             const bool fin = done + n == total;
+            const double f0 = tail_at >= 0 ? now_ms() : 0.0;   // (TailCost: the run's wall time)
             if (!inner.empty()) {
                 ok = m.feed_marks(r.ids.data() + done, (int) n, 1, 1, inner, err);
                 if (ok) next_cut = cuts.size();   // (the points the read went past: kept by it)
@@ -1028,6 +1057,20 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             } else
                 ok = fin ? m.feed_mark(r.ids.data() + done, (int) n, 1, 1, err)
                          : m.feed(r.ids.data() + done, (int) n, 0, err);
+            if (ok && tail_at >= 0) {
+                const bool after = done >= (size_t) tail_at;
+                (after ? ms_tail : ms_main) += now_ms() - f0;
+                if (after && done + n == total && tail_auto) {   // (the read's end: its cost measured)
+                    const bool was = tail_cost.costly(), known = tail_cost.measured();
+                    if (tail_cost.add(ms_main, (size_t) tail_at - from, ms_tail, total - (size_t) tail_at) &&
+                        ((was && !tail_cost.costly()) || (!known && tail_cost.measured() && !tail_cost.costly())))
+                        std::fprintf(stderr, "ds4 serve: the tail restore point is kept%s: its read stop costs %.1fx a "
+                                             "long read's time a token (2x or less: no more than reading its tokens "
+                                             "again; the last tail run %zu tokens in %.0f ms, the long read %.2f ms a "
+                                             "token)\n", was ? " again" : "", tail_cost.ratio, tail_cost.last_tail_tokens,
+                                     tail_cost.last_tail_ms, tail_cost.last_main_ms_token);
+                }
+            }
             done += n;
             if (ok && next_cut < cuts.size() && done == (size_t) cuts[next_cut].pos) {
                 const bool sh = cuts[next_cut++].shared;
@@ -1113,6 +1156,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         };
         for (;;) {
             if (in.stop.load()) {
+                finish = "cancel";
+                break;
+            }
+            if (tok < 0) {   // (a sample's CUDA error, printed by the sampler: no T -1 to the client; Project Maya #619)
+                std::fprintf(stderr, "ds4 serve: the sample failed\n");
                 finish = "cancel";
                 break;
             }
@@ -1651,6 +1699,10 @@ int main(int argc, char** argv) {
         int tok = m.sample(temp, 1.0f, temp > 0 ? 64 : 1, 0.0f, cli_seed, counter++);
         std::vector<int> got;
         for (;;) {
+            if (tok < 0) {   // (a sample's CUDA error, printed by the sampler)
+                std::fprintf(stderr, "strata-dsv41: the sample failed\n");
+                return 1;
+            }
             out.push_back(tok);
             {
                 const double tn = now_ms();

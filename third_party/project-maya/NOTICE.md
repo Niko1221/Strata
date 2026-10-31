@@ -18,7 +18,7 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
 (MIT, same copyright and permission notice as above):
 - A0, restore points (`ds4_marks.hpp`, `Model::mark`, marks in `restore()` and in the conversation slots, the `marks=` /
   `shared=` / `tail=` GEN keys): Project Maya #639 (needmorevram, 50a3313; `ds4_marks.hpp` also holds #668's tail-cost
-  logic by mw00, 8721412 and 66fb17b, taken whole and not wired in yet). Test: `tests/dsv41/marks_test.cpp`, from
+  logic by mw00, 8721412 and 66fb17b). Test: `tests/dsv41/marks_test.cpp`, from
   Maya's `tests/ds4_marks_test.cpp`.
 - A1, the server side (`deepseek_restore_points`, `restore_point_settings`, `StrataEngine.restore_keys`,
   `serve/test_ds4_restore_points.py`): Project Maya #639 (needmorevram) and v1.1.37 / v1.1.39 (mw00).
@@ -27,3 +27,12 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
 - A4, restore points near a prompt's end kept in one read (`Model::feed_marks`, `marks_inside`, `feed(..., after)`, the
   layers' snapshot sets `snap_win[]`/`snap_kv[]`/`snap_sc[]`): Project Maya #691 (needmorevram, c7d08c5, v1.1.40). The
   "a chunk streams only the experts it picks" and EXL3 lend parts of #691 are not ported.
+- A2, the tail restore point judged by its measured cost (`TailCost` in `ds4_marks.hpp` wired into the serve loop in
+  `ds4_main.cpp`; `STRATA_DS4_RESTORE_TAIL_AUTO=0` keeps it always): Project Maya #668 (mw00, 8721412 and 66fb17b).
+- A5, the prompt path's flow timing correction kept per prompt-size class (`ds4_path_policy.hpp`, `PathModel::flow`; only
+  the opt-in `DS4_PICK=adaptive` timing pick uses it, the default pick is by length): Project Maya #612 (Will Hampson,
+  6e0d27d). Test: `tests/dsv41/path_policy_test.cpp`.
+
+Taken from Project Maya v1.1.35 to v1.1.42 on branch f-040-maya-ds:
+- the thread pool's generation fence (#618, Cody Harrison).
+- Small items (A2 slice): #619 sampler error ends the request and `logits()` copies on the head stream (Cody Harrison, 2040174), #620 CPU-lane layers that cannot compute stop the engine instead of answering zeros (Cody Harrison, e598716), #676 `bf16_rn` by arithmetic (rilken, 79628d7), #608 `DS4_ASYNC_T=16` as an opt-in value (mw00, b9c07e7).
