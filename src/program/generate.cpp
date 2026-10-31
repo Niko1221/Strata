@@ -9607,7 +9607,13 @@ int main(int argc, char** argv) {
             }
         }
 #endif
-        const bool share_pool = o.batch <= 0 && !o.no_pool;
+        // STRATA_PREFILL_CPU_SHARE_BATCH=1 (opt-in): the prompt path gets the pool beside batch slots too; a read takes the
+        // share only while no slot decodes (set_share_blocked before each read), since the slots' windows use the pool
+        static const bool share_batch = [] { const char* v = std::getenv("STRATA_PREFILL_CPU_SHARE_BATCH"); return v != nullptr && v[0] == '1'; }();
+        const bool share_pool = (o.batch <= 0 || share_batch) && !o.no_pool;
+        if (share_batch && o.batch > 0 && !o.no_pool)
+            std::fprintf(stderr, "strata serve: STRATA_PREFILL_CPU_SHARE_BATCH=1: the prompt path may use the CPU pool beside the "
+                                 "%lld batch slots, for a read with no slot decoding\n", (long long) o.batch);
         bool share_has_work = strata::prefill::share_rules::default_share_has_work(
             (int64_t) xcache.slots(), (int64_t) (g.n_layers * g.n_expert));   // #1595
         if (!share_has_work)
@@ -15355,6 +15361,19 @@ int main(int argc, char** argv) {
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
             int64_t req_chunk = 0, req_chunk_len = 0;   // the DONE line's chunk=: the longest batched segment's first chunk
+
+            // STRATA_PREFILL_CPU_SHARE_BATCH: the read takes the CPU share only with no slot decoding (their windows use the pool)
+            auto share_gate = [&]() {
+                int busy = 0;
+                for (const auto& x : bs) busy += x.active ? 1 : 0;
+                strata::prefill::Prefill::set_share_blocked(busy > 0);
+                static int said = 0;
+                static const bool on = [] { const char* v = std::getenv("STRATA_PREFILL_CPU_SHARE_BATCH"); return v != nullptr && v[0] == '1'; }();
+                if (on && said < 4) {
+                    ++said;
+                    std::fprintf(stderr, "strata batch: CPU share for this read: %s (%d slot(s) decoding)\n", busy > 0 ? "off" : "on", busy);
+                }
+            };
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
                 // --prefill-pipe on a layer split: the segment's chunk is planned ONCE, on its whole length (or taken
                 // from the read it goes on from: resume_plan), and every run of it reads in that chunk (force_chunk) -
@@ -15462,8 +15481,10 @@ int main(int argc, char** argv) {
                                  std::chrono::duration<double, std::milli>(Clock::now() - tco).count());
                     return true;
                 };
+                bool conc_read = false;   // run_conc: the slots decode beside the read, so the share stays off for all of it
                 auto run = [&](int64_t q, int64_t r) -> bool {
                     if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
+                    if (!conc_read) share_gate();   // STRATA_PREFILL_CPU_SHARE_BATCH: re-decided for every run (a piece beside decoding slots too)
                     bool run_ok;
                     if (!co_set.empty() && !co_tried && admit_slot >= 0 && req_imgs.empty()) {
                         co_tried = true;
@@ -15493,6 +15514,8 @@ int main(int argc, char** argv) {
                     std::atomic<bool> done{false};
                     bool read_ok = false;
                     in_prompt_read = true;
+                    conc_read = true;
+                    strata::prefill::Prefill::set_share_blocked(true);
                     std::thread reader([&] {
                         try {   // (an exception leaving a std::thread ends the process: a failed read instead)
                             read_ok = run(q, r);
@@ -15531,6 +15554,7 @@ int main(int argc, char** argv) {
                     }
                     reader.join();
                     in_prompt_read = false;
+                    conc_read = false;
                     std::fprintf(stderr, "strata batch: read %lld tokens on a thread of its own in %.0f ms; the slots ran %lld windows meanwhile\n",
                                  (long long) (r - q), std::chrono::duration<double, std::milli>(Clock::now() - tc).count(),
                                  (long long) (bt_windows - windows0));
@@ -15771,6 +15795,7 @@ int main(int argc, char** argv) {
                         std::string read_err;
                         in_prompt_read = true;
                         sp.stop_at_chunk = [&] { return want_yield.load(std::memory_order_acquire) >= 0; };
+                        share_gate();   // on this thread, before the reader starts
                         std::thread reader([&] {
                             conc_thread_cpus();
                             try {   // (an exception leaving a std::thread ends the process: a failed read instead)
