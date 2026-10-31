@@ -732,6 +732,32 @@ void test_mv_rows(cudaStream_t s) {
                         if (std::memcmp(&a, &b, 4) != 0) ++nd, mx = std::max(mx, (double) std::fabs(a - b));
                     }
                     std::printf("  rows: %d activations, column %d: %d of %d outputs differ from its single mv, max |d| %.3g\n", nc, c, nd, n, mx);
+                    {   // (what the difference depends on: the neighbours, or the column's place)
+                        auto run_cols = [&](const std::vector<float>& xs, int ncol, int col, const char* what_) {
+                            float* dxx = dev(xs);
+                            float* dyy = dev(std::vector<float>((size_t) n * ncol, 0.0f));
+                            x3::MvJob jj = j;
+                            jj.xf = dxx;
+                            jj.y = dyy;
+                            jj.ncol = ncol;
+                            if (!gg::mv(&jj, 1, s)) ++g_fail;
+                            CU(cudaStreamSynchronize(s));
+                            const std::vector<float> yy = host(dyy, (size_t) n * ncol);
+                            int nd2 = 0;
+                            for (int r = 0; r < n; ++r) nd2 += std::memcmp(&y1[r], &yy[(size_t) col * n + r], 4) != 0;
+                            std::printf("    %s: column %d of %d: %d outputs differ from the single mv\n", what_, col, ncol, nd2);
+                            cudaFree(dxx), cudaFree(dyy);
+                        };
+                        std::vector<float> xc(x.begin() + (size_t) c * xcs, x.begin() + (size_t) (c + 1) * xcs);
+                        std::vector<float> rep((size_t) nc * xcs), alone((size_t) nc * xcs, 0.0f), first = x;
+                        for (int q = 0; q < nc; ++q) std::copy(xc.begin(), xc.end(), rep.begin() + (size_t) q * xcs);
+                        std::copy(xc.begin(), xc.end(), alone.begin() + (size_t) c * xcs);
+                        std::copy(xc.begin(), xc.end(), first.begin());
+                        run_cols(rep, nc, c, "the column in every place");
+                        run_cols(alone, nc, c, "the column with zeros beside it");
+                        run_cols(first, nc, 0, "the column moved to place 0");
+                        run_cols(xc, 1, 0, "the column alone again");
+                    }
                 }
                 for (int r = 0; r < n; ++r) { uint32_t u; std::memcpy(&u, &y1[r], 4); sig = sig * 16777619u + u; }
                 same = same && eq;
