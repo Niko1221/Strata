@@ -1253,6 +1253,8 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     plan = None
     saved = None
     key = os.environ.get(a.credential_env)
+    if key is not None and key.strip().lower() == "none":
+        key = None
     if a.profile:
         _, saved, _, cfg = _source(a.profile)
         plan, _ = _launch_plan(a.profile)
