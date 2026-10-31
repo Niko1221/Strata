@@ -1222,7 +1222,7 @@ class StrataEngine:
         self.lines: queue.Queue = queue.Queue()
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
-        asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
+        asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots", "--parallel") if k in args), 0)
         self.batch = int(self.info.get("batch_slots") or 0)
         if self.multi:                                  # DeepSeek --parallel: several requests at once, in its own protocol
             self.batch = self.multi                     # (the server's parallel paths key on it: no FIFO, a request's own figures)
