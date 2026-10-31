@@ -1066,6 +1066,20 @@ measured. "Exact" means the 10-prompt and 4K/20K identity gate with the switch o
 `STRATA_DEQUANT_WIDE` (wide dequantization of Q4_K, Q5_K, Q6_K and IQ4_XS for the prompt's dense weights) is on by default on
 sm_86 and sm_61, bit-exact. `STRATA_DEQUANT_WIDE=0` turns it off.
 
+`STRATA_PREFILL_ROUTED_STREAM=1` (opt-in; the streamed prompt walk of a chunk of 1,024 tokens or more, one GPU, the
+issuer thread): the issuer keeps at most `STRATA_PREFILL_ROUTED_STREAM_DEPTH` copies (default 16) queued ahead of the
+PCIe link, each layer's routing is handed to it as soon as the layer's router has run, and an expert not yet copied that
+no token of the chunk routes to is not copied at all. The routed experts go into the same ring slots as without the
+switch, so the prompt's results are the same bits, and the slots the prompt borrowed are refilled from RAM as before.
+With `STRATA_TRACE=1` each chunk prints how many ring entries it copied and how many it dropped. With
+`STRATA_PREFILL_COPY_EVENT_EVERY` above 1 or `STRATA_PREFILL_COPY_WAIT_DEDUPE=1` the switch stays off: those keep the
+default issuer, whose copy records the routed walk does not write. When the switch is set but a streamed chunk keeps the
+default walk (these two, `STRATA_PREFILL_ISSUER=0` or the peer prompt ring), the engine prints the reason once. On an
+RTX 3090 (PCIe 3.0 x16, 250 W) with the Swift IQ3_XXS pack at the v0.2.6 release defaults, 23% fewer experts were
+streamed for a 2K prompt and 4% fewer at 32K (8,192-token chunks); a 1,790-token follow-up read on an 18.8K-token
+conversation took 18% less time and fresh 2K, 4K and 32K reads ran 20%, 8% and 5% faster (4 pairs), with byte-identical
+replies in a deterministic lane at 1K to 32K.
+
 ### RTX 20 (Turing, sm_75) kernels (opt-in)
 
 Kernels by rafatxf (#2069-#2072, #2093, #2220-#2222), imanu86 (#2081) and xrip (#1821) for compute capability 7.5 are bitwise

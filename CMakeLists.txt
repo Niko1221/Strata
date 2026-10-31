@@ -391,6 +391,13 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
+  # (header-only, no GPU)
+  add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
+  target_include_directories(routed_stream_test PRIVATE include)
+  target_link_libraries(routed_stream_test PRIVATE Threads::Threads)
+  add_test(NAME routed_stream_test COMMAND routed_stream_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
