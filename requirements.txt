@@ -10,7 +10,8 @@ regex==2026.9.10
 pyyaml==6.0.3
 tqdm==4.70.1
 requests==2.34.2
-pillow==12.3.0
+pillow==13.0.0; python_version >= "3.11"
+pillow==12.3.0; python_version < "3.11"     # Pillow 13 needs 3.11+; 12.3.0 has open advisories (GHSA-78g4-xqwv-q3g8, ...)
 psutil==7.2.2
 
 # their dependencies
