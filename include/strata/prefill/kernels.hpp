@@ -75,6 +75,12 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16 = 0);
+/// HIP gfx12 only, STRATA_GDN_CHUNKED=1 (STRATA_GDN_FUSE=0 off): gdn_conv + gdn_recurrence on the chunked matrix-core path with
+/// the conv output kept as FP16 in `hbuf` (the FP32 h buffer of gdn_conv, reused).  Returns false, having launched nothing, when
+/// it does not apply (not gfx12, short prompt, unaligned stride, off): the caller then calls the two.
+bool gdn_conv_recurrence_fused(float* history, const float* qkv, const float* conv_w, float* hbuf, float* state, const float* gate,
+                               const float* beta, const float* z, const float* gamma, float eps, float l2eps, float* y,
+                               uint16_t* y16, int64_t T, void* stream, int64_t ld16 = 0);
 /// KVA (CUDA/HIP only): the same recurrence kernels as gdn_recurrence, bit for bit, without the output
 /// normalization: state, h, gate, beta and the scratch `y` only.  The output projection and the gated residual
 /// write have no consumer when only the state advances, and their input (z, the gate projection) is not needed

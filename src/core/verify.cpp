@@ -91,6 +91,8 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
+bool window_init_slots(void* w, const std::vector<strata::core::SessionState*>& slots, std::string& err);
+bool window_run_slots(void* w, const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
 }  // namespace strata::metal_engine
 #endif
 
@@ -1626,10 +1628,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         gg.state[gg.n] = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats;
                         gg.first[gg.n] = first;
                         gg.ntok[gg.n] = t - first;
+                        gg.keep[gg.n] = keep_rows ? one_ : nullptr;   // STRATA_BATCH_SELF_COMMIT: the window keeps its one-row groups itself
                         ++gg.n;
                     }
                     strata::kernels::gdn_step_norm_groups(gg, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS,
-                                                          y_, (int) HK, (int) HV, false, cs);
+                                                          y_, (int) HK, (int) HV, keep_rows, cs);
                 } else
                 if (batch_rec_) {   // each slot's recurrence over its own proposed-token group
                     for (int t = tb; t < te;) {
@@ -3704,6 +3707,17 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
             return false;
         }
     }
+#if defined(STRATA_GPU_METAL)
+    // the Metal window keeps each slot's running state itself (metal/src/engine/window.cpp): none of the CUDA batch buffers
+    slots_ = slots;
+    slot_sp_.assign(slots.size(), sampling_);
+    if (metal_ == nullptr || !strata::metal_engine::window_init_slots(metal_, slots, err)) {
+        if (err.empty()) err = "verify: the Metal window is not up";
+        return false;
+    }
+    std::fprintf(stderr, "strata verify: batch windows of up to %d sequences, run slot by slot in the Metal window\n", (int) slots.size());
+    return true;
+#endif
     const strata::kernels::QsaShapes s = shapes_of(*g_);
     const int64_t S = (int64_t) slots.size(), CB = 2 + max_t_;
     const int64_t TS = (s.idx_block - 1) * g_->idx_key_dim, nQ = g_->n_qsa_layers();
@@ -4379,6 +4393,16 @@ bool Verifier::run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolM
 
 bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool,
                              void* user, int32_t* out, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    // each row runs in its slot's state and commits there (a one-token window); nothing is left for commit_slots
+    if (S < 1 || S > (int) strata::kernels::kVerifyMaxT) { err = "verify: batch window size out of range"; return false; }
+    (void) pool; (void) user;
+    if (!strata::metal_engine::window_run_slots(metal_, rows, S, tokens, pos, out, err)) return false;
+    last_t_ = S;
+    for (int t = 0; t < S; ++t) { last_rows_[t] = rows[t]; last_tokens_[t] = tokens[t]; last_pos_b_[t] = pos[t]; }
+    last_batch_ = true;
+    return true;
+#endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
@@ -4490,6 +4514,11 @@ bool Verifier::commit_slots(std::string& err) {
 }
 
 bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    (void) keep;   // (greedy one-row windows, committed by window_run_slots)
+    if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
+    return true;
+#endif
     const OnDevice on_device(device_);
     if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
     const int S = last_t_;

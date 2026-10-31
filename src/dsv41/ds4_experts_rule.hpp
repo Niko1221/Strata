@@ -186,10 +186,12 @@ inline bool copy_hugetlb_default(int env, double pool_free_bytes, double copy_by
     return pool_free_bytes > 0.0 && pool_free_bytes >= copy_bytes;
 }
 
-// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for gfx1200 / gfx1201.
-inline bool fast_attn_default(int env, bool gfx12, bool v026 = false) {
+// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for
+// gfx1200 / gfx1201, and (this change) on for gfx1151 on Windows, where it measured +43.6% on a 32K prompt (101.6 -> 70.8 s,
+// sparse attention 38.3 -> 7.0 s), the same greedy first token and a first-token KL far under the 0.0228 bar.
+inline bool fast_attn_default(int env, bool gfx12, bool gfx1151win = false, bool v026 = false) {
     if (env >= 0) return env != 0;
-    return !v026 && gfx12;
+    return !v026 && (gfx12 || gfx1151win);
 }
 
 // The drafter's cumulative confidence cut (STRATA_DS4_DSPARK_CUM, a request's dspark_cum): the variable when set; 0.2.6: 0; 0.2.7: 0.5 on gfx1200 / gfx1201.

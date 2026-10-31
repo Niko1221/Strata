@@ -93,6 +93,52 @@ class OwnDeepSeekFiles(unittest.TestCase):
             self.touch_set(d / "c" / "UD-Q8_K_XL", ud)
             self.assertEqual(Runner.deepseek_set_in(setup, d / "c")[0], "UD-Q8_K_XL")
 
+    def test_the_six_shard_names_are_recognised_like_the_pinned_ones(self):
+        from strata_cli.launch.runner import Runner
+        fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.touch_set(d / "a", fam["models"]["IST-DAS-2.00bpw"]["shards6"])
+            self.assertEqual(Runner.deepseek_set_in(setup, d / "a")[0], "IST-DAS-2.00bpw")
+            self.touch_set(d / "b" / "2.25bpw", fam["models"]["IST-DAS-2.25bpw"]["shards6"])
+            m, _entry, folder = Runner.deepseek_set_in(setup, d / "b")
+            self.assertEqual((m, folder), ("IST-DAS-2.25bpw", d / "b" / "2.25bpw"))
+
+    def deepseek_files(self, folder: Path):
+        from strata_cli.launch import settings as S
+        from strata_cli.launch.runner import Runner
+        catalog = mock.MagicMock()
+        catalog.strata.setup_module.return_value = setup
+        r = Runner(S.LaunchSettings(model_path=str(folder)), catalog=catalog)
+        return r, r.deepseek_files()
+
+    def test_launch_model_path_takes_a_whole_six_shard_set_and_names_what_is_missing_from_an_incomplete_one(self):
+        from strata_cli.launch.runner import LaunchError
+        six = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-1.75bpw"]["shards6"]
+        with tempfile.TemporaryDirectory() as d:
+            self.touch_set(Path(d) / "whole", six)
+            r, got = self.deepseek_files(Path(d) / "whole")
+            self.assertTrue(got)
+            self.assertEqual((r.s.family, r.s.model), ("deepseek41", "IST-DAS-1.75bpw"))
+            self.touch_set(Path(d) / "cut", [n for n in six if "-00003-" not in n])
+            with self.assertRaises(LaunchError) as cm:
+                self.deepseek_files(Path(d) / "cut")
+            self.assertIn("is in five parts and 1 of them are not in", str(cm.exception))
+            self.assertIn("-00003-of-00006.gguf", str(cm.exception))
+
+    def test_the_guided_screen_takes_a_six_shard_set_and_names_a_missing_part(self):
+        from strata_cli.launch import settings as S
+        six = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards6"]
+        with tempfile.TemporaryDirectory() as d:
+            self.touch_set(Path(d) / "whole", six)
+            cls, f, said = self.screen(S.LaunchSettings())
+            self.assertTrue(cls.check_own_deepseek(f, str(Path(d) / "whole")))
+            self.assertEqual((f.ctx.settings.family, f.ctx.settings.model), ("deepseek41", "IST-DAS-2.00bpw"))
+            self.touch_set(Path(d) / "cut", six[:4])
+            cls, f, said = self.screen(S.LaunchSettings())
+            self.assertTrue(cls.check_own_deepseek(f, str(Path(d) / "cut")))
+            self.assertIn("1 of 5 parts are not in", " ".join(said))
+
     def test_other_models_files_are_not_deepseeks(self):
         from strata_cli.launch.runner import Runner
         with tempfile.TemporaryDirectory() as d:

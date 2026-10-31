@@ -101,6 +101,13 @@
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
+#include "strata/program/par_counters.hpp"
+#if defined(__linux__)
+#include <execinfo.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
 #include "strata/program/pipe_probe.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
@@ -129,7 +136,12 @@
 
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
-namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+namespace strata::metal_engine {
+void set_model_shard(const char* shard1);   // metal/src/engine/window.cpp
+void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch slots the window keeps state for
+// batch slot b <-> the main sequence: the running state (unless kv_only) and the first `upto` cells of K/V
+bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
+}
 #endif
 
 #include <array>
@@ -234,6 +246,35 @@ std::string vram_free_note() {
                   (unsigned long long) (total_b >> 20));
     return buf;
 }
+
+#if defined(__linux__)
+// STRATA_CRASH_BT=1 (research): a fatal signal prints the call stack to stderr (the addresses go through addr2line -e <binary>)
+namespace {
+char g_crash_path[512] = "";
+void crash_bt_handler(int sig) {
+    void* frames[48];
+    const int n = backtrace(frames, 48);
+    const char msg[] = "strata: fatal signal, call stack:\n";
+    int fd = 2;
+    if (g_crash_path[0] != '\0') {
+        const int f = open(g_crash_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (f >= 0) fd = f;
+    }
+    (void) !write(fd, msg, sizeof msg - 1);
+    backtrace_symbols_fd(frames, n, fd);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+const bool crash_bt_installed = [] {
+    const char* v = std::getenv("STRATA_CRASH_BT");
+    if (v == nullptr || v[0] == '\0' || v[0] == '0') return false;
+    if (v[0] != '1' || v[1] != '\0') std::snprintf(g_crash_path, sizeof g_crash_path, "%s", v);
+    for (int sg : {SIGFPE, SIGSEGV, SIGBUS, SIGABRT}) signal(sg, crash_bt_handler);
+    return true;
+}();
+}  // namespace
+#endif
+
 
 // STRATA_PIPE_BYIELD_NODRAIN=1 (read once; off by default): with the pipelined groups, a BYIELD that reaches the main
 // loop is dropped without draining the groups first.  A pipelined read never gives way (batch_read_piece), so the
@@ -708,6 +749,10 @@ struct Options {
     int64_t prefill_auto_cap = 0;
     /// a bare `--prefill auto` (no ":N", no STRATA_PREFILL_AUTO_MAX): the gfx12 Linux rule below may raise its ceiling
     bool prefill_auto_bare = false;
+    /// 0.2.8 (Strix Halo on Windows): the prompt path keeps its own buffers by default (no lending), so `--prefill auto`
+    /// must not fall back to 2048 ("reserved buffers, keep them small") - the gfx1151 rule above has already chosen a
+    /// chunk that fits this box's carve-out.
+    bool prefill_own_keep_chunk = false;
     bool prefill_gfx12_16k = false;   ///< the gfx12 default raised the auto chunk ceiling to 16384 (a layer split takes 8192 back, 0.1.44)
     /// --prefill-pipe (opt-in): a layer split's prompt chunks sized for its pipeline (Prefill::pipeline_chunk): 0 off,
     /// 1 today's chunk count evened out, a number > 1 the rig's b/a in tokens (setup's --calibrate measures it).
@@ -3371,7 +3416,27 @@ int main(int argc, char** argv) {
                 const char* d1 = std::getenv("STRATA_GFX1151_DEFAULTS");
                 if (!(c1 != nullptr && c1[0] == '0') && !(d1 != nullptr && d1[0] == '0')) {
                     o.prefill_auto_cap = 0;
-                    o.prefill_chunk = std::max<int64_t>(o.prefill_chunk, 8192);
+                    // 0.2.8: 16,384 rather than 8,192.  The prompt reads every expert once per chunk, so a bigger chunk
+                    // reads them fewer times: measured on strix (engine 0.1.52, own prompt buffers, IQ3_S) 32K 1,260.0 ->
+                    // 1,307.9 tok/s and 64K 1,191.0 -> 1,238.2 (+3.8% / +4.0%); at 4K and 8K the chunk is the prompt, so
+                    // nothing changes there.  The buffers' reserve grows to ~10.9 GiB and the cache keeps all 24,576 slots
+                    // (the box reports 84.7 GiB free at a 64K context).  STRATA_GFX1151_CHUNK=0 keeps 6,144.
+                    o.prefill_chunk = std::max<int64_t>(o.prefill_chunk, 16384);
+                }
+            }
+            // 0.2.8: the Strix Halo prompt path keeps its own buffers instead of lending cache slots.  A lent slot's expert
+            // is re-read from the host arena during every chunk, and on this box that copy runs at ~0.5 GB/s (the arena is
+            // unregistered in UMA mode): measured on strix, engine 0.1.52, IQ3_S, 2026-10-27 - 823 slots = 2.75 s of a
+            // 3.3 s 4K prompt, 1,408 slots = 5.5 s of a 6.1 s 8K prompt.  Without lending every expert stays in the cache
+            // (24,576 slots) and the prompt reads VRAM only; the buffers' VRAM is reserved up front instead (the cache
+            // still fits: 46.84 GiB of experts against a 63.6 GB carve-out).  STRATA_PREFILL_BORROW=1 keeps 0.2.7's
+            // lending, STRATA_GFX1151_DEFAULTS=0 turns the whole gfx1151 block off.
+            if (win_host && all_igpu && std::strncmp(ad.gcnArchName, "gfx1151", 7) == 0) {
+                const char* pb = std::getenv("STRATA_PREFILL_BORROW");
+                const char* pd = std::getenv("STRATA_GFX1151_DEFAULTS");
+                if (!(pb != nullptr && pb[0] == '1') && !(pd != nullptr && pd[0] == '0')) {
+                    o.no_prefill_borrow = true;
+                    o.prefill_own_keep_chunk = true;
                 }
             }
         } else (void) cudaGetLastError();
@@ -3705,7 +3770,9 @@ int main(int argc, char** argv) {
 #endif
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
         o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small
-        o.prefill_chunk = 2048;
+        // 0.2.8 Strix Halo: the gfx1151 rule above chose a chunk that fits this box; the "keep them small" 2048 would throw
+        // the whole 8K prompt back into 4 chunks (measured: 2048 against 8192 costs ~26% of an 8K prompt on this box).
+        o.prefill_chunk = o.prefill_own_keep_chunk ? o.prefill_chunk : 2048;
     }
     if (!have_tokens && o.serve) {   // plan v0.3 P8: requests bring their own tokens
         o.tokens = {248045};
@@ -3971,6 +4038,7 @@ int main(int argc, char** argv) {
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
 #if defined(STRATA_GPU_METAL)   // Apple Silicon: every expert is on the GPU; ggml-cpu (NEON) is the only CPU expert code
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
+    strata::metal_engine::set_batch_slots(o.batch);
     o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
 #else
@@ -12480,6 +12548,14 @@ int main(int argc, char** argv) {
         const bool batch_telemetry_enabled = batch_telemetry_env != nullptr &&
                                              batch_telemetry_env[0] == '1' && batch_telemetry_env[1] == '\0';
         strata::core::BatchWindowSampler batch_telemetry(batch_telemetry_enabled);
+        strata::program::ParCounters pc;   // STRATA_PAR_COUNTERS=1: counters only (par_counters.hpp); off: a branch
+        auto pc_ex = [&]() {
+            strata::program::ParCounters::Ex e;
+            e.misses = drive.d.multi_misses; e.entries = drive.d.multi_entries; e.hits = drive.d.cache_hits;
+            e.offload = drive.d.offload_entries; e.pcie = drive.d.pcie_experts; e.run_ms = drive.d.ms_run; e.jobs_ms = drive.d.ms_jobs;
+            e.vwait_ms = ver.ms_wait; e.vpool_ms = ver.ms_pool;
+            return e;
+        };
         auto report_batch_window = [&](int processed_rows, int active_rows, bool idle, Clock::time_point started) {
             if (!batch_telemetry_enabled) return;
             const auto sample = batch_telemetry.complete(processed_rows, active_rows, idle, started, Clock::now());
@@ -12491,6 +12567,12 @@ int main(int argc, char** argv) {
         };
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
+        // BCO <slot> <ids> (research, PAR-H; STRATA_COALESCE_PREFILL on the server): prompts of waiting requests, read in
+        // the SAME layer-major pass as the next BGEN's prompt into the named idle slots' sessions (the experts a layer
+        // streams are shared), so their own admissions find the prompt in the slot and read nothing.  BCOK <slot> <tokens>
+        // says a slot holds its prompt; a declined or failed co-read says nothing and costs nothing.
+        struct CoReq { int slot = -1; std::vector<int64_t> ids; };
+        std::vector<CoReq> co_pending, co_set;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
@@ -12541,6 +12623,10 @@ int main(int argc, char** argv) {
         };
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
+#if defined(STRATA_GPU_METAL)
+            // the running state and the K/V of the Metal window, not the session's device buffers
+            return strata::metal_engine::window_slot_copy_main(true, b, upto, false, e);
+#endif
             if (slot_copy_direct) {
                 if (!direct_slot_copy(true, b, ids, e)) return false;
             } else
@@ -12588,6 +12674,10 @@ int main(int argc, char** argv) {
             conversations.take_reuse();
             const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) bs[(size_t) b].ids.size();
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
+#if defined(STRATA_GPU_METAL)
+            if (!strata::metal_engine::window_slot_copy_main(false, b, upto, at != nullptr, e)) return false;
+            return at == nullptr || strata::core::conversation_checkpoint_restore(*at, ss, g, e);   // (the checkpoint's running state)
+#endif
             if (slot_copy_direct && at == nullptr) {
                 if (!direct_slot_copy(false, b, bs[(size_t) b].ids, e)) return false;
             } else
@@ -12757,6 +12847,7 @@ int main(int argc, char** argv) {
                     bt_stage_pool0[k] = stage_verifier((int) k).ms_pool;
                 }
                 bt_cpu_ent0 = drive.d.multi_entries; bt_off_ent0 = drive.d.offload_entries;
+                if (pc.on()) pc.begin(pc_ex(), (int) g.n_layers);
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
             const Clock::time_point w0 = Clock::now();
@@ -12869,8 +12960,10 @@ int main(int argc, char** argv) {
             }
             strata::core::progress().busy.store(was_busy);
             report_batch_window(S, A, !batch_on(), w0);
+            pc.window(S, A);
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
+                pc.flush(wall, pc_ex());
                 const double L = (double) g.n_layers;
                 const double e_vram = (double) (drive.d.cache_hits - bt_hits0), e_pcie = (double) (drive.d.offload_entries - bt_off_ent0),
                              e_cpu = (double) (drive.d.multi_entries - bt_cpu_ent0);
@@ -13173,6 +13266,7 @@ int main(int argc, char** argv) {
                 p4.span_start(bt_start);
                 bt_wait0 = ver.ms_wait; bt_pool0 = ver.ms_pool;
                 bt_miss0 = drive.d.multi_misses; bt_hits0 = drive.d.cache_hits; bt_pcie0 = drive.d.pcie_experts;
+                if (pc.on()) pc.begin(pc_ex(), (int) g.n_layers);
             }
             for (int k = 0; k < n_pipe; ++k) {
                 const int gi = stage_group[(size_t) k];
@@ -13239,6 +13333,7 @@ int main(int argc, char** argv) {
                 ++pa_windows;
                 G.inflight = false;
                 report_batch_window(G.S, G.active, !pipe_inflight() && !batch_on(), G.started);
+                pc.window(G.S, G.active);
             }
             // start waiting groups on free stages, the longest waiting first; a new step on stage 0 round-robin
             for (int k = n_pipe - 1; k >= 0; --k) {
@@ -13366,6 +13461,7 @@ int main(int argc, char** argv) {
             if (!pipe_inflight() && !batch_on() && bt_windows > 0) {   // all idle: the timing line, as batch_step
                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
                 p4.span_end(wall);
+                pc.flush(wall, pc_ex());
                 char pa_txt[160] = "";
                 if (pipe_adapt_every > 0)
                     std::snprintf(pa_txt, sizeof pa_txt, "; adaptive tier (STRATA_PIPE_ADAPT_EVERY): %lld rounds, %lld experts "
@@ -13406,10 +13502,11 @@ int main(int argc, char** argv) {
                 // (STRATA_PIPE_BYIELD_NODRAIN: not for a BYIELD, which is dropped below)
                 if (piped && line.rfind("BSTOP ", 0) != 0 &&
                     !(pipe_byield_nodrain_env() && line.rfind("BYIELD", 0) == 0)) {
-                    const int in_flight = trace ? (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) {
+                    const int in_flight = (trace || pc.on()) ? (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) {
                                                       return G.inflight; }) : 0;
                     const auto td = Clock::now();
                     if (!pipe_drain()) return 1;
+                    if (pc.on()) pc.drain(line, in_flight, std::chrono::duration<double, std::milli>(Clock::now() - td).count());
                     if (trace) {   // STRATA_TRACE: what the drain before this line cost (BGEN: an admission's first phase)
                         line_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
                         std::fprintf(stderr, "strata trace: drain for %.*s: %d groups in flight, %.1f ms\n",
@@ -13428,6 +13525,21 @@ int main(int argc, char** argv) {
             if (line.rfind("BSTOP ", 0) == 0) {
                 const int b = std::atoi(line.c_str() + 6);
                 if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+                continue;
+            }
+            if (line.rfind("BCO ", 0) == 0) {   // BCO <slot> <id,id,...>: kept for the next BGEN
+                CoReq cr;
+                char* e1 = nullptr;
+                cr.slot = (int) std::strtol(line.c_str() + 4, &e1, 10);
+                for (const char* q = e1; q != nullptr && *q != '\0';) {
+                    while (*q == ' ' || *q == ',') ++q;
+                    if (*q == '\0') break;
+                    char* e2 = nullptr;
+                    cr.ids.push_back((int64_t) std::strtoll(q, &e2, 10));
+                    if (e2 == q) { cr.ids.clear(); break; }
+                    q = e2;
+                }
+                if (cr.slot >= 0 && cr.slot < (int) bs.size() && cr.ids.size() >= 3) co_pending.push_back(std::move(cr));
                 continue;
             }
             if (line.rfind("BYIELD", 0) == 0) {   // for a prompt read that has ended meanwhile
@@ -13465,6 +13577,8 @@ int main(int argc, char** argv) {
                 admit_slot = (int) b;
                 admit_max_new = mn;
                 adm_drain_ms = line_drain_ms;
+                co_set = std::move(co_pending);
+                co_pending.clear();
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
@@ -15061,14 +15175,146 @@ int main(int argc, char** argv) {
                     ConvCheckpoint::PromptPlan& p;
                     ~SegPlanScope() { p = {}; }
                 } seg_plan_scope{seg_plan};
+                // the first run of a BGEN with co-reads: the waiting prompts are read in the same layer-major pass
+                bool co_tried = false;
+                auto co_run = [&](int64_t q, int64_t r, std::string& ce) -> bool {
+                    using PSeg = strata::prefill::Prefill::Seg;
+                    std::vector<PSeg> segs;
+                    PSeg lead;
+                    lead.tokens = ids.data() + q;
+                    lead.n = r - q;
+                    lead.pos0 = q;
+                    segs.push_back(lead);
+                    std::vector<const CoReq*> used;
+                    for (const CoReq& c : co_set) {
+                        if (c.slot < 0 || c.slot >= (int) bs.size() || c.slot == admit_slot || bs[(size_t) c.slot].active ||
+                            bs[(size_t) c.slot].partial)
+                            continue;
+                        bool dup = false;
+                        for (const CoReq* u : used) dup = dup || u->slot == c.slot;
+                        if (dup) continue;
+                        PSeg sg;
+                        sg.tokens = c.ids.data();
+                        sg.n = (int64_t) c.ids.size() - 1;   // (the last token goes through the slot's own first window)
+                        sg.pos0 = 0;
+                        for (size_t k = 0; k < bslot_ss.size(); ++k) sg.stage_ss.push_back(bslot_ss[k][(size_t) c.slot].get());
+                        segs.push_back(sg);
+                        used.push_back(&c);
+                    }
+                    if (segs.size() < 2) return sp.run(lead.tokens, lead.n, lead.pos0, ce);
+                    for (const CoReq* c : used) {
+                        park_slot(c->slot);   // the conversation the slot holds, before this read overwrites it
+                        for (size_t k = 0; k < bslot_ss.size(); ++k) {
+                            const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                            strata::core::session_zero(*bslot_ss[k][(size_t) c->slot], g, nullptr, nullptr);
+                            cudaDeviceSynchronize();
+                        }
+                        bs[(size_t) c->slot] = BSlot{};   // (it holds nothing until the read is done)
+                    }
+                    const auto tco = Clock::now();
+                    std::fprintf(stderr, "strata batch: co-read starting: %zu more prompt(s) with this request's %lld tokens\n",
+                                 used.size(), (long long) lead.n);
+                    std::fflush(stderr);
+                    if (!sp.run_multi(segs, ce)) {
+                        if (ce.rfind("prefill: multi-prompt read declined", 0) == 0) {   // nothing was read: the usual run
+                            std::fprintf(stderr, "strata batch: co-read of %zu prompt(s) declined (%s)\n", used.size(), ce.c_str());
+                            ce.clear();
+                            return sp.run(lead.tokens, lead.n, lead.pos0, ce);
+                        }
+                        return false;
+                    }
+                    for (const CoReq* c : used) {
+                        BSlot& sl = bs[(size_t) c->slot];
+                        sl = BSlot{};
+                        sl.ids.assign(c->ids.begin(), c->ids.end() - 1);
+                        sl.cached = true;
+                        sl.cvec = want_cvec;
+                        std::printf("BCOK %d %lld\n", c->slot, (long long) sl.ids.size());
+                    }
+                    std::fflush(stdout);
+                    std::fprintf(stderr, "strata batch: co-read: %zu more prompt(s) read in the same pass as this request's %lld tokens "
+                                         "(%.0f ms)\n", used.size(), (long long) lead.n,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - tco).count());
+                    return true;
+                };
                 auto run = [&](int64_t q, int64_t r) -> bool {
                     if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
-                    const bool run_ok = sp.run(ids.data() + q, r - q, q, e);
+                    bool run_ok;
+                    if (!co_set.empty() && !co_tried && admit_slot >= 0 && req_imgs.empty()) {
+                        co_tried = true;
+                        run_ok = co_run(q, r, e);
+                    } else {
+                        run_ok = sp.run(ids.data() + q, r - q, q, e);
+                    }
                     if (run_ok && q == 0 && sp.kva_floor() > 0) {   // KVA approximated the start of this prompt: remember which tokens
                         kva_floors.note(ids.data(), sp.kva_floor());
                         if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
                     }
                     return run_ok;
+                };
+                // STRATA_BATCH_CONCURRENT_READ=1 (opt-in, one GPU, --batch with --no-prefill-borrow): the prompt is read on a
+                // thread of its own while this thread keeps the slots' batch windows going, so the decoding slots do not
+                // stop for an admission.  The prompt writes the main session, the windows the slots' sessions; the prompt
+                // borrows no cache slots (--no-prefill-borrow), so the windows' experts stay where they are.  The same
+                // bytes are computed as in the serial form (a window's rows do not depend on what else is on the GPU).
+                static const bool conc1 = [] {
+                    const char* v = std::getenv("STRATA_BATCH_CONCURRENT_READ");
+                    return v != nullptr && std::atoi(v) != 0;
+                }();
+                auto run_conc = [&](int64_t q, int64_t r) -> bool {
+                    if (!conc1 || piped || !stages.empty() || o.batch <= 0 || !o.no_prefill_borrow || !batch_on() ||
+                        !req_imgs.empty() || kvg.on)
+                        return run(q, r);
+                    std::atomic<bool> done{false};
+                    bool read_ok = false;
+                    in_prompt_read = true;
+                    std::thread reader([&] {
+                        try {   // (an exception leaving a std::thread ends the process: a failed read instead)
+                            read_ok = run(q, r);
+                        } catch (const std::exception& x) {
+                            read_ok = false;
+                            e = std::string("the prompt read failed: ") + x.what();
+                        } catch (...) {
+                            read_ok = false;
+                            e = "the prompt read failed";
+                        }
+                        done.store(true, std::memory_order_release);
+                        { std::lock_guard<std::mutex> lk(in_mu); }
+                        in_cv.notify_all();
+                    });
+                    bool step_ok = true;
+                    int64_t windows0 = bt_windows;
+                    const auto tc = Clock::now();
+                    while (!done.load(std::memory_order_acquire)) {
+                        if (step_ok && batch_on()) {
+                            step_ok = batch_step();
+                        } else {
+                            std::unique_lock<std::mutex> lk(in_mu);
+                            in_cv.wait_for(lk, std::chrono::milliseconds(2),
+                                           [&] { return done.load(std::memory_order_acquire); });
+                        }
+                        std::lock_guard<std::mutex> lk(in_mu);   // a BSTOP that came meanwhile ends its slot at its next window
+                        for (auto it = in_lines.begin(); it != in_lines.end();) {
+                            if (it->rfind("BSTOP ", 0) == 0) {
+                                const int b = std::atoi(it->c_str() + 6);
+                                if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+                                it = in_lines.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
+                    reader.join();
+                    in_prompt_read = false;
+                    std::fprintf(stderr, "strata batch: read %lld tokens on a thread of its own in %.0f ms; the slots ran %lld windows meanwhile\n",
+                                 (long long) (r - q), std::chrono::duration<double, std::milli>(Clock::now() - tc).count(),
+                                 (long long) (bt_windows - windows0));
+                    if (!step_ok) {
+                        batch_fatal = true;
+                        e = "a batch window failed";
+                        return false;
+                    }
+                    return read_ok;
                 };
                 // (a layer split reads its stages as a pipeline over one run's chunks: beside slots a chunk at a time, with
                 // none decoding in pieces of STRATA_BATCH_YIELD_CHUNKS chunks (default 8; 0 = one run) so a BYIELD is taken)
@@ -15157,7 +15403,14 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 }();
-                if (piped && pr_conc && req_imgs.empty()) {   // (with no slot decoding it only watches for a BYIELD)
+                // STRATA_PIPED_CONCURRENT_MIN=N (opt-in, with STRATA_PIPED_CONCURRENT=1): only a read of at least N tokens
+                // runs beside the decoding slots on its own thread; a shorter one takes the usual path (drained windows,
+                // no priority streams' cost on the short prompts' TTFT and throughput).  Unset or 0: every read, as before.
+                static const int64_t pr_conc_min = [] {
+                    const char* v = std::getenv("STRATA_PIPED_CONCURRENT_MIN");
+                    return v != nullptr ? (int64_t) std::max(0LL, std::atoll(v)) : (int64_t) 0;
+                }();
+                if (piped && pr_conc && req_imgs.empty() && (b0 - a0) >= pr_conc_min) {   // (with no slot decoding it only watches for a BYIELD)
                     // the drafter's prompt pass captures its graphs and grows its records at first use, and the
                     // prompt path's pinned upload slots grow at their first larger upload: done here, with nothing in
                     // flight (on the reader's thread a capture, an allocation or a free takes the driver's lock and
@@ -15450,7 +15703,7 @@ int main(int argc, char** argv) {
                 for (int64_t q = a0; q < b0;) {
                     const int64_t r = std::min(b0, q + piece);
                     const auto tq = Clock::now();
-                    if (!run(q, r)) return false;
+                    if (!run_conc(q, r)) return false;
                     const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     if (pr_on && r < b0) pr_prev_piece_ms = piece_ms;
                     const int64_t piece_tokens = r - q;
@@ -17180,6 +17433,7 @@ int main(int argc, char** argv) {
                     const auto tc4 = Clock::now();
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
                                  (long long) live.size(), std::chrono::duration<double, std::milli>(tc4 - tc0).count());
+                    pc.admission((long long) live.size(), prompt_ms);
                     if (trace) {   // STRATA_TRACE: the admission's phases (ms), from the drain before BGEN to this copy
                         auto span = [](Clock::time_point a, Clock::time_point b) {
                             return std::chrono::duration<double, std::milli>(b - a).count();

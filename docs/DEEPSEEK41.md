@@ -39,6 +39,15 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 | IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
 
+**Two layouts of the same sets.** Setup downloads the four-shard files (`...-0000N-of-00004.gguf`, the Hugging Face revision `cb02422c`). On 27 October 2026
+ISTA-DASLab re-split the three sets: five shards each (`...-0000N-of-00006.gguf`; shard 1 is 5.8 MB of metadata and has no tensors) and the Engram file as the
+sixth shard of the split. Strata takes either from files you already have (`--gguf-dir`, `--model-path`, "Use a local GGUF" in the app, `strata models import`),
+checks their size and SHA-256, and packs them. The same goes for the four-shard files whose first shard ISTA-DASLab re-published on 26 October with a larger
+chat template. What differs in the six-shard files: the two Engram tables are one tensor (the same bytes), the Engram gate is stored already folded (q times k),
+the attention output matrix is one 2-D tensor instead of a 3-D one, and there is a routing bias for picture tokens. The packs are the same size and the engine
+reads both. The Engram has the same name and size in both layouts but another hash; either one works with either layout, and setup downloads the pinned one
+if you have none. The download default is still the four-shard files.
+
 **On a Ryzen AI Max "Strix Halo" (Windows)** the graphics chip and the CPU share one pool of memory, so the engine counts it once: the
 128 GB box (a 64 GB BIOS carve-out plus the 64 GB Windows sees) keeps about 109 GB of the 2.00 set's experts in that pool (the dense
 weights and 12 GB for Windows and the desktop aside) and reads the other 23 GB from the SSD. Measured there (2.00 bpw, default Faster

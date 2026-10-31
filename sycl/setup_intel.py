@@ -44,7 +44,7 @@ MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
-INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
+INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e222": ("Arc Pro B65", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
              "e20b": ("Arc B580", 12.0),
              "e20c": ("Arc B570", 10.0), "e212": ("Arc B50", 16.0),
              "56a0": ("Arc A770", 16.0), "56a1": ("Arc A750", 8.0), "56a2": ("Arc A580", 8.0),

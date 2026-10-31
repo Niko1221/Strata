@@ -1087,7 +1087,7 @@ bool type_on_chunk(int type) {
 #if defined(STRATA_METAL)
     // ds4_mm.metal instantiates the tile GEMM for IQ2_XXS / IQ2_XS / IQ2_S only; IQ1_M (the 2.00 bpw pack's type) has
     // the matvec kernel but no tile one, so a chunked prompt would stop in "kernel launch with no Metal dispatch".
-    if (type == iq::kIQ1_S || type == iq::kIQ4_NL) return false;   // (IQ1_M: the tile kernels since DS4_MM_INST(29) and iq_bs)
+    if (type == iq::kIQ4_NL) return false;   // (IQ1_M and IQ1_S: the tile kernels, DS4_MM_INST(29) / (19) and iq_bs)
     return type_on_device(type);
 #else
     (void) type;

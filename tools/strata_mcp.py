@@ -345,7 +345,7 @@ def spawn_detached(cmd: list, cwd: Path, log_path: Path, env: dict | None = None
 def run_quiet(cmd, timeout=30) -> str:
     """A command's stdout ('' when it is missing or fails), without a console window flashing up on Windows."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                               creationflags=CREATE_NO_WINDOW if WIN else 0).stdout or ""
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
@@ -976,6 +976,8 @@ class Strata:
             amd = []
         if not WIN and not amd and shutil.which("rocm-smi"):
             amd = rocm_smi_gpus()
+        if not WIN and not amd:                         # no setup module, no rocm-smi (ROCm from a Python venv): the kernel's own list
+            amd = kfd_gpus()
         # A PC whose only NVIDIA cards are Pascal / Volta (two GTX 1080s) and that has no AMD card Strata can use: setup runs them with the
         # CUDA 12 engine (old_gpus_opt_in), so the app must not call it "no supported graphics card" and start both cards Off (#3655).
         # A PC with a newer card keeps recommending that one; naming an old card is still the opt-in.
@@ -1286,6 +1288,8 @@ class Strata:
         for f, fd in families.items():
             sizes = []
             for m in self.sizes_of(models, f):
+                if f == "deepseek41" and self.dsv41_not_here(m):      # the Unsloth 1-bit sets on a DGX Spark: not offered until a Spark run passes
+                    continue
                 own = self.own_size(f, m)
                 d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
@@ -1339,6 +1343,23 @@ class Strata:
         return out
 
     @staticmethod
+    def dsv41_not_on_mac() -> tuple:
+        """The DeepSeek sets the Metal engine cannot run yet (IQ1_S experts): strata_control/dsv41_fit.MAC_NOT_YET."""
+        from strata_control import dsv41_fit
+        return dsv41_fit.MAC_NOT_YET
+
+    @staticmethod
+    def dsv41_not_here(model: str) -> str | None:
+        """The plain line when this computer (a Mac, a DGX Spark) is not offered `model`, else None: strata_control/dsv41_fit.not_here."""
+        from strata_control import dsv41_fit
+        return dsv41_fit.not_here(model)
+
+    @staticmethod
+    def dsv41_not_on_mac_line() -> str:
+        from strata_control import dsv41_fit
+        return dsv41_fit.MAC_NOT_YET_LINE
+
+    @staticmethod
     def dsv41_disk_gb(d: dict) -> float:
         """The free disk a DeepSeek set needs: its whole download plus the pack and room to work (the card text says "about")."""
         from strata_control import dsv41_fit
@@ -1350,7 +1371,7 @@ class Strata:
         cards = list((hw or {}).get("gpus", []))
         if only:
             cards = [c for c in cards if int(c.get("index", -1)) in {int(i) for i in only}]
-        return dsv41_fit.plan(cards, (hw or {}).get("ram_gb"), disk_free, vendor=(hw or {}).get("engine_vendor"), model=model)
+        return dsv41_fit.plan(cards, (hw or {}).get("ram_gb"), disk_free, vendor=(hw or {}).get("engine_vendor"), model=model, named=bool(only))
 
     def dsv41_words(self, hw, model=None, installed: bool = False) -> str:
         """The catalog's `on_this_pc` text for DeepSeek-V4.1-Flash, with the disk it needs (download and preparation) beside the memory: a set that
@@ -1879,6 +1900,43 @@ def windows_video_controllers() -> list:
     return [{"name": x.get("Name"), "driver": x.get("DriverVersion")} for x in d if isinstance(x, dict)]
 
 
+KFD_SUPPORTED = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151")
+
+
+def kfd_gpus(sysfs: str = "/sys") -> list:
+    """AMD cards from the kernel's KFD topology and the amdgpu driver's files, with no ROCm tool and no setup module: a PC that has only the
+    driver plus the engine's own runtime has no rocm-smi, amd-smi or rocminfo, and the cards were then not counted at all (a 4-card PC ran on one).
+    Numbered as HIP numbers them (the GPU nodes in order, CPU nodes skipped)."""
+    base = Path(sysfs) / "class/kfd/kfd/topology/nodes"
+    out = []
+    try:
+        nodes = sorted((p for p in base.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
+    except OSError:
+        return out
+    for node in nodes:
+        try:
+            props = dict(line.partition(" ")[::2] for line in (node / "properties").read_text().splitlines())
+            ver, simd = int(props.get("gfx_target_version") or 0), int(props.get("simd_count") or 0)
+        except (OSError, ValueError):
+            continue
+        if ver == 0 or simd == 0:
+            continue
+        arch = f"gfx{ver // 10000}{(ver // 100) % 100:x}{ver % 100:x}"
+        dev = Path(sysfs) / f"class/drm/renderD{props.get('drm_render_minor', '').strip()}/device"
+        try:
+            vram = int((dev / "mem_info_vram_total").read_text()) / 2 ** 30
+        except (OSError, ValueError):
+            vram = 0.0
+        try:
+            name = (dev / "product_name").read_text().strip() or f"AMD Radeon ({arch})"
+        except OSError:
+            name = f"AMD Radeon ({arch})"
+        ok = arch in KFD_SUPPORTED
+        out.append({"index": len(out), "name": name, "vram_gb": round(vram, 1), "arch": arch, "driver": "amdgpu", "vendor": "amd",
+                    "usable": ok, "problem": None if ok else f"not supported - Strata's AMD backend does not list {arch}"})
+    return out
+
+
 def rocm_smi_gpus() -> list:
     s = run_quiet(["rocm-smi", "--showproductname", "--showmeminfo", "vram", "--json"])
     try:
@@ -2274,6 +2332,8 @@ class Tools:
             gpu = gpus = kv = low_ram = None
             if md.get("multi_file"):                    # DeepSeek on a Mac (0.2.7.1): the sets that were run there, 8K like everywhere, text only
                 from strata_control import dsv41_fit
+                if model in dsv41_fit.MAC_NOT_YET:
+                    raise ToolError(dsv41_fit.MAC_NOT_YET_LINE)
                 if model not in dsv41_fit.MAC_SET_PACK:
                     raise ToolError(f"{model} is not offered on a Mac: DeepSeek runs there as " + " or ".join(dsv41_fit.MAC_SET_PACK))
                 if vision in ("yes", "gpu", "cpu"):

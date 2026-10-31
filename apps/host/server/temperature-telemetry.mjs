@@ -122,3 +122,8 @@ export async function readTemperatures({ platform = process.platform, now = Date
   }
   return { cpuTempC: null, ssdTempC: null };
 }
+
+/** Ends the Windows drive-temperature loop (the Monitor has not been open for a while); the next read starts it again. */
+export function stopTemperatures() {
+  if (windowsReader) { windowsReader.stop(); windowsReader = null; }
+}

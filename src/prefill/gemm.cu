@@ -637,6 +637,7 @@ bool gemm_dequant_side() {
 }
 
 Gemm::~Gemm() {
+    for (W16Entry& e : w16_) if (e.d) (void) cudaFree(e.d);
     for (void* e : side_ready_)
         if (e) (void) cudaEventDestroy((cudaEvent_t) e);
     for (void* e : side_free_)
@@ -1391,6 +1392,36 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     }
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
+#endif
+#ifndef STRATA_USE_HIP
+    // STRATA_PF_W16_CACHE_MIB=N: the FP16 weight kept on the device after its first dequant (same values, same product)
+    if (w16_budget_ < 0) {
+        const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
+        w16_budget_ = v ? (int64_t) std::atoll(v) * (1ll << 20) : 0;
+    }
+    if (w16_budget_ > 0 && !side_scratch_) {
+        const int64_t bytes = N * K * 2;
+        uint16_t* cw = nullptr;
+        for (const W16Entry& e : w16_)
+            if (e.p == W_blocks && e.type == ggml_type && e.n == N && e.k == K) { cw = e.d; break; }
+        if (cw == nullptr && w16_used_ + bytes <= w16_budget_) {
+            size_t fb = 0, tb = 0;
+            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (2ull << 30) &&
+                cudaMalloc((void**) &cw, (size_t) bytes) == cudaSuccess) {
+                strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, cw, stream_);
+                w16_.push_back({W_blocks, ggml_type, N, K, cw});
+                w16_used_ += bytes;
+            } else {
+                (void) cudaGetLastError();
+                cw = nullptr;
+                w16_budget_ = w16_used_ > 0 ? w16_used_ : 0;   // out of room: stop trying
+            }
+        }
+        if (cw != nullptr) {
+            f16(X, cw, Y, T, N, K, ldy, beta);
+            return;
+        }
+    }
 #endif
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.

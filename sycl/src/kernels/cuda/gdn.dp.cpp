@@ -4,6 +4,7 @@
 // barrier at all: every line of it touches only one (j, h) column, so one thread owns a column end to end.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/gdn.hpp"
@@ -232,8 +233,8 @@ void gdn_step(float *state, const float *q, const float *k, const float *v,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_step_kernel_34b62e>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_step_kernel_34b62e>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, JTHREADS),
                                   sycl::range(1, 1, JTHREADS)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -261,8 +262,8 @@ void gdn_conv_step(float *conv_state, const float *x, const float *kW,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_conv_kernel_b12e73>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_conv_kernel_b12e73>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -296,8 +297,8 @@ void gdn_l2_norm(float *x, int64_t rows, int64_t cols, float eps,
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_l2_kernel_fcfb3d>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_l2_kernel_fcfb3d>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)rows) *
                                       sycl::range(1, 1, 32),
                                   sycl::range(1, 1, 32)),
@@ -344,8 +345,8 @@ void gdn_beta_gate(float *beta, int64_t h_v, void *stream) try {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_beta_gate_kernel_e2ab3e>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_beta_gate_kernel_e2ab3e>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((n + 127) / 128)) *
                         sycl::range(1, 1, 128),
@@ -376,8 +377,8 @@ void gdn_out_norm(const float *o, const float *z, const float *ssm_norm,
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_out_norm_kernel_9883e0>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_out_norm_kernel_9883e0>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)h_v) *
                                       sycl::range(1, 1, 32),
                                   sycl::range(1, 1, 32)),

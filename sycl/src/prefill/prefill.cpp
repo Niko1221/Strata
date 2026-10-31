@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/kprof.hpp"
 #include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/esimd_moe.hpp"
@@ -2387,6 +2388,7 @@ struct PeTimer {
 bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                        std::string &err) try {
     err.clear();
+    strata::kprof::phase("prompt");
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
@@ -5005,6 +5007,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                      (long long) kv_prefetches);
     }
     stats_.ms_total += ms_since(t_start);
+    strata::kprof::window_end("prompt");   // STRATA_KPROF=1: the per-kernel table of this prompt
     if (pt.on) {
         pt.fold();
         double total = 0.0;

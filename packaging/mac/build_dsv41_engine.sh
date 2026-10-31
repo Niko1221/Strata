@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the DeepSeek-V4.1-Flash engine component for Apple Silicon (strata-dsv41, backend metal).
 #
-#   bash packaging/mac/build_dsv41_engine.sh [--version 0.1.54] [--build DIR] [--out DIR] [--build-id ID]
+#   bash packaging/mac/build_dsv41_engine.sh [--version 0.1.55] [--build DIR] [--out DIR] [--build-id ID]
 #
 # Run it in the source tree on the Mac. It configures and builds the `strata_ds4` target (metal/CMakeLists.txt) when the binary is
 # missing, stages it as `strata-dsv41` beside the kernel sources the engine compiles at start-up, packages them with
@@ -18,7 +18,7 @@
 #   <exe>/metal/ggml-common.h
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-VERSION=0.1.54
+VERSION=0.1.55
 BUILD="$ROOT/build-metal"
 OUT="$ROOT/pkg/engine"
 BUILD_ID=""

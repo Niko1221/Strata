@@ -19,6 +19,7 @@ import json
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 
 from strata_control import discovery
@@ -336,6 +337,8 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
 
 
 ISSUE_WORDS = {
+    "not_on_this_mac": "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do",
+    "not_on_this_spark": "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were",
     "multiple_model_groups": "the folder holds more than one model",
     "incomplete_or_invalid_shard_set": "some parts of the model are missing",
     "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
@@ -364,6 +367,11 @@ _REASON_WORDS = (
     ("unsupported_architecture", "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"),
     ("symlink", "this is a shortcut (symbolic link) that cannot be followed"),
 )
+
+
+def _not_here(model: str) -> str | None:
+    from strata_control import dsv41_fit
+    return dsv41_fit.not_here(model)
 
 
 def plain_issue(code: str) -> str:
@@ -667,12 +675,21 @@ def _dsv41_plan(path: Path, details) -> dict | None:
         candidate = {"family": dsv41_sets.FAMILY, "model": row["model"], "basis": "known_names_and_sizes", "expected_expert_types": [],
                      "expected_tensor_count": None,
                      "setup_args_hint": ["--family", dsv41_sets.FAMILY, "--model", row["model"], "--gguf-dir", str(place)]}
+        line = _not_here(row["model"])
+        if line:       # recommend, never force: say what does work and stop before anything is copied or packed (Mac: no Metal IQ1_S kernel; DGX Spark: never run)
+            issues.append("not_on_this_mac" if sys.platform == "darwin" else "not_on_this_spark")
+            candidate = None
+            messages.append(line)
         messages.append(f"This is DeepSeek-V4.1-Flash, {row['label']}: all {len(row['present'])} model files are here"
                         + (", and the n-gram table." if row["engram"] else "."))
         if not row["engram"]:
             messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put engram-IQ4_NL.gguf beside the model files.")
         if row["legacy"]:
             messages.append("These are the file names of the first release; Strata uses them as they are.")
+        if row.get("layout") == "six":
+            messages.append("These are ISTA-DASLab's six-shard files of 27 October 2026 (the Engram is the sixth part); Strata uses them as they are.")
+        if row.get("newer_first"):
+            messages.append("The first part is the version ISTA-DASLab re-published on 26 October 2026 (a larger chat template); Strata uses it as it is.")
         messages.append("Strata checks the files once when it sets them up (about 5 minutes on a fast drive); nothing is copied or downloaded for them.")
     sizes = _dsv41_files(place)
     wanted = list(row["present"]) + ([row["engram"]] if row["engram"] else [])

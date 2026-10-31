@@ -713,7 +713,30 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         std::signal(SIGPIPE, SIG_IGN);
 #endif
     }
-    while (in.next(line)) {
+    // WP-8's option (1): the post-prompt cache settle runs in the gaps between requests and gives way the moment one arrives
+    // (DS4_SETTLE_IDLE=0 turns it off).  An agent's turn ends, its tool runs, and the swaps the next answer wants go in during
+    // that idle - which is what the 800 ms prompt-side budget cannot do for a run that has no next request.
+    std::atomic<bool> settle_cancel{false};
+    std::thread settle_th;
+    const bool settle_idle_on = [] {
+        const char* v = std::getenv("DS4_SETTLE_IDLE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    const auto settle_stop = [&] {
+        if (!settle_th.joinable()) return;
+        settle_cancel.store(true, std::memory_order_release);
+        settle_th.join();
+    };
+    const auto settle_start = [&] {
+        if (!settle_idle_on || settle_th.joinable()) return;
+        settle_cancel.store(false, std::memory_order_release);
+        settle_th = std::thread([&m, &settle_cancel] { m.settle_idle(settle_cancel); });
+    };
+    for (;;) {
+        settle_start();   // (nothing in flight: this is the idle)
+        const bool have_line = in.next(line);
+        settle_stop();    // (a line arrived, or the input closed)
+        if (!have_line) break;
         if (line == "QUIT") break;
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
@@ -1024,6 +1047,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             note(msg);
         }
     }
+    settle_stop();   // (the idle thread must be off the cache before the profile is saved and the engine ends)
     m.save_profile();
     return 0;
 }

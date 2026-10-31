@@ -4,6 +4,7 @@
 // The ggml authors): dequantize_row_q2_0/q4_0/q5_0/q8_0/q3_K/q4_K/q5_K/q6_K/iq4_nl/iq4_xs.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
@@ -235,7 +236,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
                                                                                \
-        st->submit([&](sycl::handler &cgh) {                                   \
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                                   \
             auto p_ct0 = p;                                                    \
             auto row_bytes_ct1 = row_bytes;                                    \
             auto row0_ct2 = row0;                                              \

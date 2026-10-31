@@ -10,6 +10,8 @@
 // Requires the native weights (`--native`): every quantized projection must carry its GGUF blocks.
 #pragma once
 
+#include <array>
+
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
@@ -265,6 +267,19 @@ public:
     /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
     /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
     /// On a layer split it is the last stage's (the one that reports the rows), asked through the first.
+    /// One prompt of a multi-prompt read (run_multi): its tokens, the position it starts at and, per stage of a layer split
+    /// (index 0 = the first stage), the session it reads into (nullptr / missing: that stage's own main session).
+    struct Seg {
+        const int64_t* tokens = nullptr;
+        int64_t n = 0;
+        int64_t pos0 = 0;
+        std::vector<core::SessionState*> stage_ss;
+    };
+    /// Several prompts in ONE layer-major pass (the streamed experts of a layer are read once for all of them).  Each
+    /// prompt fills its own sessions; `on_chunk` / `on_stage_chunk` report the FIRST prompt only.  Returns false with `err`
+    /// when the layer-major walk does not apply (then nothing was read; the caller reads the prompts one by one).
+    bool run_multi(const std::vector<Seg>& segs, std::string& err);
+
     bool layer_major_mid() const {
         const Prefill* p = this;
         while (p->next_ != nullptr) p = p->next_;
@@ -282,8 +297,11 @@ private:
     int64_t lm_prepare_chain(int64_t n, std::string& why);
     void lm_release_chain();
     bool run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    struct LmSub { int seg = 0; int64_t c0 = 0, T = 0, t0 = 0; };   ///< a sub-chunk: prompt, first token, tokens, row in the super-chunk
+    bool lm_run(const std::vector<Seg>& segs, int depth, const std::vector<LmSub>* given_super, std::string& err);
     void lm_release();
     bool lm_mid_ = false;
+    bool lm_force_ = false;        ///< run_multi: the walk even for a short total
     bool lm_by_default_ = false;   ///< the walk is on because nothing was set (a wider VRAM margin, the measured super-chunk size)
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.

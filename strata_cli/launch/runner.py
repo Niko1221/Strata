@@ -356,10 +356,14 @@ def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
         cfg.pop("layer_split", None)
 
 
-def installed_cards(base: dict | None) -> list[int] | None:
+def installed_cards(base: dict | None, usable: list[dict] | None = None) -> list[int] | None:
     """The cards the installed model's own config names after a choice (setup --gpu / --gpus, the app's card pick: "gpus_asked"), in its order;
-    None when it names none or was never asked."""
+    None when it names none or was never asked, or when setup picked them itself (strata_control/gpu_pick.py: a DeepSeek config of setup 0.2.8
+    and earlier marks setup's one-card pick as asked; `usable`: the cards that count on this PC, needed to tell the two apart)."""
     if not isinstance(base, dict) or not (base.get("gpus_asked") or base.get("gpu_roles")):
+        return None
+    from strata_control import gpu_pick
+    if not gpu_pick.chosen_by_person(base, usable):
         return None
     g = base.get("gpu")
     if g is None or g == "":
@@ -387,7 +391,11 @@ def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, 
             return None
     if s.gpus:
         return [int(g) for g in s.gpus]
-    if installed_cards(base) or (isinstance(base, dict) and base.get("gpu_roles")):
+    try:
+        usable_now = catalog.computer().usable_gpus
+    except Exception:                                        # noqa: BLE001 - without the card list a saved card is kept, as before
+        usable_now = None
+    if installed_cards(base, usable_now) or (isinstance(base, dict) and base.get("gpu_roles")):
         return None
     try:
         from strata_control import gpu_roles
@@ -395,6 +403,15 @@ def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, 
         if len(comp.usable_gpus) < 2:
             return None
         cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        if comp.engine_vendor == "amd" and ((isinstance(base, dict) and base.get("arch") == "deepseek41")
+                                            or getattr(s, "family", None) == "deepseek41"):
+            # DeepSeek on AMD: the cards setup and `--plan` use (strata_control/dsv41_fit.run_cards): one card on Windows, only cards the engine
+            # package runs, no integrated chip beside a card with memory of its own
+            from strata_control import dsv41_fit
+            ids = [int(c["index"]) for c in dsv41_fit.run_cards(comp.usable_gpus, comp.engine_vendor)[0]]
+            if len(ids) < 2:
+                return ids or None                           # pinned to that card, exactly as setup pins it
+            cards = [c for c in cards if int(c.get("index", 0)) in ids]
         rec = gpu_roles.recommend(cards, comp.engine_vendor)["roles"]
         return gpu_roles.order(rec, cards) or None
     except Exception:                                        # noqa: BLE001 - never block a launch over the choice of cards
@@ -415,7 +432,7 @@ def dsv41_engine_version(exe) -> tuple:
     if version:
         return version
     try:
-        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, errors="replace", timeout=10, stdin=subprocess.DEVNULL)
         found = re.search(r"(\d+\.\d+\.\d+(?:\.\d+)?)", (done.stdout or "") + (done.stderr or ""))
         return tuple(int(x) for x in found.group(1).split(".")) if found else ()
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -948,7 +965,11 @@ class Runner:
             roles = base.get("gpu_roles")
             if isinstance(roles, dict) and roles:
                 return ["--gpu-roles", ",".join(f"{k}={v}" for k, v in sorted(roles.items(), key=lambda kv: int(kv[0])))]
-            cards = installed_cards(base)
+            try:
+                usable_now = self.catalog.computer().usable_gpus
+            except Exception:                                # noqa: BLE001
+                usable_now = None
+            cards = installed_cards(base, usable_now)
             if cards:
                 return ["--gpus", ",".join(str(g) for g in cards)] if len(cards) > 1 else ["--gpu", str(cards[0])]
         except Exception:                                    # noqa: BLE001 - never block a launch over remembering the cards
@@ -1286,7 +1307,7 @@ class Runner:
             d = fam["models"][m]
             subs = [d.get("subdir"), d.get("legacy_subdir"), m]
             folders = [p, *[p / x for x in subs if x]] if p.is_dir() else [p.parent]
-            names = [n for s in d["shards"] for n in (s, legacy.get(s)) if n]
+            names = [n for s in d["shards"] for n in (s, legacy.get(s)) if n] + list(d.get("shards6") or [])      # (+ the six-shard layout of 2026-10-27)
             folder = next((f for f in folders if any((f / n).exists() for n in names)), None)
             if folder is not None:
                 return m, d, folder
@@ -1309,14 +1330,17 @@ class Runner:
         if found is None:
             return False
         model, d, folder = found
+        from strata_control import dsv41_fit
+        if dsv41_fit.not_here(model):     # Mac: no Metal IQ1_S kernel yet; DGX Spark: never run; said before an engine or a download is touched
+            raise LaunchError(dsv41_fit.not_here(model),
+                              "Use the 2.00 or 2.25 files (--model ist-das-2.00bpw or --model ist-das-2.25bpw, or --model-path to those files). "
+                              "Nothing was downloaded or changed.", 2)
         if s.family and s.family != "deepseek41":
             raise LaunchError(f"These are DeepSeek-V4.1-Flash's files, not {s.family} {s.model}'s.",
                               "Leave --model out, or use --model " + model + ".", 2)
-        others = list(d["shards"])
-        legacy = getattr(mod, "DSV41_LEGACY_NAMES", {})
-        missing = [n for n in others if not (folder / n).exists() and not (legacy.get(n) and (folder / legacy[n]).exists())]
+        _layout, others, missing = mod.dsv41_parts(d, lambda n: (folder / n).exists())      # the pinned four-shard layout, or ISTA's six-shard one (0.2.8.1)
         if missing:
-            parts = {4: "four", 9: "nine"}.get(len(others), str(len(others)))
+            parts = {4: "four", 5: "five", 9: "nine"}.get(len(others), str(len(others)))
             raise LaunchError(f"DeepSeek-V4.1-Flash {d.get('label', model)} is in {parts} parts and {len(missing)} of them are not in {folder} "
                               f"(first missing: {missing[0]}).",
                               "Put every part in the folder (or drop --model-path and let Strata download them). "
@@ -1416,6 +1440,9 @@ class Runner:
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
                             log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
+        if self.s.gpus and not self.s.gpu_roles:             # a DeepSeek model on AMD keeps the card the person names from now on (strata_control/gpu_pick.py)
+            from strata_control import gpu_pick
+            gpu_pick.remember(base_path, [int(g) for g in self.s.gpus])
         self.apply_four_card(cfg)
         self.use_own_dsv41_engine(cfg)
         apply_experts(cfg, self.experts_flag(cfg.get("exe")))   # after the engine is settled: only a 0.1.50+ engine is given --experts

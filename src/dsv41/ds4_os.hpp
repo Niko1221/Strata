@@ -122,6 +122,36 @@ inline bool pread_direct(fd_t f, void* dst, uint64_t n, uint64_t off) {
     if (ev.h == nullptr) return false;
     const uint64_t a0 = off & ~(kDirectAlign - 1), need = direct_span(off, n), want = (off - a0) + n;
     uint8_t* p = (uint8_t*) dst;
+    {   // DS4_READ_SPLIT (default 1): a read of 2 MB or more goes out as that many overlapped reads at once (a deeper queue for one
+        // expert matrix; on a file with no view the drive does 6.5 GB/s at a queue of 4 against 3.4 at 1)
+        static const int split = std::getenv("DS4_READ_SPLIT") ? std::max(1, std::min(16, std::atoi(std::getenv("DS4_READ_SPLIT")))) : 1;
+        if (split > 1 && need >= (2ull << 20) && need < (1ull << 30)) {
+            const uint64_t seg = (((need + split - 1) / split) + kDirectAlign - 1) & ~(kDirectAlign - 1);
+            struct SOv { OVERLAPPED ov; HANDLE h; uint64_t len; };
+            SOv o[16];
+            int cnt = 0;
+            bool okk = true;
+            for (uint64_t at = 0; at < need && cnt < 16; at += seg, ++cnt) {
+                o[cnt].ov = OVERLAPPED{};
+                o[cnt].len = std::min(seg, need - at);
+                o[cnt].h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                const uint64_t fat = a0 + at;
+                o[cnt].ov.Offset = (DWORD) (fat & 0xffffffffu);
+                o[cnt].ov.OffsetHigh = (DWORD) (fat >> 32);
+                o[cnt].ov.hEvent = o[cnt].h;
+                if (!ReadFile((HANDLE) f, p + at, (DWORD) o[cnt].len, nullptr, &o[cnt].ov) && GetLastError() != ERROR_IO_PENDING) okk = false;
+            }
+            uint64_t total = 0;
+            for (int i = 0; i < cnt; ++i) {
+                DWORD r = 0;
+                if (!GetOverlappedResult((HANDLE) f, &o[i].ov, &r, TRUE) && GetLastError() != ERROR_HANDLE_EOF) okk = false;
+                total += r;
+                if (r != o[i].len && i + 1 < cnt) okk = false;   // (only the last segment may be short, at the file's end)
+                CloseHandle(o[i].h);
+            }
+            return okk && total >= want;
+        }
+    }
     uint64_t got = 0;
     while (got < need) {
         const DWORD ask = (DWORD) std::min<uint64_t>(need - got, 1ull << 30);   // (a multiple of 4096)

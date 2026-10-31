@@ -2734,11 +2734,12 @@ namespace {
 // are folded at every MoE layer's host sync, after which all of them have completed.
 enum PfPhase { kPfStart, kPfHc, kPfGdn, kPfQsa, kPfQsaIdx, kPfQsaSel, kPfQsaAttn, kPfRouter, kPfHostGroup, kPfGather,
                kPfWaitCopy, kPfDequant, kPfGemmGU, kPfGemmD, kPfCombine, kPfPle, kPfKvStage, kPfGdnConv, kPfGdnRec, kPfGdnOut, kPfHcWrite,
+               kPfHcDown, kPfHcUp, kPfHcInj, kPfHcMix, kPfQsaIdxG, kPfQsaPrep,
                kPfCount };
 const char* const kPfNames[kPfCount] = {"embed+steps", "hc read", "gdn", "qsa proj", "qsa indexer", "qsa select",
                                         "qsa attn", "router+shared", "host grouping", "gather", "wait copy", "dequant",
                                         "gemm gate/up", "gemm down", "combine", "ple", "kv stage", "gdn conv+gates",
-                                        "gdn recurrence", "gdn out proj", "hc write"};
+                                        "gdn recurrence", "gdn out proj", "hc write", "hc read: down+silu", "hc read: up", "hc read: inject", "hc read: mix", "qsa: indexer gemms", "qsa: norm/rope/kv append/q prep"};
 struct PfTimer {
     bool on = std::getenv("STRATA_PREFILL_TIMING") != nullptr;
     std::vector<cudaEvent_t> ev;
@@ -3726,6 +3727,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo, xf16);
                 else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo, ldx, xf16);
                 normed = false;
+                pt.mark(kPfHcDown, cs);   // STRATA_PREFILL_TIMING: the hyper-connection read's parts on their own lines (norm stays on "hc read")
                 bool hcd = false;
                 bool hdown = false;
                 if (wd->q8_scale == nullptr && ldx != D && !pf_hcdown()) {   // not with STRATA_HC_REQ8's int8 rows   // STRATA_HCD_EXACT: the exact-order down kernel when hipBLASLt would take 1176 / 1177
@@ -3743,6 +3745,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (!hcd && !hdown && !bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
                 gr_silu(m.lo, m.lo16, T, m.cs, m.lo16_lo);
+                pt.mark(kPfHcUp, cs);
                 bool upmixed = false;
                 if (wu->q8_scale == nullptr && hc_upmix() && T >= std::max(pf_switch_min_t(), hc_upmix_min_t()) && !gr_unfused() && !m.lo16_lo && !m.mixed_bf_lo &&
                     wu->kind == core::WeightKind::Bf16InF32 && wu->data && wu->ne0 == LR && wu->ne1 == D) {
@@ -3771,7 +3774,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     }
                 }
                 if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                pt.mark(kPfHcInj, cs);
                 if (!hcd && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
+                pt.mark(kPfHcMix, cs);
                 if (upmixed) {
                 } else if (gr_unfused()) {
                     gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h, m.mixed_bf_lo);
@@ -3808,10 +3813,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     pt.mark(kPfGdnConv, cs);   // "gdn" is the projections in; the rest on their own lines
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
-                    gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
-                    pt.mark(kPfGdnRec, cs);
                     const int64_t ld_y = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
-                    if (kva_state_only && !kva_gdn_norm)   // KVA: the recurrence without the output normalization
+                    bool fused_gdn = false;
+#if defined(STRATA_USE_HIP)
+                    // gfx12, STRATA_GDN_CHUNKED=1: conv and recurrence together, the conv output as FP16 (their time then shows in "gdn conv+gates")
+                    if (!kva_state_only)
+                        fused_gdn = gdn_conv_recurrence_fused(conv, m.qkv, (const float*) wc->data, m.hbuf, state, m.gate, m.beta, m.z,
+                                                              (const float*) wnm->data, EPS, EPS, m.y, m.y_h, T, m.cs, ld_y);
+#endif
+                    if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
+                    pt.mark(kPfGdnRec, cs);
+                    if (fused_gdn) {
+                    } else if (kva_state_only && !kva_gdn_norm)   // KVA: the recurrence without the output normalization
                         gdn_recurrence_state_only(state, m.hbuf, m.gate, m.beta, m.y, T, m.cs);
                     else
                         gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs,
@@ -3843,8 +3856,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
                     // KVA: the query projections have no consumer when only the KV/indexer state advances
                     if (!kva_state_only && !native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
+                    pt.mark(kPfQsaIdxG, cs);   // STRATA_PREFILL_TIMING: "qsa proj" is the k, v and q projections
                     if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     if (!kva_state_only && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
+                    pt.mark(kPfQsaPrep, cs);
                     rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
                     rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), m.cs);
                     // KV streaming: this layer's cells [0, p0) come in from the host copy to the staging pool, and the
@@ -5882,6 +5897,11 @@ const char* lm_env_text() {   // STRATA_PREFILL_LAYER_MAJOR as set (nullptr: uns
 }
 bool lm_env_explicit() { const char* e = lm_env_text(); return e != nullptr && e[0] != '\0'; }
 
+bool lm_force_env() {   // STRATA_PREFILL_LM_FORCE=1 (research): the layer-major walk even for a prompt under two chunks (the identity reference of a multi-prompt read)
+    static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_LM_FORCE"); return e != nullptr && e[0] == '1'; }();
+    return v;
+}
+
 bool lm_even_env() {   // even super-chunks (STRATA_PREFILL_LM_EVEN=0: the largest that fits, then the rest)
     static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_LM_EVEN"); return !(e && e[0] == '0'); }();
     return v;
@@ -5936,9 +5956,15 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     Impl& m = *impl_;
     if (m.g == nullptr) { why = "not initialized"; return 0; }
 #if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
-    // only NVIDIA CUDA has run this path; on an AMD build the prompt stays on the chunk-major path
-    why = "layer-major prefill has only been run on NVIDIA CUDA";
-    return 0;
+    // only NVIDIA CUDA has run this path by default; on an AMD build the prompt stays on the chunk-major path unless
+    // STRATA_LM_HIP=1 (opt-in, PAR-A 2026-10-30: gfx1201 is being qualified)
+    {
+        static const bool lm_hip = [] { const char* v = std::getenv("STRATA_LM_HIP"); return v != nullptr && v[0] == '1'; }();
+        if (!lm_hip) {
+            why = "layer-major prefill has only been run on NVIDIA CUDA";
+            return 0;
+        }
+    }
 #endif
     const core::ModelGeometry& g = *m.g;
     const core::OnDevice on_device(m.device);   // a layer split's later stage is sized on its own GPU
@@ -5996,13 +6022,13 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
     if (m.fused_bufs) { why = "the fused expert layout"; return 0; }
     if (!m.GU || !m.Dm || (n_mmq > 0 && !m.ids_identity)) { why = "the MoE buffers are missing"; return 0; }
     // (an explicit STRATA_PREFILL_LM_TOKENS may be one chunk: the A/B against the default path, experts aside)
-    const int64_t min_s = lm_tokens_env() > 0 ? m.T : 2 * m.T;
+    const int64_t min_s = (lm_force_ || lm_force_env()) ? 1 : (lm_tokens_env() > 0 ? m.T : 2 * m.T);   // (lm_force_: run_multi - several prompts, however short)
     if (n < min_s) { why = "a short prompt"; return 0; }
     const int64_t want = lm_tokens_env() > 0 ? lm_tokens_env() : (lm_by_default_ ? kLmDefaultOnTokens : kLmDefaultTokens);
     int64_t S = std::max<int64_t>(min_s, want / m.T * m.T);
     S = std::min<int64_t>(S, (n + m.T - 1) / m.T * m.T);
     if (cap > 0) {
-        if (cap % m.T != 0 || cap < min_s) { why = "the layer split's stages read different chunks"; return 0; }
+        if ((!lm_force_ && cap % m.T != 0) || cap < min_s) { why = "the layer split's stages read different chunks"; return 0; }
         S = std::min(S, cap);
     }
     const int64_t G = m.T * K;
@@ -6148,15 +6174,57 @@ void Prefill::lm_release_chain() {
 }
 
 bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    Seg one;
+    one.tokens = tokens;
+    one.n = n;
+    one.pos0 = pos0;
+    return lm_run(std::vector<Seg>{one}, 0, nullptr, err);
+}
+
+// Several prompts in ONE layer-major pass (PAR-H, 2026-10-30): the super-chunk is a list of sub-chunks, each from one
+// prompt ("segment") with its own sessions; a layer's attention halves run per sub-chunk against that segment's
+// session (GDN / QSA / PLE state), and the layer's experts are staged ONCE for every sub-chunk of the super-chunk -
+// the streamed experts cost is shared by the prompts.  A single segment with no sessions given is exactly the usual run.
+bool Prefill::run_multi(const std::vector<Seg>& segs, std::string& err) {
+    err.clear();
+    if (segs.empty()) { err = "prefill: no prompt"; return false; }
+    int64_t total = 0;
+    for (const Seg& sg : segs) total += sg.n;
+    std::string why;
+    if (hand_in_ != nullptr || !impl_) { err = "prefill: multi-prompt read declined (chunk hand-off in use)"; return false; }
+    for (Prefill* q = this; q != nullptr; q = q->next_) q->lm_force_ = true;
+    struct ForceOff { Prefill* h; ~ForceOff() { for (Prefill* q = h; q != nullptr; q = q->next_) q->lm_force_ = false; } } force_off{this};
+    if (lm_prepare_chain(total, why) <= 0) { err = "prefill: multi-prompt read declined: " + why; return false; }
+    bool ok = lm_run(segs, 0, nullptr, err);
+    std::string drain_err;
+    if (!drain_pipeline(drain_err) && ok) {
+        ok = false;
+        err = drain_err;
+    }
+    for (Prefill* q = this; q != nullptr; q = q->next_) q->lm_mid_ = false;
+    lm_release_chain();
+    return ok;
+}
+
+bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<LmSub>* given_super, std::string& err) {
     err.clear();
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
-    core::SessionState& ss = *m.ss;
+    // the session of segment i on THIS stage: the segment's own (stage depth `depth`), else this stage's main session
+    auto ss_of = [&](size_t i) -> core::SessionState* {
+        const Seg& sg = segs[i];
+        return (size_t) depth < sg.stage_ss.size() && sg.stage_ss[(size_t) depth] != nullptr ? sg.stage_ss[(size_t) depth] : m.ss;
+    };
+    core::SessionState* ssp = ss_of(0);
+    const bool multi = segs.size() > 1;
+    int64_t n = 0;                       // all the prompts' tokens
+    for (const Seg& sg : segs) n += sg.n;
+    const int64_t pos0 = segs[0].pos0;   // (only the progress line's)
     const auto t_start = Clock::now();
     const cudaStream_t cs = (cudaStream_t) m.cs;
     Impl::LmBufs& lb = m.lm;
-    const int64_t S = lb.S, L = g.n_layers;
+    const int64_t L = g.n_layers;
     // a layer split's stage (2026-10-24): its layers [LB, LE); a later stage's rows arrive in R_host, written by the
     // stage before it, and a stage before the last writes its final rows into the next stage's R_host, then runs
     // the next stage on that super-chunk on a thread while it reads its own next super-chunk (one hand-off buffer:
@@ -6166,38 +6234,89 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
     strata::kernels::QsaShapes s = core::qsa_shapes(g);   // as 0.2.2's run_impl
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
-    int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+    std::vector<std::array<int32_t, 2>> prevs(segs.size());
+    for (size_t i = 0; i < segs.size(); ++i) prevs[i] = {ss_of(i)->ple_prev[0], ss_of(i)->ple_prev[1]};
     PfTimer pt;
     // the MMQ row table lives in the borrowed cache slots when the prompt path borrows: written for every prompt
     // (none without an MMQ layer: the FP16 path has no such table)
     if (m.ids_identity) mmq::iota(m.ids_identity, m.T * K, m.cs);
     // ---- the PLE rows, read per chunk on a thread as run_impl does (the same state machine, in chunk order)
-    const bool ple_on = ss.ple.ready();
+    const bool ple_on = m.ss->ple.ready();
     static const bool ple_batch_env = [] {
         const char* v = std::getenv("STRATA_PLE_BATCH");
         return v == nullptr || std::atoi(v) != 0;
     }();
     const bool ple_batch = ple_on && ple_batch_env && strata::kernels::ple_native_postops_enabled() &&
-                           (ss.ple.w.key_bf16 != nullptr || ss.ple.w.key_native_data != nullptr) &&
+                           (m.ss->ple.w.key_bf16 != nullptr || m.ss->ple.w.key_native_data != nullptr) &&
                            m.region_bytes / ((uint64_t) (3 * strata::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * 2 + 4096) >= 64;
-    const int32_t prev0[2] = {prev[0], prev[1]};
-    auto ple_gather = [&m, &ss, tokens, n, prev0](int64_t c0, int buf, std::string& e) -> bool {
-        const int64_t T = std::min(m.T, n - c0);
-        auto at = [&](int64_t i) { return i < 2 ? prev0[i] : (int32_t) tokens[i - 2]; };
+    // ---- the plan.  A segment is cut into pieces of at most S tokens (the usual super-chunks), each piece into
+    // sub-chunks of m.T tokens from the piece's start; pieces of several segments are packed into one super-chunk while
+    // their rows fit S.  One segment: exactly the usual super-chunks.
+    const int64_t S = m.lm.S;
+    // the sub-chunk size of a multi-prompt read: what every stage of the chain can take (the stages' chunks may differ)
+    int64_t tsub = m.T;
+    if (lm_force_)
+        for (const Prefill* q = this; q != nullptr; q = q->next_) tsub = std::min(tsub, q->impl_->T);
+    std::vector<std::vector<LmSub>> supers_own;
+    const std::vector<std::vector<LmSub>>* supers_p = &supers_own;
+    std::vector<std::vector<LmSub>> one_given;
+    if (given_super != nullptr) {
+        one_given.push_back(*given_super);
+        supers_p = &one_given;
+    } else {
+        std::vector<LmSub> cur;
+        int64_t cur_rows = 0;
+        for (size_t si = 0; si < segs.size(); ++si)
+            for (int64_t p0s = 0; p0s < segs[si].n; p0s += S) {
+                const int64_t piece = std::min(S, segs[si].n - p0s);
+                if (!cur.empty() && cur_rows + piece > S) {
+                    supers_own.push_back(std::move(cur));
+                    cur.clear();
+                    cur_rows = 0;
+                }
+                for (int64_t c0s = 0; c0s < piece; c0s += tsub) {
+                    LmSub sb;
+                    sb.seg = (int) si;
+                    sb.c0 = p0s + c0s;
+                    sb.T = std::min(tsub, piece - c0s);
+                    sb.t0 = cur_rows + c0s;
+                    cur.push_back(sb);
+                }
+                cur_rows += piece;
+            }
+        if (!cur.empty()) supers_own.push_back(std::move(cur));
+    }
+    const std::vector<std::vector<LmSub>>& supers = *supers_p;
+    std::vector<std::pair<int, int>> flat;   // every sub-chunk in order: (super-chunk, sub-chunk)
+    for (size_t si = 0; si < supers.size(); ++si)
+        for (size_t c = 0; c < supers[si].size(); ++c) flat.push_back({(int) si, (int) c});
+    std::vector<int64_t> flat_base(supers.size(), 0);
+    for (size_t si = 1; si < supers.size(); ++si) flat_base[si] = flat_base[si - 1] + (int64_t) supers[si - 1].size();
+    auto sub_at = [&](int64_t gi) -> const LmSub& { return supers[(size_t) flat[(size_t) gi].first][(size_t) flat[(size_t) gi].second]; };
+    const std::array<int32_t, 2> prev_none{-1, -1};
+    (void) prev_none;
+    std::vector<std::array<int32_t, 2>> prev0s = prevs;
+    auto ple_gather = [&m, &segs, &ss_of, &prev0s, &sub_at](int64_t gi, int buf, std::string& e) -> bool {
+        const LmSub& sb = sub_at(gi);
+        const int64_t* tokens = segs[(size_t) sb.seg].tokens;
+        core::SessionState* ssq = ss_of((size_t) sb.seg);
+        const int64_t c0 = sb.c0, T = sb.T;
+        const std::array<int32_t, 2>& prev0 = prev0s[(size_t) sb.seg];
+        auto at = [&](int64_t i) { return i < 2 ? prev0[(size_t) i] : (int32_t) tokens[i - 2]; };
         int32_t pv[2] = {at(c0), at(c0 + 1)};
         for (int64_t t = 0; t < T; ++t) {
             const int32_t tok = (int32_t) tokens[c0 + t];
-            strata::kernels::ngram_rows(&tok, pv, 1, ss.ple.consts,
+            strata::kernels::ngram_rows(&tok, pv, 1, m.ss->ple.consts,
                                         m.ple_rows[buf].data() + t * strata::kernels::PLE_N_HEADS);
             pv[0] = pv[1];
             pv[1] = tok;
         }
-        return ss.ple.table->gather_batch(m.ple_rows[buf].data(), (size_t) T, m.ple_emb_host[buf], e);
+        return m.ss->ple.table->gather_batch(m.ple_rows[buf].data(), (size_t) T, m.ple_emb_host[buf], e);
     };
     std::string ple_next_err;
     std::future<bool> ple_next;
     int ple_buf = 0;
-    auto ple_land = [&](int64_t c0, int64_t T) -> bool {
+    auto ple_land = [&](int64_t gi, int64_t T) -> bool {
         const auto tp = Clock::now();
         if (!ple_next.get()) { err = ple_next_err; return false; }
         // #1996: the pageable fallback (no RAM to pin) goes up through a pinned slot; the pinned buffers as before
@@ -6208,12 +6327,12 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
             err = std::string("prefill: the PLE rows' upload failed: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
-        if (c0 + m.T < n) {
+        if (gi + 1 < (int64_t) flat.size()) {
             if (cudaEventSynchronize(m.ple_copied[ple_buf ^ 1]) != cudaSuccess) {
                 err = std::string("prefill: the PLE rows' upload failed: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
-            ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c1 = c0 + m.T, b = ple_buf ^ 1] {
+            ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c1 = gi + 1, b = ple_buf ^ 1] {
                 strata::aux_cpus::pin_current_thread();
                 return ple_gather(c1, b, ple_next_err);
             });
@@ -6249,7 +6368,10 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                 continue;
             }
             const uint8_t* b = m.src->blob_stable(l, e);
-            if (!b) { err = "prefill (layer-major): expert source has no blob"; return false; }
+            if (!b) {   // #4695: no contiguous mapped blob (Windows, the mapping dropped for unbuffered reads): the source copies it itself
+                js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
+                continue;
+            }
             js.push_back({b, (size_t) lay.blob_bytes(l)});
         }
         m.stager->start(std::move(js));
@@ -6312,7 +6434,10 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                     continue;
                 }
                 const uint8_t* b = m.src->blob_stable(l, e);
-                if (!b) { err = "prefill (layer-major): expert source has no blob"; return false; }
+                if (!b) {   // #4695: as in lm_prefetch
+                    js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
+                    continue;
+                }
                 js.push_back({b, (size_t) lay.blob_bytes(l)});
             }
             m.stager->start(std::move(js));
@@ -6556,9 +6681,13 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
         return true;
     };
 
-    for (int64_t sc0 = 0; sc0 < n; sc0 += S) {
-        const int64_t Sn = std::min(S, n - sc0);
-        const int64_t nc = (Sn + m.T - 1) / m.T;
+    for (size_t sci = 0; sci < supers.size(); ++sci) {
+        const std::vector<LmSub>& subs = supers[sci];
+        int64_t Sn = 0;
+        for (const LmSub& sb : subs) Sn = std::max(Sn, sb.t0 + sb.T);
+        const int64_t nc = (int64_t) subs.size();
+        int64_t last_seg0 = -1;
+        for (int64_t c = 0; c < nc; ++c) if (subs[(size_t) c].seg == 0) last_seg0 = c;
         ++lm_supers;
         lm_mid_ = true;
         for (int64_t l = LB; l <= LE; ++l) {
@@ -6567,8 +6696,8 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
             // host mode: sub-chunk c's rows go up on the copy stream into buffer c % 2 (issued one sub-chunk ahead)
             auto r_buf = [&](int64_t c) { return (c & 1) ? lb.R2 : R_chunk; };
             auto issue_up = [&](int64_t c) {
-                const int64_t cc0 = sc0 + c * m.T, TT = std::min(m.T, n - cc0);
-                cudaMemcpyAsync(r_buf(c), lb.R_host + (size_t) (c * m.T) * D, (size_t) TT * D * 4, cudaMemcpyHostToDevice,
+                const int64_t TT = subs[(size_t) c].T;
+                cudaMemcpyAsync(r_buf(c), lb.R_host + (size_t) subs[(size_t) c].t0 * D, (size_t) TT * D * 4, cudaMemcpyHostToDevice,
                                 m.copy);
                 cudaEventRecord(lb.ev_in[c & 1], m.copy);
             };
@@ -6579,12 +6708,17 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
             for (int64_t c = 0; c < nc; ++c) {
                 if (should_stop && should_stop()) { err = "cancelled"; return false; }
                 core::progress_beat();
-                core::progress_at("reading the prompt (layer-major): layer", l, pos0 + sc0 + c * m.T);
+                const LmSub& sub = subs[(size_t) c];
+                const Seg& sgm = segs[(size_t) sub.seg];
+                const int64_t* const tokens = sgm.tokens;
+                ssp = ss_of((size_t) sub.seg);
+                core::progress_at("reading the prompt (layer-major): layer", l, sgm.pos0 + sub.c0);
                 qsa_index = qsa_index0;
                 gdn_index = gdn_index0;
-                const int64_t c0 = sc0 + c * m.T;          // in this run's tokens
-                const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
-                const int64_t t0 = c * m.T;                // in the super-chunk
+                const int64_t c0 = sub.c0;                 // in this prompt's tokens
+                const int64_t T = sub.T, p0 = sgm.pos0 + c0;
+                const int64_t t0 = sub.t0;                 // in the super-chunk
+                const int64_t gi = flat_base[sci] + c;     // in the whole run
                 m.R = lb.r_dev ? lb.R + t0 * D : r_buf(c);
                 if (!lb.r_dev) {
                     if (l > 0) {
@@ -6635,11 +6769,14 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         if (!core::embed_row(*m.wt, g, tokens[c0 + t], m.emb + t * N, cs, err)) return false;
                     gr_broadcast(m.emb, m.R, T, cs);
                     if (ple_on && !ple_next.valid())
-                        ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c0, b = ple_buf] {
+                        ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, gi, b = ple_buf] {
                             strata::aux_cpus::pin_current_thread();
-                            return ple_gather(c0, b, ple_next_err);
+                            return ple_gather(gi, b, ple_next_err);
                         });
-                    for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }
+                    {
+                        std::array<int32_t, 2>& pvv = prevs[(size_t) sub.seg];
+                        for (int64_t t = 0; t < T; ++t) { pvv[0] = pvv[1]; pvv[1] = (int32_t) tokens[c0 + t]; }
+                    }
                 } else if (l > LB) {   // (a later stage's first layer: the stage before wrote layer LB - 1)
                     // the previous layer's experts: the hyper-connection write of its FFN half
                     gr_write(m.R, acc, m.inj, HC, T, cs);
@@ -6684,19 +6821,21 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                             err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
                             return false;
                         }
-                        lm_mid_ = c + 1 < nc;
-                        if (on_stage_chunk && !lm_mid_ && !on_stage_chunk(p0 + T, err)) return false;
-                        if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
+                        lm_mid_ = c != last_seg0 && last_seg0 >= 0;
+                        if (sub.seg == 0) {   // (the reports are the first prompt's; the others only fill their sessions)
+                            if (on_stage_chunk && !lm_mid_ && !on_stage_chunk(p0 + T, err)) return false;
+                            if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
+                        }
                     }
                     continue;
                 }
                 const core::LayerView v(*m.wt, l);
-                if (l == 1 && ple_on && !ple_land(c0, T)) return false;
+                if (l == 1 && ple_on && !ple_land(gi, T)) return false;
                 // ---- the PLE block at layer 1 (run_impl's, batched or token by token)
                 if (l == 1 && ple_on && ple_batch) {
                     pt.mark(kPfPle, cs);
                     const auto tp = Clock::now();
-                    const strata::kernels::PleWeights& pw = ss.ple.w;
+                    const strata::kernels::PleWeights& pw = m.ss->ple.w;
                     constexpr int64_t HD = strata::kernels::NG_HC_DIM;
                     const uint64_t per_token = (uint64_t) (3 * HD + N + 4) * 4 + (uint64_t) N * (bf16x2(m.f16_io) ? 4 : 2) + 4096;
                     const int64_t SB = std::min<int64_t>(T, (int64_t) (m.region_bytes / per_token));
@@ -6724,7 +6863,7 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         m.gemm.bf16(e16, pw.value_bf16, val, nb, N, N);
                         if (e16_lo) m.gemm.bf16(e16_lo, pw.value_bf16, val, nb, N, N, 0, 1.0f);
                         try {
-                            strata::kernels::native_ple_postops_batch(key, m.R + s0 * D, val, ss.ple.hist, pw, qn, gated,
+                            strata::kernels::native_ple_postops_batch(key, m.R + s0 * D, val, ssp->ple_hist, pw, qn, gated,
                                                                       gate, (int) nb, cs);
                         } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
                     }
@@ -6737,10 +6876,10 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         po.normalized = m.ple_norm;
                         po.result = m.R + t * D;
                         try {
-                            strata::kernels::ple_block(m.ple_emb + t * N, m.R + t * D, ss.ple.hist, ss.ple.w, po,
-                                                       ss.ple.scratch, cs);
+                            strata::kernels::ple_block(m.ple_emb + t * N, m.R + t * D, ssp->ple_hist, m.ss->ple.w, po,
+                                                       m.ss->ple.scratch, cs);
                         } catch (const std::exception& e) { err = std::string("prefill PLE: ") + e.what(); return false; }
-                        strata::kernels::ple_history_advance(ss.ple.hist, m.ple_norm, cs);
+                        strata::kernels::ple_history_advance(ssp->ple_hist, m.ple_norm, cs);
                     }
                     stats_.ms_ple += ms_since(tp);
                 }
@@ -6798,7 +6937,7 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                                               *wsa = need(v, "ssm_a", err);
                         if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
                         pt.mark(kPfGdn, cs);
-                        float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
+                        float* state = ssp->gdn_state + (size_t) (gdn_index - ssp->gdn_ord0) * gdn_floats;
                         float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                         if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
                         if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
@@ -6806,15 +6945,21 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                         if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                         pt.mark(kPfGdnConv, cs);
                         gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, cs);
-                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, cs);
+                        bool fused_gdn = false;
+#if defined(STRATA_USE_HIP)
+                        fused_gdn = gdn_conv_recurrence_fused(conv, m.qkv, (const float*) wc->data, m.hbuf, state, m.gate, m.beta, m.z,
+                                                              (const float*) wnm->data, EPS, EPS, m.y, m.y_h, T, cs, 0);
+#endif
+                        if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, cs);
                         pt.mark(kPfGdnRec, cs);
-                        gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, cs);
+                        if (!fused_gdn)
+                            gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, cs);
                         pt.mark(kPfGdnOut, cs);
                         if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err)) return false;
                         ++gdn_index;
                     } else if (half == 0) {
                         // ======================= QSA (run_impl's, without its debug dumps) =======================
-                        const core::QsaState& st = ss.qsa_states[qsa_index];
+                        const core::QsaState& st = ssp->qsa_states[qsa_index];
                         const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
                                               *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
                                               *wik = need(v, "indexer.k_proj.weight", err),
@@ -6986,17 +7131,22 @@ bool Prefill::run_layer_major(const int64_t* tokens, int64_t n, int64_t pos0, st
                       cudaGetErrorString(cudaGetLastError());
                 return false;
             }
-            if (on_stage_chunk && !on_stage_chunk(pos0 + sc0 + Sn, err)) return false;
+            if (on_stage_chunk && last_seg0 >= 0 &&
+                !on_stage_chunk(segs[0].pos0 + subs[(size_t) last_seg0].c0 + subs[(size_t) last_seg0].T, err))
+                return false;
             next_err_.clear();
-            next_run_ = std::async(std::launch::async, [this, tokens, sc0, Sn, pos0] {
+            next_run_ = std::async(std::launch::async, [this, segs_c = std::make_shared<std::vector<Seg>>(segs), depth,
+                                                        sp_super = std::make_shared<std::vector<LmSub>>(supers[sci])] {
                 strata::aux_cpus::pin_current_thread();
-                return next_->run_layer_major(tokens + sc0, Sn, pos0 + sc0, next_err_);
+                return next_->lm_run(*segs_c, depth + 1, sp_super.get(), next_err_);
             });
         }
     }
     lm_mid_ = false;
-    ss.ple_prev[0] = prev[0];
-    ss.ple_prev[1] = prev[1];
+    for (size_t i = 0; i < segs.size(); ++i) {
+        ss_of(i)->ple_prev[0] = prevs[i][0];
+        ss_of(i)->ple_prev[1] = prevs[i][1];
+    }
     if (ple_next.valid()) ple_next.wait();
     if (cudaStreamSynchronize(cs) != cudaSuccess) {
         err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());

@@ -2,6 +2,7 @@
 // (from PR #21 by code-martin; KV-streaming integration and the deterministic group maximum added on merge).
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -251,7 +252,7 @@ void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto ct3 = 1.0f / 16.0f;
 
@@ -281,7 +282,7 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 KvHostPools host_host_KvHostPools_ct11 =
                     host ? *host : KvHostPools{};
@@ -323,7 +324,7 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->parallel_for<
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class kv_append_q4_batch_kernel_11c37a>>(
             sycl::nd_range<3>(grid * sycl::range(1, 1, 32),
                               sycl::range(1, 1, 32)),
@@ -349,8 +350,8 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class kv_gather_q4_kernel_300c16>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class kv_gather_q4_kernel_300c16>>(
                 sycl::nd_range<3>(sycl::range(1, 1, num_blocks) *
                                       sycl::range(1, rows_per_block, 32),
                                   sycl::range(1, rows_per_block, 32)),

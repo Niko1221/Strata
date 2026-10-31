@@ -47,3 +47,14 @@ test('the monitor uses the pace, the Monitor screen asks while it is open, and /
   const screen = await readFile(new URL('../src/screens/Monitor.tsx', import.meta.url), 'utf8');
   assert.match(screen, /api\.get\('\/api\/monitor'\)/);
 });
+
+test('the drive-temperature reader starts only while the Monitor is watched and ends after it is gone (#4661)', async () => {
+  const monitor = await readFile(new URL('../server/monitor.mjs', import.meta.url), 'utf8');
+  assert.match(monitor, /STRATA_REAL_ENGINE==='1'&&Date\.now\(\)<watchedUntil\?readTemperatures\(\)/);
+  assert.match(monitor, /stopTemperatures\(\)/);
+  const { readTemperatures, stopTemperatures } = await import('../server/temperature-telemetry.mjs');
+  assert.equal(typeof stopTemperatures, 'function');
+  // nothing is started by importing or by stopping: on a PC that never opens the Monitor no PowerShell and no disk query exists
+  stopTemperatures();
+  assert.deepEqual(await readTemperatures({ platform: 'darwin' }), { cpuTempC: null, ssdTempC: null });
+});

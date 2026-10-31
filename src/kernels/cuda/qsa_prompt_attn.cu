@@ -19,6 +19,8 @@
 
 #include <atomic>
 #include <cstdio>
+#include <vector>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
@@ -2243,6 +2245,34 @@ bool hip_wmma_usable(int64_t n_q, int64_t cap) {
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                  const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+    {   // STRATA_QSA_STAT=1 (diagnostic): how much consecutive queries' selections overlap (the row-union attention's sharing factor)
+        static const bool stat_on = std::getenv("STRATA_QSA_STAT") != nullptr;
+        static int stat_calls = 0;
+        if (stat_on && n_q >= 2048 && stat_calls < 4) {
+            ++stat_calls;
+            cudaStreamSynchronize(st);
+            std::vector<int32_t> h((size_t) (n_q * cap)), hs((size_t) (n_q * kStepCount));
+            cudaMemcpy(h.data(), ids, h.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hs.data(), steps, hs.size() * 4, cudaMemcpyDeviceToHost);
+            for (int R : {4, 8, 16, 32}) {
+                double mean_n = 0, mean_u = 0; int64_t groups = 0;
+                for (int64_t g0 = n_q / 2; g0 + R <= n_q; g0 += 4 * R) {   // the second half of the chunk (longer contexts)
+                    std::vector<int32_t> all;
+                    int64_t sum_n = 0;
+                    for (int r = 0; r < R; ++r) {
+                        const int n = hs[(size_t) (g0 + r) * kStepCount + kStepWidth];
+                        sum_n += n;
+                        all.insert(all.end(), h.begin() + (size_t) (g0 + r) * cap, h.begin() + (size_t) (g0 + r) * cap + n);
+                    }
+                    std::sort(all.begin(), all.end());
+                    const int64_t u = std::unique(all.begin(), all.end()) - all.begin();
+                    mean_n += (double) sum_n / R; mean_u += (double) u; ++groups;
+                }
+                if (groups) std::fprintf(stderr, "strata qsa stat: call %d n_q %lld cap %lld rows/group %d: mean selection %.0f, mean union %.0f (x%.2f; K/V reads per row %.2fx lower)\n",
+                                         stat_calls, (long long) n_q, (long long) cap, R, mean_n / groups, mean_u / groups, mean_u / mean_n, R * mean_n / mean_u);
+            }
+        }
+    }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;

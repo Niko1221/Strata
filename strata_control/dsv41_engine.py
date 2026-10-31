@@ -213,7 +213,7 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
     The package's own folders go on the library path first: a Windows HIP package carries the ROCm runtime it loads in rocm/bin."""
     import subprocess
     try:
-        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(Path(exe).parent),
+        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(Path(exe).parent),
                               env=start_env(exe))
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"it could not be started ({exc})"

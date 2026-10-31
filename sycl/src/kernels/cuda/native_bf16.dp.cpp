@@ -1,5 +1,6 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -336,7 +337,7 @@ the work-group size if needed.
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
                                                                                \
-        st->submit([&](sycl::handler &cgh) {                                   \
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                                   \
             auto x_ct0 = x;                                                    \
             auto ldx_ct1 = ldx;                                                \
             auto w_ct2 = w;                                                    \
@@ -369,7 +370,7 @@ the work-group size if needed.
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
                                                                                \
-        st->submit([&](sycl::handler &cgh) {                                   \
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                                   \
             auto x_ct0 = x;                                                    \
             auto ldx_ct1 = ldx;                                                \
             auto w_ct2 = w;                                                    \
@@ -629,7 +630,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -658,7 +659,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -687,7 +688,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -716,7 +717,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -745,7 +746,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -774,7 +775,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -803,7 +804,7 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
                 sycl::ext::oneapi::experimental::use_root_sync};               \
                                                                                \
-            st->submit([&](sycl::handler &cgh) {                               \
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                               \
                 auto x_ct0 = x;                                                \
                 auto ldx_ct1 = ldx;                                            \
                 auto w_ct2 = w;                                                \
@@ -874,7 +875,7 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
                                                                                \
-        st->submit([&](sycl::handler &cgh) {                                   \
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {                                   \
             auto x_ct0 = x;                                                    \
             auto w_ct1 = w;                                                    \
             auto y_ct2 = y;                                                    \

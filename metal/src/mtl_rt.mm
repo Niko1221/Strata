@@ -65,11 +65,7 @@ struct Context::Impl {
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
 // the MTLBuffer and offset that bind byte `off` of b (a chunked buffer: the chunk the offset selects)
 static inline id<MTLBuffer> BO(const Buffer& b, size_t off, size_t& o) {
-#if defined(STRATA_DS4_RUNTIME)
-    if (!b.chunks) { o = off + b.bias; return B(b); }
-#else
-    if (!b.chunks) { o = off; return B(b); }
-#endif
+    if (!b.chunks) { o = off + b.bias; return B(b); }   // (bias: a view onto part of a bigger allocation; 0 otherwise)
     const size_t k = std::min(off / b.stride, b.chunks->size() - 1);
     o = off - k * b.stride;
     return (__bridge id<MTLBuffer>)(*b.chunks)[k];

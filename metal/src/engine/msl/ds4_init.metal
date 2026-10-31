@@ -2706,6 +2706,36 @@ kernel void ds4_dq_q5k(device const uchar* W [[buffer(0)]], constant ulong& ld [
     }
 }
 
+// Q6_K (210-byte blocks: ql[128], qh[64], int8 scales[16], f16 d; the Unsloth sets' attention, shared-expert, head and engram_kv
+// matrices): a thread four values of a block (two 128-value halves x 32 lanes), ggml's dequantize_row_q6_K arithmetic
+// ((d * scale) * (q - 32), in this order) -> out[n][k] half
+kernel void ds4_dq_q6k(device const uchar* W [[buffer(0)]], constant ulong& ld [[buffer(1)]], constant uint& k [[buffer(2)]],
+                       constant uint& n [[buffer(3)]], device half* out [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
+    const uint nb = k / 256u;
+    const ulong total = (ulong) n * nb * 64ul;
+    if (ulong(gid) >= total) return;
+    const uint l = gid & 31u;
+    const uint hf = (gid >> 5) & 1u;
+    const uint blk = (gid >> 6) % nb;
+    const uint row = uint(ulong(gid) / (64ul * nb));
+    const device uchar* p = W + (ulong) row * ld + (ulong) blk * 210ul;
+    const float d = float(as_type<half>(*(const device ushort*) (p + 208)));
+    const device uchar* ql = p + 64u * hf;
+    const device uchar* qh = p + 128u + 32u * hf;
+    const device char* sc = (const device char*) (p + 192u + 8u * hf);
+    const uint is = l >> 4;
+    const uint qlo = uint(ql[l]), qhi = uint(ql[l + 32u]), h = uint(qh[l]);
+    const int q1 = int((qlo & 0xfu) | (((h >> 0) & 3u) << 4)) - 32;
+    const int q2 = int((qhi & 0xfu) | (((h >> 2) & 3u) << 4)) - 32;
+    const int q3 = int((qlo >> 4) | (((h >> 4) & 3u) << 4)) - 32;
+    const int q4 = int((qhi >> 4) | (((h >> 6) & 3u) << 4)) - 32;
+    device half* o = out + (ulong) row * k + (ulong) blk * 256ul + 128ul * hf + l;
+    o[0] = half(d * float(sc[is + 0u]) * float(q1));
+    o[32] = half(d * float(sc[is + 2u]) * float(q2));
+    o[64] = half(d * float(sc[is + 4u]) * float(q3));
+    o[96] = half(d * float(sc[is + 6u]) * float(q4));
+}
+
 // Q8_0: 34-byte blocks (fp16 d, 32 int8)
 kernel void ds4_dq_q8(device const uchar* W [[buffer(0)]], constant ulong& ld [[buffer(1)]], constant uint& k [[buffer(2)]],
                       constant uint& n [[buffer(3)]], device half* out [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
