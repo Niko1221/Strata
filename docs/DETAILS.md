@@ -521,8 +521,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   there and in the window, but has no name to list.
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema
   must accept only JSON objects at its root (`"type":"object"`, or `anyOf`/`oneOf` of object schemas). Local `#` references
-  work and remote ones are refused. This is schema prompting followed by server validation, not grammar-constrained
-  decoding, with one generation per request. `jsonschema` is used when installed (`python -m pip install "jsonschema>=4.23,<5"`);
+  work and remote ones are refused. This is schema prompting followed by server validation on the ordinary path, or
+  grammar-constrained decoding when the engine takes token masks and `llguidance` is installed (below); one generation
+  per request. `jsonschema` is used when installed (`python -m pip install "jsonschema>=4.23,<5"`);
   without it the answer is only checked to be one JSON object. Malformed output returns **502** with
   `error.code: structured_output_failed`, an invalid schema **400**. JSON formats combined with tools or MCP are refused.
   Streaming buffers the answer and emits content only after validation. Math answers often hold LaTeX such as `\alpha`, which is
@@ -582,6 +583,22 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   A started reply ends as `"length"`, and a second hit on the retry returns an error. `STRATA_NAN_GUARD=0` turns the check off;
   `STRATA_NAN_INJECT=<n>[,<n>...]` flags the n-th checked window to test the path. The one-shot command line and the
   Intel (SYCL) port do not check.
+
+This is **schema prompting followed by server validation** on the ordinary path. When the engine takes token masks
+(its INFO line says `token_mask=1`) and the Python package `llguidance` is installed (setup adds it), the chat
+route's JSON formats are also **grammar-constrained**: before every generation window the engine asks the server
+(MQ) and the server answers with the tokens the grammar allows (MK) or free sampling (MF), so every emitted token
+advances the schema; a turn that opens a tool call leaves the grammar. Without the engine support or the package
+the server says so once and validation after the turn is all there is. Either way one generation is made per
+request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
+duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
+`error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
+tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
+
+Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
+then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
+`/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior; its
+`constrained_decoding` says whether the token masks are live for this server.
 
 ### Context and limits
 
