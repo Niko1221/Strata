@@ -3,6 +3,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -12,6 +13,9 @@
 #include <string>
 #include <cstdlib>
 #include <limits>
+#include <memory>
+#include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -43,6 +47,7 @@ void cuda_check(cudaError_t e) {
     if (e != cudaSuccess) { std::fprintf(stderr, "CUDA: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 struct Fixture {
+    int owner_device = 0;
     ModelGeometry g;
     QsaState state;
     std::vector<void*> device, host;
@@ -63,6 +68,7 @@ struct Fixture {
         }
     }
     Fixture(int fmt, int mode) {
+        cuda_check(cudaGetDevice(&owner_device));
         auto& st = state;
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
         st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
@@ -120,10 +126,147 @@ struct Fixture {
                 cuda_check(cudaMemset(static_cast<uint8_t*>(sources[i])+offset, salt, sizes[i]-offset));
         }
     }
-    ~Fixture() { for (void* p:device) cudaFree(p); for (void* p:host) cudaFreeHost(p); }
+    ~Fixture() {
+        int previous = 0;
+        cuda_check(cudaGetDevice(&previous));
+        cuda_check(cudaSetDevice(owner_device));
+        for (void* p:device) cuda_check(cudaFree(p));
+        for (void* p:host) cuda_check(cudaFreeHost(p));
+        cuda_check(cudaSetDevice(previous));
+    }
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {
     return a.k==b.k && a.v==b.v && a.k_scale==b.k_scale && a.v_scale==b.v_scale && a.pooled==b.pooled;
+}
+
+bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+    if (a.ids != b.ids || a.imgs != b.imgs || a.gdn != b.gdn || a.ple != b.ple || a.tails != b.tails ||
+        a.dead != b.dead || a.block_pos != b.block_pos || a.used != b.used || a.dev_tag != b.dev_tag ||
+        a.pinned != b.pinned || a.plan.chunk != b.plan.chunk || a.plan.from != b.plan.from || a.plan.to != b.plan.to ||
+        a.plan.lend != b.plan.lend || a.plan.pipe != b.plan.pipe || a.plan.single != b.plan.single ||
+        a.plan.chunked != b.plan.chunked || a.stage_parts.size() != b.stage_parts.size()) return false;
+    for (size_t i = 0; i < a.stage_parts.size(); ++i)
+        if (!same_checkpoint(a.stage_parts[i], b.stage_parts[i])) return false;
+    return true;
+}
+
+bool same_kv(const ConversationKv& a, const ConversationKv& b) {
+    return a.format == b.format && a.cells == b.cells && a.heads == b.heads && a.head_dim == b.head_dim &&
+           a.page_size == b.page_size && a.pooled_rows == b.pooled_rows && a.idx_dim == b.idx_dim &&
+           a.dev_tag == b.dev_tag && equal(a, b);
+}
+
+// A small independent session used only by STRATA_TEST_STAGE_PARALLEL.  It deliberately does not share a
+// Fixture, QSA state, or SavedConversation with another worker; the test exercises concurrent capture ownership,
+// not concurrent mutation of one conversation.
+struct ConcurrentCapture {
+    Fixture main{ kKvF16, 0 }, draft{ kKvF16, 2 };
+    SessionState session;
+    ConversationStateSizes sizes;
+    std::vector<int32_t> ids;
+    std::vector<ConversationImageKey> images;
+    std::vector<ConversationCheckpoint> checkpoints;
+    bool with_draft;
+
+    ConcurrentCapture(uint8_t salt, bool use_draft) : ids(65), with_draft(use_draft) {
+        auto& g = main.g;
+        g.n_layers = 4;
+        g.n_expert = 256;
+        g.ssm_state_size = 2;
+        g.ssm_v_heads = 2;
+        g.ssm_conv_channels = 8;
+        session.max_cells = 96;
+        session.qsa_states = &main.state;
+        session.layer_hi = g.n_layers;
+        session.gdn_alloc = g.n_gdn_layers();
+        session.qsa_alloc = g.n_qsa_layers();
+        std::string error;
+        if (!conversation_state_sizes(g, sizes, error)) throw std::runtime_error(error);
+        main.alloc(session.gdn_state, sizes.gdn);
+        main.alloc(session.ple_hist, sizes.ple);
+        main.alloc(main.state.idx_tail, sizes.tail);
+        main.alloc(main.state.idx_dead, sizes.dead);
+        main.alloc(main.state.idx_block_pos, sizes.block_pos);
+        for (size_t i = 0; i < ids.size(); ++i) ids[i] = (int32_t)i + 1;
+        fill(salt);
+    }
+
+    void fill(uint8_t salt) {
+        main.fill(salt);
+        draft.fill(salt);
+        for (const auto& [p, n] : std::vector<std::pair<void*, size_t>>{
+                 {session.gdn_state, sizes.gdn}, {session.ple_hist, sizes.ple}, {main.state.idx_tail, sizes.tail},
+                 {main.state.idx_dead, sizes.dead}, {main.state.idx_block_pos, sizes.block_pos}})
+            cuda_check(cudaMemset(p, salt, n));
+        cuda_check(cudaMemcpy(main.state.idx_pooled + (ids.size() / 4) * main.g.idx_key_dim,
+                              main.state.idx_dead, sizes.dead, cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    }
+
+    bool capture(SavedConversation& image, std::string& error) const {
+        const ConversationView view{ids, images, checkpoints, true};
+        return conversation_snapshot_save(image, view, session, main.g, with_draft ? &draft.state : nullptr, error);
+    }
+
+    ConversationRestore restore(const SavedConversation& image, std::string& error) {
+        return conversation_snapshot_restore(image, session, main.g, with_draft ? &draft.state : nullptr, error);
+    }
+};
+
+bool same_saved(const SavedConversation& a, const SavedConversation& b) {
+    if (a.geometry != b.geometry || a.layer_lo != b.layer_lo || a.layer_hi != b.layer_hi || a.cvec != b.cvec ||
+        !same_checkpoint(a.live, b.live) || a.kv.size() != b.kv.size() ||
+        a.checkpoints.size() != b.checkpoints.size() || a.stage_images.size() != b.stage_images.size()) return false;
+    for (size_t i = 0; i < a.kv.size(); ++i) if (!same_kv(a.kv[i], b.kv[i])) return false;
+    for (size_t i = 0; i < a.checkpoints.size(); ++i)
+        if (!same_checkpoint(a.checkpoints[i], b.checkpoints[i])) return false;
+    for (size_t i = 0; i < a.stage_images.size(); ++i)
+        if (!same_saved(a.stage_images[i], b.stage_images[i])) return false;
+    return true;
+}
+
+struct ConcurrentResult { bool ok = false; std::string error; };
+
+void concurrent_capture_regression(int devices) {
+    const int workers = std::min(std::max(devices, 2), 4);  // also exercise two independent sessions on one GPU
+    std::vector<std::unique_ptr<ConcurrentCapture>> cases;
+    std::vector<SavedConversation> serial((size_t)workers);
+    cases.reserve((size_t)workers);
+    for (int i = 0; i < workers; ++i) {
+        cuda_check(cudaSetDevice(i % devices));
+        cases.push_back(std::make_unique<ConcurrentCapture>((uint8_t)(31 + i * 47), (i & 1) != 0));
+        std::string error;
+        check(cases.back()->capture(serial[(size_t)i], error), "serial concurrent-capture reference");
+    }
+    check(!same_saved(serial.front(), serial.back()), "distinct salts produce distinct serial captures");
+
+    std::vector<ConcurrentResult> results((size_t)workers);
+    std::vector<std::thread> threads;
+    threads.reserve((size_t)workers);
+    for (int i = 0; i < workers; ++i) {
+        threads.emplace_back([&, i] {
+            auto& result = results[(size_t)i];
+            try {
+                cudaError_t set = cudaSetDevice(i % devices);
+                if (set != cudaSuccess) { result.error = cudaGetErrorString(set); return; }
+                SavedConversation captured, restored;
+                if (!cases[(size_t)i]->capture(captured, result.error) ||
+                    !same_saved(serial[(size_t)i], captured)) {
+                    if (result.error.empty()) result.error = "parallel capture differs from serial reference";
+                    return;
+                }
+                cases[(size_t)i]->fill(199);
+                if (cases[(size_t)i]->restore(serial[(size_t)i], result.error) != ConversationRestore::restored) return;
+                if (!cases[(size_t)i]->capture(restored, result.error) || !same_saved(serial[(size_t)i], restored)) {
+                    if (result.error.empty()) result.error = "parallel restore/capture differs from serial reference";
+                    return;
+                }
+                result.ok = true;
+            } catch (const std::exception& e) { result.error = e.what(); }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    for (const auto& result : results) check(result.ok, result.error.empty() ? "parallel capture worker" : result.error.c_str());
 }
 
 void full_session(int fmt, int mode, int experts) {
@@ -337,6 +480,11 @@ void full_session(int fmt, int mode, int experts) {
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
+    if (const char* parallel = std::getenv("STRATA_TEST_STAGE_PARALLEL"); parallel != nullptr && parallel[0] == '1') {
+        concurrent_capture_regression(devices);
+        std::printf("conversation_snapshot_test parallel: %d checks passed\n",checks);
+        return 0;
+    }
     for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
         if (fmt==3 && mode!=0) continue;
         Fixture f(fmt,mode);

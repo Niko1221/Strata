@@ -113,6 +113,9 @@ decodes alone.
 
 | Switch | What it does |
 |---|---|
+| `STRATA_STAGE_COPY_PARALLEL=1` | on a layer split, capture, parked restore and slot copies run one persistent worker per stage; each worker touches only its own sessions and GPU. With `STRATA_PARK_ASYNC=1` or `STRATA_CKPT_ASYNC=1`, logs the conflict and keeps all stage copies serial to preserve the shared async staging buffers |
+| `STRATA_STAGE_COPY_TRACE=1` | with the above: print each stage's copy duration as `strata stage copy: OPERATION stage N in X ms`; off by default, with no timing vector or clock reads when disabled |
+| `STRATA_SLOT_SHUTTLE_REUSE=1` | the host-image slot path reuses one temporary K/V image per stage and call instead of allocating one per QSA layer; every save still copies the full image |
 | `STRATA_SLOT_COPY_DIRECT=1` | an admission (and a slot's resume) copies the running state and the QSA K/V device to device, instead of through host images |
 | `STRATA_SLOT_COPY_BATCHSYNC=1` | with the above: queue the ~116 copies and synchronize each device once |
 | `STRATA_SLOT_CKPT_MOVE=1` | the admission's turn checkpoint moves into the slot (no 112 MB copy); it also keeps the dropped checkpoints' storage, as `STRATA_CKPT_POOL` does; a session SAVE or parked conversation taken right after an admission lacks the moved checkpoint (the slot holds it) |

@@ -249,7 +249,7 @@ bool on_device(const void* p) {
 // STRATA_PARK_TRACE: where conversation_kv_save's time goes since the park's begin (ms): the pointer-attribute
 // queries, the host buffer resizes and the copies (into the stage, or the synchronous ones).  Read by the park trace.
 struct KvSaveTrace { double attrs = 0, resize = 0, copy = 0; };
-KvSaveTrace& kv_save_trace() { static KvSaveTrace t; return t; }
+KvSaveTrace& kv_save_trace() { static thread_local KvSaveTrace t; return t; }
 bool park_trace_on() {
     static const bool on = std::getenv("STRATA_PARK_TRACE") != nullptr;
     return on;
@@ -593,7 +593,10 @@ void conversation_kv_save_trace(double& attrs_ms, double& resize_ms, double& cop
 }
 
 bool conversation_park_async_begin(size_t need) {
-    if (park_trace_on()) kv_save_trace() = {};   // (the sums cover this park's saves)
+    if (park_trace_on()) kv_save_trace() = {};   // each stage's sums belong to its calling thread
+    // Synchronous stage captures may run concurrently. When async parking is off,
+    // do not reset the process-wide staging transaction, even for an empty image.
+    if (!park_async_on()) return false;
     conversation_park_join();   // (the stage is reused)
     ParkAsync& a = park_async();
     a.active = false;
@@ -601,7 +604,7 @@ bool conversation_park_async_begin(size_t need) {
     a.used = 0;
     a.slot = nullptr;
     a.slot_tag = 0;
-    if (!park_async_on() || need == 0) return false;
+    if (need == 0) return false;
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
     // STRATA_PARK_VRAM_MIB: a slot of the whole K/V instead of the stage, while the budget allows - taken before the

@@ -708,6 +708,11 @@ the engine (v2 `memory.max` and `memory.high`, v1 `memory.limit_in_bytes`, less 
 `--memory-limit-mib` cap. The startup line `strata generate: memory guard: limit X GiB (source: flag|cgroup|meminfo) ...` names
 the source. It covers parking and session files only, not the startup sizing of the arena, the resident budget or the Windows commit check.
 
+With `STRATA_STAGE_COPY_PARALLEL=1`, independent layer-split stages capture and restore through persistent workers.
+If `STRATA_PARK_ASYNC=1` or `STRATA_CKPT_ASYNC=1` is also requested, the engine logs the conflict and keeps stage copies
+serial: those async modes share staging buffers between stages. Their existing behavior takes precedence.
+Parallel copies are off by default and do not change prompt admission. See [BATCHING.md](BATCHING.md) for the copy switches.
+
 **When the arena does not fit in the RAM that is free (#4051).** The engine checks the RAM before it reads the experts into the
 arena. A memory limit below the arena (a container) stops the start with the numbers. Less free RAM than the arena (an engine
 that was still exiting, another program) is waited for up to 20 s, and the log says so (`STRATA_ARENA_RAM_WAIT_S` changes the

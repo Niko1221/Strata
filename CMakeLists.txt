@@ -795,6 +795,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME conversation_snapshot_test_ckpt_vram_slots COMMAND conversation_snapshot_test)
     set_tests_properties(conversation_snapshot_test_ckpt_vram_slots PROPERTIES
       ENVIRONMENT "STRATA_TEST_BIG_GDN=1;STRATA_CKPT_ASYNC=1;STRATA_CKPT_VRAM_SLOTS=3" SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # Concurrent, independent session captures against serial byte-exact references.  Keep the shared async paths
+    # explicitly off here; their preserved serial contracts have dedicated tests above.
+    add_test(NAME conversation_snapshot_test_stage_parallel COMMAND conversation_snapshot_test)
+    set_tests_properties(conversation_snapshot_test_stage_parallel PROPERTIES
+      ENVIRONMENT "STRATA_TEST_STAGE_PARALLEL=1;STRATA_PARK_ASYNC=0;STRATA_CKPT_ASYNC=0" SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_test(NAME conversation_snapshot_test_stage_parallel_trace COMMAND conversation_snapshot_test)
+    set_tests_properties(conversation_snapshot_test_stage_parallel_trace PROPERTIES
+      ENVIRONMENT "STRATA_TEST_STAGE_PARALLEL=1;STRATA_PARK_ASYNC=0;STRATA_CKPT_ASYNC=0;STRATA_PARK_TRACE=1" SKIP_RETURN_CODE 77 TIMEOUT 120)
     add_executable(conversation_validation_test src/core/conversation_validation_test.cpp)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
@@ -1779,6 +1787,9 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME spec_start_test COMMAND spec_start_test)
 endif()
 if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
+  add_executable(stage_pool_test tests/core/stage_pool_test.cpp)
+  target_include_directories(stage_pool_test PRIVATE include)
+  add_test(NAME stage_pool_test COMMAND stage_pool_test)
   add_executable(message_boundary_test src/program/message_boundary_test.cpp)
   target_include_directories(message_boundary_test PRIVATE include)
   add_test(NAME message_boundary_test COMMAND message_boundary_test)
@@ -1892,6 +1903,9 @@ endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
+if(TARGET stage_pool_test)
+  target_link_libraries(stage_pool_test PRIVATE Threads::Threads)
+endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
