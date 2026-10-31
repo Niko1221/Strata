@@ -2748,6 +2748,11 @@ struct PfTimer {
     double ms[kPfCount] = {};
     void mark(int phase, cudaStream_t s) {
         if (!on) return;
+        // a mark in the phase already running adds nothing to the totals (the gaps are charged to the earlier mark's
+        // phase either way), but every event record is a submission of its own under WDDM (~80 us on a 6900 XT,
+        // Windows 11): compute() marks "dequant" once per expert, which put ~16 records per MMQ group on the stream
+        // and charged the launch gaps they made to "dequant".  The same totals, a fraction of the records.
+        if (used > 0 && ph[used - 1] == phase) return;
         if (used == ev.size()) {
             cudaEvent_t e = nullptr;
             cudaEventCreate(&e);
