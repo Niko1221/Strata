@@ -118,6 +118,13 @@ int main() {
                 std::snprintf(what, sizeof what, "finite: %s picks equal the host's top-%d", which ? "route_publish" : "route", k);
                 check(same, what);
             }
+            {   // the flag the engine polls: raised when a pick had to be made up, clear (and cleared by the call) otherwise
+                const bool flagged = router_nonfinite_take(0);
+                const bool again = router_nonfinite_take(0);
+                std::snprintf(what, sizeof what, "%s: %s %s the router's non-finite flag, and the call clears it", names[mode],
+                              which ? "route_publish" : "route", mode == 1 ? "raises" : "leaves clear");   // (fewer than k finite: the picked entries' -FLT_MAX re-wins, no stand-in is needed)
+                check(flagged == (mode == 1) && !again, what);
+            }
             if (which == 1) {
                 std::vector<unsigned long long> pl((size_t) T * kPicks);
                 CK(cudaMemcpy(pl.data(), d_plan, pl.size() * 8, cudaMemcpyDeviceToHost));
