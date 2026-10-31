@@ -184,7 +184,7 @@ int run_case(const Case& c, WMode wm, XMode xm, bool heavy, cudaStream_t s) {
     std::vector<uint8_t> w(wbytes);
     fill_weights(w, size_t(c.n_out) * nb, wm, rng);
     uint8_t* dw = nullptr;
-    if (!ck(cudaMalloc(&dw, wbytes + 64), "malloc w") || !ck(cudaMemcpy(dw, w.data(), wbytes, cudaMemcpyHostToDevice), "copy w")) return 1;
+    if (!ck(cudaMalloc(&dw, wbytes + 64), "malloc w") || !ck(cudaMemcpy(dw, w.data(), wbytes, cudaMemcpyHostToDevice), "copy w") || !ck(cudaDeviceSynchronize(), "sync w")) return 1;
 
     // rows to check on the host: all of them, or a sample for the big shapes
     std::vector<int> rows;
@@ -218,6 +218,7 @@ int run_case(const Case& c, WMode wm, XMode xm, bool heavy, cudaStream_t s) {
             !ck(cudaMalloc(&ynew, ybytes), "ynew") || !ck(cudaMalloc(&yold, ybytes), "yold"))
             return 1;
         cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+        cudaDeviceSynchronize();   // a pageable H2D copy returns before its DMA lands; the kernels run on a non-blocking stream
         quantize_q8_1_rows(dx, T, c.n_in, xq, s);
         cudaMemsetAsync(ynew, 0xff, ybytes, s);   // on the kernel's own stream: a legacy-stream memset does not order against a non-blocking stream
         const bool launched = dense_tc(14, dw, xq, ynew, c.n_in, c.n_out, T, s);
@@ -412,6 +413,7 @@ void bench_case(const Case& c, int rounds, cudaStream_t s) {
         cudaMalloc(&yn, size_t(T) * c.n_out * 4);
         cudaMalloc(&yo, size_t(T) * c.n_out * 4);
         cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+        cudaDeviceSynchronize();   // a pageable H2D copy returns before its DMA lands; the kernels run on a non-blocking stream
         quantize_q8_1_rows(dx, T, c.n_in, xq, s);
         if (T >= 2) native_q8_1_interleave(xq, xil, c.n_in, T, s);
         const bool il = native_mmvq_il_supported(14, T, c.n_out);
