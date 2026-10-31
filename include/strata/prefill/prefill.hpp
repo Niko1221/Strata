@@ -83,6 +83,10 @@ public:
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).
     bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err);
     int64_t chunk() const;
+    /// Whether the buffers were carved from expert-cache slots lent for the prompt (`init` got a `borrow` region)
+    /// rather than allocated for the session.  A reader that depends on the prompt path's own arithmetic being right
+    /// - `Scorer`, whose rows a training step consumes - asks so it can say which way this engine is running.
+    bool borrowed() const;
 
     /// The share of the streamed experts' bytes DMA-able straight from pinned RAM (1 = all).  Sizes the streamed
     /// ring (a big one only pays when the copy engine, not the host copies, is the limit); set before bytes_needed.

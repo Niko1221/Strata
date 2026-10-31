@@ -1404,6 +1404,50 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    def score(self, ids, timeout: float = 21600.0) -> dict:
+        """`SCORE <id,id,...>`: a log-probability for EVERY position of a token sequence the caller chose -
+        log p(ids[t+1] | ids[0..t]) - which is what a zeroth-order optimiser needs and what generation cannot give
+        (it reports the token it sampled, after temperature and truncation, and nothing for the prompt).
+
+        The engine answers one `SL <pos> <logprob>` per scored position and then `SSUM <sum> <n> <ms> <head_ms>
+        <rows>`.  A scoring run reads the prompt from position 0 and advances the session the way a prompt read
+        does, so it ends whatever conversation was live: callers take the service's FIFO first.
+
+        The timeout is generous because a 128K prompt is a long prompt read (~280 s at the measured 465 tok/s,
+        and a 2x4 layer-split or a cold expert cache is slower still)."""
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        self.proc.stdin.write("SCORE " + ",".join(str(int(t)) for t in ids) + "\n")
+        self.proc.stdin.flush()
+        lps: list[float] = []
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                raise EngineDied("the engine did not answer the SCORE command") from None
+            if line is None:
+                raise EngineDied("the engine ended")
+            line = line.strip()
+            if line.startswith("SL "):
+                parts = line.split()
+                if len(parts) >= 3:
+                    # A position with nothing to score comes back as `nan`; kept, so the caller sees the gap.
+                    lps.append(float(parts[2]))
+                continue
+            if line.startswith("SSUM "):
+                p = line.split()
+                out = {"logprobs": lps, "sum": float(p[1]), "n": int(p[2]), "ms": float(p[3])}
+                if len(p) > 4:
+                    out["head_ms"] = float(p[4])
+                if len(p) > 5:
+                    out["rows"] = int(p[5])
+                return out
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip() or "the engine refused the SCORE command")
+            if time.time() > deadline:
+                raise EngineDied("the engine did not answer the SCORE command")
+
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
@@ -4550,6 +4594,91 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
+    score_timeout_s = 21600.0                            # a scored sequence is a prompt read: minutes, not seconds
+
+    def score(self, req: dict) -> dict:
+        """POST /v1/score: a log-probability for EVERY position of a sequence the CALLER chose.
+
+        The sequence comes as `tokens` (the precise form - a training loop already holds the ids it sampled),
+        `messages` (+ `tools`, `chat_template_kwargs`; rendered and tokenized the way a chat request's prompt is,
+        without a generation prompt unless asked) or `prompt` (a plain string).  Position t is scored against
+        tokens[t + 1], so the answer is `n - 1` figures for an `n`-token sequence: the last token has nothing after
+        it and comes back as null, which keeps the array aligned with `tokens`.
+
+        This is what a zeroth-order optimiser needs and what generation cannot give: generation reports the ONE token
+        it sampled, after temperature and truncation, and reports nothing at all for the prompt segment.
+
+        Two runs at the same weights agree; the figures do NOT equal a generation's `logprobs` for the same token,
+        because a score comes from the prompt path and a generation's logprob from the decode path (different
+        activation formats: about 0.2 nats apart on this model).  A difference of two scores is unaffected.
+
+        The run reads from position 0, so it ends whatever conversation was live: callers take the engine's turn."""
+        ids = self._score_ids(req)
+        ctx = self.reported_ctx()
+        if ctx and len(ids) > ctx:
+            raise ValueError(f"the sequence is {len(ids)} tokens; this server holds {ctx}")
+        if not callable(getattr(self.engine, "score", None)):
+            raise ValueError("this engine cannot score a sequence (it needs the teacher-forced scoring path, "
+                             "which this build of the engine does not have)")
+        self.last_request_at = time.time()           # the idle unloader must not take the engine from under us
+        if not self.fifo.acquire(timeout=self.vram_wait_s):
+            raise ModelBusy("another request is running; try again when it has finished")
+        # as /v1/vram: parallel requests do not hold the fifo, so the engine's control lines are taken too
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(timeout=self.vram_wait_s):
+            self.fifo.release()
+            raise ModelBusy("another request is running; try again when it has finished")
+        try:
+            self.ensure_loaded()
+            out = self.engine.score(ids, timeout=self.score_timeout_s)
+        finally:
+            if ctl is not None:
+                ctl.release()
+            self.fifo.release()
+        lps = [None if v != v else float(v) for v in out["logprobs"]]   # nan: nothing to score there
+        if len(lps) != len(ids) - 1:
+            raise EngineDied(f"the engine scored {len(lps)} positions of {len(ids)} tokens")
+        n, total = int(out["n"]), float(out["sum"])
+        mean = total / n
+        return {"object": "score", "model": self.model, "tokens": ids, "n": len(ids), "scored": n,
+                "logprobs": lps + [None], "sum_logprob": total, "mean_logprob": mean,
+                "nll": -total, "perplexity": math.exp(-mean) if mean > -700.0 else float("inf"),
+                "engine": {k: out[k] for k in ("ms", "head_ms", "rows") if k in out}}
+
+    def _score_ids(self, req: dict) -> list[int]:
+        """The sequence to score: `tokens`, or `messages` / `prompt` rendered and tokenized here."""
+        tokens = req.get("tokens")
+        if tokens is not None:
+            if not isinstance(tokens, list):
+                raise ValueError("tokens: a list of token ids (or send messages / prompt to have it tokenized here)")
+            out: list[int] = []
+            for t in tokens:
+                if isinstance(t, bool) or not isinstance(t, int):
+                    raise ValueError("tokens: every entry is a whole token id")
+                if t < 0:
+                    raise ValueError("tokens: a token id is not negative")
+                out.append(int(t))
+            if len(out) < 2:
+                raise ValueError("tokens: two ids at least - every position is scored against the next one")
+            return out
+        messages = req.get("messages")
+        if messages is not None:
+            if not isinstance(messages, list):
+                raise ValueError("messages: a list of messages")
+            kw = dict(req.get("chat_template_kwargs") or {})
+            kw.setdefault("add_generation_prompt", False)    # scoring a sequence, not asking for an answer
+            out = self.encode_prompt(messages, req.get("tools"), kw, store=False)
+            if len(out) < 2:
+                raise ValueError("messages: the rendered prompt is a single token, nothing to score")
+            return out
+        prompt = req.get("prompt")
+        if isinstance(prompt, str):
+            out = self.tok.encode(prompt, parse_special=True)
+            if len(out) < 2:
+                raise ValueError("prompt: a single token, nothing to score")
+            return out
+        raise ValueError("send tokens (a list of ids), messages, or prompt")
+
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
         note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
@@ -7366,7 +7495,7 @@ def make_handler(svc: Service):
                 return
             reserved = False
             try:
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/score"):
                     reserved = svc.reserve_inference()
                     if reserved is None:
                         error = {"type": "server_error", "code": "server_draining",
@@ -7425,6 +7554,9 @@ def make_handler(svc: Service):
                         self._json(200, svc.vram(r))
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                if path == "/v1/score":                      # teacher-forced log-probabilities (a training teacher)
+                    self._json(200, svc.score(req))
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)

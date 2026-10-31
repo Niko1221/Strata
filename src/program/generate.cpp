@@ -79,6 +79,7 @@
 #include "strata/prefill/kva.hpp"
 #include "strata/prefill/kva_floor.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/prefill/score.hpp"
 #if defined(STRATA_PREFILL_MMQ)
 #include "strata/prefill/moe_mmq.hpp"
 #endif
@@ -13811,6 +13812,83 @@ int main(int argc, char** argv) {
                     std::printf("RESTORED %zu %zu %.1f\n", live.size(), bytes, ms());
                 }
                 std::fflush(stdout);
+                continue;
+            }
+            // SCORE <id,id,...>: teacher-forced log-probabilities - log p(ids[t+1] | ids[0..t]) for every position,
+            // the sequence the CALLER chose rather than one the engine sampled.  Generation cannot answer this: it
+            // reports the token it sampled, after temperature and truncation, and nothing at all for the prompt.
+            // Output: one `SL <pos> <logprob>` per scored position, then `SSUM <sum> <n> <ms> <head_ms> <rows>`.
+            // The run consumes the session the way a prompt read does, so no conversation survives it.
+            if (line.rfind("SCORE ", 0) == 0) {
+                std::vector<int64_t> sids;
+                std::string se;
+                if (!parse_i64_list(line.c_str() + 6, sids, se) || sids.size() < 2) {
+                    std::printf("ERR score: %s\n", sids.size() < 2 ? "two ids at least" : se.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                if (multi_gpu) {
+                    std::printf("ERR score: one GPU only (a layer split would score each stage's own rows)\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                const int64_t n = (int64_t) sids.size();
+                // Position t is scored against ITS OWN next token: that is the whole contract, and it is why the
+                // last position has nothing to score.
+                std::vector<int32_t> stg((size_t) n, -1);
+                for (int64_t t = 0; t + 1 < n; ++t) stg[(size_t) t] = (int32_t) sids[(size_t) t + 1];
+                std::vector<float> slp((size_t) n, std::numeric_limits<float>::quiet_NaN());
+                // One Scorer per prompt path: attaching dequantizes the head into its FP16 image (1.27 GB here),
+                // which must not happen per request.
+                static std::unique_ptr<strata::prefill::Scorer> scorer;
+                static strata::prefill::Prefill* scorer_pf = nullptr;
+                if (!scorer || scorer_pf != &sp) {
+                    scorer.reset(new strata::prefill::Scorer());
+                    if (!scorer->attach(sp, wt, g, native_head.loaded() ? &native_head : nullptr, main_cs, se)) {
+                        std::printf("ERR score: %s\n", se.c_str());
+                        scorer.reset();
+                        std::fflush(stdout);
+                        continue;
+                    }
+                    scorer_pf = &sp;
+                }
+                // A scoring run reads from position 0, so the session has to be where a first prompt finds it.
+                strata::core::session_zero(ss, g, nullptr, main_cs);
+                if (cudaStreamSynchronize((cudaStream_t) main_cs) != cudaSuccess) {
+                    std::printf("ERR score: clearing the session failed\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                const auto t_score = std::chrono::steady_clock::now();
+                if (!scorer->run(sids.data(), n, stg.data(), slp.data(), se)) {
+                    std::printf("ERR score: %s\n", se.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                const double score_ms =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_score).count();
+                // The head's layout decides whether a scoring run is a fraction of a second or several, and nothing
+                // else reports it: say it once, on stderr, with the rest of the engine's diagnostics.  After the first
+                // run, not after attach: `note` describes the block the head actually got, which the run allocates.
+                static bool note_printed = false;
+                if (!note_printed) {
+                    std::fprintf(stderr, "strata score: %s\n", scorer->note().c_str());
+                    std::fflush(stderr);
+                    note_printed = true;
+                }
+                double ssum = 0.0;
+                for (int64_t t = 0; t + 1 < n; ++t) {
+                    std::printf("SL %lld %.6f\n", (long long) t, (double) slp[(size_t) t]);
+                    ssum += (double) slp[(size_t) t];
+                }
+                std::printf("SSUM %.6f %lld %.1f %.1f %lld\n", ssum, (long long) (n - 1), score_ms,
+                            scorer->ms_head(), (long long) scorer->rows_per_block());
+                std::fflush(stdout);
+                // The read left the session at this sequence's end; nothing may continue it as a conversation.
+                live.clear();
+                live_imgs.clear();
+                checks.clear();
+                live_ok = false;
                 continue;
             }
             const bool geni = line.rfind("GENI ", 0) == 0;
