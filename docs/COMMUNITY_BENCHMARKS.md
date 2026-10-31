@@ -73,6 +73,12 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-31: Radeon RX 6900 XT 16 GB (gfx1030) on Windows 11, Ryzen 9 5950X, 127.9 GiB RAM](../bench/results/2026-10-31-community-rx6900xt-windows-rdna2/README.md):
+  the released `windows-x64-hip-rdna2` package (engine 0.1.54) on a real RX 6000 card, which had no report at all:
+  262,144-token context, IQ3_S with a native pack and MTP, eleven environment switches; one run each at 869.0 tok/s prompt
+  (9,699 tokens) and 68.5 tok/s decode (400 tokens) with 78.6 % draft acceptance. Not a standard protocol run. Records the
+  Windows budget (15,570 of 16,368 MiB reaches the process), large pages refused (VirtualAlloc error 1314), and an open
+  question about the `--expert-cache auto` estimate disagreeing with the slot count it finishes with.
 
 ## Run the standard benchmark
 
