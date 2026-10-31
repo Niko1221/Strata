@@ -746,7 +746,10 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   host caches (retained K/V, oldest unpinned parked conversations, unpinned checkpoints), and the server waits up to 30 s for
   RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save.
 - Clients still send their messages and images; the file holds engine state and token identity, not a chat export. A follow-up
-  that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
+  that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved,
+  and the continuation must extend it exactly: a prompt that branches inside the saved conversation is read again from the start,
+  because a checkpoint's recurrent state exists only at its own boundary. The draft layer's K/V is in the file only when the
+  drafter owns a K/V ring: on the Apple Silicon engine the decode window runs the draft rounds itself, so its file carries none.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
   rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
