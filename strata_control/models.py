@@ -478,6 +478,9 @@ SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "pro
                        "$recycle.bin", "system volume information", "appdata"})
 
 
+DRAFT_LAYER = re.compile(r"mtp[-_][a-z0-9_.-]*\.gguf")
+
+
 def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
     """(model files, picture-reader file names, cut) of one folder. A link to a file counts (it is followed when read); a name that
     only ends in .gguf but is a folder does not."""
@@ -499,6 +502,8 @@ def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
                 if low.startswith("mmproj"):
                     readers.append(entry.name)
                     continue
+                if DRAFT_LAYER.fullmatch(low):
+                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) is not a second model (#4693)
                 if len(shards) >= MAX_LISTED:
                     cut = True
                     break
