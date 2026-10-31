@@ -48,6 +48,7 @@ import type {
   MonitorState,
   ServingState,
   Session,
+  ChatMode,
   SetupState,
   Skill,
   WorkspaceFile,
@@ -90,6 +91,8 @@ export interface AppState {
   doneSound: boolean;
   /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
   approvalNotify: boolean;
+  /** What a new conversation starts with (Settings → General): mode, reasoning effort, thinking limit. */
+  chatDefaults: ChatDefaults;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -155,9 +158,39 @@ export interface Prefs {
   electricityCurrency: string;
   doneSound: boolean;
   approvalNotify: boolean;
+  /** What a new conversation starts with: its mode, reasoning effort and thinking limit. */
+  chatDefaults: ChatDefaults;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
+}
+
+/** What a new conversation starts with, before the person changes it in that chat's own composer.
+ *  These are the values a chat with no preference falls back to today, so leaving them untouched
+ *  keeps a new chat exactly as it was. */
+export interface ChatDefaults {
+  mode: ChatMode;
+  /** The reasoning effort name the composer shows ('Off' … 'Max'). */
+  thinking: string;
+  /** The most tokens one reply may spend thinking; 0 = no limit. */
+  thinkingBudget: number;
+}
+
+export const CHAT_MODE_CHOICES: ChatMode[] = ['manual', 'plan', 'bypass'];
+export const CHAT_EFFORT_CHOICES = ['Off', 'Low', 'Medium', 'High', 'Max'];
+export const CHAT_BUDGET_CHOICES: number[] = [0, 2048, 8192, 32768];
+
+export const CHAT_DEFAULTS: ChatDefaults = { mode: 'manual', thinking: 'Medium', thinkingBudget: 0 };
+
+/** Keep only what the composer can actually offer: a hand-edited or older stored value must not leave a chat showing a choice that does nothing. */
+function validChatDefaults(value: unknown): ChatDefaults {
+  const raw = (value ?? {}) as Partial<ChatDefaults>;
+  const thinking = typeof raw.thinking === 'string' && CHAT_EFFORT_CHOICES.includes(raw.thinking) ? raw.thinking : CHAT_DEFAULTS.thinking;
+  return {
+    mode: CHAT_MODE_CHOICES.includes(raw.mode as ChatMode) ? raw.mode as ChatMode : CHAT_DEFAULTS.mode,
+    thinking,
+    thinkingBudget: CHAT_BUDGET_CHOICES.includes(Number(raw.thinkingBudget)) ? Number(raw.thinkingBudget) : CHAT_DEFAULTS.thinkingBudget,
+  };
 }
 
 const PREFS_DEFAULTS: Prefs = {
@@ -176,6 +209,7 @@ const PREFS_DEFAULTS: Prefs = {
   electricityCurrency: '',
   doneSound: false,
   approvalNotify: false,
+  chatDefaults: CHAT_DEFAULTS,
   shareTelemetry: false,
 };
 
@@ -224,6 +258,7 @@ function loadPrefs(): Prefs {
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
+        chatDefaults: validChatDefaults(parsed.chatDefaults),
       };
     } catch {
       /* fall through to the next key */
@@ -260,6 +295,7 @@ let state: AppState = {
   electricityCurrency: prefs.electricityCurrency,
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
+  chatDefaults: prefs.chatDefaults,
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -486,6 +522,7 @@ function savePrefs() {
     electricityCurrency: state.electricityCurrency,
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
+    chatDefaults: state.chatDefaults,
     shareTelemetry: state.shareTelemetry,
   };
   try {
@@ -602,6 +639,12 @@ export function setDoneSound(doneSound: boolean) {
 
 export function setApprovalNotify(approvalNotify: boolean) {
   set({ approvalNotify });
+  savePrefs();
+}
+
+/** Change what a new conversation starts with. Existing chats keep what they already have. */
+export function setChatDefaults(patch: Partial<ChatDefaults>) {
+  set({ chatDefaults: validChatDefaults({ ...state.chatDefaults, ...patch }) });
   savePrefs();
 }
 
@@ -1112,7 +1155,12 @@ export function newSession(): Session {
     workspace: state.workspaces.find(w => w.id === state.activeWorkspace)?.path ?? state.workspacePath,
     tokensIn: 0,
     tokensOut: 0,
-    ...(state.activeSession === null && state.remoteModel ? { preferences: { remoteModel: state.remoteModel } } : {}),
+    // A new chat starts from what the person set in Settings; with the stored defaults untouched
+    // these are the very values a chat with no preference showed before.
+    preferences: {
+      ...state.chatDefaults,
+      ...(state.activeSession === null && state.remoteModel ? { remoteModel: state.remoteModel } : {}),
+    },
   };
   const sessions = [session, ...state.sessions];
   persistSessions(sessions);

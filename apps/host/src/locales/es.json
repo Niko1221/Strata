@@ -3526,5 +3526,10 @@
   "s9034": "Cargando el modelo…",
   "s9035": "Faltan estos archivos del modelo: {0}.",
   "s9036": "Pulse de nuevo «Descargar y cargar» para obtenerlos. Los archivos que ya están se conservan. Si vuelven a aparecer los mismos archivos, abra los detalles y compártalos cuando pida ayuda.",
-  "s9037": "Esta actualización se interrumpió cuando la aplicación se reinició. Una actualización posterior terminó, así que no hay nada que hacer."
+  "s9037": "Esta actualización se interrumpió cuando la aplicación se reinició. Una actualización posterior terminó, así que no hay nada que hacer.",
+  "s9038": "Chats nuevos",
+  "s9039": "Con lo que empieza cada conversación nueva: cuánto puede hacer por su cuenta, qué tan a fondo piensa y qué tan larga puede ser una respuesta. Una conversación que ya empezaste mantiene su propia opción.",
+  "s9040": "Qué puede hacer un chat nuevo",
+  "s9041": "Qué tan a fondo piensa un chat nuevo",
+  "s9042": "Qué tan larga puede ser la respuesta de un chat nuevo"
 }

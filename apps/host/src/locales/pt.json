@@ -3526,5 +3526,10 @@
   "s9034": "Carregando o modelo…",
   "s9035": "Estes arquivos do modelo estão faltando: {0}.",
   "s9036": "Pressione Baixar e carregar de novo para buscá-los. Os arquivos que já estão aí são mantidos. Se os mesmos arquivos aparecerem de novo, abra os Detalhes e compartilhe-os ao pedir ajuda.",
-  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer."
+  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer.",
+  "s9038": "Novas conversas",
+  "s9039": "Com que toda nova conversa começa: o que ela pode fazer sozinha, com que profundidade pensa e o tamanho de uma resposta. Uma conversa que você já começou mantém a sua própria escolha.",
+  "s9040": "O que uma nova conversa pode fazer",
+  "s9041": "Quão profundamente uma nova conversa pensa",
+  "s9042": "O tamanho da resposta de uma nova conversa"
 }
