@@ -106,6 +106,40 @@ class Keeper(unittest.TestCase):
             time.sleep(0.2)
         self.assertFalse(park_keeper.pid_alive(doc["pid"]))
 
+    def test_spawn_gives_up_within_its_whole_wait(self):
+        names, _ = park_keeper.manifest_sections(self.dir)
+        made = [park_keeper.Section(n, 1 << 20) for n in names]
+        t0 = time.monotonic()
+        with self.assertRaises(RuntimeError) as cm:
+            park_keeper.spawn(self.dir, 600, timeout_s=4, python=os.environ.get("COMSPEC", "cmd.exe"))   # never a keeper
+        for s in made:
+            s.close()
+        self.assertLess(time.monotonic() - t0, 12)
+        self.assertIn("no keeper ready", str(cm.exception))
+        self.assertIn("keeper.json", str(cm.exception))                 # and says what the folder shows
+
+    def test_touch_stops_at_its_deadline_and_goes_on_later(self):
+        s = park_keeper.Section(f"Local\\strata-park-touch-{os.getpid()}-{time.time_ns()}", 3 << 20)
+        s.write(b"x" * (3 << 20))
+        seen = []
+        with mock.patch.object(park_keeper, "TOUCH_CHUNK", 1 << 20), \
+                mock.patch.object(s, "_touch_range", lambda a, b: seen.append((a, b))):
+            self.assertFalse(s.touch(until=time.monotonic() - 1))       # no time: nothing touched, nowhere to resume
+            self.assertEqual(seen, [])
+            calls = {"n": 0}
+            real = time.monotonic
+
+            def clock():                                                # time runs out after the second step
+                calls["n"] += 1
+                return real() + (100 if calls["n"] > 2 else 0)
+            with mock.patch.object(park_keeper.time, "monotonic", clock):
+                self.assertFalse(s.touch(until=real() + 50))
+            self.assertEqual(len(seen), 2)
+            self.assertTrue(s.touch())                                  # the rest from where it stopped
+            self.assertEqual(seen[2][0], seen[1][1])
+            self.assertEqual(seen[-1][1], 64 + (3 << 20))               # up to the end of the data (head included)
+        s.close()
+
     def test_no_keeper_no_status(self):
         self.assertIsNone(park_keeper.status(self.dir))
 

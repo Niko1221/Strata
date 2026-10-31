@@ -782,7 +782,8 @@ only two checkpoints of each: the deepest, where the next turn resumes, and the 
 The files are bound to the model, to the engine file (its size and modification time) and to every `STRATA_*` variable
 except `STRATA_PARK_*`: after an engine update or a changed switch nothing is loaded and the next stop replaces them. A
 save that does not finish (a forced kill, a crash, a power cut) leaves the previous manifest and its files. A request
-still running when the server is stopped is not waited for by the save (it is skipped then). Not used with
+still running when the server is stopped is not waited for by the save (it is skipped then). On Windows a Ctrl+Break
+sent to every process on the console also ends the engine at once, and then nothing is saved. Not used with
 `--peer-device`, `--batch` (`"parallel"`) or replicas. Unset (the default), nothing is written or read; delete the
 folder to free its space.
 
@@ -807,7 +808,9 @@ What it costs: the parked conversations take their size in RAM and commit from t
 says so and reads the conversations again. Only under memory pressure can Windows page them out to the pagefile. Every
 kept conversation is copied again at each stop (a RAM copy, about 1.4 s for 1.94 GB). The keeper needs to outlive the
 server: if the server runs inside a job that ends its processes and does not allow a breakaway, the keeper ends with
-it and nothing is kept. Off unless set, and only on Windows (elsewhere the engine refuses the save and says why).
+it and nothing is kept. The server waits for the keeper at most `STRATA_PARK_KEEPER_WAIT_S` seconds (default 30): a
+keeper that is late does not hold up the stop, the log says what the folder showed, and those conversations are read
+again. Off unless set, and only on Windows (elsewhere the engine refuses the save and says why).
 
 Measured on four GP100 dies (Swift 1.5 IQ3_S GGUF, `--layer-split 12,24,36`, Windows 11, `STRATA_PARK_MIN_TOKENS=50000`):
 a 103,749-token conversation that takes 94-95 s to read from zero was kept over a graceful stop (8.2 s in all: 1.94 GB

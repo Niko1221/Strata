@@ -49,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 import uuid
 from http.client import HTTPException
@@ -1352,7 +1353,21 @@ class StrataEngine:
             print(f"[strata] parked conversations not saved: {e}", flush=True)
             return
         if self.PARK_RAMLIKE:
-            self._park_keep(r["tokens"])
+            self._park_keep_bounded(r["tokens"])
+
+    def _park_keep_bounded(self, conversations: int) -> None:
+        """The hand-over to the keeper, in a thread the unload waits for at most so long: the unload holds the service
+        FIFO and the engine open, and a step that blocked here would take the whole stop with it.  If it is still
+        running at the limit, the log gets where it was and the stop goes on."""
+        limit = park_keeper.spawn_wait_s() + 15.0
+        th = threading.Thread(target=self._park_keep, args=(conversations,), name="park-keep", daemon=True)
+        th.start()
+        th.join(limit)
+        if th.is_alive():
+            frame = sys._current_frames().get(th.ident)
+            where = "".join(traceback.format_stack(frame)[-5:]).rstrip() if frame is not None else "(no frame)"
+            print(f"[strata] parked conversations not kept in RAM: the hand-over to the keeper is still running after "
+                  f"{limit:.0f} s; the stop goes on.  It was in:\n{where}", flush=True)
 
     def _park_keep(self, conversations: int) -> None:
         """STRATA_PARK_RAMLIKE: a keeper process takes the sections the engine still holds, before the engine is
