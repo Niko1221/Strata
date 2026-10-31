@@ -614,10 +614,10 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
         if bad and bad.get("manifest_sha256") == offered.manifest_sha256:
             report["status"] = "failed-before"
             report["note"] = (f"{offered.version} failed its test start on {bad.get('at', 'an earlier try')} ({bad.get('reason')}); "
-                              "run with --force to try it again")
+                              "run `strata update --force` to try it again")
         elif offered.version in (section.get("skipped") or []):
             report["status"] = "skipped"
-            report["note"] = f"{offered.version} was rolled back from; run with --force to install it again"
+            report["note"] = f"{offered.version} was rolled back from, so an update leaves it alone; run `strata update --force` to install it again"
     return report, offered
 
 
@@ -1256,7 +1256,11 @@ def rollback_engine(ctx: Context) -> dict:
             section.pop("pinned", None)
             state.save()
             raise UpdateError(f"the previous engine does not fit this PC any more: {exc}", 5) from None
-        if current and current.version != target.version:
+        forward = bool(current) and feedmod.version_key(target.version) > feedmod.version_key(current.version)
+        if forward:
+            # the second rollback goes back to the newer engine: it is no longer one the person left, so a later update may offer it
+            section["skipped"] = [v for v in section.get("skipped", []) if v != target.version]
+        elif current and current.version != target.version:
             skip = section.setdefault("skipped", [])
             if current.version not in skip:
                 skip.append(current.version)
@@ -1266,7 +1270,7 @@ def rollback_engine(ctx: Context) -> dict:
         state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "rollback-engine",
                        "from": current.version if current else None, "to": target.version, "ok": True})
         state.save()
-        return {"component": "engine", "status": "rolled-back", "from": current.version if current else None,
+        return {"component": "engine", "status": "rolled-forward" if forward else "rolled-back", "from": current.version if current else None,
                 "to": target.version, "folder": previous, "presets_marked": bool(mark)}
 
 

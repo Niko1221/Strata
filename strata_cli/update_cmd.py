@@ -175,7 +175,10 @@ def _print_check(report: dict) -> None:
     else:
         print(f"  Control  {ctl['installed'] or '?'}: {ctl['status']}" + (f" ({ctl['offered']})" if ctl["offered"] else ""))
     if app["status"] != "not-in-feed":
-        print(f"  App      {app['installed'] or 'unknown'} -> {app['offered']}: {app['status']}")
+        if app["status"] == "unknown-installed":
+            print(f"  App      latest is {app['offered']}; this terminal cannot tell which version of the app is installed (the app checks itself)")
+        else:
+            print(f"  App      {app['installed'] or 'unknown'} -> {app['offered']}: {app['status']}")
     if report.get("serving"):
         print("  An engine is serving; an update waits until it stops.")
 
@@ -211,10 +214,13 @@ def run(a) -> int:
             if machine:
                 print(json.dumps({"schema_version": 1, "ok": True, **out}))
             else:
-                print(f"Engine rolled back: {out['from']} -> {out['to']}.")
+                forward = out["status"] == "rolled-forward"
+                print(f"Engine moved to the newer version: {out['from']} -> {out['to']}." if forward else
+                      f"Engine rolled back: {out['from']} -> {out['to']}.")
                 print("Saved tuning presets are marked for the short re-check; none were deleted." if out["presets_marked"] else
                       "Saved tuning presets are unchanged.")
-                print("Run `strata update --force` to try the newer version again.")
+                print("Run `strata update --force` to try the newer version again, or `strata components rollback` to return to it." if not forward else
+                      "Run `strata components rollback` again to go back to the older one.")
             return 0
         if getattr(a, "components_command", None) == "install-file":
             ctx.trusted = signing.load_trusted_keys()
@@ -251,7 +257,8 @@ def run(a) -> int:
                 print(_line(result["component"].capitalize(), result))
             if any(r.get("presets_marked") for r in out["results"]):
                 print("Saved tuning presets: marked for the short re-check (nothing was deleted).")
-            if any(r.get("status") == "updated" and r["component"] == "engine" for r in out["results"]):
+            kept = next((r.get("previous") for r in out["results"] if r.get("status") == "updated" and r["component"] == "engine"), None)
+            if kept:                                     # a first install has no earlier engine to keep
                 print("The previous engine version is kept; `strata components rollback` returns to it.")
         return out["exit_code"]
     except updater.UpdateError as exc:
