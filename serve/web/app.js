@@ -118,6 +118,7 @@ async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
     renderEmptyChat();
+    updateContextPill();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
@@ -597,6 +598,7 @@ document.addEventListener("click", (e) => {
   if (b) copyText(b.dataset.copy, b);
 });
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
+$("compact-btn").addEventListener("click", compactChat);
 
 // ------------------------------------------------------------------ MCP servers (GET /mcp)
 // Tools from the MCP servers in the run config: the chat offers them to the model (opt-in per request,
@@ -793,18 +795,164 @@ function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
+
+function updateContextPill() {
+  const el = $("ctx-pill");
+  if (!el) return;
+  let ctx = null;
+  for (const m of messages) {
+    if (m.ctx != null) ctx = m.ctx;
+    if (m.compact && m.stats && m.stats.ctx != null) ctx = m.stats.ctx;   // a fresh fold is the latest reading until the next reply
+  }
+  const total = health.max_context || 0;
+  if (ctx == null || !total) {
+    el.hidden = !total;
+    el.classList.remove("warn", "hot");
+    el.querySelector(".st-ctx__fill").style.width = "0%";
+    el.querySelector(".st-ctx__text").textContent = total ? `–/${ctxfmt(total)}` : "–";
+    el.title = "Context usage is not measured yet";
+    return;
+  }
+  const pct = Math.min(100, 100 * ctx / total);
+  el.hidden = false;
+  el.classList.toggle("warn", pct >= 70 && pct < 90);
+  el.classList.toggle("hot", pct >= 90);
+  el.querySelector(".st-ctx__fill").style.width = `${pct}%`;
+  el.querySelector(".st-ctx__text").textContent = `${kfmt(ctx)}/${ctxfmt(total)}`;
+  el.title = `Context window: ${fmt(ctx)} of ${fmt(total)} tokens`;
+}
+
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
-let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
+let messages = store.get("chat", []).filter((m) => !m.compacting);   // a reload mid-compaction leaves no placeholder
+let foldPoint = null;                 // messages older than the LAST marker's cut are out of context
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
+
+// Compact: one hidden request summarizes the older turns; its marker stands in for them in the API payload
+// while the page keeps every message. Removing the marker restores the turns to the context.
+const COMPACT_KEEP_TOKENS = 5000;   // the kept window is a TOKEN budget, not a message count - six huge pastes
+                                    // would otherwise defeat the fold. ~3.3 chars/token, client estimate
+
+async function compactChat() {
+  if (historyLocked() || messages.length < 2) return;
+  const pk = messages.map((m) => !!m.compact).lastIndexOf(true);
+  const minimum = Math.max(2, pk + 1);   // always include the previous summary in the dense prefix
+  let cut = messages.length, kept = 0;
+  while (cut > minimum && kept < COMPACT_KEEP_TOKENS) {
+    const sz = Math.ceil(JSON.stringify(convertApiMessage(messages[cut - 1])).length / 3.3);
+    // one oversized paste must not hijack the verbatim tail - not even the newest message: a
+    // 36k paste kept verbatim defeats the fold entirely. It goes to the dense part, the model
+    // compresses it (its code and URLs verbatim INSIDE the summary), and the tail stays bounded
+    if (kept + sz > COMPACT_KEEP_TOKENS * 2) break;
+    cut--;
+    kept += sz;
+  }
+  const start = pk >= 0 ? Math.max(0, Math.min(messages[pk].folded, pk)) : 0;
+  const newly = messages.slice(start, cut).filter((m) => !m.compact && !m.compacting).length;
+  if (newly < 2 || (pk >= 0 && messages.length - pk - 1 < 2)) { toast("info", "Nothing to compact", "The recent turns within the token budget are already all that is in context.", 6000); return; }
+  const controller = new AbortController();
+  const ph = {role: "assistant", compacting: true, time: Date.now()};
+  busy = {controller, compaction: true, msg: ph};
+  setBusy(true);
+  setPill("generating", "Compacting the conversation\u2026");
+  messages.push(ph);
+  renderChat();
+  let completed = false;
+  try {
+    const turns = apiMessages(cut);   // summarize the prefix; keep the complete tail as API messages
+    // the server 400s a request whose prompt + max tokens exceeds the window (without --fit-max-tokens),
+    // and compacting near-full is the norm: clamp the cap to the estimated room
+    const est = Math.ceil(JSON.stringify(turns).length / 3.3) + 200;
+    const cap = Math.max(256, Math.min(5000, (health.max_context || 1e9) - est));
+    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true),
+      body: JSON.stringify({model: health.model, stream: false, temperature: 0, reasoning_effort: "low",
+                            max_tokens: cap,
+                            messages: [{role: "system", content: COMPACT_PROMPT},
+                                       ...turns, {role: "user", content: "Write the summary now."}]}),
+      signal: controller.signal});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const summary = (j.choices?.[0]?.message?.content || "").trim();
+    if (!summary) throw new Error("the model returned no summary");
+    const cutShort = j.choices[0].finish_reason === "length";   // a truncated summary loses its last sections
+    const i = messages.indexOf(ph);
+    if (i < 0) throw new Error("the chat changed while compacting");
+    const u = j.usage || {}, tt = j.timings || {};
+    // Only the prefix is folded. The original tail keeps files, images and complete tool rounds.
+    messages.splice(i, 1);
+    messages.push({role: "assistant", compact: true, text: summary, folded: cut, newly, time: Date.now(),
+                   stats: {summary: u.completion_tokens || null,
+                           read: tt.prompt_n != null ? tt.prompt_n : u.prompt_tokens != null ? u.prompt_tokens : null,
+                           read_s: tt.prompt_per_second || null,
+                           // the context AFTER the fold is the summary + the kept tail - NOT this
+                           // request's prompt, which by definition still contained everything being folded;
+                           // the next exchange replaces the estimate with the measured number
+                           ctx: u.completion_tokens != null ? u.completion_tokens + kept + 64 : null}});
+    saveChat();
+    renderChat();
+    {   // scroll to the fresh marker and flash it: it lands among messages, easy to miss
+      const el = $("chat").lastElementChild;
+      if (el) { el.scrollIntoView({block: "center"}); el.classList.add("st-compact--new");
+                setTimeout(() => el.classList.remove("st-compact--new"), 2400); }
+    }
+    toast(cutShort ? "warn" : "info", "Compacted",
+          `${fmt(newly)} messages are folded into the summary; the page keeps them.` +
+          (cutShort ? " The summary hit the token cap - it may be missing its last sections; consider unfolding and compacting again later." : ""), cutShort ? 9000 : 6000);
+    completed = true;
+  } catch (e) {
+    const i = messages.indexOf(ph);
+    if (i >= 0) messages.splice(i, 1);
+    saveChat();
+    renderChat();
+    if (e.name !== "AbortError") toast("error", "Compact failed", e.message || String(e), 6000);
+  } finally {
+    const cut = !!busy.cut;
+    busy = null;
+    setBusy(false);
+    setPill(messages.length ? null : "idle", null);
+    settlePending(cut, completed);   // a stopped or failed summary leaves queued messages for the user
+  }
+}
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
   const el = document.createElement("div");
   el.className = `st-msg st-msg--${m.role}`;
   el.dataset.i = i;
+  if (m.compacting) {   // the placeholder the summary request runs under; it becomes the fold marker
+    el.className = "st-msg st-msg--compacting";
+    el.innerHTML = `<div class="st-compacting"><span class="dot"></span>Compacting the conversation\u2026</div>`;
+    return el;
+  }
+  if (!m.compact && !m.compacting && foldPoint != null && i < foldPoint)
+    el.classList.add("st-msg--folded");   // muted: out of the model's context, kept on the page
+  if (m.compact) {   // the fold: a divider card, expandable to the summary; only the LAST marker can unfold
+    const isLast = !messages.some((m2, i2) => m2.compact && i2 > i);
+    el.innerHTML = `<div class="st-compact"><details class="st-collapse compact">
+      <summary>${icon("layers", "st-icon st-icon--sm")}<span>Compacted ${fmt(m.newly != null ? m.newly : m.folded)} messages</span>` +
+      `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>
+      <div class="st-collapse__body"></div></details>` +
+      (isLast ? `<button class="st-btn st-btn--secondary" data-msg-unfold>Put back into the context</button>` : "") +
+      `</div>`;
+    const unfold = el.querySelector("[data-msg-unfold]");
+    if (unfold) unfold.disabled = historyLocked();
+    el.querySelector(".st-collapse__body").textContent = m.text;
+    if (m.stats) {
+      const bits = [];
+      if (m.stats.summary != null) bits.push(`${fmt(m.stats.summary)}-token summary`);
+      if (m.stats.read != null) bits.push(`read ${fmt(m.stats.read)}${m.stats.read_s ? ` @ ${fmt(m.stats.read_s)} tok/s` : ""}`);
+      if (m.stats.ctx != null) bits.push(`context now ~${fmt(m.stats.ctx)} tokens`);
+      const st = document.createElement("div");
+      st.className = "st-compact__stats";
+      st.textContent = bits.join(" · ");
+      el.querySelector(".st-collapse__body").appendChild(st);
+    }
+    const actions = msgActions(m, i);
+    if (actions) el.appendChild(actions);
+    return el;
+  }
   if (m.role === "user") {
     if (m.files && m.files.length) {
       const wrap = document.createElement("div");
@@ -830,7 +978,18 @@ function msgEl(m, i) {
     const b = document.createElement("div");
     b.className = "st-bubble";
     b.textContent = m.text;
+    const lines = (m.text.match(/\n/g) || []).length + 1;
+    const long = lines > 10 || m.text.length > 800;   // length too, so a single-line wall still clamps
+    if (long && !m.userOpen) b.classList.add("st-bubble--clamped");
     el.appendChild(b);
+    if (long) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "st-btn st-btn--secondary st-msg__more";
+      more.dataset.msgUserMore = "";
+      more.textContent = m.userOpen ? "Show less" : `Show all ${fmt(lines)} lines`;
+      el.appendChild(more);
+    }
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
     meta.textContent = `${tr("chat.you", "You")} · ${timeStr(m.time)}`;
@@ -965,6 +1124,11 @@ function renderChat() {
   const chat = $("chat");
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
+  foldPoint = null;
+  { const k = messages.map((m) => !!m.compact).lastIndexOf(true);
+    if (k >= 0) foldPoint = Math.max(0, Math.min(messages[k].folded, k)); }   // clamped as compaction.js clamps it
+  updateContextPill();
+  $("compact-btn").disabled = historyLocked() || messages.length < 2;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   renderSidebar();
   renderParent();
@@ -1024,6 +1188,25 @@ $("chat").addEventListener("click", (e) => {
     const run = fr.dataset.scripts !== "1";
     if (run && !confirm(tr("preview.confirm", "Run this code with scripts?\n\nIt runs in your browser, cut off from this chat and from the network, but it can still freeze the tab, and it is code the model wrote.\n\nOnly this block, and only until you close the preview."))) return;
     fillPreview(fr, run);
+  }
+  const um = e.target.closest("[data-msg-user-more]");
+  if (um) {
+    const el2 = um.closest(".st-msg"), m2 = messages[+el2.dataset.i];
+    if (m2) {
+      m2.userOpen = !m2.userOpen;
+      saveChat();
+      // Keep the live answer and any history editor attached while toggling this bubble.
+      el2.querySelector(".st-bubble").classList.toggle("st-bubble--clamped", !m2.userOpen);
+      um.textContent = m2.userOpen ? "Show less" : `Show all ${fmt((m2.text.match(/\n/g) || []).length + 1)} lines`;
+    }
+    return;
+  }
+  const mu = e.target.closest("[data-msg-unfold]");
+  if (mu) {   // only the LAST marker's button exists, but verify: an earlier one could not put anything back
+    if (historyLocked()) return;
+    const i = +mu.closest(".st-msg").dataset.i;
+    const isLast = messages.every((m2, i2) => !m2.compact || i2 <= i);
+    if (messages[i] && messages[i].compact && isLast) { messages.splice(i, 1); saveChat(); renderChat(); }
     return;
   }
   const mc = e.target.closest("[data-msg-copy]");
@@ -1047,20 +1230,20 @@ $("chat").addEventListener("toggle", (e) => {
   if (d.open && body.dataset.pending) { body.textContent = messages[+d.closest(".st-msg").dataset.i].reasoning; delete body.dataset.pending; }
 }, true);
 
-function apiMessages() {
-  const out = [];
-  for (const m of messages) {
-    if (m.role === "user") {
-      const imgs = (m.images || []).filter((i) => i.url);
-      const text = userText(m);
-      out.push({role: "user", content: imgs.length ? [{type: "text", text},
-        ...imgs.map((i) => ({type: "image_url", image_url: {url: i.url}}))] : text});
-    } else if (!(busy && busy.msg === m)) {            // the answer being asked for now is not history yet
-      out.push(...assistantMessages(m));
-    }
-  }
-  return out;
+function apiMessages(upto) {   // the compaction rules in compaction.js + the app's own message conversion
+  return buildApiMessages(messages, upto, convertApiMessage);
 }
+function convertApiMessage(m) {
+  if (m.role === "user") {
+    const imgs = (m.images || []).filter((i) => i.url);
+    const text = userText(m);
+    return [{role: "user", content: imgs.length ? [{type: "text", text},
+      ...imgs.map((i) => ({type: "image_url", image_url: {url: i.url}}))] : text}];
+  }
+  if (busy && busy.msg === m) return [];   // the answer being asked for now is not history yet (#1392)
+  return assistantMessages(m);
+}
+
 // An answer that used MCP tools goes back as the model wrote it: per round the text before the calls, the calls and
 // their results (as the model read them), then the rest - so the next question can build on what the tools found.
 function assistantMessages(m) {
@@ -1108,6 +1291,8 @@ function setBusy(on) {
                                          : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
   if (settings.chatEdit) syncActions();                 // the buttons follow the state: none under the answer being written
   $("s-list").disabled = $("s-edit").disabled = !!busy || !!panel;      // they change the messages on the screen
+  $("compact-btn").disabled = historyLocked() || messages.length < 2;
+  for (const button of $("chat").querySelectorAll("[data-msg-unfold]")) button.disabled = historyLocked();
   renderUndoBar();
   renderPending();
 }
@@ -1282,6 +1467,7 @@ async function generateReply() {
   if (cut) m.interrupted = true;
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
+  if (usage && usage.prompt_tokens != null) m.ctx = usage.prompt_tokens + (n || 0);   // the context pill's reading
   const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
@@ -1299,6 +1485,7 @@ async function generateReply() {
   paintLive();
   if (frame) cancelAnimationFrame(frame);
   updateAssistant(el, m, false);
+  updateContextPill();   // renderChat is not called here, and the fresh m.ctx is the newest measurement
   saveChat();
   scrollDown();
   settlePending(cut, !m.stopped && !m.error);
@@ -1520,6 +1707,7 @@ $("s-apply").onclick = async () => {
   setBusy(!!busy);
   for (const el of $("chat").querySelectorAll(".st-msg--assistant")) {
     const m = messages[+el.dataset.i];
+    if (m.compact || m.compacting) continue;
     updateAssistant(el, m, !!busy && busy.msg === m);  // the element send() holds stays the same while an answer streams
   }
   const share = checked("s-share");
