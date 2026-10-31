@@ -172,6 +172,7 @@ bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only,
 #include <stdexcept>
 #include <string>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 // logprobs=K / allowed=...: one `LP` line for the token just emitted, from `ver`'s head
@@ -12440,6 +12441,8 @@ int main(int argc, char** argv) {
         strata::spec::DraftPolicy policy(S);   // MTP or lookup window, learned over the whole process
         strata::spec::DraftPolicy policy_idle(S);   // --draft auto: the other drafter's learned costs; swapped in with it when a request uses the other drafter
         bool policy_is_df2 = use_df2;   // which drafter's costs `policy` holds (the engine's first drafter; swapped with policy_idle when a request uses the other one)
+        struct DraftBandit { double tps[2] = {0, 0}; int n[2] = {0, 0}; int64_t reqs = 0; };   // [1] = DFlash2, [0] = MTP: decode tok/s of finished requests (--draft-rule learn)
+        std::unordered_map<uint64_t, DraftBandit> bandit;
         static const bool draft_log = std::getenv("STRATA_DRAFT_LOG") != nullptr;   // one stderr line per request: drafter, tokens, rounds, ms, upkeep ms
         static const bool draft_keep_off = std::getenv("STRATA_DRAFT_KEEP") != nullptr && std::atoi(std::getenv("STRATA_DRAFT_KEEP")) == 0;   // diagnostic: do not keep the idle drafter current
         int64_t draft_req_count = 0;
@@ -14049,17 +14052,7 @@ int main(int argc, char** argv) {
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
-            // --draft auto: this request's drafter.  Without the DFlash2 drafter loaded every request uses the MTP, as before.
-            bool req_df2 = use_df2;
-            if (use_df2 && o.draft_auto) {
-                const std::string& d = !req_draft.empty() ? req_draft : o.draft_rule;
-                if (d == "mtp") req_df2 = false;
-                else if (d == "dflash2" || d == "df2") req_df2 = true;
-                if (!req_df2 && !req_min_p_set && o.draft_mtp_min_p >= 0.0) req_spec_min_p = o.draft_mtp_min_p;
-                if (req_df2 != policy_is_df2) { std::swap(policy, policy_idle); policy_is_df2 = req_df2; }
-                S_mtp = req_df2 ? S_mtp_wide : S_mtp_narrow;
-                if (use_mtp) mtp.set_max_drafts(S_mtp - 1);
-            }
+            bool req_df2 = use_df2;   // --draft auto: this request's drafter, decided once the prompt is parsed (below)
             std::vector<float> req_bias;
             std::string bias_error;
             if (req_bias_present && (o.batch > 0 ||
@@ -14081,6 +14074,30 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            // --draft auto: this request's drafter.  Without the DFlash2 drafter loaded every request uses the MTP, as before.
+            uint64_t bandit_key = 0;
+            if (use_df2 && o.draft_auto) {
+                const std::string& d = !req_draft.empty() ? req_draft : o.draft_rule;
+                if (d == "mtp") req_df2 = false;
+                else if (d == "dflash2" || d == "df2") req_df2 = true;
+                else if (d == "learn") {   // what this kind of request (its first prompt tokens: the system prompt of the app) did best so far, with some exploring
+                    bandit_key = 1469598103934665603ull;
+                    for (int64_t i = 1; i < std::min<int64_t>(n, 33); ++i) bandit_key = (bandit_key ^ (uint64_t) ids[(size_t) i]) * 1099511628211ull;
+                    DraftBandit& b = bandit[bandit_key];
+                    const int64_t r = b.reqs++;
+                    if (b.n[1] < 2) req_df2 = true;
+                    else if (b.n[0] < 2) req_df2 = false;
+                    else {
+                        const bool df_better = b.tps[1] >= 0.99 * b.tps[0];   // DFlash2 unless the MTP is clearly ahead
+                        const int every = std::fabs(b.tps[1] / b.tps[0] - 1.0) < 0.04 ? 6 : 12;   // the other one is tried now and then
+                        req_df2 = (r % every == every - 1) ? !df_better : df_better;
+                    }
+                }
+                if (!req_df2 && !req_min_p_set && o.draft_mtp_min_p >= 0.0) req_spec_min_p = o.draft_mtp_min_p;
+                if (req_df2 != policy_is_df2) { std::swap(policy, policy_idle); policy_is_df2 = req_df2; }
+                S_mtp = req_df2 ? S_mtp_wide : S_mtp_narrow;
+                if (use_mtp) mtp.set_max_drafts(S_mtp - 1);
+            }
             if (req_prefill_only && (geni || o.batch > 0 || n < 2)) {
                 std::printf("ERR prefill=1 needs a text prompt of at least 2 tokens and no --batch\n");
                 continue;
@@ -17309,6 +17326,13 @@ int main(int argc, char** argv) {
             }
             if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
+            if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0) {
+                DraftBandit& b = bandit[bandit_key];
+                const int w = req_df2 ? 1 : 0;
+                const double tps = 1000.0 * (double) produced_n / decode_ms;
+                b.tps[w] = b.n[w] == 0 ? tps : 0.65 * b.tps[w] + 0.35 * tps;
+                ++b.n[w];
+            }
             if (draft_log && use_df2)
                 std::fprintf(stderr, "strata draft: request %lld drafter=%s window<=%d tokens=%lld rounds=%lld decode_ms=%.1f keep_ms=%.1f (%.3f per round)\n",
                              (long long) ++draft_req_count, req_df2 ? "dflash2" : "mtp", S_mtp, (long long) produced_n, (long long) (rounds - rounds_at_start),
