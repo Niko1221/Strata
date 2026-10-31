@@ -1175,5 +1175,40 @@ class ArchiveCommitTests(unittest.TestCase):
         self.assertIn("COMMIT", str(raised.exception))
 
 
+class StandardComparison(unittest.TestCase):
+    """#4325: two standard reports side by side, with the cautions a reader needs."""
+
+    def _doc(self, *, suite="strata-test-v1", model="m", gpu="RTX 5090", engine="0.1.54", scale=1.0):
+        return {"protocol": {"id": suite}, "model": {"id": model},
+                "hardware": {"gpus": [{"name": gpu}]}, "software": {"engine_version": engine},
+                "run": {"id": "run-" + str(scale)},
+                "summaries": [
+                    {"phase": "performance", "case_id": "short", "metric": "decode_tps", "median": 200.0 * scale},
+                    {"phase": "performance", "case_id": "short", "metric": "ttft_s", "median": 0.5},
+                ]}
+
+    def test_a_single_card_before_and_after(self):
+        got = bs.compare(self._doc(), self._doc(scale=1.5))
+        self.assertEqual(got["warnings"], [])
+        decode = next(r for r in got["rows"] if r["metric"] == "decode_tps")
+        self.assertEqual((decode["baseline"], decode["candidate"]), (200.0, 300.0))
+        self.assertEqual(decode["change_pct"], 50.0)
+        self.assertIn("+50.0%", bs.format_comparison(got))
+
+    def test_a_different_suite_model_card_or_engine_is_named(self):
+        got = bs.compare(self._doc(), self._doc(suite="other-v1", model="m2", gpu="RTX 4090", engine="0.1.52"))
+        text = " ".join(got["warnings"])
+        for want in ("different suites", "different models", "different graphics cards", "different engines"):
+            self.assertIn(want, text)
+
+    def test_a_figure_one_side_does_not_have_is_none_not_zero(self):
+        candidate = self._doc()
+        candidate["summaries"] = [s for s in candidate["summaries"] if s["metric"] != "ttft_s"]
+        got = bs.compare(self._doc(), candidate)
+        ttft = next(r for r in got["rows"] if r["metric"] == "ttft_s")
+        self.assertEqual((ttft["baseline"], ttft["candidate"], ttft["change_pct"]), (0.5, None, None))
+        self.assertIn("n/a", bs.format_comparison(got))
+
+
 if __name__ == "__main__":
     unittest.main()
