@@ -109,10 +109,63 @@ class Rx6000Detection(KfdDetection):
         self.assertFalse(setup.is_rdna2({"arch": "gfx1030x"}))
 
     def test_windows_ids_and_names(self):
-        for device, arch in ((0x73BF, "gfx1030"), (0x73AF, "gfx1030"), (0x73A5, "gfx1030"), (0x73DF, "gfx1031")):
+        for device, arch in ((0x73BF, "gfx1030"), (0x73AF, "gfx1030"), (0x73A5, "gfx1030"), (0x73DF, "gfx1031"),
+                             (0x73FF, "gfx1032")):
             self.assertEqual(setup.win_amd_arch(device, ""), arch)
         self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
         self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")      # an RX 7000 card is not RDNA2
+
+
+class Rx6600OptIn(unittest.TestCase):
+    """STRATA_EXPERIMENTAL_GFX1032=1: the RX 6600 / 6600 XT / 6600M (gfx1032) is RDNA2 like the RX 6800 / 6700, but no
+    ready-made engine carries its code, so the owner builds one and passes --prebuilt (docs/RX6600M.md).  Off by default."""
+
+    CARD = {"index": 0, "name": "AMD Radeon RX 6600M", "vram_gb": 8.0, "arch": "gfx1032", "vendor": "amd", "driver": "amd"}
+
+    def test_off_by_default_and_the_switch_names_itself(self):
+        if setup.GFX1032_OPT_IN:
+            self.skipTest("this run has STRATA_EXPERIMENTAL_GFX1032=1 set")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)):   # no engine installed
+            self.assertNotIn("gfx1032", setup.AMD_ARCHS)
+            self.assertIn("STRATA_EXPERIMENTAL_GFX1032", setup.amd_problem({"arch": "gfx1032"}))
+        self.assertEqual(setup.AMD_NAMES["gfx1032"], "AMD Radeon RX 6600 / 6600 XT / 6600M (gfx1032)")
+        self.assertEqual(setup.ROCM_INDEXES["gfx1032"], setup.ROCM_INDEXES["gfx1030"])
+        self.assertFalse(setup.is_rdna2({"arch": "gfx1032"}))        # not one of the ready-made package's cards
+
+    def test_the_installed_engine_makes_the_card_usable(self):
+        """A setup run again on the same PC (SETUP.bat: another model, other settings) accepts the card when the engine
+        in engine/ was built for gfx1032, with no switch set."""
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d) / "engine"
+            eng.mkdir()
+            (eng / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1032"]}', encoding="utf-8")
+            with mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup, "WIN", True):
+                self.assertIsNone(setup.amd_problem(dict(self.CARD)))
+                self.assertIn("installed here", setup.gfx1032_notes(self.CARD)[0])
+            (eng / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1100"]}', encoding="utf-8")
+            with mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup, "WIN", True):
+                self.assertIsNotNone(setup.amd_problem(dict(self.CARD)))     # an engine for other cards does not count
+                self.assertIn("STRATA_HIP_ARCHS=gfx1032", setup.gfx1032_notes(self.CARD)[0])
+
+    def test_switched_on(self):
+        with mock.patch.object(setup, "AMD_ARCHS", setup.AMD_ARCHS + ("gfx1032",)):
+            self.assertIsNone(setup.amd_problem({"arch": "gfx1032"}))
+            self.assertIsNone(setup.amd_problem(self.CARD))
+
+    def test_the_note_names_the_build_and_the_card(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)), \
+                mock.patch.object(setup, "WIN", True):
+            line = setup.gfx1032_notes({"arch": "gfx1032"})[0]
+        self.assertIn("STRATA_HIP_ARCHS=gfx1032", line)
+        self.assertIn("--prebuilt", line)
+        self.assertEqual(setup.gfx1032_notes({"arch": "gfx1031"}), [])
+        self.assertEqual(setup.gfx1032_notes({"arch": "gfx1100"}), [])
+
+    def test_the_default_engine_is_not_downloaded_for_it(self):
+        """The release zips carry no gfx1032 code: the default base is passed over (engine_step names the build), while
+        an explicit --prebuilt base is still looked at."""
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)):
+            self.assertIsNone(setup.get_prebuilt_hip(setup.PREBUILT_URL, dict(self.CARD)))
 
 
 class GpuLists(unittest.TestCase):
@@ -303,7 +356,8 @@ class WindowsDetection(unittest.TestCase):
     def test_registry_alone(self):
         """No WMI answer: the registry's own list (which can hold a removed card)."""
         g = setup.amd_gpus_windows([], self.REGISTRY)
-        self.assertEqual([x["arch"] for x in g if not x["arch"].startswith("unknown")], ["gfx1201", "gfx1101"])
+        self.assertEqual([x["arch"] for x in g if not x["arch"].startswith("unknown")],
+                         ["gfx1032", "gfx1201", "gfx1101"])      # PCI 73FF is the RX 6600 series, not an unknown id
 
     def test_arch_names(self):
         for name, arch in (("AMD Radeon RX 9070 GRE", "gfx1201"), ("AMD Radeon AI PRO R9700", "gfx1201"),

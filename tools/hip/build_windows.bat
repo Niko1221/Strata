@@ -15,6 +15,8 @@ rem   STRATA_HIP_ARCHS     gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx10
 rem                        gfx1031 = RX 6700 XT / 6800M, #915 #1078; drop it from the list to build the zip without it)
 rem                        The release packages are built one per card family: rx9070 = gfx1200;gfx1201, rdna3 = gfx1100;gfx1101;gfx1102;gfx1151,
 rem                        rdna2 (0.2.2, RX 6000: built, not tested on a real card) = gfx1030;gfx1031; each then goes through package_engine.py --variant <name>
+rem                        A card outside a package is built the same way: STRATA_HIP_ARCHS=gfx1032 for the RX 6600 series
+rem                        (setup's opt-in STRATA_EXPERIMENTAL_GFX1032=1, docs/RX6600M.md).
 rem   STRATA_ROCM_VERSION  10.2.0a20260930        STRATA_ROCM_INDEX  https://nightly.repo.amd.com/rocm/whl-next/
 rem   ROCM_VENV            <repo>\.rocm-win       BUILD_DIR          <repo>\build-hip-win     DIST_DIR  <repo>\dist
 rem   STRATA_GGML_DIR      a llama.cpp checkout at the pinned commit (default: CMake fetches it)
@@ -50,7 +52,12 @@ if not "!HAVE!"=="!WANT!" if not "%STRATA_ROCM_KEEP%"=="1" (
   "%ROCM_VENV%\Scripts\rocm-sdk.exe" init || exit /b 1
   >"%STAMP%" echo !WANT!
 )
-for /f "delims=" %%R in ('"%ROCM_VENV%\Scripts\rocm-sdk.exe" path --root') do set "ROCM=%%R"
+rem The console script answers on most machines.  On some Windows venvs it prints nothing and exits 1, and the module
+rem behind it works: that fallback is why the root is read here and not left to the script alone.
+set "ROCM="
+for /f "delims=" %%R in ('"%ROCM_VENV%\Scripts\rocm-sdk.exe" path --root 2^>nul') do set "ROCM=%%R"
+if not defined ROCM for /f "delims=" %%R in ('"%ROCM_VENV%\Scripts\python.exe" -m rocm_sdk path --root') do set "ROCM=%%R"
+if not defined ROCM (echo ROCm's rocm-sdk did not answer in "%ROCM_VENV%" & exit /b 1)
 if not exist "%ROCM%\lib\llvm\bin\clang++.exe" (echo ROCm has no compiler in "%ROCM%" & exit /b 1)
 set "ROCM_F=%ROCM:\=/%"
 set "BITCODE=%ROCM_F%/lib/llvm/amdgcn/bitcode"

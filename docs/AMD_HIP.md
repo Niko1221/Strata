@@ -35,6 +35,7 @@ runs are not supported. Use the [package table](#ready-made-packages) to match y
 | RX 7800 XT / 7700 XT | gfx1101 | Validated by its owner |
 | RX 7600 XT | gfx1102 | Reported working, not validated |
 | RX 6800 / 6900 series, RX 6700 XT | gfx1030, gfx1031 | Has a package, not tested on a real card ([RDNA2](#rdna2-gfx1030)) |
+| RX 6600M (laptop) | gfx1032 | Windows source build; setup takes it with `STRATA_EXPERIMENTAL_GFX1032=1` and `--prebuilt <the zip you built>`; `strata launch` serves it once that engine is a component package (`packaging/package_engine.py`); community report: [RX6600M.md](RX6600M.md) |
 | Ryzen AI Max (Strix Halo) | gfx1151 | [STRIX_HALO.md](STRIX_HALO.md) |
 | Radeon 780M / 760M | gfx1103 | Linux, opt-in build: [RADEON_780M.md](RADEON_780M.md) |
 | Instinct MI50 / MI60, Radeon VII | gfx906 | Source build, community-tested ([gfx906](#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source)) |
@@ -533,7 +534,7 @@ Other gfx103x and RDNA2-adjacent cards (community reports):
 | --- | --- |
 | gfx1031, RX 6700 XT 12 GB (#524, #1027) | Setup knows it (`gfx103X-all` wheels, unvalidated). IQ2_XS on ROCm 7.2.4: decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6 needles. The default list of `build_windows.bat` includes it. |
 | RX 6800M 12 GB, Windows, self-built (#915, #1078) | Q2_0: decode 9-27 tok/s, prompt 50-114 tok/s; experts stream from disk with 31 GB RAM |
-| gfx1032, RX 6600 / 6600 XT | Unvalidated. Ran under Windows as the helper expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)): +8-18% decode over the 6800 alone. No report as a primary card. |
+| gfx1032, RX 6600 / 6600 XT | Unvalidated by the maintainers. Ran under Windows as the helper expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)): +8-18% decode over the 6800 alone. A primary-card Windows report on an RX 6600M, with a source build, setup (`STRATA_EXPERIMENTAL_GFX1032=1` with `--prebuilt`), the model served by setup and by `strata launch` at 8K context, and 5.7-17.5 tok/s decode, is in [RX6600M.md](RX6600M.md). |
 | gfx1150, Radeon 890M (#1217) | Builds and runs as an unvalidated target. MINISFORUM N5 PRO, 96 GB, TheRock ROCm 7.14.1, IQ3_XXS: decode 15-19 tok/s, prompts 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `gfx1150-hipblaslt-100401.txt`. Setup does not install for it: build with `-DCMAKE_HIP_ARCHITECTURES=gfx1150` and point `STRATA_HIPBLASLT_TUNING` at the table. [Report](../bench/results/2026-10-07-community-gfx1150/README.md). |
 | gfx1152, Radeon 860M / 840M (#1625) | Builds with a warning; portable kernels; no report; setup does not install for it |
 
