@@ -160,6 +160,9 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
 | **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
 
+Two or three cards can share one model ([multi-GPU](docs/MULTI_GPU.md)); two AMD cards of different families on Bazzite
+or another read-only-image Fedora need one extra step ([BAZZITE.md](docs/BAZZITE.md)).
+
 <a id="using-it"></a>
 
 ## Tools

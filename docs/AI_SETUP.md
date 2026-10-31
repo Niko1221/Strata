@@ -169,4 +169,6 @@ Stop active models before `strata update`. Very old Terminals require rerunning 
 A source build is a separate workflow: [SOURCE_INSTALL.md](SOURCE_INSTALL.md). `START-HERE.bat`, `SETUP.bat`,
 `UPDATE.bat`, `setup.sh` and generated `run-<model>` scripts belong to that workflow. Do not pass their flags to
 `strata launch`, promise a source build will support an unknown model, or describe a source-only command as an
-installed-app command. If a required backend or artifact is missing, say exactly what is missing.
+installed-app command. If a required backend or artifact is missing, say exactly what is missing. AMD cards of two GPU
+families sharing one model need a system ROCm 7: [AMD_HIP.md](AMD_HIP.md); on Bazzite or another read-only-image Fedora
+the `-devel` packages are layered with `rpm-ostree`: [BAZZITE.md](BAZZITE.md).

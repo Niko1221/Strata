@@ -104,7 +104,7 @@ prompt-speed run with `on` and `off` from an RX 7000 or Strix Halo card.
 | Step | What setup does |
 | --- | --- |
 | Detection | Finds the card through the kernel's KFD topology. Integrated Radeon GPUs are listed as not supported (Strix Halo has its own page). |
-| ROCm | Uses a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS when present. Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). |
+| ROCm | Uses a system ROCm 7 with hipcc, hipBLAS and the HIP development files when present: AMD's packages in `/opt/rocm` (or `$ROCM_PATH`), or a distro's packages built into `/usr` (Fedora: `sudo dnf install rocm-hip-devel hipblas-devel hipblaslt-devel`). Otherwise, or when it is older than 7.0, installs ROCm into `.venv` from AMD's TheRock wheels (about 10 GB, no sudo). On an immutable Fedora (Bazzite, Silverblue, Kinoite) the same packages are layered with `rpm-ostree` instead of `dnf`: [BAZZITE.md](BAZZITE.md). |
 | Engine | Compiles it for the card's architecture (10-20 minutes, once; again when you pick another architecture). Needs a C++ compiler and git (`sudo apt install build-essential git`). |
 | Tuning table | Uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the architecture and the installed hipBLASLt version. Otherwise it says so and uses plain hipBLAS. On gfx103x the same role falls to a rocBLAS table. |
 | Pictures | On by default. CPU reader under 24 GB of VRAM, GPU reader from 24 GB; `--vision gpu` / `--vision cpu` switch it. If the GPU reader cannot start, the CPU reader is used. |
@@ -124,7 +124,9 @@ tested path there.
 | `--gpu-roles 1=main,0=helper` | Say the roles yourself ([MULTI_GPU.md](MULTI_GPU.md)) |
 
 Every chosen card must be one of the supported architectures. Cards of two families (for example gfx1100 and gfx1201) need
-a system ROCm 7, because AMD's wheels hold one family. A split pays only when no single card holds the model's experts.
+a system ROCm 7, because AMD's wheels hold one family, and setup names the ROCm packages that are missing when the one on
+the PC cannot build the engine ([BAZZITE.md](BAZZITE.md) is that step on Bazzite and the other read-only-image Fedoras).
+A split pays only when no single card holds the model's experts.
 
 Setup does not offer tuning (calibration) on AMD. A tuning run by hand (`./setup.sh --calibrate`) is saved for that AMD card and
 reused. The Monitor shows the card's load, VRAM, temperature and power from Linux sysfs.
