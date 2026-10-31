@@ -3433,6 +3433,16 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     if ds:
         # DeepSeek: --parallel N (the engine holds N conversations at once, each its own rings and KV in VRAM, taken out of the
         # experts' room; their tokens are decoded together).  Not --batch: that is the Qwen engine's slots.
+        # An engine package from before this flag would stop at the start on it ("unknown option"): asked of the engine itself, and said.
+        try:
+            from strata_control import dsv41_engine
+            old_engine = dsv41_engine.takes_parallel(cfg.get("exe")) is False
+        except Exception:                                # noqa: BLE001 - a probe that fails decides nothing
+            old_engine = False
+        if old_engine:
+            print(f'[strata] "parallel": {n} - this DeepSeek engine ({cfg.get("exe")}) is from before --parallel, so it answers one request at a '
+                  "time. Update the engine (strata update) to answer several at once.", flush=True)
+            return []
         if n > PARALLEL_MAX:
             print(f'[strata] "parallel": {n} - the DeepSeek engine runs at most {PARALLEL_MAX} conversations at once; it will use '
                   f"{PARALLEL_MAX}", flush=True)

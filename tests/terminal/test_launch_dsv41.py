@@ -103,13 +103,14 @@ class LaunchDeepSeek(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("No graphics card", out)
 
-    def test_parallel_pictures_and_tuning_are_not_passed_on(self):
+    def test_parallel_is_passed_on_and_pictures_and_tuning_stay(self):
+        """`--parallel 4` on DeepSeek is no longer dropped (tests/terminal/test_launch_dsv41_parallel.py has the rest)."""
         p = self.plan("--model", "ud-q8_k_xl", "--parallel", "4", "--vision", "on", "--tune", "quick")
         s = p["settings"]
-        self.assertFalse(s.get("parallel"))
+        self.assertEqual(s.get("parallel"), 4)
         self.assertEqual((s["vision"], s["tune"]), ("on", "quick"))           # the DeepSeek tune is real now: the choice stays; pictures stay on
         text = " ".join(p["warnings"])
-        self.assertIn("one request at a time", text)
+        self.assertNotIn("one request at a time", text)
         self.assertNotIn("cannot read pictures", text)
         off = self.plan("--model", "ud-q8_k_xl", "--vision", "off")["settings"]
         self.assertEqual(off["vision"], "off")                                 # --vision off still turns them off

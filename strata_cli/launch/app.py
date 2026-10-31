@@ -71,8 +71,13 @@ class Ctx:
     def warnings(self) -> list[str]:
         s = self.settings
         out = [n.line() for n in S.check_access(s)]
-        out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
         deepseek = bool(s.family and self.catalog.strata.multi_family(s.family))
+        if deepseek:
+            if s.parallel and s.parallel > 1:
+                from strata_cli.launch.cmd import parallel_notices
+                out += [n.line() for n in parallel_notices(s, self.computer)]
+        else:
+            out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
         out += [n.line() for n in S.check_context(s, deepseek=deepseek, pack_limit=self.catalog.pack_limit(s.family, s.model) if deepseek else None)]
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":

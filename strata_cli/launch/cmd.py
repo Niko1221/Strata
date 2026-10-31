@@ -318,6 +318,27 @@ def _placement_lines(placement: dict | None) -> None:
             _say("      " + w)
 
 
+def _parallel_word(plan: dict, s: S.LaunchSettings) -> str:
+    """The plan's parallel word: DeepSeek is one at a time unless --parallel 2 to 8; other models fit to the card unless a number was given."""
+    if plan.get("placement"):
+        k = (plan.get("parallel") or {}).get("conversations")
+        return f"{k} conversations at the same time" if k else "one at a time"
+    return str(s.parallel or "fit to your card")
+
+
+def _parallel_lines(info: dict | None) -> None:
+    """DeepSeek `--parallel N` in --plan: what it does, in plain words with the measured numbers (only when it was asked for)."""
+    if not info or not info.get("conversations"):
+        return
+    import textwrap
+    _say("  parallel")
+    for line in info.get("lines") or []:
+        wrapped = textwrap.wrap(line, 94) or [""]
+        _say("    - " + wrapped[0])
+        for w in wrapped[1:]:
+            _say("      " + w)
+
+
 def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
     """Fill what was left open with the recommendation for this computer, and collect warnings (never errors for a bad fit)."""
     notices: list[S.Notice] = []
@@ -349,10 +370,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 if s.vision == "off" and r.images and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
-        if catalog.strata.multi_family(s.family):           # DeepSeek-V4.1-Flash: one request at a time, no tuning
-            if s.parallel and s.parallel > 1:
-                notices.append(S.Notice("warn", f"{s.model} answers one request at a time in this Strata version, so --parallel {s.parallel} is not used.", ""))
-                s.parallel = None
+        if catalog.strata.multi_family(s.family):           # DeepSeek-V4.1-Flash: one request at a time unless --parallel N, no tuning
+            if s.parallel and s.parallel > 1:               # off by default; asked for: passed on, with what it does and what was run (never refused)
+                notices += parallel_notices(s, comp)
             # pictures: on unless the person chose off - the engine reads them with its own vision tower, no separate reader
             s.vision = "off" if s.vision == "off" else "on"   # (tuning is DeepSeek's own short tune: tools/dsv41/tune.py, run by the launch)
         elif s.speed:
@@ -373,8 +393,29 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
-    notices += S.check_parallel(s, vram_gb=vram)
+    if not (s.family and catalog.strata.multi_family(s.family)):     # (DeepSeek's own words are parallel_notices above: Qwen's card table does not apply)
+        notices += S.check_parallel(s, vram_gb=vram)
     return s, notices
+
+
+def _host_platform() -> tuple[str, str]:
+    """(sys.platform, platform.machine()) of this computer, in one place the tests can replace."""
+    import platform
+    return sys.platform, platform.machine()
+
+
+def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
+    """DeepSeek `--parallel N` asked for: a warning for each way this pick goes beyond what was run (strata_control/dsv41_parallel.py), never a refusal.
+    The explanation itself is in `--plan` (and the engine prints the memory it took)."""
+    from strata_control import dsv41_fit, dsv41_parallel
+    try:
+        cards = dsv41_fit.run_cards(comp.usable_gpus, comp.engine_vendor, named=bool(s.gpus or s.gpu_roles))[0]
+    except Exception:                                        # noqa: BLE001 - the notes must never stop a launch
+        cards = list(getattr(comp, "usable_gpus", None) or [])
+    if s.gpus:
+        cards = [c for c in cards if int(c.get("index", -1)) in {int(g) for g in s.gpus}] or cards
+    return [S.Notice("warn", what, todo) for what, todo in dsv41_parallel.warnings(
+        s.parallel, cards=cards, context=s.context, os_name=_host_platform()[0], machine=_host_platform()[1], vendor=comp.engine_vendor)]
 
 
 def roles_line(s: S.LaunchSettings, catalog) -> str | None:
@@ -811,13 +852,14 @@ def run_launch(a: argparse.Namespace) -> int:
                     _say(f"  model     {m.get('title') or 'your model files'}{size}   (your files in {s.model_path})")
                 else:
                     _say(f"  model     {m.get('title') or f'{s.family} {s.model}'}{size}")
-                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {('one at a time' if plan.get('placement') else s.parallel or 'fit to your card')}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {_parallel_word(plan, s)}")
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
                 if plan.get("speed"):
                     _say(f"  speed     {plan['speed'].replace('Speed: ', '', 1)}")
                 _placement_lines(plan.get("placement"))
+                _parallel_lines(plan.get("parallel"))
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:

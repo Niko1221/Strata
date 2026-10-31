@@ -208,6 +208,34 @@ def source_reachable(source: str, timeout: float = 10.0) -> bool:
         return False
 
 
+_PARALLEL_SEEN: dict = {}
+
+
+def takes_parallel(exe: str | os.PathLike | None, timeout: float = 15.0) -> bool | None:
+    """Does this DeepSeek engine take `--parallel N` (several conversations at once)?  Asked of the engine itself: its usage text (`--help`,
+    which needs no card and no model) names the flag from the version that has it.  True / False; None when it cannot be told (no such file,
+    it would not start, no usage text came back) - then nothing is decided and the caller goes on as before.  Remembered per file and time."""
+    import subprocess
+    try:
+        path = Path(str(exe))
+        key = (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+    except (OSError, ValueError, TypeError):
+        return None
+    if key in _PARALLEL_SEEN:
+        return _PARALLEL_SEEN[key]
+    answer: bool | None = None
+    try:
+        done = subprocess.run([str(path), "--help"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(path.parent),
+                              env=start_env(path), stdin=subprocess.DEVNULL)
+        text = (done.stdout or "") + (done.stderr or "")
+        if "--pack" in text and "--serve" in text:        # its own usage text (every version prints these two)
+            answer = "--parallel" in text
+    except (OSError, subprocess.SubprocessError):
+        answer = None
+    _PARALLEL_SEEN[key] = answer
+    return answer
+
+
 def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
     """The new engine starts: `strata-dsv41 --version` runs, loads its libraries and names itself (it needs no graphics card and no model).
     The package's own folders go on the library path first: a Windows HIP package carries the ROCm runtime it loads in rocm/bin."""
