@@ -1,12 +1,14 @@
-# Intel Arc on Linux
+# Intel Arc
 
-Strata runs on Intel Arc cards on Linux through its own engine ported to SYCL (Intel oneAPI). This page is for people with
+Strata runs on Intel Arc cards through its own engine ported to SYCL (Intel oneAPI), on Linux and, since this
+change, on Windows. This page is for people with
 an Arc A-series (Alchemist) or B-series (Battlemage) card. It covers the released Terminal route, what you need, how to
 build the engine from source, and which cards were tested. The port's workflow and measurements are in [INTEL.md](INTEL.md).
 
 maxfridbe wrote the port in [#423](https://github.com/Niko1221/Strata/pull/423). The code is in `sycl/`. Intel Arc is an
 official platform since 0.1.40.2. The maintainers test on an Arc Pro B70 (32 GB, `xe` driver) and an Arc A750 (8 GB, `i915`
-driver); results from other cards are community reports. The Mac and Windows builds have no Intel engine.
+driver); results from other cards are community reports. The Mac has no Intel engine. Windows has no Intel engine
+package either: it is built from source there, as on Linux (Windows below).
 
 ## Quick start
 
@@ -113,8 +115,8 @@ engine is at `build-sycl/sycl/strata`, so use `-S sycl` or set `STRATA_SYCL_BIN`
 
 Setup continues with `sycl/setup_intel.py`, which finds the Arc in sysfs, uses the SYCL engine you built, and writes the
 config and `run-<model>.sh`. On a card under 12 GB or an `i915` card (the A-series) it writes the small-card config
-([INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards)). It downloads and packs the model the usual way. Windows has no
-path: `setup --backend sycl` on Windows stops and points here.
+([INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards)). It downloads and packs the model the usual way. Windows runs the
+same script with the card read from Windows' device list instead of sysfs (Windows below).
 
 Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 
@@ -149,7 +151,8 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 
 ## Tested cards
 
-> **Measured on:** the hardware in each row, Linux. Versions are the engine version of that report, not the current release.
+> **Measured on:** the hardware in each row (the last on Windows). Versions are the engine version of that report, not
+the current release.
 
 | Who | Hardware | Result | Reported in |
 | --- | --- | --- | --- |
@@ -162,20 +165,92 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 | Maintainers | Arc Pro B70 32 GB (xe), 0.1.40.2 and later | Flash-Next IQ3_S with 11.5k of 24.6k experts resident: 10-prompt gate passes, prompt 980-1,000 tok/s on 4K tokens, decode 30 (prose) to 41 (code) tok/s | [INTEL.md](INTEL.md#arc-pro-b70-with-a-model-that-does-not-fit-flash-next-iq3_s) |
 | Maintainers | Arc A750 8 GB (i915) | Flash-Next IQ3_XXS about 10-19 tok/s decode | [INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards) |
 | Maintainers | 2x Arc Pro B65 32 GB (xe), 0.2.8 | Flash-Next IQ3_S, every expert in VRAM, the JIT package build: decode 71-83 tok/s (chat, JSON, code), prompts 1,261 / 1,511 / 1,628 tok/s at 4K / 8K / 16K | the bullet above |
+| Tester | Intel Arc B390 iGPU (`8086:b082`, Core Ultra X7 358H, 31.5 GB RAM), **Windows**, driver 32.0.101.9150, oneAPI 2026.1.1, engine 0.1.54 built from source with `icx` | Flash-Next IQ1_M, `--spec 6`, 8K context, Level Zero: 21.70 GiB free of the shared pool, 9,552 of 12,288 experts resident (18.19 GiB, filled at 1.23 GB/s), 21.8 GB/s host to device; 32 greedy tokens at 10.5 tok/s (14 of 14 drafts accepted), first token after 15.7 s | this change |
 
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).
 
-**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
-Panther Lake in #515; shared-memory planning does not exist), and pictures on a Battlemage card with a GPU reader. Pictures work
+**Not tested by anyone:** Arc on WSL2 with the current engine, and pictures on a Battlemage card with a GPU reader. Pictures work
 on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
+
+**Tested on one machine only, and still not covered:** an integrated Arc other than the B390, more than one card in a Windows
+PC, prompts longer than a few tokens measured for speed, 32K-128K contexts, and pictures on the B390. The B390 row below is one
+session of 32 greedy tokens on a 4-token prompt; treat its decode figure as a working check, not a speed claim.
 
 ## Windows
 
-There is no Windows path. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows, but
-`sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a bash/Docker script.
-Nobody has tried a native build. WSL2 with an Arc was used by one tester (the B580 row above), but setup cannot detect the card
-there, because it reads `/sys/class/drm`, which WSL2 does not have.
+Intel Arc works on Windows too, with the engine built from source on the PC. Neither OS has a ready-made Intel engine
+package, so this is the Linux route with Microsoft's toolchain: install Intel oneAPI (the base toolkit; 2026.1.1 was
+used) and Visual Studio 2022, then
+
+```bat
+call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+cmake -S sycl -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+      -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icx -DSTRATA_GGML_DIR=C:\path\to\llama.cpp
+ninja -C build-win strata
+```
+
+Two things about that build, both met on the B390 PC: the configure and the build must run in the *same* window where
+`setvars.bat` ran (a link that cannot open `libircmt.lib` means it did not - run the `cmake -S sycl -B build-win` line
+again in that window and build), and the engine needs Level Zero, which is only reachable from a process that saw
+`setvars.bat`. `strata doctor` on a run config with `"backend": "sycl"` says when oneAPI cannot be reached, and the
+engine line it would otherwise print ("`No device of requested type available`") names nothing to fix.
+
+`setup --backend sycl` runs `sycl/setup_intel.py`, which on Windows finds the Intel adapter in Windows' own device
+list (there is no `/sys/class/drm`), uses `build-win\strata.exe` and writes a config that starts it directly: no
+Docker, and the oneAPI runtime folders go in the config's `lib_dirs` because a service does not inherit what
+`setvars.bat` put on `PATH`.
+
+`strata launch --plan` on such a PC says the same thing in one line: there is no Intel engine package to download, so the
+engine is built here. The launcher finds the card in Windows' own device list, and an Arc iGPU is counted as what it
+is - a chip that shares the computer's RAM, never twice (its own carve-out plus the RAM).
+
+Two settings a Windows run needs, and the config writes both:
+
+- **`ONEAPI_DEVICE_SELECTOR=level_zero:gpu`, when Level Zero answers.** Windows lists the same chip twice, once
+  through Level Zero and once through OpenCL. The OpenCL device reports no free memory at all
+  (`get_memory_info: ext_intel_free_memory is not supported`) and, on the B390, fails later when the verify window is
+  captured (`verify: begin capture failed`). So the config pins Level Zero - but only when `sycl-ls` sees a Level Zero
+  GPU in the environment that will start the engine, which means Strata was run where Intel's `setvars.bat` has run.
+  A pinned selector with no Level Zero device leaves the engine with no graphics device at all, so in that case
+  nothing is pinned and setup says what to do. Measured on a B390, 2026-10-30.
+- **`ZES_ENABLE_SYSMAN=1`**, which is what lets Level Zero report the memory the driver actually has for this process.
+
+### An Arc iGPU (the B390) shares the computer's memory
+
+The graphics chip of a Panther Lake PC has no memory of its own. Windows says so in its own way: the B390 adapter
+reports 0.12 GiB as dedicated and keeps its whole usable pool (26.67 GiB of this PC's 31.5 GiB) in the *local* video
+memory segment, with none in the non-local one. The engine now asks Windows for that budget through DXGI
+(`IDXGIAdapter3::QueryVideoMemoryInfo`), the same source the AMD build uses on a Strix Halo (#243), and sizes the
+expert cache from it when the driver's own figure is smaller: on the tested PC, 26.7 GiB budget - 5.6 GiB already in
+use - 6 GiB of headroom = 15.05 GiB for the cache, 6,075 expert slots, where the same device without the query
+sized zero slots and refused. `STRATA_UMA_HEADROOM_GIB` changes the headroom (the same setting the Linux unified-
+memory rule uses). As on a Strix Halo, the machine's free RAM is the real limit: an iGPU run wants the model, the
+cache and the OS to fit in what is left after the desktop, and the engine's own figures come from the adapter's
+per-process budget, which Windows moves around under it.
+
+Two measurements from the first served requests on this card, both now handled in the engine:
+
+- **the cache never takes RAM the computer cannot give.** The adapter's budget is what Windows lets *this process*
+  aim at (26.7 GiB of 31.5 GiB), but the model, the KV, the draft layer and the desktop live in the same RAM. Sized
+  from the budget alone the cache took 17.68 GiB, the first request ran with 318 MiB of RAM left on the whole
+  machine, and the engine died (`0xC0000005`). The sizing now takes the smaller of the adapter's budget and what the
+  OS can hand out, minus the headroom: 10.60 GiB free here, 2,861 expert slots, and the session answers.
+- **an integrated Arc waits for the CPU like an Arc A-series does.** The experts that do not fit the cache are
+  computed on the CPU, and the GPU's window waits have to *complete* rather than expire; with the B-series bound of
+  20,000 reads the GPU went on with the experts' outputs missing - the engine's own note for the A750 describes
+  exactly this (an answer of token 0, or a crash in the CPU pool) - and the served request died. The engine now takes
+  the long bound when it recognises an Intel adapter that shares the machine's memory. `STRATA_SPIN_MAX` still
+  overrides it.
+
+Served on this PC with those in place (no engine environment overrides): `128 + 256?` answered **384**, "Name three
+colors" answered **red, blue, green**; 48 tokens in 45.8 s and 57 in 30.1 s with the cache holding 2,861 of 12,288
+experts (58-67% hit). That is the honest speed of this card at 31.5 GB of shared RAM with IQ1_M: a PC with more free
+RAM keeps more experts resident and decodes faster (the one-shot run with 9,552 experts resident decoded at 10.5 tok/s).
+
+Because the SYCL runtime names no adapter by LUID on Windows, the Intel adapter is matched by its PCI device id and,
+when that id answers nothing (the OpenCL device reports the CPU's), as the Intel adapter with the largest pool - exact
+on the one-Intel-GPU PCs this port runs on.
 
 ## Reporting a problem
 

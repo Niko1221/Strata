@@ -491,6 +491,25 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
     return None, "no GPU tool answered"
 
 
+def level_zero_device_answers() -> bool:
+    """Does the oneAPI runtime see a Level Zero GPU from this process?  Windows lists an Intel chip twice - once
+    through Level Zero, once through OpenCL - and Strata's engine wants the Level Zero one: it reports the memory this
+    process may still take and completes the verify graphs, while the OpenCL device answers no free memory at all and
+    fails the capture (an Arc B390, driver 32.0.101.9150, 2026-10-30).  False when `sycl-ls` is not reachable, which
+    is what a service that never ran Intel's setvars.bat looks like: pinning the selector then leaves the engine with
+    no graphics device at all, so the caller must not pin it."""
+    tool = shutil.which("sycl-ls")
+    if tool is None:
+        return False
+    try:
+        done = subprocess.run([tool], capture_output=True, text=True, timeout=10, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    low = (done.stdout or "").lower()
+    return "level_zero" in low and "gpu" in low
+
+
 def _first_make(makes) -> str:
     """The make Strata uses when a PC has cards of several: NVIDIA, then AMD, then Intel (the order of every probe)."""
     return next(m for m in ("cuda", "hip", "sycl") if m in makes)

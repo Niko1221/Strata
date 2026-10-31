@@ -131,6 +131,14 @@ inline bool doorbell_plain_payload() {
 // launch. A Linux xe card keeps 20,000 in every mode (unchanged).
 inline std::atomic<bool>& spin_long_drafts_flag() { static std::atomic<bool> f{false}; return f; }
 inline void spin_drafts_need_long_bound(bool on) { spin_long_drafts_flag() = on; }
+
+// A chip that runs in the machine's memory (an Arc iGPU: the B390 of a Panther Lake PC) computes the experts it
+// cannot hold on the CPU and waits for them at every layer, as an Arc A-series on i915 does: its waits have to
+// COMPLETE, not expire.  Measured on a B390 (Windows, 2026-10-30): with the 20,000-read bound a served request read
+// the experts' outputs as missing and the engine died (0xC0000005); with the long bound the same session answered
+// normally.  The engine's shared-memory sizing sets this, before any launch.
+inline std::atomic<bool>& spin_waits_must_complete_flag() { static std::atomic<bool> f{false}; return f; }
+inline void spin_waits_must_complete(bool on) { spin_waits_must_complete_flag() = on; }
 inline uint32_t spin_max(const sycl::queue& q) {
     static std::mutex mu;
     static std::unordered_map<sycl::device, uint32_t> cache;
@@ -144,7 +152,8 @@ inline uint32_t spin_max(const sycl::queue& q) {
     else v = STRATA_SYCL_SPIN_MAX;
 #else
     else if (intel_gpu_driver() == "xe") v = 20000u;
-    else if (intel_gpu_driver().empty() && intel_gpu_gen(d) == IntelGpuGen::Battlemage)
+    else if (intel_gpu_driver().empty() && intel_gpu_gen(d) == IntelGpuGen::Battlemage &&
+             !spin_waits_must_complete_flag().load())
         v = spin_long_drafts_flag().load() ? 2000000u : 20000u;
     else v = 2000000u;
 #endif

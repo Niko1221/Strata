@@ -229,6 +229,9 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
     access = _device_access_issue(cfg.get("backend"))
     if access:
         report["issues"].append(access)
+    oneapi = _windows_sycl_env_issue(cfg.get("backend"))
+    if oneapi:
+        report["issues"].append(oneapi)
     cpu_pack = _cpu_pack_issue(cfg, config_path)
     if cpu_pack:
         report["issues"].append(cpu_pack)
@@ -254,6 +257,22 @@ def _device_access_issue(backend: str | None, dev_root: str = "/dev") -> dict | 
     return {"code": "GPU_DEVICE_ACCESS", "severity": "warning",
             "message": f"this user cannot open {', '.join(str(n) for n in nodes)}; the {backend} engine will not see the card. "
                        "Add the user to the `render` group (and `video` for some distributions), then log in again"}
+
+
+def _windows_sycl_env_issue(backend: str | None) -> dict | None:
+    """Windows Intel (SYCL): the engine needs Intel oneAPI reachable from the process that starts it. Without it
+    Level Zero answers no device and the engine says only "No device of requested type available" - the same dead end
+    the `render` group is on Linux, and nothing in the message names the fix (measured on an Arc B390, 2026-10-30).
+    None when Level Zero answers, or when this is not an Intel run on Windows."""
+    if backend != "sycl" or not sys.platform.startswith("win"):
+        return None
+    from strata_control.engine_component import level_zero_device_answers
+    if level_zero_device_answers():
+        return None
+    return {"code": "ONEAPI_NOT_REACHABLE", "severity": "warning",
+            "message": "Intel oneAPI's Level Zero device cannot be reached from here: start Strata from a window where "
+                       "Intel's setvars.bat has run, or the engine will not find the card "
+                       "(docs/INTEL_ARC.md, \"Windows\")"}
 
 
 AVX512_FULL = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"}   # what the Q2_0 pack's CPU kernel uses

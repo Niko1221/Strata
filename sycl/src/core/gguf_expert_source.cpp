@@ -6,17 +6,85 @@
 #include <atomic>
 #include <cstring>
 #include <utility>
-#include <fcntl.h>
-#include <unistd.h>
+#include <cstdio>
 #include <dpct/dpct.hpp>
 #include <sycl/sycl.hpp>
 #include <thread>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace strata::core {
 
 namespace {
 constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a layer's worth of streamed experts
+
+// The shard handle and the positional read, per platform.  What both must keep: a read that takes its own offset
+// and leaves no shared file pointer, because the mirror reads one shard from several threads at once (Windows'
+// _lseek + _read would race for it).
+#ifdef _WIN32
+// The shard as one read-only file mapping: a read is a memcpy out of the view and the OS pages the file in on
+// demand.  An OVERLAPPED read would be the closer analogue of pread, but with the handle shared between threads
+// it answered 0 bytes while another read was in flight here; a mapping needs no such handshake.
+struct FileMap {
+    HANDLE file;
+    HANDLE section;
+    uint8_t* view;
+    uint64_t bytes;
+};
+
+void* open_file(const std::string& name) {
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, nullptr, 0);
+    if (wide <= 0) return nullptr;
+    std::vector<wchar_t> w((size_t) wide, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, w.data(), wide) <= 0) return nullptr;
+    HANDLE file = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return nullptr;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0) { CloseHandle(file); return nullptr; }
+    HANDLE section = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (section == nullptr) { CloseHandle(file); return nullptr; }
+    void* view = MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+    if (view == nullptr) { CloseHandle(section); CloseHandle(file); return nullptr; }
+    return new FileMap{file, section, (uint8_t*) view, (uint64_t) size.QuadPart};
 }
+
+int64_t read_at(void* file, uint8_t* dst, uint64_t n, uint64_t off) {
+    const FileMap* m = (const FileMap*) file;
+    if (off > m->bytes || n > m->bytes - off) return -1;   // past the end of the shard
+    std::memcpy(dst, m->view + off, (size_t) n);
+    return (int64_t) n;
+}
+
+void close_file(void* file) {
+    if (file == nullptr) return;
+    FileMap* m = (FileMap*) file;
+    UnmapViewOfFile(m->view);
+    CloseHandle(m->section);
+    CloseHandle(m->file);
+    delete m;
+}
+#else
+void* open_file(const std::string& name) {
+    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+    return fd < 0 ? nullptr : (void*) (intptr_t) fd;
+}
+
+int64_t read_at(void* file, uint8_t* dst, uint64_t n, uint64_t off) {
+    return (int64_t) ::pread((intptr_t) file, dst, (size_t) n, (off_t) off);
+}
+
+void close_file(void* file) {
+    if (file != nullptr && (intptr_t) file >= 0) ::close((int) (intptr_t) file);
+}
+#endif
+}  // namespace
 
 GgufExpertSource::~GgufExpertSource() { close(); }
 
@@ -24,7 +92,7 @@ void GgufExpertSource::close() {
     for (uint8_t* c : mirror_chunks_) if (c) sycl::free(c, dpct::get_in_order_queue());
     mirror_chunks_.clear();
     mirror_bytes_ = 0; mirror_ptr_.clear(); layer_first_.clear();
-    for (int fd : fds_) if (fd >= 0) ::close(fd);
+    for (void* f : fds_) close_file(f);
     fds_.clear(); names_.clear(); layer_fd_.clear(); ring_.clear(); ring_key_.clear(); where_.clear();
     ring_next_ = 0;
 }
@@ -50,7 +118,7 @@ bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t
     layer_fd_.assign((size_t) (3 * n_layers), -1);
     for (int64_t l = 0; l < n_layers; ++l)
         for (int r = 0; r < 3; ++r)
-            if (fd_of(l, r, err) < 0) { close(); return false; }
+            if (fd_of(l, r, err) == nullptr) { close(); return false; }
     ring_.resize(kRing);
     for (auto& b : ring_) b.resize((size_t) lay.max_blob);
     ring_key_.assign(kRing, -1);
@@ -60,7 +128,7 @@ bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t
 // The file of role `role` (0 gate, 1 up, 2 down) of `layer`. ExpertLayout::gguf_file is per layer AND role
 // (`3 * layer + role`) since upstream 0.1.31; indexing it by layer alone read a shard-2 layer from shard 1 (Swift 1.5,
 // whose layers 13-47 are in shard 2: garbage IQ1_M scales, NaN logits - 2026-10-01).
-int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
+void* GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
     const size_t i = (size_t) (3 * layer + role);
     if (layer_fd_[i] >= 0) return fds_[(size_t) layer_fd_[i]];
     const auto& lay = strata::kernels::cpu::expert_layout();
@@ -68,12 +136,12 @@ int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
     if (lay.gguf_file.size() > i && !lay.gguf_file[i].empty()) name = dir_ + lay.gguf_file[i];
     for (size_t k = 0; k < names_.size(); ++k)
         if (names_[k] == name) { layer_fd_[i] = (int) k; return fds_[k]; }
-    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { err = "--stream-experts: cannot open " + name; return -1; }
+    void* f = open_file(name);
+    if (f == nullptr) { err = "--stream-experts: cannot open " + name; return nullptr; }
     names_.push_back(name);
-    fds_.push_back(fd);
+    fds_.push_back(f);
     layer_fd_[i] = (int) fds_.size() - 1;
-    return fd;
+    return f;
 }
 
 const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
@@ -102,11 +170,11 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
     }
     std::vector<uint8_t>& buf = ring_[slot];
     for (int r = 0; r < 3; ++r) {
-        const int fd = fds_[(size_t) layer_fd_[(size_t) (3 * layer + r)]];
+        void* f = fds_[(size_t) layer_fd_[(size_t) (3 * layer + r)]];
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, buf.data() + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const int64_t n = read_at(f, buf.data() + at[r] + done, per[r] - done, src + done);
             if (n <= 0) { std::lock_guard<std::mutex> lk(mu_); where_.erase(key); ring_key_[slot] = -1; return nullptr; }
             done += (uint64_t) n;
         }
@@ -224,11 +292,11 @@ bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, si
     const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
     const uint64_t at[3] = {0, fm.up_off, fm.down_off};
     for (int r = 0; r < 3; ++r) {
-        const int fd = fds_[(size_t) layer_fd_[(size_t) (3 * layer + r)]];
+        void* f = fds_[(size_t) layer_fd_[(size_t) (3 * layer + r)]];
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, dst + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const int64_t n = read_at(f, dst + at[r] + done, per[r] - done, src + done);
             if (n <= 0) return false;
             done += (uint64_t) n;
         }

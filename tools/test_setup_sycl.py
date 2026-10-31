@@ -32,12 +32,15 @@ def run(argv, win):
 
 
 class SyclBackend(unittest.TestCase):
-    def test_windows_stops_with_the_docs_pointer(self):
+    def test_windows_hands_over_to_setup_intel_as_linux_does(self):
+        # Windows has no ready-made Intel engine either, but it builds the same one with oneAPI, so setup no longer
+        # stops there (an Arc B390 on Windows, docs/INTEL_ARC.md).
         rc, out, call = run(["--backend", "sycl"], win=True)
-        self.assertEqual(rc, ("exit", 1))
+        self.assertEqual(rc, 0)
         self.assertIn("supported since 0.1.40.2", out)
+        self.assertIn("icx", out)
         self.assertIn("docs/INTEL_ARC.md", out)
-        call.assert_not_called()
+        self.assertIn("setup_intel.py", str(call.call_args_list[0]))
 
     def test_linux_hands_over_to_setup_intel_without_the_backend_flag(self):
         rc, out, call = run(["--model", "IQ2_XS", "--backend", "sycl", "--port", "8085"], win=False)
@@ -204,7 +207,43 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--ple-io") + 1], "ram")
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "300")
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
-        self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+        with mock.patch.object(m.S, "WIN", False):     # STRATA_SYCL_BIN is how the container finds the engine
+            c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+            self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+            self.assertEqual(c["exe"], str(m.SYCL_WRAPPER))
+
+    def test_windows_runs_the_engine_natively_with_the_oneapi_dll_dirs(self):
+        # Windows has no Docker wrapper and no setvars.bat in a service's PATH: the config names the engine, the
+        # Level Zero device and the oneAPI runtime folders (measured on an Arc B390, 2026-10-30 - the OpenCL device
+        # answers get_memory_info with no free bytes at all, and the cache then sizes to nothing).
+        m = self.mod()
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "oneapi_runtime_dirs",
+                                                                   return_value=[r"C:\oneAPI\mkl\latestin"]),                 mock.patch.object(m, "level_zero_answers", return_value=True):
+            c = m.to_sycl(self.cfg(m), m.ROOT / "build-win" / "strata.exe", 32.0, {}, 31.5, "xe", "b082")
+        self.assertEqual(c["backend"], "sycl")
+        self.assertEqual(c["exe"], str(m.ROOT / "build-win" / "strata.exe"))
+        self.assertEqual(c["lib_dirs"], [r"C:\oneAPI\mkl\latestin"])
+        self.assertEqual(c["env"]["ONEAPI_DEVICE_SELECTOR"], "level_zero:gpu")
+        self.assertEqual(c["env"]["ZES_ENABLE_SYSMAN"], "1")
+        self.assertNotIn("sycl_root", c)
+        # with no Level Zero device reachable, nothing is pinned: a forced selector would leave the engine no device
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "level_zero_answers", return_value=False),                 mock.patch.object(m, "oneapi_runtime_dirs", return_value=[]):
+            quiet = m.to_sycl(self.cfg(m), m.ROOT / "build-win" / "strata.exe", 32.0, {}, 31.5, "xe", "b082")
+        self.assertNotIn("ONEAPI_DEVICE_SELECTOR", quiet.get("env") or {})
+        self.assertNotIn("lib_dirs", quiet)
+
+    def test_windows_finds_an_integrated_arc_from_the_registry(self):
+        m = self.mod()
+        adapters = [{"vendor": "8086", "device": 0xB082, "name": "Intel(R) Arc(TM) B390 GPU", "vram_gb": 4.0},
+                    {"vendor": "1414", "device": 0x8C, "name": "Microsoft Basic Render Driver", "vram_gb": 0.0}]
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m.S, "ram_gb", return_value=31.5),                 mock.patch("strata_control.engine_component.windows_display_adapters", return_value=adapters,
+                           create=True):
+            gpus = m.intel_gpus()
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(gpus[0]["devid"], "b082")
+        self.assertTrue(gpus[0]["integrated"])
+        self.assertEqual(gpus[0]["name"], "Intel Arc B390")
+        self.assertEqual(gpus[0]["vram_gb"], 31.5)      # the machine's RAM: the card has none of its own
 
     def test_gyro_memory_warning_reads_the_real_ram(self):
         # setup's RAM rule is fed 1024 GB on the Intel path; Gyro counts VRAM + RAM, so it must see the real RAM

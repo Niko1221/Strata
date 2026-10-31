@@ -24,6 +24,9 @@ BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
     "metal": ("macos-arm64",),
     "cuda": ("windows-x86_64", "linux-x86_64", "linux-aarch64"),   # linux-aarch64: the NVIDIA DGX Spark (GB10, sm_121) only
     "hip": ("windows-x86_64", "linux-x86_64"),
+    # A packaged Intel engine exists for Linux only.  Windows runs the same engine built from source with oneAPI
+    # (docs/INTEL_ARC.md, an Arc B390 measured 2026-10-30): setup --backend sycl and sycl/setup_intel.py accept it,
+    # and this row keeps the handoff from promising a package that was never published.
     "sycl": ("linux-x86_64",),
     "cpu": ("macos-arm64", "macos-x86_64", "windows-x86_64", "linux-x86_64"),
 }
@@ -49,6 +52,12 @@ def backend_supported(backend: str, target: str | None = None) -> tuple[bool, st
     platforms = BACKEND_MATRIX[backend]
     if target in platforms:
         return True, ""
+    if backend == "sycl" and target.startswith("windows"):
+        # No Intel package for Windows on purpose (there is none for Linux either until the maintainers built one):
+        # the engine is compiled on the PC, and setup's Intel route runs it from there (docs/INTEL_ARC.md).
+        return False, (f"sycl has no engine package for {target}. An Intel card on Windows is set up the same way as on "
+                       f"Linux: build the engine with Intel oneAPI, then run `setup --backend sycl` "
+                       f"(docs/INTEL_ARC.md, \"Windows\").")
     return False, (f"{backend} is not a supported combination on {target}; it is supported on "
                    f"{', '.join(platforms)}. Unsupported combinations are not attempted.")
 

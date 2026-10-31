@@ -32,7 +32,7 @@ Each row is an OS, CPU ABI and backend. A row is `qualified` only after the acce
 | `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | `rx9070` (gfx1200 / gfx1201) built and tested on a Radeon AI PRO R9700. `rx7900` (gfx1100 / 1101 / 1102) built, not run on an RX 7000 card. `rx6000` (gfx1030 / 1031) built, not tested on a real RX 6000 card. |
 | `linux-aarch64-cuda` | none (no AppImage for arm64) | `packaging/build_cuda_linux_aarch64.sh`, built on the DGX Spark (`cuda13`, `sm_121`) | Engine packages (Qwen with `strata-dsv41` inside, and the separate DeepSeek one) and the Terminal archive built and tested on one DGX Spark ([DGX_SPARK_LINUX.md](../docs/DGX_SPARK_LINUX.md)). Not tried on any other arm64 machine. |
 | `linux-x86_64-sycl` | none | `packaging/build_sycl_linux.sh` (one JIT package for Alchemist and Battlemage) | Engine package built and tested on an Arc A750. Battlemage is supported and untested by us. |
-| `windows-x86_64-sycl` | none | none | Gated. No native Windows SYCL path exists upstream. |
+| `windows-x86_64-sycl` | none | none | No package: the engine is built from source with oneAPI (`icx`), measured on an Arc B390. |
 | `macos-x86_64-*` | none | none | Unsupported. The macOS engine is Apple Silicon only. |
 
 **DeepSeek V4.1-Flash.** The signed feed's `dsv41` member carries the DeepSeek engine `strata-dsv41` as its own package: Windows

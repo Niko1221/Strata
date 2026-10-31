@@ -99,6 +99,62 @@ class ArcChoice(unittest.TestCase):
         self.assertTrue(any("needs sycl" in r for r in why), why)
 
 
+class WindowsArc(unittest.TestCase):
+    """An Intel card in a Windows PC: no engine package exists for it, so every line the Terminal shows must send the
+    person to the oneAPI source build instead of a download that cannot work (docs/INTEL_ARC.md, an Arc B390 measured
+    on Windows 2026-10-30)."""
+
+    B390 = {"vendor": "8086", "device": 0xB082, "name": "Intel(R) Arc(TM) B390 GPU", "vram_gb": 28.0}
+    B580 = {"vendor": "8086", "device": 0xE20B, "name": "Intel(R) Arc(TM) B580", "vram_gb": 12.0}
+
+    def test_the_refusal_names_the_source_build(self):
+        ok, why = ec.backend_supported("sycl", WIN)
+        self.assertFalse(ok)
+        self.assertIn("oneAPI", why)
+        self.assertIn("--backend sycl", why)
+        self.assertIn("docs/INTEL_ARC.md", why)
+        self.assertTrue(ec.backend_supported("sycl", LINUX)[0])
+
+    def test_the_plan_says_build_for_an_intel_windows_pc_and_downloads_elsewhere(self):
+        from strata_cli.launch.runner import engine_plan_note
+        self.assertIn("build it with Intel oneAPI", engine_plan_note({"intel"}, "Windows 11"))
+        self.assertIn("downloaded first", engine_plan_note({"nvidia"}, "Windows 11"))
+        self.assertIn("downloaded first", engine_plan_note({"intel"}, "Ubuntu 24.04"))
+
+    def test_the_launcher_sees_the_b390_and_counts_its_memory_once(self):
+        from strata_cli.launch.catalog import intel_arc_cards_windows
+        from strata_control import gpu_fit
+        cards = intel_arc_cards_windows([self.B390])
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["vendor"], "intel")
+        self.assertTrue(cards[0]["integrated"])
+        # its 28 GB is the system RAM it shares: counting it beside the RAM would let a model "fit" twice
+        self.assertEqual(gpu_fit.own_memory_gb(cards[0]), 0.0)
+        keep, ignored = gpu_fit.usable_cards(cards)
+        self.assertEqual(keep, cards)          # an integrated chip counts when it is the only graphics device
+        self.assertEqual(gpu_fit.pick_vendor(cards), "intel")
+        discrete = intel_arc_cards_windows([self.B580])
+        self.assertNotIn("integrated", discrete[0])
+        self.assertEqual(gpu_fit.own_memory_gb(discrete[0]), 12.0)
+
+    def test_the_same_built_in_chip_named_three_times_is_one_card(self):
+        # this B390 appears three times under the display-class registry key; two identical discrete Arcs are two
+        # real cards and stay two (a layer split).
+        from strata_cli.launch.catalog import intel_arc_cards_windows
+        cards = intel_arc_cards_windows([self.B390] * 3)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual([c["index"] for c in cards], [0])
+        self.assertEqual(len(intel_arc_cards_windows([self.B580] * 2)), 2)
+
+    def test_an_integrated_chip_beside_a_real_card_stays_out_of_the_way(self):
+        from strata_cli.launch.catalog import intel_arc_cards_windows
+        from strata_control import gpu_fit
+        cards = intel_arc_cards_windows([self.B390, {"vendor": "10de", "device": 0x2705, "name": "RTX 4070", "vram_gb": 12.0}])
+        keep, ignored = gpu_fit.usable_cards([*cards, {"vendor": "nvidia", "name": "RTX 4070", "vram_gb": 12.0, "index": 1}])
+        self.assertEqual([c["vendor"] for c in keep], ["nvidia"])
+        self.assertTrue(any("integrated" in str(c.get("why_ignored")) for c in ignored))
+
+
 class Recipe(unittest.TestCase):
     SCRIPT = ROOT / "packaging" / "build_sycl_linux.sh"
 
