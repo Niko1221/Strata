@@ -1389,6 +1389,19 @@ class StrataEngine:
                 except ValueError:
                     pass
 
+        # The engine reports the loop it ran; never infer it from config or from generated token counts.
+        extra = dict(tok.split("=", 1) for tok in f[16:] if "=" in tok)
+        mode, windows, reason = (extra.get(k) for k in ("decode_mode", "pipeline_windows", "decode_reason"))
+        serial_reasons = {"0": {"not_requested"}, "1": {"prefill_only"},
+                          "2": {"configuration", "pipeline_unavailable", "snapshot_unavailable",
+                                "repetition_penalties", "coupled_draft_sampling"}}
+        if mode in ("none", "serial", "pipeline") and windows in serial_reasons:
+            consistent = ((mode == "pipeline" and windows == "2" and reason == "none") or
+                          (mode == "none" and reason == "no_decode_loop") or
+                          (mode == "serial" and reason in serial_reasons[windows]))
+            if consistent:
+                self.last["decode_segments"] = [{"mode": mode, "pipeline_windows": int(windows), "reason": reason}]
+
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
         expert cache until that much VRAM is free, or grows it back when more is free; None: back to the reserve it
@@ -6089,7 +6102,8 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
             "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms > 0 else None,
             # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
             **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
-               if last.get("drafts_offered") is not None else {})}
+               if last.get("drafts_offered") is not None else {}),
+            **({"decode_segments": last["decode_segments"]} if "decode_segments" in last else {})}
 
 
 def request_stats(segments: list[dict]) -> dict:
@@ -6106,6 +6120,11 @@ def request_stats(segments: list[dict]) -> dict:
                 "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed"):
         if any(segment.get(key) is not None for segment in segments):
             result[key] = sum(segment.get(key) or 0 for segment in segments)
+    if any("decode_segments" in segment for segment in segments):
+        # A recovery can change the sampling and hence the loop. Keep every segment in order; a missing
+        # report (old engine / unsupported path) is unknown, never the last segment's mode for the whole request.
+        result["decode_segments"] = [dict(item) for segment in segments
+                                     for item in segment.get("decode_segments", [{"mode": "unknown"}])]
     return result
 
 

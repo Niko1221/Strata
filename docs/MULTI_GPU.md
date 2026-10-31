@@ -196,6 +196,34 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
 `--remote-expert-opt` does something only with a helper cache; on a plain layer split it is inert.
 The `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIPELINE_DEBUG=1`.
 
+### Per-request decode diagnostics
+
+Set `STRATA_DECODE_DIAGNOSTICS=1` in the server config's `env` block and restart the engine to have the
+Flash-Next engine report its chosen decode loop in each request's statistics. Off by default; it changes no
+sampling, scheduling or GPU work. With no `--batch` slots configured, Chat Completions responses include, for example:
+
+```json
+{"timings": {"decode_segments": [{"mode": "serial", "pipeline_windows": 2, "reason": "repetition_penalties"}]}}
+```
+
+The streaming response carries the same field beside its final timings. There is one entry per native request
+segment: an internal continuation or recovery may use a different loop. `pipeline_windows` is the requested
+window count with auto resolved, before an unsupported setup disables it (a diagnostic switch override is
+reported when used). `mode` is `pipeline`, `serial`, or `none`. It names the **decode loop**, not measured GPU
+overlap: `none` means neither decode loop ran, and the prompt's tail may still have emitted tokens.
+
+`reason` is `none` for the pipeline loop; `no_decode_loop` for `none`; otherwise `not_requested`, `prefill_only`
+(one requested window, without decode pipelining), `configuration` (an unsupported startup setup),
+`pipeline_unavailable`, `snapshot_unavailable`,
+`repetition_penalties`, or `coupled_draft_sampling`. These identify the selected path; they do not attribute a
+percentage of time to a bottleneck.
+
+An engine started with `--batch` never reports this field, including requests processed on its solo path.
+Old engines, the SYCL backend (which uses a separate generator), and other model engines do not report it either.
+Unrecognized or inconsistent metadata is ignored. The field is omitted when no segment reported diagnostics;
+if a continuation has no report beside segments that do, its entry is `{"mode": "unknown"}`. Do not treat a
+missing report as serial execution.
+
 ## Two models on two cards
 
 The other way to use two cards is two models, one per card, each answering on its own. In the app, turn on **Run multiple
