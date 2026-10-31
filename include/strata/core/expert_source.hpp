@@ -237,6 +237,10 @@ public:
     /// stays valid for the layer it was asked in and the next one or two; a consumer that keeps a blob longer (the
     /// prompt path's stager queues a whole chunk) copies it with `copy_blob` instead.
     virtual bool transient(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// #3065: whether the prompt path's stager hands every unpinned blob to `copy_blobs` (the source reads them
+    /// itself, batched) instead of copying it out of a mapping.  Unlike `transient` this says nothing about the decode
+    /// or the prompt path's CPU share, so it changes where the bytes come from and nothing that is computed.
+    virtual bool prompt_reads() const { return false; }
     /// #1353: of the bytes `transient` experts would be copied from, the share whose pages are in RAM right now (a
     /// GGUF read in place whose page cache is warm), measured on a sample of up to `samples` experts; -1 when this
     /// source cannot tell (not a file source, or no residency query on this OS).  The prompt path's stager uses it to
@@ -919,6 +923,11 @@ public:
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
+    /// #3065 (Windows): experts.bin read through the mapping by the decode, by the prompt path through
+    /// open_prompt_direct's handles.  Linux keeps its behaviour (the GGUF in place, through `transient`).
+#if defined(_WIN32)
+    bool prompt_reads() const override { return direct_.empty() && !pdirect_.empty() && role_ptr_.empty(); }
+#endif
     double cached_share(int64_t samples) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
     /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
@@ -1072,7 +1081,8 @@ private:
     /// Windows: experts.bin mapped again as `open` maps it (begin/end_startup_unbuffered).
     bool map_view(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
-    std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds for copy_blobs only
+    std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds (Linux) / unbuffered handles (Windows) for copy_blobs only
+    void* pbuffered_ = nullptr;               ///< #3065 (Windows): experts.bin, cached + overlapped (STRATA_PREFILL_DIRECT_RAM >= 2)
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source

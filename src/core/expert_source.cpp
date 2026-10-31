@@ -51,6 +51,7 @@
 #define NOMINMAX   // std::numeric_limits<T>::max() below
 #endif
 #include <windows.h>
+#include <psapi.h>   // QueryWorkingSetEx (STRATA_PREFILL_DIRECT_RAM, copy_blobs)
 #else
 #include <fcntl.h>
 #if defined(__APPLE__)
@@ -1628,6 +1629,8 @@ void FileExpertSource::close() {
     direct_.clear();
     for (void* h : pdirect_) close_direct(h);
     pdirect_.clear();
+    if (pbuffered_ != nullptr) close_direct(pbuffered_);
+    pbuffered_ = nullptr;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         // the buffers' last copies end before they are freed (#1237)
@@ -2510,8 +2513,41 @@ bool FileExpertSource::open_prompt_direct(std::string& why) {
         pdirect_.push_back((void*) (intptr_t) fd);
     }
     return true;
+#elif defined(_WIN32)
+    // #3065: experts.bin opened a second time, unbuffered and overlapped, for the prompt path's batched reads while the
+    // decode keeps the mapping.  NTFS serves the unbuffered reads of a mapped file one at a time (3.4 GB/s on a PCIe 5
+    // drive, see read_direct), which is still more than the copies out of the mapping get when the RAM cannot hold the
+    // experts: on a 32 GB PC with a 35.5 GB experts.bin they faulted the pages in at 0.2-0.5 GB/s, these reads ran at
+    // about 1.3 GB/s (the drive's limit) and left the decode's cached experts in RAM.  Opt-in (STRATA_PROMPT_DIRECT=1).
+    if (base_ == nullptr || paths_.empty()) { why = "no expert files open"; return false; }
+    if (!role_ptr_.empty()) { why = "the GGUF in place (experts.bin only)"; return false; }
+    if (!direct_.empty()) { why = "the file tier reads unbuffered already"; return false; }
+    if (!pdirect_.empty()) return true;
+    for (const std::string& path : paths_) {
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            why = "cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+            for (void* d : pdirect_) close_direct(d);
+            pdirect_.clear();
+            return false;
+        }
+        pdirect_.push_back(h);
+        // STRATA_PREFILL_DIRECT_RAM >= 2 (copy_blobs): and a cached overlapped handle, so a blob the file cache still
+        // holds (the standby list) is copied from it rather than read from the drive again
+        const char* rm = std::getenv("STRATA_PREFILL_DIRECT_RAM");
+        if (pbuffered_ == nullptr && rm != nullptr && std::atoi(rm) >= 2) {
+            HANDLE hb = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
+                                    nullptr);
+            if (hb != INVALID_HANDLE_VALUE) pbuffered_ = hb;
+        }
+    }
+    return true;
 #else
-    why = "Linux only (NTFS serves unbuffered reads of a mapped file one at a time)";
+    why = "Linux and Windows only";
     return false;
 #endif
 }
@@ -2806,7 +2842,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
                 continue;
             }
         }
-        sc.req.push_back({(HANDLE) direct_[(size_t) x.file], x.a0, x.size, total});
+        sc.req.push_back({(HANDLE) (direct_.empty() ? pdirect_ : direct_)[(size_t) x.file], x.a0, x.size, total});
         total += x.size;
         last_file = x.file;
         x.req = sc.req.size() - 1;
@@ -3413,6 +3449,19 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
     thread_local std::vector<Fill> fills;
     fills.clear();
     uint64_t bytes = 0;
+#if defined(_WIN32)
+    // #3065, STRATA_PREFILL_DIRECT_RAM (Windows, with prompt_reads: STRATA_PROMPT_DIRECT=1 in the low-RAM mode):
+    //   >= 1: a blob whose pages are all in this process's working set (the decode read it and it is still mapped in) is
+    //         copied from the mapping - no fault, no drive read; the rest are read unbuffered as before
+    //   2: the rest through the file cache instead (pbuffered_), which serves what the standby list still holds
+    //   3: as 2, a run of neighbouring blobs of a layer is one read (bigger requests)
+    // The same bytes either way: only where they come from changes.  Unset or 0: as without it.
+    static const int ram_env = [] {
+        const char* v = std::getenv("STRATA_PREFILL_DIRECT_RAM");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    const int ram = prompt_reads() ? ram_env : 0;
+#endif
     for (size_t i = 0; i < n; ++i) {
         const int64_t l = layers[i], e = experts[i];
         if (base_ == nullptr || dst[i] == nullptr || l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) return false;
@@ -3422,11 +3471,100 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
             if (!copy_blob(l, e, dst[i])) return false;
             continue;
         }
+#if defined(_WIN32)
+        if (ram > 0) {
+            const uint64_t per = layer_blob_bytes_[(size_t) l];
+            const uint8_t* p = mapped_blob(l, e);
+            bool in_ram = false;
+            if (p != nullptr) {
+                thread_local std::vector<PSAPI_WORKING_SET_EX_INFORMATION> ws;
+                const uintptr_t a0 = (uintptr_t) p & ~(uintptr_t) 4095;
+                const uintptr_t a1 = ((uintptr_t) p + (uintptr_t) per + 4095) & ~(uintptr_t) 4095;
+                const size_t np = (size_t) ((a1 - a0) >> 12);
+                ws.resize(np);
+                for (size_t k = 0; k < np; ++k) ws[k].VirtualAddress = (PVOID) (a0 + ((uintptr_t) k << 12));
+                in_ram = QueryWorkingSetEx(GetCurrentProcess(), ws.data(), (DWORD) (np * sizeof(ws[0]))) != 0;
+                for (size_t k = 0; in_ram && k < np; ++k) in_ram = ws[k].VirtualAttributes.Valid != 0;
+            }
+            if (in_ram) {
+                std::memcpy(dst[i], p, (size_t) per);
+                continue;
+            }
+        }
+#endif
         fills.push_back({0, l, e, dst[i]});
         bytes += layer_blob_bytes_[(size_t) l];
     }
     if (fills.empty()) return true;
     const auto t0 = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    if (ram >= 2 && pbuffered_ != nullptr) {   // every read in flight before the first wait
+        struct Run { size_t i0, i1; uint64_t off, size; uint8_t* to; };
+        thread_local std::vector<Run> runs;
+        thread_local std::vector<uint8_t> bounce;
+        thread_local std::vector<OVERLAPPED> ov;
+        thread_local std::vector<HANDLE> ev;
+        std::sort(fills.begin(), fills.end(), [](const Fill& a, const Fill& b) {
+            return a.layer != b.layer ? a.layer < b.layer : a.e < b.e;
+        });
+        runs.clear();
+        for (size_t i = 0; i < fills.size(); ++i) {
+            const uint64_t per = layer_blob_bytes_[(size_t) fills[i].layer];
+            if (ram == 3 && !runs.empty() && fills[i].layer == fills[runs.back().i1 - 1].layer &&
+                fills[i].e == fills[runs.back().i1 - 1].e + 1) {
+                runs.back().i1 = i + 1;
+                runs.back().size += per;
+                continue;
+            }
+            runs.push_back({i, i + 1, layer_offsets_[(size_t) fills[i].layer] + (uint64_t) fills[i].e * per, per, nullptr});
+        }
+        size_t at = 0;
+        for (const Run& r : runs)
+            if (r.i1 - r.i0 > 1) at += (size_t) r.size;
+        if (bounce.size() < at) bounce.resize(at);
+        at = 0;
+        for (Run& r : runs) {
+            if (r.i1 - r.i0 == 1) { r.to = fills[r.i0].dst; continue; }
+            r.to = bounce.data() + at;
+            at += (size_t) r.size;
+        }
+        while (ev.size() < runs.size()) ev.push_back(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        ov.assign(runs.size(), OVERLAPPED{});
+        size_t issued = 0;
+        bool ok = true;
+        for (size_t q = 0; q < runs.size(); ++q) {
+            const Run& r = runs[q];
+            ov[q].Offset = (DWORD) r.off;
+            ov[q].OffsetHigh = (DWORD) (r.off >> 32);
+            ov[q].hEvent = ev[q];
+            if (ev[q] == nullptr ||
+                (!ReadFile((HANDLE) pbuffered_, r.to, (DWORD) r.size, nullptr, &ov[q]) && GetLastError() != ERROR_IO_PENDING)) {
+                ok = false;
+                break;
+            }
+            ++issued;
+        }
+        for (size_t q = 0; q < issued; ++q) {
+            DWORD got = 0;
+            if (!GetOverlappedResult((HANDLE) pbuffered_, &ov[q], &got, TRUE) || got != (DWORD) runs[q].size) ok = false;
+        }
+        if (ok && issued == runs.size()) {
+            for (const Run& r : runs)
+                if (r.i1 - r.i0 > 1) {
+                    uint64_t o = 0;
+                    for (size_t i = r.i0; i < r.i1; ++i) {
+                        const uint64_t per = layer_blob_bytes_[(size_t) fills[i].layer];
+                        std::memcpy(fills[i].dst, r.to + o, (size_t) per);
+                        o += per;
+                    }
+                }
+            file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                               std::memory_order_relaxed);
+            file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+            return true;
+        }   // else: read them unbuffered below
+    }
+#endif
     if (!read_direct(fills.data(), fills.size()))
         for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
             if (!copy_from_files(f.layer, f.e, f.dst)) return false;
