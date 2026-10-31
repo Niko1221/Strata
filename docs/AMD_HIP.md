@@ -510,6 +510,7 @@ kernels for FP16-in / FP16-out GEMMs only; the prompt path's FP16-in / FP32-out 
 | `STRATA_SELECT_SIMT=1` | QSA block scores on the FP32 tiled scorer instead of the warp kernel; helps long prompts (128K: +7.4%). Not bitwise the warp kernel. [Data](../bench/results/2026-10-07-rdna2-qsa-select-simt/README.md). |
 | `STRATA_HC_PERSIST=1` | The verifier's hyper-connection read as one persistent kernel (HIP, wave32). Measured on 2x RX 6900 XT: -2.8% to -4.2% ms per verify window. Not offered on gfx11 and gfx12. Opt-in for measurement on gfx103x. [Data](../bench/results/2026-10-12-hc-persist-gfx1030/README.md). |
 | `STRATA_FILE_CACHE_OLD_RULE` | gfx906 keeps the old file-tier cache rule; `=1` forces it on any Linux build, `=0` the current one |
+| `STRATA_PF_MMVQ=1` | Prompt chunks of up to `STRATA_PF_MMVQ_MAX_T` tokens (default 256) multiply the quantized dense projections with decode's native MMVQ (activations through Q8_1) instead of dequantize + GEMM; larger chunks, strided outputs and unsupported types keep the old path. Measured on gfx906 only (MI50, Swift 1.5 IQ3_S: 165-token turns 1.8 -> 1.55 s). The switch is process-wide: it also reaches the q36 engine and the MTP draft projections. |
 
 On a 16 GB card keep the defaults for `--pcie-frac` and `--adapt-every`; the 7900 XTX values in
 [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md) cost 8.6 and 13.6 tok/s on an RX 6900 XT.

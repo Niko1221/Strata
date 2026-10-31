@@ -1,6 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
 #include "strata/prefill/moe_mmq.hpp"
 #endif
@@ -657,6 +658,7 @@ Gemm::~Gemm() {
     if (tc_w_) cudaFree(tc_w_);
     if (tc_x_) cudaFree(tc_x_);
     if (unpadded_x_) cudaFree(unpadded_x_);
+    if (mmvq_buf_) cudaFree(mmvq_buf_);
     if (!external_) {
         if (scratch_) cudaFree(scratch_);
         if (workspace_) cudaFree(workspace_);
@@ -1343,8 +1345,68 @@ void Gemm::f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
 #endif
 }
 
+namespace {
+__global__ void pf_mmvq_widen(const __half* __restrict__ in, float* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __half2float(in[i]);
+}
+// values per block of a GGML type (native_mmvq.hpp's ids): the K the MMVQ kernels need a whole number of
+int64_t pf_mmvq_block(int type) {
+    switch (type) {
+        case 2: case 6: case 8: case 20: return 32;   // Q4_0, Q5_0, Q8_0, IQ4_NL
+        case 42: return 64;                           // Q2_0
+        default: return 256;                          // Q3_K .. Q6_K, IQ4_XS
+    }
+}
+}  // namespace
+
+bool Gemm::native_mmvq(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
+                       int64_t ldy, float beta, int64_t ldx) {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_MMVQ"); return v && v[0] == '1'; }();
+    static const int64_t max_t = [] {
+        const char* v = std::getenv("STRATA_PF_MMVQ_MAX_T");
+        return v ? std::max<int64_t>(1, std::atoll(v)) : (int64_t) 256;   // the gfx906 turn sweep: 256 helps, 512+ slows ~480-token chunks
+    }();
+    if (!on || mmvq_failed_ || T < 1 || T > max_t || beta != 0.0f || (ldx != 0 && ldx != K) || (ldy != 0 && ldy != N) ||
+        N < 1 || K < 1 || !strata::kernels::native_mmvq_supported(ggml_type) || K % pf_mmvq_block(ggml_type) != 0)
+        return false;
+    // one workspace of the fixed cap, allocated at the first use and never grown: growing would free it (a device-wide
+    // sync) in the middle of a prompt.  A failed allocation turns the path off for this Gemm (no retry per projection).
+    constexpr size_t kCap = 16u << 20;
+    if (!mmvq_buf_) {
+        if (cudaMalloc(&mmvq_buf_, kCap) != cudaSuccess) {
+            (void) cudaGetLastError();
+            mmvq_buf_ = nullptr;
+            mmvq_failed_ = true;
+            return false;
+        }
+        mmvq_bytes_ = kCap;
+    }
+    const size_t per_tok = (size_t) K * 4 + strata::kernels::native_q8_1_bytes((int) K, 1);
+    const int64_t slice = std::min<int64_t>({T, 256, (int64_t) ((kCap - 256) / per_tok)});
+    if (slice < 1) return false;
+    const size_t f32_bytes = ((size_t) slice * K * 4 + 255) & ~(size_t) 255;
+    float* const xf = static_cast<float*>(mmvq_buf_);
+    uint8_t* const xq = static_cast<uint8_t*>(mmvq_buf_) + f32_bytes;
+    const size_t q_col = strata::kernels::native_q8_1_bytes((int) K, 1);
+    const cudaStream_t s = (cudaStream_t) stream_;
+    for (int64_t t0 = 0; t0 < T; t0 += slice) {
+        const int64_t n = std::min<int64_t>(slice, T - t0);
+        pf_mmvq_widen<<<(unsigned) ((n * K + 255) / 256), 256, 0, s>>>(reinterpret_cast<const __half*>(X + t0 * K), xf,
+                                                                        n * K);
+        // the quantizer takes 1..8 columns; Q8_1 blocks are per 32 values and column j's sit at j * K / 32, so the
+        // slice as ONE column of n * K values is byte for byte the n columns
+        strata::kernels::native_quantize_q8_1(xf, xq, (int) (n * K), 1, stream_);
+        for (int64_t c = 0; c < n; c += 8)
+            strata::kernels::native_mmvq(ggml_type, W_blocks, xq + (size_t) c * q_col, Y + (t0 + c) * N, (int) K, (int) N,
+                                         (int) std::min<int64_t>(8, n - c), stream_);
+    }
+    return true;
+}
+
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                   int64_t ldy, float beta, int64_t ldx) {
+    if (native_mmvq(X, ggml_type, W_blocks, Y, T, N, K, ldy, beta, ldx)) return;
 #ifdef STRATA_USE_HIP
     // S23 (opt-in STRATA_PF_PAD=1, with STRATA_PF_GEMM=1 on chunks of STRATA_PF_SWITCH_MIN_T+ tokens): the weight
     // dequantized into the scratch with row stride K + 64 halves, so no 4 KB-multiple stride camps on the memory

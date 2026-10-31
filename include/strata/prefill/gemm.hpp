@@ -59,6 +59,13 @@ public:
     void native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                 int64_t ldy = 0, float beta = 0.0f, int64_t ldx = 0);
 
+    /// STRATA_PF_MMVQ=1 (opt-in): native()'s product for a small chunk (T <= STRATA_PF_MMVQ_MAX_T, default 256) through
+    /// decode's native MMVQ on the GGUF blocks, 8 token columns per call, the activations through Q8_1 - no dequantized
+    /// weight, no GEMM.  Only beta = 0, contiguous X and Y (ldx 0 or K, ldy 0 or N), a type native_mmvq_supported()
+    /// takes and a K that is a whole number of its blocks.  true: Y written; false: declined, nothing written.
+    bool native_mmvq(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
+                     int64_t ldy = 0, float beta = 0.0f, int64_t ldx = 0);
+
     /// HIP gfx103x (prompt_f16()): bf16() takes X as the FP16 image the prompt path's kernels write (set_act_f16),
     /// and bf16() / f16() / native() run the GEMM with FP16 out (rocBLAS's tuned kernels there), widened in place in
     /// Y's own rows.  Off (default): every call is what it was.  Set by Prefill::init, together with set_act_f16.
@@ -129,6 +136,9 @@ private:
     int64_t unpadded_x_elems_ = 0;
     void* mmq_ctx_ = nullptr;
     void* mmq_buf_ = nullptr;
+    void* mmvq_buf_ = nullptr;      // native_mmvq: an FP32 slice of X and its Q8_1 blocks (16 MiB, allocated once)
+    size_t mmvq_bytes_ = 0;
+    bool mmvq_failed_ = false;      // the workspace could not be allocated: the path stays off for this Gemm
     bool mmq_failed_ = false;
     /// Y = X . W^T with FP16 out, written into Y's own rows and widened there (no buffer): prompt_f16() only.
     void f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy);

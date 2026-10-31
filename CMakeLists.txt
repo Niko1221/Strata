@@ -1349,6 +1349,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(gfx906_gdn_rec_head PRIVATE strata_prefill ${_strata_gpu_runtime_target})
     add_test(NAME gfx906_gdn_rec_head COMMAND gfx906_gdn_rec_head)
     set_tests_properties(gfx906_gdn_rec_head PROPERTIES TIMEOUT 120)
+    # STRATA_PF_MMVQ: the small-chunk native MMVQ dense projections against a host product
+    add_executable(pf_mmvq_parity tests/hip/pf_mmvq_parity.cpp)
+    target_include_directories(pf_mmvq_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(pf_mmvq_parity PRIVATE strata_prefill ggml-base ${_strata_gpu_runtime_target})
+    add_test(NAME pf_mmvq_parity COMMAND pf_mmvq_parity)
+    set_tests_properties(pf_mmvq_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
   endif()
   if(STRATA_ENABLE_CUDA)
     # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA) against a double reference; skipped below sm_70
