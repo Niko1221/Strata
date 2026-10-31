@@ -100,7 +100,7 @@ std::vector<int> parse_ids(const std::string& s) {
 
 void usage() {
     std::fprintf(stderr,
-                 "maya-ds4 --pack <model>/maya-ds4 [--gpus 0,1,...] [--max-context N] [--reserve-mib N]\n"
+                 "maya-ds4 --pack <model>/maya-ds4 [--gpus 0,1,...] [--expert-cache-device1 N|auto] [--max-context N] [--reserve-mib N]\n"
                  "           [--vram-experts F] [--cpu-threads N] [--expert-profile FILE|none] [--profile-readonly] [--ssd-cache GB] [--ssd-policy lru|lfu|lfulru] [--no-expert-cache] [--verbose]\n"
                  "           [--tp N] [--threads on|off] [--prefill-chunk N] [--dspark on|off|none|auto] [--dspark-block N] [--dspark-conf F] [--experts N|auto]\n"
                  "           [--vision on|off] [--mmap-experts on|off|auto]\n"
@@ -752,6 +752,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             continue;
         }
         const double t0 = now_ms();
+        const strata::ds4::Stats s_req = m.stats();
         std::vector<Pic> pics;
         {
             std::string e;
@@ -1018,6 +1019,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      t1 > t0 ? 1000.0 * (double) (r.ids.size() - from) / (t1 - t0) : 0.0, produced, t2 - t1,
                      t2 > t1 ? 1000.0 * (double) produced / (t2 - t1) : 0.0,
                      s.experts ? 100.0 * (double) s.cpu_experts / (double) s.experts : 0.0);
+        if (s.card_experts > 0) {   // (the answer's routed experts; the waits and moves over the whole request)
+            const double ex = (double) (s.experts - s_dec.experts);
+            std::fprintf(stderr, "maya ds4 serve: CUDA1 (--expert-cache-device1) %.1f%% of the answer's experts, %.0f ms "
+                                 "waited for it, %lld moves in this request\n",
+                         ex > 0 ? 100.0 * (double) (s.card_experts - s_dec.card_experts) / ex : 0.0,
+                         s.card_wait_ms - s_req.card_wait_ms, (long long) (s.card_fills - s_req.card_fills));
+        }
         if (d_off > 0) std::fprintf(stderr, "maya ds4 serve: drafts %lld of %lld kept; %s\n", d_acc, d_off,
                                     per_position(s_dec, s).c_str());
         m.save_profile();
@@ -1316,6 +1324,9 @@ int main(int argc, char** argv) {
         if (a == "--pack") o.pack = val("--pack");
         else if (a == "--gpus") {
             for (int g : parse_ids(val("--gpus"))) o.gpus.push_back(g);
+        } else if (a == "--expert-cache-device1") {
+            const std::string v = val("--expert-cache-device1");
+            o.expert_cache_device1 = v == "auto" ? -1 : std::max(0, std::atoi(v.c_str()));
         } else if (a == "--max-context") o.max_context = std::atoll(val("--max-context").c_str());
         else if (a == "--reserve-mib") o.reserve_mib = std::atoll(val("--reserve-mib").c_str());
         else if (a == "--vram-experts") { o.vram_experts = std::atof(val("--vram-experts").c_str()); o.vram_experts_auto = false; }

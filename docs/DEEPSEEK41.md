@@ -186,6 +186,44 @@ python setup.py --family deepseek41 --model IST-DAS-2.00bpw
 `strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.
 Please tell us how it runs on your card (the speed, and the card and RAM): we only list a card as tested after someone has run it.
 
+## A slower second card as a cache card, for testing
+
+With two cards of different speed, a layer split makes the faster card wait for the slower one's layers. The engine flag
+`--expert-cache-device1 N|auto` (the Qwen engine's name for its helper cache) uses the second card another way: CUDA1 takes
+no layers and holds up to N of the experts CUDA0 leaves to the CPU (`auto`: as many as fit), the most-routed first by the
+expert profile. While the model writes, the picks CUDA1 holds are computed there, beside the CPU's; prompts are read on CUDA0
+alone. Between windows the experts move with CUDA0's cache: a CUDA1 slot whose expert CUDA0 took is refilled with the hottest
+CPU expert of its layer, an expert CUDA0 evicts takes a free CUDA1 slot of its layer (or CUDA1's coldest there, when it is
+hotter), and at every window a layer's coldest CUDA1 expert makes way for a hotter CPU one.
+
+It takes a GGUF pack (the official 2-bit sets) and is checked on CUDA. The engine stops at the start when there is no CUDA1 or
+CUDA1 is in `--gpus`, and stops with a message if CUDA1 fails while answering. Set the cards in the config's environment,
+the faster one first, and leave out the `"gpu"` key (a `"gpu"` list is a layer split). For an A40 at nvidia-smi index 1 and
+an RTX 2080 Ti at index 0:
+
+```
+"args": [..., "--expert-cache-device1", "auto"],
+"env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "1,0"}
+```
+
+The start prints `ds4: CUDA1 expert cache (--expert-cache-device1): N of the CPU lane's most-routed experts, X GB (Y% of the
+routed picks by the profile), loaded in S s, F MiB free`, and each served request `maya ds4 serve: CUDA1
+(--expert-cache-device1) P% of the answer's experts, W ms waited for it, M moves in this request`.
+
+Measured on that pair with the official IQ2_XXS 2.00 bpw set and `--experts 5`: 1,197 experts (10.3 GB) on the 2080 Ti;
+7.6% faster decode than the A40 alone, prompts read at the same speed. The best layer split (4 layers on the 2080 Ti)
+decoded 1.7% faster and read 4K to 16K prompts at 0.64-0.87x. CUDA1's part of a token is summed apart and added on the
+host, so the answers are not bit for bit one card's: KL 0.017 against the A40 alone (top-1 95.3%); for scale, the A40's
+cache adapting against held fixed is KL 0.013.
+
+Switches, for tests:
+
+- `DS4_CACHE_CARD=0`: CUDA1 loads its experts and computes none: the same answers as CUDA0 alone, for comparisons.
+- `DS4_CACHE_CARD_FILL=0`: CUDA1's experts stay as loaded.
+- `DS4_CARD_EVERY` (1): tokens between the swap scans, prompt tokens included.
+- `DS4_CARD_MARGIN` (1.25) and `DS4_CARD_BONUS` (1): a CPU expert replaces CUDA1's coldest of its layer when its heat is
+  above the coldest's heat x margin + bonus.
+
 ## Compressed experts (trellis), for testing
 
 `strata-dsv41` reads the routed experts in the trellis types as well as the source MXFP4: TQK6 and TQK7 (agentionai's files), and the

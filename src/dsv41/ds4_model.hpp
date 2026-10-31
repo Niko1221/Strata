@@ -25,7 +25,8 @@ namespace strata::ds4 {
 struct Options {
     std::string pack;                 // <model>/maya-ds4
     int64_t max_context = 32768;
-    std::vector<int> gpus;            // empty: every visible GPU
+    std::vector<int> gpus;            // empty: every visible GPU (but CUDA1 with expert_cache_device1)
+    int expert_cache_device1 = 0;     // CUDA1 holds the CPU lane's most-routed experts and no layers (0: off, -1: as many as fit)
     int64_t reserve_mib = 600;        // VRAM left free on each GPU
     bool vram_experts_auto = true;    // (Metal: no --vram-experts given: the share the anonymous-memory cap leaves - metal_expert_cap)
     double vram_experts = 1.0;        // the share of the expert budget to use (tests: less, so the CPU lane works)
@@ -77,6 +78,9 @@ struct Stats {
     int64_t tokens = 0;
     int64_t experts = 0, cpu_experts = 0;   // routed experts run, and how many of them on the CPU lane
     double cpu_ms = 0.0, gpu_wait_ms = 0.0;   // the CPU lane's time; the host's waits for the routing
+    int64_t card_experts = 0;         // (--expert-cache-device1) routed experts CUDA1 computed
+    double card_wait_ms = 0.0;        // the host's waits for CUDA1's part after the CPU lane's
+    int64_t card_fills = 0;           // experts copied into CUDA1's slots: refills, swaps and demotions
     double layer_ms = 0.0, head_ms = 0.0, engram_ms = 0.0;   // the layers' host time in all; the head's wait; Engram reads
     int64_t eg_rows = 0, eg_hits = 0, eg_reads = 0;   // Engram rows asked for, served without a read, read from the files
     double eg_io_ms = 0.0;                            // the windows' Engram reads, issue to last done (mostly hidden)
