@@ -1,3 +1,4 @@
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/window_limits.hpp"
 #include "s26_tsum.cuh"
@@ -278,10 +279,25 @@ void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64
     else bf16_f32_mmvf_rows_kernel<B, 8, RPB><<<nb, B, 0, st>>>(x, ldx, w, y, ldy, n_in, n_out, n_tok);
 }
 
-// BW-DENSE STRATA_SMALL_UNR bit 0: see bf16_f32_mmvf_multi_kernel (default 0 until measured)
+// BW-DENSE STRATA_SMALL_UNR bit 0: see bf16_f32_mmvf_multi_kernel (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
 int mmvf_fast() {
-    static const int v = [] { const char* e = std::getenv("STRATA_SMALL_UNR"); return e != nullptr ? (std::atoi(e) & 1) : 0; }();
-    return v;
+    static int per_dev[64];   // 0 unknown, else bit + 1
+    const char* e = std::getenv("STRATA_SMALL_UNR");
+    if (e != nullptr) return std::atoi(e) & 1;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? (strata::small_unr_default(ma, mi) & 1) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
 }
 int mmvf_block_size(int64_t n_in) {
     int best = 32;

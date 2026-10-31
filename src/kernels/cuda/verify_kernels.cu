@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
@@ -1141,10 +1142,25 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
     return true;
 }
 
-// BW-DENSE STRATA_SMALL_UNR bit 1: see gdn_ab_body (default 0 until measured)
+// BW-DENSE STRATA_SMALL_UNR bit 1: see gdn_ab_body (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
 static int gdn_ab_fast() {
-    static const int v = [] { const char* e = std::getenv("STRATA_SMALL_UNR"); return e != nullptr ? ((std::atoi(e) >> 1) & 1) : 0; }();
-    return v;
+    static int per_dev[64];   // 0 unknown, else bit + 1
+    const char* e = std::getenv("STRATA_SMALL_UNR");
+    if (e != nullptr) return (std::atoi(e) >> 1) & 1;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? ((strata::small_unr_default(ma, mi) >> 1) & 1) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
 }
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
