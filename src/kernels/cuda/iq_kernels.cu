@@ -6038,7 +6038,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
 // [r0, r0 + 32): gate rows r0.. and up rows r0.. (64 weight rows, the same per-(row, entry) sums as mode 7), so
 // one 32-lane warp per entry holds exactly one q8_1 block of h and runs quantize_q8_1_kernel's own code on it -
 // bitwise the separate kernels' hq, two launches fewer per call.
-template<int TG>
+template<int TG, bool STAGE_WEIGHTS>
 __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                               const int32_t* __restrict__ grp_start,
                                                               const int32_t* __restrict__ n_groups,
@@ -6049,7 +6049,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     using F = Fmt<TG>;
     __shared__ GT sgrid[GridOf<TG>::N];
     __shared__ float res[LDS_NT][64];
-    extern __shared__ int sx_raw[];
+    extern __shared__ __align__(16) unsigned char smem[];
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
@@ -6059,7 +6059,9 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     const int nb = (int) (L.n_embd / F::qk), xb = (int) (L.n_embd / 32), hb = (int) (L.n_ff / 32);
     const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int r0 = blockIdx.x * 32;
+    int* sx_raw = (int*) smem;
     const block_q8_1* sx = (const block_q8_1*) sx_raw;
+    uint8_t* sw = smem + (size_t) LDS_NT * xb * sizeof(block_q8_1);
     auto wrow = [&](int i) -> const uint8_t* {   // i < 32: gate row r0 + i, else up row r0 + i - 32
         return blob + (i < 32 ? (size_t) 0 : L.up_off) + (size_t) (r0 + (i & 31)) * L.gu_row;
     };
@@ -6073,8 +6075,18 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         __syncthreads();
         for (int p = 0; p < 4; ++p) {
             const int i0 = p * 16 + warp, i1 = i0 + 8;
-            const uint8_t* w0 = wrow(i0);
-            const uint8_t* w1 = wrow(i1);
+            const uint8_t *w0, *w1;
+            if constexpr (STAGE_WEIGHTS) {
+                // These 16 contiguous rows are reused by every entry in this chunk.
+                const int4* wsrc = (const int4*) wrow(p * 16);
+                for (size_t i = tid; i < 16 * L.gu_row / sizeof(int4); i += 256) ((int4*) sw)[i] = wsrc[i];
+                __syncthreads();
+                w0 = sw + (size_t) warp * L.gu_row;
+                w1 = sw + (size_t) (warp + 8) * L.gu_row;
+            } else {
+                w0 = wrow(i0);
+                w1 = wrow(i1);
+            }
             auto pass = [&](auto ntc) {
                 constexpr int NTC = decltype(ntc)::value;
                 float s0[NTC], s1[NTC];
@@ -6103,8 +6115,9 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                 case 3: pass(std::integral_constant<int, 3>{}); break;
                 default: pass(std::integral_constant<int, 4>{}); break;
             }
+            if constexpr (STAGE_WEIGHTS) __syncthreads();
         }
-        __syncthreads();
+        if constexpr (!STAGE_WEIGHTS) __syncthreads();
         if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
             const float gg = res[warp][lane], uu = res[warp][32 + lane];
             const float xi = (gg / (1.0f + __expf(-gg))) * uu;
@@ -6197,6 +6210,23 @@ int sm75_down_em(int em0, int64_t cap_groups) {
 #else
 int sm75_down_em(int em0, int64_t) { return em0; }
 #endif
+
+bool sm121_weight_tiles() {
+#if defined(__HIPCC__)
+    return false;
+#else
+    static int per_dev[64];   // 0 unknown, 1 no, 2 sm_121
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!per_dev[dev]) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        per_dev[dev] = major == 12 && minor == 1 ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
+#endif
+}
 
 void native_expert_set_mode(int mode, int phase) {
 #if STRATA_EXP_LAYOUTS
@@ -6339,14 +6369,24 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                           L.n_ff % 32 == 0;
     if (fused_gu && g_exp_phase != 2) {
         const dim3 gl((unsigned) (L.n_ff / 32), (unsigned) cap_groups);
-        const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
+        const bool stage_weights = sm121_weight_tiles();
+        const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1) + (stage_weights ? 16 * L.gu_row : 0);
+#define STRATA_FUSED_GU(T) \
+    case T: \
+        if (stage_weights) native_gu_fused_kernel<T, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); \
+        else native_gu_fused_kernel<T, false><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); \
+        break
         switch (L.gu_type) {
-            case 16: native_gu_fused_kernel<16><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
-            case 18: native_gu_fused_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
-            case 21: native_gu_fused_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
-            case 23: native_gu_fused_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
-            default: native_gu_fused_kernel<22><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            STRATA_FUSED_GU(16);
+            STRATA_FUSED_GU(18);
+            STRATA_FUSED_GU(21);
+            STRATA_FUSED_GU(23);
+            default:
+                if (stage_weights) native_gu_fused_kernel<22, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq);
+                else native_gu_fused_kernel<22, false><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq);
+                break;
         }
+#undef STRATA_FUSED_GU
         check("native_expert_grouped/gu fused");
     }
 #endif
