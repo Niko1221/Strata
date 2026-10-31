@@ -848,8 +848,8 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
         return None
     if kind == "required" and len(names) == 1:     # one tool to call: name it, the model cannot invent another
         kind, name = "named", next(iter(names))
-    if kind == "required" and names:
-        return CALL_START + "\n<function="
+    if kind == "required" and names:               # the model writes "<function=NAME>": from a written "<function=", Qwen3.8 went on with names no tool has
+        return CALL_START + "\n"
     if kind == "named" and name in names:
         return CALL_START + f"\n<function={name}>\n"
     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
