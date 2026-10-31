@@ -86,7 +86,7 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
     try:
         result = subprocess.run(
             [tool, "--query-gpu=index,name,uuid,memory.total,driver_version",
-             "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5, check=False,
+             "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5, check=False,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None, "nvidia-smi could not complete within five seconds"

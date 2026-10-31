@@ -27,3 +27,22 @@ test('native gateway preserves all three protocols and routes exact IDs, usage, 
   result=await call('/v1/responses',{model:'native-a',input:'slow',stream:true});const read=result.body.getReader();await read.read();await read.cancel();for(let n=0;n<30&&!cancelled;n++)await new Promise(r=>setTimeout(r,20));assert.equal(cancelled,true);
  }finally{await close(gateway);await close(engine);}
 });
+test('a client that hangs up right after data: [DONE] has its answer: the request is done, not "Request cancelled." (#4690)',{timeout:30000},async()=>{
+ const net=await import('node:net');const records=[];let closeDelay=0;
+ const engine=http.createServer(async(req,res)=>{for await(const _ of req);res.writeHead(200,{'content-type':'text/event-stream',connection:'close'});
+  res.write('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n');res.write('data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n');res.write('data: [DONE]\n\n');
+  await new Promise(r=>setTimeout(r,closeDelay));res.end();});
+ const enginePort=await listen(engine);
+ const serving={open:value=>{const record={id:records.length,state:'queued',tokensIn:null,tokensOut:null,...value};records.push(record);return record;},mark:(id,value)=>Object.assign(records[id],value),finish:(id,{tokensOut,error})=>Object.assign(records[id],{state:error?'error':'done',tokensOut,error})};
+ const control={resolveInstance:()=>({id:'x',apiModelId:'x',port:enginePort,key:'k',gpus:[0]})};
+ const gateway=http.createServer(async(req,res)=>{let text='';for await(const chunk of req)text+=chunk;await nativeGateway({req,res,path:req.url,body:JSON.parse(text),control,serving});});
+ const gatewayPort=await listen(gateway);
+ const call=()=>new Promise(resolve=>{const body=JSON.stringify({model:'x',stream:true,messages:[]});
+  const socket=net.connect(gatewayPort,'127.0.0.1',()=>socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
+  let text='';socket.on('data',data=>{text+=data;if(text.includes('data: [DONE]'))socket.destroy();});socket.on('close',()=>resolve(text));});
+ try{
+  for(const delay of [0,5,30])for(let run=0;run<5;run++){closeDelay=delay;const before=records.length;assert.match(await call(),/\[DONE\]/);
+   for(let n=0;n<100&&!['done','error'].includes(records[before]?.state);n++)await new Promise(r=>setTimeout(r,20));
+   const last=records[before];assert.equal(last.state,'done',`delay ${delay} ms: ${last.error}`);assert.equal(last.tokensIn,12);assert.equal(last.tokensOut,3);}
+ }finally{await close(gateway);await close(engine);}
+});

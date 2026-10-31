@@ -1775,6 +1775,23 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const started = performance.now();
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
+  /* Text and reasoning arrive token by token (90 a second or more). Drawing the whole answer again for each one made the page do more work for every
+     word the longer the answer grew (measured: 15.7 s of main-thread time for 24 s of a 40,000-token answer), until the page stopped answering
+     and ran out of memory. The pieces are gathered and applied together about ten times a second; any other frame, the end and a failure
+     apply what is waiting first, so the order the person sees is the order it was written. */
+  const waiting: ['reasoning' | 'delta', string][] = [];
+  let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  const applyReasoning = (text: string) => patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + text, reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+  const applyDelta = (text: string) => patchAssistant((m) => { const content=tidyAnswer(m.content+text); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,text)}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+  const flushWaiting = () => {
+    if (waitingTimer !== null) { clearTimeout(waitingTimer); waitingTimer = null; }
+    for (const [kind, text] of waiting.splice(0)) if (kind === 'delta') applyDelta(text); else applyReasoning(text);
+  };
+  const queueText = (kind: 'reasoning' | 'delta', text: string) => {
+    const last = waiting[waiting.length - 1];
+    if (last && last[0] === kind) last[1] += text; else waiting.push([kind, text]);
+    waitingTimer ??= setTimeout(flushWaiting, 90);
+  };
   try {
     await streamPost(
       planStart ? '/api/plan/start-goal' : '/api/chat/stream',
@@ -1801,6 +1818,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         // A line from the app itself carries `key` (the English sentence): shown in the person's language.
         if (frame.type === 'delta' && typeof frame.key === 'string') frame = { ...frame, text: tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) };
         const type = frame.type as string;
+        if (type === 'delta' || type === 'reasoning') { queueText(type, String(frame.text ?? '')); return; }
+        flushWaiting();
         if (type === 'start' && frame.agent === true) { const turn = liveTurns.get(sessionId); if (turn) turn.agent = true; }
         if (type === 'queued') {
           patchAssistant(m => ({ ...m, requestId: String(frame.requestId) }));
@@ -1837,7 +1856,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'plan-step') {
           /* the whole plan follows in a plan frame; the live status already says which step is running */
         } else if (type === 'reasoning') {
-          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+          /* applied through queueText above */
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
@@ -1852,7 +1871,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=tidyAnswer(m.content+String(frame.text??'')); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          /* applied through queueText above */
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
@@ -1914,6 +1933,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       turnAbort.signal,
     );
   } catch (err) {
+    flushWaiting();
     if ((err as Error).name !== 'AbortError') {
       patchAssistant((m) => ({
         ...m,
@@ -1925,6 +1945,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
+    flushWaiting();
     // A cancelled or failed turn is still worth keeping.
     flushSessions();
     clearStatus(sessionId);

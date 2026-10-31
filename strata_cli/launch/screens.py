@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -559,10 +560,13 @@ class ModelScreen(Base):
         if found is None:
             return False
         model, d, folder = found
-        legacy = getattr(mod, "DSV41_LEGACY_NAMES", {})
-        missing = [n for n in d["shards"] if not (folder / n).exists() and not (legacy.get(n) and (folder / legacy[n]).exists())]
+        from strata_control import dsv41_fit
+        if dsv41_fit.not_here(model):
+            self.say(dsv41_fit.not_here(model) + " Pick the 2.00 or 2.25 version from the list, or point to those files.", True)
+            return True
+        _layout, names, missing = mod.dsv41_parts(d, lambda n: (folder / n).exists())       # the pinned four-shard layout, or ISTA's six-shard one (0.2.8.1)
         if missing:
-            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(d['shards'])} parts are not in {folder} "
+            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(names)} parts are not in {folder} "
                      f"(first missing: {missing[0]}). Put every part in the folder, or pick a model from the list.", True)
             return True
         s = self.ctx.settings
@@ -616,7 +620,7 @@ class CardsScreen(Base):
         """The cards the installed model was set to by a person's choice (kept unless this launch names others)."""
         from strata_cli.launch.runner import installed_cards
         try:
-            return installed_cards(self.ctx.base_config())
+            return installed_cards(self.ctx.base_config(), self.ctx.computer.usable_gpus)
         except Exception:                                    # noqa: BLE001
             return None
 

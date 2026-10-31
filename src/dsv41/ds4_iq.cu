@@ -1457,7 +1457,7 @@ bool supported(int t) {
     // The MSL kernels (metal/src/engine/msl/ds4_iq.metal) implement the 2.0-bit types plus IQ1_M; IQ1_S and IQ4_NL
     // have CUDA kernels here but no Metal ones.  Saying so makes those layers "cpu only" (ds4_model.cu, expert_layout),
     // so their experts stay on the CPU lane instead of stopping in "kernel launch with no Metal dispatch".
-    if (t == kIQ1_S || t == kIQ4_NL) return false;
+    if (t == kIQ4_NL) return false;   // (IQ1_S: ds4_iq1s_mvn + the tile kernel since the Unsloth sets)
 #endif
     // the types the kernels below are instantiated for (DS4_IQ_SWITCH + the trellis ones + the dense K-quants)
     switch (t) {

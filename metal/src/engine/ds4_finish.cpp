@@ -746,10 +746,12 @@ bool iq_mv(const void* jobs, int nj) {
         const char* tn = nullptr;
         switch (q.type) {
             case 13: tn = "ds4_q5k_mvn"; break;
+            case 14: tn = "ds4_q6k_mvn"; break;   // (the Unsloth sets' Q6_K dense matrices)
             case 16: tn = "ds4_iq2xxs_mvn"; break;
             case 17: tn = "ds4_iq2xs_mvn"; break;
             case 18: tn = "ds4_iq3xxs_mvn"; break;
             case 22: tn = "ds4_iq2s_mvn"; break;
+            case 19: tn = "ds4_iq1s_mvn"; break;   // (Unsloth UD-IQ1_S / UD-IQ1_M experts: ds4_w32_iq1s)
             case 29: tn = "ds4_iq1m_mvn"; break;   // (the 2.00 bpw pack's IQ1_M: ds4_iq.metal's ds4_w32_iq1m)
             default: break;
         }
@@ -2328,13 +2330,13 @@ bool rows_f16(const float* x, int ldx, const int* idx, int nrows, int ncols, uin
     return true;
 }
 
-// kind: 0 BF16 values, 8 Q8_0, 13 Q5_K.  n rows of k values, ld the row stride (bytes; values for BF16), out half rows.
+// kind: 0 BF16 values, 8 Q8_0, 13 Q5_K, 14 Q6_K.  n rows of k values, ld the row stride (bytes; values for BF16), out half rows.
 bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* out) {
     if (n <= 0 || k <= 0) return true;
     if (!ensure()) return false;
-    const char* fn = kind == 13 ? "ds4_dq_q5k" : kind == 8 ? "ds4_dq_q8" : kind == 0 ? "ds4_dq_bf16" : nullptr;
+    const char* fn = kind == 13 ? "ds4_dq_q5k" : kind == 14 ? "ds4_dq_q6k" : kind == 8 ? "ds4_dq_q8" : kind == 0 ? "ds4_dq_bf16" : nullptr;
     if (!fn) return false;
-    if ((kind == 13 && k % 256 != 0) || (kind == 8 && k % 32 != 0)) return false;
+    if (((kind == 13 || kind == 14) && k % 256 != 0) || (kind == 8 && k % 32 != 0)) return false;
     void* hw = strata::gpu::host_view((void*) raw);
     void* ho = strata::gpu::host_view(out);
     if (!hw || !ho) return false;
@@ -2345,7 +2347,7 @@ bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* 
         return g_cx->wrap((void*) base, wrap_len(base, end - base));
     };
     auto off = [&](void* host) { return (size_t) ((uintptr_t) host - (((uintptr_t) host) & ~(uintptr_t) (page - 1))); };
-    const size_t wbytes = (size_t) (n - 1) * ld * (kind == 0 ? 2 : 1) + (kind == 0 ? (size_t) k * 2 : (kind == 13 ? (size_t) (k / 256) * 176 : (size_t) (k / 32) * 34));
+    const size_t wbytes = (size_t) (n - 1) * ld * (kind == 0 ? 2 : 1) + (kind == 0 ? (size_t) k * 2 : (kind == 13 ? (size_t) (k / 256) * 176 : kind == 14 ? (size_t) (k / 256) * 210 : (size_t) (k / 32) * 34));
     if (!std::getenv("DS4_NO_TOUCH")) {   // (the matrix may be file-backed pages not read yet: the GPU does not page them in, it stalls)
         volatile unsigned char sink = 0;
         for (size_t o = 0; o < wbytes; o += 4096) sink = sink + ((const volatile unsigned char*) hw)[o];
@@ -2356,7 +2358,7 @@ bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* 
     if (!bw.handle || !bo.handle) return false;
     mtl::Pipeline pl;
     try { pl = g_cx->pipeline(g_lib, fn); } catch (...) { return false; }
-    size_t items = kind == 13 ? (size_t) n * (k / 256) * 8 : kind == 8 ? (size_t) n * (k / 32) : (size_t) n * k;
+    size_t items = kind == 13 ? (size_t) n * (k / 256) * 8 : kind == 14 ? (size_t) n * (k / 256) * 64 : kind == 8 ? (size_t) n * (k / 32) : (size_t) n * k;
     mtl::Dispatch d;
     d.p = &pl;
     d.args = {mtl::Arg::B(bw, off(hw)), mtl::Arg::V((unsigned long) ld), mtl::Arg::V((unsigned) k), mtl::Arg::V((unsigned) n),
@@ -2454,7 +2456,7 @@ int g_lib_moe = -2;
 mtl::Buffer g_mm_xs, g_mm_hs, g_mm_ys;   // grow-only scratch: the sorted rows' half activations; the gate/up's swiglu rows (the down's input)
 bool g_mm_hs_ok = false;
 // bytes of a 256-value block per type: the tile kernels are instantiated for exactly these (DS4_MM_INST)
-size_t iq_bs(int type) { return type == 16 ? 66 : type == 17 ? 74 : type == 22 ? 82 : type == 18 ? 98 : type == 29 ? 56 : 0; }
+size_t iq_bs(int type) { return type == 16 ? 66 : type == 17 ? 74 : type == 22 ? 82 : type == 18 ? 98 : type == 29 ? 56 : type == 19 ? 50 : 0; }
 struct DsMmArgsH {
     unsigned long gate_off, up_off, down_off, stride;
     unsigned gu_row, d_row, n_embd, n_ff;

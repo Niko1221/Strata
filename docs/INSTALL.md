@@ -38,10 +38,10 @@ hardware drivers. Models and updates need an internet connection to download.
 
 1. Open the [latest release](https://github.com/Niko1221/Strata/releases/latest).
 2. Download the one installer for your system. There is one per system, not one per graphics card:
-   - **Windows:** run `Strata-0.2.8-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
-   - **Linux:** make `Strata-0.2.8-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
+   - **Windows:** run `Strata-0.2.9-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
+   - **Linux:** make `Strata-0.2.9-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
      downloaded file with `--appimage-extract-and-run`. [Linux help](TROUBLESHOOTING.md).
-   - **Mac:** open `Strata-0.2.8-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
+   - **Mac:** open `Strata-0.2.9-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
 3. On Windows and Linux the installer has no engine inside. On first start the app shows the engine for your
    graphics card with its size and one **Download** button, with progress and resume. If you already downloaded the
    engine file, choose **I already have the file** and it installs without internet. The Mac file keeps its small

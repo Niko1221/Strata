@@ -182,7 +182,10 @@ int main() {
     for (const Mock& m : mocks) {
         const bool want = m.expect_on && std::string(m.gcn).rfind("gfx1103", 0) == 0;
 #if defined(_WIN32)
-        CHECK(igpu_default_env(m.gcn, m.integrated).empty());
+        // 0.2.8: Strix Halo (gfx1151, integrated) gets the matrix-core prompt set on Windows; the 780M and the 890M are
+        // not measured there and stay off
+        const bool win_on = m.expect_on && m.integrated && std::string(m.gcn).rfind("gfx1151", 0) == 0;
+        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (win_on ? 7u : 0u));
 #else
         CHECK(igpu_default_env(m.gcn, m.integrated).size() == (want ? 5u : 0u));
 #endif
@@ -212,14 +215,21 @@ int main() {
         const auto t = igpu_default_env(m.gcn, m.integrated);
         CHECK(t.empty() == !m.expect_on);
         if (m.expect_on) {
-            CHECK(t.size() == 5);
-            const char* want[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
+            bool halo_win = false;
+#if defined(_WIN32)
+            halo_win = std::string(m.gcn).rfind("gfx1151", 0) == 0;
+#endif
+            CHECK(t.size() == (halo_win ? 7u : 5u));
+            std::vector<const char*> want = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX"};
+            want.push_back("STRATA_SELECT_WMMA");
+            if (halo_win) { want.push_back("STRATA_PF_FUSED"); want.push_back("STRATA_PF_F16"); }
             for (const char* w : want) {
                 bool found = false;
                 for (const auto& kv : t) found = found || (kv.first == w && kv.second == "1");
                 CHECK(found);
             }
-            for (const auto& kv : t) CHECK(kv.first != "STRATA_PF_FUSED" && kv.first != "STRATA_HC_Q8" && kv.first != "STRATA_PF_HCDOWN");
+            for (const auto& kv : t) CHECK(kv.first != "STRATA_HC_Q8" && kv.first != "STRATA_PF_HCDOWN");
+            if (!halo_win) { for (const auto& kv : t) CHECK(kv.first != "STRATA_PF_FUSED"); }
         }
         if (!m.expect_on) std::printf("  (not on) %s\n", m.name);
     }
@@ -260,6 +270,60 @@ int main() {
     CHECK(std::getenv("STRATA_HC_UPMIX") != nullptr && std::string(std::getenv("STRATA_HC_UPMIX")) == "0");
     for (const char* k : five) unset(k);
     unset("STRATA_IGPU_PROMPT_SET");
+#if defined(_WIN32)
+    // 0.2.8: Strix Halo (gfx1151) on Windows gets the matrix-core prompt set with nothing asked.  Measured on the strix
+    // box (Qwen3.8-Flash-Next IQ3_S, engine 0.1.52, 4K / 8K ids prompts): 4K 690 -> 1,090, 8K 785 -> 1,183 (x1.58 /
+    // x1.51), KL 0.0088 mean against the HC_Q8 bar of 0.0228.  The set is HIP_WMMA + PF_GEMM + PA_FAST + HC_UPMIX +
+    // PF_FUSED (0.2.9 adds SELECT_WMMA and PF_F16 to the Windows gfx1151 set), and the 780M / 890M keep exactly what was measured on them.
+    unset("STRATA_IGPU_DEFAULTS");
+    unset("STRATA_GFX1151_DEFAULTS");   // the 19-switch gfx1151 table is live in this block (the checks above turned it off)
+    CHECK(igpu_prompt_set_enabled("gfx1151", true));
+    CHECK(igpu_prompt_set_enabled("gfx1151:sramecc-:xnack-", true));
+    CHECK(!igpu_prompt_set_enabled("gfx1151", false));      // Linux gfx1151: still opt-in
+    CHECK(!igpu_prompt_set_enabled("gfx1150", true));
+    CHECK(!igpu_prompt_set_enabled("gfx1103", true));
+    {
+        const auto t = igpu_default_env("gfx1151", true);
+        CHECK(t.size() == 7);
+        auto has = [&t](const char* k) {
+            for (const auto& kv : t) if (kv.first == k) return kv.second == "1";
+            return false;
+        };
+        CHECK(has("STRATA_HIP_WMMA") && has("STRATA_PF_GEMM") && has("STRATA_PA_FAST") && has("STRATA_HC_UPMIX") &&
+              has("STRATA_PF_FUSED") && has("STRATA_SELECT_WMMA") && has("STRATA_PF_F16"));
+        CHECK(igpu_default_env("gfx1151", false).empty());   // a gfx1151 reported as a discrete card
+        CHECK(igpu_default_env("gfx1150", true).empty());    // 890M: unchanged
+        CHECK(igpu_default_env("gfx1103", true).empty());    // 780M on Windows: unchanged
+    }
+    {
+        const char* halo[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX", "STRATA_PF_FUSED",
+                              "STRATA_SELECT_WMMA", "STRATA_PF_F16"};
+        for (const char* k : halo) unset(k);
+        const auto set = apply_arch_defaults("gfx1151", true);
+        for (const char* k : halo) {
+            bool in = false;
+            for (const auto& n : set) in = in || n == k;
+            CHECK(in);
+            CHECK(std::getenv(k) != nullptr && std::string(std::getenv(k)) == "1");
+        }
+        // a switch the user set (even to 0) is kept, and the whole set turns off with either switch
+        for (const char* k : halo) unset(k);
+        put("STRATA_HC_UPMIX", "0");
+        const auto set2 = apply_arch_defaults("gfx1151", true);
+        CHECK(std::getenv("STRATA_HC_UPMIX") != nullptr && std::string(std::getenv("STRATA_HC_UPMIX")) == "0");
+        for (const auto& n : set2) CHECK(n != "STRATA_HC_UPMIX");
+        CHECK(std::getenv("STRATA_PF_FUSED") != nullptr);
+        unset("STRATA_HC_UPMIX");
+        for (const char* k : halo) unset(k);
+        put("STRATA_IGPU_PROMPT_SET", "0");
+        CHECK(igpu_default_env("gfx1151", true).empty());
+        unset("STRATA_IGPU_PROMPT_SET");
+        put("STRATA_IGPU_DEFAULTS", "0");
+        CHECK(igpu_default_env("gfx1151", true).empty());
+        unset("STRATA_IGPU_DEFAULTS");
+        put("STRATA_GFX1151_DEFAULTS", "0");   // back to the state this block found (the 026 checks below rely on it)
+    }
+#endif
     // 021-minipc: UMA mode is NOT a default (slower, resets not fixed): off with nothing asked; the logic below runs with on=true
     CHECK(!kIgpuUmaArenaDefaultOn);
     CHECK(!igpu_uma_arena_default("gfx1103", true, false));

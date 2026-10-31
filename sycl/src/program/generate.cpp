@@ -629,7 +629,9 @@ struct Options {
     bool trim_stage_weights = false;
     /// The --batch slots in this many groups pipelined through the stages of a layer split (stage k
     /// runs one group while stage k+1 runs another).  1 = every slot in one window, stage after stage.
-    int batch_groups = 1;
+    /// 0: not given (two Arc B-series cards with 8 or more slots pipeline 2 groups, anything else 1), -1: `auto` (the most
+    /// groups, at most one per stage, that divide the slots - the engine's other builds' rule), else the number asked for.
+    int batch_groups = 0;
     bool batch_mtp = false;      ///< --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): one MTP proposal per batch slot
     std::string spec_oracle;
     int spec_corrupt = 0;
@@ -1930,7 +1932,10 @@ int main(int argc, char **argv) try {
         else if (a == "--batch") o.batch = std::atoi(next("--batch"));
         else if (a == "--slots") o.batch = std::atoi(next("--slots"));   // the same as --batch
         else if (a == "--trim-stage-weights") o.trim_stage_weights = true;
-        else if (a == "--batch-groups") o.batch_groups = std::atoi(next("--batch-groups"));
+        else if (a == "--batch-groups") {
+            const std::string bg = next("--batch-groups");
+            o.batch_groups = bg == "auto" ? -1 : std::atoi(bg.c_str());
+        }
         else if (a == "--batch-mtp") o.batch_mtp = true;
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
@@ -4175,6 +4180,27 @@ int main(int argc, char **argv) try {
                                  "slots\n", o.batch, cap, cap);
             o.batch = cap;
         }
+    }
+    if (o.batch > 0 && o.batch_groups <= 0) {   // not given, or `auto`
+        const bool given_auto = o.batch_groups < 0;
+        int g = 1;
+        if (!stages.empty()) {
+            const auto battlemage = [](int d) -> bool {
+                try { return strata::intel_gpu_gen(dpct::get_device(d)) == strata::IntelGpuGen::Battlemage; } catch (...) { return false; }
+            };
+            const bool two_b = stages.size() == 1 && battlemage(0) && battlemage(stages[0]->dev);
+            static const char* ga = std::getenv("STRATA_BATCH_GROUPS_AUTO");
+            const bool off = ga != nullptr && std::atoi(ga) == 0;
+            if (two_b && o.batch >= 8 && o.batch % 2 == 0 && !off) {
+                g = 2;
+                std::fprintf(stderr, "strata generate: --batch-groups 2 by default: %d slots over a layer split on two Arc B-series "
+                                     "cards (--batch-groups 1 or STRATA_BATCH_GROUPS_AUTO=0 turns it off)\n", o.batch);
+            } else if (given_auto) {
+                for (int d = 2; d <= (int) stages.size() + 1 && d <= o.batch; ++d)
+                    if (o.batch % d == 0) g = d;
+            }
+        }
+        o.batch_groups = g;
     }
     if (o.batch > 0 && o.batch_groups > 1 && (stages.empty() || o.batch % o.batch_groups != 0)) {
         std::fprintf(stderr, "strata generate: WARNING: --batch-groups %d needs a layer split and to divide --batch %d; "
@@ -8882,6 +8908,7 @@ int main(int argc, char **argv) try {
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
+                                       " batch_groups=" + std::to_string(o.batch_groups > 0 ? o.batch_groups : 1) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on

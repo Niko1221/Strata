@@ -20,6 +20,10 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -71,6 +75,27 @@
 #define STRATA_FSEEK64(f, o) fseeko((f), (off_t) (o), SEEK_SET)
 #endif
 #endif
+
+// The pid of this process and whether a pid still exists (the shared arena's reader election, both OSes)
+static uint64_t arena_this_pid() {
+#ifdef _WIN32
+    return (uint64_t) GetCurrentProcessId();
+#else
+    return (uint64_t) getpid();
+#endif
+}
+static bool arena_pid_alive(uint64_t pid) {
+#ifdef _WIN32
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD) pid);
+    if (h == nullptr) return GetLastError() == ERROR_ACCESS_DENIED;     // (denied: it exists; invalid parameter: it does not)
+    DWORD code = 0;
+    const bool alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    CloseHandle(h);
+    return alive;
+#else
+    return !(kill((pid_t) pid, 0) != 0 && errno == ESRCH);
+#endif
+}
 
 namespace strata::core {
 
@@ -6000,6 +6025,43 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
     const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
     LoadStats st;
+    // A shared arena (--shared-expert-arena, the replicas): ONE engine reads the experts into it, the others wait and skip the
+    // read.  The state word in the file's header says who: 0 nobody, a pid loading, ~0 filled.  An engine that finds a
+    // pid that is gone takes the load over (the previous one died mid-read: the arena is read again from the start), so a
+    // dead loader never leaves the others waiting, and an engine that waits too long loads it itself.
+    constexpr uint64_t kArenaFilled = ~uint64_t{0};
+    std::atomic<uint64_t>* arena_state = padded_ ? nullptr : a->shared_state;
+    bool arena_leader = false, arena_skip = false;
+    if (arena_state != nullptr) {
+        const uint64_t me = arena_this_pid();
+        const auto t_begin = std::chrono::steady_clock::now();
+        bool said = false;
+        for (;;) {
+            uint64_t cur = arena_state->load(std::memory_order_acquire);
+            if (cur == kArenaFilled) { arena_skip = true; break; }
+            if (cur == 0 || cur == me) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) { arena_leader = true; break; }
+                continue;
+            }
+            const bool alive = arena_pid_alive(cur);
+            if (!alive) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) {
+                    std::fprintf(stderr, "strata generate: shared expert arena: engine %llu died while reading it; reading it again\n",
+                                 (unsigned long long) cur);
+                    arena_leader = true;
+                    break;
+                }
+                continue;
+            }
+            if (std::chrono::steady_clock::now() - t_begin > std::chrono::minutes(45)) break;   // (loads it on its own)
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata generate: shared expert arena: engine %llu is reading the experts; waiting for it "
+                                     "instead of reading them again\n", (unsigned long long) cur);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
     std::atomic<int> ready{0};
     std::thread reg;
     if (deferred) {
@@ -6011,7 +6073,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         });
     }
     const std::atomic<int>* rp = deferred ? &ready : nullptr;
-    if (from_gguf) {
+    if (arena_skip) {
+        st.ok = true;
+        st.bytes = want;
+        st.seconds = 0.0;
+        std::fprintf(stderr, "strata generate: shared expert arena: already filled by another engine; the read is skipped\n");
+    } else if (from_gguf) {
         st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
     } else {
         if (unbuffered && !padded_) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20, rp);
@@ -6022,15 +6089,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
                  why.c_str());
     if (!st.ok) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);   // (somebody else may try)
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
         return false;
     }
     if (st.bytes != want) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);
         delete a;
         err = "ArenaExpertSource: the load read " + std::to_string(st.bytes) + " B of " + std::to_string(want);
         return false;
     }
+    if (arena_leader) arena_state->store(kArenaFilled, std::memory_order_release);   // the others may use (and skip reading) it
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
         std::fprintf(stderr, "strata generate: expert arena checksum %016llx (%.2f GiB)\n",
                      (unsigned long long) fnv1a64(a->data(), want), (double) want / (1ull << 30));

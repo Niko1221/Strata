@@ -712,6 +712,35 @@ template <> struct W8<T_IQ1_M> {
     }
 };
 
+// IQ1_S (Unsloth's UD-IQ1_S / UD-IQ1_M experts), ggml's dequantize_row_iq1_s: f16 d, qs[32], qh[8] u16; a 32-value sub-block has
+// one scale dl = d (2 s + 1) (qh bits 12-14), a +-0.125 delta (qh bit 15) and four 8-value groups whose grid index is
+// qs[4 ib + g] | 3 bits of qh << 8.  Same float arithmetic as ggml (dl (grid + delta)), so the half4 is what the CPU reference rounds to.
+template <typename P>
+static inline half4 iq1s_w4(P row, int k) {
+    const P bl = row + (k >> 8) * 50;
+    const int ib = (k & 255) >> 5, g = (k & 31) >> 3, hh = (k & 7) >> 2;
+    const uint qh = uint(bl[34 + 2 * ib]) | (uint(bl[35 + 2 * ib]) << 8);
+    const float dl = float(as_type<half>(ushort(uint(bl[0]) | (uint(bl[1]) << 8)))) * float(2u * ((qh >> 12) & 7u) + 1u);
+    const float delta = (qh & 0x8000u) != 0u ? -0.125f : 0.125f;
+    const uint idx = uint(bl[2 + 4 * ib + g]) | (((qh >> (3u * uint(g))) & 7u) << 8);
+    const ulong gr = iq1s_grid[idx];
+    float v[4];
+    for (int j = 0; j < 4; ++j) {
+        const uint by = uint((gr >> (8u * uint(4 * hh + j))) & 0xffu);
+        const int c = (by & 0x80u) != 0u ? int(by) - 256 : int(by);
+        v[j] = dl * (float(c) + delta);
+    }
+    return half4(v[0], v[1], v[2], v[3]);
+}
+template <> struct W8<T_IQ1_S> {
+    template <typename P>
+    static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
+        (void) tab;
+        a = iq1s_w4(row, k);
+        b = iq1s_w4(row, k + 16);
+    }
+};
+
 template <> struct W8<T_IQ3_S> {
     template <typename P>
     static inline void run(P row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {

@@ -23,8 +23,8 @@ Use the [current release](https://github.com/Niko1221/Strata/releases/latest). Y
 
 | System | What to install | Engine variant |
 | --- | --- | --- |
-| Linux | `Strata-0.2.8-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
-| Windows | `Strata-0.2.8-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
+| Linux | `Strata-0.2.9-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
+| Windows | `Strata-0.2.9-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
 
 Packaged engines carry the matching hipBLASLt tuning table for gfx1151 and select it on their own. Setup recognizes `gfx1151` and
 PCI ID `1002:1586`; other integrated Radeon chips have separate support limits. Unified memory is counted once. Setup does not
@@ -213,6 +213,14 @@ export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the
 `STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA` and `STRATA_SELECT_WMMA` together are one opt-in on an
 integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"), measured on a Radeon 780M only, where
 it is the default. `STRATA_PF_FUSED`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
+
+**On Windows the Strix Halo is the exception** (engine 0.1.52 and later): `gfx1151` takes the matrix-core set by itself -
+`STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`, `STRATA_HC_UPMIX` and `STRATA_PF_FUSED`, without `STRATA_SELECT_WMMA`
+(x1.003 there) - and the prompt keeps its own buffers instead of lending expert-cache slots. Measured on Qwen3.8-Flash-Next
+IQ3_S, prompts of 4K to 64K: x1.59 to x1.72 over 0.2.7. The whole block is off with `STRATA_GFX1151_DEFAULTS=0`; the set with
+`STRATA_IGPU_PROMPT_SET=0`, the buffers with `STRATA_PREFILL_BORROW=1`
+([STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md#4-what-is-on-by-default)). Linux `gfx1151` keeps the opt-in above until it is
+measured there.
 
 | Switch | What it does |
 | --- | --- |

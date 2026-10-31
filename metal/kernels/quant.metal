@@ -25,6 +25,7 @@
 #define T_IQ3_XXS 18
 #define T_IQ4_NL 20
 #define T_IQ3_S 21
+#define T_IQ1_S 19   // Unsloth UD-IQ1_S / UD-IQ1_M experts (50-byte blocks)
 #define T_IQ1_M 29   // the 2.00 bpw pack's 1.75-bit type
 #define T_IQ2_S 22
 #define T_IQ4_XS 23
@@ -41,6 +42,7 @@ template <> struct fmt<T_Q2_0R>   { enum { QK = 64,  BB = 18,  UNIT = 16, TAB = 
 template <> struct fmt<T_IQ3_XXS> { enum { QK = 256, BB = 98,  UNIT = 16, TAB = 256 + 32 }; };
 template <> struct fmt<T_IQ2_XXS> { enum { QK = 256, BB = 66,  UNIT = 16, TAB = 512 + 32 }; };
 template <> struct fmt<T_IQ1_M> { enum { QK = 256, BB = 56, UNIT = 16, TAB = 1 }; };
+template <> struct fmt<T_IQ1_S> { enum { QK = 256, BB = 50, UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_IQ2_XS>  { enum { QK = 256, BB = 74,  UNIT = 16, TAB = 1024 + 32 }; };
 template <> struct fmt<T_IQ2_S>   { enum { QK = 256, BB = 82,  UNIT = 16, TAB = 2048 + 32 }; };
 template <> struct fmt<T_IQ3_S>   { enum { QK = 256, BB = 110, UNIT = 16, TAB = 512 + 32 }; };
@@ -393,6 +395,7 @@ template <> inline void load_tab<T_IQ2_XS>(threadgroup uint* tab, ushort tid, us
 }
 // IQ1_M: no threadgroup table - the tile reads iq1s_grid from the constants (the w4 helper in moe_mm.metal)
 template <> inline void load_tab<T_IQ1_M>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_IQ1_S>(threadgroup uint*, ushort, ushort) {}   // (same: iq1s_grid from the constants)
 template <> inline void load_tab<T_IQ2_S>(threadgroup uint* tab, ushort tid, ushort nth) {
     if (ctab) return;
     for (int i = tid; i < 1024; i += nth) { tab[2 * i] = uint(iq2s_grid[i]); tab[2 * i + 1] = uint(iq2s_grid[i] >> 32); }

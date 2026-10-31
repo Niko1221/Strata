@@ -363,6 +363,24 @@ def is_engram_file(g) -> bool:
     return arch == "engram" or arch.endswith("-engram")
 
 
+def engram_is_last_shard(explicit: str | None, split: int, shards: list) -> int:
+    """1 when the model's split ends in the Engram table: ISTA-DASLab's six-shard sets (llama.cpp b11870 and newer) declare split.count 6 with five
+    model shards, and the sixth is the Engram file shared by all their sets, passed as --engram (a single file) instead of in --shards.  It counts only
+    when it is one file that is not already among the shards and is either the Engram of the pinned four-shard release (general.architecture
+    deepseek41-engram: the same tables, so it serves the six-shard shards too) or the converted one: no general.architecture, the same split as number
+    count-1, exactly one tensor, per_layer_token_embd.weight.  Else 0."""
+    if not explicit or len(shards) != split - 1:
+        return 0
+    path = pathlib.Path(explicit).expanduser().resolve()
+    if not path.is_file() or any(os.path.samefile(path, p) for p in shards):
+        return 0
+    g = Gguf(path)
+    if is_engram_file(g):
+        return 1
+    return int(int(g.kv.get("split.count", 0)) == split and int(g.kv.get("split.no", -1)) == split - 1
+               and [t[0] for t in g.tensors] == ["per_layer_token_embd.weight"])
+
+
 def model_kv(gs):
     """The metadata of the model: of the first group whose architecture IS deepseek41 - never an Engram file's, whatever order they come in."""
     return next((g.kv for g in gs if g.kv.get("general.architecture") == "deepseek41"), None)
@@ -464,7 +482,8 @@ def main() -> int:
     ap.add_argument("--skip-tensors", help="a regex of the GGUF's tensor names to leave out (a --dense-override supplies them "
                                            "instead): e.g. attn_output_a, for a quant that stores the grouped wo_a as one "
                                            "interleaved 3-D tensor instead of o_groups matrices")
-    ap.add_argument("--engram", help="the folder of the Engram tables' GGUF set, for a quant that leaves them out "
+    ap.add_argument("--engram", help="the folder of the Engram tables' GGUF set, or the one Engram file (ISTA-DASLab's six-shard sets: it is their "
+                                     "sixth shard, so --shards names only the five others), for a quant that leaves them out "
                                      "(default: <model>/../Engram, when it is whole)")
     ap.add_argument("--engram-meta", help="a GGUF whose metadata carries the Engram's hash parameters (llama.cpp's ple.* / "
                                           "engram.*: layers, head offsets, vocab sizes, multipliers, token map), for a quant whose own "
@@ -492,9 +511,10 @@ def main() -> int:
     if a.config_json:
         apply_source_config(kv, json.loads(pathlib.Path(a.config_json).expanduser().read_text()))
     split = int(kv.get("split.count", 1))
-    if split != len(shards):
+    here = len(shards) + engram_is_last_shard(a.engram, split, shards)
+    if split != here:
         counts = sorted({m.group(1) for m in (re.search(r"-of-(\d{5})\.gguf$", p.name) for p in shards) if m})
-        raise SystemExit("%s: %d of the %d shards are here" % (model, len(shards), split) if len(counts) < 2 else
+        raise SystemExit("%s: %d of the %d shards are here" % (model, here, split) if len(counts) < 2 else
                          "%s: the shards of more than one GGUF split (-of-%s): name the model's own with --shards" %
                          (model, ", -of-".join(counts)))
     # a quant whose shards leave the Engram's metadata out (the IST-DAS sets: deepseek41.engram_* only, no token map):

@@ -1575,7 +1575,7 @@ def _timeskip(a: argparse.Namespace) -> int:
         env = {**os.environ, "STRATA_TIMESKIP_PROMPT": prompt,
                "STRATA_TIMESKIP_ATTEMPT": str(attempt)}
         proc = subprocess.run(a.revise_command, shell=True, cwd=str(candidate), env=env,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, errors="replace")
         if proc.returncode != 0:
             raise time_skip.TimeSkipError(
                 f"the revision command failed (exit {proc.returncode}): "

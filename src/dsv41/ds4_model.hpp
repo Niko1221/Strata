@@ -157,6 +157,10 @@ public:
     const std::vector<int32_t>& tokens() const;   // what the state has consumed, in order
 
     void reset();
+    /// The post-prompt cache settle run on a thread of its own while the server waits for its next request (WP-8's option 1):
+    /// the swap rounds of cache_settle without the store preload, stopped early when `cancel` goes true.  `done` is set when
+    /// the thread has nothing left to do.  Only one such run at a time; the caller joins the thread after setting cancel.
+    void settle_idle(const std::atomic<bool>& cancel);
     /// Keep the state at the current position in checkpoint slot 0 or 1 (the end of a prompt, the position before it);
     /// restore(limit) goes back to the latest one at or before limit (-1: none).
     void checkpoint(int slot = 0);

@@ -229,7 +229,7 @@ def _gfx_names() -> list[str]:
         tool = shutil.which("rocminfo") if os.name != "nt" else shutil.which("hipInfo")
         if tool:
             try:
-                done = subprocess.run([tool], capture_output=True, text=True, timeout=10,
+                done = subprocess.run([tool], capture_output=True, text=True, errors="replace", timeout=10,
                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 found = sorted(set(re.findall(r"\bgfx[0-9a-f]{3,4}\b", done.stdout)))
             except (OSError, subprocess.SubprocessError):
@@ -767,7 +767,7 @@ def binary_smoke(component: ec.EngineComponent, timeout: float = 60) -> dict:
     env = dict(os.environ)
     env[var] = os.pathsep.join(ec.package_lib_dirs(component.root)) + os.pathsep + env.get(var, "")
     try:
-        done = subprocess.run([str(component.exe), "--version"], capture_output=True, text=True, timeout=timeout, env=env,
+        done = subprocess.run([str(component.exe), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, env=env,
                               cwd=str(component.root), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         raise TestStartFailed(component.version, f"the engine could not run ({type(exc).__name__}: {exc})") from None
@@ -908,7 +908,11 @@ def _test_start_failure(component: ec.EngineComponent, started: dict, ctx: Conte
         return TestStartFailed(component.version, f"it was still loading the model after {minutes} minutes", busy=True,
                                hint="Nothing was changed. A slow disk or a card that other programs are using can do this: close them and run "
                                     "`strata update` again." + kept)
-    return TestStartFailed(component.version, f"it did not answer a one-token probe ({error or started.get('state')}){tail}")
+    reason = f"it did not answer a one-token probe ({error or started.get('state')}){tail}"
+    # #4692: "report it with the log" named no log. The engine's words stay out of the sentence, but the person is told where the kept log is.
+    hint = (None if TestStartFailed.BUSY.search(reason) else
+            f"Run `strata update --force` to try again; if it fails again, report it with the log: {log}")
+    return TestStartFailed(component.version, reason, hint=hint)
 
 
 TEST_CONTEXT = 4096
@@ -1305,7 +1309,7 @@ def _control_version(interpreter: str, entry: Path, stage: Path, ctx: Context, v
     done = None
     for attempt, timeout in enumerate(CONTROL_VERSION_TIMEOUTS):
         try:
-            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(stage),
+            done = subprocess.run([interpreter, str(entry), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(stage),
                                   env={**ctx.environ, "PYTHONNOUSERSITE": "1", "STRATA_NO_ACQUIRE": "1", "STRATA_HANDOVER": "1"},
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             last_error = None
