@@ -16079,8 +16079,15 @@ int main(int argc, char** argv) {
                 }
                 mtp.set_draft_sampling(draft_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
             }
-            const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() && !slot_grammar &&   // #3862: the gated
-                // verifier's per-row measure rides no grammar mask chain - grammar requests keep the accepted pick-gate path
+            // #3862: a grammar request rides the gated measure too.  The measure's target p is this request's own
+            // sampling_, whose grammar_mask is the ring's row 0 with the chain's stride: the split part masks row t
+            // through grammar_ring.row(t), which the chain below builds from the drafts in window[1..t] (a draft the
+            // grammar cannot take leaves p(D)=0 on that row, so min(1, p(D)/mu(D)) rejects it and the residual
+            // (p-mu)+ samples inside the mask).  mu stays the drafter's own q, unmasked, as the packet requires: it
+            // is the proposal, not the target.
+            // The measure needs a sampled head (verify.cpp refuses a greedy one): a greedy request - the common
+            // shape of a grammar request, a tool call at temperature 0 - keeps the pick-gate path instead.
+            const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() && req_temperature > 0.0f &&
                 gated_proposal_usable(o.pipeline_windows < 2 && o.batch == 0 && n_stages == 1 && !multi_gpu && drive.d.remote_count == 0,
                                       o.lookup_chain, o.adapt_swaps, req_pcie_frac != 0.0 || o.pcie_frac_auto, spec_cost, S,
                                       req_spec_min_p);
@@ -17037,8 +17044,8 @@ int main(int argc, char** argv) {
                     const int room = (int) std::min<int64_t>(S, o.max_context - p);
                     source_policy.apply_costs(p);   // held round times whose draws are all committed now
                     if (!prepare_gated_window(proposal, generation, sfx, source_policy, sfx_on,   // #3862: a grammar
-                                              first_window, room, S_mtp, (int) ver.vocab(), (float) req_spec_min_p,   // request never drafts
-                                              mtp.spec_q(), drafts.data(), dprob.data(), sbuf.data(), sfx_match, err)) {
+                                              first_window, room, S_mtp, (int) ver.vocab(), (float) req_spec_min_p,   // request adds no
+                                              mtp.spec_q(), drafts.data(), dprob.data(), sbuf.data(), sfx_match, err)) {   // suffix root
                         std::printf("ERR %s\n", err.c_str()); return 1;
                     }
                     T = proposal.T; from_sfx = proposal.from_sfx;
