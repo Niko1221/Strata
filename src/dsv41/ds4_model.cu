@@ -8021,6 +8021,13 @@ struct Model::Impl {
         ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
 #endif
         int t = -1;
+        // (DS4_TEST_SAMPLE_FAIL=N: the Nth sample of the run fails as a CUDA error would - the test of #619's handling)
+        static const long fail_at = std::getenv("DS4_TEST_SAMPLE_FAIL") ? std::atol(std::getenv("DS4_TEST_SAMPLE_FAIL")) : 0;
+        static long calls = 0;
+        if (fail_at > 0 && ++calls == fail_at) {
+            std::fprintf(stderr, "ds4 sample: injected failure (DS4_TEST_SAMPLE_FAIL=%ld)\n", fail_at);
+            return -1;
+        }
         cudaError_t e = cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
         if (e == cudaSuccess) e = cudaStreamSynchronize(d.st);
         if (e == cudaSuccess) return t;
