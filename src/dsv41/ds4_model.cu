@@ -739,6 +739,37 @@ struct Chunk {
 // before its last row (feed_mark)
 constexpr int kSnapN = 8;
 
+// DS4_UNPICKED_STAT=1: for each size of chunk a prompt runs, how many of a layer's experts none of the chunk's rows picked
+// (the experts a chunk that streams all of them reads for nothing, Project Maya #691's "streams only the experts it
+// picks"), printed at exit
+struct UnpickedStat {
+    std::mutex mu;
+    std::map<int, std::array<double, 3>> by_rows;   // rows -> {chunk-layers, unpicked experts, experts}
+    void add(int rows, int picked, int n_exp) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto& v = by_rows[rows];
+        v[0] += 1;
+        v[1] += n_exp - picked;
+        v[2] += n_exp;
+    }
+    ~UnpickedStat() {
+        for (const auto& kv : by_rows)
+            std::fprintf(stderr, "ds4 unpicked: chunks of %d rows: %.0f chunk-layers, %.2f%% of a layer's experts picked by none of them\n",
+                         kv.first, kv.second[0], kv.second[2] > 0 ? 100.0 * kv.second[1] / kv.second[2] : 0.0);
+    }
+};
+UnpickedStat g_unpicked_stat;
+// DS4_SKIP_UNPICKED_ROWS: the streamed experts a skipping chunk copied and left out, printed at exit
+struct SkipCount {
+    std::atomic<size_t> skipped{0}, copied{0};
+    ~SkipCount() {
+        if (skipped + copied > 0)
+            std::fprintf(stderr, "ds4 skip unpicked: %zu streamed experts copied, %zu left out (%.1f%%)\n", copied.load(), skipped.load(),
+                         100.0 * (double) skipped / (double) (skipped + copied));
+    }
+};
+SkipCount g_skip_count;
+
 struct Layer {
     int il = 0, dev = 0, ratio = 0;
     // its group (tensor parallel: nm members, each a copy of the device state in mates, member mi's share of the
@@ -3731,7 +3762,26 @@ struct Model::Impl {
         std::vector<Batch> b;
         size_t cp = 0, kp = 0;        // the next batch to copy, to compute
         std::atomic<size_t> done{0};  // cp, for read_ahead's thread
+        // DS4_SKIP_UNPICKED_ROWS / DS4_SKIP_UNPICKED (Project Maya #691): a chunk of few rows streams only the experts some
+        // row of it picked - the copies of its layer wait for the layer's routing (routed_layer / routed_chunk, the
+        // experts' row bounds in routed_bounds), then copy the picked ones into the same slots and batches
+        std::vector<char> skip_k;     // chunk k streams only its picks
+        bool skips(int k) const { return k >= 0 && (size_t) k < skip_k.size() && skip_k[(size_t) k]; }
+        int routed_layer = -1, routed_chunk = -1;
+        std::vector<int> routed_bounds;
+        size_t skipped = 0, copied = 0;
     };
+    // chunks of up to this many rows stream only the experts they pick (DS4_SKIP_UNPICKED_ROWS=N; DS4_SKIP_UNPICKED=1:
+    // every chunk); 0 (default): every chunk streams every expert of its layers
+    static int skip_unpicked_rows() {
+        static const int n = [] {
+            const char* v = std::getenv("DS4_SKIP_UNPICKED");
+            if (v != nullptr && std::atoi(v) != 0) return INT_MAX;
+            const char* r = std::getenv("DS4_SKIP_UNPICKED_ROWS");
+            return r != nullptr ? std::max(0, std::atoi(r)) : 0;
+        }();
+        return n;
+    }
     // in place (file_experts): the batches' file regions read ahead of their copies - POSIX_FADV_WILLNEED, the kernel
     // reading them in the background in large requests, where the copies alone fault the pages in a few at a time -
     // at most DS4_READAHEAD_MB (2048) beyond the batch being copied; each region by its layer's first member alone
@@ -3753,6 +3803,10 @@ struct Model::Impl {
             const Batch& bt = S.b[q];
             const Layer& l0 = L[(size_t) bt.il];
             double nb = 0;
+            if (S.skips(bt.k)) {   // (the picked ones only are read, once the layer is routed)
+                issued.push_back({q++, 0.0});
+                continue;
+            }
             if (l0.dev == di)
                 for (int i = 0; i < bt.n; ++i) {
                     const int e = l0.host_list[(size_t) (bt.j0 + i)];
@@ -3774,8 +3828,16 @@ struct Model::Impl {
         const int P = Chunk::kParts;
         while (S.cp < S.b.size() && S.cp < S.kp + P) {
             const Batch& bt = S.b[S.cp];
+            // a chunk that streams only its picks waits for its layer's routing
+            const bool skip_unpicked = S.skips(bt.k);
+            if (skip_unpicked && (bt.il != S.routed_layer || bt.k != S.routed_chunk)) break;
             const int half = (int) (S.cp % P);
             const Layer& l0 = L[(size_t) bt.il];
+            const auto picked = [&](int i) {
+                if (!skip_unpicked) return true;
+                const size_t v = (size_t) l0.n_slots + (size_t) bt.j0 + (size_t) i;   // (the streamed ones' virtual slots)
+                return S.routed_bounds[v + 1] > S.routed_bounds[v];
+            };
             int mi = 0;
             for (int m = 0; m < l0.nm; ++m)
                 if (member(l0, m).dev == di) mi = m;
@@ -3789,6 +3851,7 @@ struct Model::Impl {
                 std::atomic<bool> bad{false};
                 const double t_st = now_ms();
                 c.readers->run(bt.n, [&](int i) {
+                    if (!picked(i)) return;   // (an expert no row of the chunk routed to)
                     const int e = l0.host_list[(size_t) (bt.j0 + i)];
                     if (l0.lay.fmt == gg::kFmtMXFP4 ? !read_mx(l0, e, sb + (size_t) i * c.stage_stride)
                                                     : !pk.read_at(l0.region_file[(size_t) e], l0.region_off[(size_t) e],
@@ -3804,6 +3867,15 @@ struct Model::Impl {
             }
             const double t_dma = now_ms();
             for (int i = 0; i < bt.n; ++i) {
+                if (!picked(i)) {
+                    ++S.skipped;
+                    g_skip_count.skipped.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                if (skip_unpicked) {
+                    ++S.copied;
+                    g_skip_count.copied.fetch_add(1, std::memory_order_relaxed);
+                }
                 uint8_t* dst = c.ring + ((size_t) half * (c.ring_n / P) + i) * c.ring_stride;
                 if (!stream_expert(l0, mi, l0.host_list[(size_t) (bt.j0 + i)], dst, c.cs, err,
                                    sb != nullptr ? sb + (size_t) i * c.stage_stride : nullptr))
@@ -8568,15 +8640,19 @@ struct Model::Impl {
         }
         if (mi == 0) {   // the profile (the CPU lane's experts: by the plan's order)
             uint32_t* pr = prof.data() + (size_t) l.il * g.n_exp;
+            int n_picked = 0;
             for (int e = 0; e < l.n_exp; ++e) {
                 const int v = L0.vs_pin[e];
                 const int cnt = b[(size_t) v + 1] - b[(size_t) v];
                 pr[e] += (uint32_t) cnt;
                 if (cnt > 0) {   // (the expert cache learns from a chunked prompt as from windows: heat, and the CPU lane's hits)
+                    ++n_picked;
                     l.heat[(size_t) e] += (float) cnt;
                     if (l.slot[(size_t) e] < 0) l.cpu_hits.push_back(e);
                 }
             }
+            static const bool ustat = std::getenv("DS4_UNPICKED_STAT") != nullptr;
+            if (ustat && !l.mtp) g_unpicked_stat.add(T, n_picked, l.n_exp);
             st.experts += (int64_t) T * l.k_exp;
         }
         if (c.flow) {
@@ -8592,6 +8668,12 @@ struct Model::Impl {
         const int di = l.dev, P = Chunk::kParts;
         int nb = 0;
         for (size_t q = S.kp; q < S.b.size() && S.b[q].il == L0.il && S.b[q].k == wp.k; ++q) ++nb;
+        if (S.skips(wp.k) && nb > 0) {   // (this layer routed: its picked experts are the ones to copy)
+            S.routed_layer = L0.il;
+            S.routed_chunk = wp.k;
+            S.routed_bounds = b;
+            if (!copy_ahead(d, c, S, di, err)) return false;
+        }
         int v_done = 0;
         for (int bi = 0; bi < nb; ++bi) {
             const Batch& bt = S.b[S.kp];
@@ -8872,6 +8954,10 @@ struct Model::Impl {
                 for (int j0 = 0; j0 < (int) L0.host_list.size(); j0 += B)
                     S.b.push_back({k, il, j0, std::min(B, (int) L0.host_list.size() - j0)});
             }
+        if (skip_unpicked_rows() > 0) {   // (before the read-ahead thread starts: it reads skip_k)
+            S.skip_k.assign((size_t) nk, 0);
+            for (int k = 0; k < nk; ++k) S.skip_k[(size_t) k] = run.T[(size_t) k] <= skip_unpicked_rows();
+        }
         if (!S.b.empty() && c.ring == nullptr) {
             err = "no slots to stream experts into on CUDA" + std::to_string(d.id);
             return false;

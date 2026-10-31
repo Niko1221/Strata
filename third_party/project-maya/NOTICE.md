@@ -36,3 +36,6 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
 Taken from Project Maya v1.1.35 to v1.1.42 on branch f-040-maya-ds:
 - the thread pool's generation fence (#618, Cody Harrison).
 - Small items (A2 slice): #619 sampler error ends the request and `logits()` copies on the head stream (Cody Harrison, 2040174), #620 CPU-lane layers that cannot compute stop the engine instead of answering zeros (Cody Harrison, e598716), #676 `bf16_rn` by arithmetic (rilken, 79628d7), #608 `DS4_ASYNC_T=16` as an opt-in value (mw00, b9c07e7).
+- A4b, a chunk of few rows streams only the experts it picks, on the batches path (`DS4_SKIP_UNPICKED_ROWS`, `Streamer::skip_k`
+  in `copy_ahead`; opt-in): Project Maya #691 (needmorevram, c7d08c5). The flow path (the default for in-place GGUF
+  experts) already read only routed experts.
