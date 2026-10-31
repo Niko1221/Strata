@@ -103,7 +103,7 @@ int64_t qsa_topk_multi_scratch_ints(int64_t nq);
 /// 16-byte aligned) holds the key norms qsa_two_pass_keys wrote for this layer and chunk.  False (nothing launched):
 /// the switch is off, HIP, a card or STRATA_QSA_WARP where qsa_block_scores_tc would not run its tensor-core kernel,
 /// another geometry, nq > nq_cap, too little scratch.
-bool qsa_two_pass_on();             ///< STRATA_SELECT_TWO_PASS=1, read once
+bool qsa_two_pass_on();             ///< STRATA_SELECT_TWO_PASS=1, read once (HIP: false; prints once where unused)
 bool qsa_two_pass_check_on();       ///< STRATA_SELECT_TWO_PASS_CHECK=1, read once (a diagnostic, see qsa_two_pass_check)
 int64_t qsa_two_pass_min_blocks();  ///< STRATA_SELECT_TWO_PASS_MIN (blocks), read once; default two_pass::kMinBlocksDefault
 uint64_t qsa_two_pass_scratch_bytes(int64_t nq_cap, int64_t max_blocks);

@@ -6,6 +6,7 @@
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/qsa_two_pass.hpp"
+#include "strata/kernels/qsa_two_pass_status.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
 #include <cuda_runtime.h>
@@ -3746,8 +3747,12 @@ bool tp_device_ok() {
 }  // namespace
 
 bool qsa_two_pass_on() {
-    static const bool on = [] { const char* v = std::getenv("STRATA_SELECT_TWO_PASS"); return v && v[0] == '1' && v[1] == '\0'; }();
-    return on;
+    static two_pass::RequestStatus status(std::getenv("STRATA_SELECT_TWO_PASS"));
+    if (!status.requested()) return false;
+    // the card current at this call (a layer split can mix cards): sm_75 or STRATA_QSA_WARP=1|select keep the other
+    // scorer there, so the switch says once that it is not used; checked here too, so a short prompt says it as well
+    if (!tp_device_ok()) (void) status.on("this CUDA card or with STRATA_QSA_WARP");
+    return true;
 }
 bool qsa_two_pass_check_on() {
     static const bool on = [] {
@@ -3854,7 +3859,10 @@ bool qsa_two_pass_stats(unsigned long long* out, bool reset, void* stream) {
     return true;
 }
 #else   // HIP: the two-pass scorer is CUDA-only (the gfx12 WMMA scorer has another arithmetic); nothing runs
-bool qsa_two_pass_on() { return false; }
+bool qsa_two_pass_on() {   // false; a set switch says once that it is not used here
+    static two_pass::RequestStatus status(std::getenv("STRATA_SELECT_TWO_PASS"));
+    return status.on("HIP");
+}
 bool qsa_two_pass_check_on() { return false; }
 int64_t qsa_two_pass_min_blocks() { return two_pass::kMinBlocksDefault; }
 uint64_t qsa_two_pass_scratch_bytes(int64_t nq_cap, int64_t max_blocks) { return two_pass::layout(nq_cap, max_blocks).total; }

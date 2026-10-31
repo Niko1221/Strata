@@ -396,6 +396,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(qsa_two_pass_test tests/prefill/qsa_two_pass_test.cpp)
   target_include_directories(qsa_two_pass_test PRIVATE include)
   add_test(NAME qsa_two_pass_test COMMAND qsa_two_pass_test)
+  # STRATA_SELECT_TWO_PASS: the request's parse and the line it prints once where the scorer cannot run (no GPU)
+  add_executable(qsa_two_pass_status_test tests/prefill/qsa_two_pass_status_test.cpp)
+  target_include_directories(qsa_two_pass_status_test PRIVATE include)
+  add_test(NAME qsa_two_pass_status_test COMMAND qsa_two_pass_status_test
+           "${CMAKE_CURRENT_BINARY_DIR}/qsa_two_pass_status_test.log")
 
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)

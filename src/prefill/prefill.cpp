@@ -43,6 +43,7 @@
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/qsa_two_pass.hpp"
+#include "strata/kernels/qsa_two_pass_status.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_ws.hpp"
@@ -7166,7 +7167,12 @@ bool Prefill::reserve_uploads(int64_t T) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    (void) strata::kernels::qsa_two_pass_on();   // HIP: a set STRATA_SELECT_TWO_PASS says once it is not used
+#endif
 #if defined(STRATA_GPU_METAL)
+    static strata::kernels::two_pass::RequestStatus tp_status(std::getenv("STRATA_SELECT_TWO_PASS"));
+    (void) tp_status.on("Metal");
     {
         const auto t0 = std::chrono::steady_clock::now();
         const bool ok = strata::metal_engine::prompt_run(tokens, n, pos0, embd_rows, on_chunk, err);
@@ -7198,6 +7204,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             }
         }
         if (lm_prepare_chain(n, why) > 0) {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+            // STRATA_SELECT_TWO_PASS is in run_impl's selection only, not in this walk: say so once
+            static strata::kernels::two_pass::RequestStatus tp_status(std::getenv("STRATA_SELECT_TWO_PASS"));
+            (void) tp_status.on("the layer-major prompt path");
+#endif
             bool ok = run_layer_major(tokens, n, pos0, err);
             std::string drain_err;   // a layer split: the later stages' last super-chunk
             if (!drain_pipeline(drain_err) && ok) {

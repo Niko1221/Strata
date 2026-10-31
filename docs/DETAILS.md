@@ -1067,13 +1067,16 @@ measured. "Exact" means the 10-prompt and 4K/20K identity gate with the switch o
 sm_86 and sm_61, bit-exact. `STRATA_DEQUANT_WIDE=0` turns it off.
 
 `STRATA_SELECT_TWO_PASS=1` (opt-in; sm_80+, the prompt path's tensor-core block scorer): every block is scored once in
-single-pass TF32 with a per-block error bound, and again in the usual 3xTF32 only where the bound reaches the query's top-k
-cut-off (a query the bound cannot settle has its 16-query tile scored again in full), so the selected cells, their order and
-the ties are exactly the 3xTF32 scorer's (the bound and the rule: `include/strata/kernels/qsa_two_pass.hpp`). On an RTX 3090
-(sm_86, PCIe 3.0, 250 W; the release defaults, 2 pairs of 2 runs) a 256K prompt read 5.2% faster (1,887 to 1,984 tokens/s), a
-128K prompt 2.2% faster and a 32K prompt the same within 1%; decode and the answers did not change. Calls whose last query has
-`STRATA_SELECT_TWO_PASS_MIN` blocks or more take it (default 4096, 16K cells). `STRATA_SELECT_TWO_PASS_CHECK=1` (a slow
-diagnostic) runs the 3xTF32 scorer beside it and prints, after each prompt, the queries whose ids differ (must be 0).
+single-pass TF32 with a per-block error bound, and again in the usual 3xTF32 only where the bound reaches the query's
+top-k cut-off (a query the bound cannot settle has its 16-query tile scored again in full), so the selected cells, their
+order and the ties are exactly the 3xTF32 scorer's (the bound and the rule: `include/strata/kernels/qsa_two_pass.hpp`).
+On an RTX 3090 (sm_86, PCIe 3.0, 250 W; the v0.2.6 release defaults, 2 pairs of 2 runs) a 256K prompt read 5.2% faster
+(1,887 to 1,984 tokens/s), a 128K prompt 2.2% faster and a 32K prompt the same within 1%; decode and the answers did not
+change. Calls whose last query has `STRATA_SELECT_TWO_PASS_MIN` blocks or more take it (default 4096, 16K cells).
+`STRATA_SELECT_TWO_PASS_CHECK=1` (a slow diagnostic) runs the 3xTF32 scorer beside it and prints, after each prompt, the
+queries whose ids differ (must be 0). Where the scorer cannot run (HIP, Metal and SYCL builds, a card below sm_80 or
+`STRATA_QSA_WARP`, the layer-major prompt path) a set switch prints one line saying it is not used there, and the
+selection is unchanged.
 
 ### RTX 20 (Turing, sm_75) kernels (opt-in)
 
