@@ -258,6 +258,7 @@ inline bool cpu_share_on() { return cpu_share_env() != 0.0; }
 // STRATA_PREFILL_CPU_SHARE_MAX (default 3072, at least 1024): with the share on, chunks below it are staged after their
 // routing - so they can hand the CPU its share - instead of streaming every expert the cards do not hold.  The share pays
 // on chunks up to ~3K tokens, where few tokens route to many of the streamed experts; 1024 keeps the old limit.
+int64_t g_share_limit_arch = 0;   // AMD-Q: the default limit of a gfx12 card (share_rules::gfx12_share_limit), set by arm_cpu_share
 inline int64_t cpu_share_max() {
     static const int64_t v = [] {
         const char* e = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX");
@@ -265,7 +266,7 @@ inline int64_t cpu_share_max() {
     }();
     static const bool explicit_max = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX") != nullptr;
     if (g_share_default && cpu_share_explicit() == -2.0 && !explicit_max)   // the default-armed share: share_rules::default_share_limit (STRATA_PREFILL_CPU_SHARE_MAX=1024 restores the old 1,024)
-        return strata::prefill::share_rules::default_share_limit();
+        return g_share_limit_arch > 0 ? g_share_limit_arch : strata::prefill::share_rules::default_share_limit();
     return v;
 }
 // On a layer split every stage may have the pool (set_cpu_pool), and the stages read different chunks at the same time:
@@ -2642,6 +2643,7 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
         if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
             strata::core::gfx12_prefill_share_default(prop.gcnArchName)) {
             g_share_default = true;
+            g_share_limit_arch = strata::prefill::share_rules::gfx12_share_limit(fused::gfx12_iq2s_default());
             std::fprintf(stderr, "prefill: the CPU share is ON by default for prompt chunks up to %lld tokens on this gfx12 card (the idle CPU "
                                  "takes some of the experts the GPU would stream; answers can differ slightly: first-token KL ~0.02 at 1K tokens, "
                                  "prompts of 500-1,000 tokens +18..+31%%, 2K and up unchanged). STRATA_PREFILL_CPU_SHARE=0 or STRATA_GFX12_DEFAULTS=0 turns it off, "

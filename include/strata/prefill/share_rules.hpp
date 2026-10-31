@@ -22,6 +22,11 @@ constexpr int64_t kShareLimitOld = 1024;
 constexpr int64_t kShareLimitNew = 3072;
 /// `raise`: the card class may take the new limit (a class whose A/B lost at 1-3K keeps 1,024, automatically).
 constexpr int64_t default_share_limit(bool raise = true) { return raise ? kShareLimitNew : kShareLimitOld; }
+/// AMD-Q: a gfx12 card whose fused IQ2_S / IQ4_XS gate/up kernels are on (fused::gfx12_iq2s_default): chunks below this are staged and take the CPU share, a chunk
+/// from it up streams every expert and runs the fused kernels.  R9700 (p620, IQ3_S, 54% resident), prompt speed against the share-only default (limit 3,072):
+/// limit 1,536: 1.3K 1.00, 1.5K 1.00, 1.8K +7.1%, 2K +10.0%, 2.6K +16.2%, 3K +11.1% (two pairs each); limit 2,048: 1.8K +1.4%, 2K +9.7%; limit 3,072 (fused only above): no gain at 1.5K-2.6K.
+constexpr int64_t kShareLimitGfx12Fused = 1536;
+constexpr int64_t gfx12_share_limit(bool fused_iq2s) { return fused_iq2s ? kShareLimitGfx12Fused : kShareLimitNew; }
 
 /// resident_slots: the expert cache's live slots; total_pairs: layers x routed experts per layer (<= 0: unknown, arm).
 constexpr bool default_share_has_work(int64_t resident_slots, int64_t total_pairs) {
