@@ -2103,7 +2103,6 @@ int main(int argc, char** argv) {
     if (!o.vision_only) std::fprintf(stderr, "%s", m.describe().c_str());
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
     if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack);
-    if (multi_check) return check_multi(m, parse_ids(ids_s), std::max(2, n));
     const int window_given = window;
     if (window == 0) window = 16;   // (the scoring / profiling runs; the plain run below takes the model's feed unit)
     if (!prof_ids.empty()) return profile_run(m, prof_ids, window);
@@ -2143,6 +2142,7 @@ int main(int argc, char** argv) {
         ids_s = ss.str();
     }
     const std::vector<int> ids = parse_ids(ids_s);
+    if (multi_check) return check_multi(m, ids, std::max(2, n));
     if (!images.empty()) {   // --images: a GENI file's pictures, for the prompt's spans
         std::vector<Pic> pics;
         if (!read_pics(images, pics, err)) {
