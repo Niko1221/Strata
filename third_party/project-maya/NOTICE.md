@@ -25,3 +25,12 @@ MAYA-B port (2026-10-31), staged merges onto the v1.1.17 base:
 - #476 (RubenTorney), 1b60249 / 7c0ceb1 / (mw00, #551 #496), 32f3c8c (handmade0octopus), #646 (handmade0octopus), #567 (TheSmokeDev),
   #563 (Cass, mw00): one-GPU decode with the CPU lane's copies pulled in place, verify windows streamed, streamed experts landing in recent
   slots, IQ1_S multi-token CPU rows. In Strata the lane is opt-in (DS4_STREAM=1); the helper-GPU condition (#415) is not ported.
+
+Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch f-041-maya-a), staged against Maya v1.1.42
+(MIT, same copyright and permission notice as above):
+- A0, restore points (`ds4_marks.hpp`, `Model::mark`, marks in `restore()` and in the conversation slots, the `marks=` /
+  `shared=` / `tail=` GEN keys): Project Maya #639 (needmorevram, 50a3313; `ds4_marks.hpp` also holds #668's tail-cost
+  logic by mw00, 8721412 and 66fb17b, taken whole and not wired in yet). Test: `tests/dsv41/marks_test.cpp`, from
+  Maya's `tests/ds4_marks_test.cpp`.
+- A1, the server side (`deepseek_restore_points`, `restore_point_settings`, `StrataEngine.restore_keys`,
+  `serve/test_ds4_restore_points.py`): Project Maya #639 (needmorevram) and v1.1.37 / v1.1.39 (mw00).

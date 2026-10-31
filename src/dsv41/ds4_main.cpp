@@ -15,9 +15,12 @@
 // STRATA_DS4_SLOT_KEEP=1 the conversations are kept when another one takes the model (a slot each: the state, the
 // compressed KV included), and across runs in STRATA_DS4_SLOT_DIR - so a request that does not continue the state but
 // does continue a kept conversation reads only its new tokens.
-// `pin=N` on a GEN marks the first N prompt tokens as a start other requests share (a system prompt and its tools): the
-// read stops there for a checkpoint, so a request behind the same start - another agent - goes back to it instead of
-// reading it again (also without slots).  STRATA_DS4_REUSE=0 turns every reuse off (each request reads its whole prompt).
+// `shared=N` (or `pin=N`) on a GEN marks the first N prompt tokens as a start other requests share (a system prompt and
+// its tools): the read stops there for a restore point, so a request behind the same start - another agent - goes back
+// to it instead of reading it again (also without slots).  `marks=a,b,..` and `tail=P` ask for more restore points (the
+// start of the last user message, a point near the prompt's tail; ds4_marks.hpp, STRATA_DS4_RESTORE_POINTS of them at
+// most a conversation, 4; 0: none kept), where a prompt that leaves the conversation after one goes back to it instead
+// of further.  STRATA_DS4_REUSE=0 turns every reuse off (each request reads its whole prompt).
 #if defined(__APPLE__)
 #include <execinfo.h>
 #include <csignal>
@@ -25,6 +28,7 @@
 #include <libproc.h>   // proc_pid_rusage: the bytes this process had the storage read (io_read_bytes)
 #endif
 #include "ds4_launch.h"   // ds4_dbg
+#include "ds4_marks.hpp"
 #include "ds4_model.hpp"
 #include "ds4_experts_rule.hpp"
 #include "ds4_os.hpp"
@@ -315,6 +319,11 @@ struct Req {
     long long pin = 0;      // pin=N: the first N prompt tokens are a start other requests share (a system prompt and its
                             // tools): the state at N is kept as a checkpoint, so another agent behind the same start
                             // goes back to it instead of reading it again
+    // marks=<pos>,... and shared=<pos>: restore points the read keeps (the server's: the start of the last user message;
+    // the end of a start other conversations share, given up last) - a later prompt that leaves this one past one of them
+    // goes back there (ds4_marks.hpp); pin=N is shared=N.  tail=<pos>: the point near the prompt's tail, kept like a mark
+    std::vector<int64_t> marks;
+    long long shared = -1, tail = -1;
     float cum = -1.0f;      // dspark_cum=F: the cut on the product of the confidences (-1: the engine's, dspark_cum_default)
     // the penalties (penalty_last_n / _repeat / _freq / _present, llama.cpp's): over the last pen_n tokens of the state
     // (-1: the whole context, which the engine caps at its window; 0: none)
@@ -416,6 +425,16 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
         else if (k == "spec") r.spec = std::atoi(v.c_str()) != 0;
         else if (k == "dspark_conf") r.conf = std::strtof(v.c_str(), nullptr);
         else if (k == "pin") r.pin = std::atoll(v.c_str());
+        else if (k == "shared") r.shared = std::atoll(v.c_str());
+        else if (k == "tail") r.tail = std::atoll(v.c_str());
+        else if (k == "marks") {
+            std::stringstream ss(v);
+            std::string x;
+            while (std::getline(ss, x, ',')) {
+                const long long n = std::atoll(x.c_str());
+                if (n > 0) r.marks.push_back(n);
+            }
+        }
         else if (k == "dspark_cum" || k == "spec_cum") r.cum = std::strtof(v.c_str(), nullptr);
         else if (k == "spec_min_p") r.conf = std::strtof(v.c_str(), nullptr);   // (the server's strata_tune names)
         else if (k == "penalty_last_n") r.pen_n = std::atoi(v.c_str());
@@ -916,14 +935,26 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         });
         // (DS4_LAST_WINDOW=1: the last token in a window of its own after the checkpoint, as before - for A/B runs)
         static const bool last_window = std::getenv("DS4_LAST_WINDOW") != nullptr;
-        // (pin=N: the read stops at N for a checkpoint of the shared start; only when this read crosses N, and N leaves
-        //  the prompt's last token to the usual end)
-        const size_t pin_at = (r.pin >= 256 && (size_t) r.pin + 1 < total) ? (size_t) r.pin : 0;
+        // the restore points the request asks for (marks= / tail= / shared= / pin=N; ds4_marks.hpp picks the ones this
+        // read reaches, and leaves the prompt's last token to the usual end): the read stops at each and keeps the state
+        std::vector<strata::ds4::MarkAt> cuts;
+        size_t next_cut = 0;
+        if (m.marks_cap() > 0) {
+            std::vector<int64_t> asked = r.marks;
+            if (r.tail > (long long) from) asked.push_back(r.tail);
+            const long long shared = r.shared >= 0 ? r.shared : (r.pin >= 256 ? r.pin : -1);
+            if (!asked.empty() || shared >= 0) {
+                std::vector<std::pair<int64_t, int64_t>> spans;
+                for (const Pic& q : pics) spans.push_back({q.start, (int64_t) q.len});
+                cuts = strata::ds4::mark_plan(asked, shared, (int64_t) from, (int64_t) total, m.marks_cap(), 16, spans);
+            }
+        }
         // a STOP while the prompt is read ends it there (the engine's run of chunks at a layer or chunk, windows between
         // feeds) and goes back to the state before this prompt - kept here first, in checkpoint 1, which the prompt's
         // own end overwrites as before - so the next request still shares the conversation up to it
         if (from > 0 && from < total) m.checkpoint(1);
         m.set_cancel([&in] { return in.stop.load(); });
+        if (!cuts.empty() && cuts[0].pos == (int64_t) from) m.mark(cuts[next_cut++].shared);   // (the state as it is)
         bool stopped = false;
         while (ok && done < total) {
             if (in.stop.load()) {
@@ -931,7 +962,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 break;
             }
             size_t n = std::min<size_t>((size_t) m.feed_unit(), total - done);
-            if (pin_at > done && pin_at < done + n) n = pin_at - done;
+            if (next_cut < cuts.size() && (size_t) cuts[next_cut].pos < done + n) n = (size_t) cuts[next_cut].pos - done;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
             const bool fin = done + n == total;
             if (fin && last_window) {
@@ -942,7 +973,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 ok = fin ? m.feed_mark(r.ids.data() + done, (int) n, 1, 1, err)
                          : m.feed(r.ids.data() + done, (int) n, 0, err);
             done += n;
-            if (ok && pin_at != 0 && done == pin_at) m.checkpoint(3);
+            if (ok && next_cut < cuts.size() && done == (size_t) cuts[next_cut].pos) m.mark(cuts[next_cut++].shared);
             if (ok && (done >= next_pp || done == total)) {
                 const double ms = now_ms() - t0;
                 std::printf("PP %zu %zu %.1f %.1f %zu\n", done, r.ids.size(), ms,

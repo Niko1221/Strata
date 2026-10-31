@@ -181,6 +181,13 @@ public:
     /// Checkpoint 1 also becomes the anchor (kept until a restore goes before it): the position before the end of the
     /// first prompt of a run that continued in place, where a re-rendered history (earlier reasoning dropped) splits.
     void pin();
+    /// Keep the state at the current position as a restore point a request asked for (GEN marks= / shared=, pin=: the
+    /// start of the last user message, a point near the prompt's tail, the end of a shared start - shared: given up
+    /// last), besides the three above: restore() and a slot go back to these too.  At most marks_cap() a conversation
+    /// (DS4_RESTORE_POINTS, 4; 0: none kept), the least recently used giving way; each check_bytes() of host RAM.
+    void mark(bool shared = false);
+    int marks_cap() const;
+    size_t check_bytes() const;
     /// The positions restore() can go back to, latest first (a slot keeps them: it can be taken back at any of them).
     std::vector<int64_t> check_positions() const;
 

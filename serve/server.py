@@ -734,6 +734,60 @@ def experts_loading_words(args: list, size: str) -> str:
 OPENS_BROWSER = False        # set in main() when the server was started with --open: only then may a message say a browser opens
 
 
+# STRATA_DS4_RESTORE_POINTS (4): the DeepSeek engine keeps restore points where a later prompt is likely to leave this
+# one - its GEN line carries marks=<pos>,..., tail=<pos> and shared=<pos> - besides the end of the last prompt, the
+# position before it and the anchor it keeps anyway.  N (1-16) turns them on, and is also the engine's cap a
+# conversation (it reads the same setting); 0: no keys, every GEN line as before.  STRATA_DS4_RESTORE_TAIL (512): how
+# far before the prompt's end the tail point sits (0: none).  (Project Maya #639, restore points.)
+RESTORE_LEAST = 1024        # no point before this many tokens: such a start is read again in about the time a point costs
+
+
+def restore_point_settings(env=None) -> tuple[bool, int]:
+    """(on, tail) from STRATA_DS4_RESTORE_POINTS and STRATA_DS4_RESTORE_TAIL."""
+    env = os.environ if env is None else env
+
+    def whole(name, default):
+        try:
+            return max(0, int(str(env.get(name, default)).strip()))
+        except ValueError:
+            return default
+    return whole("STRATA_DS4_RESTORE_POINTS", 4) > 0, whole("STRATA_DS4_RESTORE_TAIL", 512)
+
+
+def deepseek_restore_points(ids, user_id, system_id=None, tail=512, least=RESTORE_LEAST) -> dict:
+    """Where the DeepSeek engine keeps restore points for this prompt -> {"marks": [pos, ...], "tail": pos, "shared":
+    pos} (any may be missing; {}: none).  From the prompt's ids as the template wrote them: a turn opens with its role's
+    special token (<｜User｜>, a tool result's turn too; <｜System｜> for a system message after the first user turn), and
+    text inside a message never encodes to one, so the positions are the template's own.
+
+    - the start of the last user turn: its last message edited, or sent again after another answer, goes back there;
+    - "tail": `tail` tokens before the end, when the last turn is longer than that: a new question after the same long
+      document in the same message;
+    - "shared": the end of the system prompt and its tools (the first user turn): another conversation behind the same
+      start goes back there, and the engine gives that point up last.
+    Positions under `least` are left out: a start that short is read again in about the time a point costs."""
+    if user_id is None or len(ids) < 2:
+        return {}
+    first = last = None
+    for i, t in enumerate(ids):
+        if t == user_id:
+            first = i if first is None else first
+            last = i
+        elif t == system_id and first is not None:
+            last = i
+    marks, out = [], {}
+    if first is not None and first >= least:
+        out["shared"] = first
+    if last is not None and last >= least and last != first:
+        marks.append(last)
+    t = len(ids) - tail
+    if tail > 0 and t >= least and (last is None or t > last):
+        out["tail"] = t
+    if marks:
+        out["marks"] = sorted(marks)
+    return out
+
+
 def narrate_start(log_path: str, offset: int, args: list, done: threading.Event, heartbeat=20.0) -> None:
     """While the engine starts, say in the server window what it is doing, from its log: the start reads tens of GB
     into RAM and locks part of it for the GPU, and on many PCs everything is slow or frozen for a minute or more -
@@ -1491,6 +1545,8 @@ class StrataEngine:
             pn = prefix.get("tokens")
             if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
                 keys += f" pin={pn}"
+        # restore points (Service.prepare puts them in `_restore`; only the DeepSeek engine gets them)
+        keys += StrataEngine.restore_keys(sampling)
         # logprobs: the engine writes an `LP` line after each `T` line (an engine without them ignores
         # the key, so an older engine answers exactly as it did).  Absent = no LP lines at all.
         k = top_logprobs(sampling)
@@ -1501,6 +1557,22 @@ class StrataEngine:
                 # only these ids are printed; the engine's comma-separated list, renormalised below
                 keys += " allowed=" + ",".join(str(i) for i in ids)
         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
+
+    @staticmethod
+    def restore_keys(sampling: dict) -> str:
+        """`marks=<pos>,...`, `tail=<pos>` and `shared=<pos>`: the DeepSeek engine's restore points for this prompt
+        (Service.prepare puts them in `_restore` with STRATA_DS4_RESTORE_POINTS; no other engine gets them).  "" without:
+        the line as before."""
+        pts = sampling.get("_restore")
+        if not isinstance(pts, dict):
+            return ""
+
+        def pos(v):
+            return isinstance(v, int) and not isinstance(v, bool) and v > 0
+        marks = [p for p in pts.get("marks") or () if pos(p)]
+        tail, shared = pts.get("tail"), pts.get("shared")
+        return ((" marks=" + ",".join(str(p) for p in marks) if marks else "") +
+                (f" tail={tail}" if pos(tail) else "") + (f" shared={shared}" if pos(shared) else ""))
 
     @staticmethod
     def projection_key(sampling: dict) -> str:
@@ -5319,7 +5391,40 @@ class Service:
                 req["strata_prefix"] = {"messages": lead}
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
+        if req is not None:
+            self.set_restore_points(req, ids, bool(images) or ds_pics)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
+
+    def deepseek_turn_ids(self):
+        """(<｜User｜>'s id, <｜System｜>'s id) of the DeepSeek template, each None where the vocabulary has no such single token."""
+        got = getattr(self, "_ds_turn_ids", None)
+        if got is None:
+            def one(text):
+                try:
+                    t = self.tok.encode(text, parse_special=True)
+                except Exception:
+                    return None
+                return int(t[0]) if len(t) == 1 else None
+            got = self._ds_turn_ids = (one("<｜User｜>"), one("<｜System｜>"))
+        return got
+
+    def set_restore_points(self, req: dict, ids, has_images: bool) -> None:
+        """STRATA_DS4_RESTORE_POINTS: where the DeepSeek engine keeps restore points for this prompt, in req["_restore"]
+        (never a client's own; not with pictures, whose spans the engine reads whole).  The shared start is left to
+        strata_prefix (pin=N) where the request has one."""
+        req.pop("_restore", None)
+        if self.family != "deepseek41" or has_images:
+            return
+        on, tail = restore_point_settings()
+        if not on:
+            return
+        user_id, system_id = self.deepseek_turn_ids()
+        pts = deepseek_restore_points(ids, user_id, system_id, tail)
+        pref = req.get("strata_prefix")
+        if isinstance(pref, dict) and pref.get("tokens"):
+            pts.pop("shared", None)
+        if pts:
+            req["_restore"] = pts
 
     @staticmethod
     def deepseek_shared_start(messages) -> int:
