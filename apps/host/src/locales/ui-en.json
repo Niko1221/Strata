@@ -17,5 +17,14 @@
  "ui16": "Message this helper",
  "ui17": "Message to {0}",
  "ui18": "Write to {0}…",
- "ui19": "Sent to {0}."
+ "ui19": "Sent to {0}.",
+ "ui20": "While an answer is being written",
+ "ui21": "What Enter does when you send a message while the assistant is still answering.",
+ "ui22": "Wait for the answer",
+ "ui23": "Send after the answer",
+ "ui24": "Interrupt the answer",
+ "ui25": "Enter sends it when the answer is done.",
+ "ui26": "Enter stops the answer here and sends it now.",
+ "ui27": "Waiting to send",
+ "ui28": "Take back"
 }

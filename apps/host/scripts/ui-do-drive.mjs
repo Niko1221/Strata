@@ -542,6 +542,62 @@ cases.helper = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4783 */
+cases.busy = async () => {
+  const fresh = (scheme, w, h, whileBusy) => open(scheme, w, h, [chat('s1', 'Busy', [])], { prefs: whileBusy ? { whileBusy } : {} });
+  const send = async (page, text) => { await page.locator('textarea').first().fill(text); await page.keyboard.press('Enter'); };
+  const lastReply = page => page.locator('.st-msg--assistant .st-bubble').last();
+  for (const scheme of ['light', 'dark']) {
+    const w = 1280, h = 860, tag = scheme;
+    // Wait (the default): Enter while it answers sends nothing, the message stays in the box, and a note says why.
+    let page = await fresh(scheme, w, h, null);
+    await send(page, 'SCRIPT:slow 80');
+    await page.locator('.st-msg--assistant').first().waitFor({ timeout: 15000 });
+    await page.locator('textarea').first().fill('my second message');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(600);
+    check(await page.locator('textarea').first().inputValue() === 'my second message', `${tag}: Wait: the message stays in the box`);
+    check(await page.locator('.parked').count() === 0, `${tag}: Wait: nothing is parked`);
+    await page.getByText('The assistant is still answering').first().waitFor({ timeout: 4000 }).catch(() => {});
+    check(await page.getByText('The assistant is still answering').count() > 0, `${tag}: Wait: a note says the assistant is still answering`);
+    await page.context().close();
+    // Send after: it waits (shown), and goes when the answer is done, after the whole first answer.
+    page = await fresh(scheme, w, h, 'queue');
+    await send(page, 'SCRIPT:slow 80');
+    await page.locator('.st-msg--assistant').first().waitFor({ timeout: 15000 });
+    await page.locator('textarea').first().fill('SCRIPT:echo the second answer');
+    check(/Enter sends it when the answer is done/.test(await page.locator('.composer__busy-hint').innerText()), `${tag}: Send after: the hint says what Enter will do`);
+    await page.keyboard.press('Enter');
+    await page.locator('.parked').waitFor({ timeout: 3000 });
+    check(/Waiting to send/.test(await page.locator('.parked').innerText()) && /second answer/.test(await page.locator('.parked').innerText()), `${tag}: Send after: the waiting message is shown`);
+    if (scheme === 'light') await shot(page, `4783-${tag}-waiting`);
+    await page.locator('.st-msg--assistant').nth(1).waitFor({ timeout: 30000 });
+    await page.waitForFunction(() => document.querySelectorAll('.parked').length === 0, null, { timeout: 15000 });
+    const firstText = await page.locator('.st-msg--assistant .st-bubble').first().innerText();
+    check(/w79/.test(firstText), `${tag}: Send after: the first answer was written to its end`, firstText.slice(-30));
+    check(/the second answer/.test(await lastReply(page).innerText()), `${tag}: Send after: then the second message was answered`);
+    await page.context().close();
+    // Interrupt: the answer stops where it is, what is written stays, and the message goes at once.
+    page = await fresh(scheme, w, h, 'interject');
+    await send(page, 'SCRIPT:slow 600');
+    await page.locator('.st-msg--assistant').first().waitFor({ timeout: 15000 });
+    await page.waitForTimeout(800);
+    await page.locator('textarea').first().fill('SCRIPT:echo interrupted and answered');
+    check(/Enter stops the answer here and sends it now/.test(await page.locator('.composer__busy-hint').innerText()), `${tag}: Interrupt: the hint says what Enter will do`);
+    await page.keyboard.press('Enter');
+    const t0 = Date.now();
+    await page.locator('.st-msg--assistant').nth(1).waitFor({ timeout: 30000 });
+    check(Date.now() - t0 < 12000, `${tag}: Interrupt: the new message was answered long before the first answer would have ended`, `${Date.now() - t0} ms`);
+    const cut = await page.locator('.st-msg--assistant .st-bubble').first().innerText();
+    check(cut.includes('w0') && !cut.includes('w599'), `${tag}: Interrupt: the first answer stopped where it was and stays`, `${cut.length} characters`);
+    await page.waitForFunction(() => /interrupted and answered/.test([...document.querySelectorAll('.st-msg--assistant .st-bubble')].at(-1)?.innerText ?? ''), null, { timeout: 15000 }).catch(() => {});
+    check(/interrupted and answered/.test(await lastReply(page).innerText()), `${tag}: Interrupt: the second message was answered`);
+    if (scheme === 'light') await shot(page, `4783-${tag}-interrupted`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

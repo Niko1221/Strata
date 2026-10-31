@@ -7555,3 +7555,10 @@ textarea {
 .subagent-row__reply { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .subagent-row__reply .st-input { flex: 1; min-width: 0; }
 .subagent-row__copy p.subagent-row__note { white-space: normal; margin: 6px 0 0; }
+
+/* ---- a message sent while an answer is being written: the one waiting to go, and what Enter will do (#4783) ---- */
+.parked { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.parked__item { display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 12px; border: 1px dashed var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); }
+.parked__item .xs { flex: none; }
+.parked__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-sm); }
+.composer__busy-hint { margin: 8px 4px 0; }

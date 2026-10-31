@@ -324,3 +324,33 @@ test('#4749 the helper strings are translated', async () => {
   }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4783
+test('#4783 the three choices while an answer is written, as the web chat page has them, and only those three are valid', async () => {
+  const { busyPlan, validWhileBusy, WHILE_BUSY } = await load('lib/while-busy.ts');
+  assert.deepEqual([...WHILE_BUSY], ['wait', 'queue', 'interject']);
+  assert.equal(busyPlan('wait'), 'refuse');
+  assert.equal(busyPlan('queue'), 'goal', 'a running goal has its own queue in the host; with none, the message is parked');
+  assert.equal(busyPlan('interject'), 'interrupt');
+  assert.equal(validWhileBusy('queue'), true);
+  for (const bad of ['', 'steer', 'QUEUE', null, undefined, 3]) assert.equal(validWhileBusy(bad), false, String(bad));
+});
+
+test('#4783 the composer acts on the choice, the default keeps today\'s behaviour, and the parked message is sent when the chat is quiet', () => {
+  const chat = src('screens/Chat.tsx');
+  assert.match(chat, /if \(plan === 'interrupt'\) \{\s*updateDraft\(''\);\s*parkMessage\(session\.id, text\);\s*stopStreaming\(\);\s*return;\s*\}/);
+  assert.match(chat, /if \(plan === 'goal'\) \{ parkMessage\(session\.id, text\); return; \}/);
+  assert.match(chat, /pushToast\('info', tr\('The assistant is still answering'\)/, 'Wait still says so');
+  assert.match(chat, /if \(!session \|\| streaming \|\| !parked\?\.length\)\s*return;\s*const next = takeParked\(session\.id\);/);
+  const store = src('lib/store.ts');
+  assert.match(store, /whileBusy: validWhileBusy\(parsed\.whileBusy\) \? parsed\.whileBusy : 'wait'/, 'an old or invalid saved value reads as Wait');
+  assert.match(store, /\n  whileBusy: 'wait',\n/);
+  assert.match(src('screens/Settings.tsx'), /setWhileBusy\(value as typeof prefs\.whileBusy\)/);
+});
+
+test('#4783 the new sentences are translated', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  const lines = ['While an answer is being written', 'What Enter does when you send a message while the assistant is still answering.', 'Wait for the answer', 'Send after the answer', 'Interrupt the answer', 'Enter sends it when the answer is done.', 'Enter stops the answer here and sends it now.', 'Waiting to send', 'Take back'];
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
+  setTranslationLanguage('en');
+});

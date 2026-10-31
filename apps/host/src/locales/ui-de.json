@@ -17,5 +17,14 @@
  "ui16": "Diesem Helfer schreiben",
  "ui17": "Nachricht an {0}",
  "ui18": "An {0} schreiben…",
- "ui19": "An {0} gesendet."
+ "ui19": "An {0} gesendet.",
+ "ui20": "Während eine Antwort geschrieben wird",
+ "ui21": "Was die Eingabetaste bewirkt, wenn du eine Nachricht sendest, während der Assistent noch antwortet.",
+ "ui22": "Auf die Antwort warten",
+ "ui23": "Nach der Antwort senden",
+ "ui24": "Die Antwort unterbrechen",
+ "ui25": "Die Eingabetaste sendet sie, sobald die Antwort fertig ist.",
+ "ui26": "Die Eingabetaste stoppt die Antwort hier und sendet die Nachricht sofort.",
+ "ui27": "Wartet auf das Senden",
+ "ui28": "Zurücknehmen"
 }

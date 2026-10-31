@@ -144,6 +144,42 @@ add(en="Sent to {0}.",
     zh="已发给 {0}。", ja="{0} に送りました。", de="An {0} gesendet.", es="Enviado a {0}.",
     ru="Отправлено: {0}.", pt="Enviado para {0}.", ko="{0}에게 보냈습니다.", fr="Envoyé à {0}.")
 
+# #4783 a message while an answer is being written
+add(en="While an answer is being written",
+    zh="回答生成期间", ja="回答の作成中", de="Während eine Antwort geschrieben wird", es="Mientras se escribe una respuesta",
+    ru="Пока пишется ответ", pt="Enquanto uma resposta é escrita", ko="답변을 작성하는 동안", fr="Pendant qu'une réponse s'écrit")
+add(en="What Enter does when you send a message while the assistant is still answering.",
+    zh="助手仍在回答时，你发送消息后按回车会发生什么。", ja="アシスタントがまだ回答している間にメッセージを送ったとき、Enter で何が起こるかを選びます。",
+    de="Was die Eingabetaste bewirkt, wenn du eine Nachricht sendest, während der Assistent noch antwortet.",
+    es="Qué hace Intro cuando envías un mensaje mientras el asistente todavía está respondiendo.",
+    ru="Что делает Enter, когда вы отправляете сообщение, пока ассистент ещё отвечает.",
+    pt="O que o Enter faz quando você envia uma mensagem enquanto o assistente ainda está respondendo.",
+    ko="어시스턴트가 아직 답하는 중에 메시지를 보낼 때 Enter가 하는 일입니다.",
+    fr="Ce que fait Entrée quand vous envoyez un message pendant que l'assistant répond encore.")
+add(en="Wait for the answer",
+    zh="等回答完成", ja="回答が終わるまで待つ", de="Auf die Antwort warten", es="Esperar la respuesta",
+    ru="Дождаться ответа", pt="Esperar a resposta", ko="답변이 끝날 때까지 기다리기", fr="Attendre la réponse")
+add(en="Send after the answer",
+    zh="回答完成后再发送", ja="回答が終わってから送る", de="Nach der Antwort senden", es="Enviar después de la respuesta",
+    ru="Отправить после ответа", pt="Enviar depois da resposta", ko="답변이 끝난 뒤 보내기", fr="Envoyer après la réponse")
+add(en="Interrupt the answer",
+    zh="打断回答", ja="回答を中断する", de="Die Antwort unterbrechen", es="Interrumpir la respuesta",
+    ru="Прервать ответ", pt="Interromper a resposta", ko="답변 중단하기", fr="Interrompre la réponse")
+add(en="Enter sends it when the answer is done.",
+    zh="回答完成后，按回车即可发送。", ja="回答が終わったら Enter で送信されます。", de="Die Eingabetaste sendet sie, sobald die Antwort fertig ist.",
+    es="Intro lo envía cuando termina la respuesta.", ru="Enter отправит сообщение, когда ответ закончится.",
+    pt="O Enter envia quando a resposta terminar.", ko="답변이 끝나면 Enter로 보냅니다.", fr="Entrée l'envoie quand la réponse est terminée.")
+add(en="Enter stops the answer here and sends it now.",
+    zh="按回车会在此处停止回答并立即发送。", ja="Enter で回答をここで止めて、すぐに送信します。", de="Die Eingabetaste stoppt die Antwort hier und sendet die Nachricht sofort.",
+    es="Intro detiene la respuesta aquí y lo envía ahora.", ru="Enter остановит ответ здесь и сразу отправит сообщение.",
+    pt="O Enter para a resposta aqui e envia agora.", ko="Enter를 누르면 여기서 답변을 멈추고 바로 보냅니다.", fr="Entrée arrête la réponse ici et l'envoie tout de suite.")
+add(en="Waiting to send",
+    zh="等待发送", ja="送信待ち", de="Wartet auf das Senden", es="Esperando para enviar",
+    ru="Ждёт отправки", pt="Aguardando envio", ko="보내기 대기 중", fr="En attente d'envoi")
+add(en="Take back",
+    zh="撤回", ja="取り消す", de="Zurücknehmen", es="Retirar",
+    ru="Забрать обратно", pt="Desfazer", ko="되돌리기", fr="Reprendre")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

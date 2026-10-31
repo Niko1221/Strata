@@ -33,13 +33,14 @@ import { useLiveStatus } from '../lib/live-status';
 import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import { openExternal } from '../lib/open-external';
+import { busyPlan } from '../lib/while-busy';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, parkMessage, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { CopyBtn, CopyMenuItem, MenuCloseContext } from '../components/CopyBtn';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
@@ -52,6 +53,7 @@ export function ChatScreen() {
     const activeId = useStore((s) => s.activeSession);
     const library = useStore((s) => s.library);
     const streaming = useStore((s) => s.streaming);
+    const whileBusy = useStore(s => s.whileBusy);
     const setup = useStore(s => s.setup);
     const setupFlag = useStore(s => s.setupOpen);
     const setupVisible = location.route === 'setup' || setupFlag || !!setup && !setup.complete && !setup.dismissed;
@@ -68,6 +70,15 @@ export function ChatScreen() {
             markRead(session.id);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id, messageCount, streaming]);
+    const parked = useStore(s => (session ? s.parked[session.id] : undefined));
+    // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again.
+    useEffect(() => {
+        if (!session || streaming || !parked?.length)
+            return;
+        const next = takeParked(session.id);
+        if (next !== undefined)
+            void sendMessage(next);
+    }, [streaming, parked?.length, session?.id]);
     const [draft, setDraft] = useState('');
     const draftKey = `strata.chat-draft.${session?.id ?? 'new'}`;
     useEffect(() => {
@@ -396,8 +407,16 @@ export function ChatScreen() {
             // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
             if (!text || !session)
                 return;
+            const plan = busyPlan(whileBusy);
+            // Interrupt: the answer stops where it is (what is written stays) and the message goes as soon as it has stopped (the effect below sends it).
+            if (plan === 'interrupt') {
+                updateDraft('');
+                parkMessage(session.id, text);
+                stopStreaming();
+                return;
+            }
             updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (!ok) { updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void queueMessage(session.id, text).then(ok => { if (!ok) { if (plan === 'goal') { parkMessage(session.id, text); return; } updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -522,6 +541,7 @@ function SlashMenu({ query, commands, cursor, onPick, onHover, }: {
         </button>)))}
     </div>);
 }
+const NO_PARKED: string[] = [];
 function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session, onPreview, textareaRef, }: {
     draft: string;
     setDraft: (v: string) => void;
@@ -536,6 +556,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const clearDraft = useCallback(() => setDraft(''), [setDraft]);
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
+    const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
     const [fileError, setFileError] = useState('');
@@ -567,6 +588,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
+          {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
@@ -615,6 +637,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
           </div>
         </div>
+        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
         <ChatTelemetry session={session}/>
         </div>
       </div>

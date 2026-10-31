@@ -1,5 +1,6 @@
 import { workspaceIdForSession } from './session-workspace';
 import { detectLanguage } from './language-detect';
+import { validWhileBusy, type WhileBusy } from './while-busy';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { settleAgents, updateAgent } from './agents';
@@ -91,6 +92,8 @@ export interface AppState {
   doneSound: boolean;
   /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -118,6 +121,8 @@ export interface AppState {
   sessions: Session[];
   activeSession: string | null;
   streaming: boolean;
+  /** Messages the person sent while an answer was being written, waiting to go when it ends (Send after, Interrupt), by chat (#4783). */
+  parked: Record<string, string[]>;
   /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
   liveChats: number;
   toasts: Toast[];
@@ -156,6 +161,8 @@ export interface Prefs {
   electricityCurrency: string;
   doneSound: boolean;
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -177,6 +184,7 @@ const PREFS_DEFAULTS: Prefs = {
   electricityCurrency: '',
   doneSound: false,
   approvalNotify: false,
+  whileBusy: 'wait',
   shareTelemetry: false,
 };
 
@@ -226,6 +234,7 @@ function loadPrefs(): Prefs {
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
+        whileBusy: validWhileBusy(parsed.whileBusy) ? parsed.whileBusy : 'wait',
       };
     } catch {
       /* fall through to the next key */
@@ -264,6 +273,8 @@ let state: AppState = {
   electricityCurrency: prefs.electricityCurrency,
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
+  whileBusy: prefs.whileBusy,
+  parked: {},
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -490,6 +501,7 @@ function savePrefs() {
     electricityCurrency: state.electricityCurrency,
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
+    whileBusy: state.whileBusy,
     shareTelemetry: state.shareTelemetry,
   };
   try {
@@ -597,6 +609,29 @@ export function setElectricity(price: number, currency: string) {
   const ok = Number.isFinite(price) && price > 0 && price < 1000;
   set({ electricityPrice: ok ? Math.round(price * 10000) / 10000 : 0, electricityCurrency: /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : '' });
   savePrefs();
+}
+
+export function setWhileBusy(whileBusy: WhileBusy) {
+  if (!validWhileBusy(whileBusy)) return;
+  set({ whileBusy });
+  savePrefs();
+}
+
+/** A message sent while an answer is being written waits here; the chat sends it when the answer is done (it is also where Interrupt leaves it). */
+export function parkMessage(sessionId: string, text: string) {
+  const clean = text.trim();
+  if (!clean) return;
+  set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
+}
+/** The first parked message of a chat, taken out of the list (to send it, or to give it back to the box). */
+export function takeParked(sessionId: string, index = 0): string | undefined {
+  const list = state.parked[sessionId] ?? [];
+  if (index < 0 || index >= list.length) return undefined;
+  const rest = list.filter((_, i) => i !== index);
+  const next = { ...state.parked };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ parked: next });
+  return list[index];
 }
 
 export function setDoneSound(doneSound: boolean) {

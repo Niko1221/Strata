@@ -17,5 +17,14 @@
  "ui16": "Écrire à cet assistant",
  "ui17": "Message pour {0}",
  "ui18": "Écrire à {0}…",
- "ui19": "Envoyé à {0}."
+ "ui19": "Envoyé à {0}.",
+ "ui20": "Pendant qu’une réponse s’écrit",
+ "ui21": "Ce que fait Entrée quand vous envoyez un message pendant que l’assistant répond encore.",
+ "ui22": "Attendre la réponse",
+ "ui23": "Envoyer après la réponse",
+ "ui24": "Interrompre la réponse",
+ "ui25": "Entrée l’envoie quand la réponse est terminée.",
+ "ui26": "Entrée arrête la réponse ici et l’envoie tout de suite.",
+ "ui27": "En attente d’envoi",
+ "ui28": "Reprendre"
 }
