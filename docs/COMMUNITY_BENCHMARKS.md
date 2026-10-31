@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-29: 1x AMD Instinct MI50 32 GB (gfx906), Threadripper PRO 3975WX, 247 GiB RAM](../bench/results/2026-10-29-community-instinct-mi50-32gb-qwen3-8-flash-next-coder-iq1-m/README.md):
+  source build 0.1.53 on the community ROCm 7.14 image (`mixa3607/rocm-gfx906`, container, host amdgpu 7.1.3), Coder IQ1_M at 262,144-token context on ONE card: all 12,288 experts resident in the HBM cache with 2.4 GiB VRAM free (no expert streaming, no layer split); prompt 463/493/487 tok/s at 4K/16K/32K, decode 61.7 short chat and 63.7 agent turns (thinking off, spec 4), agent cache hit 69.5%. Notes: the `dflash2.cpp` stream-priority build failure (#3986) was hit at 0.1.53 and patched locally to link; the GPU runs under a 210 W power cap (of its 300 W TDP).
 
 ## Run the standard benchmark
 
