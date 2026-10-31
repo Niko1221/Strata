@@ -50,6 +50,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         t.push_back({"STRATA_ATTN_MERGE_V2", "1"});
         t.push_back({"STRATA_TSUM", "1"});
         t.push_back({"STRATA_EXPDEC", "1"});
+        // AMD-Q (p620, R9700, IQ3_S, serve, interleaved pairs): the constant-trip loads of Blackwell's BW-DENSE (bit 0 the router-shaped bf16 read,
+        // bit 1 the GDN a/b projection) and two load-ordering variants of the Q8 hyper-connection read (2 rows a warp loaded together in the
+        // up read, the down read's staging loads of all tokens together); each is the same arithmetic in the same order (kernel hashes equal).
+        t.push_back({"STRATA_SMALL_UNR", "3"});
+        t.push_back({"STRATA_GR_Q32_G", "2"});
+        t.push_back({"STRATA_GR_Q8_PFS", "1"});
         return t;
     }
     if (!strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;

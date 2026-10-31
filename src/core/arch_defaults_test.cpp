@@ -112,7 +112,7 @@ int main() {
     unset("STRATA_GFX12_DEFAULTS");
     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
         const auto t = arch_default_env(a);
-        CHECK(t.size() == 9);
+        CHECK(t.size() == 12);
         bool attn_lane = false, attn_merge = false, tsum = false, expdec = false;
         for (const auto& kv : t) {
             if (kv.first == "STRATA_ATTN_LANECELL") attn_lane = kv.second == "1";
@@ -253,12 +253,15 @@ int main() {
     const char* g12[] = {"STRATA_GDN_HEAD", "STRATA_GDN_PP",  "STRATA_GDN_CONVL2",    "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
                          "STRATA_ATTN_LANECELL", "STRATA_ATTN_MERGE_V2", "STRATA_TSUM", "STRATA_EXPDEC"};
     for (const char* k : g12) unset(k);
+    unset("STRATA_SMALL_UNR"); unset("STRATA_GR_Q32_G"); unset("STRATA_GR_Q8_PFS");
     const auto g12set = apply_arch_defaults("gfx1201", false);
-    CHECK(g12set.size() == 9);
+    CHECK(g12set.size() == 12);
     for (const char* k : g12) {
         CHECK(std::getenv(k) != nullptr);
         CHECK(std::string(std::getenv(k)) == (std::strcmp(k, "STRATA_GDN_PP") == 0 ? "2" : "1"));
     }
+    CHECK(std::string(std::getenv("STRATA_SMALL_UNR")) == "3" && std::string(std::getenv("STRATA_GR_Q32_G")) == "2" &&
+          std::string(std::getenv("STRATA_GR_Q8_PFS")) == "1");
     CHECK(apply_arch_defaults("gfx1201", false).empty());
     CHECK(apply_arch_defaults("gfx1103", false).empty());   // integrated == false: a mixed box (iGPU + dGPU) keeps the old defaults
     for (const char* k : five) CHECK(std::getenv(k) == nullptr);
