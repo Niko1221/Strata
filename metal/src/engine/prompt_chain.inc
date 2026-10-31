@@ -66,7 +66,7 @@ bool Window::pc_setup(int C) {
     const int nblk_max = ((int) MT * TOPK + 1023) / 1024;
     auto F32 = [&](size_t n) { return cx_->alloc(4 * n); };
     auto F16 = [&](size_t n) { return cx_->alloc(2 * n); };
-    b.R = F32(MT * HC * N); b.bo = F32(MT * N); b.inj[0] = F32(MT * HC); b.inj[1] = F32(MT * HC); b.xn = F32(MT * HC * N);
+    b.R = F32(MT * HC * N); if (mtp_ovl_ && mtp_on_) b.R2 = F32(MT * HC * N); b.bo = F32(MT * N); b.inj[0] = F32(MT * HC); b.inj[1] = F32(MT * HC); b.xn = F32(MT * HC * N);
     b.xnh = F16(MT * HC * N); b.V = F32(MT * (LR + HC)); b.loh = F16(MT * LR); b.mixed = F32(MT * N); b.mixh = F16(MT * N);
     b.fused = gdn_fused_inputs(cx_->device_name());
     if (b.fused) {   // the four GDN input projections as one GEMM: [qkv | z | alpha | beta] rows of 16480 floats
@@ -441,6 +441,7 @@ bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
     if (!pc_setup((int) std::min<int64_t>(C, std::max<int64_t>(n, 64)))) { err = "metal prompt: setup failed"; return false; }
     const double t0 = now_ms();
     pb_.gpu_ms = pb_.host_ms = pb_.mtp_ms = 0;
+    struct MtpJoin { Window* w; ~MtpJoin() { w->mtp_wait(); } } mtp_join{this};   // (every way out waits for the drafter's last rows)
     for (int64_t c = 0; c < n; c += C) {
         const int nT = (int) std::min<int64_t>(C, n - c);
         if (pos0 + c + nT + 1 >= max_cells_) { err = "metal prompt: the prompt runs past the context"; return false; }
@@ -450,6 +451,7 @@ bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
             mpsrc_ = &pb_.R;   // the drafter's prompt rows are this chunk's final residuals
             const bool ok = on_chunk(nullptr, nT, pos0 + c, err);
             mpsrc_ = nullptr;
+            if (mtp_async_) std::swap(pb_.R, pb_.R2);   // the drafter's rows are still reading this chunk's residuals: the next chunk writes the other
             pb_.mtp_ms += now_ms() - tm0;
             if (!ok) return false;
         }

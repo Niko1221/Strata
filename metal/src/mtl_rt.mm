@@ -57,6 +57,7 @@ struct Context::Impl {
 #endif
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
+    id<MTLCommandQueue> q2 = nil;   // run_graph_async's queue
     std::vector<id<MTLLibrary>> libs;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
@@ -998,6 +999,34 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
             while (cb.status < MTLCommandBufferStatusCompleted &&
                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20e-3) {}
         }
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+void* Context::run_graph_async(const std::vector<Dispatch>& ds) {
+    @autoreleasepool {
+        if (impl_->q2 == nil) impl_->q2 = [impl_->dev newCommandQueue];
+        id<MTLCommandBuffer> cb = [impl_->q2 commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        for (size_t i = 0; i < ds.size(); ++i) {
+            if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            encode(enc, ds[i]);
+        }
+        [enc endEncoding];
+        [cb commit];
+        return (__bridge_retained void*) cb;
+    }
+}
+
+double Context::wait_async(void* token) {
+    if (token == nullptr) return 0.0;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = (__bridge_transfer id<MTLCommandBuffer>) token;
         if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);

@@ -142,7 +142,7 @@ struct PromptBufs {
     int C = 0, maxrows = 0;
     double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
     int gu3[4] = {}, dn3[4] = {};
-    mtl::Buffer R, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
+    mtl::Buffer R, R2, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
         kcur, vcur, iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta,
         stok, sw, pos, XS, HS, YE, yr, gsh, ush, hh, ys, sgv, WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr,
         Wsg, Wshg, Wshu, Wshd, yf, Wcat, pemb, pembh, pkey, pval, keyn, qn, gated, normW, Wpk, Wpv, mixr;
@@ -475,6 +475,12 @@ private:
     }
     Act XEn_, XHn_;
     PromptBufs pb_;
+    // The drafter's K/V rows of a prompt chunk run on a second queue while the next chunk's main work runs on the first (the two touch
+    // different buffers: the chunk's final residual rows are double-buffered, pb_.R / pb_.R2).  The drafter's rows of chunk c+1 wait for
+    // chunk c's (they share the drafter's cache and scratch).  STRATA_METAL_MTP_OVERLAP=0: each chunk's rows run before the next chunk.
+    bool mtp_ovl_ = !(std::getenv("STRATA_METAL_MTP_OVERLAP") && std::string(std::getenv("STRATA_METAL_MTP_OVERLAP")) == "0");
+    void* mtp_async_ = nullptr;
+    void mtp_wait() { if (mtp_async_) { cx_->wait_async(mtp_async_); mtp_async_ = nullptr; } }
     mtl::Buffer mpemb_;                    // the drafter's prompt embedding rows (mtp_prefill, one command buffer)
     size_t mpemb_rows_ = 0;
     const mtl::Buffer* membp_ = nullptr;   // mtp_encode's embedding rows (nullptr: memb_)
@@ -2191,7 +2197,8 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
     const std::string L = "mtp.layers.0.";
     auto rms = [&](const mtl::Buffer& x, size_t xo, const std::string& w, mtl::Buffer& y, int width, int rows) {
         mtl::Dispatch d;
-        d.p = P(lmtp_, "mtp_rms", {}, "mtp_rms");
+        const char* rk = ldb_ && width == 2560 ? "mtp_rms_b10" : ldb_ && width == 10240 ? "mtp_rms_b40" : "mtp_rms";   // (loads batched: same values)
+        d.p = P(lmtp_, rk, {}, rk);
         RmsArgs a{(uint32_t) width, eps_};
         d.args = {mtl::Arg::B(x, xo), mtl::Arg::B(mnorm_, NM(w)), mtl::Arg::B(y), mtl::Arg::V(a)};
         d.grid[0] = rows; d.tg[0] = 256;
@@ -2381,6 +2388,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
 // the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
 bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    mtp_wait();   // (the previous chunk's rows share the cache, the scratch and the embedding rows)
     mrope_sync(cell0, n);
     // every group of MAXT rows in one command buffer: the embedding rows of all of them in mpemb_ (row c + i)
     if ((int64_t) mpemb_rows_ < n) {
@@ -2397,7 +2405,8 @@ bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, s
                    cell0 + c, false, (int) c, 0);
     }
     membp_ = nullptr;
-    cx_->run_graph(ds);
+    if (mtp_ovl_ && mpsrc_ == &pb_.R && pb_.R2.handle != nullptr && !mrope_on()) mtp_async_ = cx_->run_graph_async(ds);
+    else cx_->run_graph(ds);
     return true;
 }
 
