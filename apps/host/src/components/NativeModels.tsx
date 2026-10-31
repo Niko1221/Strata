@@ -12,6 +12,7 @@ import { installProgress, installStage, stageText, useDownloadEta } from '../lib
 import { useKept } from '../lib/kept-state';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
+import { EngineUpdateCard } from './EngineUpdateCard';
 import { sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
@@ -205,6 +206,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
       {tr(selectedSize?.images ? <><div className="native-image-reading"><label><input type="checkbox" checked={vision !== 'no'} disabled={!selectedSize?.images || !!active} onChange={e => setVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures ")}<small>{tr("On by default")}</small></strong><small>{tr("Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.")}</small></span></label>{tr(expert && vision !== 'no' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={setVision}/> : null)}</div>{tr(vision !== 'no' && installed?.ready && installed.visionPrepared === false ? <div className="native-vision-missing" role="status"><span>{tr("Picture reading needs a few more files that are not on this computer yet.")}</span><Btn size="sm" disabled={pending || !!active} onClick={() => void download()}>{tr("Download picture-reading files")}</Btn></div> : null)}</> : null)}
      </> : null)}
      <EngineWarning native={native}/>
+     <EngineUpdateCard native={native} busy={!!active}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}

@@ -255,3 +255,5 @@
 .engine-warning p { margin: 0; }
 .engine-warning svg { flex: none; margin-top: 1px; }
 .engine-warning small { display: block; margin-top: 4px; }
+.engine-update { align-items: center; }
+.engine-update > div { flex: 1; }
