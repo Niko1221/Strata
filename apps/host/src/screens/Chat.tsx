@@ -298,6 +298,11 @@ export function ChatScreen() {
         if (!el || !inner)
             return undefined;
         const ro = new ResizeObserver(() => {
+            if (pinned.current && readerHasSelection(el)) {
+                // Words are selected: the view stays where they are (#3818); the way back to the newest message is offered.
+                pinned.current = false;
+                setAwayFromBottom(distanceFromBottom(el) > PILL_DISTANCE);
+            }
             if (pinned.current)
                 el.scrollTop = el.scrollHeight;
         });
@@ -326,6 +331,10 @@ export function ChatScreen() {
         const sent = count > seenMessages.current && session?.messages.at(-1)?.role === 'user';
         seenMessages.current = count;
         // Sending a message always brings the reader to it, as it did before; only the answer's growth waits for the reader.
+        if (pinned.current && !sent && readerHasSelection(el)) {
+            pinned.current = false;
+            setAwayFromBottom(distanceFromBottom(el) > PILL_DISTANCE);
+        }
         if (pinned.current || sent)
             scrollToLatest();
     }, [session?.messages.length, session?.messages.at(-1)?.content, scrollToLatest]);
@@ -566,6 +575,11 @@ function SlashMenu({ query, commands, cursor, onPick, onHover, }: {
     </div>);
 }
 const NO_PARKED: string[] = [];
+/** Whether the reader has words selected inside the transcript: a view that moves under the pointer loses the selection (#3818). */
+function readerHasSelection(scroller: HTMLElement): boolean {
+    const sel = window.getSelection();
+    return !!sel && !sel.isCollapsed && !!sel.anchorNode && scroller.contains(sel.anchorNode) && sel.toString().trim().length > 0;
+}
 const NO_QUOTES: Quote[] = [];
 /** The message that goes out: the quoted passages in their fixed form, then the person's words. A command such as /plan goes out as typed. */
 function quotedMessage(quotes: readonly Quote[], text: string): string {

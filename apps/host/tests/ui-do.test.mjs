@@ -455,3 +455,11 @@ test('#4244 the new words are translated', async () => {
   for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #3818
+test('#3818 the transcript lets go of the newest token while the reader has words selected in it, and offers the way back', () => {
+  const chat = src('screens/Chat.tsx');
+  assert.match(chat, /function readerHasSelection\(scroller: HTMLElement\): boolean \{\s*const sel = window\.getSelection\(\);\s*return !!sel && !sel\.isCollapsed && !!sel\.anchorNode && scroller\.contains\(sel\.anchorNode\) && sel\.toString\(\)\.trim\(\)\.length > 0;/);
+  assert.match(chat, /if \(pinned\.current && readerHasSelection\(el\)\) \{\s*\/\/[^\n]*\n\s*pinned\.current = false;\s*setAwayFromBottom\(distanceFromBottom\(el\) > PILL_DISTANCE\);\s*\}\s*if \(pinned\.current\)\s*el\.scrollTop = el\.scrollHeight;/, 'the observer that follows a growing reply');
+  assert.match(chat, /if \(pinned\.current && !sent && readerHasSelection\(el\)\) \{\s*pinned\.current = false;/, 'and the effect that follows each token; sending a message still brings the reader to it');
+});

@@ -708,6 +708,54 @@ cases.ask = async () => {
   await fetch(`${t.origin}/__fixture/ask`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: false }) });
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #3818 (a probe, no fix) */
+cases.select = async () => {
+  const paras = Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1}. This is a sentence of a long answer that goes on for a while so that the reply overflows the window.`).join('\n\n');
+  const pick = async (page, fromText, toText) => {
+    const a = await page.getByText(fromText, { exact: false }).first().boundingBox(), b = await page.getByText(toText, { exact: false }).first().boundingBox();
+    await page.mouse.move(a.x + 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width - 4, b.y + b.height / 2, { steps: 12 });
+    await page.mouse.up();
+    return page.evaluate(() => window.getSelection().toString());
+  };
+  const page = await open('light', 1280, 860, [chat('s1', 'Select', [user('u1', 'Write a lot'), reply('a1', paras)])]);
+  await page.locator('.st-bubble p').first().waitFor({ timeout: 15000 });
+  await page.locator('.main__body.chat').evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(400);
+  // After the reply has finished: a drag across several paragraphs.
+  const visible = await page.evaluate(() => [...document.querySelectorAll('.st-bubble p')].filter(p => { const r = p.getBoundingClientRect(); return r.top > 100 && r.bottom < innerHeight - 220; }).map(p => p.textContent.slice(0, 12)));
+  const first = visible[0], last = visible.at(-1);
+  const got = await pick(page, first, last);
+  check(got.includes(first) && got.includes(last) && got.split('\n').filter(Boolean).length >= visible.length, `finished reply: a drag across ${visible.length} paragraphs selects all of them`, `${got.length} characters`);
+  await page.context().close();
+  // While a reply streams: select a passage of the older reply, and see whether the selection and the view stay.
+  const page2 = await open('light', 1280, 860, [chat('s1', 'Select', [user('u1', 'Write a lot'), reply('a1', paras)])]);
+  await page2.locator('.st-bubble p').first().waitFor({ timeout: 15000 });
+  await page2.locator('textarea').first().fill('SCRIPT:slow 400');
+  await page2.keyboard.press('Enter');
+  await page2.waitForTimeout(1500);
+  const v2 = await page2.evaluate(() => [...document.querySelector('.st-msg--assistant').querySelectorAll('.st-bubble p')].filter(p => { const r = p.getBoundingClientRect(); return r.top > 100 && r.bottom < innerHeight - 220; }).map(p => p.textContent.slice(0, 12)));
+  if (v2.length >= 2) {
+    // The selection is made in code here (a drag moves with the layout and made this probe flaky): words of the older reply, as a drag would select them.
+    const sel0 = await page2.evaluate(([a, b]) => {
+      const ps = [...document.querySelector('.st-msg--assistant').querySelectorAll('.st-bubble p')], from = ps.find(p => p.textContent.startsWith(a)), to = ps.find(p => p.textContent.startsWith(b));
+      const r = document.createRange(); r.setStart(from.firstChild, 0); r.setEnd(to.lastChild, to.lastChild.textContent.length);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); return s.toString();
+    }, [v2[0], v2.at(-1)]);
+    const top0 = await page2.locator('.main__body.chat').evaluate(el => el.scrollTop);
+    await page2.waitForTimeout(3000);
+    const sel1 = await page2.evaluate(() => window.getSelection().toString());
+    const top1 = await page2.locator('.main__body.chat').evaluate(el => el.scrollTop);
+    console.log(`INFO streaming: selection ${sel0.length} -> ${sel1.length} characters, scrollTop ${Math.round(top0)} -> ${Math.round(top1)}`);
+    console.log(`INFO before: ${JSON.stringify(sel0.slice(0, 40))} ... ${JSON.stringify(sel0.slice(-40))}
+INFO after:  ${JSON.stringify(sel1.slice(0, 40))} ... ${JSON.stringify(sel1.slice(-40))}`);
+    check(sel1 === sel0, 'streaming: a selection in the older reply stays as it was while the new reply is written (a selection inside the paragraph that is being written does not: React replaces its text node on every token)', `${sel0.length} -> ${sel1.length}`);
+    check(Math.abs(top1 - top0) < 40, 'streaming: the view is not pulled away from the selection', `${Math.round(top0)} -> ${Math.round(top1)}`);
+  } else console.log('INFO streaming: the older reply was not on screen, nothing to select');
+  await page2.context().close();
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {
