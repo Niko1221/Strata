@@ -5,6 +5,7 @@ import type { PreviewArtifact } from '../lib/artifacts';
 import { pushToast } from '../lib/store';
 import { plainFailureText } from '../lib/plain-errors';
 import { FloatingMenu } from './FloatingMenu';
+import { CopyMenuItem } from './CopyBtn';
 import { Icon } from './ui';
 
 const problem = (title: string, e: unknown) => pushToast('error', tr(title), plainFailureText(e instanceof Error ? e.message : String(e)).message);
@@ -36,7 +37,7 @@ export function FileCard({ file, sessionId, onPreview }: { file: Deliverable; se
     {tr(menu ? <FloatingMenu anchor={more.current} title={tr("File actions")} width={220} onClose={() => setMenu(false)}>
       <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); void showOf(file, sessionId, onPreview, file.kind); }}><Icon name="panel"/>{tr("Open in sidebar")}</button>
       <button role="menuitem" className="menu__item" onClick={() => void run(() => fileAction.open(sessionId, file.path, 'folder'), 'The folder was not opened')}><Icon name="folder"/>{tr("Show in folder")}</button>
-      <button role="menuitem" className="menu__item" onClick={() => void run(async () => { await navigator.clipboard.writeText(await fileAction.fullPath(sessionId, file.path)); pushToast('info', tr('Path copied')); }, 'The path was not copied')}><Icon name="copy"/>{tr("Copy path")}</button>
+      <CopyMenuItem text={() => fileAction.fullPath(sessionId, file.path)} label="Path" onClose={() => setMenu(false)}>Copy path</CopyMenuItem>
       <button role="menuitem" className="menu__item" onClick={() => void run(async () => { await fileAction.attach(sessionId, file.path); pushToast('info', tr('Attached to your next message'), file.name); }, 'The file was not attached')}><Icon name="attach"/>{tr("Attach as context")}</button>
     </FloatingMenu> : null)}
   </div>;

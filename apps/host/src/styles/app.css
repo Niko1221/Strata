@@ -7527,3 +7527,9 @@ textarea {
 .approvaldock { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 0 0 10px; }
 .approvaldock > .askcard, .approvaldock > .toolcard { margin: 0; flex: none; border-color: var(--st-accent); box-shadow: var(--st-sh-bar); }
 .approval-wait { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+
+/* ---- a Copy control shows that it worked: a check mark for a moment, and the action row it sits in stays visible meanwhile (#4748) ---- */
+.st-btn--icon[data-copied] { color: var(--st-accent-text); background: var(--st-accent-tint); }
+.st-code .st-btn--icon[data-copied] { color: var(--st-accent); background: rgba(255, 255, 255, .08); }
+.menu__item[data-copied] { color: var(--st-accent-text); }
+.st-msg__actions:has([data-copied]) { opacity: 1; }

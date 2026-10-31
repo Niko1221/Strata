@@ -70,3 +70,41 @@ test('#4725 the dock and the waiting line are translated', async () => {
   }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4748
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+const walk = dir => readdirSync(dir).flatMap(name => { const p = join(dir, name); return statSync(p).isDirectory() ? (name === 'locales' ? [] : walk(p)) : /\.tsx?$/.test(name) ? [p] : []; });
+
+test('#4748 every Copy control goes through one shared behaviour: no bare clipboard call, no copy icon button of its own', () => {
+  const files = walk(new URL('../src', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+  const bare = [], own = [];
+  for (const file of files) {
+    if (/lib[\/]clipboard\.ts$/.test(file)) continue;
+    const text = readFileSync(file, 'utf8');
+    if (/navigator\.clipboard\.writeText/.test(text)) bare.push(file);
+    if (/<IconBtn name="copy"/.test(text)) own.push(file);
+  }
+  assert.deepEqual(bare, [], 'a bare clipboard call reports nothing when the clipboard is refused');
+  assert.deepEqual(own, [], 'a copy icon button that is not CopyBtn shows nothing on itself');
+});
+
+test('#4748 the shared copy shows its state on the control for about two seconds, then goes back; a menu item says Copied and then closes', () => {
+  const hook = src('lib/use-copy.ts');
+  assert.match(hook, /COPIED_MS = 1800/);
+  assert.match(hook, /COPIED_MENU_MS = 900/);
+  assert.match(hook, /if \(ok\) \{\s*setCopied\(true\);/, 'only a copy that worked is shown');
+  const btn = src('components/CopyBtn.tsx');
+  assert.match(btn, /data-copied=\{copied \|\| undefined\}/);
+  assert.match(btn, /name=\{copied \? 'check' : 'copy'\}/);
+  assert.match(btn, /role="status">\{copied \? tr\('Copied'\) : ''\}/, 'a screen reader hears Copied');
+  assert.match(btn, /e\.stopPropagation\(\)/, 'the menu does not close before the person sees it');
+  const css = src('styles/app.css');
+  assert.match(css, /\.st-msg__actions:has\(\[data-copied\]\)\s*\{\s*opacity:\s*1/, 'the hover-only action row stays while it says Copied');
+});
+
+test('#4748 Copied is translated in every language', async () => {
+  const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); assert.notEqual(tr('Copied'), 'Copied', l); }
+  setTranslationLanguage('en');
+});

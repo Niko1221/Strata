@@ -126,6 +126,86 @@ cases.approval = async () => {
   await page.context().close();
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4748 */
+const codeReply = 'Here is a command.\n\n```bash\nnpm install left-pad\n```\n\nThat is all.';
+cases.copy = async () => {
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const sessions = [chat('s1', 'Copy', [user('u1', 'Show me a command'), reply('a1', codeReply), user('u2', 'Thanks'), reply('a2', 'You are welcome. Second reply.')])];
+    const page = await open(scheme, w, h, sessions);
+    await page.locator('.st-msg--assistant').last().waitFor({ timeout: 15000 });
+    const flag = async loc => loc.evaluate(el => ({ copied: el.hasAttribute('data-copied'), icon: el.querySelector('use')?.getAttribute('href') ?? '' }));
+    const read = () => page.evaluate(() => navigator.clipboard.readText());
+    // The last reply's copy button (an icon in the action row).
+    const copyResponse = page.getByRole('button', { name: 'Copy response' });
+    await copyResponse.last().click();
+    await page.mouse.move(2, 2);
+    await page.waitForTimeout(250);
+    let f = await flag(copyResponse.last());
+    check(f.copied && f.icon.endsWith('i-check'), `${tag}: Copy response turns into a check mark`, JSON.stringify(f));
+    check((await read()) === 'You are welcome. Second reply.', `${tag}: the reply is on the clipboard`);
+    const row = page.locator('.st-msg--assistant').last().locator('.st-msg__actions');
+    check(await row.evaluate(el => getComputedStyle(el).opacity) === '1', `${tag}: the action row stays visible while it says so, mouse away`);
+    check(/Copied/.test(await page.locator('.st-msg--assistant').last().locator('[role=status]').first().innerText()), `${tag}: a screen reader hears Copied`);
+    await shot(page, `4748-${tag}-reply`);
+    await page.waitForTimeout(2200);
+    f = await flag(copyResponse.last());
+    check(!f.copied && f.icon.endsWith('i-copy'), `${tag}: after about two seconds it is a Copy button again`, JSON.stringify(f));
+    // The code block.
+    const code = page.locator('.st-code__head').getByRole('button', { name: 'Copy code' });
+    await code.click();
+    await page.waitForTimeout(250);
+    f = await flag(code);
+    check(f.copied && f.icon.endsWith('i-check'), `${tag}: the code block's Copy turns into a check mark`, JSON.stringify(f));
+    check((await read()) === 'npm install left-pad', `${tag}: the code is on the clipboard`);
+    await shot(page, `4748-${tag}-code`);
+    await page.waitForTimeout(2200);
+    // The menu item of an earlier reply: says Copied, then the menu closes.
+    await page.locator('.st-msg--assistant').first().hover();
+    await page.locator('.st-msg--assistant').first().getByRole('button', { name: 'More response actions' }).click();
+    const item = page.getByRole('menuitem', { name: 'Copy response' });
+    await item.click();
+    await page.waitForTimeout(250);
+    check(/Copied/.test(await page.locator('.menu [data-copied]').innerText()), `${tag}: the menu item says Copied`);
+    check((await read()).startsWith('Here is a command'), `${tag}: the earlier reply is on the clipboard`);
+    await shot(page, `4748-${tag}-menu`);
+    await page.waitForTimeout(1300);
+    check(await page.locator('.menu').count() === 0, `${tag}: and the menu closes by itself`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+  // A refused clipboard: nothing says Copied on the button, and the person is told in a toast.
+  {
+    const page = await open('light', 1280, 860, [chat('s1', 'Refused', [user('u1', 'Hi'), reply('a1', 'Hello there.')])]);
+    await page.locator('.st-msg--assistant').last().waitFor({ timeout: 15000 });
+    await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true }); document.execCommand = () => false; });
+    const b = page.getByRole('button', { name: 'Copy response' }).last();
+    await b.click();
+    await page.waitForTimeout(400);
+    check(await b.evaluate(el => !el.hasAttribute('data-copied')), 'refused clipboard: the button does not claim success');
+    check(/Couldn.t copy/.test(await page.locator('.st-toast').first().innerText()), 'refused clipboard: a toast says it did not work');
+    await page.context().close();
+  }
+  // The Serving screen: the address and the request template.
+  for (const scheme of ['light', 'dark']) {
+    const page = await open(scheme, 1280, 860, [chat('s1', 'Serving', [user('u1', 'Hi'), reply('a1', 'Hello there.')])], { hash: '#/serving' });
+    const c = page.getByRole('button', { name: 'Copy API base URL' });
+    await c.waitFor({ timeout: 15000 });
+    await c.click();
+    await page.waitForTimeout(250);
+    check(await c.evaluate(el => el.hasAttribute('data-copied') && (el.querySelector('use')?.getAttribute('href') ?? '').endsWith('i-check')), `${scheme}: Serving, Copy API base URL turns into a check mark`);
+    check(/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(await page.evaluate(() => navigator.clipboard.readText())), `${scheme}: Serving, the address is on the clipboard`);
+    await shot(page, `4748-serving-${scheme}`);
+    await page.getByRole('button', { name: 'Connection guide' }).click();
+    const t = page.getByRole('button', { name: 'Copy request template' });
+    await t.click();
+    await page.waitForTimeout(250);
+    check(await t.evaluate(el => el.hasAttribute('data-copied')), `${scheme}: Serving, Copy request template turns into a check mark`);
+    check((await page.evaluate(() => navigator.clipboard.readText())).startsWith('curl http'), `${scheme}: Serving, the template is on the clipboard`);
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {

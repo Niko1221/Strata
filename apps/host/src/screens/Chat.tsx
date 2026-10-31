@@ -39,7 +39,7 @@ import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
 import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
-import { copyText } from '../lib/clipboard';
+import { CopyBtn, CopyMenuItem, MenuCloseContext } from '../components/CopyBtn';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
@@ -652,7 +652,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
-            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void copyText(m.content, 'Message', { toast: pushToast })}/>
+            <CopyBtn text={m.content} label="Message" title="Copy message"/>
             <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
@@ -691,11 +691,11 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
           <span className="st-msg__actions">
             {tr(isLast ? <>
-              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/>
+              <CopyBtn text={m.content} label="Response" title="Copy response"/>
               <IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/>
             </> : null)}
             <MessageMenu label={tr("More response actions")}>
-              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
+              {tr(!isLast ? <><CopyMenuItem text={m.content} label="Response">Copy response</CopyMenuItem><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
@@ -710,7 +710,7 @@ function MessageMenu({ label, children }: {
 }) {
     const [open, setOpen] = useState(false);
     const trigger = useRef<HTMLButtonElement>(null);
-    return <><button ref={trigger} className="st-btn st-btn--icon" aria-label={tr(label)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="ellipsis" size={16}/></button>{tr(open ? <FloatingMenu anchor={trigger.current} title={tr(label)} onClose={() => setOpen(false)}><div onClick={() => setOpen(false)}>{tr(children)}</div></FloatingMenu> : null)}</>;
+    return <><button ref={trigger} className="st-btn st-btn--icon" aria-label={tr(label)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="ellipsis" size={16}/></button>{tr(open ? <FloatingMenu anchor={trigger.current} title={tr(label)} onClose={() => setOpen(false)}><MenuCloseContext.Provider value={() => setOpen(false)}><div onClick={() => setOpen(false)}>{tr(children)}</div></MenuCloseContext.Provider></FloatingMenu> : null)}</>;
 }
 /**
  * A tool call, with the grant it needs. Approvals are per action and per turn —
