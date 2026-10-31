@@ -499,6 +499,12 @@ inline bool hcd_exact() {
     return v;
 }
 inline bool hc_pad() { return pf_hcdown() || hcd_exact(); }
+// STRATA_QSA_FUSE_NR (default on, =0 runs rms_rows + rope [+ split_q] as separate kernels): the QSA layer's K, query and
+// indexer-query norm + rotary in one pass each (strata::prefill::rms_rope_rows; the same bits as the chain it replaces).
+inline bool qsa_fuse_nr() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_QSA_FUSE_NR"); return !(e != nullptr && e[0] == '0'); }();
+    return v;
+}
 inline bool cvec_fuse() {
     static const bool v = [] { const char* e = std::getenv("STRATA_CVEC_FUSE"); return e && e[0] == '1'; }();
     return v;
@@ -3860,8 +3866,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     if (!kva_state_only && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     pt.mark(kPfQsaPrep, cs);
-                    rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
-                    rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    if (qsa_fuse_nr()) {
+                        rms_rope_rows(m.Kc, 512, 256, m.Kc, 512, (const float*) wkn->data, T, 2, 256, EPS, p0, strata::kernels::rope_scaling(), m.cs);
+                    } else {
+                        rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
+                        rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    }
                     // KV streaming: this layer's cells [0, p0) come in from the host copy to the staging pool, and the
                     // chunk's cells go to the host copy, the staging pool, and the VRAM slots of resident blocks
                     const bool staged = st.kv_mode == 1;
@@ -3922,12 +3932,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
-                    split_q(m.Qf, m.q, T, m.cs);
-                    rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
-                    rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), m.cs);
+                    if (qsa_fuse_nr()) {
+                        rms_rope_rows(m.Qf, 24 * 512, 512, m.q, 6144, (const float*) wqn->data, T, 24, 256, EPS, p0, strata::kernels::rope_scaling(), m.cs);
+                    } else {
+                        split_q(m.Qf, m.q, T, m.cs);
+                        rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
+                        rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), m.cs);
+                    }
                     if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, m.cs);
-                    rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
-                    rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    if (qsa_fuse_nr()) {
+                        rms_rope_rows(m.q_idx, 512, 128, m.q_idx, 512, (const float*) wiqn->data, T, 4, 128, EPS, p0, strata::kernels::rope_scaling(), m.cs);
+                    } else {
+                        rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
+                        rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    }
                     // the indexer appends, token by token; then scores + selection for many queries at once:
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
                     const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
@@ -6974,8 +6992,12 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                         if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
                         if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
-                        rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, cs);
-                        rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), cs);
+                        if (qsa_fuse_nr()) {
+                            rms_rope_rows(m.Kc, 512, 256, m.Kc, 512, (const float*) wkn->data, T, 2, 256, EPS, p0, strata::kernels::rope_scaling(), cs);
+                        } else {
+                            rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, cs);
+                            rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), cs);
+                        }
                         const bool staged = st.kv_mode == 1;
                         if (staged) {
                             pt.mark(kPfKvStage, cs);
@@ -7021,12 +7043,20 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                                     core::qsa_kv_format(st), p0 / s.page_size,
                                                                     (p0 + T + s.page_size - 1) / s.page_size, s, cs);
                         }
-                        split_q(m.Qf, m.q, T, cs);
-                        rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, cs);
-                        rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), cs);
+                        if (qsa_fuse_nr()) {
+                            rms_rope_rows(m.Qf, 24 * 512, 512, m.q, 6144, (const float*) wqn->data, T, 24, 256, EPS, p0, strata::kernels::rope_scaling(), cs);
+                        } else {
+                            split_q(m.Qf, m.q, T, cs);
+                            rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, cs);
+                            rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), cs);
+                        }
                         if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, cs);
-                        rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, cs);
-                        rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), cs);
+                        if (qsa_fuse_nr()) {
+                            rms_rope_rows(m.q_idx, 512, 128, m.q_idx, 512, (const float*) wiqn->data, T, 4, 128, EPS, p0, strata::kernels::rope_scaling(), cs);
+                        } else {
+                            rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, cs);
+                            rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), cs);
+                        }
                         const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         pt.mark(kPfQsaIdx, cs);
                         try {
