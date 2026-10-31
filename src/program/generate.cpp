@@ -573,7 +573,7 @@ struct Options {
     int ple_inflight = 256;   // the prompt path reads a chunk's rows at once: 64 left the SSD half idle (32K: 303 -> 189 ms)
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
-    std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
+    std::string kv = "auto";           ///< plan v0.3 P7: KV storage; auto follows --max-context (see kv_for_context)
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
@@ -919,8 +919,10 @@ void usage() {
                  "  --ple-inflight N     outstanding SSD reads (default 256)\n"
                  "  --ple-delay-us U     fault injection: each row read completes no earlier than U us\n"
                  "  --ple-sync-submit    A/B arm: submit table reads on the token thread (default: an I/O thread)\n"
-                 "  --kv fp16|int8       KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
-                 "                       VRAM; default fp16 until gate G-C accepts int8\n"
+                 "  --kv auto|fp16|int8  KV storage (plan v0.3 P7): int8 codes + fp16 scale per 64 values, half the\n"
+                 "                       VRAM. auto (default) follows --max-context: fp16 to 32K, int8 to 128K,\n"
+                 "                       k8v4 to 256K, q4_0 beyond (a 4K session keeps fp16 for 84 MiB; 128K takes\n"
+                 "                       1.68 GiB rather than fp16's 3.35 GiB, which is expert cache it would lose)\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
@@ -3761,8 +3763,24 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
+    if (o.kv == "auto") {
+        // The KV cache costs a fixed number of bytes per token per attention layer (2112 fp16, 1056 int8, 816 k8v4,
+        // 576 q4_0), so the context alone decides the bill.  One fixed precision for every context either wastes
+        // VRAM (fp16 at 128K: 3.35 GiB that the expert cache would rather have) or drops precision where nothing
+        // asked for it (int8 at 4K).  The steps sit where the two sides cross: fp16 stays free to 32K (0.84 GiB),
+        // 128K in int8 is 1.68 GiB against 3.35, and 256K in k8v4 is 2.62 GiB against fp16's 6.7.
+        o.kv = o.max_context <= 32768    ? "fp16"
+             : o.max_context <= 131072   ? "int8"
+             : o.max_context <= 262144   ? "k8v4"
+                                         : "q4_0";
+        const int64_t per = o.kv == "int8" ? 1056 : o.kv == "k8v4" ? 816 : o.kv == "q4_0" ? 576 : 2112;
+        // 13 attention layers, the Qwen3.8-Flash-Next family this ships with: a guide for the reader, not a check.
+        std::fprintf(stderr, "strata generate: --kv auto: %s for a %lld-token context (~%.2f GiB of KV)\n",
+                     o.kv.c_str(), (long long) o.max_context,
+                     (double) o.max_context * 13.0 * (double) per / 1073741824.0);
+    }
     if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+        std::fprintf(stderr, "strata generate: --kv must be auto, fp16, int8, q4_0 or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");

@@ -6668,7 +6668,7 @@ def choices_from_config(cfg_path: Path) -> dict:
     esp_path = esp.rsplit(":", 1)[0] if esp else None
     return {"family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
-            "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
+            "kv": val("--kv") if val("--kv") in ("auto", "int8", "q4_0", "k8v4", "fp16") else None,
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
             "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
@@ -7240,6 +7240,16 @@ UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the S
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
 KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
 UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13)
+KV_AUTO_STEPS = ((32768, "fp16"), (131072, "int8"), (262144, "k8v4"))   # --kv auto, the same steps as generate.cpp
+
+
+def kv_for_context(ctx: int) -> str:
+    """What --kv auto resolves to: fp16 to 32K, int8 to 128K, k8v4 to 256K, q4_0 beyond.  setup needs the resolved
+    name to estimate VRAM (unsloth_vram_slack_mib); the engine resolves the flag with the same steps on its own."""
+    for limit, name in KV_AUTO_STEPS:
+        if ctx <= limit:
+            return name
+    return "q4_0"
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
 
@@ -8840,9 +8850,11 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16"],
-                    help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
-                         "precise) k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
+    ap.add_argument("--kv", choices=["auto", "int8", "q4_0", "k8v4", "fp16"],
+                    help="KV cache precision (default auto: fp16 to 32K context, int8 to 128K, k8v4 to 256K, q4_0 "
+                         "beyond - the same steps the engine takes for --kv auto); int8 (8-bit, half of fp16's "
+                         "memory), q4_0 (half the memory of int8, a little less precise), k8v4 (hybrid: INT8 K + "
+                         "4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
                          "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
@@ -9525,16 +9537,17 @@ def main() -> int:
                   else "as requested")
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
-    # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
-    if ctx > 8192 and not a.kv and not a.yes:
+    # the KV cache (the model's memory of the conversation): auto follows the context, so a 4K session keeps fp16
+    # and only a context long enough to matter steps down (int8 past 32K, k8v4 past 128K, q4_0 past 256K)
+    kv = a.kv if a.kv and a.kv != "auto" else kv_for_context(ctx)
+    if kv == "int8" and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
         say("  1) 8-bit   (recommended: what every published number was measured with)")
         say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
         say("             documents; long-context lookups (needle tests) still pass")
         kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
-    if ctx > 8192:
+    if kv != "fp16":
         ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL
         vision = "none"
