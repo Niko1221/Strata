@@ -125,6 +125,17 @@ def _tool_output(item, param):
     return out if isinstance(out, str) else _content(out, param + ".output")
 
 
+def _agent_message(item, param):
+    """An agent_message item (Codex's multi-agent v2: the task the parent agent sends a worker, the worker's answer)
+    -> a user message's content.  Its payload is an `encrypted_content` part, which holds plain text when the agents
+    run on this server."""
+    content = item.get("content")
+    if isinstance(content, list):
+        content = [{"type": "input_text", "text": part.get("encrypted_content") or ""}
+                   if isinstance(part, dict) and part.get("type") == "encrypted_content" else part for part in content]
+    return _content(content, param + ".content")
+
+
 def input_messages(req: dict) -> list[dict]:
     """`instructions` + `input` -> the chat template's messages."""
     messages = []
@@ -191,6 +202,10 @@ def input_messages(req: dict) -> list[dict]:
             messages.append({"role": "tool", "content": _tool_output(item, param), "_call_id": item.get("call_id")})
             open_turn = None
             thinking.clear()
+        elif kind == "agent_message":
+            open_turn = None
+            thinking.clear()
+            messages.append({"role": "user", "content": _agent_message(item, param)})
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":

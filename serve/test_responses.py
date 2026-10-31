@@ -127,6 +127,24 @@ class Parsing(unittest.TestCase):
         self.assertEqual([t["name"] for t in tools], ["exec_command", "later_tool"])
         self.assertIn("later_tool", names)
 
+    def test_agent_messages_become_user_messages(self):
+        """Codex's multi-agent v2 sends a worker its task, and the parent the worker's answer, as `agent_message`
+        items, the task's payload in an `encrypted_content` part; they used to be refused with a 400."""
+        task = {"type": "agent_message", "author": "/root", "recipient": "/root/reviewer",
+                "content": [{"type": "input_text", "text": "Message Type: NEW_TASK\nPayload:\n"},
+                            {"type": "encrypted_content", "encrypted_content": "Review app.py."}]}
+        answer = {"type": "agent_message", "author": "/root/reviewer", "recipient": "/root",
+                  "content": [{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nPayload:\nTwo issues."}]}
+        self.assertEqual(input_messages({"instructions": "I", "input": [task]}), [
+            {"role": "system", "content": "I"},
+            {"role": "user", "content": "Message Type: NEW_TASK\nPayload:\nReview app.py."}])
+        msgs = input_messages({"input": [
+            {"role": "user", "content": "scan"},
+            {"type": "function_call", "call_id": "c1", "name": "spawn_agent", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "started"}, answer]})
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "tool", "user"])
+        self.assertEqual(msgs[3]["content"], "Message Type: FINAL_ANSWER\nPayload:\nTwo issues.")
+
     def test_effort_and_text_format(self):
         self.assertEqual(template_kwargs({"reasoning": {"effort": "minimal"}}, {}), {"enable_thinking": False})
         self.assertEqual(template_kwargs({"reasoning": {"effort": "high"}}, {}), {"reasoning_effort": "xhigh"})
