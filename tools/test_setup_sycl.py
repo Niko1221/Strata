@@ -317,5 +317,32 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(out.getvalue().count("/dev/shm has no room"), 1)
 
 
+class UseVenv(unittest.TestCase):
+    """`python sycl/setup_intel.py` with the system Python wrote setup's pip stamp to /usr (Permission denied): it now
+    runs again with .venv's Python, and says to use setup.sh when there is no .venv."""
+
+    def test_the_system_python_hands_over_to_the_venv_and_a_venv_stays(self):
+        m = ToSycl.mod()
+        with tempfile.TemporaryDirectory() as d:
+            py = Path(d) / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            py.parent.mkdir(parents=True)
+            py.write_text("")
+            with mock.patch.object(m, "ROOT", Path(d)), mock.patch.object(m.sys, "prefix", "/usr"), \
+                    mock.patch.object(m.sys, "base_prefix", "/usr"), mock.patch.object(m.sys, "argv", ["x", "--check"]), \
+                    mock.patch.object(m.os, "execv") as ex:
+                m.use_venv()
+                self.assertEqual(ex.call_args[0][0], str(py))
+                self.assertEqual(ex.call_args[0][1][-1], "--check")
+            with mock.patch.object(m.sys, "prefix", "/v"), mock.patch.object(m.sys, "base_prefix", "/usr"), \
+                    mock.patch.object(m.os, "execv") as ex:
+                m.use_venv()
+                ex.assert_not_called()
+            with mock.patch.object(m, "ROOT", Path(d) / "none"), mock.patch.object(m.sys, "prefix", "/usr"), \
+                    mock.patch.object(m.sys, "base_prefix", "/usr"), contextlib.redirect_stdout(io.StringIO()) as out, \
+                    self.assertRaises(SystemExit):
+                m.use_venv()
+            self.assertIn("./setup.sh --backend sycl", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
