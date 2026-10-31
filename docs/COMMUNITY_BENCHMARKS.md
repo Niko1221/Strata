@@ -73,6 +73,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-30: AMD Radeon RX 6900 XT 16 GB (gfx1030), Core i3-13100T, 96 GB DDR4-3200, QEMU guest with the GPU passed through](../bench/results/2026-10-30-standard-navi-21-rx-6800-6800-xt-6900-x-0f8809de/README.md):
+  the **first run of the released `rx6000` package on a real RX 6000 card** (engine 0.1.54, no source build), Flash-Next IQ3_S, 262,144-token context, pictures on (CPU reader). Standard protocol: prompt 908.5/1,128.9 tok/s
+  and decode 39.7/40.2 tok/s at 4K/16K, 12 of 12 sanity checks. System ROCm is 6.3.0 and unused (the package carries its own runtime). Supplementary notes in the same folder cover
+  `STRATA_HIP_PROMPT_F16=1` (2.1x on prefill), the flat cost of context size from 64K to 512K, and prompts up to 300K tokens.
 
 ## Run the standard benchmark
 
