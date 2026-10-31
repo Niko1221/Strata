@@ -245,5 +245,9 @@
   "tool.running": "Выполняется",
   "tool.skipped": "Не выполнен",
   "tool.writing": "Пишется",
-  "undo": "Отменить"
+  "undo": "Отменить",
+  "sidebar.import": "Вернуть сохранённый чат",
+  "sidebar.imported": "Чат возвращён",
+  "sidebar.importFailed": "Возвращать нечего",
+  "sidebar.importFailedText": "В файле нет переписки. При сохранении пишутся '## You' и ответы модели."
 }

@@ -47,6 +47,34 @@ const cases = {
     assert.equal(clean[1].text, "a1", "the text stays");
     assert.deepEqual(convo()[0].files, [{kind: "file", name: "n.txt", text: "notes"}], "a copy: the screen keeps its contents");
   },
+  import_parses_a_saved_export_back() {
+    // the shape the composer's "Save this chat as Markdown" writes (app.js): `## You` then `## <model>`,
+    // thinking and tool calls as <details> blocks
+    const md = "## You\n\nwhat is two plus two?\n\n## Qwen-Flash-Next\n\n" +
+      "<details><summary>Thinking</summary>\n\nsecret thoughts\n\n</details>\n\n" +
+      "<details><summary>Tool fs / read (error)</summary>\n\n```json\n{}\n```\n\n```\nboom\n```\n\n</details>\n\nIt is 4.\n";
+    const c = H.parseChatMarkdown(md, 5000, 0.5);
+    assert.equal(c.messages.length, 2);
+    assert.equal(c.messages[0].role, "user"); assert.equal(c.messages[0].text, "what is two plus two?");
+    assert.equal(c.messages[1].role, "assistant"); assert.equal(c.messages[1].text, "It is 4.");
+    assert.ok(!JSON.stringify(c.messages).includes("secret thoughts"), "thinking is dropped, as the store would");
+    assert.equal(c.time, 5000, "no timestamps in the file: the time it came back");
+    assert.ok(c.id && typeof c.id === "string", "a real chat record");
+  },
+  import_is_faithful_and_picky() {
+    assert.equal(H.parseChatMarkdown(""), null, "empty");
+    assert.equal(H.parseChatMarkdown("just some text, no turns"), null);
+    assert.equal(H.parseChatMarkdown(null), null);
+    // any '## ' line starts a turn (stated limitation): a question with its own '## ' line is read as a turn of its own
+    const quoted = H.parseChatMarkdown("## You\n\nmy notes:\n\n## heading inside the question\n\nmore text\n");
+    assert.deepEqual(quoted.messages.map((m) => m.role), ["user", "assistant"], "a '## ' line starts a turn");
+    // a '## You' in an answer's text is read as a new turn: known shape, the export never writes it there
+    const two = H.parseChatMarkdown("## You\n\nq\n\n## Model\n\npartial\n\n## You\n\na\n");
+    assert.deepEqual(two.messages.map((m) => m.role), ["user", "assistant", "user"]);
+    // blank turns are skipped
+    const blank = H.parseChatMarkdown("## You\n\n\n\n## Model\n\nanswer\n");
+    assert.deepEqual(blank.messages.map((m) => m.role), ["assistant"]);
+  },
   rewind_a_question() {
     const m = convo();
     const plan = H.rewind(m, 2);

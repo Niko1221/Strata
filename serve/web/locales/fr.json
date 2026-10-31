@@ -260,5 +260,9 @@
   "tool.running": "En cours",
   "tool.skipped": "Non exécuté",
   "tool.writing": "Écriture",
-  "undo": "Annuler"
+  "undo": "Annuler",
+  "sidebar.import": "Récupérer une conversation enregistrée",
+  "sidebar.imported": "Conversation récupérée",
+  "sidebar.importFailed": "Rien à récupérer",
+  "sidebar.importFailedText": "Aucune conversation dans le fichier. L'enregistrement écrit '## You' et les réponses du modèle."
 }

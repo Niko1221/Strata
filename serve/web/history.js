@@ -83,8 +83,33 @@
     return {...newChat(now, rnd), title, parent: {id: chat.id, title: chatTitle(chat)}, messages: copy};
   }
 
+  // Bring a saved chat back (the other half of the composer's "Save this chat as Markdown"): the export's
+  // `## You` / `## <model>` headings become messages. Known shape, stated plainly: any `## ` line starts a turn, so
+  // a question that itself contains a `## ` line at the start of a line is read as a turn of its own (the export
+  // cannot tell the two apart). Thinking and tool calls were exported as <details> blocks, which carry nothing the
+  // store keeps (the store keeps attachments' names only), so they are dropped. No timestamps in the file: the
+  // whole chat takes the time it came back. Returns the chat, or null when the file holds no turns.
+  function parseChatMarkdown(text, now = Date.now(), rnd = Math.random()) {
+    const lines = String(text || "").split("\n");
+    const messages = [];
+    let role = null, body = [];
+    const flush = () => {
+      const t = body.join("\n").replace(/<details>[\s\S]*?<\/details>/g, "").trim();
+      if (role && t) messages.push({role, text: t, time: now});
+      body = [];
+    };
+    for (const line of lines) {
+      const h = line.match(/^## (.+)$/);
+      if (h) { flush(); role = h[1] === "You" ? "user" : "assistant"; }
+      else body.push(line);
+    }
+    flush();
+    if (!messages.length) return null;
+    return {...newChat(now, rnd), messages};
+  }
+
   const api = {TITLE_MAX, newChat, chatTitle, cleanMessages, cleanChat, groupKey, filterChats, lostAttachments, draftOf, rewind,
-               regenerate, editAnswer, branch};
+               regenerate, editAnswer, branch, parseChatMarkdown};
   root.StrataHistory = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

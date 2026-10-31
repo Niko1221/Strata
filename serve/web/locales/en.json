@@ -260,5 +260,9 @@
   "tool.running": "Running",
   "tool.skipped": "Not run",
   "tool.writing": "Writing",
-  "undo": "Undo"
+  "undo": "Undo",
+  "sidebar.import": "Bring back a saved chat",
+  "sidebar.imported": "Chat brought back",
+  "sidebar.importFailed": "Nothing to bring back",
+  "sidebar.importFailedText": "No turns in the file. The save writes '## You' and the model's turns."
 }
