@@ -126,22 +126,27 @@ async function loadHealth() {
 }
 
 // ------------------------------------------------------------------ Monitor
+// The card titles are rendered through data-i18n below, so a language switch updates them too. The calls in
+// this comment are the English text for tools/web_i18n.py and for a translator; their result is not used.
+//   tr("monitor.speed", "Speed")      tr("monitor.gpuLoad", "GPU load")   tr("monitor.vram", "VRAM")
+//   tr("monitor.gpuTemp", "GPU temp") tr("monitor.power", "Power")        tr("monitor.pcie", "PCIe")
+//   tr("monitor.cpu", "CPU")          tr("monitor.diskRead", "Disk read")
 const METRICS = [
-  {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
-  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
-  {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
-  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
-  {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
-  {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
+  {key: "speed", label: "Speed", i18n: "monitor.speed", icon: "gauge", unit: "t/s", series: "tok_s"},
+  {key: "gpu", label: "GPU load", i18n: "monitor.gpuLoad", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
+  {key: "vram", label: "VRAM", i18n: "monitor.vram", icon: "layers", unit: "GB", series: "gpu_mem_used"},
+  {key: "temp", label: "GPU temp", i18n: "monitor.gpuTemp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
+  {key: "power", label: "Power", i18n: "monitor.power", icon: "bolt", unit: "W", series: "gpu_power"},
+  {key: "pcie", label: "PCIe", i18n: "monitor.pcie", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
+  {key: "cpu", label: "CPU", i18n: "monitor.cpu", icon: "cpu", unit: "%", series: "cpu", max: 100},
+  {key: "disk", label: "Disk read", i18n: "monitor.diskRead", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}<span data-i18n="${m.i18n}">${esc(m.label)}</span></span>
     ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed" data-i18n="monitor.decode">Decode</span></div>
+      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill" data-i18n="monitor.prefill">Prefill</span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
@@ -390,18 +395,26 @@ function renderConvCache(c) {
     $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
-  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
-  const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
-  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  $("cc-sum").textContent = c.requests
+    ? tr("monitor.ccSum", "{reused} of {total} requests reused part of their prompt", {reused: fmt(c.requests_reused), total: fmt(c.requests)})
+    : "";
+  const share = c.prompt_tokens
+    ? tr("monitor.ccShare", " ({pct}% of all prompt tokens)", {pct: fmt((100 * c.reused_tokens) / c.prompt_tokens)})
+    : "";
+  const event = c.last_event
+    ? `${c.last_event === "parked" ? tr("monitor.parked", "Parked") : tr("monitor.restored", "Restored")} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}`
+    : null;
   facts($("cc-facts"), [
-    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
-    ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
-    ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
-    ["Last switch", c.enabled ? event : null],
+    [tr("monitor.lastRequest", "Last request"), c.last_prompt != null
+      ? tr("monitor.ccLastReuse", "{reused} of {total} prompt tokens reused", {reused: fmt(c.last_reused || 0), total: fmt(c.last_prompt)}) : null],
+    [tr("monitor.reusedSinceStart", "Reused since start"), c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
+    [tr("monitor.parkedRestored", "Parked / restored"), c.enabled
+      ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? tr("monitor.ccEvicted", " · {n} evicted", {n: fmt(c.evictions)}) : ""}` : null],
+    [tr("monitor.lastSwitch", "Last switch"), c.enabled ? event : null],
   ]);
   $("cc-note").textContent = c.enabled
-    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
-    : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+    ? tr("monitor.ccNoteOn", "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full.")
+    : tr("monitor.ccNoteOff", "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).");
 }
 
 function renderTotals(t) {
@@ -424,21 +437,22 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     b.classList.toggle("on", lit);
   }
   const prog = $("state-progress");
-  let label = "Waiting for a request", detail = "", pct = 0;
+  let label = tr("monitor.waiting", "Waiting for a request"), detail = "", pct = 0;
   if (modelOp === "load" || (busy != null && live.state === "unloaded" && !imageNow)) {
-    label = "Loading";
+    label = tr("monitor.loading", "Loading");
     delete prog.dataset.tone;
-    detail = "The model is loading.";
+    detail = tr("monitor.loadingDetail", "The model is loading.");
   } else if (imageNow && (live.state === "unloaded" || live.state === "reading" || live.state === "generating" || live.state === "idle")) {
-    label = live.state === "unloaded" ? "Loading" : "Generating image";
+    label = live.state === "unloaded" ? tr("monitor.loading", "Loading") : tr("monitor.generatingImage", "Generating image");
     delete prog.dataset.tone;
-    detail = live.state === "unloaded" ? "The model is loading." : "An image is generating. It finishes on its own.";
+    detail = live.state === "unloaded" ? tr("monitor.loadingDetail", "The model is loading.")
+                                     : tr("monitor.imageDetail", "An image is generating. It finishes on its own.");
   } else if (modelOp === "unload") {
-    label = "Unloading";
+    label = tr("monitor.unloading", "Unloading");
     delete prog.dataset.tone;
-    detail = "Freeing the GPU.";
+    detail = tr("monitor.unloadingDetail", "Freeing the GPU.");
   } else if (live.state === "reading") {
-    label = "Reading prompt";
+    label = tr("monitor.readingPrompt", "Reading prompt");
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
@@ -447,14 +461,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }
   } else if (live.state === "generating") {
-    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
+    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : tr("monitor.generating", "Generating");
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
   } else if (live.state === "unloaded") {
-    label = "Unloaded";
+    label = tr("monitor.unloadedState", "Unloaded");
     delete prog.dataset.tone;
-    detail = "Load brings it back. A message does too.";
+    detail = tr("monitor.unloadedDetail", "Load brings it back. A message does too.");
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -466,41 +480,49 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+            live.state === "generating" ? tr("monitor.decodeNow", "Decode now")
+              : last ? tr("monitor.decodeLast", "Decode last request") : tr("monitor.decode", "Decode"));
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+            live.state === "reading" ? tr("monitor.prefillNow", "Prefill now")
+              : live.state === "generating" ? tr("monitor.prefillThis", "Prefill this request")
+              : last ? tr("monitor.prefillLast", "Prefill last request") : tr("monitor.prefill", "Prefill"));
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
+            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`))
+                  : st.gpu_name || (st.gpu_note ? tr("monitor.notAvailable", "not available") : ""));
   spark("sp-gpu", h.gpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
+                  : eng.expert_slots ? tr("monitor.expertsCached", "{n} experts cached", {n: fmt(eng.expert_slots)})
+                  : (st.gpu_note ? tr("monitor.notAvailableAmd", "not available on Windows AMD yet") : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+            hw.gpu_power_limit ? tr("monitor.powerLimit", "of {n} W limit", {n: fmt(hw.gpu_power_limit)}) : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+            hw.gpu_pcie_rx_mb == null ? "" : tr("monitor.pcieToGpu", "to GPU {n} MB/s", {n: fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)}) +
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? tr("monitor.pcieIdleGen", " · idle Gen{n}", {n: hw.gpu_pcie_gen}) : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%",
+            st.threads ? (st.cores ? tr("monitor.coresThreads", "{cores} cores · {threads} threads", {cores: st.cores, threads: st.threads})
+                                    : tr("monitor.threads", "{threads} threads", {threads: st.threads})) : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
+    setMetric("disk", null, "", st.psutil ? "" : tr("monitor.needsPsutil", "needs psutil (setup installs it)"));
   } else {
     const big = hw.disk_read_mb >= 1000;
     setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
+              hw.disk_write_mb == null ? "" : tr("monitor.diskWrite", "write {n} MB/s", {n: fmt(hw.disk_write_mb, 1)}));
   }
   spark("sp-disk", h.disk_read_mb);
 
@@ -527,7 +549,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="muted" data-i18n="monitor.noRequests">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
@@ -564,32 +586,40 @@ function projectionText(c) {
   if (!c || c === "0" || c === 0) return null;
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
-  return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
-         "describes the vector as a refusal-direction projection; measure the speed yourself";
+  return tr("about.cvecText", "{mode} control vector on layers {from}–{to}", {
+    mode: mode === "project" ? tr("about.cvecProjection", "Projection") : tr("about.cvecAdditive", "Additive"),
+    from: a, to: b,
+  })
+    + (single ? tr("about.cvecSingle", " (layer {n}'s direction)", {n: single.replace("single", "")}) : "")
+    + tr("about.cvecNote", ". Per chat in Sampling. Its package describes the vector as a refusal-direction projection; measure the speed yourself.");
 }
 function renderAbout(eng, hw, st) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
-    ["Model", eng.model],
-    ["Engine", eng.version ? `v${eng.version}` : "built from source"],
-    ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
-    ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
-    ["Images", eng.images ? "on" : "off"],
-    ["Experimental speed projection", projectionText(eng.cvec)],
+    [tr("about.model", "Model"), eng.model],
+    [tr("about.engine", "Engine"), eng.version ? `v${eng.version}` : tr("about.builtFromSource", "built from source")],
+    [tr("about.context", "Context"), eng.max_context ? tr("about.tokens", "{n} tokens", {n: fmt(eng.max_context)}) : null],
+    [tr("about.kvCache", "KV cache"), kv ? `${kv}${eng.kv_resident
+      ? tr("about.kvStreamed", ", streamed: {n} positions per layer in VRAM, the rest in RAM", {n: fmt(eng.kv_resident)})
+      : tr("about.kvAllVram", ", all in VRAM")}` : null],
+    [tr("monitor.expertsInVram", "Experts in VRAM"), eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    [tr("about.speculation", "Speculation"), eng.spec
+      ? tr("about.specText", "MTP drafts up to {n} tokens", {n: Math.max(0, (eng.mtp_max || eng.spec) - 1)})
+        + (eng.lookup ? tr("about.lookupOn", ", prompt lookup on") : "")
+      : null],
+    [tr("about.images", "Images"), eng.images ? tr("about.on", "on") : tr("about.off", "off")],
+    [tr("about.cvec", "Experimental speed projection"), projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
-    ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
-    ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
+    [tr("about.gpu", "GPU"), st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || tr("about.notReadable", "not readable (NVML)"))],
+    [tr("about.cpu", "CPU"), st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${tr("about.threads", "{n} threads", {n: st.threads})}` : ""}` : null],
+    [tr("about.ram", "RAM"), hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
   const base = location.origin;
   facts($("facts-api"), [
-    ["OpenAI base URL", `${base}/v1`, true],
-    ["Anthropic base URL", base, true],
-    ["Model name", eng.model, true],
+    [tr("about.openaiUrl", "OpenAI base URL"), `${base}/v1`, true],
+    [tr("about.anthropicUrl", "Anthropic base URL"), base, true],
+    [tr("about.modelName", "Model name"), eng.model, true],
   ]);
 }
 document.addEventListener("click", (e) => {
@@ -636,6 +666,27 @@ function renderMcp() {
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
 // server lists them, checks every value and keeps every other key of the file as it is.
+// The field help arrives from the server in English. The calls below are that text for tools/web_i18n.py and for a
+// translator; configHelp() builds the same key at render time, so a catalog can translate it.
+//   tr("config.sampling.temperature", "Default temperature for requests that send none (0 = greedy; without it the model card's: 1.0 thinking, 0.7 not)")
+//   tr("config.sampling.top_p", "Default top_p for requests that send none")
+//   tr("config.sampling.top_k", "Default top_k for requests that send none (1-64)")
+//   tr("config.sampling.min_p", "Default min_p for requests that send none")
+//   tr("config.reasoning_budget_tokens", "Cap the thinking of every request at this many tokens (0 or empty: no cap)")
+//   tr("config.fit_max_tokens", "Shorten a max_tokens that does not fit the context (on by default); off: answer 400 like llama.cpp")
+//   tr("config.anthropic_thinking", "Anthropic requests that do not ask for thinking: think as the model does (model) or not (on_request)")
+//   tr("config.effort_position", "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)")
+//   tr("config.aliases", "Other model names the server lists and answers to (comma-separated)")
+//   tr("config.idle_unload_s", "Unload the model after this many seconds without requests (0 or empty: never)")
+//   tr("config.mtp", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); empty or on: as installed")
+//   tr("config.lazy_load", "Start without loading the model; the first request loads it (text only)")
+//   tr("config.engine_silence_s", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)")
+//   tr("config.api_monitor", "Keep the last 100 requests' prompts and answers in memory for /api-monitor")
+//   tr("config.open_browser", "Open the chat page in the browser when the model is ready")
+//   tr("config.vram_reserve_mib", "VRAM in MiB the engine leaves free for other programs (engine default 700)")
+//   tr("config.default", "default")   tr("config.nothingChanged", "Nothing changed.")
+//   tr("config.saved", "Saved ({keys}); the earlier file is {file}.bak. Start the model again to use it.")
+function configHelp(k) { return tr("config." + k.key, k.help); }
 let cfgKeys = [];
 async function loadConfig() {
   let r;
@@ -646,18 +697,20 @@ async function loadConfig() {
   $("cfg-file").textContent = c.file || "";
   $("cfg-form").innerHTML = cfgKeys.map((k, i) => {
     const id = `cfg-${i}`, v = k.value;
+    const help = configHelp(k);
     let input;
     if (k.kind === "bool" || k.kind === "enum") {
-      const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
+      const opts = k.kind === "bool" ? [["true", tr("about.on", "on")], ["false", tr("about.off", "off")]]
+                                     : k.choices.map((x) => [x, x]);
       const cur = v == null ? "" : String(v);
-      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>${esc(tr("config.default", "default"))}</option>` +
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
       input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
-        `value="${esc(text)}" placeholder="default" autocomplete="off">`;
+        `value="${esc(text)}" placeholder="${esc(tr("config.default", "default"))}" autocomplete="off">`;
     }
-    return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
+    return `<label for="${id}" title="${esc(help)}">${esc(help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
 }
@@ -675,13 +728,14 @@ $("cfg-save").addEventListener("click", async () => {
     const old = Array.isArray(k.value) ? k.value.join(", ") : k.value;
     if (JSON.stringify(v) !== JSON.stringify(old ?? null)) set[k.key] = v;
   });
-  if (!Object.keys(set).length) { $("cfg-msg").textContent = "Nothing changed."; return; }
+  if (!Object.keys(set).length) { $("cfg-msg").textContent = tr("config.nothingChanged", "Nothing changed."); return; }
   try {
     const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+      ? tr("config.saved", "Saved ({keys}); the earlier file is {file}.bak. Start the model again to use it.", {keys: b.changed.join(", "), file: b.file})
+      : tr("config.nothingChanged", "Nothing changed.");
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";
