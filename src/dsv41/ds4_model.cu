@@ -9565,7 +9565,8 @@ struct Model::Impl {
         if (inner != nullptr && !inner->empty()) skip = std::min(skip, (int) (inner->front().first - pos) - keep);
         const int a = yl > 0 && skip >= kYocoMin ? skip : 0;
         const int nc = (n + chunk - 1) / chunk, per = (n + nc - 1) / nc;
-        if (ds4_dbg("DS4_DBG_CHUNK")) std::fprintf(stderr, "forward_chunks n %d nc %d per %d\n", n, nc, per);
+        if (std::getenv("DS4_CHUNK_LOG") != nullptr) std::fprintf(stderr, "forward_chunks n %d nc %d per %d yoco %d keep %d skip_rows %d (after %d, first point at row %d)\n", n, nc, per, yl, keep, a,
+                                                       after, inner != nullptr && !inner->empty() ? (int) (inner->front().first - pos) : -1);
         Run run;
         for (int x = 0; x < n; x += per) {
             run.p0.push_back(pos + x);
