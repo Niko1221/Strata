@@ -68,6 +68,9 @@ struct Options {
     bool vision = true;               // the vision tower (the checkpoint's vision.* / aligner.*), when it has one
     bool vision_only = false;         // (tests) load the vision tower alone: encode_image() and nothing else
     bool verbose = false;
+    // --parallel: conversations held at once (1-8), each its own state - its position, tokens, checkpoints, window rings,
+    // the compressors' partial groups, the compressed KV and the index keys (a full context's each); 1: as before
+    int seqs = 1;
 };
 
 /// A picture in the prompt: its span's rows (every position of the span carries the image token), BF16 [span][dim]
@@ -178,6 +181,21 @@ public:
     int vocab() const;
     int dim() const;
     const std::vector<int32_t>& tokens() const;   // what the state has consumed, in order
+
+    /// --parallel's conversations (Options::seqs): each its own state.  seq_bind(s): every call of this class acts on
+    /// conversation s from here - feed, step, draft / verify, sample, checkpoints, slots, reset, tokens (0 at load).
+    int seq_count() const;
+    void seq_bind(int s);
+    int seq_bound() const;
+    int64_t seq_pos(int s) const;
+    const std::vector<int32_t>& seq_tokens(int s) const;
+    /// One token into each of n conversations (distinct, n <= 16, each at its own next position) through the model
+    /// together: the dense weights and the experts the rows share read once for all of them, each row's attention on
+    /// its own conversation's rings and KV.  Row i's logits stay for sample_multi(i, ...), with the penalties
+    /// set_penalties() set over row i's conversation's tokens.  No drafts; each conversation's drafter rings are
+    /// seeded as its own step would seed them, so it drafts on alone later.  The bound conversation stays bound.
+    bool step_multi(const int* seqs, const int* tokens, int n, std::string& err);
+    int sample_multi(int row, float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter);
 
     void reset();
     /// The post-prompt cache settle run on a thread of its own while the server waits for its next request (WP-8's option 1):

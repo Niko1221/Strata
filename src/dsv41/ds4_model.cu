@@ -648,6 +648,9 @@ struct Dev {
     uint8_t* tail = nullptr;
     size_t tail_bytes = 0, tail_step = 0;
     int tail_k = 0;
+    // (--parallel) a multi step's new compressed rows of each row's conversation gathered for the other groups' readers:
+    // kWin ckv rows, then kWin index-key rows
+    uint8_t* mstage = nullptr;
 };
 
 // the chunked prompt path's buffers on a device: a chunk of C tokens through a layer at once (the attention in slabs of
@@ -1012,6 +1015,11 @@ struct WinPlan {
     int snap_t[kSnapN] = {}, snap_ix[kSnapN] = {};
     int eg_slot = -1;       // (a run of chunks, layer-major) the Engram rows' slot (-1: k % 2)
     unsigned vl = 0;        // (a window) bit t: token t is inside a picture's span (routed with the image bias)
+    // (--parallel, Impl::step_multi) rows of nrow conversations instead of a window of one: row t is conversation
+    // rseq[t]'s token at position rpos[t] (0: a window of the bound conversation from p0)
+    int nrow = 0;
+    int rseq[kWin] = {};
+    int64_t rpos[kWin] = {};
     unsigned seq[kMaxL] = {};
     int topk[kMaxL][kWin] = {}, cand[kMaxL][kWin] = {};
 };
@@ -1226,7 +1234,26 @@ struct Model::Impl {
     std::vector<Check> mk;
     uint64_t mark_clock = 0;
     bool slot_held = false;           // slot_save took this state and nothing has changed it since
-    std::vector<uint32_t> prof;       // [nl][n_exp] routed-expert hits
+    // --parallel (Options::seqs > 1): every conversation's state.  The bound one's host state lives in the fields above
+    // (pos, toks, ctoks, ck, mk, mark_clock, slot_held) and its device buffers in the layers and the sources; seq_park()
+    // moves that host state here (a multi step reads every conversation's from here), seq_unpark() back.  Every
+    // conversation's device pointers stay here, the bound one's too.
+    struct SeqState {
+        int64_t pos = 0;
+        std::vector<int32_t> toks, ctoks;
+        Check ck[3];
+        std::vector<Check> mk;                       // (the restore points a request asked for, A0)
+        uint64_t mark_clock = 0;
+        bool slot_held = false;
+        std::vector<uint8_t*> win;                   // [layer member] (sq_base[layer] + member)
+        std::vector<float*> c_kv, c_score;
+        std::vector<std::vector<uint8_t*>> ckv, ik;   // [source][device]
+    };
+    std::vector<SeqState> sqs;   // empty: one conversation (Options::seqs 1)
+    int sq_bound = 0;
+    std::vector<int> sq_base;
+    std::vector<int> mrows;      // the last multi step's rows' conversations (sample_multi)
+    std::vector<uint32_t> prof;      // [nl][n_exp] routed-expert hits
     // ... as loaded (--no-expert-cache: what the flow's early reads go by, so a prompt is streamed and summed in the
     // same order whatever this process answered before)
     std::vector<uint32_t> prof_load;
@@ -3365,6 +3392,8 @@ struct Model::Impl {
         }
         prof_load = prof;
 
+        // --parallel: the other conversations' rings, partial groups and KV (before the experts: they take what is left)
+        if (!alloc_seqs(err)) return false;
         // the chunked prompt path's buffers (before the experts: they take what is left)
         if (chunk > 0) {
             // recommend, never force: a chunk the cards cannot hold in buffers is halved (down to 256 rows) and then the
@@ -6754,6 +6783,123 @@ struct Model::Impl {
                      lane_name.c_str(), cpu_threads(), kPer, lane_report.c_str());
     }
 
+    // ---- --parallel: several conversations (Options::seqs), each its own rings, partial groups and KV
+    bool alloc_seqs(std::string& err) {
+        const int n = std::max(1, o.seqs);
+        if (n == 1) return true;
+        sq_base.assign(L.size(), 0);
+        int nmem = 0;
+        for (size_t i = 0; i < L.size(); ++i) {
+            sq_base[i] = nmem;
+            nmem += L[i].nm;
+        }
+        sqs.assign((size_t) n, SeqState{});
+        std::vector<size_t> before(devs.size());
+        for (size_t di = 0; di < devs.size(); ++di) before[di] = devs[di].caches;
+        for (int s = 0; s < n; ++s) {
+            SeqState& q = sqs[(size_t) s];
+            q.win.assign((size_t) nmem, nullptr);
+            q.c_kv.assign((size_t) nmem, nullptr);
+            q.c_score.assign((size_t) nmem, nullptr);
+            q.ckv.assign(srcs.size(), std::vector<uint8_t*>(devs.size(), nullptr));
+            q.ik.assign(srcs.size(), std::vector<uint8_t*>(devs.size(), nullptr));
+            for (size_t i = 0; i < L.size(); ++i)
+                for (int m = 0; m < L[i].nm; ++m) {
+                    Layer& l = member(L[i], m);
+                    const size_t k = (size_t) sq_base[i] + (size_t) m;
+                    if (s == 0) {   // (the model's own: conversation 0's)
+                        q.win[k] = l.win;
+                        q.c_kv[k] = l.c_kv;
+                        q.c_score[k] = l.c_score;
+                        continue;
+                    }
+                    Dev& d = devs[(size_t) l.dev];
+                    if (!dalloc(d, q.win[k], (size_t) g.win * win_rb(), err, &d.caches)) return false;
+                    if (l.c_kv != nullptr && !dalloc(d, q.c_kv[k], (size_t) l.ratio * g.hd, err, &d.caches)) return false;
+                    if (l.c_score != nullptr && !dalloc(d, q.c_score[k], (size_t) l.ratio * g.hd, err, &d.caches))
+                        return false;
+                }
+            for (size_t j = 0; j < srcs.size(); ++j)
+                for (size_t di = 0; di < devs.size(); ++di) {
+                    Src& sr = srcs[j];
+                    if (s == 0) {
+                        q.ckv[j][di] = sr.ckv[di];
+                        q.ik[j][di] = sr.ik[di];
+                        continue;
+                    }
+                    Dev& d = devs[di];
+                    if (sr.ckv[di] != nullptr && !dalloc(d, q.ckv[j][di], (size_t) sr.cap * ckv_rb(), err, &d.caches))
+                        return false;
+                    if (sr.ik[di] != nullptr && !dalloc(d, q.ik[j][di], (size_t) sr.cap * ik_rb(), err, &d.caches))
+                        return false;
+                }
+        }
+        for (Dev& d : devs)
+            if (!dalloc(d, d.mstage, (size_t) kWin * (ckv_rb() + ik_rb()), err)) return false;
+        double more = 0;
+        for (size_t di = 0; di < devs.size(); ++di) more += (double) (devs[di].caches - before[di]);
+        std::fprintf(stderr, "ds4: --parallel %d: %d conversations at once, each its own rings and KV (%.2f GB more "
+                             "VRAM for the other %d, from the experts' room)\n", n, n, more / 1e9, n - 1);
+        return true;
+    }
+    int seq_count() const { return sqs.empty() ? 1 : (int) sqs.size(); }
+    // the bound conversation's host state into its SeqState (park) and back (unpark)
+    void seq_park() {
+        SeqState& q = sqs[(size_t) sq_bound];
+        q.pos = pos;
+        q.toks = std::move(toks);
+        q.ctoks = std::move(ctoks);
+        for (int i = 0; i < 3; ++i) q.ck[i] = std::move(ck[i]);
+        q.mk = std::move(mk);
+        q.mark_clock = mark_clock;
+        q.slot_held = slot_held;
+        toks.clear();
+        ctoks.clear();
+        mk.clear();
+    }
+    void seq_unpark() {
+        SeqState& q = sqs[(size_t) sq_bound];
+        pos = q.pos;
+        toks = std::move(q.toks);
+        ctoks = std::move(q.ctoks);
+        for (int i = 0; i < 3; ++i) ck[i] = std::move(q.ck[i]);
+        mk = std::move(q.mk);
+        mark_clock = q.mark_clock;
+        slot_held = q.slot_held;
+        q.toks.clear();
+        q.ctoks.clear();
+        q.mk.clear();
+    }
+    // the layers' and sources' buffers: conversation s's (mtp_only: the drafter's blocks' rings alone)
+    void seq_point(int s, bool mtp_only = false) {
+        const SeqState& q = sqs[(size_t) s];
+        for (size_t i = mtp_only ? (size_t) g.nl : 0; i < L.size(); ++i)
+            for (int m = 0; m < L[i].nm; ++m) {
+                Layer& l = member(L[i], m);
+                const size_t k = (size_t) sq_base[i] + (size_t) m;
+                l.win = q.win[k];
+                l.c_kv = q.c_kv[k];
+                l.c_score = q.c_score[k];
+            }
+        if (mtp_only) return;
+        for (size_t j = 0; j < srcs.size(); ++j)
+            for (size_t di = 0; di < devs.size(); ++di) {
+                srcs[j].ckv[di] = q.ckv[j][di];
+                srcs[j].ik[di] = q.ik[j][di];
+            }
+    }
+    void seq_bind(int s) {
+        if (sqs.empty() || s == sq_bound || s < 0 || s >= (int) sqs.size()) return;
+        seq_park();
+        sq_bound = s;
+        seq_point(s);
+        seq_unpark();
+    }
+    int64_t seq_pos(int s) const { return sqs.empty() || s == sq_bound ? pos : sqs[(size_t) s].pos; }
+    const std::vector<int32_t>& seq_tokens(int s) const {
+        return sqs.empty() || s == sq_bound ? toks : sqs[(size_t) s].toks;
+    }
+
     void reset() {
         pos = 0;
         toks.clear();
@@ -7420,7 +7566,9 @@ struct Model::Impl {
     // [hd] codes then the scales; nullptr: h_eg).  eg_issue serves the rows already fetched from the row cache (and a
     // row the window needs twice from one read) and hands the rest to the reader's threads; eg_finish waits for them,
     // copies the repeats and keeps the new rows in the cache.  The rows are the file's bytes either way.
-    void eg_issue(int64_t p0, int T, int li, uint8_t* dst, EgBatch& b) {
+    // (rows: a multi step's - row t is conversation rows->rseq[t]'s token at rows->rpos[t], its look-back in that
+    //  conversation's tokens, parked in sqs)
+    void eg_issue(int64_t p0, int T, int li, uint8_t* dst, EgBatch& b, const WinPlan* rows = nullptr) {
         const int cols = (pk.eg_ngram - 1) * pk.eg_heads, hd = pk.eg_hd;
         const size_t per = (size_t) cols * (hd + hd / 32);
         b.clear();
@@ -7437,18 +7585,19 @@ struct Model::Impl {
         {
             std::lock_guard<std::mutex> lk(eg_cache_mu);
             for (int t = 0; t < T; ++t) {
-                const int64_t p = p0 + t;
-                uint8_t* rows = dst != nullptr ? dst + (size_t) t * per : h_eg + ((size_t) li * eg_cap + t) * per;
-                uint8_t* scales = rows + (size_t) cols * hd;
-                if (ctoks[(size_t) p] < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
-                    std::memset(rows, 0, per);
+                const int64_t p = rows != nullptr ? rows->rpos[t] : p0 + t;
+                const std::vector<int32_t>& ct = rows != nullptr ? sqs[(size_t) rows->rseq[t]].ctoks : ctoks;
+                uint8_t* rd0 = dst != nullptr ? dst + (size_t) t * per : h_eg + ((size_t) li * eg_cap + t) * per;
+                uint8_t* scales = rd0 + (size_t) cols * hd;
+                if (ct[(size_t) p] < 0) {   // a picture's token: no rows (zeros: its gate adds nothing)
+                    std::memset(rd0, 0, per);
                     continue;
                 }
                 int64_t prod[8];
                 bool blocked = false;
                 for (int s = 0; s < pk.eg_ngram; ++s) {   // (the look-back stops at the start and at a picture)
-                    blocked = blocked || p < s || ctoks[(size_t) (p - s)] < 0;
-                    const int64_t tk = blocked ? pk.eg_pad : ctoks[(size_t) (p - s)];
+                    blocked = blocked || p < s || ct[(size_t) (p - s)] < 0;
+                    const int64_t tk = blocked ? pk.eg_pad : ct[(size_t) (p - s)];
                     prod[s] = tk * pk.eg_mult[(size_t) li * pk.eg_ngram + s];
                 }
                 int64_t rolling = prod[0];
@@ -7457,7 +7606,7 @@ struct Model::Impl {
                     for (int h = 0; h < pk.eg_heads; ++h) {
                         const int c = (n - 1) * pk.eg_heads + h;
                         const int64_t id = rolling % pk.eg_primes[(size_t) li * cols + c] + pk.eg_off[(size_t) li * cols + c];
-                        uint8_t* rd = rows + (size_t) c * hd;
+                        uint8_t* rd = rd0 + (size_t) c * hd;
                         uint8_t* sd = scales + (size_t) c * (hd / 32);
                         const uint64_t key = (uint64_t) id * 8 + (uint64_t) li;
                         if (const uint8_t* hit = eg_cache.find(key)) {
@@ -10585,7 +10734,10 @@ struct Model::Impl {
 
     // the penalty rows of T picks (on the head device, its stream): row t the last h of toks[0 .. end0 + t), -1 in
     // front; the penalties into sp.  nullptr and h = 0 (sp untouched) for a request without penalties
-    const int* pen_rows(int64_t end0, int T, strata::dsv41k::SamplerParams& sp, int& h) {
+    // (hist: whose tokens - null: the bound conversation's; a multi step's row: its own conversation's)
+    const int* pen_rows(int64_t end0, int T, strata::dsv41k::SamplerParams& sp, int& h,
+                        const std::vector<int32_t>* hist = nullptr) {
+        const std::vector<int32_t>& toks = hist != nullptr ? *hist : this->toks;
         h = 0;
         if (pen_n <= 0 || T < 1 || T > kWin) return nullptr;
         Dev& d = devs[(size_t) head_dev];
@@ -12561,11 +12713,12 @@ struct Model::Impl {
     }
 
     // the window's plan, in window order (the indexer's and the candidate source's sizes carry from window to window)
+    // (wp.nrow > 0: a multi step's rows, row t at wp.rpos[t] - decoded tokens, never a picture's)
     void plan_window(int64_t p0, int T, WinPlan& wp) {
         wp.par = par;
         wp.async = par || (!sync_decode && T <= async_max_t);
         wp.vl = 0;
-        for (int t = 0; t < T && !imgs.empty(); ++t)
+        for (int t = 0; t < T && !imgs.empty() && wp.nrow == 0; ++t)
             if (in_image(p0 + t)) wp.vl |= 1u << t;
         for (int il = 0; il < g.nl; ++il) {
             const Layer& l = L[(size_t) il];
@@ -12573,7 +12726,7 @@ struct Model::Impl {
                 const int R = l.ratio;
                 int n[kWin], k[kWin], clen_max = 0;
                 for (int t = 0; t < T; ++t) {
-                    n[t] = (int) ((p0 + t + 1) / R);
+                    n[t] = (int) (((wp.nrow > 0 ? wp.rpos[t] : p0 + t) + 1) / R);
                     k[t] = std::min(g.ix_topk, n[t]);
                     clen_max = std::max(clen_max, n[t]);
                 }
@@ -12728,6 +12881,7 @@ struct Model::Impl {
         const int D = g.dim;
         for (int t = 0; t < T; ++t)   // (h_emb is written again by the next window, after this one's last sync)
             std::memcpy(h_emb + (size_t) t * D, emb_row(p0 + t, tk[t]), (size_t) D * 2);
+        wplan.nrow = 0;
         plan_window(p0, T, wplan);
         prof_window = prof_on && T == 1;
         n_logits = std::min(logits_rows, T);
@@ -12907,6 +13061,10 @@ struct Model::Impl {
                 got[(size_t) sidx] = 1;
                 Src& sr = srcs[(size_t) sidx];
                 if (L[(size_t) sr.layer].grp == L0.grp) continue;
+                if (wp.nrow > 0) {   // (--parallel: the rows' new groups in one piece, each to its conversation's rows)
+                    if (!multi_get(sidx, di, wp, err)) return false;
+                    continue;
+                }
                 const int64_t g_first = p0 / sr.ratio;
                 const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
                 if (ng == 0) continue;
@@ -12951,6 +13109,318 @@ struct Model::Impl {
             CK(cudaMemcpyAsync(copies[od] + at, stage, bytes, cudaMemcpyHostToDevice, o2.st));
         }
         cudaSetDevice(d.id);
+        return true;
+    }
+
+    // the state a window's attention reads and writes: the bound conversation's (the layer's and the sources'
+    // buffers), or a multi step row's own conversation's (--parallel)
+    struct AttnSeq {
+        uint8_t* win = nullptr;
+        float *c_kv = nullptr, *c_score = nullptr;
+        std::vector<uint8_t*>* ckv = nullptr;   // [device]: the layer's source's compressed KV (null: none)
+        std::vector<uint8_t*>* ik = nullptr;    // [device]: its index keys' source's
+    };
+    AttnSeq attn_bound(Layer& l) {
+        AttnSeq A;
+        A.win = l.win;
+        A.c_kv = l.c_kv;
+        A.c_score = l.c_score;
+        A.ckv = l.src >= 0 ? &srcs[(size_t) l.src].ckv : nullptr;
+        A.ik = l.ik_src >= 0 ? &srcs[(size_t) l.ik_src].ik : nullptr;
+        return A;
+    }
+    AttnSeq attn_seq(const Layer& L0, int mi, int sq) {
+        SeqState& q = sqs[(size_t) sq];
+        const Layer& l = member(L0, mi);
+        const size_t k = (size_t) sq_base[(size_t) L0.il] + (size_t) mi;
+        AttnSeq A;
+        A.win = q.win[k];
+        A.c_kv = q.c_kv[k];
+        A.c_score = q.c_score[k];
+        A.ckv = l.src >= 0 ? &q.ckv[(size_t) l.src] : nullptr;
+        A.ik = l.ik_src >= 0 ? &q.ik[(size_t) l.ik_src] : nullptr;
+        return A;
+    }
+    // layer l's attention for T queries from position p0 of one conversation (A), rows r0 .. r0 + T - 1 of the
+    // window's buffers: q (rotated already), the KV row, the compressor's rows, the indexer's inputs in, the
+    // attention's output (rotated back) out - what layer() runs for a window, and for each row of a multi step
+    bool attn_core(Layer& l, int mi, Dev& d, int64_t p0, int T, int r0, const WinPlan& wp, const AttnSeq& A,
+                   std::string& err) {
+        cudaStream_t s = d.st;
+        const int D = g.dim, HD = g.hd, NHL = l.ahn, HQ = NHL * HD;
+        const float* freqs = l.ratio ? d.freqs_comp : d.freqs_win;
+        float* q = d.q + (size_t) r0 * HQ;
+        float* kvr = d.kvr + (size_t) r0 * HD;
+        float* ckr = d.ckr + (size_t) r0 * HD;
+        float* cgr = d.cgr + (size_t) r0 * HD;
+        float* qr = d.qr + (size_t) r0 * g.q_lora;
+        float* x = d.x + (size_t) r0 * D;
+        int* topk_r = d.topk + (size_t) r0 * topk_stride();
+        int* cand_r = d.cand + (size_t) r0 * cand_stride();
+        float* o_r = d.o + (size_t) r0 * HQ;
+        // the window rows: the ring's (positions p0 - win ..) then this window's, each query its own 128.  A DSpark
+        // block's ring holds the trunk's main KV (positions <= p0 - 1, seeded); its block of drafts attends to all of
+        // that ring and to the whole block, and leaves the ring as it was
+        ring_to_ext(A.win, d.ext, l.mtp ? (int64_t) g.win : p0, g.win, HD, s);   // (a block's ring: its rows as they lie)
+        Finish fk;
+        fk.w = l.kv_norm;
+        fk.eps = g.eps;
+        fk.rd = g.rd;
+        fk.pos = (int) p0;
+        fk.freqs = freqs;
+        fk.quant = 1;
+        fk.dst = d.ext + (size_t) g.win * HD;
+        fk.dst_stride = HD;
+        finish(kvr, T, HD, HD, fk, s);
+        if (!l.mtp) ext_to_ring(d.ext, A.win, p0, g.win, T, HD, s, spec_win ? l.ring_bak : nullptr);
+        dump_sub(d, "kv_win", l.il, p0, T, d.ext + (size_t) g.win * HD, (size_t) T * HD * 4);
+        dump_sub(d, "ext", l.il, p0, T, d.ext, ((size_t) g.win + T) * HD * 2);   // (BF16 rows: the ring's, then this window's)
+        AttnRows ar;
+        for (int t = 0; t < T; ++t) {
+            if (l.mtp) {
+                ar.win0[t] = 0;
+                ar.nwin[t] = (int) std::min<int64_t>(g.win, p0);
+                ar.nsel[t] = T;
+                continue;
+            }
+            const int first = (int) std::max<int64_t>(g.win - p0, t + 1);   // ext row of position max(0, p - win + 1)
+            ar.win0[t] = first;
+            ar.nwin[t] = g.win + t - first + 1;
+            ar.nsel[t] = 0;
+        }
+        const void* ckv = nullptr;
+        int ckv_fmt = kKvFp4;
+        if (l.ratio > 0) {
+            Src& sr = srcs[(size_t) l.src];
+            const int R = l.ratio;
+            // the groups this window completes: g_first .. g_first + ng - 1
+            const int64_t g_first = p0 / R;              // the first group whose last position is >= p0
+            const int64_t g_end = (p0 + T) / R;          // groups completed by p0 + T - 1
+            const int ng = (int) std::max<int64_t>(0, g_end - g_first);
+            if (l.kv_src) {
+                if (R == 1) {
+                    Finish fc;
+                    fc.w = l.c_norm;
+                    fc.eps = g.eps;
+                    finish(ckr, T, HD, HD, fc, s);
+                    CK(cudaMemcpyAsync(d.latent, ckr, (size_t) T * HD * 4, cudaMemcpyDeviceToDevice, s));
+                } else {
+                    if (spec_win && l.c_snap != nullptr) {   // to replay the accepted rows if drafts are rejected
+                        const size_t ns = (size_t) R * HD * 4, nr = (size_t) T * HD * 4;
+                        CK(cudaMemcpyAsync(l.c_snap, A.c_kv, ns, cudaMemcpyDeviceToDevice, s));
+                        CK(cudaMemcpyAsync(l.c_snap + (size_t) R * HD, A.c_score, ns, cudaMemcpyDeviceToDevice, s));
+                        CK(cudaMemcpyAsync(l.c_rows, ckr, nr, cudaMemcpyDeviceToDevice, s));
+                        CK(cudaMemcpyAsync(l.c_rows + (size_t) kWin * HD, cgr, nr, cudaMemcpyDeviceToDevice, s));
+                    }
+                    compress_win(ckr, cgr, A.c_kv, A.c_score, R, (int) p0, T, HD, l.c_norm, g.eps, d.latent, s);
+                    dump_sub(d, "ckr", l.il, p0, T, ckr, (size_t) T * HD * 4);
+                    dump_sub(d, "cgr", l.il, p0, T, cgr, (size_t) T * HD * 4);
+                }
+            }
+            Rows lim;
+            int clen_max = 0;
+            for (int t = 0; t < T; ++t) {
+                lim.n[t] = (int) ((p0 + t + 1) / R);
+                lim.k[t] = std::min(g.ix_topk, lim.n[t]);
+                clen_max = std::max(clen_max, lim.n[t]);
+            }
+            if (l.ix_src) {
+                Src& ks = srcs[(size_t) l.ik_src];
+                if (l.owns_k && ng > 0) {
+                    if (!mv(d, {job(l.i_wk, d.latent, d.ikr, ng, HD, g.ix_hd)}, err)) return false;
+                    Finish fi;
+                    fi.w = l.ik_norm;
+                    fi.eps = g.eps;
+                    fi.rd = g.rd;
+                    fi.pos = (int) (g_first * R);
+                    fi.pos_step = R;
+                    fi.freqs = freqs;
+                    fi.quant = 3;
+                    fi.pdst = (*A.ik)[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                    fi.pdst_stride = (long long) ik_rb();
+                    finish(d.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
+                    if (!wp.par && !replicate((*A.ik), ks.h_ik, ks.ev_ik, fi.pdst, (size_t) g_first * ik_rb(),
+                                              (size_t) ng * ik_rb(), l.dev, err))
+                        return false;
+                }
+                if (clen_max > 0) {
+                    if (!mv(d, {job(l.i_wq_b, qr, d.iq, T, g.q_lora, (size_t) g.ix_heads * g.ix_hd)}, err)) return false;
+                    Finish fi;
+                    fi.rd = g.rd;
+                    fi.pos = (int) p0;
+                    fi.vpp = g.ix_heads;
+                    fi.freqs = freqs;
+                    fi.quant = 3;
+                    finish(d.iq, T * g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
+                    // (iw rows are 64 apart)
+                    gemv_f16_rows(l.i_wproj, x, (size_t) D, g.ix_heads, D, T,
+                                  1.0f / std::sqrt((float) g.ix_hd) / std::sqrt((float) g.ix_heads), d.iw, 64, s);
+                    const long long ss = (long long) o.max_context + 64;
+                    bool restrict_ = false;
+                    for (int t = 0; t < T; ++t)
+                        restrict_ = restrict_ || (lim.n[t] + g.cand_blk - 1) / g.cand_blk > g.cand_topk;
+                    if (l.uses_cand && restrict_) {
+                        Rows cl;   // the candidate positions of each query: its blocks x blk
+                        int nmax = 0;
+                        for (int t = 0; t < T; ++t) {
+                            cl.n[t] = lim.n[t];
+                            cl.k[t] = wp.cand[l.il][r0 + t];
+                            nmax = std::max(nmax, wp.cand[l.il][r0 + t] * g.cand_blk);
+                        }
+                        index_score(d.iq, d.iw, (*A.ik)[(size_t) l.dev], g.ix_heads, g.ix_hd, T, nmax, cand_r,
+                                    (int) cand_stride(), g.cand_blk, cl, d.scores, ss, s);
+                        Rows tr;
+                        for (int t = 0; t < T; ++t) {
+                            tr.n[t] = wp.cand[l.il][r0 + t] * g.cand_blk;
+                            tr.k[t] = lim.k[t];
+                        }
+                        topk(d.scores, ss, T, tr, cand_r, (int) cand_stride(), g.cand_blk, topk_r, (int) topk_stride(), s);
+                    } else {
+                        index_score(d.iq, d.iw, (*A.ik)[(size_t) l.dev], g.ix_heads, g.ix_hd, T, clen_max, nullptr, 0, 1,
+                                    lim, d.scores, ss, s);
+                        if (l.cand_src) {
+                            Rows cr;
+                            for (int t = 0; t < T; ++t) {
+                                cr.n[t] = lim.n[t];
+                                cr.k[t] = g.cand_topk;
+                            }
+                            cand_blocks(d.scores, ss, T, cr, g.cand_blk, d.bm, (long long) bm_stride(), cand_r,
+                                        (int) cand_stride(), s);
+                        }
+                        topk(d.scores, ss, T, lim, nullptr, 0, 1, topk_r, (int) topk_stride(), s);
+                    }
+                }
+            }
+            if (l.kv_src && ng > 0) {
+                Finish fc;
+                fc.rd = g.rd;
+                fc.pos = (int) (g_first * R);
+                fc.pos_step = R;
+                fc.freqs = freqs;
+                fc.quant = 2;
+                fc.pdst = (*A.ckv)[(size_t) l.dev] + (size_t) g_first * ckv_rb();
+                fc.pdst_stride = (long long) ckv_rb();
+                finish(d.latent, ng, HD, HD, fc, s);
+                if (!wp.par && !replicate((*A.ckv), sr.h_ckv, sr.ev_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
+                                          (size_t) ng * ckv_rb(), l.dev, err))
+                    return false;
+                if (wp.par && wp.nrow == 0 && mi == 0 && sr.remote) {   // the new rows for the other groups' readers
+                    Xfer x;
+                    x.src[0] = fc.pdst;
+                    x.dst[0] = sr.x_stage;
+                    x.bytes[0] = (size_t) ng * ckv_rb();
+                    x.n = 1;
+                    if (l.owns_k && (*A.ik)[(size_t) l.dev] != nullptr) {
+                        x.src[1] = (*A.ik)[(size_t) l.dev] + (size_t) g_first * ik_rb();
+                        x.dst[1] = sr.x_stage + x_cap() * ckv_rb();
+                        x.bytes[1] = (size_t) ng * ik_rb();
+                        x.n = 2;
+                    }
+                    xfer_put(x, sr.x_flag, wp.win, d.xcnt, s);
+                }
+            }
+            if (ng > 0) dump_sub(d, "latent", l.il, p0, ng, d.latent, (size_t) ng * HD * 4);
+            dump_sub(d, "topk", l.il, p0, T, topk_r, (size_t) T * topk_stride() * 4);
+            for (int t = 0; t < T; ++t) ar.nsel[t] = lim.n[t] > 0 ? wp.topk[l.il][r0 + t] : 0;
+            ckv = (*A.ckv)[(size_t) l.dev];
+        }
+        if (l.mtp) {   // the block's rows (BF16), after the ring's in ext, as every query's selection
+            ckv = d.ext + (size_t) g.win * HD;
+            ckv_fmt = kKvBf16;
+            iota_rows(topk_r, T, T, (int) topk_stride(), s);
+        }
+        if (NHL > 0) {
+            sparse_attn(q, d.ext, ckv, topk_r, (int) topk_stride(), ar, l.sink, NHL, HD, T,
+                        1.0f / std::sqrt((float) HD), o_r, s, ckv_fmt, 0, &d.attn_scr);
+            dump_sub(d, "o", l.il, p0, T, o_r, (size_t) T * HQ * 4);
+            Finish fo;
+            fo.rd = g.rd;
+            fo.pos = (int) p0;
+            fo.vpp = NHL;
+            fo.freqs = freqs;
+            fo.inverse = 1;
+            fo.quant = 1;
+            finish(o_r, T * NHL, HD, HD, fo, s);
+            dump_sub(d, "o_fin", l.il, p0, T, o_r, (size_t) T * HQ * 4);
+        }
+        return true;
+    }
+    // a multi step's new compressed rows (each row's own conversation's, a group its position completed) to the other
+    // groups' readers: gathered in d.mstage, one hand-off - what a window's source puts in one piece (layer())
+    bool multi_put(const Layer& l, int mi, Dev& d, const WinPlan& wp, std::string& err) {
+        (void) err;
+        if (!wp.par || wp.nrow == 0 || mi != 0 || !l.kv_src || l.ratio <= 0 || l.src < 0) return true;
+        Src& sr = srcs[(size_t) l.src];
+        if (!sr.remote) return true;
+        cudaStream_t s = d.st;
+        const int R = l.ratio;
+        const bool with_ik = l.owns_k && l.ik_src >= 0 && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr;
+        int j = 0;
+        for (int t = 0; t < wp.nrow; ++t) {
+            const int64_t p = wp.rpos[t];
+            if ((p + 1) / R == p / R) continue;   // (no group completed at this row)
+            const SeqState& q = sqs[(size_t) wp.rseq[t]];
+            CK(cudaMemcpyAsync(d.mstage + (size_t) j * ckv_rb(),
+                               q.ckv[(size_t) l.src][(size_t) l.dev] + (size_t) (p / R) * ckv_rb(), ckv_rb(),
+                               cudaMemcpyDeviceToDevice, s));
+            if (with_ik)
+                CK(cudaMemcpyAsync(d.mstage + (size_t) kWin * ckv_rb() + (size_t) j * ik_rb(),
+                                   q.ik[(size_t) l.ik_src][(size_t) l.dev] + (size_t) (p / R) * ik_rb(), ik_rb(),
+                                   cudaMemcpyDeviceToDevice, s));
+            ++j;
+        }
+        if (j == 0) return true;
+        Xfer x;
+        x.src[0] = d.mstage;
+        x.dst[0] = sr.x_stage;
+        x.bytes[0] = (size_t) j * ckv_rb();
+        x.n = 1;
+        if (with_ik) {
+            x.src[1] = d.mstage + (size_t) kWin * ckv_rb();
+            x.dst[1] = sr.x_stage + x_cap() * ckv_rb();
+            x.bytes[1] = (size_t) j * ik_rb();
+            x.n = 2;
+        }
+        xfer_put(x, sr.x_flag, wp.win, d.xcnt, s);
+        return true;
+    }
+    // ... and on a reader of source sidx (device di): the rows multi_put gathered, each to its conversation's copy
+    bool multi_get(int sidx, int di, const WinPlan& wp, std::string& err) {
+        (void) err;
+        Src& sr = srcs[(size_t) sidx];
+        Dev& d = devs[(size_t) di];
+        cudaStream_t s = d.st;
+        const int R = sr.ratio;
+        int j = 0;
+        for (int t = 0; t < wp.nrow; ++t) j += (wp.rpos[t] + 1) / R != wp.rpos[t] / R;
+        if (j == 0) return true;
+        Xfer x;
+        if (sr.ckv[(size_t) di] != nullptr) {
+            x.src[x.n] = sr.x_stage;
+            x.dst[x.n] = d.mstage;
+            x.bytes[x.n++] = (size_t) j * ckv_rb();
+        }
+        if (sr.ik[(size_t) di] != nullptr) {
+            x.src[x.n] = sr.x_stage + x_cap() * ckv_rb();
+            x.dst[x.n] = d.mstage + (size_t) kWin * ckv_rb();
+            x.bytes[x.n++] = (size_t) j * ik_rb();
+        }
+        if (x.n == 0) return true;
+        xfer_get(x, sr.x_flag, wp.win, s);
+        j = 0;
+        for (int t = 0; t < wp.nrow; ++t) {
+            const int64_t p = wp.rpos[t];
+            if ((p + 1) / R == p / R) continue;
+            const SeqState& q = sqs[(size_t) wp.rseq[t]];
+            if (sr.ckv[(size_t) di] != nullptr)
+                CK(cudaMemcpyAsync(q.ckv[(size_t) sidx][(size_t) di] + (size_t) (p / R) * ckv_rb(),
+                                   d.mstage + (size_t) j * ckv_rb(), ckv_rb(), cudaMemcpyDeviceToDevice, s));
+            if (sr.ik[(size_t) di] != nullptr)
+                CK(cudaMemcpyAsync(q.ik[(size_t) sidx][(size_t) di] + (size_t) (p / R) * ik_rb(),
+                                   d.mstage + (size_t) kWin * ckv_rb() + (size_t) j * ik_rb(), ik_rb(),
+                                   cudaMemcpyDeviceToDevice, s));
+            ++j;
+        }
         return true;
     }
 
@@ -13082,193 +13552,22 @@ struct Model::Impl {
             fr.pos = (int) p0;
             fr.vpp = NHL;
             fr.freqs = freqs;
-            finish(d.q, T * NHL, HD, HD, fr, s);
+            if (wp.nrow == 0) finish(d.q, T * NHL, HD, HD, fr, s);
+            else
+                for (int t = 0; t < T; ++t) {   // (--parallel: each row by its own position)
+                    fr.pos = (int) wp.rpos[t];
+                    finish(d.q + (size_t) t * HQ, NHL, HD, HD, fr, s);
+                }
         }
         if (NHL > 0) dump_sub(d, "q", l.il, p0, T, d.q, (size_t) T * HQ * 4);
-        // the window rows: the ring's (positions p0 - win ..) then this window's, each query its own 128.  A DSpark
-        // block's ring holds the trunk's main KV (positions <= p0 - 1, seeded); its block of drafts attends to all of
-        // that ring and to the whole block, and leaves the ring as it was
-        ring_to_ext(l.win, d.ext, l.mtp ? (int64_t) g.win : p0, g.win, HD, s);   // (a block's ring: its rows as they lie)
-        Finish fk;
-        fk.w = l.kv_norm;
-        fk.eps = g.eps;
-        fk.rd = g.rd;
-        fk.pos = (int) p0;
-        fk.freqs = freqs;
-        fk.quant = 1;
-        fk.dst = d.ext + (size_t) g.win * HD;
-        fk.dst_stride = HD;
-        finish(d.kvr, T, HD, HD, fk, s);
-        if (!l.mtp) ext_to_ring(d.ext, l.win, p0, g.win, T, HD, s, spec_win ? l.ring_bak : nullptr);
-        dump_sub(d, "kv_win", l.il, p0, T, d.ext + (size_t) g.win * HD, (size_t) T * HD * 4);
-        dump_sub(d, "ext", l.il, p0, T, d.ext, ((size_t) g.win + T) * HD * 2);   // (BF16 rows: the ring's, then this window's)
-        AttnRows ar;
-        for (int t = 0; t < T; ++t) {
-            if (l.mtp) {
-                ar.win0[t] = 0;
-                ar.nwin[t] = (int) std::min<int64_t>(g.win, p0);
-                ar.nsel[t] = T;
-                continue;
-            }
-            const int first = (int) std::max<int64_t>(g.win - p0, t + 1);   // ext row of position max(0, p - win + 1)
-            ar.win0[t] = first;
-            ar.nwin[t] = g.win + t - first + 1;
-            ar.nsel[t] = 0;
-        }
-        const void* ckv = nullptr;
-        int ckv_fmt = kKvFp4;
-        if (l.ratio > 0) {
-            Src& sr = srcs[(size_t) l.src];
-            const int R = l.ratio;
-            // the groups this window completes: g_first .. g_first + ng - 1
-            const int64_t g_first = p0 / R;              // the first group whose last position is >= p0
-            const int64_t g_end = (p0 + T) / R;          // groups completed by p0 + T - 1
-            const int ng = (int) std::max<int64_t>(0, g_end - g_first);
-            if (l.kv_src) {
-                if (R == 1) {
-                    Finish fc;
-                    fc.w = l.c_norm;
-                    fc.eps = g.eps;
-                    finish(d.ckr, T, HD, HD, fc, s);
-                    CK(cudaMemcpyAsync(d.latent, d.ckr, (size_t) T * HD * 4, cudaMemcpyDeviceToDevice, s));
-                } else {
-                    if (spec_win && l.c_snap != nullptr) {   // to replay the accepted rows if drafts are rejected
-                        const size_t ns = (size_t) R * HD * 4, nr = (size_t) T * HD * 4;
-                        CK(cudaMemcpyAsync(l.c_snap, l.c_kv, ns, cudaMemcpyDeviceToDevice, s));
-                        CK(cudaMemcpyAsync(l.c_snap + (size_t) R * HD, l.c_score, ns, cudaMemcpyDeviceToDevice, s));
-                        CK(cudaMemcpyAsync(l.c_rows, d.ckr, nr, cudaMemcpyDeviceToDevice, s));
-                        CK(cudaMemcpyAsync(l.c_rows + (size_t) kWin * HD, d.cgr, nr, cudaMemcpyDeviceToDevice, s));
-                    }
-                    compress_win(d.ckr, d.cgr, l.c_kv, l.c_score, R, (int) p0, T, HD, l.c_norm, g.eps, d.latent, s);
-                    dump_sub(d, "ckr", l.il, p0, T, d.ckr, (size_t) T * HD * 4);
-                    dump_sub(d, "cgr", l.il, p0, T, d.cgr, (size_t) T * HD * 4);
-                }
-            }
-            Rows lim;
-            int clen_max = 0;
-            for (int t = 0; t < T; ++t) {
-                lim.n[t] = (int) ((p0 + t + 1) / R);
-                lim.k[t] = std::min(g.ix_topk, lim.n[t]);
-                clen_max = std::max(clen_max, lim.n[t]);
-            }
-            if (l.ix_src) {
-                Src& ks = srcs[(size_t) l.ik_src];
-                if (l.owns_k && ng > 0) {
-                    if (!mv(d, {job(l.i_wk, d.latent, d.ikr, ng, HD, g.ix_hd)}, err)) return false;
-                    Finish fi;
-                    fi.w = l.ik_norm;
-                    fi.eps = g.eps;
-                    fi.rd = g.rd;
-                    fi.pos = (int) (g_first * R);
-                    fi.pos_step = R;
-                    fi.freqs = freqs;
-                    fi.quant = 3;
-                    fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                    fi.pdst_stride = (long long) ik_rb();
-                    finish(d.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
-                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, (size_t) g_first * ik_rb(),
-                                              (size_t) ng * ik_rb(), l.dev, err))
-                        return false;
-                }
-                if (clen_max > 0) {
-                    if (!mv(d, {job(l.i_wq_b, d.qr, d.iq, T, g.q_lora, (size_t) g.ix_heads * g.ix_hd)}, err)) return false;
-                    Finish fi;
-                    fi.rd = g.rd;
-                    fi.pos = (int) p0;
-                    fi.vpp = g.ix_heads;
-                    fi.freqs = freqs;
-                    fi.quant = 3;
-                    finish(d.iq, T * g.ix_heads, g.ix_hd, g.ix_hd, fi, s);
-                    // (iw rows are 64 apart)
-                    gemv_f16_rows(l.i_wproj, d.x, (size_t) D, g.ix_heads, D, T,
-                                  1.0f / std::sqrt((float) g.ix_hd) / std::sqrt((float) g.ix_heads), d.iw, 64, s);
-                    const long long ss = (long long) o.max_context + 64;
-                    bool restrict_ = false;
-                    for (int t = 0; t < T; ++t)
-                        restrict_ = restrict_ || (lim.n[t] + g.cand_blk - 1) / g.cand_blk > g.cand_topk;
-                    if (l.uses_cand && restrict_) {
-                        Rows cl;   // the candidate positions of each query: its blocks x blk
-                        int nmax = 0;
-                        for (int t = 0; t < T; ++t) {
-                            cl.n[t] = lim.n[t];
-                            cl.k[t] = wp.cand[l.il][t];
-                            nmax = std::max(nmax, wp.cand[l.il][t] * g.cand_blk);
-                        }
-                        index_score(d.iq, d.iw, ks.ik[(size_t) l.dev], g.ix_heads, g.ix_hd, T, nmax, d.cand,
-                                    (int) cand_stride(), g.cand_blk, cl, d.scores, ss, s);
-                        Rows tr;
-                        for (int t = 0; t < T; ++t) {
-                            tr.n[t] = wp.cand[l.il][t] * g.cand_blk;
-                            tr.k[t] = lim.k[t];
-                        }
-                        topk(d.scores, ss, T, tr, d.cand, (int) cand_stride(), g.cand_blk, d.topk, (int) topk_stride(), s);
-                    } else {
-                        index_score(d.iq, d.iw, ks.ik[(size_t) l.dev], g.ix_heads, g.ix_hd, T, clen_max, nullptr, 0, 1,
-                                    lim, d.scores, ss, s);
-                        if (l.cand_src) {
-                            Rows cr;
-                            for (int t = 0; t < T; ++t) {
-                                cr.n[t] = lim.n[t];
-                                cr.k[t] = g.cand_topk;
-                            }
-                            cand_blocks(d.scores, ss, T, cr, g.cand_blk, d.bm, (long long) bm_stride(), d.cand,
-                                        (int) cand_stride(), s);
-                        }
-                        topk(d.scores, ss, T, lim, nullptr, 0, 1, d.topk, (int) topk_stride(), s);
-                    }
-                }
-            }
-            if (l.kv_src && ng > 0) {
-                Finish fc;
-                fc.rd = g.rd;
-                fc.pos = (int) (g_first * R);
-                fc.pos_step = R;
-                fc.freqs = freqs;
-                fc.quant = 2;
-                fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
-                fc.pdst_stride = (long long) ckv_rb();
-                finish(d.latent, ng, HD, HD, fc, s);
-                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
-                                          (size_t) ng * ckv_rb(), l.dev, err))
-                    return false;
-                if (wp.par && mi == 0 && sr.remote) {   // the new rows for the other groups' readers
-                    Xfer x;
-                    x.src[0] = fc.pdst;
-                    x.dst[0] = sr.x_stage;
-                    x.bytes[0] = (size_t) ng * ckv_rb();
-                    x.n = 1;
-                    if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
-                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                        x.dst[1] = sr.x_stage + x_cap() * ckv_rb();
-                        x.bytes[1] = (size_t) ng * ik_rb();
-                        x.n = 2;
-                    }
-                    xfer_put(x, sr.x_flag, wp.win, d.xcnt, s);
-                }
-            }
-            if (ng > 0) dump_sub(d, "latent", l.il, p0, ng, d.latent, (size_t) ng * HD * 4);
-            dump_sub(d, "topk", l.il, p0, T, d.topk, (size_t) T * topk_stride() * 4);
-            for (int t = 0; t < T; ++t) ar.nsel[t] = lim.n[t] > 0 ? wp.topk[l.il][t] : 0;
-            ckv = sr.ckv[(size_t) l.dev];
-        }
-        if (l.mtp) {   // the block's rows (BF16), after the ring's in ext, as every query's selection
-            ckv = d.ext + (size_t) g.win * HD;
-            ckv_fmt = kKvBf16;
-            iota_rows(d.topk, T, T, (int) topk_stride(), s);
+        if (wp.nrow == 0) {
+            if (!attn_core(l, mi, d, p0, T, 0, wp, attn_bound(l), err)) return false;
+        } else {   // (--parallel: each row its own conversation's attention, then its new rows to the other groups)
+            for (int t = 0; t < T; ++t)
+                if (!attn_core(l, mi, d, wp.rpos[t], 1, t, wp, attn_seq(L0, mi, wp.rseq[t]), err)) return false;
+            if (!multi_put(l, mi, d, wp, err)) return false;
         }
         if (NHL > 0) {
-            sparse_attn(d.q, d.ext, ckv, d.topk, (int) topk_stride(), ar, l.sink, NHL, HD, T,
-                        1.0f / std::sqrt((float) HD), d.o, s, ckv_fmt, 0, &d.attn_scr);
-            dump_sub(d, "o", l.il, p0, T, d.o, (size_t) T * HQ * 4);
-            Finish fo;
-            fo.rd = g.rd;
-            fo.pos = (int) p0;
-            fo.vpp = NHL;
-            fo.freqs = freqs;
-            fo.inverse = 1;
-            fo.quant = 1;
-            finish(d.o, T * NHL, HD, HD, fo, s);
-            dump_sub(d, "o_fin", l.il, p0, T, d.o, (size_t) T * HQ * 4);
             x3::MvJob j[16];
             const int per = HQ / OG;
             for (int gi = 0; gi < OG; ++gi)
@@ -13639,6 +13938,133 @@ struct Model::Impl {
         return tok_back(d);
     }
 
+    // ---- --parallel: one token of each of T conversations through the model together (Model::step_multi).  The rows
+    // go through the window path as a window's would - the dense weights, the routing, the experts and the head for
+    // all of them at once, each row's own experts - except where a row's own conversation counts: q's and the
+    // output's rotation by its own position, and its attention (its rings, partial groups, compressed KV, index keys,
+    // the indexer's top k) through the window code a row at a time (layer(), attn_core); the Engram rows by its own
+    // tokens; the drafter's rings seeded for each conversation as its own step seeds them.
+    bool step_multi(const int* sv, const int* tk, int T, std::string& err) {
+        if (sqs.empty()) {
+            err = "one conversation (no --parallel)";
+            return false;
+        }
+        if (T < 1 || T > kWin) {
+            err = "a multi step of " + std::to_string(T) + " rows";
+            return false;
+        }
+        for (int t = 0; t < T; ++t) {
+            if (sv[t] < 0 || sv[t] >= (int) sqs.size()) {
+                err = "conversation " + std::to_string(sv[t]) + " out of range";
+                return false;
+            }
+            for (int u = 0; u < t; ++u)
+                if (sv[u] == sv[t]) {
+                    err = "conversation " + std::to_string(sv[t]) + " twice in a multi step";
+                    return false;
+                }
+            if (tk[t] < 0 || tk[t] >= g.vocab) {
+                err = "token " + std::to_string(tk[t]) + " out of range";
+                return false;
+            }
+            if (seq_pos(sv[t]) + 1 > o.max_context) {
+                err = "the context is full";
+                return false;
+            }
+        }
+        seq_park();   // (every conversation's host state in sqs while the rows run)
+        WinPlan& wp = wplan;
+        wp.nrow = T;
+        for (int t = 0; t < T; ++t) {
+            SeqState& q = sqs[(size_t) sv[t]];
+            wp.rseq[t] = sv[t];
+            wp.rpos[t] = q.pos;
+            q.slot_held = false;
+            q.toks.push_back(tk[t]);
+            q.ctoks.push_back(tk[t] < pk.eg_vocab ? pk.eg_map[(size_t) tk[t]] : 0);   // (a decoded token: no picture's)
+        }
+        bool ok = true;
+        const double te = now_ms();
+        const int64_t eg_w0 = eg_wait_ns.load();
+        for (int li = 0; li < pk.eg_layers; ++li) {
+            EgBatch& b = *eg_win[(size_t) li];
+            if (b.live) eg_finish(b);
+            eg_issue(0, T, li, nullptr, b, &wp);
+        }
+        st.engram_ms += now_ms() - te;
+        const int D = g.dim;
+        for (int t = 0; t < T; ++t)
+            std::memcpy(h_emb + (size_t) t * D, embed_pinned + (size_t) tk[t] * D, (size_t) D * 2);
+        plan_window(0, T, wp);
+        prof_window = false;
+        n_logits = T;
+        logits_all = false;
+        const double tl = now_ms();
+        ok = par ? forward_par(0, T, err) : forward_serial(0, T, err);
+        st.layer_ms += now_ms() - tl;
+        for (auto& b : eg_win)
+            if (b->live) eg_finish(*b);
+        st.engram_ms += (double) (eg_wait_ns.load() - eg_w0) / 1e6;
+        eg_stats();
+        if (ok) {
+            Dev& d = devs[(size_t) head_dev];
+            cudaSetDevice(d.id);
+            const double th = now_ms();
+            const cudaError_t se = cudaStreamSynchronize(d.st);
+            st.head_ms += now_ms() - th;
+            if (se != cudaSuccess) {
+                err = std::string("the multi step: ") + cudaGetErrorString(se);
+                wp.nrow = 0;
+                seq_unpark();
+                return false;
+            }
+            prof_collect();
+            for (int t = 0; t < T; ++t) ++sqs[(size_t) sv[t]].pos;
+            st.tokens += T;
+            cache_tick(T);
+            // each row's conversation's drafter rings, from its row's taps (its own step's seeding, a row at a time)
+            for (int t = 0; ok && t < T && g.n_mtp > 0; ++t) {
+                seq_point(sv[t], true);
+                ok = seed_drafter(wp.rpos[t], 1, t, err);
+            }
+            if (g.n_mtp > 0) seq_point(sq_bound, true);
+        } else {   // (the rows' tokens were not consumed: the conversations as they were)
+            for (int t = 0; t < T; ++t) {
+                SeqState& q = sqs[(size_t) sv[t]];
+                if (!q.toks.empty() && (int64_t) q.toks.size() > q.pos) q.toks.pop_back();
+                if (!q.ctoks.empty() && (int64_t) q.ctoks.size() > q.pos) q.ctoks.pop_back();
+            }
+        }
+        wp.nrow = 0;
+        mrows.assign(sv, sv + T);
+        seq_unpark();
+        return ok;
+    }
+    int sample_multi(int row, float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter) {
+        if (row < 0 || row >= (int) mrows.size() || row >= n_logits) return -1;
+        Dev& d = devs[(size_t) head_dev];
+        cudaSetDevice(d.id);
+        strata::dsv41k::SamplerParams sp;
+        sp.temperature = temperature;
+        sp.greedy = temperature <= 0.0f;
+        sp.top_p = top_p;
+        sp.top_k = top_k;
+        sp.min_p = min_p;
+        sp.seed = seed;
+        sp.counter = counter;
+        const std::vector<int32_t>& hist = seq_tokens(mrows[(size_t) row]);
+        int h = 0;
+        const int* hr = pen_rows((int64_t) hist.size(), 1, sp, h, &hist);
+        strata::dsv41k::sample_tokens(d.logits + (size_t) row * g.vocab, 1, g.vocab, hr, h, sp, d.tok, d.st);
+        int t = -1;
+#if defined(STRATA_METAL)
+        ds4_metal_flush();   // (a host read of a device result: commit the batched dispatches first)
+#endif
+        cudaMemcpyAsync(&t, d.tok, 4, cudaMemcpyDeviceToHost, d.st);
+        cudaStreamSynchronize(d.st);
+        return t;
+    }
+
     bool logits(std::vector<float>& out) {
         if (logits_all) {
             out = chunk_logits;
@@ -13827,6 +14253,17 @@ int64_t Model::pos() const { return p_->pos; }
 int64_t Model::max_context() const { return p_->o.max_context; }
 int Model::vocab() const { return p_->g.vocab; }
 const std::vector<int32_t>& Model::tokens() const { return p_->toks; }
+int Model::seq_count() const { return p_->seq_count(); }
+void Model::seq_bind(int s) { p_->seq_bind(s); }
+int Model::seq_bound() const { return p_->sq_bound; }
+int64_t Model::seq_pos(int s) const { return p_->seq_pos(s); }
+const std::vector<int32_t>& Model::seq_tokens(int s) const { return p_->seq_tokens(s); }
+bool Model::step_multi(const int* seqs, const int* tokens, int n, std::string& err) {
+    return p_->step_multi(seqs, tokens, n, err);
+}
+int Model::sample_multi(int row, float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter) {
+    return p_->sample_multi(row, t, tp, tk, mp, seed, counter);
+}
 void Model::reset() { p_->reset(); }
 void Model::checkpoint(int slot) { p_->checkpoint(slot); }
 void Model::mark(bool shared) { p_->mark(shared); }

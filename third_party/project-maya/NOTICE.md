@@ -51,3 +51,9 @@ Taken from Project Maya v1.1.35 to v1.1.42 on branch f-040-maya-ds:
 - A4b, a chunk of few rows streams only the experts it picks, on the batches path (`DS4_SKIP_UNPICKED_ROWS`, `Streamer::skip_k`
   in `copy_ahead`; opt-in): Project Maya #691 (needmorevram, c7d08c5). The flow path (the default for in-place GGUF
   experts) already read only routed experts.
+
+MAYA-PAR (2026-10-31, branch f-041-maya-par), DeepSeek `--parallel`:
+- #332 (mw00, 5da555f): several conversations in one engine (`Options::seqs`, `Model::seq_bind` / `step_multi` / `sample_multi`, the
+  per-conversation rings, partial groups, KV and index keys, `--parallel N`, the multi protocol of `--serve` (GEN rid=<id>, READY multi=<n>),
+  `--multi-check`, `ds4_gguf_test --rows`). Strata parks the restore points (marks) per conversation too. The server side
+  (`StrataEngine` reading the tagged lines, `parallel_args`, `serve/test_ds_parallel.py`) is written for Strata's server.
