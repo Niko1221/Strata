@@ -43,8 +43,18 @@ inline int depth_from(const char* v) {
 // not publish the entries a sparse consumer waits on (STRATA_PREFILL_COPY_EVENT_EVERY > 1: a_rec / rec_of) and does not
 // deduplicate release waits (STRATA_PREFILL_COPY_WAIT_DEDUPE=1).  With either set the chunk keeps the default issuer:
 // otherwise the consumer would wait on a record that never comes, or the requested wait policy would be bypassed.
+// held_off: why a streamed chunk keeps the default walk with the switch set (null when it takes the routed walk); the
+// engine prints it once, so a set switch does not read as active where it cannot run.
+inline const char* held_off(bool issuer_on, bool peer, int copy_event_every, bool copy_wait_dedupe) {
+    if (!issuer_on) return "the inline issuer (STRATA_PREFILL_ISSUER=0) copies every expert";
+    if (peer) return "the peer prompt ring (--peer-device) keeps its own walk";
+    if (copy_event_every != 1 || copy_wait_dedupe)
+        return "STRATA_PREFILL_COPY_EVENT_EVERY > 1 and STRATA_PREFILL_COPY_WAIT_DEDUPE=1 keep the default issuer, whose "
+               "copy records the routed walk does not write";
+    return nullptr;
+}
 inline bool eligible(bool stream_all, bool issuer_on, bool peer, int copy_event_every, bool copy_wait_dedupe) {
-    return stream_all && issuer_on && !peer && copy_event_every == 1 && !copy_wait_dedupe;
+    return stream_all && held_off(issuer_on, peer, copy_event_every, copy_wait_dedupe) == nullptr;
 }
 
 // Which experts each layer's tokens route to, published by the compute thread once the layer's router has run and
