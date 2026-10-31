@@ -1,0 +1,54 @@
+{
+  "fresh_processes": 3,
+  "layer": 0,
+  "weight_repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "weight_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "independent_origin_hashes_verified": true,
+  "complete_layer_cases": 21,
+  "complete_layer_cases_passed": 21,
+  "complete_layer_output_hashes_stable": true,
+  "forced_expert_cases": 1536,
+  "forced_expert_cases_passed": 1533,
+  "forced_expert_output_hashes_stable": true,
+  "failed_experts_per_process": [
+    [
+      423
+    ],
+    [
+      423
+    ],
+    [
+      423
+    ]
+  ],
+  "projection_checks": 6480,
+  "projection_failures": 0,
+  "max_projection_error_over_bound": 0.044428288193599376,
+  "quantization_checks": 4320,
+  "quantization_failures": 0,
+  "max_quantization_scale_ulps": 1,
+  "all_resident_weights_unchanged": true,
+  "max_layer_output_normalized_rms_error": 2.1609771759717035e-06,
+  "max_layer_output_max_normalized_error": 2.7492277649567608e-06,
+  "max_expert_normalized_rms_error": 0.0007467130060547875,
+  "max_expert_max_normalized_error": 0.000589519026816682,
+  "torch_npu_peak_allocated_bytes": 828427776,
+  "torch_npu_peak_reserved_bytes": 861929472,
+  "all_original_numerical_budgets_passed": false,
+  "budgets": {
+    "end_max_normalized": 0.001,
+    "end_rms_normalized": 0.0005,
+    "projection": "gamma(4*K/64+4)*sum(abs(products))"
+  },
+  "binary_sha256": {
+    "libstrata_s2_projection.so": "e49fd7ae0bf22b8cc80ffc1b76acbc42aa1a6f2eabd7220e897326fc3dcf86b9",
+    "libstrata_moe_reference.so": "def116982cc889010e7af5fec674d0c53bc7973fb3d4b0f15bbbaf0f157c12b0"
+  },
+  "source_sha256": {
+    "diagnose_expert.py": "6f0a8e32bc197bc2443a7edd0d56d4410c7c9e45398a77822c1b3ddf32cc10e7",
+    "fetch_layer.py": "f7773bf0760006ba8afd086863e882097bdc55d38018e1eae93e94e7ec8c5c22",
+    "probe.py": "b23db9d7e18497cc51da9cb019995fa8a7de3e17076c46f4ce34a68bf84d5616"
+  },
+  "scope": "router + 10 routed experts + gated shared expert; host expert dispatch; no attention/residual/model integration",
+  "input_scope": "synthetic FP32 hidden states, not activations captured from a prompt"
+}

@@ -1,0 +1,18 @@
+{
+  "bench/ascend_a2_s2/build-a3-release": [
+    "ASCENDC_CMAKE_DIR:PATH=<CANN_ROOT>/aarch64-linux/tikcpp/ascendc_kernel_cmake",
+    "ASCEND_CANN_PACKAGE_PATH:PATH=<CANN_ROOT>",
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++",
+    "RUN_MODE:STRING=npu",
+    "SOC_VERSION:STRING=Ascend910_9362"
+  ],
+  "bench/ascend_a2_s2/fused/build-a3-release": [
+    "ASCENDC_CMAKE_DIR:PATH=<CANN_ROOT>/aarch64-linux/tikcpp/ascendc_kernel_cmake",
+    "ASCEND_CANN_PACKAGE_PATH:PATH=<CANN_ROOT>",
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++",
+    "RUN_MODE:STRING=npu",
+    "SOC_VERSION:STRING=Ascend910_9362"
+  ]
+}

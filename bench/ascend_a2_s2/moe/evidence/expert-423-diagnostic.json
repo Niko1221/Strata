@@ -1,0 +1,66 @@
+{
+  "expert": 423,
+  "input_sha256": "09e7ea9cce123b56c46c3053a620d566f1fc2f255a13ca568459fd8f382fd8c2",
+  "weights_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "binary_sha256": {
+    "libstrata_s2_projection.so": "e49fd7ae0bf22b8cc80ffc1b76acbc42aa1a6f2eabd7220e897326fc3dcf86b9",
+    "libstrata_moe_reference.so": "def116982cc889010e7af5fec674d0c53bc7973fb3d4b0f15bbbaf0f157c12b0"
+  },
+  "source_sha256": "6f0a8e32bc197bc2443a7edd0d56d4410c7c9e45398a77822c1b3ddf32cc10e7",
+  "gate_vs_fp64": {
+    "max_abs_error": 4.3054984644186334e-07,
+    "max_normalized_error": 1.8282590018260472e-07,
+    "normalized_rms_error": 1.2954676348999183e-07,
+    "finite": true
+  },
+  "up_vs_fp64": {
+    "max_abs_error": 6.918461536997711e-07,
+    "max_normalized_error": 3.2876131242915e-07,
+    "normalized_rms_error": 1.2437464502816764e-07,
+    "finite": true
+  },
+  "mid_vs_fp64_chain": {
+    "max_abs_error": 3.5762786865234375e-07,
+    "max_normalized_error": 1.9041560808811875e-07,
+    "normalized_rms_error": 1.661492000975819e-07,
+    "finite": true
+  },
+  "independent_full_expert": {
+    "max_abs_error": 0.00023475709574150017,
+    "max_normalized_error": 0.000589519026816682,
+    "normalized_rms_error": 0.0007467130060547875,
+    "finite": true
+  },
+  "intermediate_code_differences": 1,
+  "changed_coordinates": [
+    {
+      "token": 0,
+      "column": 196,
+      "native_mid": -0.10586678236722946,
+      "fp64_chain_mid_fp32": -0.10586674511432648,
+      "native_code": -20,
+      "fp64_chain_code": -19,
+      "native_scale": 0.005429064854979515,
+      "fp64_chain_scale": 0.005429066717624664,
+      "native_scaled": -19.500003814697266,
+      "fp64_chain_scaled": -19.499990463256836
+    }
+  ],
+  "nonlinearity_held_projection_code_differences": 0,
+  "quantizer_actual_mid_code_differences": 0,
+  "conditional_down_bound": {
+    "max_abs_error": 2.9072069196445227e-08,
+    "max_error_over_bound": 0.012264123326246342,
+    "passed": true
+  },
+  "counterfactual_reference_codes_through_native_down": {
+    "max_abs_error": 3.624517574962738e-08,
+    "max_normalized_error": 9.101842339303848e-08,
+    "normalized_rms_error": 6.19593963834083e-08,
+    "finite": true
+  },
+  "native_output_sha256": "881478566bd22818941e56ea5c2f3441614ed0d3e0a8634b0673be4e29faa6a7",
+  "reference_codes_sha256": "c9cc0b57f9a29c4d644b39cdbbe9861719c3dc5bd1e9201cb0396c3433706041",
+  "native_codes_sha256": "19f3a1a1beb71a7be061d40a0c86b43ac9a544523b9759eaa8e6e18c28206e65",
+  "input_unchanged": true
+}
