@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -121,11 +122,21 @@ public:
     bool step(int token, bool logits, std::string& err);
     /// Feeds n tokens (windows of up to 16, or a long run in chunks of prefill_chunk); the last `logits_rows` of them get
     /// logits (logits_rows > 16: only a run of one chunk or window).
-    bool feed(const int* tokens, int n, int logits_rows, std::string& err);
+    bool feed(const int* tokens, int n, int logits_rows, std::string& err, int after = 0);
     /// feed() of a prompt's end that also keeps the state before its last token in checkpoint `slot` (a prompt's
     /// last token then rides along in the run of chunks instead of a window of its own); the same as
     /// feed(n - 1), checkpoint(slot), feed(1)
     bool feed_mark(const int* tokens, int n, int logits_rows, int slot, std::string& err);
+    /// feed_mark() that also keeps the restore points `inner` on the way (positions inside the read - past its first
+    /// token, short of its last - in order, with mark()'s `shared`), each the state a read up to it leaves: the same as
+    /// feed() up to each and mark() there, then feed_mark() of the rest - but a run of chunks keeps them in one run
+    /// instead of a run up to each.  marks_inside(): whether n tokens read so, the points at rows `rel` of them, cost
+    /// at most a chunk's rows more than stopping at each (a long prompt's skip: the one read runs the rows before its
+    /// first point through every layer, where the reads after it would have skipped theirs) - else the caller stops the
+    /// read at the points, as before.  feed()'s `after`: the prompt's tokens still to come in later feeds (a piece of it)
+    bool feed_marks(const int* tokens, int n, int logits_rows, int slot,
+                    const std::vector<std::pair<int64_t, bool>>& inner, std::string& err);
+    bool marks_inside(int n, const std::vector<int64_t>& rel) const;
     /// The next token from the last feed's last logit row (greedy when temperature <= 0).
     int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter);
     /// The request's repetition / frequency / presence penalties (llama.cpp's) for every pick after this - sample() and

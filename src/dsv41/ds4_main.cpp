@@ -465,6 +465,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     auto dump_rows = [&]() {
         if (dump_f != nullptr && m.logits(dump_lg)) std::fwrite(dump_lg.data(), 4, dump_lg.size(), dump_f);
     };
+    // STRATA_DS4_RESTORE_TAIL_AUTO (1): the tail point is left out where its cost is measured higher than reading its
+    // tokens again; 0: kept on every read that reaches it
+    static const bool tail_auto = [] {
+        const char* v = std::getenv("STRATA_DS4_RESTORE_TAIL_AUTO");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    strata::ds4::TailCost tail_cost;
     SpanCache spans;
     const int img_tok = m.image_token();
     // CONVERSATION SLOTS: a request that does not continue the conversation in the model first sets that one aside
@@ -713,6 +720,88 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         note(msg);
         return len;
     };
+    // SHARED STARTS (#607): the state at the end of a system prompt and its tools (the shared start of a prompt read from
+    // token 0) is also kept apart from its conversation, in RAM, so a NEW conversation behind the same start - after an
+    // unrelated one, with or without STRATA_DS4_SLOT_KEEP - takes it back and reads only the rest.  It is the state the read
+    // itself keeps at that point (a whole read up to it).  STRATA_DS4_PREFIX_KEEP (2) starts at most, the least recently
+    // used giving way, STRATA_DS4_PREFIX_GB (2) their bytes at most, STRATA_DS4_PREFIX_MIN (1024) the shortest start kept;
+    // STRATA_DS4_PREFIX_KEEP=0: none.  Starts with pictures are not kept.
+    struct Prefix {
+        std::vector<int32_t> tokens;
+        std::vector<uint8_t> data;
+        uint64_t used = 0;
+    };
+    std::vector<Prefix> prefixes;
+    uint64_t prefix_clock = 0;
+    const int prefix_max = m.marks_cap() > 0 ? std::max(0, (int) env_num("STRATA_DS4_PREFIX_KEEP", 2)) : 0;
+    const uint64_t prefix_budget = (uint64_t) (std::max(0.0, env_num("STRATA_DS4_PREFIX_GB", 2)) * 1073741824.0);
+    const size_t prefix_min = (size_t) std::max(1.0, env_num("STRATA_DS4_PREFIX_MIN", 1024));
+    // the longest kept start the prompt begins with, past `floor` tokens and short of its last token (none: -1)
+    const auto prefix_find = [&](const std::vector<int>& prompt, const std::vector<Pic>& want, size_t floor) -> int {
+        int best = -1;
+        for (size_t i = 0; i < prefixes.size(); ++i) {
+            const auto& t = prefixes[i].tokens;
+            if (t.size() <= floor || t.size() + 1 > prompt.size() ||
+                (best >= 0 && t.size() <= prefixes[(size_t) best].tokens.size()))
+                continue;
+            if (!std::equal(t.begin(), t.end(), prompt.begin())) continue;
+            bool pic = false;   // (a picture inside the start: its KV needs that picture - none is kept)
+            for (const Pic& q : want) pic = pic || (size_t) q.start < t.size();
+            if (!pic) best = (int) i;
+        }
+        return best;
+    };
+    // the state as the read keeps it at a shared start: kept apart (a copy of it), unless it already is
+    const auto prefix_keep = [&]() {
+        const std::vector<int32_t>& t = m.tokens();
+        if (prefix_max <= 0 || t.size() < prefix_min) return;
+        for (Prefix& p : prefixes)
+            if (p.tokens == t) {
+                p.used = ++prefix_clock;
+                return;
+            }
+        const auto t0 = std::chrono::steady_clock::now();
+        Prefix p;
+        std::string e;
+        const uint64_t bytes = m.slot_save(p.data, e);
+        if (bytes == 0) {
+            std::fprintf(stderr, "ds4: keeping the shared start failed (%s)\n", e.c_str());
+            return;
+        }
+        if (bytes > prefix_budget) return;
+        p.tokens = t;
+        p.used = ++prefix_clock;
+        prefixes.push_back(std::move(p));
+        uint64_t total = 0;
+        for (const Prefix& x : prefixes) total += x.data.size();
+        while (prefixes.size() > 1 && ((int) prefixes.size() > prefix_max || total > prefix_budget)) {
+            size_t lru = 0;
+            for (size_t i = 1; i < prefixes.size(); ++i)
+                if (prefixes[i].used < prefixes[lru].used) lru = i;
+            total -= prefixes[lru].data.size();
+            prefixes.erase(prefixes.begin() + (long) lru);
+        }
+        std::fprintf(stderr, "ds4: kept a %zu-token shared start (%s in RAM in %.2f s); %zu kept, %s\n", t.size(),
+                     gb(bytes).c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                     prefixes.size(), gb(total).c_str());
+    };
+    // kept start i back in the model (false: it did not load - the state is reset, and the start is dropped)
+    const auto prefix_take = [&](int i) -> bool {
+        Prefix& p = prefixes[(size_t) i];
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string e;
+        if (!m.slot_load(p.data.data(), p.data.size(), (int64_t) p.tokens.size(), e) ||
+            (size_t) m.pos() != p.tokens.size()) {
+            std::fprintf(stderr, "ds4: taking a shared start back failed (%s) - reading it again\n", e.c_str());
+            prefixes.erase(prefixes.begin() + i);
+            m.reset();
+            return false;
+        }
+        p.used = ++prefix_clock;
+        std::fprintf(stderr, "ds4: took back a %zu-token shared start (%.2f s)\n", p.tokens.size(),
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return true;
+    };
     if (slot_max > 0) {
         slot_dir = std::getenv("STRATA_DS4_SLOT_DIR") ? std::filesystem::path(std::getenv("STRATA_DS4_SLOT_DIR"))
                                                       : std::filesystem::path(pack) / "slots";
@@ -872,11 +961,18 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             const int64_t limit = (int64_t) std::min(c, r.ids.size() - 1);
             const int64_t rs = m.restorable(limit);
             bool whole = false;
-            const size_t back = pics.empty() ? slot_take(r.ids, rs > 0 ? (size_t) rs : 0, whole) : 0;
+            // (a kept shared start, when it covers more than the state itself can go back to; a kept conversation only
+            //  when it covers more than either)
+            const int pi = prefix_find(r.ids, pics, rs > 0 ? (size_t) rs : 0);
+            const size_t plen = pi >= 0 ? prefixes[(size_t) pi].tokens.size() : 0;
+            const size_t back = pics.empty() ? slot_take(r.ids, std::max(rs > 0 ? (size_t) rs : 0, plen), whole) : 0;
             if (back > 0) {
                 from = back;
                 took = true;
                 continued = whole;
+            } else if (pi >= 0 && prefix_take(pi)) {
+                from = plen;
+                took = true;   // (the state that comes back holds no pictures)
             } else if (rs >= 0 && m.restore(limit))
                 from = (size_t) m.pos();
             else m.reset();
@@ -939,9 +1035,30 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // read reaches, and leaves the prompt's last token to the usual end): the read stops at each and keeps the state
         std::vector<strata::ds4::MarkAt> cuts;
         size_t next_cut = 0;
+        // the tail point (tail=): only where the read reaches it, and - once two reads measured it - where its run costs
+        // no more than reading its tokens again (TailCost, ds4_marks.hpp; Maya #668: a 4-GPU split or experts outside
+        // VRAM make the stop cost 4-9x); one in 32 is still kept to measure again
+        int64_t tail_at = -1;
+        double ms_main = 0.0, ms_tail = 0.0;
         if (m.marks_cap() > 0) {
             std::vector<int64_t> asked = r.marks;
-            if (r.tail > (long long) from) asked.push_back(r.tail);
+            if (r.tail > (long long) from && r.tail < (long long) total - 1) {
+                const bool was = tail_cost.costly();
+                if (!tail_auto || tail_cost.keep()) {
+                    asked.push_back(r.tail);
+                    tail_at = r.tail;
+                }
+                static bool said_off = false;
+                if (tail_auto && was && !said_off) {
+                    std::fprintf(stderr, "ds4 serve: the tail restore point is left out on this PC: its read stop cost "
+                                         "%.1fx a long read's time a token (more than reading its tokens again: the last "
+                                         "tail run %zu tokens in %.0f ms, the long read %.2f ms a token); one in 32 still "
+                                         "keeps it, to measure again (STRATA_DS4_RESTORE_TAIL_AUTO=0 keeps it always)\n",
+                                 tail_cost.ratio, tail_cost.last_tail_tokens, tail_cost.last_tail_ms,
+                                 tail_cost.last_main_ms_token);
+                    said_off = true;
+                }
+            }
             const long long shared = r.shared >= 0 ? r.shared : (r.pin >= 256 ? r.pin : -1);
             if (!asked.empty() || shared >= 0) {
                 std::vector<std::pair<int64_t, int64_t>> spans;
@@ -963,17 +1080,57 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             }
             size_t n = std::min<size_t>((size_t) m.feed_unit(), total - done);
             if (next_cut < cuts.size() && (size_t) cuts[next_cut].pos < done + n) n = (size_t) cuts[next_cut].pos - done;
+            // (the rest of the prompt in one read that keeps the restore points left on the way, where that costs at most
+            //  a chunk's rows more than stopping at each - a run of chunks has a fixed cost of its own, the CPU lane's
+            //  experts streamed for it: a point near the prompt's tail read alone cost as much as the rest; not past a
+            //  shared start a read from token 0 reaches first: the read stops there and prefix_keep keeps its state)
+            std::vector<std::pair<int64_t, bool>> inner;
+            const size_t rest = total - done;
+            const bool start_kept = prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
+                                    cuts[0].shared && (size_t) cuts[0].pos >= prefix_min;
+            if (next_cut < cuts.size() && !last_window && !start_kept && rest <= (size_t) m.feed_unit()) {
+                std::vector<int64_t> rel;
+                for (size_t j = next_cut; j < cuts.size(); ++j) rel.push_back(cuts[j].pos - (int64_t) done);
+                if (m.marks_inside((int) rest, rel))
+                    for (size_t j = next_cut; j < cuts.size(); ++j) inner.push_back({cuts[j].pos, cuts[j].shared});
+            }
+            if (!inner.empty()) n = rest;
             // (the prompt's end: the last token in the same run, the checkpoint before it kept on the way)
             const bool fin = done + n == total;
-            if (fin && last_window) {
+            const double f0 = tail_at >= 0 ? now_ms() : 0.0;   // (TailCost: the run's wall time)
+            if (!inner.empty()) {
+                ok = m.feed_marks(r.ids.data() + done, (int) n, 1, 1, inner, err);
+                if (ok) next_cut = cuts.size();   // (the points the read went past: kept by it)
+            } else if (fin && last_window) {
                 ok = (n < 2 || m.feed(r.ids.data() + done, (int) n - 1, 0, err));
                 if (ok) m.checkpoint(1);
                 ok = ok && m.feed(r.ids.data() + done + n - 1, 1, 1, err);
             } else
                 ok = fin ? m.feed_mark(r.ids.data() + done, (int) n, 1, 1, err)
                          : m.feed(r.ids.data() + done, (int) n, 0, err);
+            if (ok && tail_at >= 0) {
+                const bool after = done >= (size_t) tail_at;
+                (after ? ms_tail : ms_main) += now_ms() - f0;
+                if (after && done + n == total && tail_auto) {   // (the read's end: its cost measured)
+                    const bool was = tail_cost.costly(), known = tail_cost.measured();
+                    if (tail_cost.add(ms_main, (size_t) tail_at - from, ms_tail, total - (size_t) tail_at) &&
+                        ((was && !tail_cost.costly()) || (!known && tail_cost.measured() && !tail_cost.costly())))
+                        std::fprintf(stderr, "ds4 serve: the tail restore point is kept%s: its read stop costs %.1fx a "
+                                             "long read's time a token (2x or less: no more than reading its tokens "
+                                             "again; the last tail run %zu tokens in %.0f ms, the long read %.2f ms a "
+                                             "token)\n", was ? " again" : "", tail_cost.ratio, tail_cost.last_tail_tokens,
+                                     tail_cost.last_tail_ms, tail_cost.last_main_ms_token);
+                }
+            }
             done += n;
-            if (ok && next_cut < cuts.size() && done == (size_t) cuts[next_cut].pos) m.mark(cuts[next_cut++].shared);
+            if (ok && next_cut < cuts.size() && done == (size_t) cuts[next_cut].pos) {
+                const bool sh = cuts[next_cut++].shared;
+                m.mark(sh);
+                // (a shared start read from token 0 with no stop before it: kept apart for new conversations, #607)
+                bool pic = false;
+                for (const Pic& q : pics) pic = pic || (size_t) q.start < done;
+                if (sh && from == 0 && next_cut == 1 && !pic) prefix_keep();
+            }
             if (ok && (done >= next_pp || done == total)) {
                 const double ms = now_ms() - t0;
                 std::printf("PP %zu %zu %.1f %.1f %zu\n", done, r.ids.size(), ms,
@@ -1069,6 +1226,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         };
         for (;;) {
             if (in.stop.load()) {
+                finish = "cancel";
+                break;
+            }
+            if (tok < 0) {   // (a sample's CUDA error, printed by the sampler: no T -1 to the client; Project Maya #619)
+                std::fprintf(stderr, "ds4 serve: the sample failed\n");
                 finish = "cancel";
                 break;
             }
@@ -1610,6 +1772,10 @@ int main(int argc, char** argv) {
         int tok = m.sample(temp, 1.0f, temp > 0 ? 64 : 1, 0.0f, cli_seed, counter++);
         std::vector<int> got;
         for (;;) {
+            if (tok < 0) {   // (a sample's CUDA error, printed by the sampler)
+                std::fprintf(stderr, "strata-dsv41: the sample failed\n");
+                return 1;
+            }
             out.push_back(tok);
             {
                 const double tn = now_ms();
