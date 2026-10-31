@@ -1,0 +1,113 @@
+{
+  "label": "1-baseline",
+  "rows": [
+    {
+      "ttft_ms": 368.59,
+      "wall_s": 3.825,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "350",
+          "117.0",
+          "256",
+          "3472",
+          "73.7"
+        ]
+      ],
+      "output_utf8_sha256": "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+      "kind": "japanese",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 466.08,
+      "wall_s": 2.812,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "448",
+          "131.8",
+          "256",
+          "2362",
+          "108.4"
+        ]
+      ],
+      "output_utf8_sha256": "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+      "kind": "code",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 2272.63,
+      "wall_s": 3.132,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2253",
+          "688.4",
+          "64",
+          "876",
+          "73.1"
+        ]
+      ],
+      "output_utf8_sha256": "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+      "kind": "long",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 10194.55,
+      "wall_s": 10.966,
+      "usage": {
+        "prompt_tokens": 15352,
+        "completion_tokens": 64,
+        "total_tokens": 15416,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "15352",
+          "0",
+          "15352",
+          "10173",
+          "1509.1",
+          "64",
+          "789",
+          "81.2"
+        ]
+      ],
+      "output_utf8_sha256": "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+      "kind": "prefill16k",
+      "repeat": 0
+    }
+  ]
+}

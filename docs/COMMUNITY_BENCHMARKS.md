@@ -25,6 +25,12 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-31: dual V100 PCIe 32 GB, current-main B6-only/full-table comparison](../bench/results/2026-10-31-v100-b6-compatibility/README.md):
+  Three cycles, one CUDA 12.8/sm70 binary; B6-only Japanese/code +3.0%/+4.3%, combined table +10.7%/+12.7%;
+  decoded texts matched in all 12 comparisons per optimized arm, four 32K concurrent requests passed.
+  Community diagnostic; independent per-flag gains and broader hardware coverage not established.
+
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

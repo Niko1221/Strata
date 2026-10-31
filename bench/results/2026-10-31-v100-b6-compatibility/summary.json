@@ -1,0 +1,334 @@
+{
+  "arms": {
+    "baseline": {
+      "japanese": {
+        "decode": [
+          73.7,
+          73.7,
+          73.8
+        ],
+        "prefill": [
+          122.8,
+          117.0,
+          124.3
+        ],
+        "hashes": [
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+        ],
+        "ttft_ms": [
+          352.71,
+          368.59,
+          348.44
+        ],
+        "median_decode": 73.7,
+        "median_prefill": 122.8,
+        "median_ttft_ms": 352.71
+      },
+      "code": {
+        "decode": [
+          108.1,
+          108.4,
+          108.4
+        ],
+        "prefill": [
+          132.2,
+          131.8,
+          131.3
+        ],
+        "hashes": [
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+        ],
+        "ttft_ms": [
+          465.05,
+          466.08,
+          467.98
+        ],
+        "median_decode": 108.4,
+        "median_prefill": 131.8,
+        "median_ttft_ms": 466.08
+      },
+      "long": {
+        "decode": [
+          72.9,
+          73.1,
+          73.0
+        ],
+        "prefill": [
+          690.4,
+          688.4,
+          690.2
+        ],
+        "hashes": [
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637"
+        ],
+        "ttft_ms": [
+          2265.96,
+          2272.63,
+          2266.43
+        ],
+        "median_decode": 73.0,
+        "median_prefill": 690.2,
+        "median_ttft_ms": 2266.43
+      },
+      "prefill16k": {
+        "decode": [
+          81.0,
+          81.2,
+          81.1
+        ],
+        "prefill": [
+          1504.5,
+          1509.1,
+          1504.6
+        ],
+        "hashes": [
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7"
+        ],
+        "ttft_ms": [
+          10225.05,
+          10194.55,
+          10225.3
+        ],
+        "median_decode": 81.1,
+        "median_prefill": 1504.6,
+        "median_ttft_ms": 10225.05
+      }
+    },
+    "b6": {
+      "japanese": {
+        "decode": [
+          75.9,
+          75.7,
+          75.9
+        ],
+        "prefill": [
+          131.1,
+          130.8,
+          130.2
+        ],
+        "hashes": [
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+        ],
+        "ttft_ms": [
+          331.4,
+          332.15,
+          333.53
+        ],
+        "median_decode": 75.9,
+        "median_prefill": 130.8,
+        "median_ttft_ms": 332.15,
+        "decode_change_pct": 2.99,
+        "prefill_change_pct": 6.51,
+        "matching_baseline_hashes": 3
+      },
+      "code": {
+        "decode": [
+          113.1,
+          112.9,
+          113.1
+        ],
+        "prefill": [
+          140.5,
+          140.4,
+          139.3
+        ],
+        "hashes": [
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+        ],
+        "ttft_ms": [
+          438.6,
+          438.73,
+          442.12
+        ],
+        "median_decode": 113.1,
+        "median_prefill": 140.4,
+        "median_ttft_ms": 438.73,
+        "decode_change_pct": 4.34,
+        "prefill_change_pct": 6.53,
+        "matching_baseline_hashes": 3
+      },
+      "long": {
+        "decode": [
+          75.7,
+          75.4,
+          75.8
+        ],
+        "prefill": [
+          688.9,
+          687.3,
+          690.8
+        ],
+        "hashes": [
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637"
+        ],
+        "ttft_ms": [
+          2270.84,
+          2276.48,
+          2264.5
+        ],
+        "median_decode": 75.7,
+        "median_prefill": 688.9,
+        "median_ttft_ms": 2270.84,
+        "decode_change_pct": 3.7,
+        "prefill_change_pct": -0.19,
+        "matching_baseline_hashes": 3
+      },
+      "prefill16k": {
+        "decode": [
+          84.0,
+          83.9,
+          84.0
+        ],
+        "prefill": [
+          1500.5,
+          1508.7,
+          1507.8
+        ],
+        "hashes": [
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7"
+        ],
+        "ttft_ms": [
+          10252.59,
+          10197.64,
+          10203.13
+        ],
+        "median_decode": 84.0,
+        "median_prefill": 1507.8,
+        "median_ttft_ms": 10203.13,
+        "decode_change_pct": 3.58,
+        "prefill_change_pct": 0.21,
+        "matching_baseline_hashes": 3
+      }
+    },
+    "full": {
+      "japanese": {
+        "decode": [
+          81.6,
+          81.7,
+          81.6
+        ],
+        "prefill": [
+          136.6,
+          131.4,
+          137.2
+        ],
+        "hashes": [
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+          "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+        ],
+        "ttft_ms": [
+          317.85,
+          329.36,
+          315.92
+        ],
+        "median_decode": 81.6,
+        "median_prefill": 136.6,
+        "median_ttft_ms": 317.85,
+        "decode_change_pct": 10.72,
+        "prefill_change_pct": 11.24,
+        "matching_baseline_hashes": 3
+      },
+      "code": {
+        "decode": [
+          122.3,
+          122.2,
+          122.2
+        ],
+        "prefill": [
+          147.3,
+          147.6,
+          148.1
+        ],
+        "hashes": [
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+          "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+        ],
+        "ttft_ms": [
+          418.19,
+          417.41,
+          415.98
+        ],
+        "median_decode": 122.2,
+        "median_prefill": 147.6,
+        "median_ttft_ms": 417.41,
+        "decode_change_pct": 12.73,
+        "prefill_change_pct": 11.99,
+        "matching_baseline_hashes": 3
+      },
+      "long": {
+        "decode": [
+          81.9,
+          81.3,
+          81.8
+        ],
+        "prefill": [
+          716.6,
+          714.7,
+          718.0
+        ],
+        "hashes": [
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637",
+          "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637"
+        ],
+        "ttft_ms": [
+          2182.79,
+          2188.94,
+          2178.77
+        ],
+        "median_decode": 81.8,
+        "median_prefill": 716.6,
+        "median_ttft_ms": 2182.79,
+        "decode_change_pct": 12.05,
+        "prefill_change_pct": 3.82,
+        "matching_baseline_hashes": 3
+      },
+      "prefill16k": {
+        "decode": [
+          91.1,
+          91.2,
+          91.1
+        ],
+        "prefill": [
+          1516.1,
+          1517.9,
+          1519.6
+        ],
+        "hashes": [
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7",
+          "cc599e36d74ab5454cd76e30b0686396e555d68730df98000fd90cc13ab4c1c7"
+        ],
+        "ttft_ms": [
+          10146.84,
+          10134.06,
+          10123.2
+        ],
+        "median_decode": 91.1,
+        "median_prefill": 1517.9,
+        "median_ttft_ms": 10134.06,
+        "decode_change_pct": 12.33,
+        "prefill_change_pct": 0.88,
+        "matching_baseline_hashes": 3
+      }
+    }
+  }
+}
