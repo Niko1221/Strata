@@ -117,6 +117,7 @@ test('Stop ends the job and everything it started, deletes the copies, leaves th
     assert.equal(ts.status(id).phase, 'cancelled');
     let alive = true; for (let i = 0; i < 40 && alive; i++) { try { process.kill(pid, 0); await sleep(150); } catch { alive = false; } }
     assert.equal(alive, false, 'the revision command (a grandchild of the job) was ended too');
+    assert.equal(await Promise.race([ts.whenEnded(id).then(() => true), sleep(1000).then(() => false)]), true, 'the job closed its output pipes and ended');
     assert.equal(readFileSync(join(workspace, 'plan.md'), 'utf8'), 'first draft\n');
     assert.equal(existsSync(join(workspace, 'half-done.md')), false, 'nothing reached the person\'s folder');
     assert.equal(await ts.stop('b'.repeat(32)), false, 'an id that is not a run is not "stopped"');
