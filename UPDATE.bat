@@ -23,6 +23,7 @@ rem All of it in one block: cmd reads a .bat file while it runs it, and the git 
       set "REWR="
       git merge-base HEAD origin/main >nul 2>nul
       if errorlevel 1 set "REWR=1"
+      git rev-parse --verify -q "origin/main^{commit}" >nul 2>nul || set "REWR="
       git rev-parse --is-shallow-repository 2>nul | findstr /x true >nul && set "REWR="
       if defined REWR (
         echo.
