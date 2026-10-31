@@ -47,9 +47,11 @@ def main(argv):
     print("[INFO ] sampling completed, taking 0.08s", flush=True)
     print("[INFO ] decode_first_stage completed, taking 0.02s", flush=True)
     w, h, seed, n = int(a["-W"]), int(a["-H"]), int(a["-s"]), int(a.get("-b", 1))
+    with open(a["--prompt-file"], encoding="utf-8", newline="") as f:
+        prompt = f.read()
     for k in range(n):
         with open(a["-o"] % k, "wb") as f:
-            f.write(png(w, h, seed + k, a["-p"]))
+            f.write(png(w, h, seed + k, prompt))
     return 0
 
 

@@ -108,12 +108,23 @@ def parse_request(req: dict, cfg: dict) -> dict:
     return {"prompt": prompt, "width": w, "height": h, "n": n, "steps": steps, "seed": seed, "response_format": fmt}
 
 
-def sd_cli_args(cfg: dict, job: dict, out_pattern: str) -> list[str]:
+def write_prompt(work: Path, prompt: str) -> Path:
+    """The job's prompt as a file for sd-cli's --prompt-file, readable by this user only.  Not on the command line:
+    every local account can read a process's arguments (ps, /proc/<pid>/cmdline)."""
+    path = work / "prompt.txt"
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8",
+                   newline="") as f:
+        f.write(prompt)
+    return path
+
+
+def sd_cli_args(cfg: dict, job: dict, out_pattern: str, prompt_file: str) -> list[str]:
     """The sd-cli command for one job: the model card's stable-diffusion.cpp command (8 steps, CFG 1, euler, Turbo's
-    sigmas, --diffusion-fa from the config's args), the size, seed and batch count, and the config's other args."""
+    sigmas, --diffusion-fa from the config's args), the prompt from `prompt_file` (write_prompt), the size, seed and
+    batch count, and the config's other args."""
     cmd = [str(cfg["exe"]),
            "--diffusion-model", str(cfg["diffusion_model"]), "--vae", str(cfg["vae"]), "--llm", str(cfg["llm"]),
-           "-p", job["prompt"],
+           "--prompt-file", prompt_file,
            "--steps", str(job["steps"]), "--cfg-scale", "1.0", "--sampling-method", "euler",
            "-W", str(job["width"]), "-H", str(job["height"])]
     if job["steps"] == TURBO_STEPS:
@@ -223,7 +234,7 @@ class ImageGen:
         the GPU turn.  ImageJobFailed when sd-cli fails, times out or is cancelled."""
         work = Path(tempfile.mkdtemp(prefix="job-", dir=self.dir))
         pattern = str(work / "img_%d.png")
-        cmd = sd_cli_args(self.cfg, job, pattern)
+        cmd = sd_cli_args(self.cfg, job, pattern, str(write_prompt(work, job["prompt"])))
         timeout = float(self.cfg.get("timeout_s") or 3600)
         logf = work / "sd-cli.log"
         t0 = time.monotonic()
