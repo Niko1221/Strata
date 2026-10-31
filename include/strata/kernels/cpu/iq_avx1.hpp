@@ -24,9 +24,18 @@ bool iq128_supported(int ggml_type) noexcept;
 /// Activations are ggml's quantized form for the format (Q8_K for every format here), as in native_gu_rows.
 void iq128_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                    int nt, float* const* ff, int r0, int r1);
+/// The same rows with a choice of the one-token row pairing and load hoisting (0 = the pairing shipped until
+/// now, 1 = gate row paired with up row plus hoisted activation loads, 2 = the old pairing, hoisted).
+/// Measurement-only: the A/B picks one and the other two go away.
+void iq128_gu_rows_mode(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                        const void* const* act, int nt, float* const* ff, int r0, int r1, int mode);
 
 /// down formats with an AVX1 kernel: IQ4_NL (20), Q2_0 (42, the fork's type).  Activations: Q8_0 for both.
 bool iq128_down_supported(int ggml_type) noexcept;
+// measurement-only entry: mode 0 == iq128_down_rows, mode 1 = IQ4_NL one-token with |w| derived (pabsb).
+void iq128_down_rows_mode(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
+                          float* const* out, int r0, int r1, int mode);
+
 void iq128_down_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                      float* const* out, int r0, int r1);
 
