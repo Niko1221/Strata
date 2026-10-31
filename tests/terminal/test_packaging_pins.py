@@ -19,7 +19,7 @@ def norm(name):
 
 class InterpreterPins(unittest.TestCase):
     def test_every_target_has_a_digest_and_a_matching_url(self):
-        self.assertEqual(sorted(pt.PYTHON_PINS), ["darwin-arm64", "linux-x86_64", "windows-x86_64"])
+        self.assertEqual(sorted(pt.PYTHON_PINS), ["darwin-arm64", "linux-aarch64", "linux-x86_64", "windows-x86_64"])
         for target, pin in pt.PYTHON_PINS.items():
             with self.subTest(target):
                 self.assertRegex(pin["sha256"], r"^[0-9a-f]{64}$")
@@ -27,7 +27,7 @@ class InterpreterPins(unittest.TestCase):
                 self.assertIn(pt.PBS_RELEASE, pin["url"])
                 self.assertTrue(pin["url"].startswith("https://github.com/astral-sh/python-build-standalone/"))
                 self.assertTrue(pin["url"].endswith("install_only.tar.gz"))
-        self.assertEqual(len({p["sha256"] for p in pt.PYTHON_PINS.values()}), 3)
+        self.assertEqual(len({p["sha256"] for p in pt.PYTHON_PINS.values()}), 4)
 
     def test_the_mac_pin_is_the_one_setup_sh_downloads(self):
         text = (ROOT / "setup.sh").read_text(encoding="utf-8")
@@ -47,8 +47,8 @@ class InterpreterPins(unittest.TestCase):
 class WheelLocks(unittest.TestCase):
     def locks(self):
         found = sorted((ROOT / "packaging" / "locks").glob("runtime-*-cp312.txt"))
-        self.assertEqual([p.name for p in found], ["runtime-darwin-arm64-cp312.txt", "runtime-linux-x86_64-cp312.txt",
-                                                    "runtime-windows-x86_64-cp312.txt"])
+        self.assertEqual([p.name for p in found], ["runtime-darwin-arm64-cp312.txt", "runtime-linux-aarch64-cp312.txt",
+                                                    "runtime-linux-x86_64-cp312.txt", "runtime-windows-x86_64-cp312.txt"])
         return found
 
     def test_every_entry_is_pinned_and_hashed_and_nothing_else_is_in_the_file(self):

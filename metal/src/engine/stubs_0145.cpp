@@ -136,6 +136,8 @@ namespace strata::kernels { void res_patch(int* p0, int const* p1, int p2, void*
 namespace strata::kernels { void wait_copy_i32_from_mapped(unsigned int const* p0, unsigned int p1, int* p2, int const* p3, long long p4, void* p5) { strata::metal_engine::missing("strata::kernels::wait_copy_i32_from_mapped"); } }
 namespace strata::kernels { void wait_flag_ge_stamped(unsigned int const* p0, unsigned int p1, unsigned long long* p2, unsigned long long* p3, void* p4) { strata::metal_engine::missing("strata::kernels::wait_flag_ge_stamped"); } }
 namespace strata::kernels { void wait_handoff(unsigned int const* p0, unsigned int p1, unsigned int* p2, unsigned long long p3, void* p4) { strata::metal_engine::missing("strata::kernels::wait_handoff"); } }
+namespace strata::prefill { void moe_scatter_add(float const* p0, int const* p1, int const* p2, int const* p3, float const* p4, long long p5, float* p6, void* p7) { strata::metal_engine::missing("strata::prefill::moe_scatter_add"); } }
+namespace strata::prefill { void moe_shared_init(float const* p0, float const* p1, float* p2, long long p3, void* p4) { strata::metal_engine::missing("strata::prefill::moe_shared_init"); } }
 namespace strata::prefill { bool f16_range_read(float& p0, unsigned long long& p1, bool p2) {  return false; } }
 namespace strata::prefill { bool gemm_f16_range_read(float* p0, unsigned long long* p1, bool p2) {  return false; } }
 namespace strata::prefill { void gr_norm(float const* p0, float const* p1, float p2, float* p3, unsigned short* p4, long long p5, void* p6, unsigned short* p7, bool p8) { strata::metal_engine::missing("strata::prefill::gr_norm"); } }
@@ -147,5 +149,17 @@ namespace strata::kernels { bool gemm_iq_f16_grouped(int p0, void const* p1, uns
 // STRATA_Q8_SM60 (Pascal GP100, opt-in): a no-op on Metal; NativeHead::load()/unload() call these for a Q8_0 head, so they must exist and answer "nothing packed".
 namespace strata::kernels { bool native_q8_0_sm60_pack(void const* p0, int p1, int p2, char const* p3) { return false; } }
 namespace strata::kernels { void native_q8_0_sm60_release(void const* p0) { } }
+// the MTP drafter's STRATA_MTP_Q8_SM60 packing (mtp.cpp): nothing packed on Metal
+namespace strata::kernels { bool native_q8_0_sm60_pack_quiet(void const* p0, int p1, int p2, char const* p3) { return false; } }
+namespace strata::kernels { bool native_q8_0_sm60_pack_in_place(void* p0, int p1, int p2, char const* p3) { return false; } }
+// STRATA_SELECT_LONG (verify.cpp's long-context decode select): CUDA only; never reached on Metal (no scratch asked for)
+namespace strata::kernels { long long qsa_topk_multi_scratch_ints(long long p0) { return 0; } }
+namespace strata::kernels { void qsa_block_topk_long(float const* p0, int const* p1, long long p2, long long p3, long long p4, strata::kernels::QsaShapes const& p5, int* p6, void* p7, long long p8, int* p9) { strata::metal_engine::missing("strata::kernels::qsa_block_topk_long"); } }
+namespace strata::kernels { void qsa_block_scores_long(float const* p0, float const* p1, float const* p2, int const* p3, long long p4, long long p5, strata::kernels::QsaShapes const& p6, float* p7, void* p8, long long p9) { strata::metal_engine::missing("strata::kernels::qsa_block_scores_long"); } }
 // only reached with pf_wmma (off on Metal)
 namespace strata::prefill { void swiglu_split_f16(float const* p0, unsigned short* p1, long long p2, int p3, bool p4, void* p5) { } }
+// STRATA_PLE_COMPACT (opt-in, CUDA / HIP prompt path): prefill.cpp references it; the Metal prompt runs through its window and never reaches it.
+namespace strata::kernels { void ple_iq4nl_dequant(const uint8_t* p0, int64_t p1, float* p2, void* p3) { strata::metal_engine::missing("strata::kernels::ple_iq4nl_dequant"); } }
+// STRATA_DEQUANT_SIDE (opt-in, CUDA only): off on Metal; the prompt path takes no second scratch and set_dequant_side(nullptr) keeps the serial form.
+namespace strata::prefill { bool gemm_dequant_side() { return false; } }
+auto strata::prefill::Gemm::set_dequant_side(uint16_t* p0, std::string& p1) -> bool { if (p0 == nullptr) return true; strata::metal_engine::missing("strata::prefill::Gemm::set_dequant_side"); return false; }

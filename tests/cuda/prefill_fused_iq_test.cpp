@@ -13,7 +13,9 @@
 // different expert ranges.  Part 2 (timing): one layer at the engine's chunks (2048, 3584, 8192 tokens; 512 experts,
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
-// --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
+// --only=NAME, --chunks=A,B, --unset-pf-fused (STRATA_PF_FUSED left unset instead of set to 1: the engine's default, for the
+// STRATA_PF_FUSED_Q2N=1 ctest entry).  Exit 77 without a CUDA device of sm_80 or newer.
+#include "strata/core/emulate.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
@@ -81,7 +83,10 @@ struct Geo {
 // STRATA_PF_F16=1: the covered formats run on F16 weights (moe_f16_kq.cu, native_f16_kernel), not the int8 kernels
 bool f16_on() {
     const char* v = std::getenv("STRATA_PF_F16");
-    return v != nullptr && v[0] == '1';
+    // STRATA_PF_FUSED_F16=1 / STRATA_PF_FUSED_WS=1 (the int8 kernels' f16 mma form, #3779): F16 products too, so the same limits
+    const char* f = std::getenv("STRATA_PF_FUSED_F16");
+    const char* w = std::getenv("STRATA_PF_FUSED_WS");
+    return (v != nullptr && v[0] == '1') || (f != nullptr && f[0] == '1') || (w != nullptr && w[0] == '1');
 }
 
 // that the weights' typical size is that of a 2-3 bit expert (a few hundredths)
@@ -643,10 +648,15 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
 
 int main(int argc, char** argv) {
     try {
+        // --unset-pf-fused: STRATA_PF_FUSED unset, as the engine's default (the ctest entry for the opt-in STRATA_PF_FUSED_Q2N=1,
+        // whose Q2_0 / Q2_0 pair the engine takes with the old variable unset or at 1)
+        bool unset_pf = false;
+        for (int i = 1; i < argc; ++i)
+            if (std::strcmp(argv[i], "--unset-pf-fused") == 0) unset_pf = true;
 #ifdef _WIN32
-        _putenv_s("STRATA_PF_FUSED", "1");
+        if (unset_pf) _putenv_s("STRATA_PF_FUSED", ""); else _putenv_s("STRATA_PF_FUSED", "1");   // (an empty value removes it)
 #else
-        setenv("STRATA_PF_FUSED", "1", 1);
+        if (unset_pf) unsetenv("STRATA_PF_FUSED"); else setenv("STRATA_PF_FUSED", "1", 1);
         setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
 #endif
         int n = 0;
@@ -655,6 +665,24 @@ int main(int argc, char** argv) {
         if (!fused::available() && !fused::native_supported(GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL)) {
             std::printf("the fused kernels need sm_80 or newer (or gfx11 / gfx12 matrix cores): skipped\n");
             return 77;
+        }
+        // with STRATA_PF_FUSED unset nothing is set up below sm_80 (Turing's pair is STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1's)
+        if (unset_pf) {
+            int major = 0;
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
+            if (strata::cc_major_of(major) < 8) { std::printf("STRATA_PF_FUSED unset: nothing is set up below sm_80 (skipped)\n"); return 77; }
+        }
+        // the opt-in kernel sets (STRATA_PF_FUSED_NT=256, _F16=1, _WS=1): a card that cannot set them up (shared memory,
+        // occupancy) falls back to the 512-thread kernels, and a run of those would pass for the wrong kernels - skip it
+        {
+            const char* nt = std::getenv("STRATA_PF_FUSED_NT");
+            const char* f16 = std::getenv("STRATA_PF_FUSED_F16");
+            const char* ws = std::getenv("STRATA_PF_FUSED_WS");
+            const bool asked = (nt && std::atoi(nt) == 256) || (f16 && f16[0] == '1') || (ws && ws[0] == '1');
+            if (asked && !fused::native_wide()) {
+                std::printf("STRATA_PF_FUSED_NT / _F16 / _WS: those kernels are not set up on this device (skipped)\n");
+                return 77;
+            }
         }
         if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
         const std::vector<Pair> pairs = {
@@ -691,8 +719,8 @@ int main(int argc, char** argv) {
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
             if (!fused::native_supported((int) p.gu, (int) p.d)) {
-                // the canonical Q2_0 pack's Q2_0 gate/up is the Turing opt-in's (STRATA_PF_FUSED_SM75=1), and on Turing that is
-                // the only pair set up: skip what this device does not take (--only=NAME still insists)
+                // the Q2_0 / Q2_0 pair is the Turing opt-in's (STRATA_PF_FUSED_SM75=1; the only pair set up there) or, on sm_80+,
+                // STRATA_PF_FUSED_Q2N=1's: skip what this device does not take (--only=NAME still insists)
                 const bool turing_pair = p.gu == GGML_TYPE_Q2_0 && p.d == GGML_TYPE_Q2_0;
                 int major = 0;
                 cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);

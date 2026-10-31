@@ -451,7 +451,7 @@ def nvidia_speeds(timeout: float = 20.0) -> dict[int, float]:
         env = dict(os.environ)
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         env.pop("CUDA_VISIBLE_DEVICES", None)
-        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, errors="replace", timeout=timeout, env=env)
         out = {}
         for line in r.stdout.splitlines():
             i, sm, khz = (int(x) for x in line.split())

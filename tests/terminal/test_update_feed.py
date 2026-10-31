@@ -143,11 +143,15 @@ class FeedChecks(unittest.TestCase):
             self.load(*signed(document(channel="beta"), self.key), channel="stable")
 
     def test_malformed_entries_are_errors_not_defaults(self):
-        for change in ({"sha256": "nothex"}, {"size": 0}, {"format": "rar"}, {"platform": "plan9"}, {"backend": "tpu"},
-                       {"version": "latest"}, {"archs": []}, {"manifest_sha256": None}, {"size": True}):
+        for change in ({"sha256": "nothex"}, {"size": 0}, {"version": "latest"}, {"archs": []}, {"manifest_sha256": None}, {"size": True}):
             with self.subTest(change=change):
                 with self.assertRaises(feedmod.FeedError):
                     self.load(*signed(document(engine={"packages": [entry(**change)]}), self.key))
+        for change in ({"format": "rar"}, {"platform": "plan9"}, {"backend": "tpu"}):       # a kind this Control does not know: left out with a line, not an error (0.1.53)
+            with self.subTest(unknown=change):
+                feed = self.load(*signed(document(engine={"packages": [entry(), entry(**change, url="other.tar.gz")]}), self.key))
+                self.assertEqual(len(feed.engine), 1)
+                self.assertEqual(len(feed.skipped), 1)
         with self.assertRaisesRegex(feedmod.FeedError, "twice"):
             self.load(*signed(document(engine={"packages": [entry(), entry()]}), self.key))
         with self.assertRaises(feedmod.FeedError):

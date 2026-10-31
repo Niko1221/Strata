@@ -23,7 +23,7 @@ export interface HardwareCheck {
 
 export interface ProcessorInfo { id:string; socket:string; model:string; cores:number; threads:number; arch:string; ghz:number; logicalIds?:number[] }
 export interface CpuReading { id:string; utilizationPct:number|null }
-export interface GpuReading { id:string; temperatureC:number|null; utilizationPct:number|null; memoryUsedGb:number|null; source:string; sampledAt:string; powerW?:number|null; powerLimitW?:number|null; pcieGen?:number|null; pcieGenMax?:number|null; pcieWidth?:number|null; pcieRxMbs?:number|null }
+export interface GpuReading { id:string; temperatureC:number|null; utilizationPct:number|null; memoryUsedGb:number|null; source:string; sampledAt:string; powerW?:number|null; powerLimitW?:number|null; pcieGen?:number|null; pcieGenMax?:number|null; pcieWidth?:number|null; pcieRxMbs?:number|null; fanPct?:number|null; clockMhz?:number|null }
 
 export interface GpuInfo {
   id?: string;
@@ -285,6 +285,10 @@ export interface MonitorState {
     powerW?: number | null;
     powerLimitW?: number | null;
     pcieRxMbs?: number | null;
+    /** CPU and SSD temperatures (only where this PC can give one) and the GPU energy used since the host started, in Wh (#3628). */
+    cpuTempC?: number | null;
+    ssdTempC?: number | null;
+    energyWh?: number | null;
     diskReadGbs?: number | null;
     diskWriteMbs?: number | null;
     gpuLoad: number | null;

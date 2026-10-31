@@ -90,6 +90,7 @@ estimated 2 GB of its own buffers.
 - Intel GPUs in a split, and a mix of NVIDIA and AMD cards. An engine drives one make of card. The app, `strata launch` and setup
   offer only the cards the engine can drive, and say so when the other make has the bigger card. AMD cards share a model among
   themselves: `./setup.sh --backend hip --gpus 1,0` ([AMD_HIP.md](AMD_HIP.md)).
+  A prompt read on one card and an answer made on another, with the session handed over in RAM, is a different opt-in: [SPLIT_SERVE.md](SPLIT_SERVE.md).
 
 ## How the split works
 
@@ -180,6 +181,9 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
 - **Default:** on for AMD RDNA4 (gfx1200 / gfx1201) with `--serve`, the draft layer, and a split of two or more stages when the
   drafter can sit on the first card, otherwise three or more. The log says "is on by default for a layer split of N stages".
   `--pipeline-windows 0` or `STRATA_PIPELINE_AUTO=0` turns it off. NVIDIA builds keep it opt-in (`--pipeline-windows 2`).
+  The Intel Arc engine turns it on for exactly two Arc B-series (Battlemage) cards, with `--serve` and the draft layer (`--spec 2`
+  or more): on 2x Arc Pro B65 decode is 17% to 23% faster, and setup writes `--spec 2` for those cards ([INTEL_ARC.md](INTEL_ARC.md)).
+  It runs exactly two cards, so one card, Arc A-series cards and three or more cards stay serial.
 - **Draft layer placement:** with the pipeline on, the draft layer loads on the first card, whose window has finished when the
   chain starts. `STRATA_MTP_STAGE0=0` keeps the old place.
 - **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
@@ -220,6 +224,14 @@ the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reach
   An explicit `--expert-cache` on the first card is capped to leave room for them.
 - More cards pay off when the model's routed experts do not fit the faster ones. An extra slow card costs its own round per
   window and can make a good pair slower.
+- **The split pays most when the CPU pool is the bottleneck.** On two identical RTX 2080 Ti 22 GB over a dual-socket Xeon E5-2696 v4 (AVX2 only,
+  88 logical CPUs), a plain split moved decode from 35.2 to 51.0 tok/s (+45%) and an 11.6K-token prompt from 672 to 908 tok/s (+35%) at 180 W,
+  engine 0.1.49, six 300-token coding prompts. `STRATA_DECODE_TIMING=1` shows why: the window fell from 70.06 to 37.96 ms, almost entirely
+  because the CPU pool fell from 9.52 to 0.79 ms per window. The 5080 + 3090 measurement below, where decode with the second card is on par
+  with the 5080 alone, was taken over a fast CPU (Ryzen 9 9950X3D). When the CPU pool is what the window waits on, moving half the layers to a
+  second identical card removes that work. This is one pair of cards and one CPU, so there is no threshold, and the window breakdown from the
+  engine log is not the same statistic as the decode numbers beside it. Setup splits across two cards by itself; with two identical older cards
+  on a slow workstation CPU, compare one card against the split and tell us in [#3930](https://github.com/Niko1221/Strata/pull/3930).
 - For several conversations at once, `--batch N --batch-groups G --trim-stage-weights` pipelines them through the cards
   ([BATCHING.md](BATCHING.md)).
 

@@ -77,6 +77,25 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     return v;
 }
 
+/// #2409: what a conversation restore can allocate on a card. It writes into session buffers that already exist; the one
+/// thing it may create is the calling thread's private copy stream for that card (conversation_copy.hpp), which it takes
+/// from the pool of finished threads when there is one, and the first launch of the two small residency kernels loads
+/// their code. A stream and an event cost well under 2 MiB where it was measured (conversation_copy_streams_test prints
+/// it); 64 MiB covers both many times over and is far below the reserves (--vram-reserve-mib 700), so the check can only
+/// fire on a card that is really full.
+constexpr uint64_t kRestoreFirstUseMib = 64;
+
+/// Whether a parked snapshot can be restored without a first-use allocation failing: every card for which the restore
+/// would have to create its copy stream (`stream_ready[i]` false) must have `need_bytes` free. A card that already has a
+/// stream needs nothing, so it never refuses - unlike a floor on `--vram-reserve-mib`, which a loaded card is always under
+/// (#2409's review). A missing sample (`free_bytes` null) does not refuse.
+inline bool restore_fits(const uint64_t* free_bytes, const uint8_t* stream_ready, size_t n, uint64_t need_bytes) {
+    if (free_bytes == nullptr || stream_ready == nullptr || need_bytes == 0) return true;
+    for (size_t i = 0; i < n; ++i)
+        if (!stream_ready[i] && free_bytes[i] < need_bytes) return false;
+    return true;
+}
+
 /// --prompt-cache-spread: the item whose removal leaves the smallest gap for its distance from the newest, so the kept
 /// points thin out geometrically towards the root and an edit d tokens before the end reads about d again.  `lens`:
 /// the chain's token counts.  Never the root, the newest or a pinned item; the tail rule first, as above.

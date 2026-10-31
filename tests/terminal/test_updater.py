@@ -799,5 +799,64 @@ class AnotherCardFamilyNote(unittest.TestCase):
         self.assertEqual(report["note"], "This build of Strata is for AMD RX 7000 cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
 
 
+class FailedStartRecords(LazyModel):
+    """#3654: a failed test start used to leave only the last 64 KiB of the engine log, because the sandbox that held the host, child and
+    ready records was deleted at once. The records are kept (without tokens or keys) next to the log."""
+
+    def failing_start(self):
+        def start(name, **kw):
+            runtime_dir = Path(os.environ["STRATA_RUNTIME_DIR"])           # the sandbox's, set by default_test_start
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            (runtime_dir / f"{name}.json").write_text(json.dumps({"pid": 4321, "token": "a1b2c3d4" * 8, "state": "starting"}), encoding="utf-8")
+            (runtime_dir / f"{name}-{'a1b2c3d4' * 8}.child.json").write_text(json.dumps({"host_token": "a1b2c3d4" * 8, "child_pid": 111}), encoding="utf-8")
+            (runtime_dir / f"{name}-9f.ready.json").write_text(json.dumps({"pid": 222, "api_key": "sekret-key"}), encoding="utf-8")
+            (runtime_dir / f"{name}.server.log").write_text("server: model loaded\nserver: pid 222\n", encoding="utf-8")
+            (runtime_dir / f"{name}.host.log").write_text("", encoding="utf-8")
+            return {"ok": False, "state": "starting", "error": "startup_wait_expired", "phase": "ready_file_not_matched"}
+        return start
+
+    def test_the_runtime_records_of_a_failed_start_are_kept_without_tokens_or_keys(self):
+        from strata_control import runtime
+        self.install_current()
+        folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        self.config.write_text(json.dumps({**json.loads(self.config.read_text()), "api_key": "sekret-key"}), encoding="utf-8")
+        with mock.patch.object(runtime, "start", side_effect=self.failing_start()), mock.patch.object(runtime, "stop", return_value={}):
+            with self.assertRaises(updater.TestStartFailed):
+                updater.default_test_start(stage, component, self.ctx())
+        kept = updater.updates_dir(self.components) / "logs" / f"test-start-{component.version}-failed"
+        names = sorted(p.name for p in kept.iterdir())
+        self.assertIn("run.json", names)
+        self.assertTrue(any(n.endswith(".child.json") for n in names), names)
+        self.assertTrue(any(n.endswith(".ready.json") for n in names), names)
+        self.assertIn("updtest.server.log", names)
+        text = "".join(p.read_text(encoding="utf-8") for p in kept.iterdir())
+        self.assertNotIn("sekret-key", text)
+        self.assertNotIn("a1b2c3d4a1b2c3d4", text, "no full token is kept")
+        self.assertIn('"child_pid": 111', text)                              # the PIDs that show a mismatch are
+        self.assertIn("server: pid 222", text)
+        self.assertFalse((self.components / ".updates").exists() and any(p.name.startswith("t-") for p in (self.components / ".updates").rglob("*") if p.is_dir()),
+                         "the sandbox itself is still removed")
+
+    def test_only_the_last_few_failed_starts_are_kept(self):
+        logs = updater.updates_dir(self.components) / "logs"
+        for i in range(5):
+            folder = logs / f"test-start-0.1.4{i}-failed"
+            folder.mkdir(parents=True)
+            (folder / "run.json").write_text("{}", encoding="utf-8")
+            os.utime(folder, (1_700_000_000 + i, 1_700_000_000 + i))
+        from types import SimpleNamespace
+        sandbox = self.root / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "run.json").write_text("{}", encoding="utf-8")
+        updater._keep_records(sandbox, SimpleNamespace(version="0.1.49"), self.ctx())
+        left = sorted(p.name for p in logs.glob("test-start-*-failed"))
+        self.assertEqual(len(left), 3, left)
+        self.assertIn("test-start-0.1.49-failed", left)
+
+
 if __name__ == "__main__":
     unittest.main()

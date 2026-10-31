@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -697,6 +698,18 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: stream create failed";
         return false;
     }
+    if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {
+        // SYCL: a queue belongs to one context, so ev_fork_/ev_join_ (recorded on cs_) can only be waited on by
+        // sh_cs_ when the two streams are the same card.  Print both, and whether the streams are the shared ones.
+        auto dn = [](dpct::queue_ptr q) -> std::string {
+            if (q == nullptr) return "<null>";
+            try { return q->get_device().get_info<sycl::info::device::name>(); } catch (...) { return "<no device>"; }
+        };
+        std::fprintf(stderr, "strata verify: init device %d, cs '%s', sh_cs '%s', ext_stream %s, copy '%s'\n",
+                     device_, dn(cs_).c_str(), dn(sh_cs_).c_str(),
+                     ext_stream_ == nullptr ? "none" : dn(ext_stream_).c_str(), dn(copy_).c_str());
+        std::fflush(stderr);
+    }
     if (DPCT_CHECK_ERROR(commit_done_ = new sycl::event()) != 0 ||
         DPCT_CHECK_ERROR(ev_fork_ = new sycl::event()) != 0 ||
         DPCT_CHECK_ERROR(ev_join_ = new sycl::event()) != 0) {
@@ -829,7 +842,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
     const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1;   // a batch window is one group
-    const bool self_commit = T == 1 && !batch_rec_ && !g_qfuse() && one_token_self_commit();   // see Verifier::commit
+    const bool self_commit = T == 1 && !batch_rec_ && !g_qfuse() && one_token_self_commit() &&
+                              !self_commit_off_;   // see Verifier::commit
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     // SYCL port, STRATA_VERIFY_EAGER=1: the window runs on the queue instead of as a graph, and each stage stamp is
     // a host-side wait + clock (there is no %globaltimer here), so the existing stage profiler reports ms per stage.
@@ -1055,6 +1069,24 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, cs);
                 stamp(l, 5, grp);
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
+                static const bool gdn_groups_on = [] {   // STRATA_BATCH_GDN_GROUPS=1, all slots in one launch
+                    const char* e = std::getenv("STRATA_BATCH_GDN_GROUPS");
+                    return e != nullptr && std::atoi(e) != 0;
+                }();
+                if (batch_rec_ && gdn_groups_on && te - tb <= 8) {
+                    GdnGroups gg;
+                    for (int t = tb; t < te;) {
+                        const int first = t;
+                        while (t < te && brow_[t] == brow_[first]) ++t;
+                        SessionState& sx = slot_ss(first);
+                        gg.state[gg.n] = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats;
+                        gg.first[gg.n] = first;
+                        gg.ntok[gg.n] = t - first;
+                        ++gg.n;
+                    }
+                    gdn_step_norm_groups(gg, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
+                                         (int) HV, false, cs);
+                } else
                 if (batch_rec_) {   // each slot's recurrence over its own proposed-token group
                     for (int t = tb; t < te;) {
                         const int first = t;
@@ -1244,6 +1276,34 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 }
                 }
                 stamp(l, 10, grp);
+                // STRATA_BATCH_ATTN_ROWS=1: the window's rows in ONE launch per step (scores with each row's own indexer
+                // keys, the top-k over all rows, attention with each row's own pools): the same per-row arithmetic.
+                // Not with KV streaming (qsa_kv_resolve has work per slot then).
+                static const bool attn_rows = [] {
+                    const char* e = std::getenv("STRATA_BATCH_ATTN_ROWS");
+                    return e != nullptr && std::atoi(e) != 0;
+                }();
+                bool rows_ok = batch_rec_ && attn_rows && te - tb <= kAttnRowsMax;
+                for (int t = tb; rows_ok && t < te; ++t) rows_ok = slot_ss(t).qsa_states[qi].kv_mode != 1;
+                if (rows_ok) {
+                    const int n_rows = te - tb;
+                    QsaScoreRows sr;
+                    QsaAttnPoolsRows pr;
+                    sr.n = pr.n = n_rows;
+                    for (int t = tb; t < te; ++t) {
+                        const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        sr.pooled[t - tb] = sx.idx_pooled;
+                        sr.dead[t - tb] = sx.idx_dead;
+                        pr.p[t - tb] = qsa_attn_pools(sx);
+                    }
+                    qsa_block_scores_rows(sr, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n_rows, max_blocks_, s,
+                                          scores_ + (size_t) tb * max_blocks_, cs);
+                    qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n_rows, max_blocks_, cap_,
+                                   s, sel_ + (size_t) tb * cap_, cs);
+                    qsa_decode_attn_batch_rows(qcur_ + tb * NH * HD, pr, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount,
+                                               cap_, s, attn_scratch_ + (size_t) tb * attn_scratch_floats_,
+                                               attn_ + tb * NH * HD, n_rows, cs);
+                } else
                 if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
@@ -1657,6 +1717,24 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     return true;
 }
 
+// SYCL port: a failed queue wait reported as what it was.  DPCT_CHECK_ERROR keeps only "error" from the SYCL
+// exception and drops the device, which made a pipelined-window failure on a layer split impossible to place:
+// the same text came from either card and from any of the four verifiers.  These two helpers say which.
+static dpct::err0 queue_wait_diag(sycl::queue *cs, int dev, const char *what) {
+    if (cs == nullptr) return dpct::default_error;
+    try {
+        cs->wait();
+        return dpct::success;
+    } catch (std::exception const &e) {
+        std::string qdev = "<unknown>";
+        try { qdev = cs->get_device().get_info<sycl::info::device::name>(); } catch (...) {}
+        std::fprintf(stderr, "strata verify: %s: the queue wait failed on verifier device %d (queue device: %s): %s\n",
+                     what, dev, qdev.c_str(), e.what());
+        std::fflush(stderr);
+        return dpct::default_error;
+    }
+}
+
 std::string Verifier::profile_report() {
     if (!prof_on_ || prof_windows_ == 0) return std::string();
     static const char* names[kProfPer] = {"-", "hc-read0", "q8+qkv/q-idx gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
@@ -1970,11 +2048,26 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
 }
 
 void Verifier::collect_profile() {
-    if (std::getenv("STRATA_VERIFY_EAGER") == nullptr)   // eager (SYCL port): prof_h_ already holds the host clocks
-        dpct::get_in_order_queue()
-            .memcpy(prof_h_.data(), prof_, prof_h_.size() * 8)
-            .wait();
+    if (std::getenv("STRATA_VERIFY_EAGER") == nullptr) {   // eager (SYCL port): prof_h_ already holds the host clocks
+        // SYCL port: the stamps are written by kernels on THIS verifier's stream, so the readback has to ride the
+        // same stream.  The device's default queue is neither ordered after the window nor necessarily this
+        // stage's device (a layer split), so reading there could return the previous window's stamps or another
+        // card's memory - which is why the table was only ever printed in the eager mode before.
+        const strata::core::OnDevice on_device(device_);
+        cs_->memcpy(prof_h_.data(), prof_, prof_h_.size() * 8).wait();
+    }
     accumulate_profile(prof_h_.data());
+    if (prof_S_ > 0) {   // a batch window: its table (run() prints only its own windows)
+        static const long long every = [] {
+            const char* e = std::getenv("STRATA_VERIFY_PROFILE_EVERY");
+            return e ? std::atoll(e) : 0LL;
+        }();
+        if (every > 0 && prof_windows_ >= every) {
+            std::fprintf(stderr, "verify stages batch window of %d rows (ms/window over %lld, GPU clock):%s\n", prof_S_,
+                         (long long) prof_windows_, profile_report().c_str());
+            std::fflush(stderr);
+        }
+    }
 }
 
 void Verifier::accumulate_profile(const unsigned long long* stamps) {
@@ -2014,6 +2107,8 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
 bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
                    void *user, int32_t *out, std::string &err) try {
     using namespace strata::kernels;
+    strata::kprof::phase("decode");
+    prof_S_ = 0;
     const OnDevice on_device(device_);
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
@@ -2329,7 +2424,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     // watchdog then releases every verifier's GPU waits (release_live_verifiers) before it ends the engine, so no
     // spin kernel outlives the process.  The wait itself stays a blocking sync (a polling wait cost decode upstream).
     trace_ev("SYNC", -1, -1, 0);
-    const dpct::err0 se = DPCT_CHECK_ERROR(cs_->wait());
+    const dpct::err0 se = queue_wait_diag(cs_, device_, "window sync");
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     const Clock::time_point t_done = Clock::now();
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {
@@ -2424,10 +2519,25 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
                        // the next one
         copy_used_ = false;
     }
+    strata::kprof::window_end("decode");   // STRATA_KPROF=1 (with STRATA_VERIFY_EAGER=1): this window's per-kernel times
     if (prof_on_ && G == 1) {   // the window's GPU stage stamps
         collect_profile();
         if (std::getenv("STRATA_VERIFY_EAGER") != nullptr)   // SYCL port: the stage table per window, host-clocked
             std::fprintf(stderr, "verify stages T=%d (ms/window):%s\n", T, profile_report().c_str());
+        else {
+            // SYCL port: the same table from the GPU's own clock, averaged over N windows, so a decode can be
+            // attributed without the eager mode's drain per stamp (which measures host gaps, not kernel time).
+            // STRATA_VERIFY_PROFILE=1 STRATA_VERIFY_PROFILE_EVERY=32.
+            static const long long every = [] {
+                const char* e = std::getenv("STRATA_VERIFY_PROFILE_EVERY");
+                return e ? std::atoll(e) : 0LL;
+            }();
+            if (every > 0 && prof_windows_ >= every) {
+                std::fprintf(stderr, "verify stages T=%d (ms/window over %lld, GPU clock):%s\n", T,
+                             (long long) prof_windows_, profile_report().c_str());
+                std::fflush(stderr);
+            }
+        }
     }
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
@@ -2645,7 +2755,7 @@ bool Verifier::commit(int n_keep, std::string &err) try {
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
-    if (last_t_ == 1 && one_token_self_commit()) {
+    if (last_t_ == 1 && one_token_self_commit() && !self_commit_off_) {
         // a one-token window has advanced the state itself (record_window): no commit graph
     } else {
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -2919,6 +3029,13 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
             if (!is_qsa_layer(g, l)) {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
+                static const bool gdn_groups_on = [] {   // STRATA_BATCH_GDN_GROUPS=1: the one-row groups in one launch
+                    const char* e = std::getenv("STRATA_BATCH_GDN_GROUPS");
+                    return e != nullptr && std::atoi(e) != 0;
+                }();
+                bool one_row = S <= 8;
+                for (int t = 1; one_row && t < S; ++t) one_row = rows[t] != rows[t - 1];
+                GdnGroups gg;
                 for (int t = 0; t < S;) {
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
@@ -2928,6 +3045,14 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                     gdn_conv_commit(conv, qkv_L_ + (size_t) gdn_index * MT * C + (size_t) first * C,
                                     (int) C, keep, cs_);
+                    if (gdn_groups_on && one_row) {
+                        gg.state[gg.n] = state;
+                        gg.keep[gg.n] = keep;
+                        gg.first[gg.n] = first;
+                        gg.ntok[gg.n] = 1;
+                        ++gg.n;
+                        continue;
+                    }
                     gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C + (size_t) first * C, (int) C,
                                         gate_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
                                         beta_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
@@ -2936,6 +3061,11 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
                                         (int) HV, t - first, keep, cs_,
                                         t - first > 1 ? t - first : 0);   // a 1-row group keeps the 0.1.39 kernel
                 }
+                if (gg.n > 0)
+                    gdn_step_norm_groups(gg, h_L_ + (size_t) gdn_index * MT * C, (int) C,
+                                         gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV,
+                                         z_, (const float*) wnm->data, EPS, y_dummy_, (int) g.ssm_k_heads, (int) HV, true,
+                                         cs_);
                 ++gdn_index;
             } else {
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
@@ -3132,6 +3262,7 @@ bool Verifier::run_slot_rows(const int *rows, int S, const int32_t *tokens,
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
+    prof_S_ = S;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
     const dpct::err0 le =
         DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_bm_[bkey(rows, S, 0)]));
@@ -3842,7 +3973,15 @@ catch (sycl::exception const &exc) {
 bool Verifier::done(std::string &err) try {
     if (!fl_active_ || fl_k_ < fl_total_) return false;
     const OnDevice on_device(device_);
-    const dpct::err0 q = dpct::sycl_event_query(ev_done_);
+    dpct::err0 q;
+    try {
+        q = (dpct::err0) dpct::sycl_event_query(ev_done_);
+    } catch (std::exception const &e) {
+        // a dead or foreign event used to read as the bare word "error"
+        err = std::string("verify: the window's completion event could not be queried on device ") +
+              std::to_string(device_) + ": " + e.what();
+        return false;
+    }
 
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
@@ -3856,6 +3995,19 @@ bool Verifier::done(std::string &err) try {
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
+    if (q == 1) {
+        // SYCL's "not complete" is CUDA's cudaErrorNotReady: the window is still running, which is not an error.
+        // The DPCT migration dropped that branch, so the first poll of every pipelined window failed with
+        // "verify: error" and --pipeline-windows never ran on this backend.  Same body as the CUDA original.
+        const double now = now_ms();
+        if (now - fl_flush_ms_ > 2.0) {
+            fl_flush_ms_ = now;
+            (void)DPCT_CHECK_ERROR(cs_->ext_oneapi_empty());
+        }
+        if (now - fl_since_ms_ > 20000.0)   // every layer served, and the graph still runs: #267 as above
+            err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
+        return false;
+    }
     if (q != 0) {
       err = std::string("verify: ") + dpct::get_error_string_dummy(q);
       return false;
@@ -3906,6 +4058,12 @@ catch (sycl::exception const &exc) {
 bool Verifier::pl_commit_async(int n_keep, std::string &err) try {
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
+    // Debug: with a state dump requested, print what this commit is launched with, so a wrong count names
+    // itself next to the verdict log (STRATA_PIPELINE_LOG).
+    static const bool cdbg = std::getenv("STRATA_PIPELINE_DUMP") != nullptr;
+    if (cdbg)
+        std::fprintf(stderr, "strata commit: n_keep=%d T=%d pos0=%lld self_skip=%d\n", n_keep, (int) last_t_,
+                     (long long) last_pos0_, (last_t_ == 1 && one_token_self_commit()) ? 1 : 0);
     if (commit_exec_ == nullptr || ev_commit_ == nullptr) { err = "verify: pipelined commit not prepared"; return false; }
     const Clock::time_point t0 = Clock::now();
     if (commit_live_) {   // its graph reads the words below when it starts: the previous one has (a window ago)
@@ -3928,6 +4086,23 @@ bool Verifier::pl_commit_async(int n_keep, std::string &err) try {
               std::string("verify: commit: ") + dpct::get_error_string_dummy(q);
           return false;
         }
+    }
+    // A one-token window advanced the GDN state itself (record_window), so the serial path's commit() skips the
+    // commit graph for it.  The pipelined path ran the graph anyway and advanced the state twice per
+    // single-token window; the first decode window is always one token, so the two paths' GDN states were
+    // equal after the prompt and different after that window (STRATA_PIPELINE_DUMP), and the tokens diverged
+    // at the fourth.  With this skip the pipelined windows are token-identical to the serial path.
+    if (last_t_ == 1 && one_token_self_commit() && !self_commit_off_) {
+        h_commit_[0] = n_keep;
+        h_commit_[1] = n_keep - 1;
+        for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
+        if (ple_stage())
+            for (int t = 0; t < n_keep; ++t) {
+                ss_->ple_prev[0] = ss_->ple_prev[1];
+                ss_->ple_prev[1] = last_tokens_[t];
+            }
+        ms_commit += ms_since(t0);
+        return true;
     }
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;

@@ -19,6 +19,9 @@ setup.py, tools/strata_mcp.py and strata_cli/launch import it.  Recommend, never
 
 from __future__ import annotations
 
+import os
+import platform
+import sys
 from typing import Any
 
 from strata_control import gpu_fit
@@ -56,6 +59,7 @@ MEASURED = ("4 x Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: prompts of 3,00
 # R9700: answers ~31 tokens a second, prompts 330-373 tokens a second at 8K.
 ISTA_ENGRAM_BYTES = 110_595_290_816
 ISTA_DSPARK_BYTES = 7_976_914_240
+# (the six-shard layout of the same sets, setup.py DSV41_ISTA6_FILES, is 74 KB larger: 2.00 138,238,967,104, 2.25 155,225,898,368, 1.75 120,721,194,336 bytes; the figures below are the pinned four-shard ones)
 ISTA_META_BYTES = 5_780_589          # the first shard of Unsloth's UD-Q8_K_XL: only the metadata --engram-meta reads
 ISTA_SETS = {
     "IST-DAS-2.00bpw": {"title": "IST-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
@@ -72,11 +76,29 @@ ISTA_SETS = {
                         "quality": "about 7.3% above the original model's perplexity (code and agent work about 2-3% above), "
                                    "the better of the two, 17 GB more disk"},
 }
+# Unsloth's UD-IQ1_S / UD-IQ1_M (2026-10-30, unsloth/DeepSeek-V4.1-Flash-1017-GGUF; setup.py DSV41_UD_FILES): shard 1 = metadata, shards 2-4 = the model, shard 5 = the Engram
+# (the same IQ4_NL data as IST-DAS's file, so it is shared with them).  set_bytes = shards 1-4; "meta_bytes": 0 (their own shard 1 is the metadata).  The dense weights are
+# a little bigger than IST-DAS's (attention in Q6_K): 7.2 and 7.6 GB.  Quality is not measured on our side yet.
+ISTA_SETS["UD-IQ1_S"] = {"title": "Unsloth UD-IQ1_S", "set_bytes": 122_384_317_828, "experts_gb": 115.23, "profile": "profile-2.00.bin", "meta_bytes": 0,
+                         "ppl": "?", "ram_ok_gb": 36.0, "disk_total": 241.0,
+                         "quality": "Unsloth's smallest dynamic version, the size of IST-DAS 1.75 bpw; not measured here yet"}
+ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_132, "experts_gb": 132.21, "profile": "profile-2.00.bin", "meta_bytes": 0,
+                         "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
+                         "quality": "Unsloth's next dynamic version, the size of IST-DAS 2.00 bpw; not measured here yet"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
 ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
+# A unified-memory APU (Ryzen AI Max "Strix Halo", gfx1151, Windows): the graphics chip and the CPU share one pool of RAM, so the
+# engine's expert tiers are one pool too.  The measured 64 GB box: 2.00 bpw, Faster (5 experts), DSpark auto, Adrenalin 26.10.1.
+UMA_RESERVE_GB = 12.0                 # kept for Windows, the desktop and the engine's buffers (the engine's own RAM store margin)
+UMA_MEASURED = ("a Ryzen AI Max+ 395 (Radeon 8060S, 128 GB unified: a 64 GB BIOS carve-out plus 64 GB seen by Windows) on Windows: answers "
+                "14-16 tokens a second on code in the default Faster mode (5 experts) and 10-11 on chat; a 4,000-token prompt 77-81 tokens a "
+                "second, 8,000 tokens 108-111")
+# A DGX Spark (GB10, Linux, 128 GB unified, no BIOS carve-out): the same one-pool plan.  Measured with the 2.00 bpw set, six experts per word.
+UMA_MEASURED_GB10 = ("an NVIDIA DGX Spark (GB10, 128 GB unified) on Linux with six experts per word: about 17 tokens a second on a first short "
+                     "chat and 20-23 once warm; a 1,700-token prompt read at 213-237 tokens a second, a 500-token one at 76")
 
 
 def variant(model: str | None) -> dict | None:
@@ -86,13 +108,88 @@ def variant(model: str | None) -> dict | None:
     return next((v for k, v in ISTA_SETS.items() if k.lower() == str(model).lower()), None)
 
 
+#: The AMD cards the DeepSeek engine package holds code for (packaging/build_hip_linux.sh: strata-dsv41 ships in the rx9070 build, gfx1200 and
+#: gfx1201).  setup passes the installed package's own list when it has one.
+DSV41_HIP_ARCHS = ("gfx1200", "gfx1201")
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: bool | None = None,
+              covered=None, named: bool = False) -> tuple[list[dict], list[dict]]:
+    """The cards one DeepSeek run uses when the person named none: (cards, left out with 'why_ignored'), in card order.  The ONE rule that
+    `strata launch --plan`, setup and the app share, so the plan says what the run does.
+    Every card that counts (gpu_fit.usable_cards: no integrated chip beside a card with memory of its own, no card under 8 GB).  AMD:
+    on Windows one card only (several AMD cards sharing a model is Linux-only, setup.py), and only cards the engine package holds code for
+    (`covered`, default DSV41_HIP_ARCHS): a PC with an RX 9070 and an RX 7900 uses the RX 9070 and says why the other is left out.
+    `named`: the person named these cards: they are used as named (setup warns about one the package has no code for)."""
+    mine = gpu_fit.for_vendor(list(cards or []), vendor)[0] if vendor else list(cards or [])
+    keep, ignored = gpu_fit.usable_cards(mine)
+    small = [c for c in keep if float(c.get("vram_gb") or 0) < SMALLEST_CARD_GB]
+    keep = [c for c in keep if float(c.get("vram_gb") or 0) >= SMALLEST_CARD_GB]
+    ignored = list(ignored) + [{**c, "why_ignored": f"only {float(c.get('vram_gb') or 0):.0f} GB of graphics memory"} for c in small]
+    if not named and len(keep) > 1 and all(str(c.get("vendor") or "").lower() == "nvidia" for c in keep):
+        # NVIDIA: setup's role rule (gpu_roles.recommend): a card of 8 GB or less starts Off beside a bigger one, so the plan counts what the run uses
+        # (an AMD card of 8 GB counts in both the plan and the run)
+        from strata_control import gpu_roles
+        if any(round(float(c.get("vram_gb") or 0)) > gpu_roles.OFF_AT_OR_BELOW_GB for c in keep):
+            off = [c for c in keep if round(float(c.get("vram_gb") or 0)) <= gpu_roles.OFF_AT_OR_BELOW_GB]
+            ignored += [{**c, "why_ignored": f"a card with {gpu_roles.OFF_AT_OR_BELOW_GB:.0f} GB or less starts Off beside a bigger card (setup does the same)"}
+                        for c in off]
+            keep = [c for c in keep if c not in off]
+    amd = not named and bool(keep) and all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
+    if amd:
+        win = _on_windows() if windows is None else windows
+        # the list of architectures: the package's own (`covered`), else the Linux package's (gfx1200, gfx1201).  Windows ships a different
+        # DeepSeek package (hip-rdna3), so without a list of its own nothing is filtered there.
+        archs = tuple(covered) if covered else (() if win else DSV41_HIP_ARCHS)
+        if archs:
+            known = [c for c in keep if c.get("arch")]
+            ok = [c for c in keep if not c.get("arch") or c["arch"] in archs]
+            if known and ok and len(ok) < len(keep):
+                ignored += [{**c, "why_ignored": f"the DeepSeek engine has no code for {c['arch']} (it runs on {', '.join(archs)})"}
+                            for c in keep if c not in ok]
+                keep = ok
+        if win and len(keep) > 1:
+            # the card setup takes (setup.py amd_rank): a card with memory of its own before an APU, then the most memory, then the lower number
+            first = min(keep, key=lambda c: (bool(c.get("uma") or c.get("integrated")), -round(float(c.get("vram_gb") or 0)), c.get("index", 0)))
+            ignored += [{**c, "why_ignored": "on Windows a model runs on one AMD card"} for c in keep if c is not first]
+            keep = [first]
+    keep = sorted(keep, key=lambda c: c.get("index", 0))
+    return keep, ignored
+
+
+
+def uma_card(cards: list[dict] | None) -> dict | None:
+    """The integrated Radeon a run uses, when the graphics memory is the PC's RAM (Ryzen AI Max, gfx1151): setup marks it `uma` (and
+    `integrated`); a discrete card never is.  None on every other computer."""
+    return next((c for c in cards or [] if c.get("uma") or c.get("integrated")), None)
+
+
+def uma_total_gb(card: dict, ram_gb: float | None) -> float:
+    """The one pool of a unified-memory PC, counted once: the RAM Windows sees plus the BIOS carve-out the GPU owns (the "shared"
+    part of the GPU's figure is that same RAM).  On the owner's Strix Halo: 64 GB + a 64 GB carve-out = 128 GB.  Without the carve-out
+    in the card's data, the GPU's figure less its shared part, or the larger of the two, is the best that can be said."""
+    ram = float(ram_gb or 0.0)
+    dedicated = float(card.get("dedicated_gb") or 0.0)
+    if dedicated > 0:
+        return ram + dedicated
+    vram = float(card.get("vram_gb") or 0.0)
+    shared = float(card.get("shared_gb") or 0.0)
+    if vram > 0 and shared > 0:
+        return ram + max(0.0, vram - shared)
+    return max(ram, vram)
+
+
 def variant_key(model: str | None) -> str | None:
     return next((k for k in ISTA_SETS if k.lower() == str(model or "").lower()), None)
 
 
 def ista_download_bytes(model: str, have_engram: bool = False) -> int:
     v = variant(model)
-    return v["set_bytes"] + ISTA_DSPARK_BYTES + ISTA_META_BYTES + (0 if have_engram else ISTA_ENGRAM_BYTES)
+    return v["set_bytes"] + ISTA_DSPARK_BYTES + v.get("meta_bytes", ISTA_META_BYTES) + (0 if have_engram else ISTA_ENGRAM_BYTES)
 
 
 def recommend(ram_gb: float | None, disk_free_gb: float | None = None) -> str:
@@ -159,14 +256,12 @@ def _tp_args(n_cards: int, tp: int) -> list[str]:
 
 
 def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None, context: int,
-               vendor: str | None) -> dict[str, Any]:
+               vendor: str | None, named: bool = False) -> dict[str, Any]:
     """plan() for an official IST-DAS set (ISTA_SETS): the same keys, the measured speeds in plain words.  RAM classes: with RAM for every
     expert the CPU lane keeps ("fits"), with 40 GB or more the engine's RAM store keeps the hot experts and reads the rest from the SSD
     ("tight": measured 4.7 tokens a second on 64 GB, 7.2 on 46 GB), under 40 GB it is untested and slower ("spills").  Never a refusal."""
     v = variant(model)
-    keep, ignored = gpu_fit.usable_cards(gpu_fit.for_vendor(list(cards or []), vendor)[0]) if vendor else gpu_fit.usable_cards(list(cards or []))
-    keep = [c for c in keep if float(c.get("vram_gb") or 0) >= SMALLEST_CARD_GB]
-    keep.sort(key=lambda c: c.get("index", 0))
+    keep, ignored = run_cards(cards, vendor, named=named)
     n = len(keep)
     expert_gb = v["experts_gb"] / EXPERTS
     set_gb = v["set_bytes"] / GB
@@ -245,20 +340,92 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
     return out
 
 
+def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
+    """plan() for an official IST-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
+    counted once.  The engine holds what fits beside the dense weights and the reserve and reads the rest from the SSD; the numbers in
+    UMA_MEASURED are the measured 64 GB box.  Never a refusal."""
+    v = ISTA_SETS[key]
+    total = uma_total_gb(card, ram_gb)
+    expert_gb = v["experts_gb"] / EXPERTS
+    set_gb = v["set_bytes"] / GB
+    download = ista_download_bytes(model) / GB
+    room = max(0.0, total - ISTA_DENSE_GB - UMA_RESERVE_GB)
+    resident = min(float(v["experts_gb"]), room)
+    streamed = max(0.0, float(v["experts_gb"]) - room)
+    in_mem = int(resident / expert_gb)
+    need_disk = download + DISK_HEADROOM_GB
+    out: dict[str, Any] = {
+        "variant": model, "cards": [{"index": card.get("index"), "name": card.get("name"), "vram_gb": _round1(total),
+                                     "layers": [0, LAYERS - 1], "dense_gb": _round1(ISTA_DENSE_GB),
+                                     "experts_gb": _round1(resident), "experts": in_mem}],
+        "experts_total": EXPERTS, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
+        "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(ISTA_DENSE_GB),
+        "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
+        "measured": UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
+        "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
+        "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
+        "uma": True, "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(total), "spill_gb": _round1(streamed),
+        "spare_ram_gb": _round1(max(0.0, total - ISTA_DENSE_GB - v["experts_gb"] - UMA_RESERVE_GB)),
+    }
+    lines, warns = out["lines"], out["warnings"]
+    lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, "
+                 f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
+    lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
+                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+    name = card.get("name") or "the built-in Radeon"
+    if float(card.get("dedicated_gb") or 0.0) > 0 or "GB10" not in str(card.get("name") or ""):
+        lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
+                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {ISTA_DENSE_GB:.1f} GB of "
+                     f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for Windows; the other {streamed:.0f} GB are read from the SSD while it answers.")
+        lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
+    else:       # a DGX Spark's GB10: one memory for the CPU and the GPU, nothing set aside in a BIOS, Linux
+        lines.append(f"{name} shares this computer's memory: the CPU and the GPU are one pool of {total:.0f} GB. About "
+                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {ISTA_DENSE_GB:.1f} GB of "
+                     f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for the system; the other {streamed:.0f} GB are read from the SSD while it answers.")
+        lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
+        out["measured"] = UMA_MEASURED_GB10
+    if streamed > 0.5:
+        lines.append("Keep the model files on the NVMe drive and the machine otherwise idle while it answers: every word reads experts from it.")
+    if streamed <= 0.5:
+        out["verdict"] = "fits"
+    elif total >= float(v.get("ram_ok_gb") or 0):
+        out["verdict"] = "tight"
+        if total < 48:
+            warns.append(f"This PC has {total:.0f} GB of memory shared with the graphics chip and the model was measured on 128 GB: with less, "
+                         "more experts come from the SSD and each word takes longer. It still runs.")
+    else:
+        out["verdict"] = "spills"
+        warns.append(f"This PC has {total:.0f} GB of memory shared with the graphics chip and the model was measured on 128 GB: most of its "
+                     "experts are read from the SSD while it answers, so it is slow (a word can take seconds). The smaller 1.75 bpw set "
+                     "suits this computer better. It is still allowed.")
+    if disk_free_gb is not None and disk_free_gb < need_disk:
+        warns.append(f"The download needs about {need_disk:.0f} GB of free disk space and {disk_free_gb:.0f} GB are free where the files go. "
+                     "Use --models-dir on a bigger drive, or --gguf-dir for files you already have.")
+    out["words"] = " ".join(lines)
+    return out
+
+
 def plan(cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None = None, context: int = 8192,
-         vendor: str | None = None, model: str | None = None) -> dict[str, Any]:
+         vendor: str | None = None, model: str | None = None, named: bool = False) -> dict[str, Any]:
     """Where the model goes on this computer.  `cards`: the graphics cards ({"index", "name", "vram_gb", ...}, as gpu_fit takes them),
     `ram_gb` the RAM, `disk_free_gb` the free space where the files go (None: not checked).  `model`: an official IST-DAS set
     (ISTA_SETS: "IST-DAS-2.00bpw" / "IST-DAS-2.25bpw" / "IST-DAS-1.75bpw") gets its own numbers; None or "UD-Q8_K_XL" is Unsloth's 508 GB set.
 
     Keys: cards (per card: index, name, vram_gb, layers, dense_gb, experts_gb, experts), experts_in_vram, experts_total, vram_experts_gb,
     cpu_experts_gb, ram_needed_gb, spill_gb, spare_ram_gb, verdict (fits / tight / spills / unknown / no_card), tp, args,
-    download_gb, engram_gb, disk_need_gb, disk_ok, lines (plain words, one idea each), warnings (the risks, plainly), measured."""
+    download_gb, engram_gb, disk_need_gb, disk_ok, lines (plain words, one idea each), warnings (the risks, plainly), measured.
+    On a unified-memory APU (Ryzen AI Max, gfx1151) the plan counts one pool: also `uma: True` and `streamed_gb` (the experts
+    read from the SSD), tp 1 and no args (nothing to split between cards)."""
     if variant(model):
-        return _plan_ista(variant_key(model), cards, ram_gb, disk_free_gb, context, vendor)
-    keep, ignored = gpu_fit.usable_cards(gpu_fit.for_vendor(list(cards or []), vendor)[0]) if vendor else gpu_fit.usable_cards(list(cards or []))
-    keep = [c for c in keep if float(c.get("vram_gb") or 0) >= SMALLEST_CARD_GB]
-    keep.sort(key=lambda c: c.get("index", 0))                 # the engine takes the layers in card order
+        mac = mac_card(cards)
+        if mac is not None and variant_key(model) in MAC_SET_PACK:
+            return _plan_mac(variant_key(model), model, mac, ram_gb, disk_free_gb, context)
+        mine = gpu_fit.for_vendor(list(cards or []), vendor)[0] if vendor else list(cards or [])
+        card = uma_card(gpu_fit.usable_cards(mine)[0])   # an APU beside a card with memory of its own does not count (setup leaves it out too)
+        if card is not None:
+            return _plan_uma(variant_key(model), model, card, ram_gb, disk_free_gb, context)
+        return _plan_ista(variant_key(model), cards, ram_gb, disk_free_gb, context, vendor, named)
+    keep, ignored = run_cards(cards, vendor, named=named)                 # the engine takes the layers in card order
     n = len(keep)
     out: dict[str, Any] = {"cards": [], "experts_total": EXPERTS, "experts_in_vram": 0, "vram_experts_gb": 0.0,
                            "cpu_experts_gb": EXPERTS_GB, "weights_gb": _round1(WEIGHTS_GB), "experts_gb": _round1(EXPERTS_GB),
@@ -374,16 +541,198 @@ def _option(key: str, cards: list[dict], ram_gb: float | None, ctx: int, vendor:
 def options(cards: list[dict], ram_gb: float | None, vendor: str | None = None, context: int = 8192, model: str | None = None) -> dict[str, Any]:
     """gpu_fit.options for this model: every card that counts (recommended: the model is bigger than any one card, so each card adds
     experts that stay off the CPU), and the largest card alone.  Same keys as gpu_fit.options."""
-    mine, others = gpu_fit.for_vendor(list(cards or []), vendor) if vendor else (list(cards or []), [])
-    keep, ignored = gpu_fit.usable_cards(mine)
-    keep = [c for c in keep if float(c.get("vram_gb") or 0) >= SMALLEST_CARD_GB]
+    keep, ignored = run_cards(cards, vendor)          # the same cards `strata launch --plan` and setup use (Windows: one AMD card; the package's own archs)
     out: dict[str, Any] = {"options": [], "recommended": None, "ignored": ignored, "cards": len(keep), "vendor": vendor,
                            "other_vendor_note": gpu_fit.other_vendor_note(list(cards or []), vendor)}
     if not keep:
         return out
     opts = [_option("all", sorted(keep, key=lambda c: c.get("index", 0)), ram_gb, context, vendor, model)]
     if len(keep) > 1:
-        opts.append(_option("single", [keep[0]], ram_gb, context, vendor, model))
+        largest = min(keep, key=lambda c: (-round(float(c.get("vram_gb") or c.get("unified_gb") or 0)), c.get("index", 0)))
+        opts.append(_option("single", [largest], ram_gb, context, vendor, model))
     opts[0]["recommended"] = True
     out["options"], out["recommended"] = opts, "all"
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Apple Silicon: one pool of unified memory, the routed experts are file-backed and stay resident up to the engine's cap.
+# The numbers are the three GSQ-RCO packs (the research plan's table, measured from the public allocations) and the
+# engine's own cap rule (src/dsv41/ds4_model.cu metal_expert_cap, metal/src/engine/arena_budget.h).
+
+MAC_PACKS: dict[str, dict[str, Any]] = {
+    "IQ1_M": {"name": "1.75 bpw (IQ1_M)", "routed_gb": 114.56, "backbone_gb": 120.72, "bpw": 1.75},
+    "IQ2_XXS": {"name": "2.00 bpw (IQ2_XXS), the default for most users", "routed_gb": 132.07, "backbone_gb": 138.24, "bpw": 2.00},
+    "IQ2_XS": {"name": "2.25 bpw (IQ2_XS), the quality one", "routed_gb": 149.06, "backbone_gb": 155.23, "bpw": 2.25},
+    "UD-IQ1_S": {"name": "Unsloth UD-IQ1_S (1-bit experts)", "routed_gb": 115.23, "backbone_gb": 122.38, "bpw": 1.75},
+    "UD-IQ1_M": {"name": "Unsloth UD-IQ1_M (1-bit experts)", "routed_gb": 132.21, "backbone_gb": 139.81, "bpw": 2.00},
+}
+MAC_ENGRAM_GB = 110.60          # the same Engram table for all three, read row by row off the SSD
+MAC_ENGINE_FOOTPRINT_GB = 12.0  # the process' anonymous memory after the load (Metal buffers, host buffers, the KV cache)
+MAC_DEVICE_SHARE = 0.75         # recommendedMaxWorkingSetSize as a share of the RAM (107.5 of 128 GB on the M5 Max)
+MAC_FILECACHE_FLOOR_GB = 37.2   # vm.vm_page_filecache_min on the 128 GB M5 Max
+MAC_HEADROOM_GB = 12.0          # beside that floor: macOS itself and one more program
+MAC_MEASURED = ("M5 Max, 128 GB, 2.25 bpw: 13-15 tokens/s for a short answer (10-12 after a long prompt), a 3,000-token "
+                "prompt at about 295 tokens/s, 32,000 at about 720; the engine kept about 68 GB of the experts resident "
+                "and read about 110 MB a token from the SSD")
+
+
+# What each pack did on that Mac (measured on the 0.2.7.1 build, 2026-10-27, product flags, frozen placement).
+MAC_MEASURED_PACK = {
+    "IQ2_XXS": ("M5 Max, 128 GB, 2.00 bpw: 15-16 tokens/s for a short answer (14-15 after a long prompt), a 3,000-token prompt at about 240 "
+                "tokens/s, 32,000 at about 610; the engine kept about 69 GB of the experts resident and read about 48 MB a token from the SSD"),
+    "IQ2_XS": MAC_MEASURED,
+    "UD-IQ1_S": ("M5 Max, 128 GB, Unsloth UD-IQ1_S: 15-18 tokens/s for a short answer (16-18 after a 3,000-token prompt), a 3,000-token prompt at "
+                 "about 230-310 tokens/s, 14,000 at about 520; the engine kept about 68 GB of the experts resident and the process used about 79 GB"),
+    "UD-IQ1_M": "Not run on a Mac yet; UD-IQ1_S was. It keeps fewer experts in memory, so expect it to be slower.",
+}
+
+
+def mac_expert_cap_gb(ram_gb: float) -> float:
+    """The expert budget the engine will pick on a Mac of `ram_gb` (GiB, as the rest of the app reports memory), in
+    decimal GB: the RAM less what macOS keeps, less the process' own footprint.  Mirrors metal_expert_cap() with its
+    big-Mac rule (>= 64 GB: 40% left, at least the file-cache floor + 12 GB).  128 GiB gives the 68-69 GB measured on
+    the M5 Max."""
+    gib = 1.073741824
+    p = float(ram_gb) * gib
+    if p <= 0:
+        return 0.0
+    keep = max(7.0, 0.15 * p)
+    # the file-cache floor (vm.vm_page_filecache_min) was read on the 128 GiB M5 Max (37.2 GB) and on a 32 GiB M4 mini (11.1 GB, a third
+    # of its RAM): it grows with the memory, so a Mac between the two gets it by that share, an estimate (only the 128 GiB one was run)
+    floor = MAC_FILECACHE_FLOOR_GB * min(1.0, p / (128.0 * gib))
+    leave = max(keep, 0.40 * p, floor + MAC_HEADROOM_GB) if p >= 64.0 else keep
+    cap = min(p - leave, MAC_DEVICE_SHARE * p)
+    return max(0.0, cap - MAC_ENGINE_FOOTPRINT_GB - 1.0)
+
+
+def mac_plan(ram_gb: float, quant: str = "IQ2_XS", disk_free_gb: float | None = None) -> dict[str, Any]:
+    """Where the DeepSeek pack goes on an Apple Silicon Mac.  Keys: quant, name, routed_gb, dense_gb, resident_gb,
+    streaming_gb, engram_gb, disk_need_gb, disk_ok, ram_gb, verdict (fits / streams / tight / small), lines, warnings,
+    words, measured.  `fits` means every routed expert stays in memory; `streams` is the normal case and is still
+    allowed (the engine reads the rest from the SSD in place)."""
+    if quant not in MAC_PACKS:
+        raise ValueError(f"unknown Mac pack {quant!r}; one of {sorted(MAC_PACKS)}")
+    pack = MAC_PACKS[quant]
+    routed = float(pack["routed_gb"])
+    dense = round(float(pack["backbone_gb"]) - routed, 2)
+    cap = mac_expert_cap_gb(ram_gb or 0.0)
+    resident = min(routed, cap)
+    streaming = max(0.0, routed - resident)
+    disk_need = float(pack["backbone_gb"]) + MAC_ENGRAM_GB + 6.0     # the shards, the Engram table, the pack folder
+    out: dict[str, Any] = {"quant": quant, "name": pack["name"], "routed_gb": round(routed, 1), "dense_gb": dense,
+                           "resident_gb": round(resident, 1), "streaming_gb": round(streaming, 1),
+                           "engram_gb": MAC_ENGRAM_GB, "disk_need_gb": round(disk_need, 1),
+                           "disk_ok": None if disk_free_gb is None else float(disk_free_gb) >= disk_need,
+                           "ram_gb": ram_gb, "measured": MAC_MEASURED, "lines": [], "warnings": []}
+    lines, warns = out["lines"], out["warnings"]
+    lines.append(f"DeepSeek-V4.1-Flash {pack['name']}: {routed:.0f} GB of routed experts and {dense:.1f} GB of dense "
+                 "weights, plus a 111 GB Engram table that stays on the SSD and is read a few rows for each word.")
+    if ram_gb and ram_gb >= 96 and streaming <= 0.5:
+        lines.append(f"This Mac ({ram_gb:.0f} GB): the engine will keep all {routed:.0f} GB of the experts in memory.")
+    elif ram_gb and ram_gb >= 96:
+        lines.append(f"This Mac ({ram_gb:.0f} GB): the engine will keep about {resident:.0f} GB of the experts in memory "
+                     f"and read the other {streaming:.0f} GB from the SSD while it answers.")
+    elif ram_gb:
+        lines.append(f"This Mac ({ram_gb:.0f} GB) can hold about {resident:.0f} GB of the experts; the other "
+                     f"{streaming:.0f} GB stream from the SSD, which is slow on a small Mac.")
+    if cap <= 0:
+        out["verdict"] = "small"
+        warns.append("Too little memory to hold a useful part of the model: 64 GB or more is wanted.")
+    elif streaming == 0:
+        out["verdict"] = "fits"
+        lines.append("Every routed expert stays in memory: the fastest case.")
+    elif resident < 0.25 * routed:
+        out["verdict"] = "small"
+        warns.append(f"Only about {resident:.0f} GB of {routed:.0f} GB of experts fit in memory (under a quarter): "
+                     "most of the model is read from the SSD for every word, so answers are much slower than on a Mac with 128 GB "
+                     "(nothing this small was measured). It still runs; a 64 GB or bigger Mac is the better fit.")
+    else:
+        out["verdict"] = "streams"
+        lines.append("The model streams: answers are slower than on a machine that holds all the experts, and they still "
+                     "work. An NVMe SSD is wanted, not a USB or network drive.")
+    if disk_free_gb is not None and disk_free_gb < disk_need:
+        warns.append(f"The files need about {disk_need:.0f} GB of free disk space and {disk_free_gb:.0f} GB are free.")
+    lines.append("Measured on " + MAC_MEASURED + ".")
+    out["words"] = " ".join(lines)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The Mac in the launch flow: plan() answers for an Apple Silicon Mac in the shape the catalog, `strata launch` and the app read
+# for any other computer, from mac_plan's numbers.  The official sets that were run on a Mac (2.00 and 2.25 bpw, 2026-10-25);
+# the 1.75 bpw set shares the 2.00 set's IQ1_M kernel but was never run there, so it is not offered on a Mac.
+
+
+MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-IQ1_S": "UD-IQ1_S", "UD-IQ1_M": "UD-IQ1_M"}
+# Unsloth's UD-IQ1_S was run on an M5 Max (f-039-mac-dsu).  UD-IQ1_M has the same kernels and was not run there; the owner chose to offer it anyway ("they
+# will tell if it works"), with a plain "not run yet" line in its plan.  The gate stays as a mechanism, empty: put a name here to keep a set off a Mac
+# (the model lists, setup, the launch and the "I already have the model" check all read it through not_here()).
+MAC_NOT_YET = ()
+MAC_NOT_YET_LINE = "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do."
+# The same two sets were kept off a DGX Spark (linux-aarch64, GB10) until a Spark run passed: both passed there on 2026-10-30 (real `strata launch --model-path`,
+# 10 of 10 answers, tool call correct), so the tuple is empty.  Put a name back here to hide a set from the Spark again.
+AARCH64_NOT_YET = ()
+AARCH64_NOT_YET_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were."
+
+
+def not_here(model: str | None) -> str | None:
+    """The plain line when `model` is not offered on THIS computer (a Mac: MAC_NOT_YET; linux-aarch64, the DGX Spark: AARCH64_NOT_YET), else None.
+    Read at call time from sys.platform and platform.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
+    if sys.platform == "darwin" and model in MAC_NOT_YET:
+        return MAC_NOT_YET_LINE
+    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
+        return AARCH64_NOT_YET_LINE
+    return None
+MAC_SMALL_RAM_GB = 64.0     # below this the measured M5 Max numbers do not apply (nothing smaller than 32 GB was ever started)
+
+
+def mac_card(cards: list[dict] | None) -> dict | None:
+    """The Apple Silicon "graphics card" of the hardware report (vendor apple, its unified memory in `unified_gb`), None on any other computer."""
+    return next((c for c in cards or [] if str(c.get("vendor")) == "apple" or float(c.get("unified_gb") or 0) > 0), None)
+
+
+def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
+    """plan() for an official IST-DAS set on an Apple Silicon Mac.  One pool of unified memory: the engine keeps the experts it can
+    beside the dense weights resident (mac_expert_cap_gb) and reads the rest from the SSD in place.  Never a refusal: a smaller Mac
+    gets a plain warning, not a block."""
+    v = ISTA_SETS[key]
+    ram = float(ram_gb or card.get("unified_gb") or 0.0)
+    mp = mac_plan(ram, MAC_SET_PACK[key], disk_free_gb)
+    expert_gb = v["experts_gb"] / EXPERTS
+    resident = float(mp["resident_gb"])
+    streamed = float(mp["streaming_gb"])
+    in_mem = int(resident / expert_gb)
+    download = ista_download_bytes(model) / GB
+    need_disk = download + DISK_HEADROOM_GB
+    verdict = {"fits": "fits", "streams": "tight", "small": "spills"}[mp["verdict"]]
+    out: dict[str, Any] = {
+        "variant": model, "mac": True, "mac_verdict": mp["verdict"],
+        "cards": [{"index": card.get("index", 0), "name": card.get("name") or "Apple Silicon", "vram_gb": _round1(ram),
+                   "layers": [0, LAYERS - 1], "dense_gb": _round1(ISTA_DENSE_GB), "experts_gb": _round1(resident), "experts": in_mem}],
+        "experts_total": EXPERTS, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
+        "weights_gb": _round1(v["set_bytes"] / GB), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(ISTA_DENSE_GB),
+        "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
+        "measured": MAC_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
+        "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
+        "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
+        "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(resident + ISTA_DENSE_GB + MAC_ENGINE_FOOTPRINT_GB),
+        "spill_gb": _round1(streamed), "spare_ram_gb": _round1(max(0.0, ram - resident - ISTA_DENSE_GB - MAC_ENGINE_FOOTPRINT_GB)),
+        "verdict": verdict,
+    }
+    lines, warns = out["lines"], out["warnings"]
+    lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({v['set_bytes'] / GB:.0f} GB of model, "
+                 f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
+    lines.extend(l for l in mp["lines"][1:] if not l.startswith("Measured on "))
+    measured = MAC_MEASURED_PACK[MAC_SET_PACK[key]]
+    lines.append(measured if measured.startswith("Not run") else "Measured on " + measured + ".")
+    out["measured"] = measured
+    warns.extend(mp["warnings"])
+    if ram and ram < MAC_SMALL_RAM_GB and mp["verdict"] != "small":
+        warns.append(f"This Mac has {ram:.0f} GB of memory and the set was measured on one with 128 GB: with less, more experts come from "
+                     "the SSD for every word, so answers are slower. It still runs.")
+    if disk_free_gb is not None and disk_free_gb < need_disk:
+        warns.append(f"The download needs about {need_disk:.0f} GB of free disk space and {disk_free_gb:.0f} GB are free where the files go. "
+                     "Use --models-dir on a bigger drive, or --gguf-dir for files you already have.")
+    out["words"] = " ".join(lines)
     return out

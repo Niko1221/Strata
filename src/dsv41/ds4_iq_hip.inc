@@ -311,6 +311,19 @@ inline bool launch(const SetArgs& a, cudaStream_t s) {
             if (cfg == 3 && a.max_rows <= 32) return runr<T, GU, 32, 2, 2>(a, s);
             if (cfg == 4 && a.max_rows <= 32) return runr<T, GU, 32, 8, 2>(a, s);
             if (cfg == 5 && a.max_rows <= 32) return runr<T, GU, 32, 2, 1>(a, s);
+            // (MarLin tile sweep on long sets: a shorter block for the tail rows - one kernel, same arithmetic)
+            if (cfg == 6) return runr<T, GU, 64, 8, 1>(a, s);
+            if (cfg == 7) return runr<T, GU, 32, 8, 1>(a, s);
+            if (cfg == 8) return runr<T, GU, 128, 8, 2>(a, s);
+            if (cfg == 9) return runr<T, GU, 64, 4, 2>(a, s);
+            // (a wider column block for the down pass only: its K is short and its F16 activation tile is re-read by
+            // every column block - 40 of them at BN 128, 20 at BN 256, the weight tile unchanged)
+            if (cfg == 10) {
+                if constexpr (GU) return runr<T, GU, 128, 8, 1>(a, s);
+                else return runr<T, GU, 128, 8, 2>(a, s);
+            }
+            // (64 rows x 256 columns a block: half the activation re-reads of 128 x 128 at the same accumulator count)
+            if (cfg == 11) return runr<T, GU, 64, 8, 2>(a, s);
             if (a.max_rows <= 32) return runr<T, GU, 32, 4, 2>(a, s);
             if (a.max_rows <= 64) return runr<T, GU, 64, 4, 2>(a, s);
             return runr<T, GU, 128, 8, 1>(a, s);

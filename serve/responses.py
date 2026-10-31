@@ -420,11 +420,12 @@ def text_format(req: dict):
     kind = fmt.get("type")
     if kind in (None, "text"):
         return None
+    extra = {"repair_latex_escapes": True} if fmt.get("repair_latex_escapes") is True else {}   # #2893, opt-in
     if kind == "json_object":
-        return {"type": "json_object"}
+        return {"type": "json_object", **extra}
     if kind == "json_schema":
         spec = {k: fmt[k] for k in ("name", "schema", "strict", "description") if k in fmt}
-        return {"type": "json_schema", "json_schema": spec}
+        return {"type": "json_schema", "json_schema": spec, **extra}
     raise ResponsesError("text.format.type must be text, json_object or json_schema", "text.format.type")
 
 
@@ -443,8 +444,10 @@ def check_request(req: dict) -> None:
         raise ResponsesError("stored prompt templates are not supported: send instructions and input",
                              "prompt", "unsupported_parameter")
     n = req.get("max_output_tokens")
-    if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < 1):
-        raise ResponsesError("max_output_tokens must be a positive whole number", "max_output_tokens")
+    # -1 and 0 mean no cap, as max_tokens does on the chat path (docs/DETAILS.md); anything lower is a mistake
+    if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < -1):
+        raise ResponsesError("max_output_tokens must be a whole number, 1 or more, or -1 or 0 for no cap",
+                             "max_output_tokens")
     reasoning = req.get("reasoning")
     if reasoning is not None and not isinstance(reasoning, dict):
         raise ResponsesError("reasoning must be an object", "reasoning")
@@ -662,10 +665,17 @@ class Assembler:
         if length:
             self.response["status"] = "incomplete"
             self.response["incomplete_details"] = {"reason": "max_output_tokens"}
-            return out + [self.event("response.incomplete", response=self.snapshot())]
+            return out + [self._with_timings(self.event("response.incomplete", response=self.snapshot()), done)]
         self.response["status"] = "completed"
         self.response["completed_at"] = int(time.time())
-        return out + [self.event("response.completed", response=self.snapshot())]
+        return out + [self._with_timings(self.event("response.completed", response=self.snapshot()), done)]
+
+    @staticmethod
+    def _with_timings(event: dict, done: dict) -> dict:
+        """Top-level `timings` on the final event, as /v1/chat/completions has them (#107)."""
+        if done.get("timings"):
+            event["timings"] = done["timings"]
+        return event
 
     def failed(self, message: str, code: str = "server_error") -> dict:
         """response.failed: an error after the stream started (the HTTP status is already sent)."""
@@ -683,4 +693,6 @@ def collect(events) -> dict:
     for e in events:
         if e is not None:
             last = e
+    if last.get("timings"):                          # as on a whole /v1/chat/completions reply (#107)
+        return {**last["response"], "timings": last["timings"]}
     return last["response"]

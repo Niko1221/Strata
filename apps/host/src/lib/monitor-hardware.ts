@@ -29,3 +29,16 @@ export function gpuCapacity(devices:GpuInfo[]) {
   const shared=devices.filter(g=>g.unified).map(g=>g.vramGb);
   return devices.filter(g=>!g.unified).reduce((n,g)=>n+g.vramGb,0)+(shared.length?Math.max(...shared):0);
 }
+
+/**
+ * The cards "All GPUs" covers by default. A small integrated chip (an AMD or Intel adapter on the Windows/Vulkan list with a carve-out under
+ * 2 GB) beside a real card is left out: Strata cannot run a model on it (the native engine report marks it unusable), and counting it adds a
+ * second "GPU" and half a gigabyte to every total. It stays in the picker. Alone (a Strix Halo, an iGPU-only PC) it stays the default.
+ */
+export function defaultGpuSet(devices:GpuInfo[]):GpuInfo[] {
+  const real=(g:GpuInfo)=>g.vramGb>=4||g.vendor==='nvidia'||g.backend==='cuda';
+  const small=(g:GpuInfo)=>g.backend==='vulkan'&&(g.vendor==='amd'||g.vendor==='intel')&&g.vramGb<2&&!g.unified;
+  if(!devices.some(real))return devices;
+  const kept=devices.filter(g=>!small(g));
+  return kept.length?kept:devices;
+}

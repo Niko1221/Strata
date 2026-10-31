@@ -52,6 +52,10 @@ const char* type_name(int type);
 /// Whether the device kernels take this type (MXFP4 is its own path; the i-quants and K-quants ds4_iq.cu instantiates).
 /// A false here with a layout known to type_row_bytes() means the CPU lane reads it and it must not enter the VRAM tier.
 bool type_on_device(int type);
+/// Whether the *chunk* path's expert tile GEMM (ds4_mm.metal on Metal) takes this type.  IQ1_M has a matvec kernel on
+/// Metal but no tile kernel there, so a prompt in chunks would stream it to the GPU and stop; false here means the
+/// prompts must run in windows instead (ds4_model.cu switches, and says so).
+bool type_on_chunk(int type);
 
 /// The per-stream scratch of the MXFP4 experts on the current device (once per stream, as x3::prepare).
 bool prepare(cudaStream_t s);

@@ -26,7 +26,7 @@ const steps = ['Welcome', 'Your model', 'Prepare', 'Make it yours'];
 function DeepSeekNote({ version, plan }: { version: NonNullable<ReturnType<typeof nativeCatalogModels>[number]['sizes'][number]>; plan: Record<string, any> | null }) {
     void plan;   // the plan's own disk line repeats what the version says in on_this_pc
     return <div className="engine-warning" role="status"><Icon name="info" size={18}/><div>
-        <p>{tr("This is a very large model. The download is {0} GB and it needs about as much free disk space. It runs on one 12 GB graphics card with 46 to 64 GB of RAM, slowly: about 5 to 7 words a second. What does not fit in memory is read from your SSD, so an NVMe drive matters.", [Math.round(version.download_gb)])}</p>
+        <p>{tr("This is a very large model. The download is {0} GB and it needs about as much free disk space. It runs on NVIDIA RTX 30, 40 and 50 cards, on a Radeon AI PRO R9700 (Linux) or on a Ryzen AI Max / Strix Halo PC (Windows); how fast it is depends on the memory and card (the line below says what to expect on this computer). What does not fit in memory is read from your SSD, so an NVMe drive matters.", [Math.round(version.download_gb)])}</p>
         {version.on_this_pc ? <p className="small muted">{version.on_this_pc}</p> : null}
         <p className="small muted">{tr("You can stop the download and continue later; it picks up where it stopped. Strata warns you here but never blocks you.")}</p>
     </div></div>;

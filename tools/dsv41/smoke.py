@@ -77,8 +77,12 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         f = Path(d) / "ids.txt"
         f.write_text(",".join(str(i) for i in ids), encoding="ascii")
-        cmd = [a.exe, "--pack", str(pack), "--ids", "@" + str(f), "--n", str(a.tokens), "--max-context", "1024", "--dspark", "auto",
-               "--window", "16"]
+        mac = sys.platform == "darwin"
+        cmd = [a.exe, "--pack", str(pack), "--ids", "@" + str(f), "--n", str(a.tokens), "--max-context", "1024", "--dspark", "none" if mac else "auto"]
+        # (a Mac runs without the drafter: its Metal engine has no kernels for it, and it keeps the engine's own prompt window: with a window of
+        # 16 or 17 tokens the Metal engine gave a wrong first word in about half the runs; the engine's default window never did)
+        if not mac:
+            cmd += ["--window", "16"]
         if a.gpus:
             cmd += ["--gpus", a.gpus]
         try:

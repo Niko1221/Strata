@@ -433,6 +433,18 @@ def main(argv=None) -> int:
         (BUILD_DIR / "BUILD.json").unlink(missing_ok=True)
     exe = build_engine(llama)
     if a.update:
+        # update.sh's own text: "The model files are not touched".  The questions are asked anyway, so when the
+        # answers name a model (or an image encoder) that is not here, say it: a silent exit reads like a broken
+        # download (an M1 Max chose IQ3_S in update.sh and got no model and no message).
+        files = [Path(a.gguf_dir) / n if a.gguf_dir else models_root / tag / n for n in model_shard_names(model)]
+        pack = S.find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
+        pack_done = (pack / "native_experts.txt").exists() and (pack / "tokenizer" / "vocab.json").exists()
+        if not (all(f.exists() and S.done(f) for f in files) and pack_done):
+            S.warn(f"{model} is not installed here, and an update does not download model files: nothing was installed")
+            S.say(f"  to download and prepare {model}: ./setup.sh --setup")
+        elif vision == "yes" and not (models_root / fam["mmproj"]).exists():
+            S.warn("the image encoder is not downloaded here, and an update does not download model files")
+            S.say("  to add image support: ./setup.sh --setup")
         return 0
 
     # ---- 5. the model

@@ -1,5 +1,5 @@
 // The page side of the context fixes (2026-10-22 hands-on test): what the error card offers, what the context meter reads while a turn runs,
-// and that every sentence the host or the page says about the context is in the catalog in all eight languages.
+// and that every sentence the host or the page says about the context is in the catalog in all nine languages.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -99,8 +99,8 @@ test('the context meter follows the turn that is running: a tool step does not r
   assert.equal(chatMetrics(session([earlier, done]), null, 65536).used, 43090, 'when the turn has ended its final figure stands');
 });
 
-test('every sentence about the context is in the catalog in all eight languages, with the same slots', () => {
-  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+test('every sentence about the context is in the catalog in all nine languages, with the same slots', () => {
+  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
   const catalogs = Object.fromEntries(langs.map(l => [l, JSON.parse(read(`../src/locales/${l}.json`))]));
   const idOf = text => Object.entries(catalogs.en).find(([, v]) => v === text)?.[0];
   const sentences = [...Object.values(FIT_TEXT), 'Attach as a file', 'Send a shortened preview', 'Summarize and continue', 'Start a new chat',

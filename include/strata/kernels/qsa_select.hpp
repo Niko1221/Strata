@@ -78,4 +78,20 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
 void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                         const QsaShapes& s, int32_t* ids, void* stream);
 
+/// The long-context decode select (the verifier's STRATA_SELECT_LONG=1 windows; CUDA builds with
+/// STRATA_EXPERIMENTAL_SM60, elsewhere the plain calls).  qsa_block_topk_long: qsa_block_topk's ids; a call with
+/// `multi_scratch` (qsa_topk_multi_scratch_ints(nq) device ints, one call at a time per scratch, no initial value), no
+/// active count and <= 16 queries runs several CTAs per query (block_topk_multi_*: STRATA_TOPK_MULTI=0 off, =1 on any
+/// card, default compute capability 6.x past the register kernel's reach); otherwise it is qsa_block_topk.
+/// qsa_block_scores_long: qsa_block_scores's bits; a call of <= 8 queries with no active count runs
+/// block_scores_dx_kernel (STRATA_SCORES_DX=0 off, =1 on any card, default compute capability 6.x); otherwise it is
+/// qsa_block_scores.
+void qsa_block_topk_long(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
+                         const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks, int32_t* multi_scratch);
+void qsa_block_scores_long(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
+                           int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks);
+/// Device ints a qsa_block_topk_long call of `nq` queries may use as multi_scratch (0 on a build without the multi-CTA
+/// path: pass null).
+int64_t qsa_topk_multi_scratch_ints(int64_t nq);
+
 }  // namespace strata::kernels

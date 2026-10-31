@@ -39,6 +39,7 @@ RELEASE = [
     pkg("linux-x86_64", "hip", "rx7900", ("gfx1100", "gfx1101", "gfx1102")),
     pkg("linux-x86_64", "hip", "halo", ("gfx1151",)),
     pkg("linux-x86_64", "hip", "rx6000", ("gfx1030", "gfx1031")),
+    pkg("linux-aarch64", "cuda", "cuda13", ("sm_121", "compute_121"), "580.65"),     # the NVIDIA DGX Spark (GB10), 0.2.7.1
     pkg("linux-x86_64", "sycl", "", ("intel-arc",)),                 # the Intel Arc (A and B series) engine, GPU code JIT-compiled
     pkg("macos-arm64", "metal", "", ("apple-gpu",)),
 ]
@@ -66,6 +67,7 @@ class ReleaseSelection(unittest.TestCase):
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1100"]))[0],             # RX 7900 XTX
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1151"]))[0],             # Ryzen AI Max (Strix Halo)
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1031"]))[0],             # RX 6700 XT
+            self.pick(pc("linux-aarch64", "cuda", "580.173", ["sm_121"]))[0],     # DGX Spark (GB10)
             self.pick(pc("linux-x86_64", "sycl"))[0],                             # Arc A750 / B580 / Pro B70
             self.pick(pc("macos-arm64", "metal"))[0],
         }
@@ -81,6 +83,19 @@ class ReleaseSelection(unittest.TestCase):
         self.assertEqual(self.pick(pc(win, "cuda", "615.71", ["sm_70"]))[0][2], "cuda12", "Volta is only in the CUDA 12 build")
         self.assertEqual(self.pick(pc("linux-x86_64", "cuda", "575.51", ["sm_75"]))[0][2], "cuda12")
         self.assertEqual(self.pick(pc("linux-x86_64", "cuda", "580.65", ["sm_75"]))[0][2], "cuda13")
+
+    def test_the_dgx_spark_gets_the_aarch64_build_and_no_other_pc_does(self):
+        self.assertEqual(self.pick(pc("linux-aarch64", "cuda", "580.173", ["sm_121"]))[0], ("linux-aarch64", "cuda", "cuda13"))
+        for hw in (pc("linux-x86_64", "cuda", "590.10", ["sm_120"]), pc("linux-x86_64", "cuda", "590.10", ["sm_121"]),
+                   pc("windows-x86_64", "cuda", "590.10", ["sm_121"])):
+            self.assertNotEqual(self.pick(hw)[0][0], "linux-aarch64", hw)
+        got, why = self.pick(pc("linux-aarch64", "cuda", "580.173", ["sm_86"]))      # an arm64 server with an A-series card: no machine code for it
+        self.assertIsNone(got)
+        self.assertTrue(any("sm_121" in r for r in why))
+        got, why = self.pick(pc("linux-aarch64", "cuda", "570.10", ["sm_121"]))      # the driver is too old
+        self.assertIsNone(got)
+        self.assertTrue(any("580.65" in r for r in why))
+        self.assertIsNone(self.pick(pc("linux-aarch64", "hip", gfx=["gfx1201"]))[0])    # no AMD engine for arm64 Linux
 
     def test_a_driver_that_is_too_old_gets_no_engine_and_a_reason(self):
         got, why = self.pick(pc("windows-x86_64", "cuda", "551.00", ["sm_86"]))

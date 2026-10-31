@@ -32,6 +32,26 @@ typedef struct {
 } block_tqk7;
 static_assert(sizeof(block_tqk7) == 30, "wrong tqk7 block size/padding");
 
+// Gyro-L pair trellis (agentionai llama.cpp release/gyro-l): 64 steps of K bits, 2 weights per step
+// (the TQ2_T codebook's first pair).  Defined in the fork's ggml-common.h; repeated here so Strata's
+// device and CPU kernels compile without GGML_COMMON_IMPL.
+#define QK_TQP 128
+typedef struct {
+    uint16_t d;
+    uint8_t  qs[8*5];         // 64 steps x 5 bits
+} block_tqp5;
+static_assert(sizeof(block_tqp5) == 42, "wrong tqp5 block size/padding");
+typedef struct {
+    uint16_t d;
+    uint8_t  qs[8*6];         // 64 steps x 6 bits
+} block_tqp6;
+static_assert(sizeof(block_tqp6) == 50, "wrong tqp6 block size/padding");
+typedef struct {
+    uint16_t d;
+    uint8_t  qs[8*7];         // 64 steps x 7 bits
+} block_tqp7;
+static_assert(sizeof(block_tqp7) == 58, "wrong tqp7 block size/padding");
+
 // device memory in a CUDA / HIP translation unit, ordinary host data everywhere else
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_TQ_LUT_SPACE __device__

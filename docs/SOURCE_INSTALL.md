@@ -33,6 +33,15 @@ Choose a pack that fits your machine; Q2_0 is an example, not a universal minimu
 In PowerShell, prefix the wrapper with `.\`, for example `.\START-HERE.bat`.
 `SETUP.bat` opens setup again to add a model or change settings. The wrapper can reuse an existing install;
 first-start and later load times depend on the pack, disk, RAM and backend. A model can take several minutes to load.
+Run again over an installed model, setup pre-selects the size that is installed and marks it "(installed)", and `--yes` takes it: a repeat run
+does not move the model to the recommended size.
+
+When no ready-made engine fits the PC, setup compiles one. That needs the Visual Studio 2022 Build Tools with the C++ workload;
+Visual Studio 2019 is too old (the sources are C++20). With a CUDA toolkit, CUDA 13.0 to 13.2 accept Visual Studio 2022 only, and
+Visual Studio 2026 works from CUDA 13.3. The CPU image encoder alone (no CUDA toolkit on the PC) builds with MSVC and takes any
+Visual Studio that has the C++ tools. If setup cannot find an install it could use, name the file before running it, for example
+`set STRATA_VCVARS=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat`. Setup uses that file
+only if it exists; a wrong path is answered as no build tools at all.
 
 ## From source: Linux
 
@@ -70,6 +79,9 @@ For a direct NVIDIA build, with the required compiler and CUDA toolkit installed
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build --target strata -j8
 ```
+
+`native` builds for the GPUs in this PC. Name the card instead for another one: `75` (RTX 20), `86` (RTX 30), `89` (RTX 40),
+`120` (RTX 50), or a list such as `"86;120"`. Without the option the build is for RTX 50 only and the configure step says so.
 
 Run against the resulting binary and the matching model config. Use the build instructions for
 [HIP](AMD_HIP.md), [SYCL](INTEL_ARC.md) or [Metal](MAC.md) when changing those backends.

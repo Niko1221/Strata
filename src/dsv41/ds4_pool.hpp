@@ -145,12 +145,19 @@ public:
         const uint8_t* mem = nullptr;   // non-null: a copy of len bytes from memory to dst instead of a read
         const void* map = nullptr;      // the range in the file's mapping: all in the page cache, it is read buffered
         uint8_t* keep = nullptr;        // non-null (a read): the len bytes read copied here as well
+        bool exact = false;             // the len bytes land exactly at dst (a ring slot: no staging slack around them)
         std::atomic<bool>* cancel = nullptr;   // set before the job starts: it is dropped unread (bad is set, left counted down)
+        std::chrono::steady_clock::time_point pushed{};   // (DS4_IO_STATS: when it was queued)
     };
     explicit IoQueue(int n) {
         for (int i = 0; i < n; ++i) th_.emplace_back([this] { loop(); });
     }
     ~IoQueue() {
+        if (st_n_.load() > 0 && std::getenv("DS4_IO_STATS") != nullptr)
+            std::fprintf(stderr, "io stats: %llu jobs, mean queue wait %.2f ms, read %.2f ms, copy %.2f ms, %.2f MB a job\n",
+                         (unsigned long long) st_n_.load(), st_q_.load() / 1000.0 / (double) st_n_.load(),
+                         st_r_.load() / 1000.0 / (double) st_n_.load(), st_m_.load() / 1000.0 / (double) st_n_.load(),
+                         st_b_.load() / 1e6 / (double) st_n_.load());
         {
             std::lock_guard<std::mutex> lk(mu_);
             quit_ = true;
@@ -162,7 +169,10 @@ public:
     void push(const Job* jobs, int n, bool low = false) {
         {
             std::lock_guard<std::mutex> lk(mu_);
-            for (int i = 0; i < n; ++i) (low ? ql_ : q_).push_back(jobs[i]);
+            for (int i = 0; i < n; ++i) {
+                (low ? ql_ : q_).push_back(jobs[i]);
+                (low ? ql_ : q_).back().pushed = std::chrono::steady_clock::now();
+            }
         }
         if (n == 1) cv_.notify_one();
         else cv_.notify_all();
@@ -178,6 +188,9 @@ public:
 
 private:
     void loop() {
+#if defined(_WIN32)
+        if (std::getenv("DS4_IO_PRIO") != nullptr) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);   // (a read in flight is the lane's critical path)
+#endif
         for (;;) {
             Job j;
             {
@@ -204,6 +217,21 @@ private:
             if (j.mem != nullptr) {
                 std::memcpy(j.dst, j.mem, (size_t) j.len);
                 ok = true;
+            } else if (j.exact) {
+                // unbuffered through a bounce buffer (the disk reads aligned spans), then the bytes to where they belong
+                thread_local std::vector<uint8_t> bounce;
+                const uint64_t span = os::direct_span(j.off, j.len);
+                if (bounce.size() < span + os::kDirectAlign) bounce.resize((size_t) span + 2 * os::kDirectAlign);
+                uint8_t* bp = (uint8_t*) (((uintptr_t) bounce.data() + os::kDirectAlign - 1) & ~(uintptr_t) (os::kDirectAlign - 1));
+                if (j.dfd != os::kBadFd && !(j.map != nullptr && os::resident(j.map, (size_t) j.len)) &&
+                    os::pread_direct(j.dfd, bp, j.len, j.off)) {
+                    std::memcpy(j.dst, bp + lead, (size_t) j.len);
+                    ok = true;
+                    direct_.fetch_add(j.len, std::memory_order_relaxed);
+                } else if (os::pread_par(j.fd, j.dst, j.len, j.off)) {
+                    ok = true;
+                    buffered_.fetch_add(j.len, std::memory_order_relaxed);
+                }
             } else if (j.dfd != os::kBadFd && !(j.map != nullptr && os::resident(j.map, (size_t) j.len)) &&
                        os::pread_direct(j.dfd, j.dst, j.len, j.off)) {   // (the page cache's ones: buffered, below)
                 ok = true;
@@ -212,7 +240,20 @@ private:
                 ok = true;
                 buffered_.fetch_add(j.len, std::memory_order_relaxed);
             }
-            if (ok && j.keep != nullptr && j.mem == nullptr) std::memmove(j.keep, j.dst + lead, (size_t) j.len);   // (keep may overlap dst: the store reads in place and moves up)
+            const auto t_rd = std::chrono::steady_clock::now();
+            if (ok && j.keep != nullptr && j.mem == nullptr) std::memmove(j.keep, j.exact ? j.dst : j.dst + lead, (size_t) j.len);   // (keep may overlap dst: the store reads in place and moves up)
+            {
+                static const bool stats = std::getenv("DS4_IO_STATS") != nullptr;
+                if (stats && j.mem == nullptr && j.cancel == nullptr) {   // (demand reads only)
+                    const auto t_end = std::chrono::steady_clock::now();
+                    using us = std::chrono::microseconds;
+                    st_n_.fetch_add(1);
+                    st_q_.fetch_add((uint64_t) std::chrono::duration_cast<us>(t0 - j.pushed).count());
+                    st_r_.fetch_add((uint64_t) std::chrono::duration_cast<us>(t_rd - t0).count());
+                    st_m_.fetch_add((uint64_t) std::chrono::duration_cast<us>(t_end - t_rd).count());
+                    st_b_.fetch_add(j.len);
+                }
+            }
             busy_us_.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(
                                    std::chrono::steady_clock::now() - t0).count(),
                                std::memory_order_relaxed);
@@ -232,6 +273,7 @@ private:
     uint64_t done_ = 0;
     bool quit_ = false;
     std::atomic<uint64_t> busy_us_{0}, direct_{0}, buffered_{0};
+    std::atomic<uint64_t> st_n_{0}, st_q_{0}, st_r_{0}, st_m_{0}, st_b_{0};   // DS4_IO_STATS: jobs, queue wait / read / copy us, bytes
 };
 
 }  // namespace strata::ds4

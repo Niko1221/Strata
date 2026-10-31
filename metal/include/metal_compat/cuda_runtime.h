@@ -1,3 +1,32 @@
+// The CUDA function-space qualifiers and the few launch/kernel spellings the shared sources use.  On Metal they say
+#include "cuda_launch.h"
+// nothing: a "kernel" here is an MSL function compiled at run time and dispatched by the host runtime, so the qualifiers
+// are empty and __forceinline__ is plain inline.  Part of the metal_compat layer (M5 Max, 2026-10-23).
+#ifndef __host__
+#define __host__
+#endif
+#ifndef __device__
+#define __device__
+#endif
+#ifndef __global__
+#define __global__
+#endif
+#ifndef __shared__
+#define __shared__
+#endif
+#ifndef __constant__
+#define __constant__
+#endif
+#ifndef __forceinline__
+#define __forceinline__ inline
+#endif
+#ifndef __launch_bounds__
+#define __launch_bounds__(...)
+#endif
+#ifndef __restrict__
+#define __restrict__
+#endif
+
 // metal/include/metal_compat/cuda_runtime.h - the CUDA runtime names the host files use, on Metal.
 //
 // The HIP build's approach (include/strata/hip_compat/cuda_runtime.h maps every cudaX the host code calls to hipX),
@@ -7,6 +36,27 @@
 // CUDA ones.  Only the names in the Phase 1 inventory (phaseA-tests/mac-design.md §1.3) are provided; a host file that
 // uses another one fails to compile on Metal, which is the point.
 #pragma once
+
+// CUDA's alignment qualifier
+#ifndef __align__
+#define __align__(n) alignas(n)
+#endif
+
+#include "cuda_device_builtins.h"
+
+#include <cmath>
+
+using std::fmaxf;
+using std::fminf;
+using std::sqrtf;
+using std::fabsf;
+using std::powf;
+using std::expf;
+using std::logf;
+
+// CUDA's headers put min/max in scope for integers; the sources rely on it
+template <typename T> static inline T min(T a, T b) { return strata_min(a, b); }
+template <typename T> static inline T max(T a, T b) { return strata_max(a, b); }
 
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +95,12 @@ inline constexpr unsigned cudaEventDefault = strata::gpu::kEventDefault;
 inline constexpr unsigned cudaEventDisableTiming = strata::gpu::kEventDisableTiming;
 inline constexpr unsigned cudaEventBlockingSync = strata::gpu::kEventBlockingSync;
 inline constexpr unsigned cudaStreamNonBlocking = strata::gpu::kStreamNonBlocking;
+enum cudaStreamCaptureStatus { cudaStreamCaptureStatusNone = 0, cudaStreamCaptureStatusActive = 1, cudaStreamCaptureStatusInvalidated = 2 };
+static inline strata::gpu::Error cudaStreamIsCapturing(strata::gpu::Stream, cudaStreamCaptureStatus* st) {
+    if (st) *st = cudaStreamCaptureStatusNone;
+    return strata::gpu::kSuccess;
+}
+
 enum cudaStreamCaptureMode { cudaStreamCaptureModeGlobal = 0, cudaStreamCaptureModeThreadLocal = 1, cudaStreamCaptureModeRelaxed = 2 };
 // (the compute capability is asked by the 0.1.45 Turing defaults in verify.cpp: no answer here, which reads as "not a Turing card")
 enum cudaDeviceAttr {
@@ -79,6 +135,11 @@ inline cudaError_t cudaDeviceEnablePeerAccess(int p, unsigned f) { return strata
 inline cudaError_t cudaDeviceDisablePeerAccess(int) { return cudaSuccess; }   // a Mac has one GPU: nothing to disable
 
 // ---- memory and copies
+// the deferred command buffer mtl_rt batches the port's dispatches into: a copy (or any host read of a device result)
+// has to commit it first, or it reads memory the GPU has not written yet.  Defined in ds4_finish.cpp.
+extern "C" void ds4_metal_flush();
+extern "C" void ds4_metal_kick();
+
 template <class T> inline cudaError_t cudaMalloc(T** p, size_t n) { return strata::gpu::malloc_device(p, n); }
 inline cudaError_t cudaFree(void* p) { return strata::gpu::free_device(p); }
 template <class T> inline cudaError_t cudaHostAlloc(T** p, size_t n, unsigned f) { return strata::gpu::host_alloc(p, n, f); }
@@ -141,3 +202,17 @@ inline cudaError_t cudaGraphLaunch(cudaGraphExec_t x, cudaStream_t s) { return s
 inline cudaError_t cudaGraphUpload(cudaGraphExec_t x, cudaStream_t s) { return strata::gpu::graph_upload(x, s); }
 inline cudaError_t cudaGraphDestroy(cudaGraph_t g) { return strata::gpu::graph_destroy(g); }
 inline cudaError_t cudaGraphExecDestroy(cudaGraphExec_t x) { return strata::gpu::graph_exec_destroy(x); }
+
+// cudaMemcpy2D(dst, dpitch, src, spitch, width, height, kind): a strided copy, used by the vision tower's patch rows and
+// the Engram tables' column slices.  The Metal runtime has no pitched copy yet, so this reports failure rather than
+// copying nothing silently.
+inline strata::gpu::Error cudaMemcpy2D(void*, size_t, const void*, size_t, size_t, size_t, strata::gpu::CopyKind) {
+    return strata::gpu::kErrorUnsupported;   // cudaMemcpy2D_unimplemented_marker
+}
+
+// occupancy query: the Metal runtime decides its own threadgroup limits, so answer "one block" and let the caller size grids
+template <typename K, typename... A>
+static inline strata::gpu::Error cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, K&&, int, A&&...) {
+    if (n) *n = 1;
+    return strata::gpu::kSuccess;
+}

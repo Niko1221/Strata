@@ -21,11 +21,15 @@ namespace strata::prefill::mmq {
 namespace {
 // The Gyro trellis types (ids 144-146) are outside the type table of an upstream ggml (indexed by the id): their block
 // geometry is known here (128 weights; 34 / 26 / 30 bytes), everything else asks ggml.
-inline bool is_tq(int t) { return t >= 144 && t <= 146; }
+inline bool is_tq(int t) { return t >= 144 && t <= 149; }   // 144-146 TQ/TQK, 147-149 the pair trellis (Gyro-L)
 inline int64_t type_blck(int t) { return is_tq(t) ? 128 : (int64_t) ggml_blck_size((ggml_type) t); }
-inline size_t type_bytes(int t) { return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : ggml_type_size((ggml_type) t); }
+inline size_t type_bytes(int t) {
+    return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : t == 147 ? 42 : t == 148 ? 50 : t == 149 ? 58
+                                                                                     : ggml_type_size((ggml_type) t);
+}
 inline const char* type_label(int t) {
-    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7" : ggml_type_name((ggml_type) t);
+    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7"
+         : t == 147 ? "tqp5" : t == 148 ? "tqp6" : t == 149 ? "tqp7" : ggml_type_name((ggml_type) t);
 }
 }  // namespace
 #if defined(STRATA_KQ_DSO)
@@ -143,6 +147,54 @@ __global__ void swiglu_kernel(const float* __restrict__ gu, float* __restrict__ 
     const float g = interleaved ? row[2 * k] : row[k], u = interleaved ? row[2 * k + 1] : row[n_ff + k];
     h[i] = g / (1.0f + __expf(-g)) * u;
 }
+
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+// swiglu_kernel (n_ff 640), then quantize_mmq_q8_1<D4>'s rows of its output, in one pass: a block per row (128
+// threads, 4 values each, blockIdx.y the row's 512-value half), H never stored.  Each value is swiglu_kernel's
+// expression and each 32-value block quantize_mmq_q8_1's (the same unit and flags: the same bits).
+template <bool IL>
+__global__ void __launch_bounds__(128) swiglu_quant_kernel(const float* __restrict__ gu, block_q8_1_mmq* __restrict__ y,
+                                                           int64_t rows) {
+    constexpr int64_t n_ff = 640, ne0 = 1024;   // the padded row: pad512(640)
+    const int64_t i0 = ((int64_t) blockDim.x * blockIdx.y + threadIdx.x) * 4;
+    if (i0 >= ne0) return;
+    const int64_t r = blockIdx.x;
+    float4 xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (i0 < n_ff) {
+        const float* row = gu + r * 2 * n_ff;
+        float4 g4, u4;
+        if constexpr (IL) {   // gate 2k, up 2k + 1
+            const float4 a = *reinterpret_cast<const float4*>(row + 2 * i0), b = *reinterpret_cast<const float4*>(row + 2 * i0 + 4);
+            g4 = make_float4(a.x, a.z, b.x, b.z);
+            u4 = make_float4(a.y, a.w, b.y, b.w);
+        } else {
+            g4 = *reinterpret_cast<const float4*>(row + i0);
+            u4 = *reinterpret_cast<const float4*>(row + n_ff + i0);
+        }
+        xi.x = g4.x / (1.0f + __expf(-g4.x)) * u4.x;
+        xi.y = g4.y / (1.0f + __expf(-g4.y)) * u4.y;
+        xi.z = g4.z / (1.0f + __expf(-g4.z)) * u4.z;
+        xi.w = g4.w / (1.0f + __expf(-g4.w)) * u4.w;
+    }
+    float amax = fabsf(xi.x);
+    amax = fmaxf(amax, fabsf(xi.y));
+    amax = fmaxf(amax, fabsf(xi.z));
+    amax = fmaxf(amax, fabsf(xi.w));
+#pragma unroll
+    for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+    const float d_inv = 127.0f / amax;
+    char4 c;
+    c.x = roundf(xi.x * d_inv);
+    c.y = roundf(xi.y * d_inv);
+    c.z = roundf(xi.z * d_inv);
+    c.w = roundf(xi.w * d_inv);
+    const float d = 1.0f / d_inv;
+    const int64_t k_block = i0 / QK8_1_MMQ, iqs = i0 % QK8_1_MMQ;
+    block_q8_1_mmq* yb = y + k_block * rows + r;
+    reinterpret_cast<char4*>(yb->qs)[iqs / 4] = c;
+    if (iqs % 32 == 0) yb->d4[iqs / 32] = d;
+}
+#endif
 
 // swiglu_kernel on the MMQ gate/up output with each expert's gate and up scales applied as it is read: the products
 // scale_gu_rows stored, without the pass that stored them
@@ -275,6 +327,9 @@ bool supported(int t) {
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
 #ifdef STRATA_MMQ_TQ
         case GGML_TYPE_TQ2_T: case GGML_TYPE_TQK6: case GGML_TYPE_TQK7:   // APR experts (agention fork's MMQ)
+#endif
+#ifdef STRATA_MMQ_TQP   // a ggml with the pair-trellis types (the overlay, or an agention tree that has their instances)
+        case GGML_TYPE_TQP5: case GGML_TYPE_TQP6: case GGML_TYPE_TQP7:     // Gyro-L pair trellis (types 147-149)
 #endif
             return true;
 #ifdef STRATA_MMQ_KQUANTS
@@ -461,6 +516,11 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_TQ2_T: mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, a, s); break;
         case GGML_TYPE_TQK6: mul_mat_q_case<GGML_TYPE_TQK6>(ctx, a, s); break;
         case GGML_TYPE_TQK7: mul_mat_q_case<GGML_TYPE_TQK7>(ctx, a, s); break;
+#endif
+#ifdef STRATA_MMQ_TQP
+        case GGML_TYPE_TQP5: mul_mat_q_case<GGML_TYPE_TQP5>(ctx, a, s); break;
+        case GGML_TYPE_TQP6: mul_mat_q_case<GGML_TYPE_TQP6>(ctx, a, s); break;
+        case GGML_TYPE_TQP7: mul_mat_q_case<GGML_TYPE_TQP7>(ctx, a, s); break;
 #endif
 #if defined(STRATA_MMQ_KQUANTS) && defined(STRATA_KQ_DSO)
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_1: {
@@ -663,6 +723,28 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
     if (rows <= 0) return;
     swiglu_kernel<<<blocks(rows * n_ff), 256, 0, (cudaStream_t) stream>>>(gu, h, rows, n_ff, interleaved);
     ck(cudaGetLastError(), "swiglu");
+}
+
+bool swiglu_quant_ok(int t) {
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+    // the q8_1 D4 rows quantize() writes for a down product's H (K 640)
+    return supported(t) && !fp4_activations(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
+#else
+    (void) t;
+    return false;   // HIP: not checked against the HIP build's quantizer; outside the SM60 build: not built
+#endif
+}
+
+void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream) {
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+    if (rows <= 0) return;
+    const dim3 grid((unsigned) rows, 2);
+    if (interleaved) swiglu_quant_kernel<true><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    else swiglu_quant_kernel<false><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    ck(cudaGetLastError(), "swiglu_quant");
+#else
+    (void) gu; (void) hq; (void) rows; (void) interleaved; (void) stream;
+#endif
 }
 
 void iota(int32_t* dst, int64_t n, void* stream) {

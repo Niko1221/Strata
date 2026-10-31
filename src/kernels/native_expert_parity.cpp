@@ -253,6 +253,19 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 std::printf(" | %s %s", cpu::tq_isa_name(isa), same ? "bitwise equal" : "DIFFERENT");
                 if (!same) ++failures;
             }
+            {   // time: the scalar kernel against the best SIMD one this CPU has, same rows and tokens
+                const int it = 30;
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int k = 0; k < it; ++k) cpu::tq_rows(cpu::TqIsa::scalar, type, w, rb, n, acts, NT, rp, 0, rows);
+                const auto t1 = std::chrono::steady_clock::now();
+                const cpu::TqIsa best = cpu::tq_isa();
+                for (int k = 0; k < it; ++k) cpu::tq_rows(best, type, w, rb, n, acts, NT, gp, 0, rows);
+                const auto t2 = std::chrono::steady_clock::now();
+                const double us0 = std::chrono::duration<double, std::micro>(t1 - t0).count() / it;
+                const double us1 = std::chrono::duration<double, std::micro>(t2 - t1).count() / it;
+                std::printf(" | %s %.0f us, scalar %.0f us (%.2fx)", cpu::tq_isa_name(best), us1, us0,
+                            us1 > 0 ? us0 / us1 : 0.0);
+            }
             std::printf("\n");
         }
         // UD-Q4_K_XL's formats: the multi-token AVX2 kernels (kq_avx2.cpp) against ggml-cpu's vec_dot per token,
@@ -482,6 +495,11 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
 
 int type_of(std::string name) {
     for (auto& c : name) c = (char) std::tolower((unsigned char) c);
+    // The trellis types sit above GGML_TYPE_COUNT on an upstream ggml (the overlay adds them to ggml-cuda, not to the
+    // type table), so ggml_type_name cannot resolve them: name them here, as the engine's own type ids do.
+    static const struct { const char* n; int t; } trellis[] = {{"tq2_t", 144}, {"tqk6", 145}, {"tqk7", 146},
+                                                              {"tqp5", 147}, {"tqp6", 148}, {"tqp7", 149}};
+    for (const auto& e : trellis) if (name == e.n) return e.t;
     for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
         const char* n = ggml_type_name((ggml_type) t);
         if (n == nullptr) continue;
@@ -837,6 +855,15 @@ int main(int argc, char** argv) {
             const int dn = slash == std::string::npos ? -1 : type_of(arg.substr(slash + 1));
             cpu::NativeFmt f;
             std::string err;
+            // The synthetic check quantizes the blob with ggml and compares against ggml's to_float.  An upstream
+            // ggml (the MMQ overlay) has no traits for the trellis types (they sit above GGML_TYPE_COUNT), so the
+            // check needs a ggml that carries them (a build with -DSTRATA_GGML_DIR=<the agention llama.cpp>): skip it
+            // here with a message instead of reading past the type table.
+            if (gu >= (int) GGML_TYPE_COUNT || dn >= (int) GGML_TYPE_COUNT) {   // (ggml_type_name of an id past the table is not a null pointer: it reads past it)
+                std::printf("%s: skipped (this ggml has no trellis type traits: the check needs STRATA_GGML_DIR=<a "
+                            "llama.cpp with the trellis types>)\n", arg.c_str());
+                continue;
+            }
             if (gu < 0 || dn < 0 || !cpu::native_fmt(gu, dn, H, FF, f, err) ||
                 !strata::kernels::native_expert_supported(gu, dn, H, FF)) {
                 std::printf("%s: %s\n", arg.c_str(), err.empty() ? "not a pair the GPU expert kernels take" : err.c_str());

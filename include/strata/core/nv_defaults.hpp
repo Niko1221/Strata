@@ -8,6 +8,9 @@
 //
 //   STRATA_SM86_PERF=0   turns the sm_86 table off (cards of compute capability 8.6: RTX 3050-3090, RTX A2000-A6000)
 //   STRATA_SM60_PERF=0   turns the sm_60 table off (Pascal GP100: Tesla P100)
+//   STRATA_SM121_PERF=0  turns the sm_121 table off (GB10: NVIDIA DGX Spark; new in 0.2.7.1, also off under STRATA_DEFAULTS=026).  Its
+//                        switches are measured speed settings, not bit-exact ones: the fused prompt kernels and the FP4-activation NVFP4
+//                        prompt round differently from the paths they replace (24 of 24 greedy answers identical; no KL run yet).
 //
 // A switch the user set (to anything, including 0) is never overridden.  Applied once at start, before any engine code reads its
 // switches; the table is used only when every visible CUDA device has the same compute capability.
@@ -22,6 +25,8 @@ namespace strata::core {
 /// The environment settings that are the defaults of a card with compute capability major.minor (raw, as the driver reports it);
 /// empty for every other card and when its off switch is 0.
 std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int minor);
+/// The same with the answer of STRATA_DEFAULTS=026 given (the sm_121 table is empty then), so a test can check both without the environment.
+std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int minor, bool defaults026);
 
 /// Sets `nv_default_env(major, minor)` in this process's environment where the user has not set the variable, prints one line to
 /// stderr when it set anything, and returns the names it set.

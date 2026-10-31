@@ -23,8 +23,9 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
 - **Where it listens.** `127.0.0.1` by default. `--host 0.0.0.0` (or `"host"` in `strata-<model>.json`) opens it to
   your network, and the server then warns when no API key is set.
 - **API key.** `"api_key"` in the run config (or `STRATA_API_KEY`) is required on `/v1/*` and on every endpoint
-  that shows the model's state, requests or answers (`/status`, `/metrics`, `/settings`, `/mcp`, `/props`, `/slots`,
-  `/api/requests`, `/config`) and on every `POST`. It is compared in constant time. Set one before you open the
+  that shows the model's state, requests or answers (`/status`, `/metrics`, `/metrics/prometheus`, `/settings`,
+  `/mcp`, `/props`, `/slots`, `/api/requests`, `/config`) and on every `POST`. It is compared in constant time.
+  Set one before you open the
   server to your network or put a tunnel in front of it.
 - **Host check (DNS rebinding, 0.1.38).** Without an API key the server answers only requests whose `Host` is a name
   it knows (`localhost`, an IP address, the address it listens on and, when it listens beyond this PC, this PC's

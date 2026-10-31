@@ -329,7 +329,12 @@ An install with neither has no commit, and the run is `nonconforming`. `engine_v
 from `/props` (`build_info`), or `/v1/status` when `/props` has none. `build_kind` is `source` when the
 folder has a `.git`, otherwise `release`. The runner cannot read build options from a server; pass `--build-options`
 for a source build. The drivers and the CUDA version come from `nvidia-smi` (or `rocm-smi`, or the Windows display
-driver key), read on the machine that runs the engine.
+driver key), read on the machine that runs the engine. ROCm 7 and newer ship `amd-smi` and no `rocm-smi`: the card's
+name is that tool's `static --asic` market name, its memory is the amdgpu sysfs file of the PCI address `amd-smi list`
+reports, and the `rocm` runtime entry is the version file inside the ROCm install (`amd-smi -h` prints the same
+version). Where the kernel builds amdgpu in there is no driver version to read, and `gpu-driver` stays null with a
+reason. When the server can only name a vendor, because the amdgpu `product_name` is empty on some cards, the card the
+local probe named is kept instead.
 
 Except for typed objects, arrays, numbers and booleans identified above, identity and descriptive fields are
 strings (or null with a reason where unavailable). Empty configuration objects mean no relevant options;

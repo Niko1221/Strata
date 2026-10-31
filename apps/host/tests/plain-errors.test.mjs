@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 
-const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
 const catalogs = Object.fromEntries(await Promise.all(languages.map(async l => [l, JSON.parse(await readFile(`src/locales/${l}.json`, 'utf8'))])));
 const built = await build({ stdin: { contents: "export * from './src/lib/plain-errors'; export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
 const { plainFailure, plainFailureText, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
@@ -57,7 +57,7 @@ test('an ordinary sentence is left as it is and gets no Details', () => {
   assert.equal(f.detail, undefined);
 });
 
-test('every plain message and next step is translated in all eight languages', () => {
+test('every plain message and next step is translated in all nine languages', () => {
   const en = catalogs.en;
   const ids = Object.fromEntries(Object.entries(en).map(([id, text]) => [text, id]));
   for (const [raw] of cases) {

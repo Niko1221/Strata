@@ -15,11 +15,20 @@
 // Both kernels put ONE BLOCK per token over the vocabulary: `sampler_greedy_kernel` is the plain argmax,
 // `sampler_kernel` runs the sampled chain as `top_k` block-argmax rounds followed by the top_p / temperature /
 // draw chain (its header says why the selection must be parallel and why the tie rule keeps the semantics).
+#include "../ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "strata/dsv41/sampler.hpp"
+#if defined(STRATA_METAL)
+#include <ds4_metal_host.h>
+#endif
 
 #include <cuda_runtime.h>
+#if defined(STRATA_METAL)
+#include <strata/gpu/runtime.hpp>
+#endif
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 
@@ -511,6 +520,171 @@ __global__ void __launch_bounds__(1024) sampler_kernel(const float* __restrict__
 
 }  // namespace
 
+
+#if defined(STRATA_METAL)
+// ---- Metal: the sampled chain on the host (unified memory: the logits are read where the GPU wrote them).  The same function of
+// (row, params, t) as sampler_kernel above, in the same order and the same double arithmetic: penalties -> top_k (descending by
+// penalised logit, ties to the lower index) -> top_p -> min_p -> temperature -> one Philox draw; MODE 1 / 2 are the speculative
+// draft and verify.  One row costs a partial sort of the vocabulary (~0.5 ms), against a ~70 ms decode step.
+namespace {
+inline uint32_t host_umulhi(uint32_t a, uint32_t b) { return (uint32_t) (((uint64_t) a * (uint64_t) b) >> 32); }
+inline float host_philox_uniform(uint64_t seed, uint64_t counter) {
+    uint32_t c0 = (uint32_t) counter, c1 = (uint32_t) (counter >> 32), c2 = (uint32_t) seed, c3 = (uint32_t) (seed >> 32);
+    for (int i = 0; i < 10; ++i) {
+        const uint32_t hi0 = host_umulhi(0x9E3779B9u, c0), hi1 = host_umulhi(0xBB67AE85u, c2);
+        const uint32_t lo0 = 0x9E3779B9u * c0, lo1 = 0xBB67AE85u * c2;
+        const uint32_t n0 = hi1 ^ c1 ^ (uint32_t) i, n1 = lo1, n2 = hi0 ^ c3 ^ 0u, n3 = lo0;
+        c0 = n0; c1 = n1; c2 = n2; c3 = n3;
+    }
+    return (float) (c0 >> 8) * (1.0f / 16777216.0f);
+}
+inline float host_penalised(float logit, int count, const SamplerParams& p) {
+    if (count <= 0) return logit;
+    if (logit <= 0.0f) logit *= p.penalty_repeat;
+    else logit /= p.penalty_repeat;
+    logit -= (float) count * p.penalty_freq + (count > 0 ? 1.0f : 0.0f) * p.penalty_present;
+    return logit;
+}
+
+// MODE 0 draw, 1 draft (kept list into ql), 2 verify (draft[t] against ql[t])
+template <int MODE>
+void host_sample(const float* dlogits, int n_tokens, int n_vocab, const int* dhistory, int history_len, const SamplerParams& p,
+                 int* dout, SpecList* dql, const int* ddraft) {
+    cudaDeviceSynchronize();   // (the GPU's logits are complete, in the shared memory)
+    const float* logits = (const float*) strata::gpu::host_view((void*) dlogits);
+    const int* history = dhistory ? (const int*) strata::gpu::host_view((void*) dhistory) : nullptr;
+    int* out = (int*) strata::gpu::host_view(dout);
+    SpecList* ql = dql ? (SpecList*) strata::gpu::host_view(dql) : nullptr;
+    const int* draft = ddraft ? (const int*) strata::gpu::host_view((void*) ddraft) : nullptr;
+    const float* bias = p.logit_bias ? (const float*) strata::gpu::host_view((void*) p.logit_bias) : nullptr;
+    if (logits == nullptr || out == nullptr) {
+        std::fprintf(stderr, "sample (host): no host view of the logits / output\n");
+        std::exit(1);
+    }
+    const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
+    const int KMAX = 64;
+    int k = (p.top_k > 0 && p.top_k < KMAX) ? p.top_k : KMAX;
+    if (k > n_vocab) k = n_vocab;
+    std::vector<float> sc((size_t) n_vocab);
+    std::vector<int> idx((size_t) n_vocab);
+    for (int t = 0; t < n_tokens; ++t) {
+        const float* l = logits + (size_t) t * n_vocab;
+        const int* hrow = history ? history + (size_t) t * history_len : nullptr;
+        int hlen = 0;
+        if (hrow) {
+            hlen = p.penalty_last_n < history_len ? p.penalty_last_n : history_len;
+            if (hlen < 0) hlen = 0;
+            hrow += history_len - hlen;
+        }
+        for (int v = 0; v < n_vocab; ++v) {
+            int cnt = 0;
+            if (hlen > 0)
+                for (int i = 0; i < hlen; ++i) cnt += hrow[i] == v;
+            sc[(size_t) v] = host_penalised(bias ? l[v] + bias[v] : l[v], cnt, p);
+        }
+        // the ordered key: NaN below everything, -0 as +0 (the kernel's ordered())
+        auto less_than = [&](int a, int b) {   // a ranks before b
+            const float x = sc[(size_t) a], y = sc[(size_t) b];
+            const bool nx = x != x, ny = y != y;
+            if (nx != ny) return ny;
+            if (nx && ny) return a < b;
+            if (x != y) return x > y;
+            return a < b;
+        };
+        for (int v = 0; v < n_vocab; ++v) idx[(size_t) v] = v;
+        std::nth_element(idx.begin(), idx.begin() + (k - 1), idx.end(), less_than);
+        std::sort(idx.begin(), idx.begin() + k, less_than);
+        int sel_ids[64];
+        float sel_logit[64];
+        for (int i = 0; i < k; ++i) { sel_ids[i] = idx[(size_t) i]; sel_logit[i] = sc[(size_t) idx[(size_t) i]]; }
+        int n_keep = k;
+        float mx = sel_logit[0];
+        for (int i = 1; i < k; ++i) mx = std::max(mx, sel_logit[i]);
+        if (p.top_p < 1.0f) {
+            double sum = 0.0;
+            for (int i = 0; i < k; ++i) sum += std::exp((double) sel_logit[i] - (double) mx);
+            double cum = 0.0;
+            int cut = k;
+            for (int i = 0; i < k; ++i) {
+                cum += std::exp((double) sel_logit[i] - (double) mx) / sum;
+                if (cum >= (double) p.top_p) { cut = i + 1; break; }
+            }
+            if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
+            n_keep = cut;
+        }
+        if (p.min_p > 0.0f) {
+            const float thresh = sel_logit[0] + std::log(p.min_p);
+            for (int i = 0; i < n_keep; ++i)
+                if (sel_logit[i] < thresh) { n_keep = i; break; }
+        }
+        auto scaled = [&](int i) { return sel_logit[i] * inv_t; };
+        float smx = scaled(0);
+        for (int i = 1; i < n_keep; ++i) smx = std::max(smx, scaled(i));
+        double sum = 0.0;
+        for (int i = 0; i < n_keep; ++i) sum += std::exp((double) scaled(i) - (double) smx);
+        double w[64];
+        for (int i = 0; i < n_keep; ++i) w[i] = std::exp((double) scaled(i) - (double) smx) / sum;
+        auto draw = [&](float u) -> int {
+            double cum = 0.0;
+            int pick = sel_ids[n_keep - 1];
+            for (int i = 0; i < n_keep; ++i) {
+                cum += w[i];
+                if ((double) u < cum) { pick = sel_ids[i]; break; }
+            }
+            return pick;
+        };
+        if (MODE == 0) {
+            out[t] = draw(host_philox_uniform(p.seed, p.counter + (uint64_t) t));
+        } else if (MODE == 1) {
+            SpecList* q = ql + t;
+            q->n = n_keep;
+            for (int i = 0; i < n_keep; ++i) { q->ids[i] = sel_ids[i]; q->p[i] = w[i]; }
+            out[t] = draw(host_philox_uniform(p.seed ^ 0x5bd1e9955bd1e995ull, p.counter + (uint64_t) t));
+        } else {
+            const SpecList* q = ql + t;
+            const int d = draft[t];
+            const int qn = q->n < KMAX ? q->n : KMAX;
+            auto qof = [&](int id) -> double {
+                for (int j = 0; j < qn; ++j)
+                    if (q->ids[j] == id) return q->p[j];
+                return 0.0;
+            };
+            double pd = 0.0;
+            for (int i = 0; i < n_keep; ++i)
+                if (sel_ids[i] == d) { pd = w[i]; break; }
+            const double qd = qof(d);
+            int pick = -1;
+            if (qd <= 0.0) {
+                pick = draw(host_philox_uniform(p.seed, p.counter + (uint64_t) t));
+            } else if ((double) host_philox_uniform(p.seed ^ 0x9e3779b97f4a7c15ull, p.counter + (uint64_t) t) * qd < pd) {
+                pick = d;
+            } else {
+                double r[64], z = 0.0;
+                for (int i = 0; i < n_keep; ++i) {
+                    const double x = w[i] - qof(sel_ids[i]);
+                    r[i] = x > 0.0 ? x : 0.0;
+                    z += r[i];
+                }
+                const float u = host_philox_uniform(p.seed ^ 0xc2b2ae3d27d4eb4full, p.counter + (uint64_t) t);
+                if (z > 0.0) {
+                    double cum = 0.0;
+                    for (int i = 0; i < n_keep; ++i) {
+                        if (r[i] <= 0.0) continue;
+                        pick = sel_ids[i];
+                        cum += r[i] / z;
+                        if ((double) u < cum) break;
+                    }
+                } else {
+                    pick = draw(u);
+                }
+            }
+            out[t] = pick;
+        }
+    }
+}
+}  // namespace
+#endif
+
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream) {
     if (n_tokens <= 0 || n_vocab <= 0) return;
@@ -525,12 +699,23 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
     if (p.greedy || p.temperature <= 0.0f) {
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
+#if defined(STRATA_METAL)
+        // sampler_greedy_kernel on the Metal dispatch; the launch below is the fallback
+        if (::strata::dsv41::metal_host::sample_greedy(logits, n_tokens, n_vocab, history, history_len,
+                                                       p.penalty_last_n, p.penalty_repeat, p.penalty_freq,
+                                                       p.penalty_present, p.logit_bias, out))
+            return;
+#endif
+        strata_ds4_launch(sampler_greedy_kernel, (unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream, 
             logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else {
         // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
         // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
-        sampler_kernel<0><<<(unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream>>>(
+#if defined(STRATA_METAL)
+        host_sample<0>(logits, n_tokens, n_vocab, history, history_len, p, out, nullptr, nullptr);
+        return;
+#endif
+        strata_ds4_launch(sampler_kernel<0>, (unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream, 
             logits, n_vocab, n_tokens, history, history_len, p, out, nullptr, nullptr);
     }
     const cudaError_t e = cudaGetLastError();
@@ -564,7 +749,11 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
                   void* stream) {
     if (n_tokens <= 0) return;
     spec_check("sample_draft", n_tokens, n_vocab, p);
-    sampler_kernel<1><<<(unsigned) n_tokens, 1024, 0, (cudaStream_t) stream>>>(logits, n_vocab, n_tokens, nullptr, 0,
+#if defined(STRATA_METAL)
+    host_sample<1>(logits, n_tokens, n_vocab, nullptr, 0, p, out, q, nullptr);
+    return;
+#endif
+    strata_ds4_launch(sampler_kernel<1>, (unsigned) n_tokens, 1024, 0, (cudaStream_t) stream, logits, n_vocab, n_tokens, nullptr, 0,
                                                                                 p, out, q, nullptr);
     spec_launched("sample_draft", stream);
 }
@@ -573,7 +762,11 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
                    const int* draft, int* out, void* stream) {
     if (n_tokens <= 0) return;
     spec_check("sample_verify", n_tokens, n_vocab, p);
-    sampler_kernel<2><<<(unsigned) n_tokens, 1024, 0, (cudaStream_t) stream>>>(logits, n_vocab, n_tokens, nullptr, 0,
+#if defined(STRATA_METAL)
+    host_sample<2>(logits, n_tokens, n_vocab, nullptr, 0, p, out, const_cast<SpecList*>(q), draft);
+    return;
+#endif
+    strata_ds4_launch(sampler_kernel<2>, (unsigned) n_tokens, 1024, 0, (cudaStream_t) stream, logits, n_vocab, n_tokens, nullptr, 0,
                                                                                 p, out, const_cast<SpecList*>(q), draft);
     spec_launched("sample_verify", stream);
 }

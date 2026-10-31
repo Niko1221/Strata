@@ -130,9 +130,14 @@ def _validate_direct_intent(kind: str, intent: object) -> dict:
                     for key in ("if_owner_id", "if_instance_id"))):
             raise ProfileError("direct benchmark intent is invalid", 5)
     elif kind.startswith("runtime."):
-        ranges = {"wait_s": (0, 600) if kind == "runtime.start" else
+        # The waits are bounded by the runtime that runs them, so the ceiling is read from it (#3949): a start or a
+        # restart may wait for a big model up to MAX_START_WAIT. Repeating the number here is what broke a long start
+        # twice over - the CLI validator and this record both stopped it at 600 s on their way to the runtime.
+        from strata_control import runtime as _runtime
+        start_wait_max = int(_runtime.MAX_START_WAIT)
+        ranges = {"wait_s": (0, start_wait_max) if kind == "runtime.start" else
                     (1, 1800) if kind == "runtime.restart" else (1, 600),
-                  "shutdown_timeout_s": (0, 300), "startup_wait_s": (1, 600)}
+                  "shutdown_timeout_s": (0, 300), "startup_wait_s": (1, start_wait_max)}
         for key in set(intent) - {"expected_profile_revision", "expected_source_sha256",
                                "expected_owner_id", "expected_instance_id", "load",
                                "allow_source_switch", "allow_source_migration"}:

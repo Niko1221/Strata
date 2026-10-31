@@ -10,6 +10,7 @@
 //       x[piece] += wo(O) + bias
 //     xn = norm2(x); per row piece: x += w2(silu(gate) * up), gate | up = w1(xn)
 //   xn = norm(x); the 3 x 3 unfold; GELU(w1 + b1); w2 + b2 -> BF16 rows (the aligner's weights stream in pieces too)
+#include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_vision.cuh"
 
 #include <cublas_v2.h>
@@ -446,9 +447,9 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
 
     // the patches
     VK(cudaMemcpyAsync(rgb_, rgb, (size_t) N * 3 * P * P, cudaMemcpyHostToDevice, s));
-    patchify_kernel<<<N, 3 * P * P, 0, s>>>(rgb_, width, gw, P, patch_);
+    strata_ds4_launch(patchify_kernel, N, 3 * P * P, 0, s, rgb_, width, gw, P, patch_);
     if (!gemm(h, pe_w_, 3 * P * P, patch_, 3 * P * P, x_, CUDA_R_32F, D, N, 3 * P * P, D, 1.0f, err)) return false;
-    add_rows_kernel<<<N, kT, 0, s>>>(x_, nullptr, 0, pe_b_, D);
+    strata_ds4_launch(add_rows_kernel, N, kT, 0, s, x_, nullptr, 0, pe_b_, D);
 
     const float scale = 1.0f / std::sqrt((float) hd);
     const int qb = (int) std::max<size_t>(1, std::min<size_t>((size_t) N, (size_t) qb_ * max_n_ / (size_t) N));
@@ -456,11 +457,11 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
         const uint16_t* wqkv = take();
         if (wqkv == nullptr) return false;
         const uint16_t *wo = wqkv + (size_t) H3 * D, *w1 = wo + (size_t) D * D, *w2 = w1 + (size_t) 2 * I * D;
-        rmsnorm_kernel<<<N, kT, 0, s>>>(x_, n1_[l], D, g.eps, xn_);
+        strata_ds4_launch(rmsnorm_kernel, N, kT, 0, s, x_, n1_[l], D, g.eps, xn_);
         for (int r0 = 0; r0 < N; r0 += rb_) {
             const int nr = std::min(rb_, N - r0);
             if (!gemm(h, wqkv, D, xn_ + (size_t) r0 * D, D, y_, CUDA_R_32F, H3, nr, D, H3, 1.0f, err)) return false;
-            qkv_rope_kernel<<<nr, kT, 0, s>>>(y_, bqkv_[l], r0, gw, inv_freq_, g.heads, hd, qkv_);
+            strata_ds4_launch(qkv_rope_kernel, nr, kT, 0, s, y_, bqkv_[l], r0, gw, inv_freq_, g.heads, hd, qkv_);
         }
         for (int q0 = 0; q0 < N; q0 += qb) {
             const int nq = std::min(qb, N - q0);
@@ -470,29 +471,29 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
                 VB(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, N, nq, hd, &scale, qkv_ + D + hh * hd, CUDA_R_16BF, H3,
                                 qkv_ + (size_t) q0 * H3 + hh * hd, CUDA_R_16BF, H3, &zero, s_, CUDA_R_32F, N,
                                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-                softmax_kernel<<<nq, kSmT, 0, s>>>(s_, N, p_);
+                strata_ds4_launch(softmax_kernel, nq, kSmT, 0, s, s_, N, p_);
                 // O^T (hd x queries) = V^T P^T: row-major O [query][head's hd] at column hh * hd
                 VB(cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, hd, nq, N, &one, qkv_ + 2 * D + hh * hd, CUDA_R_16BF, H3,
                                 p_, CUDA_R_16BF, N, &zero, o_ + hh * hd, CUDA_R_16BF, D, CUBLAS_COMPUTE_32F,
                                 CUBLAS_GEMM_DEFAULT));
             }
             if (!gemm(h, wo, D, o_, D, y_, CUDA_R_32F, D, nq, D, D, 1.0f, err)) return false;
-            add_rows_kernel<<<nq, kT, 0, s>>>(x_ + (size_t) q0 * D, y_, D, bo_[l], D);
+            strata_ds4_launch(add_rows_kernel, nq, kT, 0, s, x_ + (size_t) q0 * D, y_, D, bo_[l], D);
         }
-        rmsnorm_kernel<<<N, kT, 0, s>>>(x_, n2_[l], D, g.eps, xn_);
+        strata_ds4_launch(rmsnorm_kernel, N, kT, 0, s, x_, n2_[l], D, g.eps, xn_);
         for (int r0 = 0; r0 < N; r0 += rb_) {
             const int nr = std::min(rb_, N - r0);
             if (!gemm(h, w1, D, xn_ + (size_t) r0 * D, D, y_, CUDA_R_32F, 2 * I, nr, D, 2 * I, 1.0f, err)) return false;
-            silu_mul_kernel<<<dim3(cdiv(I, kT), nr), kT, 0, s>>>(y_, I, mid_);
+            strata_ds4_launch(silu_mul_kernel, dim3(cdiv(I, kT), nr), kT, 0, s, y_, I, mid_);
             if (!gemm(h, w2, I, mid_, I, y_, CUDA_R_32F, D, nr, I, D, 1.0f, err)) return false;
-            add_rows_kernel<<<nr, kT, 0, s>>>(x_ + (size_t) r0 * D, y_, D, nullptr, D);
+            strata_ds4_launch(add_rows_kernel, nr, kT, 0, s, x_ + (size_t) r0 * D, y_, D, nullptr, D);
         }
         done();
     }
-    rmsnorm_kernel<<<N, kT, 0, s>>>(x_, norm_, D, g.eps, xn_);
+    strata_ds4_launch(rmsnorm_kernel, N, kT, 0, s, x_, norm_, D, g.eps, xn_);
 
     // the aligner
-    unfold_kernel<<<L, kT, 0, s>>>(xn_, gh, gw, M, D, n_w, un_);
+    strata_ds4_launch(unfold_kernel, L, kT, 0, s, xn_, gh, gw, M, D, n_w, un_);
     for (int o0 = 0; o0 < g.out; o0 += r1) {
         const uint16_t* w = take();
         if (w == nullptr) return false;
@@ -500,7 +501,7 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
             return false;
         done();
     }
-    bias_act_kernel<<<dim3(cdiv(g.out, kT), L), kT, 0, s>>>(y_, al1_b_, g.out, 1, a16_);
+    strata_ds4_launch(bias_act_kernel, dim3(cdiv(g.out, kT), L), kT, 0, s, y_, al1_b_, g.out, 1, a16_);
     for (int o0 = 0; o0 < g.out; o0 += r2) {
         const uint16_t* w = take();
         if (w == nullptr) return false;
@@ -508,7 +509,7 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
             return false;
         done();
     }
-    bias_act_kernel<<<dim3(cdiv(g.out, kT), L), kT, 0, s>>>(y_, al2_b_, g.out, 0, outb_);
+    strata_ds4_launch(bias_act_kernel, dim3(cdiv(g.out, kT), L), kT, 0, s, y_, al2_b_, g.out, 0, outb_);
     rows.resize((size_t) L * g.out);
     VK(cudaMemcpyAsync(rows.data(), outb_, rows.size() * 2, cudaMemcpyDeviceToHost, s));
     VK(cudaStreamSynchronize(s));

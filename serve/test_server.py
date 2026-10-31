@@ -1126,7 +1126,7 @@ class ToolCallTagInProse(unittest.TestCase):
 
 
 class ToolCallRecovery(unittest.TestCase):
-    """Opt-in ("tool_call_recovery": true): the model sometimes writes a call in a form next to the template's.  These
+    """On by default in the server since 0.2.8 (config "tool_call_recovery": false turns it off): the model sometimes writes a call in a form next to the template's.  These
     shapes are from a corpus of 1,462 agent turns (Qwen3.8 under Claude Code, signalnine/q27): with the switch on, a
     declared tool's call in one of them is the call; anything else stays content, verbatim."""
     SCHEMA = ToolCallTerminators.SCHEMA
@@ -1254,6 +1254,29 @@ class ToolCallRecoverySwitch(unittest.TestCase):
     def test_switch(self):
         self.assertEqual(self.run_reply(False), [])
         self.assertEqual(self.run_reply(True), [ToolCallRecovery.CALL])
+
+    def test_on_by_default_and_the_config_turns_it_off(self):
+        """0.2.8: a server that is told nothing reads these calls; "tool_call_recovery": false is the off switch."""
+        from serve.server import tool_call_recovery_setting
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIs(svc.tool_call_recovery, True)
+        self.assertIs(tool_call_recovery_setting({}), True)
+        self.assertIs(tool_call_recovery_setting({"model": "x"}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": True}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": False}), False)
+        for bad in ("false", 0, 1, None, "off"):
+            with self.assertRaises(SystemExit):
+                tool_call_recovery_setting({"tool_call_recovery": bad})
+
+    def test_a_fresh_service_reads_the_call_without_being_told(self):
+        tok = ByteTokenizer()
+        script = "</think>\n\n<function=write>\n" + ToolCallRecovery.PARAMS
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            evs = [x for kind, x in svc.run(tok.encode("hi"), True, ToolCallRecovery.SCHEMA, 3000, {},
+                                            threading.Event()) if kind == "event"]
+        self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [ToolCallRecovery.CALL])
 
 
 class UnfinishedToolCall(unittest.TestCase):
@@ -3808,6 +3831,19 @@ class UsageAndStatus(unittest.TestCase):
         self.assertEqual(last["usage"]["prompt_tokens_details"]["cached_tokens"], ClockedEngine.REUSED)
         self.assertEqual(last["timings"]["cache_n"], ClockedEngine.REUSED)
 
+    def test_responses(self):
+        # /v1/responses carries the same top-level timings as /v1/chat/completions
+        body = {"model": "x", "max_output_tokens": 20, "input": "hi"}
+        status, raw = self.request("/v1/responses", body)
+        self.assertEqual(status, 200)
+        r = json.loads(raw)
+        self.assertEqual(r["timings"]["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(r["timings"]["predicted_n"], r["usage"]["output_tokens"])
+        status, raw = self.request("/v1/responses", {**body, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")][-1]
+        self.assertIn(last["type"], ("response.completed", "response.incomplete"))
+        self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
+
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
@@ -4520,6 +4556,74 @@ class ForcedToolChoice(unittest.TestCase):
                         content = b["choices"][0]["message"]["content"] or ""
                         self.assertIn("Here is the report.", content)
                         self.assertIn("<function=lookup>", content)
+
+    def _undeclared_call_answer(self, name="lookup"):
+        from serve.frontend import CALL_END, CALL_START
+        return ("I will check that.\n" + CALL_START + f"\n<function={name}>\n<parameter=q>\n2+2\n</parameter>\n"
+                "</function>\n" + CALL_END)
+
+    def _rejected_of(self, b, stream):
+        """The strata_rejected_tool_calls of a whole reply or of a streamed one (None when the reply has none)."""
+        if not stream:
+            return b.get("strata_rejected_tool_calls")
+        found = [json.loads(line[6:]).get("strata_rejected_tool_calls") for line in b.splitlines() if line.startswith("data: {")]
+        found = [f for f in found if f]
+        self.assertLessEqual(len(found), 1, "sent once, with the last chunk")
+        return found[0] if found else None
+
+    def test_an_undeclared_call_is_named_in_the_response(self):
+        """#3796: the call stays text and finish_reason stays "stop"; the response also lists the names the model wrote
+        (strata_rejected_tool_calls), so a client can tell this from an ordinary answer and answer the model."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                before = self.svc.totals.get("tool_calls_unread", 0)
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("stop", []), b)
+                self.assertEqual(self._rejected_of(b, stream), [{"name": "execute_gdscript", "reason": "undeclared"}])
+                self.assertEqual(self.svc.totals["tool_calls_unread"], before + 1)         # /metrics counts it
+                if not stream:
+                    self.assertIn("<function=execute_gdscript>", b["choices"][0]["message"]["content"])   # the text is untouched
+
+    def test_no_marker_when_nothing_was_rejected(self):
+        """An ordinary answer and a declared call carry no extra field: the API is what it was."""
+        from serve.frontend import CALL_END, CALL_START
+        for label, answer in (("text", "The answer is 4."),
+                              ("declared call", CALL_START + "\n<function=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)):
+            self.says(answer)
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream)
+                    self.call_of(code, b, stream)
+                    self.assertIsNone(self._rejected_of(b, stream))
+                    if stream:
+                        self.assertNotIn("strata_rejected_tool_calls", b)
+
+    def test_a_collapsed_mcp_name_is_a_call_not_a_rejection(self):
+        """#3796: `mcp_playwright_browser_navigate` for the declared `mcp__playwright__browser_navigate`."""
+        from serve.frontend import CALL_END, CALL_START
+        tools = [{"type": "function", "function": {"name": "mcp__playwright__browser_navigate", "description": "open a page",
+                                                   "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}}]
+        self.says(CALL_START + "\n<function=mcp_playwright_browser_navigate>\n<parameter=q>\nx\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream, tools=tools)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("mcp__playwright__browser_navigate", {"q": "x"})]))
+                self.assertIsNone(self._rejected_of(b, stream))
+
+    def test_the_anthropic_reply_names_the_rejected_call_too(self):
+        self.says(self._undeclared_call_answer("bash"))
+        body = {"model": "m", "max_tokens": 400, "messages": [{"role": "user", "content": "2+2?"}],
+                "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            msg = json.loads(r.read().decode())
+        self.assertEqual(msg["stop_reason"], "end_turn")
+        self.assertEqual(msg["strata_rejected_tool_calls"], [{"name": "bash", "reason": "undeclared"}])
+        self.assertFalse([c for c in msg["content"] if c["type"] == "tool_use"])
 
     def test_a_call_with_a_dropped_function_keyword_is_still_the_call(self):
         """#3441: `<=search>` for `<function=search>`, as a model under a large tool surface writes it."""

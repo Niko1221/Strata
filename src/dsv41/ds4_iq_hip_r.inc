@@ -10,7 +10,7 @@ __device__ __forceinline__ float hf(uint32_t h) { return __half2float(__ushort_a
 
 constexpr int kKC = 64;   // K a step: two sub-blocks
 // BM rows (MT tiles of 16) x BN = NW 16 NTW weight rows per block; NW waves, each NTW column tiles of 16 and every row tile
-template <int T, bool GU, int BM, int NW, int NTW>
+template <int T, bool GU, int BM, int NW, int NTW, bool X16 = false>
 __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg) {
     constexpr int NM = GU ? 2 : 1, MT = BM / 16, BN = NW * 16 * NTW, NTH = NW * 32;
     static_assert(BM % 16 == 0, "row tiles");
@@ -39,16 +39,17 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
         for (int j = 0; j < NTW; ++j)
             wrow[m][j] = blob + a.tr[GU ? m : 2] + (size_t) ((c0 + warp * (16 * NTW) + j * 16 + l16)) * rb;
 
-    constexpr int NX = GU ? (BM * 16 + NTH - 1) / NTH : (BM * 8 + NTH - 1) / NTH;
+    constexpr bool XS = GU && X16;   // gate / up take the caller's F16 rows (the same values the F32 path rounds to)
+    constexpr int NX = (GU && !XS) ? (BM * 16 + NTH - 1) / NTH : (BM * 8 + NTH - 1) / NTH;
     struct XR {
-        float4 f[GU ? NX : 1];
-        uint4 u[GU ? 1 : NX];
+        float4 f[(GU && !XS) ? NX : 1];
+        uint4 u[(GU && !XS) ? 1 : NX];
     };
     auto fetchx = [&](int s, XR& R) {
 #pragma unroll
         for (int xi = 0; xi < NX; ++xi) {
             const int c = tid + xi * NTH;
-            if constexpr (GU) {
+            if constexpr (GU && !XS) {
                 if (c < BM * 16) {
                     const int row = c >> 4, ch = c & 15;
                     R.f[xi] = *(const float4*) (a.xf + (size_t) srow[row] * a.ldx + (size_t) s * kKC + ch * 4);
@@ -56,7 +57,8 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
             } else {
                 if (c < BM * 8) {
                     const int row = c >> 3, ch = c & 7;
-                    R.u[xi] = *(const uint4*) (a.xh + (size_t) srow[row] * a.ldx + (size_t) s * kKC + ch * 8);
+                    const uint16_t* px = GU ? a.xf16 : a.xh;
+                    R.u[xi] = *(const uint4*) (px + (size_t) srow[row] * a.ldx + (size_t) s * kKC + ch * 8);
                 }
             }
         }
@@ -65,7 +67,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
 #pragma unroll
         for (int xi = 0; xi < NX; ++xi) {
             const int c = tid + xi * NTH;
-            if constexpr (GU) {
+            if constexpr (GU && !XS) {
                 if (c < BM * 16) {
                     const int row = c >> 4, ch = c & 15;
                     const float4 v = R.f[xi];
@@ -88,6 +90,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
         for (int i = 0; i < MT; ++i)
 #pragma unroll
             for (int j = 0; j < NTW; ++j) acc[m][i][j] = fv8{0, 0, 0, 0, 0, 0, 0, 0};
+    uint32_t sink = 0;   // (HIPK_DBG=1: keeps the decode's registers alive when the MMA is switched off)
 
     {
         XR R0;
@@ -123,7 +126,13 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
                 for (int j = 0; j < NTW; ++j) {
                     int c0_, c1_;
                     float sc;
-                    step_dec<T, t>(cur[m][j], s, hi, tab, c0_, c1_, sc);
+                    if (!(dbg & 2)) {   // HIPK_DBG=2: no decode (the MMA path alone), =1: no MMA (the decode alone)
+                        step_dec<T, t>(cur[m][j], s, hi, tab, c0_, c1_, sc);
+                    } else {
+                        c0_ = (int) cur[m][j].w[0];
+                        c1_ = (int) cur[m][j].w[1];
+                        sc = 1.0f;
+                    }
                     const hv2 h = {(_Float16) sc, (_Float16) sc};
                     const uint2 u0 = codes4(c0_, h), u1 = codes4(c1_, h);
 #if defined(DS4_HIPK_G11)
@@ -139,6 +148,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
 #else
                     bf[m][j] = __builtin_bit_cast(hv8, make_uint4(u0.x, u0.y, u1.x, u1.y));
 #endif
+                    if (dbg & 1) sink ^= u0.x ^ u0.y ^ u1.x ^ u1.y;
                 }
 #if defined(DS4_HIPK_G11)
             const int kcol = sub * 32 + ks * 16;
@@ -147,7 +157,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
 #endif
 #pragma unroll
             for (int i = 0; i < MT; ++i) {
-                if (i * 16 < nr) {   // (a tile past the rows: skipped, uniform)
+                if (i * 16 < nr && !(dbg & 1)) {   // (a tile past the rows: skipped, uniform; HIPK_DBG=1: no MMA)
 #if defined(DS4_HIPK_G11)
                     const hv16 af = *(const hv16*) &xs[b][i * 16 + l16][kcol];
 #pragma unroll
@@ -195,6 +205,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
                 else a.y[lr * a.ldo + col] = acc[0][i][j][q];
             }
         }
+    if (sink == 0xdeadbeefu && tid == 0) a.y[0] = 0.0f;   // (HIPK_DBG=1 only: never true)
 }
 
 template <int T, bool GU, int BM, int NW, int NTW>
@@ -204,6 +215,17 @@ inline bool runr(const SetArgs& a, cudaStream_t s) {
     if (N % BN != 0) return false;
     const dim3 grid((unsigned) ((a.max_rows + BM - 1) / BM), (unsigned) (N / BN), (unsigned) a.n_exp);
     static const int dbg = std::getenv("HIPK_DBG") ? std::atoi(std::getenv("HIPK_DBG")) : 0;
+    static const bool x16 = [] {   // STRATA_DS4_X16=0: gate / up read the F32 rows as before (A/B)
+        const char* v = std::getenv("STRATA_DS4_X16");
+        return !(v != nullptr && v[0] == '0');
+    }();
+    if constexpr (GU) {
+        if (x16 && a.xf16 != nullptr) {
+            set_kernel_r<T, GU, BM, NW, NTW, true><<<grid, NW * 32, 0, s>>>(a, dbg);
+            launches().fetch_add(1, std::memory_order_relaxed);
+            return cudaPeekAtLastError() == cudaSuccess;
+        }
+    }
     set_kernel_r<T, GU, BM, NW, NTW><<<grid, NW * 32, 0, s>>>(a, dbg);
     launches().fetch_add(1, std::memory_order_relaxed);
     return cudaPeekAtLastError() == cudaSuccess;

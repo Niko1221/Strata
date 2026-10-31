@@ -67,40 +67,70 @@ export function nvidiaDriverVersion() {
 /** Where the builds are published; the wrong-make sentence points here. */
 export const RELEASES_URL = 'https://github.com/Niko1221/Strata/releases';
 
-/** The PCI vendor ids (`10de`, `1002`, `8086`) of the Windows display adapters; empty off Windows or when the registry cannot be read. */
-export function windowsDisplayVendors({ platform = process.platform, run = execFileSync } = {}) {
+/** The PCI vendor ids of the display adapters Windows reports as present right now (PowerShell, Win32_VideoController); empty when that cannot be read. */
+export function windowsPresentVendors({ platform = process.platform, run = execFileSync } = {}) {
+  const found = new Set();
+  if (platform !== 'win32') return found;
+  try {
+    const out = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID }'], { encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const match of String(out).matchAll(/VEN_([0-9A-F]{4})/gi)) found.add(match[1].toLowerCase());
+  } catch { /* no PowerShell or a limited account: the registry answer stands */ }
+  return found;
+}
+
+/**
+ * The PCI vendor ids (`10de`, `1002`, `8086`) of the Windows display adapters; empty off Windows or when the registry cannot be read.
+ * The registry keeps the entry of a card that was taken out (an NVIDIA card swapped for a Radeon, #3892): when NVIDIA and AMD are both
+ * listed, only the makes Windows reports as present now count, the same rule Strata Control uses (engine_component.windows_display_adapters).
+ */
+export function windowsDisplayVendors({ platform = process.platform, run = execFileSync, present = windowsPresentVendors } = {}) {
   const found = new Set();
   if (platform !== 'win32') return found;
   try {
     const out = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}', '/s', '/v', 'MatchingDeviceId'], { encoding: 'utf8', timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     for (const match of String(out).matchAll(/VEN_([0-9A-F]{4})/gi)) found.add(match[1].toLowerCase());
   } catch { /* no registry access: the tools decide */ }
+  if (found.has('10de') && found.has('1002')) {
+    const now = present({ platform, run });
+    const kept = new Set([...found].filter(vendor => now.has(vendor)));
+    if (kept.size) return kept;
+  }
   return found;
+}
+
+const BACKEND_OF_VENDOR = [['10de', 'cuda'], ['1002', 'hip'], ['8086', 'sycl']];
+
+/**
+ * Every engine family this PC's graphics cards can run, in the order NVIDIA, AMD, Intel; STRATA_ENGINE_BACKEND wins. A PC with two
+ * makes lists both, so a build for either make is accepted (recommend, never force).
+ */
+export function gpuBackendsHere(env = process.env, { vendors = windowsDisplayVendors() } = {}) {
+  const forced = String(env.STRATA_ENGINE_BACKEND ?? '').trim().toLowerCase();
+  if (forced) return ['cuda', 'hip', 'sycl'].includes(forced) ? [forced] : [];
+  if (vendors.size) {
+    const list = BACKEND_OF_VENDOR.filter(([vendor]) => vendors.has(vendor)).map(([, backend]) => backend);
+    if (list.length) return list;
+  }
+  if (nvidiaDriverVersion()) return ['cuda'];
+  try {
+    const base = '/sys/class/drm';
+    const seen = new Set();
+    for (const card of readdirSync(base)) {
+      if (!/^card\d+$/.test(card)) continue;
+      try { seen.add(readFileSync(`${base}/${card}/device/vendor`, 'utf8').trim().toLowerCase()); } catch { /* no vendor file */ }
+    }
+    const list = [['0x10de', 'cuda'], ['0x1002', 'hip'], ['0x8086', 'sycl']].filter(([vendor]) => seen.has(vendor)).map(([, backend]) => backend);
+    if (list.length) return list;
+  } catch { /* not Linux */ }
+  return [];
 }
 
 /**
  * The engine family this PC's graphics card needs ('cuda', 'hip', 'sycl'), or null when it cannot be told. The same order as Control
  * (NVIDIA first, then AMD, then Intel); STRATA_ENGINE_BACKEND wins. Reads only the driver and (Linux) the PCI vendor of the display adapters.
  */
-export function gpuBackendHere(env = process.env, { vendors = windowsDisplayVendors() } = {}) {
-  const forced = String(env.STRATA_ENGINE_BACKEND ?? '').trim().toLowerCase();
-  if (forced) return ['cuda', 'hip', 'sycl'].includes(forced) ? forced : null;
-  // Windows: the display adapters are the machine's own statement of which cards it has; a leftover nvidia-smi from a card that was
-  // taken out must not outvote them (#3688). Same order as Control: NVIDIA, then AMD, then Intel.
-  if (vendors.size) {
-    for (const [vendor, backend] of [['10de', 'cuda'], ['1002', 'hip'], ['8086', 'sycl']]) if (vendors.has(vendor)) return backend;
-  }
-  if (nvidiaDriverVersion()) return 'cuda';
-  try {
-    const base = '/sys/class/drm';
-    const vendors = new Set();
-    for (const card of readdirSync(base)) {
-      if (!/^card\d+$/.test(card)) continue;
-      try { vendors.add(readFileSync(`${base}/${card}/device/vendor`, 'utf8').trim().toLowerCase()); } catch { /* no vendor file */ }
-    }
-    for (const [vendor, backend] of [['0x10de', 'cuda'], ['0x1002', 'hip'], ['0x8086', 'sycl']]) if (vendors.has(vendor)) return backend;
-  } catch { /* not Linux */ }
-  return null;
+export function gpuBackendHere(env = process.env, options = {}) {
+  return gpuBackendsHere(env, options)[0] ?? null;
 }
 
 const HIP_FAMILIES = [['RX 9000', ['gfx1200', 'gfx1201']], ['RX 7000', ['gfx1100', 'gfx1101', 'gfx1102']], ['RX 6000', ['gfx1030', 'gfx1031']], ['Ryzen AI Max', ['gfx1151']]];
@@ -147,10 +177,12 @@ export async function installBundledEngine({ bundleDir, components, platform = n
     if (platform) packages = packages.filter(p => p.manifest.platform === platform);
     if (!packages.length) return { action: 'none' };
     // A build for another make of graphics card than this PC has can never run here: it is not unpacked, and the caller says so in plain words.
-    const wanted = backend === undefined ? gpuBackendHere() : backend;
+    // A PC with two makes (an AMD card for the model, an NVIDIA card for the desktop) accepts a build for either (#3892).
+    const wantedList = backend === undefined ? gpuBackendsHere() : (Array.isArray(backend) ? backend : backend ? [backend] : []);
+    const wanted = wantedList[0] ?? null;
     if (wanted && ['cuda', 'hip', 'sycl'].includes(wanted)) {
       const gpu = packages.filter(p => ['cuda', 'hip', 'sycl'].includes(p.manifest.backend));
-      const fits = packages.filter(p => !gpu.includes(p) || p.manifest.backend === wanted);
+      const fits = packages.filter(p => !gpu.includes(p) || wantedList.includes(p.manifest.backend));
       if (gpu.length && !fits.length) {
         const first = gpu.sort((a, b) => compareVersions(b.manifest.version, a.manifest.version))[0].manifest;
         return { action: 'wrong-make', built: first.backend, here: wanted, notice: wrongMakeNotice(first, wanted) };

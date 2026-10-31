@@ -193,11 +193,14 @@ def install_root(explicit: str | os.PathLike | None = None, src: str | os.PathLi
     return discovery.find_install(here=installer_folder(src))[0]
 
 
-# Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the common
-# cards are listed; an id that is not here is shown as "Intel Arc" with no size and is treated as a small card.  (A770: the 8 GB model shares
-# the id of the 16 GB one, so the smaller figure is used.)
+# Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the discrete
+# cards are listed (the same ids as sycl/setup_intel.py; tests/terminal/test_intel_cards_029.py keeps the two in step).  An id that is not
+# here is NOT counted: it is skipped, because an Intel chip built into the processor shares this vendor id and must never be named as a card.
+# (A770: the 8 GB model shares the id of the 16 GB one, so the smaller figure is used.)
 INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0": ("Arc A770", 8.0), "0x56a5": ("Arc A380", 6.0),
-             "0x56a6": ("Arc A310", 4.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0), "0xe223": ("Arc Pro B70", 32.0)}
+             "0x56a6": ("Arc A310", 4.0), "0x5690": ("Arc A770M", 16.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0),
+             "0xe223": ("Arc Pro B70", 32.0), "0xe222": ("Arc Pro B65", 32.0), "0xe221": ("Arc Pro B60", 24.0), "0xe211": ("Arc Pro B60", 24.0),
+             "0xe212": ("Arc B50", 16.0)}
 
 
 def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
@@ -316,6 +319,26 @@ class Catalog:
     def contexts(self) -> list[int]:
         return [int(c) for c in self.tables()[2]]
 
+    def contexts_for(self, family: str | None, model: str | None = None) -> list[int]:
+        """The context sizes to offer for this model: DeepSeek-V4.1-Flash goes up to 1M (its installed pack's own limit when it has one), the
+        others keep the shared list."""
+        if family and self.strata.multi_family(family):
+            from strata_control import dsv41_context
+            return dsv41_context.choices(self.pack_limit(family, model))
+        return self.contexts()
+
+    def pack_limit(self, family: str | None, model: str | None) -> int | None:
+        """The installed DeepSeek pack's own context limit (ds4.txt), None when it is not installed or the file does not say."""
+        if not (family and model and self.strata.multi_family(family)):
+            return None
+        try:
+            from strata_control import dsv41_context
+            from strata_cli.launch.runner import read_config
+            path = self.installed_config(self.tag_of(family, model))
+            return dsv41_context.limit_of_config(read_config(path)) if path else None
+        except Exception:                                  # noqa: BLE001 - no file, no limit: the choices stay as they are
+            return None
+
     def recommendation(self, hw: dict | None = None) -> dict:
         return self.strata.recommend(hw or self.hardware())
 
@@ -363,6 +386,10 @@ class Catalog:
             near = S.closest(family, list(families))
             raise ValueError(f"There is no model family called '{family}'." + (f" Did you mean '{near}'?" if near else "")
                              + " Families: " + ", ".join(families) + ".")
+        from strata_control import dsv41_fit
+        line = dsv41_fit.not_here(match) or (dsv41_fit.MAC_NOT_YET_LINE if match in dsv41_fit.MAC_NOT_YET and self._mac_hardware() else None)
+        if line:
+            raise ValueError(line + " Use ist-das-2.00bpw or ist-das-2.25bpw.")
         offered = [f for f in families if match in self.strata.sizes_of(models, f)]
         if family is not None:
             if family not in offered:
@@ -376,6 +403,25 @@ class Catalog:
     def tag_of(self, family: str, model: str) -> str:
         _m, families, _c, _s = self.tables()
         return (families[family].get("tag", "") + model).lower()
+
+    def model_folder(self, base: Path, family: str, model: str) -> Path:
+        """The folder a model's files are in under `base/models`. setup.py names it with the case kept (`models/IQ3_S`), the run-config tag is
+        lower case (`iq3_s`): on a case-sensitive disk the two are different folders, so the one that exists wins, and a folder that differs
+        only in case is found (#3996). When none exists yet it is setup's own name, because that is where the download will go."""
+        _m, families, _c, _s = self.tables()
+        models = Path(base) / "models"
+        own = models / (families[family].get("tag", "") + model)
+        lower = models / self.tag_of(family, model)
+        for candidate in (own, lower):
+            if candidate.is_dir():
+                return candidate
+        try:
+            for entry in models.iterdir():
+                if entry.name.lower() == lower.name and entry.is_dir():
+                    return entry
+        except OSError:
+            pass
+        return own
 
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""
@@ -457,6 +503,12 @@ class Catalog:
         comp = self.computer()
         vram = comp.main_vram_gb
         return VR.default_mode(vram, "intel" if comp.engine_vendor == "intel" else "") if vram > 0 else "cpu"      # no usable card: nothing to read on, the CPU reader
+
+    def _mac_hardware(self) -> bool:
+        try:
+            return bool(self.hardware().get("mac"))
+        except Exception:                                    # noqa: BLE001 - no hardware report: not a Mac as far as this check knows
+            return False
 
     def is_mac(self) -> bool:
         """An Apple Silicon Mac: the chip's memory is the system's (the Metal engine; strata_control/vision_reader.py)."""

@@ -22,10 +22,11 @@ Use the guide for your GPU and operating system. Model and feature support can d
 | --- | --- |
 | NVIDIA RTX 20 / 30 / 40 / 50 | [Install](INSTALL.md#what-you-need) |
 | AMD Radeon (RX and AI PRO R9700) | [AMD / HIP](AMD_HIP.md) |
-| AMD Ryzen AI Max / Strix Halo | [Strix Halo](STRIX_HALO.md) |
+| AMD Ryzen AI Max / Strix Halo | [Strix Halo](STRIX_HALO.md), [on Windows](STRIX_HALO_WINDOWS.md) |
 | Intel Arc on Linux | [Intel Arc](INTEL_ARC.md) |
 | Apple Silicon | [Mac / Metal](MAC.md) |
 | More than one GPU | [Multiple GPUs](MULTI_GPU.md) |
+| Two cards: one reads the prompt, one makes the answer (opt-in) | [Split serving](SPLIT_SERVE.md) |
 | Older GPUs | [Experimental hardware](OLDER_GPUS.md) |
 
 ## Developers and contributors
@@ -35,6 +36,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 - [Contribution rules](../CONTRIBUTING.md)
 - [Community benchmarks](COMMUNITY_BENCHMARKS.md) and the [standard benchmark protocol](BENCHMARK_PROTOCOL.md)
 - [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md) and [Terminal reference](TERMINAL.md)
+- [KVA: approximate prompt processing for the late layers (experimental, opt-in)](KVA.md)
 - [App development](../apps/host/README.md) and [packaging](../packaging/README.md)
 
 ## AI tools and media

@@ -6,6 +6,7 @@
 // included unchanged.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
@@ -2308,7 +2309,7 @@ template <typename T> class hadamard_rows_name;
 template <typename T>
 void launch_hadamard_rows(const T* x, T* y, int64_t rows, int64_t width, int block, const float* signs, dpct::queue_ptr s) {
     const float scale = 1.0f / std::sqrt((float) block);
-    s->parallel_for<hadamard_rows_name<T>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<hadamard_rows_name<T>>(
         sycl::nd_range<3>(sycl::range<3>(1, (size_t) rows, (size_t) (width / block) * (size_t) block),
                           sycl::range<3>(1, 1, (size_t) block)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { hadamard_rows_kernel<T>(x, y, width, signs, scale); });
@@ -3236,7 +3237,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_8df6c9, dpct_kernel_scalar<TY>,
@@ -3260,7 +3261,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_9c43f2, dpct_kernel_scalar<TY>,
@@ -3284,7 +3285,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_f8d14a, dpct_kernel_scalar<TY>,
@@ -3308,7 +3309,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_88cd9a, dpct_kernel_scalar<TY>,
@@ -3332,7 +3333,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_d55b02, dpct_kernel_scalar<TY>,
@@ -3356,7 +3357,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class mmvq_multi_kernel_3404b2, dpct_kernel_scalar<TY>,
@@ -3382,7 +3383,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<dpct_kernel_name<
                     class mmvq_multi_kernel_1f7e16, dpct_kernel_scalar<TY>,
@@ -3407,7 +3408,7 @@ void launch_mmvq_multi_nc(dpct::dim3 grid, dpct::dim3 block, dpct::queue_ptr s,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<dpct_kernel_name<
                     class mmvq_multi_kernel_95b544, dpct_kernel_scalar<TY>,
@@ -3439,7 +3440,7 @@ void launch_mmvq(const uint8_t *W, size_t rb, const block_q8_1 *X, float *y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<class mmvq_kernel_c04bb8,
                                               dpct_kernel_scalar<TY>>>(
@@ -3460,7 +3461,7 @@ void launch_mmvq(const uint8_t *W, size_t rb, const block_q8_1 *X, float *y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<class mmvq_kernel_18057f,
                                               dpct_kernel_scalar<TY>>>(
@@ -3964,7 +3965,7 @@ void s26_launch_l(const NativeExpertLayout &L, int64_t cap_groups,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class s26_gu_l_kernel_46f2dc, dpct_kernel_scalar<LT>,
@@ -3985,7 +3986,7 @@ void s26_launch_l(const NativeExpertLayout &L, int64_t cap_groups,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<dpct_kernel_name<class s26_swiglu_q8_1_kernel_a7b554>>(
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class s26_swiglu_q8_1_kernel_a7b554>>(
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
                                   sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
@@ -3998,7 +3999,7 @@ void s26_launch_l(const NativeExpertLayout &L, int64_t cap_groups,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class swiglu_entries_kernel_a4959c>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
@@ -4013,7 +4014,7 @@ void s26_launch_l(const NativeExpertLayout &L, int64_t cap_groups,
                 sycl::ext::oneapi::experimental::use_root_sync};
             dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class quantize_q8_1_kernel_6b0f01>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
@@ -4033,7 +4034,7 @@ void s26_launch_l(const NativeExpertLayout &L, int64_t cap_groups,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
 
             cgh.parallel_for<dpct_kernel_name<
                 class s26_down_l_kernel_669590, dpct_kernel_scalar<LX>,
@@ -4427,7 +4428,7 @@ void s27_launch(const NativeExpertLayout &L, int64_t cap_groups,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class s27_gu_kernel_7906c8, dpct_kernel_scalar<TG>,
                              dpct_kernel_scalar<LX>, dpct_kernel_scalar<RG>,
                              dpct_kernel_scalar<TS>>>(
@@ -4443,7 +4444,7 @@ void s27_launch(const NativeExpertLayout &L, int64_t cap_groups,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<dpct_kernel_name<class s26_swiglu_q8_1_kernel_a7f255>>(
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class s26_swiglu_q8_1_kernel_a7f255>>(
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
                                   sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
@@ -4457,7 +4458,7 @@ void s27_launch(const NativeExpertLayout &L, int64_t cap_groups,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class s27_down_kernel_d38356,
                              dpct_kernel_scalar<TD>, dpct_kernel_scalar<LX>,
                              dpct_kernel_scalar<RD>, dpct_kernel_scalar<TS>>>(
@@ -4504,7 +4505,7 @@ void launch_gu_port(unsigned groups, dpct::queue_ptr s, const unsigned long long
     constexpr int ROWS = 256 / LN;
     const unsigned gx = (unsigned) ((2 * L.n_ff + ROWS - 1) / ROWS);
     auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
-    s->parallel_for<dpct_kernel_name<class native_gu_port, dpct_kernel_scalar<TG>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_gu_port, dpct_kernel_scalar<TG>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
         sycl::nd_range<3>(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
             native_gu_kernel<TG, LN, KM>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
@@ -4540,7 +4541,7 @@ void launch_down_port(unsigned groups, dpct::queue_ptr s, const unsigned long lo
     constexpr int ROWS = 256 / LN;
     const unsigned gx = (unsigned) ((L.n_embd + ROWS - 1) / ROWS);
     auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
-    s->parallel_for<dpct_kernel_name<class native_down_port, dpct_kernel_scalar<TD>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_down_port, dpct_kernel_scalar<TD>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
         sycl::nd_range<3>(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
             native_down_kernel<TD, LN, KM>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
@@ -4576,7 +4577,7 @@ void launch_gu_multi(dpct::dim3 grid, dpct::queue_ptr s, const unsigned long lon
                      const NativeExpertLayout &L, float *gate, float *up) {
     auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
     const sycl::range<3> g(1, grid.y, (size_t) ((2 * L.n_ff + GU_ROWS - 1) / GU_ROWS));
-    s->parallel_for<dpct_kernel_name<class native_gu_multi_split, dpct_kernel_scalar<TG>,
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_gu_multi_split, dpct_kernel_scalar<TG>,
                                      dpct_kernel_scalar<STAGE_GRID>>>(
         sycl::nd_range<3>(sycl::range<3>(1, g[1], g[2] * 256), sycl::range<3>(1, 1, 256)), exp_props,
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -4611,7 +4612,7 @@ void launch_down_multi(dpct::dim3 grid, dpct::queue_ptr s, const unsigned long l
                        const block_q8_1 *hq, const NativeExpertLayout &L, float *out) {
     auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
     const size_t gx = (size_t) ((L.n_embd + GU_ROWS - 1) / GU_ROWS);
-    s->parallel_for<dpct_kernel_name<class native_down_multi_split, dpct_kernel_scalar<TD>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_down_multi_split, dpct_kernel_scalar<TD>>>(
         sycl::nd_range<3>(sycl::range<3>(1, grid.y, gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
             native_down_multi_kernel<TD, false>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
@@ -4729,8 +4730,8 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class quantize_q8_1_kernel_422964>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class quantize_q8_1_kernel_422964>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((n + 255) / 256)) *
                         sycl::range(1, 1, 256),
@@ -4810,7 +4811,7 @@ template <int NCOLS>
 void launch_iq3s_wide_t(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     constexpr int WPG = 4;   // sub-groups per work-group
     const unsigned groups = unsigned((n_out + WPG - 1) / WPG);
-    s->parallel_for<dpct_kernel_name<class iq3s_wide_k, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class iq3s_wide_k, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, WPG, groups * 32), sycl::range(1, WPG, 32)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { iq3s_wide_kernel<NCOLS>(W, rb, X, y, n_in, n_out); });
 }
@@ -4855,7 +4856,7 @@ void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stre
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<dpct_kernel_name<
@@ -4897,7 +4898,7 @@ void iq_embed_rows(int t, const void* table, size_t row_bytes, const int32_t* to
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -4926,7 +4927,7 @@ void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream)
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -4957,7 +4958,7 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -5007,7 +5008,7 @@ void iq_dequant_expert_f16(int gt, int dt, const void* gate, const void* up, con
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(strata::q_of(stream)->get_device(), {sycl::aspect::fp16});
-        strata::q_of(stream)->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             cgh.parallel_for<dpct_kernel_name<class dequant_expert_kernel_7d2c41>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned) (gu_wgs + d_wgs)) * sycl::range(1, 1, 32),
                                   sycl::range(1, 1, 32)),
@@ -5708,7 +5709,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                s->parallel_for<
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                     dpct_kernel_name<class swiglu_entries_kernel_a4959c>>(
                     sycl::nd_range<3>(
                         sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
@@ -5726,7 +5727,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                 dpct::has_capability_or_fail(s->get_device(),
                                              {sycl::aspect::fp16});
 
-                s->parallel_for<
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                     dpct_kernel_name<class quantize_q8_1_kernel_f68c59>>(
                     sycl::nd_range<3>(
                         sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
@@ -5742,7 +5743,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class swiglu_q8_1_entries_kernel_115291>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((nh + 255) / 256)) *
@@ -5826,7 +5827,7 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
     const int nb = N / BN;
 #ifndef STRATA_NO_DG2_XMX
     constexpr int TN = kSgW;
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         sycl::local_accessor<sycl::half, 1> sa(BM * LDA, h), sb(BN * LDB, h);
         auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
         h.parallel_for<Name>(sycl::nd_range<2>({(size_t) ntiles, (size_t) nb * WG}, {1, (size_t) WG}), props,
@@ -6099,7 +6100,7 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
     dpct::queue_ptr q = strata::q_of(stream);
     xmx::Src src{(const uint8_t*) gate, (const uint8_t*) up, ty, by_block ? K / 256 : 0};
     const int groups = n_out / xmx::NT;
-    q->submit([&](sycl::handler& cgh) {
+    strata::kprof::kp(q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& cgh) {
         sycl::local_accessor<uint8_t, 1> slm(sycl::range<1>(bytes), cgh);
         cgh.parallel_for(
             sycl::nd_range<3>(sycl::range<3>(1, 1, (size_t) groups * xmx::WG), sycl::range<3>(1, 1, xmx::WG)),

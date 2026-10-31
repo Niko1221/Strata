@@ -14,11 +14,15 @@
 // Everything that varies per window (token ids, `n_keep`) is read from DEVICE memory so the kernels can be captured.
 #pragma once
 
+#include "strata/kernels/window_limits.hpp"
+
 #include <cstdint>
 
 namespace strata::kernels {
 
-inline constexpr int kVerifyMaxT = 8;
+/// The most rows one verify / batch window holds (8; 16 in the CUDA / HIP builds, window_limits.hpp).  A window of up to
+/// kVerifyNarrowT rows runs the kernels it always ran.
+inline constexpr int kVerifyMaxT = kWindowMaxT;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
 /// `history` is NOT written, but with `commit` (one token): it then keeps the token, as gdn_conv_commit.  Bitwise
@@ -192,5 +196,10 @@ void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream);
 /// A sliding attention window: for `n` step records (kStepCount ints each, n_kv at [1]) the selection becomes the
 /// last `window` cells: ids[q * ids_stride + j] = max(0, n_kv - window) + j and the record's width = the count.
 void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, void* stream);
+/// window_ids whose window starts no lower than the cell `*floor_cell` (device-visible memory, read when the kernel
+/// runs; KVA: the first draft cell built from a real row).  `window` may be INT_MAX for "every cell".  A floor of 0
+/// selects exactly what window_ids selects.  CUDA / HIP only.
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream);
 
 }  // namespace strata::kernels

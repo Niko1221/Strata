@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -61,7 +62,8 @@ public:
             (count > SIZE_MAX / sizeof(Segment) || !add(total, count * sizeof(Segment)))) return SIZE_MAX;
         return total;
     }
-    void resize(size_t n, uint8_t value = 0) {
+    void resize(size_t n, uint8_t value = 0) { resize_impl(n, &value); }
+    void resize_impl(size_t n, const uint8_t* value) {
         if (n > size_) {
             const size_t held = size_;
             const bool growing = held != 0;
@@ -70,7 +72,8 @@ public:
             const size_t extra = n - size_ - extend;
             segments_.reserve(segments_.size() + extra / segment_bytes + (extra % segment_bytes != 0));
             if (extend) {
-                segments_.back().resize(segments_.back().size() + extend, value);
+                if (value) segments_.back().resize(segments_.back().size() + extend, *value);
+                else segments_.back().resize(segments_.back().size() + extend);
                 size_ += extend;
             }
             while (size_ < n) {
@@ -78,7 +81,8 @@ public:
                 const size_t previous = segments_.empty() ? 0 : segments_.back().capacity();
                 Segment segment;
                 segment.reserve(segment_capacity(count, previous, growing, held));
-                segment.resize(count, value);
+                if (value) segment.resize(count, *value);
+                else segment.resize(count);
                 segments_.push_back(std::move(segment));
                 size_ += count;
                 progress_beat();   // #2049: zero-filling 16 MiB of fresh pages is slow when the host is paging
@@ -93,6 +97,9 @@ public:
         }
     }
     void pop_back() { resize(size_ - 1); }
+    // resize() without the zero fill of what it adds (the fresh pages are not touched here): only for a caller that
+    // writes every added byte before anything reads it (STRATA_PARK_ASYNC's background copy)
+    void resize_for_overwrite(size_t n) { resize_impl(n, nullptr); }
 
     // fn(pointer, count, absolute_offset); false aborts a transfer immediately.
     template<class Fn> bool visit(size_t offset, size_t count, Fn fn) {
@@ -123,7 +130,15 @@ public:
     }
 
 private:
-    using Segment = std::vector<uint8_t>;
+    // value-initializes only when asked (resize's explicit fill value): resize_for_overwrite leaves the bytes alone
+    template<class T> struct DefaultInit : std::allocator<T> {
+        template<class U> struct rebind { using other = DefaultInit<U>; };
+        DefaultInit() = default;
+        template<class U> DefaultInit(const DefaultInit<U>&) noexcept {}
+        template<class U> void construct(U* p) { ::new ((void*) p) U; }
+        template<class U, class... A> void construct(U* p, A&&... a) { ::new ((void*) p) U(std::forward<A>(a)...); }
+    };
+    using Segment = std::vector<uint8_t, DefaultInit<uint8_t>>;
     // A fresh capture allocates exactly its payload. Later appends reserve
     // geometrically growing segments, bounded by 16 MiB. Small chat turns then
     // extend the final allocation instead of adding one transfer per turn.

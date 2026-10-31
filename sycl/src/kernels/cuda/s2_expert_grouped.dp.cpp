@@ -15,6 +15,7 @@
 // the same reason.  `bench/micro/moe_hit_parity.cu` is the check.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
@@ -785,7 +786,7 @@ void launch_hit_gu(bool fast, const uint8_t *blob_base,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class gu_pair_kernel_787004>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gu_pair_kernel_787004>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((pairs + warps - 1) / warps)) *
                         sycl::range(1, 1, THREADS),
@@ -804,7 +805,7 @@ void launch_hit_gu(bool fast, const uint8_t *blob_base,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class gu_kernel_55bc52>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gu_kernel_55bc52>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((rows + warps - 1) / warps)) *
                         sycl::range(1, 1, THREADS),
@@ -832,7 +833,7 @@ void launch_hit_down(bool fast, const uint8_t *blob_base,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class down_pair_kernel_7d15d9>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class down_pair_kernel_7d15d9>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((pairs + warps - 1) / warps)) *
                         sycl::range(1, 1, THREADS),
@@ -851,7 +852,7 @@ void launch_hit_down(bool fast, const uint8_t *blob_base,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class down_kernel_b3587f>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class down_kernel_b3587f>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((rows + warps - 1) / warps)) *
                         sycl::range(1, 1, THREADS),
@@ -911,7 +912,7 @@ void moe_hit_grouped_s2(const uint8_t* blob_base, const int32_t* slot_index, con
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class swiglu_kernel_792534>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class swiglu_kernel_792534>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, THREADS),
                                   sycl::range(1, 1, THREADS)),
@@ -1033,8 +1034,8 @@ void moe_hit_select(const int32_t* ids, const int32_t* res_row, int k, int n_exp
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class hit_select_kernel_f87f42>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class hit_select_kernel_f87f42>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 32), sycl::range(1, 1, 32)),
                 exp_props,
                 [=](sycl::nd_item<3> item_ct1)
@@ -1068,7 +1069,7 @@ void moe_hit_grouped_s2_dev(const uint8_t* blob_base, const int32_t* slot_index,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class swiglu_kernel_5aa9a9>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class swiglu_kernel_5aa9a9>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
                                 (unsigned)((pairs + THREADS - 1) / THREADS)) *
@@ -1096,8 +1097,8 @@ void moe_hit_select_multi(const int32_t* ids, const int32_t* res_row, int n, int
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<
                 dpct_kernel_name<class hit_select_multi_kernel_4749ea>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128),
                                   sycl::range(1, 1, 128)),
@@ -1133,7 +1134,7 @@ void moe_hit_grouped_s2_multi(const uint8_t* blob_base, const int32_t* slot_inde
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class swiglu_kernel_a0c31a>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class swiglu_kernel_a0c31a>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
                                 (unsigned)((pairs + THREADS - 1) / THREADS)) *
@@ -1562,8 +1563,8 @@ void moe_group_resident(const int32_t* ids, int n, int k_per_tok, const uint8_t*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<
                 dpct_kernel_name<class group_resident_kernel_5c38b8>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128),
                                   sycl::range(1, 1, 128)),
@@ -1595,7 +1596,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class gu_grouped_t_kernel_998f94>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -1610,7 +1611,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class gu_grouped_kernel_c9eb4d>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gu_grouped_kernel_c9eb4d>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props,
@@ -1638,7 +1639,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
                 class swiglu_quantize_q8_0_scaled_kernel_1271ea>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
@@ -1659,7 +1660,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<class swiglu_kernel_90849f>>(
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class swiglu_kernel_90849f>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
                                 (unsigned)((pairs + THREADS - 1) / THREADS)) *
@@ -1681,7 +1682,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class down_grouped_t_kernel_12b16d>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -1695,7 +1696,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<
+            strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class down_grouped_kernel_ea4417>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -1720,8 +1721,8 @@ void moe_hit_add(float* parts, const float* hit_out, const int32_t* dst, const i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class add_hits_kernel_50cbcb>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class add_hits_kernel_50cbcb>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -1756,7 +1757,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             auto H_ct3 = H / 32;
 
             cgh.parallel_for<
@@ -1776,7 +1777,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->parallel_for<
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class cpu_order_projection_kernel_2fbdd9,
                              dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(
@@ -1809,7 +1810,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             auto int_n_hits_FF_ct1 = (int)n_hits * FF;
 
             cgh.parallel_for<
@@ -1830,7 +1831,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             auto int_n_hits_FF_ct4 = (int)n_hits * (FF / 32);
 
             cgh.parallel_for<
@@ -1852,7 +1853,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->parallel_for<
+        strata::kprof::kp(cs, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class cpu_order_projection_kernel_2e007a,
                              dpct_kernel_scalar<true>>>(
             sycl::nd_range<3>(
