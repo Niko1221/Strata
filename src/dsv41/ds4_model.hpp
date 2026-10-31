@@ -205,6 +205,24 @@ public:
     /// seeded as its own step would seed them, so it drafts on alone later.  The bound conversation stays bound.
     bool step_multi(const int* seqs, const int* tokens, int n, std::string& err);
     int sample_multi(int row, float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter);
+    /// The drafter beside --parallel (Project Maya #611): n conversations' verify windows through the model together -
+    /// window i is conversation seqs[i]'s token y and its drafts (each conversation's own draft(), bound to it),
+    /// toks[i][0 .. lens[i]) with toks[i][0] = y - as step_multi's rows (distinct conversations, at most verify_max()
+    /// rows in all), a window's rows attending to each other as verify()'s.  Then verify_multi(i, ...) once for each
+    /// window i: its verdict as verify()'s (the drafts as points: the drafter's argmax), with the penalties
+    /// set_penalties() set over its conversation's tokens; the conversation keeps y and the accepted drafts, and its
+    /// drafter rings are seeded with them.  The bound conversation stays bound.
+    bool step_multi_spec(const int* seqs, const int* const* toks, const int* lens, int n, std::string& err);
+    /// The drafter for n conversations (2 or more, distinct) in one pass: draft()'s drafts and confidences for each
+    /// conversation seqs[i] after its token ys[i] (the drafter's argmax), the blocks' rows through the DSpark blocks
+    /// together.  can_draft_multi: whether these conversations fit one pass (their blocks in a window, each its
+    /// block's room in its context); else each drafts alone with draft().
+    bool can_draft_multi(const int* seqs, int n) const;
+    bool draft_multi(const int* seqs, const int* ys, int n, std::vector<std::vector<int>>& drafts,
+                     std::vector<std::vector<float>>& conf, std::string& err);
+    bool verify_multi(int i, const std::vector<int>& drafts, float temperature, float top_p, int top_k, float min_p,
+                      uint64_t seed, uint64_t counter, int& accepted, int& next, std::string& err);
+    int verify_max() const;   // the rows a window or a multi step takes at most
 
     void reset();
     /// The post-prompt cache settle run on a thread of its own while the server waits for its next request (WP-8's option 1):
