@@ -77,13 +77,21 @@ inline std::string table(const Costs& k, int max_s, int n_max = 8) {
     return s;
 }
 
-/// Whether the split streams anything for some n <= n_max picks, all of them warm or all cold
-inline bool streams_any(const Costs& k, int max_s, int n_max) {
+/// Whether the split streams anything for some n <= n_max picks, all of them warm or all cold.  cold_possible false:
+/// no pick can be cold (every expert of the class is in VRAM or in the RAM tier: --mmap-experts off, or auto with
+/// all of them copied), so the warm case alone decides - else splitting two disk reads between the lanes, which
+/// always pays, kept the one-GPU path on where nothing ever streamed (#551)
+inline bool streams_any(const Costs& k, int max_s, int n_max, bool cold_possible = true) {
     for (int n = 1; n <= n_max && n <= 8; ++n)
-        if (split(k, n, 0u, max_s) != 0u || split(k, n, (1u << n) - 1u, max_s) != 0u) return true;
+        if (split(k, n, 0u, max_s) != 0u || (cold_possible && split(k, n, (1u << n) - 1u, max_s) != 0u)) return true;
     return false;
 }
 
+/// Whether decode's checks (LaneAB: warm requests, cold ones) still let a class stream: one not measured slower yet -
+/// the cold kind only where a pick can be cold (a kind that never comes is never measured: it kept the lane on, #551)
+inline bool verdicts_allow(int warm, int cold, bool cold_possible) {
+    return warm >= 0 || (cold_possible && cold >= 0);
+}
 /// The times file (DS4_LANE_CAL, by default <pack>/lane-times.txt): a line a key, "key<TAB>values".  get: the values
 /// of `key` (empty: none); put: key's line replaced by vals (empty vals: dropped), through a temporary file.
 inline std::string cal_get(const std::string& file, const std::string& key) {
