@@ -10315,6 +10315,143 @@ int main(int argc, char** argv) {
                                  "windows%s\n", o.pipeline_windows, n_stages,
                          !pl_snap_ok ? "" : pl_snap_overlap ? " (decode too; the GDN snapshots beside the window)"
                                                             : " (decode too; the GDN snapshot on the critical path)");
+        // STRATA_PIPELINE_SNAP_RING=1 (opt-in): no GDN snapshot copy.  A front stage's state lives in one of its
+        // buffers - the session's own (x[0]) and the snapshot buffers above (x[1 + q]) - and the windows read the one the
+        // device word d_cur names (Verifier::set_gdn_ring).  A speculative commit reads the current buffer and writes a
+        // free one, so the state its window read stays where it was (that buffer is the window's "snapshot"); an undo
+        // replays the verified window's commit in place in that buffer; every other commit is in place.  The bytes
+        // every window and commit compute are today's (same kernels, same inputs); only where the state lives moves.
+        // At the end of a request (after pl_drain) the state goes back to the session's own buffer if it is elsewhere
+        // (one copy per front stage), so the serial paths, checkpoints and parking never see the ring.
+        constexpr int kPlRingSnaps = 2;   // PlSnap::buf: one snapshot per window parity
+        struct PlRing {
+            float** d_tab = nullptr;   // [kPlRingSnaps + 1] the buffers' bases, on the stage's device
+            float** d_cur = nullptr;   // the base the stage's windows read
+            float* x[kPlRingSnaps + 1] = {};
+            int64_t off = 0, n = 0;    // the stage's own GDN layers in a buffer (floats)
+            int m = 0, cur = 0, restore = -1;
+            int snap[kPlRingSnaps] = {};   // the buffer holding the state slot q's window read (-1: none)
+            int64_t settles = 0;
+        };
+        std::vector<PlRing> pl_ring((size_t) pl_nf);
+        bool pl_ring_on = false;
+        if (pipe && o.pipeline_windows >= 2 && [] { const char* v = std::getenv("STRATA_PIPELINE_SNAP_RING"); return v != nullptr && v[0] == '1'; }()) {
+            std::string why;
+            if (!pl_snap_ok || !pl_snap_overlap) why = "the GDN snapshots are not beside the window";
+            else (void) strata::core::Verifier::gdn_ring_ok(why);
+            const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                        (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+            int set_n = 0;   // the stages whose verifiers took the ring (undone on a failure)
+            for (int st = 0; st < pl_nf && why.empty(); ++st) {
+                PlSnap& sn = pl_snaps[(size_t) st];
+                PlRing& R = pl_ring[(size_t) st];
+                const strata::core::SessionState& sst = st == 0 ? ss : stages[(size_t) st - 1]->ss;
+                const int64_t lb = st == 0 ? 0 : split_at[(size_t) st - 1], le = split_at[(size_t) st];
+                int64_t first = 0, n_g = 0;
+                for (int64_t l = 0; l < le; ++l)
+                    if (!strata::core::is_qsa_layer(g, l)) (l < lb ? first : n_g) += 1;
+                R.off = (first - sst.gdn_ord0) * (int64_t) gdn_floats;
+                R.n = n_g * (int64_t) gdn_floats;
+                if (R.off < 0 || n_g <= 0 || first - sst.gdn_ord0 + n_g > sst.gdn_alloc) {
+                    why = "stage " + std::to_string(st + 1) + "'s GDN layers are not in its session";
+                    break;
+                }
+                R.x[0] = (float*) sn.state;
+                for (int q = 0; q < kPlRingSnaps; ++q) R.x[1 + q] = sn.buf[q];
+                const strata::core::OnDevice on(sn.dev);
+                if (cudaMalloc((void**) &R.d_tab, sizeof R.x) != cudaSuccess ||
+                    cudaMalloc((void**) &R.d_cur, sizeof(float*)) != cudaSuccess ||
+                    cudaMemcpy(R.d_tab, R.x, sizeof R.x, cudaMemcpyHostToDevice) != cudaSuccess ||
+                    cudaMemcpy(R.d_cur, &R.x[0], sizeof(float*), cudaMemcpyHostToDevice) != cudaSuccess) {
+                    cudaGetLastError();
+                    why = "its device words could not be allocated";
+                    break;
+                }
+                for (int par = 0; par < 2 && why.empty(); ++par)
+                    if (!stage_ver_p(st, par).set_gdn_ring(R.d_tab, R.d_cur))
+                        why = "parity " + std::to_string(par) + "'s graphs on stage " + std::to_string(st + 1) + " are captured already";
+                set_n = st + 1;
+            }
+            if (why.empty()) {
+                pl_ring_on = true;
+                std::fprintf(stderr, "strata serve: --pipeline-windows: the GDN snapshot ring (STRATA_PIPELINE_SNAP_RING=1): "
+                                     "%d buffers per front stage, a speculative commit writes a free one, no snapshot copy\n",
+                             kPlRingSnaps + 1);
+            } else {
+                for (int st = 0; st < set_n; ++st)
+                    for (int par = 0; par < 2; ++par) (void) stage_ver_p(st, par).set_gdn_ring(nullptr, nullptr);
+                std::fprintf(stderr, "strata serve: STRATA_PIPELINE_SNAP_RING: not used, %s\n", why.c_str());
+            }
+        }
+        // every request starts and ends with each front stage's state in its session's own buffer
+        auto pl_ring_reset = [&]() {
+            for (int st = 0; st < pl_nf && pl_ring_on; ++st) {
+                PlRing& R = pl_ring[(size_t) st];
+                R.cur = 0;
+                R.restore = -1;
+                for (int& s : R.snap) s = -1;
+                R.m = 1;   // the session's buffer and the snapshot buffers that exist
+                while (R.m <= kPlRingSnaps && pl_snaps[(size_t) st].buf[R.m - 1] != nullptr) ++R.m;
+            }
+        };
+        auto pl_ring_settle = [&]() -> bool {
+            for (int st = 0; st < pl_nf && pl_ring_on; ++st) {
+                PlRing& R = pl_ring[(size_t) st];
+                if (R.cur == 0) continue;
+                const strata::core::OnDevice on(pl_snaps[(size_t) st].dev);
+                cudaStream_t cs = pl_stream[(size_t) st];
+                if (cudaMemcpyAsync(R.x[0] + R.off, R.x[R.cur] + R.off, (size_t) R.n * sizeof(float), cudaMemcpyDeviceToDevice,
+                                    cs) != cudaSuccess ||
+                    cudaMemcpyAsync(R.d_cur, &R.x[0], sizeof(float*), cudaMemcpyHostToDevice, cs) != cudaSuccess ||
+                    cudaStreamSynchronize(cs) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: STRATA_PIPELINE_SNAP_RING: moving stage %d's GDN state back failed\n",
+                                 st + 1);
+                    return false;
+                }
+                ++R.settles;
+            }
+            pl_ring_reset();
+            return true;
+        };
+        pl_ring_reset();
+        // the buffers a front-stage commit reads and writes: an undo's replay in place in the restored buffer, a
+        // speculative commit from the current buffer into a free one (the current one stays as slot's snapshot), any
+        // other commit in place
+        auto pl_ring_sel = [&](int st, int slot, bool spec, int& src, int& dst) -> bool {
+            src = dst = 0;
+            if (!pl_ring_on) return true;
+            PlRing& R = pl_ring[(size_t) st];
+            if (R.restore >= 0) {
+                src = dst = R.cur = R.restore;
+                R.restore = -1;
+                for (int& s : R.snap) s = -1;   // the verified window's later ones were all doomed
+                return true;
+            }
+            if (!spec) {
+                src = dst = R.cur;
+                return true;
+            }
+            if (slot < 0 || slot >= kPlRingSnaps) return false;
+            R.snap[slot] = -1;   // the slot's last window was verified before this one could hold the slot
+            int pick = -1;
+            for (int i = 0; i < R.m && pick < 0; ++i) {
+                bool held = i == R.cur;
+                for (int s : R.snap) held = held || s == i;
+                if (!held) pick = i;
+            }
+            if (pick < 0) return false;
+            src = R.cur;
+            R.snap[slot] = R.cur;
+            dst = R.cur = pick;
+            return true;
+        };
+        // an undo on stage st: the state slot's window read is where its next (replayed) commit starts
+        auto pl_ring_restore = [&](int st, int slot) -> bool {
+            PlRing& R = pl_ring[(size_t) st];
+            if (slot < 0 || slot >= kPlRingSnaps || R.snap[slot] < 0) return false;
+            R.restore = R.snap[slot];
+            return true;
+        };
         // the verifiers by [stage][parity] - the first stage and the LAST (stage 1 of a two-stage split; the decode loop
         // reaches the middle stages through stage_ver_p) - their pool routing, and the drafter's events (in a pipelined
         // prompt read, a stage-1 window waits until the drafter has read the rows of the same parity's previous window)
@@ -16101,6 +16238,10 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                if (!pl_ring_settle()) {   // STRATA_PIPELINE_SNAP_RING: every front stage starts in its session's buffer
+                    std::printf("ERR the GDN snapshot ring could not be settled\n");
+                    return 1;
+                }
                 struct PW {
                     int T = 0, seq = 0;
                     int64_t p = 0;
@@ -16127,7 +16268,7 @@ int main(int argc, char** argv) {
                 // the snapshot of the GDN state window `seq` reads on front stage `st` (overlapped: before its launch
                 // there, on the stage's side stream)
                 auto snap_take = [&](int st, int seq) -> bool {
-                    if (!pl_snap_overlap) return true;
+                    if (!pl_snap_overlap || pl_ring_on) return true;   // (the ring: no copy, see pl_ring_sel)
                     PlSnap& sn = pl_snaps[(size_t) st];
                     const strata::core::OnDevice on(sn.dev);
                     cudaStream_t cs = pl_stream[(size_t) st];
@@ -16407,7 +16548,11 @@ int main(int argc, char** argv) {
                         for (int st = 0; st < pl_nf; ++st) {
                             if ((undo_w.com & (1u << st)) == 0) continue;
                             PlSnap& sn = pl_snaps[(size_t) st];
-                            {
+                            int rs = 0, rd = 0;   // STRATA_PIPELINE_SNAP_RING: the replay starts from that buffer
+                            if (pl_ring_on) {
+                                if (!pl_ring_restore(st, undo_w.seq & 1) || !pl_ring_sel(st, undo_w.seq & 1, false, rs, rd))
+                                    return die("the GDN snapshot ring has no snapshot of the verified window");
+                            } else {
                                 const strata::core::OnDevice on(sn.dev);
                                 if (cudaMemcpyAsync(sn.state, sn.buf[pl_snap_overlap ? (undo_w.seq & 1) : 0], sn.bytes,
                                                     cudaMemcpyDeviceToDevice, pl_stream[(size_t) st]) != cudaSuccess)
@@ -16417,7 +16562,7 @@ int main(int argc, char** argv) {
                                 ss.ple_prev[0] = undo_ple[0];
                                 ss.ple_prev[1] = undo_ple[1];
                             }
-                            if (!VF(st, undo_w).pl_commit_async(undo_keep, err)) return die(err);
+                            if (!VF(st, undo_w).pl_commit_async(undo_keep, err, rs, rd)) return die(err);
                         }
                         doomed = false;
                         ++pl_undo;
@@ -16532,7 +16677,11 @@ int main(int argc, char** argv) {
                             if (ajob && st == 0) a_gap(0);   // --adapt-async: stage 0 is idle until this launch
                             PlSnap& sn = pl_snaps[(size_t) st];
                             cudaStream_t cs = pl_stream[(size_t) st];
-                            {
+                            int rs = 0, rd = 0;   // STRATA_PIPELINE_SNAP_RING: A's state stays in its buffer, no copy
+                            if (pl_ring_on) {
+                                if (!pl_ring_sel(st, A.seq & 1, true, rs, rd))
+                                    return die("the GDN snapshot ring has no free buffer");
+                            } else {
                                 const strata::core::OnDevice on(sn.dev);
                                 if (pl_snap_overlap ? cudaStreamWaitEvent(cs, sn.ev[A.seq & 1], 0) != cudaSuccess
                                                     : cudaMemcpyAsync(sn.buf[0], sn.state, sn.bytes,
@@ -16543,7 +16692,7 @@ int main(int argc, char** argv) {
                                 undo_ple[0] = ss.ple_prev[0];
                                 undo_ple[1] = ss.ple_prev[1];
                             }
-                            if (!VF(st, A).pl_commit_async(A.T, err) || !snap_take(st, B.seq) ||
+                            if (!VF(st, A).pl_commit_async(A.T, err, rs, rd) || !snap_take(st, B.seq) ||
                                 !VF(st, B).pl_launch(B.T, B.tok, B.p, err))
                                 return die(err.empty() ? std::string("the GDN snapshot failed") : err);
                             A.com |= 1u << st;
@@ -16645,14 +16794,24 @@ int main(int argc, char** argv) {
                         // A accepted whole: its commit on the front stages B has not reached yet (B, now A, runs there
                         // after it)
                         for (int st = 0; st < pl_nf; ++st)
-                            if ((A.com & (1u << st)) == 0 && !VF(st, A).pl_commit_async(A.T, err)) return die(err);
+                            if ((A.com & (1u << st)) == 0) {   // (the ring: in place in the current buffer)
+                                int rs = 0, rd = 0;
+                                if (!pl_ring_sel(st, A.seq & 1, false, rs, rd) ||
+                                    !VF(st, A).pl_commit_async(A.T, err, rs, rd))
+                                    return die(err.empty() ? std::string("the GDN snapshot ring failed") : err);
+                            }
                         A = B;
                         B = PW{};
                     } else {
                         // the front stages B never ran on take A's real commit now; those it did run on are undone
                         // (snapshot restored, the commit replayed) once it has stopped
                         for (int st = 0; st < pl_nf; ++st)
-                            if ((A.com & (1u << st)) == 0 && !VF(st, A).pl_commit_async(a + 1, err)) return die(err);
+                            if ((A.com & (1u << st)) == 0) {   // (the ring: in place in the current buffer)
+                                int rs = 0, rd = 0;
+                                if (!pl_ring_sel(st, A.seq & 1, false, rs, rd) ||
+                                    !VF(st, A).pl_commit_async(a + 1, err, rs, rd))
+                                    return die(err.empty() ? std::string("the GDN snapshot ring failed") : err);
+                            }
                         if (B.launched) {   // a wrong guess (or the end): undo once it has stopped
                             doomed = true;
                             D = B;
@@ -16683,6 +16842,8 @@ int main(int argc, char** argv) {
                     if (last) ending = true;
                 }
                 pl_drain();   // nothing in flight: both stages' commits and the drafter have landed
+                // STRATA_PIPELINE_SNAP_RING: each front stage's state back in its session's buffer
+                if (!pl_ring_settle()) return die("the GDN snapshot ring could not be settled");
                 strata::core::diag_pipeline_fn().store(nullptr);
                 if (pl_adapt_thr.joinable()) pl_adapt_thr.join();   // its copies waited only for finished work
                 adapt_fence = nullptr;

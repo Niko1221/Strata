@@ -619,6 +619,139 @@ int main(int argc, char** argv) {
         bad += lb_bad;
     }
 
+    // ================= 7. STRATA_PIPELINE_SNAP_RING: the ring's kernels against today's =================
+    // (a) gdn_commit_layers_ring from buffer 0 into buffer 1 (and in place in buffer 2) == gdn_commit_layers in place,
+    //     buffer 0 left untouched, the device word set to the buffer written; the layers start one layer into the
+    //     buffers (a stage whose session holds an earlier layer too) and that layer is left alone everywhere.
+    // (b) the window's conv and recurrence through the word (gdn_conv_l2_multi_ind / gdn_step_norm_multi_ind) ==
+    //     gdn_conv_l2_multi / gdn_step_norm_multi's verify path on the same state, T 1..8, outputs from row 0 and T/2.
+    if (strata::kernels::gdn_ring_supported()) {
+        const int qk = S * h_k, C = 2 * qk + S * h_v, L = 5, MT = strata::kernels::kVerifyMaxT;
+        const int64_t conv_off = (int64_t) S * h_v * S, stride = conv_off + (int64_t) C * 3, off0 = stride;
+        const size_t nb = (size_t) (stride * (L + 1));
+        const float eps = 1e-6f;
+        std::vector<float> st0(nb), hb((size_t) L * MT * C), qkv((size_t) L * MT * C), gt((size_t) L * MT * h_v),
+            bt((size_t) L * MT * h_v), z((size_t) MT * S * h_v), gm(S), cw((size_t) C * 4);
+        for (auto& x : st0) x = gauss(rng) * 0.1f;
+        for (auto& x : hb) x = gauss(rng) * 0.1f;
+        for (auto& x : qkv) x = gauss(rng);
+        for (auto& x : gt) x = -(0.5f + (float) (rng() % 100) / 50.0f);
+        for (auto& x : bt) x = (float) (rng() % 100) / 100.0f;
+        for (auto& x : z) x = gauss(rng);
+        for (auto& x : gm) x = 0.5f + (float) (rng() % 100) / 100.0f;
+        for (auto& x : cw) x = gauss(rng) * 0.5f;
+        auto upl = [&](const std::vector<float>& v) {
+            float* d = nullptr;
+            check(cudaMalloc(&d, v.size() * 4), "rm");
+            check(cudaMemcpy(d, v.data(), v.size() * 4, cudaMemcpyHostToDevice), "rc");
+            return d;
+        };
+        float *d_ref = upl(st0), *d_h = upl(hb), *d_qkv = upl(qkv), *d_g = upl(gt), *d_bt = upl(bt), *d_z = upl(z),
+              *d_gm = upl(gm), *d_cw = upl(cw);
+        float* d_x[3] = {upl(st0), upl(st0), upl(st0)};
+        float **d_tab = nullptr, **d_cur = nullptr;
+        int32_t *d_sel = nullptr, *d_nk = nullptr;
+        check(cudaMalloc(&d_tab, sizeof d_x), "rt"); check(cudaMalloc(&d_cur, sizeof(float*)), "rcur");
+        check(cudaMalloc(&d_sel, 8), "rs"); check(cudaMalloc(&d_nk, 4), "rnk");
+        check(cudaMemcpy(d_tab, d_x, sizeof d_x, cudaMemcpyHostToDevice), "rtc");
+        float *d_y = nullptr, *d_yr = nullptr, *d_hc = nullptr, *d_hcr = nullptr;
+        check(cudaMalloc(&d_y, z.size() * 4), "ry"); check(cudaMalloc(&d_yr, z.size() * 4), "ryr");
+        check(cudaMalloc(&d_hc, (size_t) MT * C * 4), "rhc"); check(cudaMalloc(&d_hcr, (size_t) MT * C * 4), "rhcr");
+        std::vector<float> junk(nb, std::nanf(""));
+        auto get = [&](const float* d) {
+            std::vector<float> v(nb);
+            check(cudaMemcpy(v.data(), d, nb * 4, cudaMemcpyDeviceToHost), "rg");
+            return v;
+        };
+        auto get_cur = [&]() {
+            float* p = nullptr;
+            check(cudaMemcpy(&p, d_cur, sizeof p, cudaMemcpyDeviceToHost), "rgc");
+            return p;
+        };
+        int r_bad = 0, r_n = 0;
+        for (int nk = 1; nk <= MT; ++nk) {
+            check(cudaMemcpy(d_nk, &nk, 4, cudaMemcpyHostToDevice), "rnk1");
+            check(cudaMemcpy(d_ref, st0.data(), nb * 4, cudaMemcpyHostToDevice), "rr0");
+            check(cudaMemcpy(d_x[0], st0.data(), nb * 4, cudaMemcpyHostToDevice), "rx0");
+            check(cudaMemcpy(d_x[1], junk.data(), nb * 4, cudaMemcpyHostToDevice), "rx1");
+            check(cudaMemcpy(d_x[2], st0.data(), nb * 4, cudaMemcpyHostToDevice), "rx2");
+            const bool l1 = strata::kernels::gdn_commit_layers(d_ref + off0, stride, conv_off, d_qkv, (int64_t) MT * C, d_h,
+                                                               (int64_t) MT * C, d_g, d_bt, (int64_t) MT * h_v, C, h_k, h_v,
+                                                               MT, L, d_nk, nullptr);
+            const int32_t sel01[2] = {0, 1}, sel22[2] = {2, 2};
+            check(cudaMemcpy(d_sel, sel01, 8, cudaMemcpyHostToDevice), "rs01");
+            const bool l2 = strata::kernels::gdn_commit_layers_ring(d_tab, d_sel, d_cur, off0, stride, conv_off, d_qkv,
+                                                                    (int64_t) MT * C, d_h, (int64_t) MT * C, d_g, d_bt,
+                                                                    (int64_t) MT * h_v, C, h_k, h_v, MT, L, d_nk, nullptr);
+            check(cudaDeviceSynchronize(), "rsy1");
+            const std::vector<float> ref = get(d_ref), x0 = get(d_x[0]), x1 = get(d_x[1]);
+            const bool cur1 = get_cur() == d_x[1];
+            check(cudaMemcpy(d_sel, sel22, 8, cudaMemcpyHostToDevice), "rs22");
+            const bool l3 = strata::kernels::gdn_commit_layers_ring(d_tab, d_sel, d_cur, off0, stride, conv_off, d_qkv,
+                                                                    (int64_t) MT * C, d_h, (int64_t) MT * C, d_g, d_bt,
+                                                                    (int64_t) MT * h_v, C, h_k, h_v, MT, L, d_nk, nullptr);
+            check(cudaDeviceSynchronize(), "rsy2");
+            const std::vector<float> x2 = get(d_x[2]);
+            const bool cur2 = get_cur() == d_x[2];
+            const size_t o = (size_t) off0, n = (size_t) (stride * L);
+            const bool ok = l1 && l2 && l3 && cur1 && cur2 &&
+                            std::memcmp(ref.data() + o, x1.data() + o, n * 4) == 0 &&          // out of place == in place
+                            std::memcmp(x0.data(), st0.data(), nb * 4) == 0 &&                  // the source untouched
+                            std::memcmp(x1.data(), junk.data(), o * 4) == 0 &&                  // the other layer untouched
+                            std::memcmp(x2.data(), ref.data(), nb * 4) == 0 &&                  // in place == today's
+                            std::memcmp(ref.data() + o, st0.data() + o, n * 4) != 0;            // (and it did commit)
+            ++r_n;
+            if (!ok) {
+                std::printf("    *** gdn_commit_layers_ring n_keep=%d differs (launched %d%d%d, cur %d%d) ***\n", nk, l1, l2,
+                            l3, cur1, cur2);
+                ++r_bad;
+            }
+        }
+        // (b) the window through the word: the state in buffer 1 (a copy of st0), layer 2 of the buffer
+        check(cudaMemcpy(d_x[1], st0.data(), nb * 4, cudaMemcpyHostToDevice), "rwx1");
+        check(cudaMemcpy(d_cur, &d_x[1], sizeof(float*), cudaMemcpyHostToDevice), "rwcur");
+        const int64_t lay = off0 + stride;   // a layer's state, and its conv history at + conv_off
+        int w_bad = 0, w_n = 0;
+        for (int T = 1; T <= MT; ++T)
+            for (int tb : {0, T / 2}) {
+                if (tb > 0 && tb >= T) continue;
+                check(cudaMemset(d_y, 0, z.size() * 4), "ry0"); check(cudaMemset(d_yr, 0, z.size() * 4), "ryr0");
+                check(cudaMemset(d_hc, 0, (size_t) MT * C * 4), "rh0"); check(cudaMemset(d_hcr, 0, (size_t) MT * C * 4), "rhr0");
+                strata::kernels::gdn_step_norm_multi(d_x[0] + lay, d_h, C, d_g, d_bt, d_z, d_gm, eps, d_yr, h_k, h_v, T,
+                                                     nullptr, nullptr, tb);
+                strata::kernels::gdn_step_norm_multi_ind(d_cur, lay, d_h, C, d_g, d_bt, d_z, d_gm, eps, d_y, h_k, h_v, T,
+                                                         nullptr, tb);
+                strata::kernels::gdn_conv_l2_multi(d_x[0] + lay + conv_off, d_qkv, d_cw, d_hcr, C, 2 * h_k, eps, T - tb,
+                                                   nullptr, tb);
+                strata::kernels::gdn_conv_l2_multi_ind(d_cur, lay + conv_off, d_qkv, d_cw, d_hc, C, 2 * h_k, eps, T - tb,
+                                                       nullptr, tb);
+                check(cudaDeviceSynchronize(), "rwsy");
+                std::vector<float> y(z.size()), yr(z.size()), hc((size_t) MT * C), hcr((size_t) MT * C);
+                check(cudaMemcpy(y.data(), d_y, y.size() * 4, cudaMemcpyDeviceToHost), "rwy");
+                check(cudaMemcpy(yr.data(), d_yr, yr.size() * 4, cudaMemcpyDeviceToHost), "rwyr");
+                check(cudaMemcpy(hc.data(), d_hc, hc.size() * 4, cudaMemcpyDeviceToHost), "rwh");
+                check(cudaMemcpy(hcr.data(), d_hcr, hcr.size() * 4, cudaMemcpyDeviceToHost), "rwhr");
+                const std::vector<float> x0 = get(d_x[0]), x1 = get(d_x[1]);
+                bool nz = false;
+                for (size_t i = (size_t) tb * S * h_v; i < (size_t) T * S * h_v && !nz; ++i) nz = y[i] != 0.0f;
+                ++w_n;
+                if (std::memcmp(y.data(), yr.data(), y.size() * 4) != 0 || std::memcmp(hc.data(), hcr.data(), hc.size() * 4) != 0 ||
+                    std::memcmp(x0.data(), st0.data(), nb * 4) != 0 || std::memcmp(x1.data(), st0.data(), nb * 4) != 0 || !nz) {
+                    std::printf("    *** the ring's window kernels T=%d tb=%d differ from today's ***\n", T, tb);
+                    ++w_bad;
+                }
+            }
+        for (float* p : {d_ref, d_h, d_qkv, d_g, d_bt, d_z, d_gm, d_cw, d_x[0], d_x[1], d_x[2], d_y, d_yr, d_hc, d_hcr})
+            cudaFree(p);
+        cudaFree(d_tab); cudaFree(d_cur); cudaFree(d_sel); cudaFree(d_nk);
+        std::printf("  %-42s %s (%d cases, %d layers)\n", "gdn_commit_layers_ring == in place", r_bad ? "*** NO ***" : "bitwise",
+                    r_n, L);
+        std::printf("  %-42s %s (%d cases)\n", "ring window kernels == today's", w_bad ? "*** NO ***" : "bitwise", w_n);
+        bad += r_bad + w_bad;
+    } else {
+        std::printf("  %-42s skipped (STRATA_GDN_SPLIT / GDN_COMMIT_SPLIT / DBG_GDN)\n", "the GDN snapshot ring");
+    }
+
     std::printf("\ngdn: %d failures\n", bad);
     if (bad) return 1;
     if (selftest) std::printf("gdn_parity OK\n");

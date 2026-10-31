@@ -68,6 +68,28 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
                        const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
                        int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream);
+/// STRATA_PIPELINE_SNAP_RING (opt-in): a front stage's GDN state lives in one of a few equal buffers (the
+/// session's own and the pipelined loop's snapshot buffers), and the one a window reads is the device word *cur (the
+/// base of that buffer, read when each kernel starts).  The window's conv / recurrence kernels below are
+/// gdn_conv_l2_multi / gdn_step_norm_multi's verify path (no commit, no q8_1 outputs) on `*cur + off` - the same
+/// device code, so the same bits.  The commit reads buffer tab[sel[0]] and writes buffer tab[sel[1]] (sel: two device
+/// words the commit graph copies from its mapped words; equal = in place, today's commit) with the arithmetic of
+/// gdn_commit_layers, and sets *cur = tab[sel[1]] for the windows after it on the stream.  So a speculative commit can
+/// leave the state it read untouched for an undo, and no snapshot is copied.
+/// gdn_ring_supported(): false where gdn_commit_layers / the window would not take these kernels' paths
+/// (STRATA_GDN_SPLIT=1, STRATA_GDN_COMMIT_SPLIT=0, STRATA_DBG_GDN=1).
+bool gdn_ring_supported();
+void gdn_conv_l2_multi_ind(float* const* cur, int64_t off, const float* qkv, const float* conv_w, float* h, int channels,
+                           int qk_heads, float eps, int n_tok, void* stream, int t_begin = 0);
+void gdn_step_norm_multi_ind(float* const* cur, int64_t off, const float* h, int conv_channels, const float* gate,
+                             const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
+                             int n_tok, void* stream, int t_out_begin = 0);
+/// `off0`: the first layer's offset (floats) from a buffer's base; layer i at off0 + i * state_stride (conv history at
+/// + conv_off), as gdn_commit_layers' `state`.  `cur` may be null (then no window reads the word).
+bool gdn_commit_layers_ring(float* const* tab, const int32_t* sel, float** cur, int64_t off0, int64_t state_stride,
+                            int64_t conv_off, const float* qkv, int64_t qkv_stride, const float* h, int64_t h_stride,
+                            const float* gate, const float* beta, int64_t gb_stride, int conv_channels, int h_k, int h_v,
+                            int n_max, int n_layers, const int32_t* n_keep, void* stream);
 /// (xq_out, S26 STRATA_QFUSE: also write the q8_1 image of output rows [t_out_begin, n_tok) there - the bytes
 /// native_quantize_q8_1(y + t_out_begin * value_dim, xq_out, value_dim, n_tok - t_out_begin) would write.)
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
