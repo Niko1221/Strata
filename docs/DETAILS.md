@@ -344,8 +344,10 @@ By default the model stays loaded until you close Strata. Three server options, 
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | A command run before the model is loaded again, for example one that unloads another server's model. |
 | | `"before_load_timeout_s": 120` | How long that command may run. When it fails or times out, the free VRAM decides: with `min_free_vram_mib` set and not enough free, the request gets **503** with `Retry-After`; otherwise the model loads with a warning. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads. |
 
-`POST /unload` unloads now (`409` while a request is running; `?wait=1` waits for the running turn, up to 300 s, or
-`?wait=<seconds>`). `POST /load` loads ahead of a request. Both need `Content-Type: application/json`:
+`POST /unload` unloads now (**409** with a readable `error.message` while a request is running **or the model is saving**;
+`?wait=1` waits for the running turn or save, up to 300 s, or `?wait=<seconds>`). `POST /load` loads ahead of a request.
+Engine death on either call answers **503** `{"error": {"type": "server_error"}}` instead of dropping the connection.
+Both need `Content-Type: application/json`:
 
 ```sh
 curl -X POST -H "Content-Type: application/json" localhost:8080/unload
@@ -355,10 +357,19 @@ curl -X POST -H "Content-Type: application/json" localhost:8080/unload
 Monitor shows the state. Unloading ends the engine process and the image encoder, so their VRAM and RAM return at once. The
 model files stay in the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere.
 
+**Session ladder** (opt-in, `"session_ladder": {...}`): a per-conversation checkpoint ledger built on the engine's own
+session-file SAVE/RESTORE. A conversation that switches away is checkpointed at its turn end; `POST /unload` checkpoints
+every dirty conversation before the engine closes; the engine start after an unload hands the checkpoint back before the
+next request, so the prompt reads from the restored prefix instead of being re-prefilled. A refused save or restore degrades
+to a cold prefill with one log line and never fails the request. The block's keys are `idle_save_s` (8.0) and
+`retention_max_files` (16); the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
+without a resolvable budget refuses to start. Absent the block, everything above stays as it was.
+
 **Lazy start.** `serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true`) starts the HTTP
 API without the engine or the vision encoder. The first generation request or `POST /load` loads them, including
 `before_load` and `min_free_vram_mib`. `POST /v1/load` and `/v1/unload` are JSON control aliases (they need the API key,
-`application/json` and no foreign browser Origin, and return **409** while a request is active or queued). `/api/health`
+`application/json` and no foreign browser Origin, and return **409** while a request is active or queued **or the model is
+saving**). `/api/health`
 aliases `/health`, and `/v1/status` exposes `loaded` and `auto_load`.
 
 **Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With

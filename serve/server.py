@@ -64,6 +64,8 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.session_ladder import (LadderConfig, PARK_COST_KIB_PER_TOKEN, ConvEvent, SessionLadder,  # noqa: E402
+                                  extract_session_id, register_refused_class)  # the session ladder: event intake (drain_events) + request-path hooks
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -461,6 +463,13 @@ class SessionRefused(ValueError):
         return self.STATUS[self.kind]
 
 
+register_refused_class(SessionRefused)      # Task 7 review: the ladder's `except SessionRefused` must pair with
+# this exact class object.  Registration flows server -> ladder because server.py may run as __main__ (the
+# run-<model>.bat mode, see the header): serve.server is then not in sys.modules, a from-serve.server import
+# could only ever yield a different copy's class, and it would happen mid-request under the FIFO.  Loaded as
+# a module or run as the script, whichever server copy started registers the class its Engine raises.
+
+
 class EngineStuck(RuntimeError):
     """The engine process did not end after QUIT, terminate and kill: the server keeps it (and says so) rather than
     reporting its GPU and RAM as given back."""
@@ -790,11 +799,21 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    which is the log): read on from where it was last read, from the start of the engine's current run.
+    The session ladder reads the same lines through drain_events(): poll() parses each cache line exactly once,
+    feeding the monitor card's state as before and buffering the event for drain_events() to consume."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
+    # drain's taxonomy helpers (the two regexes above stay exactly as poll()'s card used them): the park line's
+    # own per-conversation snapshot_bytes, and the engine's two skip-parking refusals (below the token minimum /
+    # over the byte budget - the latter names only a MiB figure, no conversation, no tokens).
+    SNAPSHOT = re.compile(r"conversation cache: (?:parked|skipped|restored) \d+ tokens.*?snapshot_bytes=(\d+)")
+    SKIP_MIN = re.compile(r"conversation cache: skip parking \((\d+) tokens, below the \d+ minimum; parked=\d+\)")
+    SKIP_BUDGET = re.compile(r"conversation cache: skip parking \(snapshot (\d+) MiB exceeds available budget\)")
+    PARK_KIB_PER_TOKEN = PARK_COST_KIB_PER_TOKEN        # measured park cost (the ladder's pinned 40.4); the estimate when a line carries no snapshot_bytes
+    PENDING_MAX = 4096                                  # if drain_events() is never called, the oldest buffered events age out
 
     def __init__(self):
         self.key, self.pos = None, 0
@@ -803,6 +822,7 @@ class ConvCacheLog:
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
                       "last_tokens": None, "last_at": None}
+        self._pending, self._ev_seen = [], 0            # buffered ConvEvents for drain_events(); the last evictions figure this run's lines carried
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -834,14 +854,53 @@ class ConvCacheLog:
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
+                    self._ev_seen = int(m.group(5))
                 if m.group(1) != "skipped":
                     st["parks" if m.group(1) == "parked" else "restores"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
+                self._feed(m.group(1), int(m.group(2)), line, int(m.group(5)) if m.group(5) is not None else None)
                 continue
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                self._feed("dropped", 0, line)
+                continue
+            m = self.SKIP_MIN.search(line)
+            if m:
+                self._feed("skipped_below_min", int(m.group(1)), line)
+                continue
+            m = self.SKIP_BUDGET.search(line)
+            if m:
+                self._feed("skipped_over_budget", 0, line, mib=int(m.group(1)))
         return dict(self.state)
+
+    def _feed(self, kind: str, tokens: int, line: str, evictions: int | None = None, mib: int = 0) -> None:
+        """Buffer one parsed cache line as a ConvEvent for drain_events().  byte_count is per-conversation -
+        the line's own snapshot_bytes, which is exactly the delta its cumulative bytes=B implies (P1: park at
+        bytes=1046081816 then bytes=2092276296 -> the second line's snapshot_bytes=1046194480), estimated at
+        40.4 KiB/token where an event line carries none, and 0 where the engine printed no conversation size
+        (the two skip refusals, the dropped line).  An evictions-less line inherits the last figure this
+        run's log carried.  The engine's put() refusal prints "skipped N tokens": that is the byte-budget
+        signature, so it enters the taxonomy as skipped_over_budget."""
+        if kind == "skipped":
+            kind = "skipped_over_budget"
+        snap = self.SNAPSHOT.search(line)
+        byte_count = int(snap.group(1)) if snap else (
+            int(tokens * self.PARK_KIB_PER_TOKEN * 1024) if kind in ("parked", "restored", "skipped_over_budget") and tokens else 0)
+        if kind == "skipped_below_min" or kind == "dropped":
+            byte_count = 0                              # the line names no conversation size (skip's parked= is the cache's count)
+        ev = self._ev_seen if evictions is None else evictions
+        if len(self._pending) >= self.PENDING_MAX:
+            del self._pending[0]
+        self._pending.append(ConvEvent(kind=kind, tokens=tokens, byte_count=byte_count,
+                                       evictions=ev, snapshot_mib=mib))
+
+    def drain_events(self) -> list[ConvEvent]:
+        """Consume the conversation-cache events poll() parsed since this log's last drain - each line exactly
+        once, in order, drained even when it holds none.  The session ladder's intake (SessionLadder.on_conv_event
+        joins these); the monitor card's poll() state is built identically whether or not anything is drained."""
+        out, self._pending = self._pending, []
+        return out
 
 
 def conversation_slots(engine) -> int | None:
@@ -855,6 +914,81 @@ def conversation_slots(engine) -> int | None:
             pass
     slots = (getattr(engine, "info", None) or {}).get("conversation_cache_slots")
     return slots if isinstance(slots, int) else None
+
+
+def conversation_cache_mib(engine) -> int | None:
+    """The engine's conversation-cache park budget in MiB: its --conversation-cache-mib argument, which is known
+    before the engine has started (a lazy start has reported no INFO line yet), else the INFO line it reported.
+    None when neither names it."""
+    args = engine.spawn[1] if hasattr(engine, "spawn") else []
+    if "--conversation-cache-mib" in args[:-1]:
+        try:
+            return int(args[args.index("--conversation-cache-mib") + 1])
+        except ValueError:
+            pass
+    mib = (getattr(engine, "info", None) or {}).get("conversation_cache_mib")
+    return mib if isinstance(mib, int) else None
+
+
+def ladder_config_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
+    """The session ladder's config from the run config (strata.json's `session_ladder` block, Task 9): a dict
+    enables the ladder with its values - idle_save_s, retention_max_files and pre_save_idle_s (unload-works
+    Task 3: a number or null; an absent key or an explicit null keeps the adaptive quiet gate), absent keys
+    keeping LadderConfig's pinned defaults - and the slot save directory the service resolved.  Absent, false,
+    or any non-dict leaves it disabled exactly as Service.__init__ builds it (park_budget_mib 0, the value
+    today's disabled ladder carries; nothing consults it while disabled).  An enabled ladder's park_budget_mib
+    is the engine's own cache budget: --conversation-cache-mib read exactly like conversation_slots() reads
+    --conversation-cache-slots (spawn args first, the INFO line after a start) - and stays None when neither
+    names it, faithful to conversation_slots(): start_ladder_of refuses such a ladder rather than coerce it to
+    0, because a 0 budget makes every turn look save-worthy (aux checkpoints on idle/unload - the churn the
+    ladder exists to avoid)."""
+    block = cfg.get("session_ladder")
+    if not isinstance(block, dict):
+        return LadderConfig(enabled=False, slot_save_path=slot_save_path, park_budget_mib=0)
+
+    def _num(key, default, cast):
+        # F6 (final review): a malformed strata.json value ("idle_save_s": "eight") must not surface as a
+        # bare ValueError at startup - the conversion is wrapped and the refusal names the bad key and value.
+        raw = block.get(key, default)
+        try:
+            return cast(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
+    def _num_or_none(key):
+        # The nullable variant of _num (unload-works Task 3): an absent key or an explicit `null` keeps None
+        # (the adaptive quiet gate); anything else converts like _num, same refusal naming key and value.
+        # Final review C: a JSON boolean is not a number - float(False) would silently mean 0.0 (fire on any
+        # idle moment) and float(True) 1.0 - so a bool is refused with the same wording as a non-number.
+        raw = block.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'[strata] config "session_ladder" key "{key}" must be a number: {raw!r}')
+
+    return LadderConfig(enabled=True, slot_save_path=slot_save_path,
+                        park_budget_mib=conversation_cache_mib(engine),
+                        idle_save_s=_num("idle_save_s", 8.0, float),
+                        retention_max_files=_num("retention_max_files", 16, int),
+                        pre_save_idle_s=_num_or_none("pre_save_idle_s"))
+
+
+def start_ladder_of(cfg: dict, engine, slot_save_path) -> LadderConfig:
+    """main()'s session_ladder gate (Task 9 review round 1): the enabled LadderConfig of ladder_config_of,
+    or a refusal to start when its park budget resolves to None or to a non-positive number - the same
+    posture as the slot_save_path guard beside it.  An enabled ladder without a real budget would save
+    every turn, aux sizes included: F5 pins the explicit `--conversation-cache-mib 0` case too - an
+    over_budget ladder with a 0 budget saves everything the engine could still hold in park."""
+    ladder = ladder_config_of(cfg, engine, slot_save_path)
+    if ladder.enabled and (ladder.park_budget_mib is None or ladder.park_budget_mib <= 0):
+        raise SystemExit('[strata] config "session_ladder" needs the engine\'s park budget: neither a '
+                         "--conversation-cache-mib argument in the engine args nor the engine's INFO line "
+                         "names a positive one; without a real budget every turn would look save-worthy")
+    return ladder
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
@@ -4196,6 +4330,11 @@ class Service:
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
+        # Task 7: the session ladder on the request path.  Built disabled here; main() replaces it with an
+        # enabled one when the config carries a `session_ladder` dict (Task 9, ladder_config_of); disabled,
+        # every hook below short-circuits and the request path is byte-for-byte the one without the ladder.
+        self.session_ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.slot_save_path,
+                                                         park_budget_mib=0))
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
@@ -4699,6 +4838,13 @@ class Service:
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+            # Task 8, the FIFO held (this method's contract): the fresh engine parks nothing - the ladder
+            # resets every park flag while keeping its tracked entries and file_paths (the next switch
+            # back is restore-eligible) - and, unless a restore is already pending below (the image job's
+            # restore_after_load owns this start, never overwritten or doubled), queues the last active
+            # conversation's checkpoint for the warm restore the very next line performs.
+            self.session_ladder.on_start(self)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
@@ -4805,8 +4951,20 @@ class Service:
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued"):
                     return "busy"
+            ladder = self.session_ladder
+            if ladder is not None and ladder.cfg.enabled:
+                # Task 8, the FIFO held (this method's acquire above): the idle-save hook immediately
+                # before the lazy-unload decision, on the SAME idle measurement the decision uses - the
+                # human-latency head start (cfg.idle_save_s) saves the last-active session before an idle
+                # unload can drop its park; a manual /unload inside the window earns the same check.
+                ladder.on_idle(self, time.time() - (self.last_request_at or self.started_at))
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
+            if ladder is not None and ladder.cfg.enabled:
+                # Task 8: the engine is about to go and with it every parked conversation - save all the
+                # ladder's tracked save-eligible sessions first (unchanged ones skipped).  A refused save
+                # is swallowed inside the ladder; an EngineDied propagates as any engine trouble here does.
+                ladder.on_unload(self)
             self.engine.unload()
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
@@ -4814,6 +4972,40 @@ class Service:
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
+        finally:
+            self.fifo.release()
+
+    def pre_save_pass(self) -> bool:
+        """Task 4 (unload-works): one opportunistic pre-save pass for the idle queue - the dirty checkpoint
+        reaches disk while the queue is quiet, before any unload is ever asked for.  Both gates are
+        non-blocking: an engine not in memory (unloaded flag: True before the first start and after close(),
+        server.py:1126/1414 - getattr's default covers engines that carry no such flag; and final review A's
+        other half: a died engine keeps that flag False while loaded() is False, so `not self.loaded()`
+        covers it too) has nothing to pre-stage, and a held FIFO means a live request or unload owns the
+        engine: skip, never wait.  Final review A (Recommendation 6) puts the LADDER's gates first:
+        SessionLadder.pre_save_due - quiet gate, dirty last-active session, refused-save cooldown - answers
+        as an engine-free question, and a not-due pass returns False without touching the FIFO at all; only a
+        due pass grabs it (still non-blocking) and runs pre_save, which re-evaluates its gates inside the
+        hold (the state only moves under the ladder lock, so the earlier read is harmless).  Returns the
+        ladder's outcome (final review A, honest results): True only when a save committed - every skip and
+        every refused attempt answers False.  An EngineDied found mid-save is logged and swallowed here - the
+        thread polls forever and a dead engine is the next request's to restart, exactly as start_idle_unload's
+        loop reasons."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return False
+        if getattr(self.engine, "unloaded", False) or not self.loaded():
+            return False            # not started (or already gone): nothing in memory to pre-stage
+        idle = time.time() - (self.last_request_at or self.started_at)
+        if not ladder.pre_save_due(idle):
+            return False            # not quiet, nothing dirty, or a refused save is cooling down
+        if not self.fifo.acquire(blocking=False):
+            return False            # a live request or unload owns the engine: skip, never wait
+        try:
+            return ladder.pre_save(self, idle)
+        except EngineDied as e:
+            print(f"[strata] session pre-save: {e}", flush=True)
+            return False
         finally:
             self.fifo.release()
 
@@ -4829,6 +5021,31 @@ class Service:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
                     print(f"[strata] idle unload: {e}", flush=True)
+                except EngineDied as e:                 # Task 8: the ladder's save-on-unload can find
+                    print(f"[strata] idle unload: {e}", flush=True)   # the engine gone mid-save; the
+                    # thread lives, the next turn (or the next request's ensure_loaded) handles the dead engine
+        threading.Thread(target=loop, daemon=True).start()
+
+    def start_session_pre_save(self):
+        """Task 4's timer thread (unload-works): the opportunistic pre-save pass on a 2.0 s cadence, so a
+        dirty checkpoint reaches disk once the queue goes quiet - before the idle unload (or any /unload)
+        is ever asked for.  Enabled-ladder gate: with the ladder off this thread is never started.  Same
+        survival stance as start_idle_unload's loop: engine trouble is logged, the thread lives, the next
+        beat (or the next request) deals with it."""
+        ladder = self.session_ladder
+        if ladder is None or not ladder.cfg.enabled:
+            return
+        print("[strata] the session ladder pre-stages checkpoints once the queue goes quiet", flush=True)
+
+        def loop():
+            while True:
+                time.sleep(2.0)
+                try:
+                    self.pre_save_pass()
+                except EngineStuck as e:                # the same survival stance as start_idle_unload:
+                    print(f"[strata] session pre-save: {e}", flush=True)     # the thread lives, the pass
+                except EngineDied as e:                 # is tried again at the next 2 s beat
+                    print(f"[strata] session pre-save: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
@@ -5004,6 +5221,9 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:   # Task 7: the monitor's poll feeds
+            for ev in self.conv_log.drain_events():                                 # the ladder's intake too; drain
+                self.session_ladder.on_conv_event(ev)                               # consumes each line exactly once
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
@@ -5124,6 +5344,11 @@ class Service:
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
+        if self.session_ladder is not None and self.session_ladder.cfg.enabled:
+            self.request_trace.prompt = prompt    # Task 7: the rendered text lives only here; the thread-local
+        # carries it to _run's FIFO-held hook point (the same request_trace begin_request uses at 4633/5212) -
+        # the ladder byte-compares prompts, and re-decoding ids is not the same string (prefix_fidelity would
+        # drift).  Behind cfg.enabled so the disabled path writes nothing at all.
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
             return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
@@ -5554,6 +5779,10 @@ class Service:
         segments = []
         timed_out = False
         trace = getattr(self.request_trace, "record", None)
+        # Task 7: the ladder's per-request context, carried on the same thread-local channel as `trace` (E1 sets
+        # session_id in _post; encode_prompt stashes the rendered prompt) - both are read back at the FIFO-held hook.
+        session_id = getattr(self.request_trace, "session_id", None)
+        ladder_prompt = getattr(self.request_trace, "prompt", None)
         waiting = time.perf_counter()
         first_engine_token_s = None  # this request, from entering the engine queue; includes queue/prefill
         # #465: with "parallel" (the engine's batch slots) requests run at once: each keeps its own status and rate
@@ -5651,6 +5880,20 @@ class Service:
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
+                    if (self.session_ladder is not None and self.session_ladder.cfg.enabled
+                            and not par):
+                        # Task 7, FIFO held, the engine about to read this prompt: freshen the ladder's park state
+                        # from the engine log (the drain consumes each line exactly once, shared with metrics()'s
+                        # feed) and hand the conversation switch to the ladder: save the outgoing session when park
+                        # lost it, restore an incoming one that missed park while its saved prefix still matches.
+                        # A SessionRefused degrades inside the ladder to a plain prefill; an EngineDied propagates.
+                        # F2: called for a headerless request too (session_id None) - an enabled ladder treats it
+                        # as an identity-unknown switch rather than letting last_active go stale on a foreign
+                        # conversation (which the next switch-away would then checkpoint under the wrong id).
+                        self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+                        for ev in self.conv_log.drain_events():
+                            self.session_ladder.on_conv_event(ev)
+                        self.session_ladder.on_arrival(self, session_id, ladder_prompt or "")
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -5897,6 +6140,16 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            if (self.session_ladder is not None and self.session_ladder.cfg.enabled
+                                    and session_id and not par):
+                                # Task 7: this turn's DONE figures to the ladder (byte_count 0: DONE carries no
+                                # byte figure, the ladder estimates), and a checkpointed session's saved prefix
+                                # re-anchored to the prompt this conversation just rendered (map §6: the request
+                                # path is the only place that text exists).
+                                self.session_ladder.on_turn_done(session_id, tokens=seen, byte_count=0,
+                                                                 reused=last.get("reused") or 0)
+                                if ladder_prompt:
+                                    self.session_ladder.record_saved_prefix(session_id, ladder_prompt)
                             self.history.append({
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
@@ -7441,7 +7694,16 @@ def make_handler(svc: Service):
                 except EngineStuck as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                self._json(409 if r == "busy" else 200, {"status": r})
+                except EngineDied as e:                      # the engine ended mid-unload (the save before it):
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return                                   # the same 503 as EngineStuck, not a leaked traceback
+                body = {"status": r}
+                if r == "busy":                              # 409 with a message the webui can show, not a bare status
+                    # final review C: the FIFO can also be held by the ladder's background pre-staging save, so
+                    # the wording says "the model is saving" rather than calling that a request.
+                    body["error"] = {"message": "a request is running or the model is saving; "
+                                                "try again when it is quiet"}
+                self._json(409 if r == "busy" else 200, body)
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
@@ -7451,6 +7713,10 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                except (EngineDied, EngineStuck) as e:       # final review C: the engine ended (or could not
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})  # be restarted)
+                    # during the start - the same 503 shape the /unload routes answer with, not a traceback
+                    # out of _post and a dropped connection
                 return
             reserved = False
             try:
@@ -7486,7 +7752,11 @@ def make_handler(svc: Service):
                     if path == "/v1/unload":
                         wait_s = unload_wait(parse_qs(urlsplit(self.path).query).get("wait", [None])[0],
                                              svc.UNLOAD_WAIT_S)
-                        result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        try:
+                            result = svc.unload_waiting(wait_s) if wait_s else svc.unload()
+                        except (EngineStuck, EngineDied) as e:   # stuck or ended mid-unload (the save before it):
+                            self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                            return                                # the plain 503 shape, as /unload answers
                         if result == "busy":
                             raise ModelBusy("a request is running or queued")
                     else:
@@ -7516,6 +7786,14 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
+                    if svc.session_ladder is not None and svc.session_ladder.cfg.enabled:
+                        # Task 7: OpenCode's session headers, read once per request on the same thread that later
+                        # runs _run (thread-local precedent: request_trace.record at 4633/5212); absent headers ->
+                        # None, which an enabled ladder treats as an identity-unknown switch (F2) and a disabled
+                        # one ignores entirely.  Unconditional while enabled, so a headerless keep-alive request
+                        # clears the previous request's id; behind cfg.enabled so the disabled path writes nothing
+                        # at all.
+                        svc.request_trace.session_id = extract_session_id(self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -9414,6 +9692,19 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    # Task 9: the config's `session_ladder` block (a dict) turns the ladder on with its values and this save
+    # dir; absent or false leaves the disabled one Service.__init__ built - the request path unchanged.
+    # park_budget_mib comes from the engine's own --conversation-cache-mib (ladder_config_of), and an enabled
+    # ladder whose budget cannot be resolved refuses to start (start_ladder_of, Task 9 review round 1).
+    if isinstance(cfg.get("session_ladder"), dict):
+        if svc.slot_save_path is None:
+            raise SystemExit('[strata] config "session_ladder" needs slot_save_path: the ladder saves and '
+                             "restores through the engine's slot save directory")
+        svc.session_ladder = SessionLadder(start_ladder_of(cfg, engine, svc.slot_save_path))
+        lcfg = svc.session_ladder.cfg
+        print(f"[strata] session ladder on: idle save after {lcfg.idle_save_s:g} s, park budget "
+              f"{lcfg.park_budget_mib} MiB (--conversation-cache-mib), retention "
+              f"{lcfg.retention_max_files} files in {svc.slot_save_path}", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
@@ -9486,6 +9777,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     httpd = serve(svc, host=a.host, port=a.port)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
+    svc.start_session_pre_save()
     svc.start_vision_idle()
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
