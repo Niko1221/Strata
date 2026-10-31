@@ -30,6 +30,19 @@ static void put(const char* k, const char* v) {
 int main() {
     using namespace strata::core;
     unset("STRATA_GFX1151_DEFAULTS");
+    // 0.2.9.1: the parallel-request stack, Windows gfx1151 with 2 or more batch slots only
+    unset("STRATA_GFX1151_DEFAULTS");
+    CHECK(parallel_default_env("gfx1151", true, 4).size() == 9);
+    CHECK(parallel_default_env("gfx1151:sramecc-:xnack-", true, 2).size() == 9);
+    CHECK(parallel_default_env("gfx1151", true, 1).empty());
+    CHECK(parallel_default_env("gfx1151", true, 0).empty());
+    CHECK(parallel_default_env("gfx1151", false, 4).empty());      // Linux: the launcher sets its own stack
+    CHECK(parallel_default_env("gfx1201", true, 4).empty());
+    CHECK(parallel_default_env("", true, 4).empty());
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(parallel_default_env("gfx1151", true, 4).empty());
+    unset("STRATA_GFX1151_DEFAULTS");
+    for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
     CHECK(arch_default_env("gfx1150").empty());

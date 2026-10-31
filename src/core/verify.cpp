@@ -312,12 +312,16 @@ const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: pe
 // no commit graph runs after it.  Such a window's commit is unconditional (each slot keeps its one row), and the rest
 // of the commit graph only repeats what the window wrote: the indexer tails are put back and appended again from the
 // same rows, the PLE histories are put back to the window's own snapshot.
-const bool g_batch_self_commit = env_on("STRATA_BATCH_SELF_COMMIT");
+// Read at the first use, not at program start: the engine sets the Windows gfx1151 parallel-request defaults (arch_defaults.cpp) in main(),
+// after namespace-scope constants are initialised, so a constant here would never see them.
+bool batch_self_commit_on() { static const bool v = env_on("STRATA_BATCH_SELF_COMMIT"); return v; }
+#define g_batch_self_commit (batch_self_commit_on())
 // STRATA_QSA_SLOTS=1 (opt-in): in a batch window, a QSA layer's block scores, top-k and attention run as one launch
 // each over the window's rows (up to 8 per launch, each row reading its own slot's indexer keys and K/V) instead of
 // one call per row; every row is computed by the same kernel with the same arithmetic as its own call.  Not with a
 // streamed KV cache (a row's block resolve could evict the blocks an earlier row of the same slot selected).
-const bool g_qsa_slots = env_on("STRATA_QSA_SLOTS");
+bool qsa_slots_on() { static const bool v = env_on("STRATA_QSA_SLOTS"); return v; }
+#define g_qsa_slots (qsa_slots_on())
 
 // every row of a batch window is another slot's (no slot has proposal rows)
 bool one_row_per_slot(const int* rows, int S) {
@@ -2588,6 +2592,7 @@ void Verifier::refresh_ar() {
 }
 
 bool Verifier::capture(int T, std::string& err) {
+    const auto cap_t0 = std::chrono::steady_clock::now();
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
@@ -2727,8 +2732,9 @@ bool Verifier::capture(int T, std::string& err) {
     if (!made) return false;
     const cudaError_t ue = cudaGraphUpload(exec_t, cs_);
     const cudaError_t us = cudaStreamSynchronize(cs_);
-    std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
-                 cudaGetErrorString(ue), cudaGetErrorString(us));
+    std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s) in %.1f ms\n", T,
+                 cudaGetErrorString(ue), cudaGetErrorString(us),
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cap_t0).count());
     // The upload only warms the graph; the first launch does it otherwise. A failed one (out of memory on a full card)
     // must not stay pending: the next kernel wrapper's cudaGetLastError would read it and end the engine (#3702).
     if (ue != cudaSuccess || us != cudaSuccess) {
