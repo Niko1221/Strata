@@ -80,6 +80,14 @@ Make the downloaded file executable. It may need FUSE 2 (`libfuse2` on Ubuntu 22
 package names vary by distribution). Without FUSE, run the file with `--appimage-extract-and-run`. For a crash log,
 run it with `--save-logs`; see [Logs and bug reports](#logs-and-bug-reports).
 
+**The app window goes grey when a chat shows an emoji (Linux AppImage).**
+The window picture is drawn by WebKitGTK, and the copy inside the AppImage stops on one kind of colour emoji font (the
+COLRv1 format, the default on Fedora 44 and newer Ubuntu). The window log then says `colrv1_configure_skpaint` and
+`stl_vector.h`. Strata keeps that one font away from its own window: emoji show as outlines instead of
+in colour, and nothing else on the computer changes, because only the window process is told. Nothing to set up. To turn
+it off: `STRATA_FONT_CONFIG=off`. To use your own font setup instead: set `FONTCONFIG_FILE`. Opening Strata with
+`--browser` avoids the window entirely, so it cannot show this.
+
 **Checking what is installed: `strata doctor`.**
 It is a read-only check of the installed engine parts (it changes nothing): which engine and helper files a saved model
 needs, and whether they are there. `strata doctor --live` also asks the computer which graphics cards it sees and compares
