@@ -491,7 +491,7 @@ int main(int argc, char** argv) {
                       mtl::Arg::B(z), mtl::Arg::B(W, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T(b + "ssm_dt.bias").offset),
                       mtl::Arg::B(W, T(b + "ssm_a").offset), mtl::Arg::B(W, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse ? XY.b : yg),
                       mtl::Arg::V(a), mtl::Arg::B(ghist2[gi])};
-            d.grid[0] = 48;
+            d.grid[0] = std::getenv("CHAIN_GDNGRID") ? std::atoi(std::getenv("CHAIN_GDNGRID")) : 48;   // timing probe (wrong values)
             d.tg[0] = 512;
             push(d, "gdn step", 2.0 * 4 * 128 * 48 * 128);
             if (!fuse) xprep(yg, XY, 6144, "gdn proj");
