@@ -1,0 +1,626 @@
+Oct 29 13:45:00 ubuntu runner: [strata] thinking: 74 of budget 117612 (max 156816) tokens, 35.2 tok/s, 106 s
+Oct 29 13:45:01 ubuntu runner: [strata] thinking: 117 of budget 117612 (max 156816) tokens, 37.5 tok/s, 108 s
+Oct 29 13:45:02 ubuntu runner: [strata] thinking: 164 of budget 117612 (max 156816) tokens, 39.6 tok/s, 109 s
+Oct 29 13:45:03 ubuntu runner: [strata] thinking: 220 of budget 117612 (max 156816) tokens, 42.7 tok/s, 110 s
+Oct 29 13:45:05 ubuntu runner: [strata] thinking: 264 of budget 117612 (max 156816) tokens, 42.7 tok/s, 111 s
+Oct 29 13:45:06 ubuntu runner: [strata] thinking: 306 of budget 117612 (max 156816) tokens, 42.5 tok/s, 112 s
+Oct 29 13:45:07 ubuntu runner: [strata] thinking: 343 of budget 117612 (max 156816) tokens, 41.6 tok/s, 113 s
+Oct 29 13:45:08 ubuntu runner: [strata] thinking: 386 of budget 117612 (max 156816) tokens, 41.7 tok/s, 114 s
+Oct 29 13:45:09 ubuntu runner: [strata] thinking: 430 of budget 117612 (max 156816) tokens, 41.9 tok/s, 115 s
+Oct 29 13:45:10 ubuntu runner: [strata] writing a tool call: terminal: 469 of max 156816 tokens, 41.5 tok/s, 116 s
+Oct 29 13:45:11 ubuntu runner: [strata] writing a tool call: terminal: 506 of max 156816 tokens, 41.1 tok/s, 117 s
+Oct 29 13:45:12 ubuntu runner: [strata] writing a tool call: terminal: 542 of max 156816 tokens, 40.5 tok/s, 118 s
+Oct 29 13:45:13 ubuntu runner: [strata] writing a tool call: terminal: 579 of max 156816 tokens, 40.2 tok/s, 119 s
+Oct 29 13:45:14 ubuntu runner: [strata] writing a tool call: terminal: 621 of max 156816 tokens, 40.2 tok/s, 120 s
+Oct 29 13:45:15 ubuntu runner: [strata] writing a tool call: terminal: 673 of max 156816 tokens, 40.9 tok/s, 121 s
+Oct 29 13:45:16 ubuntu runner: [strata] writing a tool call: terminal: 724 of max 156816 tokens, 41.4 tok/s, 122 s
+Oct 29 13:45:17 ubuntu runner: [strata] done: 759 tokens in 123 s (41.5 tok/s) (stop, cancel=False), expert cache 86.9% hit (+1.4% of the routed experts over PCIe)
+Oct 29 13:45:19 ubuntu runner: [strata] reading the prompt: 566 of 573 tokens, 2 s so far
+Oct 29 13:45:19 ubuntu runner: [strata] done: 4 tokens in 3 s (28.0 tok/s) (stop, cancel=False), expert cache 65.0% hit (+3.2% of the routed experts over PCIe)
+Oct 29 13:45:27 ubuntu runner: [strata] reading the prompt: 8,192 of 107,145 tokens, 7 s so far
+Oct 29 13:45:34 ubuntu runner: [strata] reading the prompt: 16,384 of 107,145 tokens, 14 s so far
+Oct 29 13:45:38 ubuntu runner: [strata] reading the prompt: 19,495 of 107,145 tokens, 18 s so far
+Oct 29 13:45:46 ubuntu runner: [strata] reading the prompt: 27,687 of 107,145 tokens, 26 s so far
+Oct 29 13:45:53 ubuntu runner: [strata] reading the prompt: 35,879 of 107,145 tokens, 33 s so far
+Oct 29 13:46:00 ubuntu runner: [strata] reading the prompt: 44,071 of 107,145 tokens, 40 s so far
+Oct 29 13:46:08 ubuntu runner: [strata] reading the prompt: 52,263 of 107,145 tokens, 48 s so far
+Oct 29 13:46:16 ubuntu runner: [strata] reading the prompt: 60,455 of 107,145 tokens, 56 s so far
+Oct 29 13:46:24 ubuntu runner: [strata] reading the prompt: 68,647 of 107,145 tokens, 64 s so far
+Oct 29 13:46:32 ubuntu runner: [strata] reading the prompt: 76,839 of 107,145 tokens, 72 s so far
+Oct 29 13:46:41 ubuntu runner: [strata] reading the prompt: 85,031 of 107,145 tokens, 80 s so far
+Oct 29 13:46:49 ubuntu runner: [strata] reading the prompt: 93,223 of 107,145 tokens, 89 s so far
+Oct 29 13:46:58 ubuntu runner: [strata] reading the prompt: 101,415 of 107,145 tokens, 98 s so far
+Oct 29 13:47:05 ubuntu runner: [strata] reading the prompt: 107,140 of 107,145 tokens, 105 s so far
+Oct 29 13:47:06 ubuntu runner: [strata] thinking: 2 of budget 116244 (max 154991) tokens, 8.0 tok/s, 106 s
+Oct 29 13:47:07 ubuntu runner: [strata] thinking: 31 of budget 116244 (max 154991) tokens, 26.4 tok/s, 107 s
+Oct 29 13:47:08 ubuntu runner: [strata] thinking: 56 of budget 116244 (max 154991) tokens, 25.5 tok/s, 108 s
+Oct 29 13:47:09 ubuntu runner: [strata] thinking: 96 of budget 116244 (max 154991) tokens, 29.4 tok/s, 109 s
+Oct 29 13:47:10 ubuntu runner: [strata] thinking: 132 of budget 116244 (max 154991) tokens, 30.3 tok/s, 110 s
+Oct 29 13:47:11 ubuntu runner: [strata] thinking: 167 of budget 116244 (max 154991) tokens, 31.0 tok/s, 111 s
+Oct 29 13:47:12 ubuntu runner: [strata] thinking: 201 of budget 116244 (max 154991) tokens, 31.4 tok/s, 112 s
+Oct 29 13:47:13 ubuntu runner: [strata] writing a tool call: terminal: 238 of max 154991 tokens, 32.0 tok/s, 113 s
+Oct 29 13:47:15 ubuntu runner: [strata] writing a tool call: terminal: 278 of max 154991 tokens, 32.8 tok/s, 114 s
+Oct 29 13:47:16 ubuntu runner: [strata] writing a tool call: terminal: 328 of max 154991 tokens, 34.6 tok/s, 115 s
+Oct 29 13:47:17 ubuntu runner: [strata] writing a tool call: terminal: 381 of max 154991 tokens, 36.3 tok/s, 116 s
+Oct 29 13:47:18 ubuntu runner: [strata] writing a tool call: terminal: 430 of max 154991 tokens, 37.1 tok/s, 118 s
+Oct 29 13:47:19 ubuntu runner: [strata] done: 474 tokens in 118 s (37.9 tok/s) (stop, cancel=False), expert cache 85.7% hit (+1.5% of the routed experts over PCIe)
+Oct 29 13:47:21 ubuntu runner: [strata] reading the prompt: 504 of 511 tokens, 2 s so far
+Oct 29 13:47:21 ubuntu runner: [strata] done: 4 tokens in 2 s (31.1 tok/s) (stop, cancel=False), expert cache 72.9% hit (+2.6% of the routed experts over PCIe)
+Oct 29 13:47:29 ubuntu runner: [strata] reading the prompt: 8,192 of 107,809 tokens, 7 s so far
+Oct 29 13:47:36 ubuntu runner: [strata] reading the prompt: 16,384 of 107,809 tokens, 14 s so far
+Oct 29 13:47:40 ubuntu runner: [strata] reading the prompt: 19,495 of 107,809 tokens, 18 s so far
+Oct 29 13:47:47 ubuntu runner: [strata] reading the prompt: 27,687 of 107,809 tokens, 26 s so far
+Oct 29 13:47:55 ubuntu runner: [strata] reading the prompt: 35,879 of 107,809 tokens, 33 s so far
+Oct 29 13:48:02 ubuntu runner: [strata] reading the prompt: 44,071 of 107,809 tokens, 40 s so far
+Oct 29 13:48:10 ubuntu runner: [strata] reading the prompt: 52,263 of 107,809 tokens, 48 s so far
+Oct 29 13:48:18 ubuntu runner: [strata] reading the prompt: 60,455 of 107,809 tokens, 56 s so far
+Oct 29 13:48:26 ubuntu runner: [strata] reading the prompt: 68,647 of 107,809 tokens, 64 s so far
+Oct 29 13:48:34 ubuntu runner: [strata] reading the prompt: 76,839 of 107,809 tokens, 72 s so far
+Oct 29 13:48:42 ubuntu runner: [strata] reading the prompt: 85,031 of 107,809 tokens, 80 s so far
+Oct 29 13:48:51 ubuntu runner: [strata] reading the prompt: 93,223 of 107,809 tokens, 89 s so far
+Oct 29 13:49:00 ubuntu runner: [strata] reading the prompt: 101,415 of 107,809 tokens, 98 s so far
+Oct 29 13:49:07 ubuntu runner: [strata] reading the prompt: 107,804 of 107,809 tokens, 105 s so far
+Oct 29 13:49:08 ubuntu runner: [strata] thinking: 5 of budget 115746 (max 154327) tokens, 20.0 tok/s, 106 s
+Oct 29 13:49:09 ubuntu runner: [strata] thinking: 37 of budget 115746 (max 154327) tokens, 28.2 tok/s, 108 s
+Oct 29 13:49:10 ubuntu runner: [strata] thinking: 66 of budget 115746 (max 154327) tokens, 28.2 tok/s, 109 s
+Oct 29 13:49:12 ubuntu runner: [strata] thinking: 105 of budget 115746 (max 154327) tokens, 30.8 tok/s, 110 s
+Oct 29 13:49:13 ubuntu runner: [strata] thinking: 150 of budget 115746 (max 154327) tokens, 33.9 tok/s, 111 s
+Oct 29 13:49:14 ubuntu runner: [strata] thinking: 203 of budget 115746 (max 154327) tokens, 36.9 tok/s, 112 s
+Oct 29 13:49:15 ubuntu runner: [strata] thinking: 254 of budget 115746 (max 154327) tokens, 38.7 tok/s, 113 s
+Oct 29 13:49:16 ubuntu runner: [strata] thinking: 305 of budget 115746 (max 154327) tokens, 40.3 tok/s, 114 s
+Oct 29 13:49:17 ubuntu runner: [strata] thinking: 350 of budget 115746 (max 154327) tokens, 40.5 tok/s, 115 s
+Oct 29 13:49:18 ubuntu runner: [strata] thinking: 396 of budget 115746 (max 154327) tokens, 40.8 tok/s, 116 s
+Oct 29 13:49:19 ubuntu runner: [strata] thinking: 446 of budget 115746 (max 154327) tokens, 41.6 tok/s, 117 s
+Oct 29 13:49:20 ubuntu runner: [strata] thinking: 495 of budget 115746 (max 154327) tokens, 42.1 tok/s, 118 s
+Oct 29 13:49:21 ubuntu runner: [strata] thinking: 551 of budget 115746 (max 154327) tokens, 43.1 tok/s, 119 s
+Oct 29 13:49:22 ubuntu runner: [strata] thinking: 606 of budget 115746 (max 154327) tokens, 43.9 tok/s, 120 s
+Oct 29 13:49:23 ubuntu runner: [strata] thinking: 646 of budget 115746 (max 154327) tokens, 43.7 tok/s, 121 s
+Oct 29 13:49:24 ubuntu runner: [strata] thinking: 677 of budget 115746 (max 154327) tokens, 42.7 tok/s, 122 s
+Oct 29 13:49:25 ubuntu runner: [strata] thinking: 711 of budget 115746 (max 154327) tokens, 42.1 tok/s, 123 s
+Oct 29 13:49:26 ubuntu runner: [strata] thinking: 741 of budget 115746 (max 154327) tokens, 41.3 tok/s, 124 s
+Oct 29 13:49:27 ubuntu runner: [strata] thinking: 760 of budget 115746 (max 154327) tokens, 40.1 tok/s, 125 s
+Oct 29 13:49:28 ubuntu runner: [strata] thinking: 781 of budget 115746 (max 154327) tokens, 39.1 tok/s, 126 s
+Oct 29 13:49:29 ubuntu runner: [strata] answering: 810 of max 154327 tokens, 38.4 tok/s, 127 s
+Oct 29 13:49:30 ubuntu runner: [strata] writing a tool call: write_file: 852 of max 154327 tokens, 38.6 tok/s, 128 s
+Oct 29 13:49:31 ubuntu runner: [strata] writing a tool call: write_file: 884 of max 154327 tokens, 38.2 tok/s, 129 s
+Oct 29 13:49:32 ubuntu runner: [strata] writing a tool call: write_file: 930 of max 154327 tokens, 38.4 tok/s, 130 s
+Oct 29 13:49:33 ubuntu runner: [strata] writing a tool call: write_file: 975 of max 154327 tokens, 38.7 tok/s, 132 s
+Oct 29 13:49:34 ubuntu runner: [strata] writing a tool call: write_file: 1035 of max 154327 tokens, 39.4 tok/s, 133 s
+Oct 29 13:49:35 ubuntu runner: [strata] writing a tool call: write_file: 1091 of max 154327 tokens, 39.9 tok/s, 134 s
+Oct 29 13:49:36 ubuntu runner: [strata] writing a tool call: write_file: 1141 of max 154327 tokens, 40.2 tok/s, 135 s
+Oct 29 13:49:38 ubuntu runner: [strata] writing a tool call: write_file: 1194 of max 154327 tokens, 40.6 tok/s, 136 s
+Oct 29 13:49:39 ubuntu runner: [strata] writing a tool call: write_file: 1250 of max 154327 tokens, 41.0 tok/s, 137 s
+Oct 29 13:49:40 ubuntu runner: [strata] writing a tool call: write_file: 1304 of max 154327 tokens, 41.3 tok/s, 138 s
+Oct 29 13:49:41 ubuntu runner: [strata] writing a tool call: write_file: 1362 of max 154327 tokens, 41.8 tok/s, 139 s
+Oct 29 13:49:42 ubuntu runner: [strata] writing a tool call: write_file: 1422 of max 154327 tokens, 42.3 tok/s, 140 s
+Oct 29 13:49:43 ubuntu runner: [strata] writing a tool call: write_file: 1449 of max 154327 tokens, 41.6 tok/s, 141 s
+Oct 29 13:49:44 ubuntu runner: [strata] writing a tool call: write_file: 1485 of max 154327 tokens, 41.4 tok/s, 142 s
+Oct 29 13:49:45 ubuntu runner: [strata] done: 1499 tokens in 143 s (41.1 tok/s) (stop, cancel=False), expert cache 82.7% hit (+2.1% of the routed experts over PCIe)
+Oct 29 13:49:49 ubuntu runner: [strata] reading the prompt: 109,412 of 109,417 tokens, 4 s so far
+Oct 29 13:49:50 ubuntu runner: [strata] thinking: 11 of budget 114540 (max 152719) tokens, 18.3 tok/s, 5 s
+Oct 29 13:49:51 ubuntu runner: [strata] thinking: 31 of budget 114540 (max 152719) tokens, 19.1 tok/s, 6 s
+Oct 29 13:49:52 ubuntu runner: [strata] thinking: 53 of budget 114540 (max 152719) tokens, 19.1 tok/s, 7 s
+Oct 29 13:49:53 ubuntu runner: [strata] thinking: 75 of budget 114540 (max 152719) tokens, 19.7 tok/s, 8 s
+Oct 29 13:49:54 ubuntu runner: [strata] thinking: 105 of budget 114540 (max 152719) tokens, 21.5 tok/s, 9 s
+Oct 29 13:49:55 ubuntu runner: [strata] writing a tool call: terminal: 153 of max 152719 tokens, 25.8 tok/s, 10 s
+Oct 29 13:49:56 ubuntu runner: [strata] writing a tool call: terminal: 197 of max 152719 tokens, 28.1 tok/s, 12 s
+Oct 29 13:49:57 ubuntu runner: [strata] done: 242 tokens in 12 s (30.3 tok/s) (stop, cancel=False), expert cache 76.7% hit (+2.1% of the routed experts over PCIe)
+Oct 29 13:49:58 ubuntu runner: [strata] stopping (Ctrl+C again to end the engine at once) ...
+Oct 29 13:49:58 ubuntu systemd[1805]: Stopping strata-iq4xs.service - Strata Qwen3.8-Flash-Next Unsloth UD-IQ4_XS (Intel Arc B70, Port 11434)...
+Oct 29 13:49:59 ubuntu runner: Exception ignored while finalizing file <_io.TextIOWrapper name=7 encoding='utf-8'>:
+Oct 29 13:49:59 ubuntu runner: Traceback (most recent call last):
+Oct 29 13:49:59 ubuntu runner:   File "<home>/sandbox/strata/serve/server.py", line 2981, in shutdown
+Oct 29 13:49:59 ubuntu runner:     self.close()
+Oct 29 13:49:59 ubuntu runner: BrokenPipeError: [Errno 32] Broken pipe
+Oct 29 13:49:59 ubuntu runner: [strata] stopped
+Oct 29 13:49:59 ubuntu systemd[1805]: Stopped strata-iq4xs.service - Strata Qwen3.8-Flash-Next Unsloth UD-IQ4_XS (Intel Arc B70, Port 11434).
+Oct 29 13:49:59 ubuntu systemd[1805]: strata-iq4xs.service: Consumed 2min 27.891s CPU time over 18h 9min 34.417s wall clock time, 2.1G memory peak, 2.1M memory swap peak.
+Oct 29 13:49:59 ubuntu systemd[1805]: Started strata-iq4xs.service - Strata Qwen3.8-Flash-Next Unsloth UD-IQ4_XS (Intel Arc B70, Port 11434).
+Oct 29 13:50:00 ubuntu runner: loading the vision encoder ...
+Oct 29 13:50:02 ubuntu runner: loading the model (the first start takes a minute or two) ...
+Oct 29 13:50:02 ubuntu runner: [strata] starting the engine: reading the model's weights ...
+Oct 29 13:50:10 ubuntu runner: [strata] streaming the experts from the model files into the GPU's memory (and a pinned RAM mirror for what does not fit); the first start takes a few minutes ...
+Oct 29 13:50:12 ubuntu runner: [strata] filling the GPU's expert cache (10031 experts, 22.58 GiB of VRAM) ...
+Oct 29 13:50:32 ubuntu runner: [strata] still starting (30 s) - please wait ...
+Oct 29 13:50:48 ubuntu runner: [strata] the model unloads after 2700.0 s without requests
+Oct 29 13:50:48 ubuntu runner: ready: http://127.0.0.1:11434/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
+Oct 29 13:50:48 ubuntu runner:        open http://127.0.0.1:11434/ in a browser to chat; close this window to stop the model
+Oct 29 13:51:23 ubuntu runner: [strata] reading the prompt: 8,192 of 109,746 tokens, 8 s so far
+Oct 29 13:51:30 ubuntu runner: [strata] reading the prompt: 16,384 of 109,746 tokens, 15 s so far
+Oct 29 13:51:35 ubuntu runner: [strata] reading the prompt: 19,495 of 109,746 tokens, 20 s so far
+Oct 29 13:51:42 ubuntu runner: [strata] reading the prompt: 27,687 of 109,746 tokens, 27 s so far
+Oct 29 13:51:50 ubuntu runner: [strata] reading the prompt: 35,879 of 109,746 tokens, 34 s so far
+Oct 29 13:51:57 ubuntu runner: [strata] reading the prompt: 44,071 of 109,746 tokens, 41 s so far
+Oct 29 13:52:05 ubuntu runner: [strata] reading the prompt: 52,263 of 109,746 tokens, 49 s so far
+Oct 29 13:52:12 ubuntu runner: [strata] reading the prompt: 60,455 of 109,746 tokens, 57 s so far
+Oct 29 13:52:20 ubuntu runner: [strata] reading the prompt: 68,647 of 109,746 tokens, 65 s so far
+Oct 29 13:52:29 ubuntu runner: [strata] reading the prompt: 76,839 of 109,746 tokens, 73 s so far
+Oct 29 13:52:37 ubuntu runner: [strata] reading the prompt: 85,031 of 109,746 tokens, 81 s so far
+Oct 29 13:52:45 ubuntu runner: [strata] reading the prompt: 93,223 of 109,746 tokens, 90 s so far
+Oct 29 13:52:54 ubuntu runner: [strata] reading the prompt: 101,415 of 109,746 tokens, 98 s so far
+Oct 29 13:53:03 ubuntu runner: [strata] reading the prompt: 109,607 of 109,746 tokens, 107 s so far
+Oct 29 13:53:05 ubuntu runner: [strata] reading the prompt: 109,741 of 109,746 tokens, 109 s so far
+Oct 29 13:53:06 ubuntu runner: [strata] thinking: 7 of budget 114293 (max 152390) tokens, 28.0 tok/s, 110 s
+Oct 29 13:53:07 ubuntu runner: [strata] thinking: 31 of budget 114293 (max 152390) tokens, 23.5 tok/s, 111 s
+Oct 29 13:53:08 ubuntu runner: [strata] thinking: 59 of budget 114293 (max 152390) tokens, 24.7 tok/s, 112 s
+Oct 29 13:53:09 ubuntu runner: [strata] answering: 81 of max 152390 tokens, 23.4 tok/s, 113 s
+Oct 29 13:53:10 ubuntu runner: [strata] answering: 101 of max 152390 tokens, 22.1 tok/s, 114 s
+Oct 29 13:53:11 ubuntu runner: [strata] answering: 116 of max 152390 tokens, 20.9 tok/s, 115 s
+Oct 29 13:53:12 ubuntu runner: [strata] answering: 145 of max 152390 tokens, 21.8 tok/s, 117 s
+Oct 29 13:53:13 ubuntu runner: [strata] answering: 174 of max 152390 tokens, 22.4 tok/s, 118 s
+Oct 29 13:53:14 ubuntu runner: [strata] answering: 205 of max 152390 tokens, 23.3 tok/s, 119 s
+Oct 29 13:53:15 ubuntu runner: [strata] answering: 226 of max 152390 tokens, 23.0 tok/s, 120 s
+Oct 29 13:53:16 ubuntu runner: [strata] answering: 250 of max 152390 tokens, 23.1 tok/s, 121 s
+Oct 29 13:53:17 ubuntu runner: [strata] answering: 280 of max 152390 tokens, 23.6 tok/s, 122 s
+Oct 29 13:53:18 ubuntu runner: [strata] done: 294 tokens in 123 s (22.8 tok/s) (stop, cancel=False), expert cache 86.9% hit (+2.1% of the routed experts over PCIe)
+Oct 29 13:53:20 ubuntu runner: [strata] reading the prompt: 70 of 75 tokens, 2 s so far
+Oct 29 13:53:21 ubuntu runner: [strata] thinking: 13 of max 128 tokens, 19.9 tok/s, 3 s
+Oct 29 13:53:22 ubuntu runner: [strata] thinking: 34 of max 128 tokens, 20.5 tok/s, 4 s
+Oct 29 13:53:23 ubuntu runner: [strata] thinking: 46 of max 128 tokens, 16.8 tok/s, 5 s
+Oct 29 13:53:24 ubuntu runner: [strata] answering: 69 of max 128 tokens, 18.3 tok/s, 6 s
+Oct 29 13:53:25 ubuntu runner: [strata] answering: 90 of max 128 tokens, 18.9 tok/s, 7 s
+Oct 29 13:53:27 ubuntu runner: [strata] answering: 124 of max 128 tokens, 21.3 tok/s, 8 s
+Oct 29 13:53:27 ubuntu runner: [strata] done: 128 tokens in 8 s (21.4 tok/s) (length, cancel=False), expert cache 83.4% hit (+1.4% of the routed experts over PCIe)
+Oct 29 13:53:34 ubuntu runner: [strata] reading the prompt: 8,192 of 112,036 tokens, 8 s so far
+Oct 29 13:53:41 ubuntu runner: [strata] reading the prompt: 16,384 of 112,036 tokens, 14 s so far
+Oct 29 13:53:46 ubuntu runner: [strata] reading the prompt: 19,495 of 112,036 tokens, 19 s so far
+Oct 29 13:53:53 ubuntu runner: [strata] reading the prompt: 27,687 of 112,036 tokens, 26 s so far
+Oct 29 13:54:00 ubuntu runner: [strata] reading the prompt: 35,879 of 112,036 tokens, 33 s so far
+Oct 29 13:54:07 ubuntu runner: [strata] reading the prompt: 44,071 of 112,036 tokens, 41 s so far
+Oct 29 13:54:15 ubuntu runner: [strata] reading the prompt: 52,263 of 112,036 tokens, 48 s so far
+Oct 29 13:54:23 ubuntu runner: [strata] reading the prompt: 60,455 of 112,036 tokens, 56 s so far
+Oct 29 13:54:31 ubuntu runner: [strata] reading the prompt: 68,647 of 112,036 tokens, 64 s so far
+Oct 29 13:54:39 ubuntu runner: [strata] reading the prompt: 76,839 of 112,036 tokens, 73 s so far
+Oct 29 13:54:48 ubuntu runner: [strata] reading the prompt: 85,031 of 112,036 tokens, 81 s so far
+Oct 29 13:54:56 ubuntu runner: [strata] reading the prompt: 93,223 of 112,036 tokens, 89 s so far
+Oct 29 13:55:05 ubuntu runner: [strata] reading the prompt: 101,415 of 112,036 tokens, 98 s so far
+Oct 29 13:55:14 ubuntu runner: [strata] reading the prompt: 109,607 of 112,036 tokens, 107 s so far
+Oct 29 13:55:18 ubuntu runner: [strata] reading the prompt: 112,031 of 112,036 tokens, 112 s so far
+Oct 29 13:55:19 ubuntu runner: [strata] thinking: 15 of budget 112575 (max 150100) tokens, 43.5 tok/s, 113 s
+Oct 29 13:55:20 ubuntu runner: [strata] thinking: 53 of budget 112575 (max 150100) tokens, 37.9 tok/s, 114 s
+Oct 29 13:55:21 ubuntu runner: [strata] thinking: 83 of budget 112575 (max 150100) tokens, 34.2 tok/s, 115 s
+Oct 29 13:55:23 ubuntu runner: [strata] thinking: 118 of budget 112575 (max 150100) tokens, 33.8 tok/s, 116 s
+Oct 29 13:55:24 ubuntu runner: [strata] thinking: 156 of budget 112575 (max 150100) tokens, 34.7 tok/s, 117 s
+Oct 29 13:55:25 ubuntu runner: [strata] thinking: 202 of budget 112575 (max 150100) tokens, 35.9 tok/s, 118 s
+Oct 29 13:55:26 ubuntu runner: [strata] thinking: 242 of budget 112575 (max 150100) tokens, 36.4 tok/s, 119 s
+Oct 29 13:55:27 ubuntu runner: [strata] thinking: 282 of budget 112575 (max 150100) tokens, 36.8 tok/s, 120 s
+Oct 29 13:55:28 ubuntu runner: [strata] thinking: 322 of budget 112575 (max 150100) tokens, 37.0 tok/s, 121 s
+Oct 29 13:55:29 ubuntu runner: [strata] thinking: 343 of budget 112575 (max 150100) tokens, 35.2 tok/s, 122 s
+Oct 29 13:55:30 ubuntu runner: [strata] thinking: 383 of budget 112575 (max 150100) tokens, 35.6 tok/s, 123 s
+Oct 29 13:55:31 ubuntu runner: [strata] thinking: 413 of budget 112575 (max 150100) tokens, 35.1 tok/s, 124 s
+Oct 29 13:55:32 ubuntu runner: [strata] thinking: 446 of budget 112575 (max 150100) tokens, 34.9 tok/s, 125 s
+Oct 29 13:55:33 ubuntu runner: [strata] thinking: 484 of budget 112575 (max 150100) tokens, 35.1 tok/s, 126 s
+Oct 29 13:55:34 ubuntu runner: [strata] thinking: 517 of budget 112575 (max 150100) tokens, 34.7 tok/s, 127 s
+Oct 29 13:55:35 ubuntu runner: [strata] thinking: 555 of budget 112575 (max 150100) tokens, 34.9 tok/s, 128 s
+Oct 29 13:55:36 ubuntu runner: [strata] thinking: 606 of budget 112575 (max 150100) tokens, 35.7 tok/s, 129 s
+Oct 29 13:55:37 ubuntu runner: [strata] thinking: 643 of budget 112575 (max 150100) tokens, 35.8 tok/s, 130 s
+Oct 29 13:55:38 ubuntu runner: [strata] thinking: 668 of budget 112575 (max 150100) tokens, 35.2 tok/s, 131 s
+Oct 29 13:55:39 ubuntu runner: [strata] thinking: 695 of budget 112575 (max 150100) tokens, 34.7 tok/s, 132 s
+Oct 29 13:55:40 ubuntu runner: [strata] thinking: 727 of budget 112575 (max 150100) tokens, 34.5 tok/s, 134 s
+Oct 29 13:55:41 ubuntu runner: [strata] thinking: 761 of budget 112575 (max 150100) tokens, 34.4 tok/s, 135 s
+Oct 29 13:55:42 ubuntu runner: [strata] thinking: 796 of budget 112575 (max 150100) tokens, 34.4 tok/s, 136 s
+Oct 29 13:55:43 ubuntu runner: [strata] thinking: 824 of budget 112575 (max 150100) tokens, 34.1 tok/s, 137 s
+Oct 29 13:55:44 ubuntu runner: [strata] thinking: 864 of budget 112575 (max 150100) tokens, 34.3 tok/s, 138 s
+Oct 29 13:55:45 ubuntu runner: [strata] thinking: 902 of budget 112575 (max 150100) tokens, 34.4 tok/s, 139 s
+Oct 29 13:55:46 ubuntu runner: [strata] thinking: 941 of budget 112575 (max 150100) tokens, 34.6 tok/s, 140 s
+Oct 29 13:55:47 ubuntu runner: [strata] thinking: 979 of budget 112575 (max 150100) tokens, 34.7 tok/s, 141 s
+Oct 29 13:55:48 ubuntu runner: [strata] thinking: 1016 of budget 112575 (max 150100) tokens, 34.8 tok/s, 142 s
+Oct 29 13:55:49 ubuntu runner: [strata] thinking: 1062 of budget 112575 (max 150100) tokens, 35.1 tok/s, 143 s
+Oct 29 13:55:50 ubuntu runner: [strata] thinking: 1111 of budget 112575 (max 150100) tokens, 35.3 tok/s, 144 s
+Oct 29 13:55:52 ubuntu runner: [strata] thinking: 1148 of budget 112575 (max 150100) tokens, 35.4 tok/s, 145 s
+Oct 29 13:55:53 ubuntu runner: [strata] thinking: 1187 of budget 112575 (max 150100) tokens, 35.4 tok/s, 146 s
+Oct 29 13:55:54 ubuntu runner: [strata] thinking: 1228 of budget 112575 (max 150100) tokens, 35.6 tok/s, 147 s
+Oct 29 13:55:55 ubuntu runner: [strata] thinking: 1281 of budget 112575 (max 150100) tokens, 36.0 tok/s, 148 s
+Oct 29 13:55:56 ubuntu runner: [strata] thinking: 1327 of budget 112575 (max 150100) tokens, 36.3 tok/s, 149 s
+Oct 29 13:55:57 ubuntu runner: [strata] thinking: 1372 of budget 112575 (max 150100) tokens, 36.5 tok/s, 150 s
+Oct 29 13:55:58 ubuntu runner: [strata] thinking: 1418 of budget 112575 (max 150100) tokens, 36.7 tok/s, 151 s
+Oct 29 13:55:59 ubuntu runner: [strata] thinking: 1466 of budget 112575 (max 150100) tokens, 36.9 tok/s, 152 s
+Oct 29 13:56:00 ubuntu runner: [strata] thinking: 1503 of budget 112575 (max 150100) tokens, 36.9 tok/s, 153 s
+Oct 29 13:56:01 ubuntu runner: [strata] thinking: 1546 of budget 112575 (max 150100) tokens, 37.1 tok/s, 154 s
+Oct 29 13:56:02 ubuntu runner: [strata] thinking: 1577 of budget 112575 (max 150100) tokens, 36.9 tok/s, 155 s
+Oct 29 13:56:03 ubuntu runner: [strata] thinking: 1611 of budget 112575 (max 150100) tokens, 36.8 tok/s, 156 s
+Oct 29 13:56:04 ubuntu runner: [strata] thinking: 1650 of budget 112575 (max 150100) tokens, 36.8 tok/s, 157 s
+Oct 29 13:56:05 ubuntu runner: [strata] thinking: 1693 of budget 112575 (max 150100) tokens, 36.9 tok/s, 158 s
+Oct 29 13:56:06 ubuntu runner: [strata] thinking: 1749 of budget 112575 (max 150100) tokens, 37.3 tok/s, 159 s
+Oct 29 13:56:07 ubuntu runner: [strata] thinking: 1786 of budget 112575 (max 150100) tokens, 37.2 tok/s, 160 s
+Oct 29 13:56:08 ubuntu runner: [strata] thinking: 1816 of budget 112575 (max 150100) tokens, 37.1 tok/s, 161 s
+Oct 29 13:56:09 ubuntu runner: [strata] thinking: 1850 of budget 112575 (max 150100) tokens, 37.0 tok/s, 162 s
+Oct 29 13:56:10 ubuntu runner: [strata] thinking: 1887 of budget 112575 (max 150100) tokens, 37.0 tok/s, 163 s
+Oct 29 13:56:11 ubuntu runner: [strata] thinking: 1929 of budget 112575 (max 150100) tokens, 37.0 tok/s, 165 s
+Oct 29 13:56:12 ubuntu runner: [strata] thinking: 1960 of budget 112575 (max 150100) tokens, 36.9 tok/s, 166 s
+Oct 29 13:56:13 ubuntu runner: [strata] done: 1987 tokens in 166 s (36.8 tok/s) (stop, cancel=False), expert cache 90.9% hit (+0.9% of the routed experts over PCIe)
+Oct 29 13:56:14 ubuntu runner: [strata] reading the prompt: 72 of 77 tokens, 1 s so far
+Oct 29 13:56:15 ubuntu runner: [strata] thinking: 15 of max 512 tokens, 26.8 tok/s, 2 s
+Oct 29 13:56:16 ubuntu runner: [strata] thinking: 44 of max 512 tokens, 27.9 tok/s, 3 s
+Oct 29 13:56:17 ubuntu runner: [strata] answering: 79 of max 512 tokens, 29.9 tok/s, 4 s
+Oct 29 13:56:18 ubuntu runner: [strata] answering: 111 of max 512 tokens, 29.9 tok/s, 5 s
+Oct 29 13:56:19 ubuntu runner: [strata] answering: 150 of max 512 tokens, 31.8 tok/s, 6 s
+Oct 29 13:56:20 ubuntu runner: [strata] answering: 191 of max 512 tokens, 33.4 tok/s, 7 s
+Oct 29 13:56:21 ubuntu runner: [strata] answering: 246 of max 512 tokens, 36.5 tok/s, 8 s
+Oct 29 13:56:22 ubuntu runner: [strata] answering: 290 of max 512 tokens, 37.4 tok/s, 9 s
+Oct 29 13:56:23 ubuntu runner: [strata] answering: 329 of max 512 tokens, 37.5 tok/s, 10 s
+Oct 29 13:56:25 ubuntu runner: [strata] answering: 371 of max 512 tokens, 37.7 tok/s, 12 s
+Oct 29 13:56:25 ubuntu runner: [strata] done: 406 tokens in 12 s (37.4 tok/s) (stop, cancel=False), expert cache 87.0% hit (+1.3% of the routed experts over PCIe)
+Oct 29 13:56:32 ubuntu runner: [strata] reading the prompt: 8,192 of 135,952 tokens, 7 s so far
+Oct 29 13:56:39 ubuntu runner: [strata] reading the prompt: 16,384 of 135,952 tokens, 14 s so far
+Oct 29 13:56:44 ubuntu runner: [strata] reading the prompt: 19,495 of 135,952 tokens, 18 s so far
+Oct 29 13:56:51 ubuntu runner: [strata] reading the prompt: 27,687 of 135,952 tokens, 26 s so far
+Oct 29 13:56:58 ubuntu runner: [strata] reading the prompt: 35,879 of 135,952 tokens, 33 s so far
+Oct 29 13:57:06 ubuntu runner: [strata] reading the prompt: 44,071 of 135,952 tokens, 40 s so far
+Oct 29 13:57:13 ubuntu runner: [strata] reading the prompt: 52,263 of 135,952 tokens, 48 s so far
+Oct 29 13:57:21 ubuntu runner: [strata] reading the prompt: 60,455 of 135,952 tokens, 56 s so far
+Oct 29 13:57:29 ubuntu runner: [strata] reading the prompt: 68,647 of 135,952 tokens, 64 s so far
+Oct 29 13:57:37 ubuntu runner: [strata] reading the prompt: 76,839 of 135,952 tokens, 72 s so far
+Oct 29 13:57:46 ubuntu runner: [strata] reading the prompt: 85,031 of 135,952 tokens, 80 s so far
+Oct 29 13:57:54 ubuntu runner: [strata] reading the prompt: 93,223 of 135,952 tokens, 89 s so far
+Oct 29 13:58:03 ubuntu runner: [strata] reading the prompt: 101,415 of 135,952 tokens, 98 s so far
+Oct 29 13:58:12 ubuntu runner: [strata] reading the prompt: 109,607 of 135,952 tokens, 107 s so far
+Oct 29 13:58:21 ubuntu runner: [strata] reading the prompt: 117,799 of 135,952 tokens, 116 s so far
+Oct 29 13:58:30 ubuntu runner: [strata] reading the prompt: 125,991 of 135,952 tokens, 125 s so far
+Oct 29 13:58:40 ubuntu runner: [strata] reading the prompt: 134,183 of 135,952 tokens, 134 s so far
+Oct 29 13:58:44 ubuntu runner: [strata] reading the prompt: 135,947 of 135,952 tokens, 139 s so far
+Oct 29 13:58:45 ubuntu runner: [strata] thinking: 7 of budget 94638 (max 126184) tokens, 28.0 tok/s, 140 s
+Oct 29 13:58:46 ubuntu runner: [strata] writing a tool call: skill_view: 39 of max 126184 tokens, 31.9 tok/s, 141 s
+Oct 29 13:58:47 ubuntu runner: [strata] done: 77 tokens in 142 s (35.3 tok/s) (stop, cancel=False), expert cache 76.0% hit (+3.4% of the routed experts over PCIe)
+Oct 29 13:58:52 ubuntu runner: [strata] reading the prompt: 4,088 of 4,093 tokens, 4 s so far
+Oct 29 13:58:53 ubuntu runner: [strata] thinking: 19 of max 512 tokens, 34.4 tok/s, 5 s
+Oct 29 13:58:54 ubuntu runner: [strata] thinking: 62 of max 512 tokens, 39.4 tok/s, 6 s
+Oct 29 13:58:55 ubuntu runner: [strata] thinking: 98 of max 512 tokens, 36.9 tok/s, 8 s
+Oct 29 13:58:56 ubuntu runner: [strata] thinking: 140 of max 512 tokens, 37.8 tok/s, 9 s
+Oct 29 13:58:57 ubuntu runner: [strata] thinking: 171 of max 512 tokens, 36.3 tok/s, 10 s
+Oct 29 13:58:58 ubuntu runner: [strata] thinking: 205 of max 512 tokens, 35.6 tok/s, 11 s
+Oct 29 13:58:59 ubuntu runner: [strata] thinking: 255 of max 512 tokens, 37.4 tok/s, 12 s
+Oct 29 13:59:00 ubuntu runner: [strata] thinking: 296 of max 512 tokens, 37.7 tok/s, 13 s
+Oct 29 13:59:01 ubuntu runner: [strata] thinking: 345 of max 512 tokens, 38.8 tok/s, 14 s
+Oct 29 13:59:02 ubuntu runner: [strata] thinking: 384 of max 512 tokens, 38.7 tok/s, 15 s
+Oct 29 13:59:03 ubuntu runner: [strata] thinking: 426 of max 512 tokens, 38.8 tok/s, 16 s
+Oct 29 13:59:04 ubuntu runner: [strata] thinking: 453 of max 512 tokens, 37.8 tok/s, 17 s
+Oct 29 13:59:05 ubuntu runner: [strata] thinking: 494 of max 512 tokens, 37.8 tok/s, 18 s
+Oct 29 13:59:06 ubuntu runner: [strata] done: 512 tokens in 19 s (37.3 tok/s) (length, cancel=False), expert cache 90.6% hit (+0.8% of the routed experts over PCIe)
+Oct 29 13:59:06 ubuntu runner: [strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+Oct 29 13:59:12 ubuntu runner: [strata] reading the prompt: 8,192 of 16,387 tokens, 6 s so far
+Oct 29 13:59:19 ubuntu runner: [strata] reading the prompt: 16,382 of 16,387 tokens, 13 s so far
+Oct 29 13:59:20 ubuntu runner: [strata] thinking: 8 of max 512 tokens, 32.0 tok/s, 14 s
+Oct 29 13:59:21 ubuntu runner: [strata] thinking: 49 of max 512 tokens, 41.8 tok/s, 15 s
+Oct 29 13:59:22 ubuntu runner: [strata] thinking: 102 of max 512 tokens, 46.6 tok/s, 16 s
+Oct 29 13:59:23 ubuntu runner: [strata] thinking: 143 of max 512 tokens, 44.7 tok/s, 17 s
+Oct 29 13:59:24 ubuntu runner: [strata] thinking: 182 of max 512 tokens, 42.9 tok/s, 18 s
+Oct 29 13:59:25 ubuntu runner: [strata] answering: 217 of max 512 tokens, 40.7 tok/s, 19 s
+Oct 29 13:59:26 ubuntu runner: [strata] answering: 263 of max 512 tokens, 41.3 tok/s, 20 s
+Oct 29 13:59:27 ubuntu runner: [strata] answering: 310 of max 512 tokens, 41.9 tok/s, 21 s
+Oct 29 13:59:28 ubuntu runner: [strata] answering: 359 of max 512 tokens, 42.6 tok/s, 22 s
+Oct 29 13:59:29 ubuntu runner: [strata] answering: 411 of max 512 tokens, 43.5 tok/s, 23 s
+Oct 29 13:59:30 ubuntu runner: [strata] answering: 460 of max 512 tokens, 43.8 tok/s, 24 s
+Oct 29 13:59:31 ubuntu runner: [strata] answering: 509 of max 512 tokens, 44.2 tok/s, 25 s
+Oct 29 13:59:31 ubuntu runner: [strata] done: 512 tokens in 25 s (44.1 tok/s) (length, cancel=False), expert cache 92.0% hit (+0.8% of the routed experts over PCIe)
+Oct 29 13:59:32 ubuntu runner: [strata] reading the prompt: 72 of 77 tokens, 1 s so far
+Oct 29 13:59:34 ubuntu runner: [strata] thinking: 26 of max 512 tokens, 33.7 tok/s, 2 s
+Oct 29 13:59:35 ubuntu runner: [strata] thinking: 60 of max 512 tokens, 33.8 tok/s, 3 s
+Oct 29 13:59:36 ubuntu runner: [strata] answering: 97 of max 512 tokens, 34.9 tok/s, 4 s
+Oct 29 13:59:37 ubuntu runner: [strata] answering: 138 of max 512 tokens, 36.2 tok/s, 5 s
+Oct 29 13:59:38 ubuntu runner: [strata] answering: 177 of max 512 tokens, 36.7 tok/s, 6 s
+Oct 29 13:59:39 ubuntu runner: [strata] answering: 226 of max 512 tokens, 38.6 tok/s, 7 s
+Oct 29 13:59:39 ubuntu runner: [strata] done: 265 tokens in 8 s (40.3 tok/s) (stop, cancel=False), expert cache 89.9% hit (+0.9% of the routed experts over PCIe)
+Oct 29 13:59:44 ubuntu runner: [strata] reading the prompt: 4,088 of 4,093 tokens, 4 s so far
+Oct 29 13:59:45 ubuntu runner: [strata] thinking: 19 of max 512 tokens, 34.9 tok/s, 5 s
+Oct 29 13:59:46 ubuntu runner: [strata] thinking: 61 of max 512 tokens, 39.2 tok/s, 6 s
+Oct 29 13:59:47 ubuntu runner: [strata] thinking: 101 of max 512 tokens, 38.8 tok/s, 7 s
+Oct 29 13:59:48 ubuntu runner: [strata] thinking: 140 of max 512 tokens, 38.7 tok/s, 9 s
+Oct 29 13:59:49 ubuntu runner: [strata] thinking: 177 of max 512 tokens, 38.2 tok/s, 10 s
+Oct 29 13:59:50 ubuntu runner: [strata] thinking: 224 of max 512 tokens, 39.6 tok/s, 11 s
+Oct 29 13:59:51 ubuntu runner: [strata] thinking: 283 of max 512 tokens, 42.3 tok/s, 12 s
+Oct 29 13:59:52 ubuntu runner: [strata] thinking: 343 of max 512 tokens, 44.4 tok/s, 13 s
+Oct 29 13:59:53 ubuntu runner: [strata] thinking: 396 of max 512 tokens, 45.4 tok/s, 14 s
+Oct 29 13:59:54 ubuntu runner: [strata] thinking: 461 of max 512 tokens, 47.1 tok/s, 15 s
+Oct 29 13:59:55 ubuntu runner: [strata] thinking: 512 of max 512 tokens, 46.7 tok/s, 16 s
+Oct 29 13:59:55 ubuntu runner: [strata] done: 512 tokens in 16 s (46.6 tok/s) (length, cancel=False), expert cache 91.4% hit (+0.9% of the routed experts over PCIe)
+Oct 29 13:59:55 ubuntu runner: [strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+Oct 29 14:00:02 ubuntu runner: [strata] reading the prompt: 8,192 of 16,387 tokens, 7 s so far
+Oct 29 14:00:08 ubuntu runner: [strata] reading the prompt: 16,382 of 16,387 tokens, 13 s so far
+Oct 29 14:00:09 ubuntu runner: [strata] thinking: 6 of max 512 tokens, 24.0 tok/s, 14 s
+Oct 29 14:00:10 ubuntu runner: [strata] thinking: 42 of max 512 tokens, 35.2 tok/s, 15 s
+Oct 29 14:00:11 ubuntu runner: [strata] thinking: 85 of max 512 tokens, 37.9 tok/s, 16 s
+Oct 29 14:00:12 ubuntu runner: [strata] thinking: 119 of max 512 tokens, 36.5 tok/s, 17 s
+Oct 29 14:00:13 ubuntu runner: [strata] thinking: 158 of max 512 tokens, 37.0 tok/s, 18 s
+Oct 29 14:00:14 ubuntu runner: [strata] thinking: 197 of max 512 tokens, 37.3 tok/s, 19 s
+Oct 29 14:00:15 ubuntu runner: [strata] thinking: 237 of max 512 tokens, 37.6 tok/s, 20 s
+Oct 29 14:00:16 ubuntu runner: [strata] thinking: 282 of max 512 tokens, 38.5 tok/s, 21 s
+Oct 29 14:00:17 ubuntu runner: [strata] thinking: 329 of max 512 tokens, 39.5 tok/s, 22 s
+Oct 29 14:00:18 ubuntu runner: [strata] thinking: 374 of max 512 tokens, 39.9 tok/s, 23 s
+Oct 29 14:00:19 ubuntu runner: [strata] thinking: 422 of max 512 tokens, 40.7 tok/s, 24 s
+Oct 29 14:00:21 ubuntu runner: [strata] thinking: 469 of max 512 tokens, 41.0 tok/s, 25 s
+Oct 29 14:00:22 ubuntu runner: [strata] thinking: 509 of max 512 tokens, 40.9 tok/s, 26 s
+Oct 29 14:00:22 ubuntu runner: [strata] done: 512 tokens in 26 s (40.8 tok/s) (length, cancel=False), expert cache 92.4% hit (+0.5% of the routed experts over PCIe)
+Oct 29 14:00:22 ubuntu runner: [strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+Oct 29 14:00:23 ubuntu runner: [strata] reading the prompt: 72 of 77 tokens, 1 s so far
+Oct 29 14:00:24 ubuntu runner: [strata] thinking: 28 of max 512 tokens, 43.3 tok/s, 2 s
+Oct 29 14:00:25 ubuntu runner: [strata] thinking: 57 of max 512 tokens, 33.6 tok/s, 3 s
+Oct 29 14:00:26 ubuntu runner: [strata] answering: 94 of max 512 tokens, 34.4 tok/s, 4 s
+Oct 29 14:00:27 ubuntu runner: [strata] answering: 141 of max 512 tokens, 37.4 tok/s, 5 s
+Oct 29 14:00:28 ubuntu runner: [strata] answering: 190 of max 512 tokens, 39.4 tok/s, 6 s
+Oct 29 14:00:29 ubuntu runner: [strata] answering: 234 of max 512 tokens, 39.9 tok/s, 7 s
+Oct 29 14:00:30 ubuntu runner: [strata] done: 270 tokens in 8 s (40.2 tok/s) (stop, cancel=False), expert cache 89.8% hit (+0.9% of the routed experts over PCIe)
+Oct 29 14:00:34 ubuntu runner: [strata] reading the prompt: 4,088 of 4,093 tokens, 4 s so far
+Oct 29 14:00:35 ubuntu runner: [strata] thinking: 17 of max 512 tokens, 36.9 tok/s, 5 s
+Oct 29 14:00:36 ubuntu runner: [strata] thinking: 61 of max 512 tokens, 41.6 tok/s, 6 s
+Oct 29 14:00:37 ubuntu runner: [strata] thinking: 103 of max 512 tokens, 41.3 tok/s, 7 s
+Oct 29 14:00:38 ubuntu runner: [strata] thinking: 142 of max 512 tokens, 40.6 tok/s, 8 s
+Oct 29 14:00:39 ubuntu runner: [strata] thinking: 187 of max 512 tokens, 41.4 tok/s, 9 s
+Oct 29 14:00:40 ubuntu runner: [strata] answering: 232 of max 512 tokens, 42.1 tok/s, 10 s
+Oct 29 14:00:41 ubuntu runner: [strata] answering: 283 of max 512 tokens, 43.3 tok/s, 11 s
+Oct 29 14:00:42 ubuntu runner: [strata] answering: 341 of max 512 tokens, 44.9 tok/s, 12 s
+Oct 29 14:00:43 ubuntu runner: [strata] answering: 394 of max 512 tokens, 45.8 tok/s, 14 s
+Oct 29 14:00:44 ubuntu runner: [strata] answering: 444 of max 512 tokens, 46.2 tok/s, 15 s
+Oct 29 14:00:45 ubuntu runner: [strata] answering: 503 of max 512 tokens, 47.2 tok/s, 16 s
+Oct 29 14:00:45 ubuntu runner: [strata] done: 512 tokens in 16 s (47.5 tok/s) (length, cancel=False), expert cache 91.6% hit (+0.9% of the routed experts over PCIe)
+Oct 29 14:00:52 ubuntu runner: [strata] reading the prompt: 8,192 of 16,387 tokens, 6 s so far
+Oct 29 14:00:58 ubuntu runner: [strata] reading the prompt: 16,382 of 16,387 tokens, 13 s so far
+Oct 29 14:00:59 ubuntu runner: [strata] thinking: 4 of max 512 tokens, 16.0 tok/s, 14 s
+Oct 29 14:01:00 ubuntu runner: [strata] thinking: 46 of max 512 tokens, 38.6 tok/s, 15 s
+Oct 29 14:01:01 ubuntu runner: [strata] thinking: 94 of max 512 tokens, 42.2 tok/s, 16 s
+Oct 29 14:01:02 ubuntu runner: [strata] thinking: 131 of max 512 tokens, 40.4 tok/s, 17 s
+Oct 29 14:01:03 ubuntu runner: [strata] thinking: 175 of max 512 tokens, 41.0 tok/s, 18 s
+Oct 29 14:01:04 ubuntu runner: [strata] thinking: 220 of max 512 tokens, 41.7 tok/s, 19 s
+Oct 29 14:01:05 ubuntu runner: [strata] thinking: 262 of max 512 tokens, 41.7 tok/s, 20 s
+Oct 29 14:01:06 ubuntu runner: [strata] answering: 299 of max 512 tokens, 40.8 tok/s, 21 s
+Oct 29 14:01:08 ubuntu runner: [strata] answering: 358 of max 512 tokens, 42.9 tok/s, 22 s
+Oct 29 14:01:09 ubuntu runner: [strata] answering: 417 of max 512 tokens, 44.4 tok/s, 23 s
+Oct 29 14:01:10 ubuntu runner: [strata] answering: 475 of max 512 tokens, 45.6 tok/s, 24 s
+Oct 29 14:01:10 ubuntu runner: [strata] done: 512 tokens in 25 s (46.4 tok/s) (length, cancel=False), expert cache 91.8% hit (+0.7% of the routed experts over PCIe)
+Oct 29 14:01:10 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:11 ubuntu runner: [strata] reading the prompt: 77 of 82 tokens, 1 s so far
+Oct 29 14:01:12 ubuntu runner: [strata] thinking: 25 of budget 1536 (max 2048) tokens, 35.7 tok/s, 2 s
+Oct 29 14:01:13 ubuntu runner: [strata] answering: 64 of max 2048 tokens, 36.9 tok/s, 3 s
+Oct 29 14:01:13 ubuntu runner: [strata] done: 69 tokens in 3 s (36.8 tok/s) (stop, cancel=False), expert cache 82.8% hit (+2.1% of the routed experts over PCIe)
+Oct 29 14:01:13 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:14 ubuntu runner: [strata] reading the prompt: 85 of 90 tokens, 1 s so far
+Oct 29 14:01:15 ubuntu runner: [strata] thinking: 33 of budget 1536 (max 2048) tokens, 44.1 tok/s, 2 s
+Oct 29 14:01:16 ubuntu runner: [strata] done: 67 tokens in 3 s (47.5 tok/s) (stop, cancel=False), expert cache 83.7% hit (+2.3% of the routed experts over PCIe)
+Oct 29 14:01:16 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:17 ubuntu runner: [strata] reading the prompt: 80 of 85 tokens, 1 s so far
+Oct 29 14:01:18 ubuntu runner: [strata] thinking: 44 of budget 1536 (max 2048) tokens, 57.6 tok/s, 2 s
+Oct 29 14:01:19 ubuntu runner: [strata] done: 81 tokens in 3 s (56.3 tok/s) (stop, cancel=False), expert cache 88.6% hit (+1.6% of the routed experts over PCIe)
+Oct 29 14:01:19 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:20 ubuntu runner: [strata] reading the prompt: 70 of 71 tokens, 1 s so far
+Oct 29 14:01:21 ubuntu runner: [strata] done: 24 tokens in 2 s (38.3 tok/s) (stop, cancel=False), expert cache 87.2% hit (+1.4% of the routed experts over PCIe)
+Oct 29 14:01:21 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:25 ubuntu runner: [strata] reading the prompt: 4,084 of 4,089 tokens, 4 s so far
+Oct 29 14:01:26 ubuntu runner: [strata] thinking: 23 of budget 1536 (max 2048) tokens, 43.4 tok/s, 5 s
+Oct 29 14:01:27 ubuntu runner: [strata] done: 66 tokens in 6 s (50.5 tok/s) (stop, cancel=False), expert cache 90.8% hit (+1.0% of the routed experts over PCIe)
+Oct 29 14:01:27 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:31 ubuntu runner: [strata] reading the prompt: 4,084 of 4,089 tokens, 4 s so far
+Oct 29 14:01:32 ubuntu runner: [strata] thinking: 30 of budget 1536 (max 2048) tokens, 55.5 tok/s, 5 s
+Oct 29 14:01:33 ubuntu runner: [strata] done: 67 tokens in 6 s (52.4 tok/s) (stop, cancel=False), expert cache 93.0% hit (+0.8% of the routed experts over PCIe)
+Oct 29 14:01:33 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:39 ubuntu runner: [strata] reading the prompt: 8,192 of 16,382 tokens, 6 s so far
+Oct 29 14:01:46 ubuntu runner: [strata] reading the prompt: 16,377 of 16,382 tokens, 13 s so far
+Oct 29 14:01:47 ubuntu runner: [strata] thinking: 12 of budget 1536 (max 2048) tokens, 48.0 tok/s, 14 s
+Oct 29 14:01:48 ubuntu runner: [strata] answering: 69 of max 2048 tokens, 55.6 tok/s, 15 s
+Oct 29 14:01:48 ubuntu runner: [strata] done: 70 tokens in 15 s (55.1 tok/s) (stop, cancel=False), expert cache 94.1% hit (+0.6% of the routed experts over PCIe)
+Oct 29 14:01:48 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:01:54 ubuntu runner: [strata] reading the prompt: 8,192 of 16,390 tokens, 6 s so far
+Oct 29 14:02:01 ubuntu runner: [strata] reading the prompt: 16,384 of 16,390 tokens, 13 s so far
+Oct 29 14:02:02 ubuntu runner: [strata] reading the prompt: 16,389 of 16,390 tokens, 14 s so far
+Oct 29 14:02:03 ubuntu runner: [strata] thinking: 45 of budget 1536 (max 2048) tokens, 45.6 tok/s, 15 s
+Oct 29 14:02:04 ubuntu runner: [strata] thinking: 97 of budget 1536 (max 2048) tokens, 48.2 tok/s, 16 s
+Oct 29 14:02:05 ubuntu runner: [strata] thinking: 148 of budget 1536 (max 2048) tokens, 48.2 tok/s, 17 s
+Oct 29 14:02:06 ubuntu runner: [strata] thinking: 187 of budget 1536 (max 2048) tokens, 45.9 tok/s, 18 s
+Oct 29 14:02:07 ubuntu runner: [strata] thinking: 241 of budget 1536 (max 2048) tokens, 47.2 tok/s, 19 s
+Oct 29 14:02:08 ubuntu runner: [strata] answering: 291 of max 2048 tokens, 47.3 tok/s, 20 s
+Oct 29 14:02:08 ubuntu runner: [strata] done: 301 tokens in 20 s (47.4 tok/s) (stop, cancel=False), expert cache 89.5% hit (+1.1% of the routed experts over PCIe)
+Oct 29 14:02:08 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:02:10 ubuntu runner: [strata] reading the prompt: 320 of 325 tokens, 2 s so far
+Oct 29 14:02:11 ubuntu runner: [strata] thinking: 28 of budget 1536 (max 2048) tokens, 37.3 tok/s, 3 s
+Oct 29 14:02:12 ubuntu runner: [strata] done: 64 tokens in 4 s (42.0 tok/s) (stop, cancel=False), expert cache 84.7% hit (+1.7% of the routed experts over PCIe)
+Oct 29 14:02:12 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:02:14 ubuntu runner: [strata] reading the prompt: 330 of 335 tokens, 2 s so far
+Oct 29 14:02:15 ubuntu runner: [strata] thinking: 22 of budget 1536 (max 2048) tokens, 30.4 tok/s, 3 s
+Oct 29 14:02:16 ubuntu runner: [strata] writing a tool call: get_weather: 69 of max 2048 tokens, 38.5 tok/s, 4 s
+Oct 29 14:02:17 ubuntu runner: [strata] done: 79 tokens in 4 s (40.3 tok/s) (stop, cancel=False), expert cache 83.4% hit (+2.0% of the routed experts over PCIe)
+Oct 29 14:02:17 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:02:19 ubuntu runner: [strata] reading the prompt: 347 of 352 tokens, 2 s so far
+Oct 29 14:02:20 ubuntu runner: [strata] writing a tool call: convert_units: 36 of max 2048 tokens, 47.0 tok/s, 3 s
+Oct 29 14:02:20 ubuntu runner: [strata] done: 71 tokens in 4 s (51.3 tok/s) (stop, cancel=False), expert cache 84.0% hit (+2.2% of the routed experts over PCIe)
+Oct 29 14:02:20 ubuntu runner: [strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+Oct 29 14:02:23 ubuntu runner: [strata] reading the prompt: 334 of 339 tokens, 2 s so far
+Oct 29 14:02:24 ubuntu runner: [strata] writing a tool call: get_build_status: 35 of max 2048 tokens, 48.2 tok/s, 3 s
+Oct 29 14:02:24 ubuntu runner: [strata] done: 64 tokens in 4 s (49.0 tok/s) (stop, cancel=False), expert cache 87.5% hit (+1.5% of the routed experts over PCIe)
+Oct 29 14:14:37 ubuntu runner: [strata] reading the prompt: 8,192 of 110,055 tokens, 7 s so far
+Oct 29 14:14:44 ubuntu runner: [strata] reading the prompt: 16,384 of 110,055 tokens, 14 s so far
+Oct 29 14:14:49 ubuntu runner: [strata] reading the prompt: 19,495 of 110,055 tokens, 18 s so far
+Oct 29 14:14:56 ubuntu runner: [strata] reading the prompt: 27,687 of 110,055 tokens, 25 s so far
+Oct 29 14:15:03 ubuntu runner: [strata] reading the prompt: 35,879 of 110,055 tokens, 33 s so far
+Oct 29 14:15:11 ubuntu runner: [strata] reading the prompt: 44,071 of 110,055 tokens, 40 s so far
+Oct 29 14:15:18 ubuntu runner: [strata] reading the prompt: 52,263 of 110,055 tokens, 48 s so far
+Oct 29 14:15:26 ubuntu runner: [strata] reading the prompt: 60,455 of 110,055 tokens, 56 s so far
+Oct 29 14:15:34 ubuntu runner: [strata] reading the prompt: 68,647 of 110,055 tokens, 64 s so far
+Oct 29 14:15:43 ubuntu runner: [strata] reading the prompt: 76,839 of 110,055 tokens, 72 s so far
+Oct 29 14:15:51 ubuntu runner: [strata] reading the prompt: 85,031 of 110,055 tokens, 80 s so far
+Oct 29 14:15:59 ubuntu runner: [strata] reading the prompt: 93,223 of 110,055 tokens, 89 s so far
+Oct 29 14:16:08 ubuntu runner: [strata] reading the prompt: 101,415 of 110,055 tokens, 98 s so far
+Oct 29 14:16:17 ubuntu runner: [strata] reading the prompt: 109,607 of 110,055 tokens, 107 s so far
+Oct 29 14:16:20 ubuntu runner: [strata] reading the prompt: 110,050 of 110,055 tokens, 109 s so far
+Oct 29 14:16:21 ubuntu runner: [strata] thinking: 6 of budget 114061 (max 152081) tokens, 24.0 tok/s, 110 s
+Oct 29 14:16:22 ubuntu runner: [strata] thinking: 37 of budget 114061 (max 152081) tokens, 29.3 tok/s, 111 s
+Oct 29 14:16:23 ubuntu runner: [strata] thinking: 62 of budget 114061 (max 152081) tokens, 27.2 tok/s, 112 s
+Oct 29 14:16:24 ubuntu runner: [strata] thinking: 85 of budget 114061 (max 152081) tokens, 25.7 tok/s, 113 s
+Oct 29 14:16:25 ubuntu runner: [strata] writing a tool call: terminal: 119 of max 152081 tokens, 27.3 tok/s, 114 s
+Oct 29 14:16:26 ubuntu runner: [strata] writing a tool call: terminal: 161 of max 152081 tokens, 29.9 tok/s, 115 s
+Oct 29 14:16:27 ubuntu runner: [strata] done: 198 tokens in 116 s (31.5 tok/s) (stop, cancel=False), expert cache 79.5% hit (+2.3% of the routed experts over PCIe)
+Oct 29 14:16:29 ubuntu runner: [strata] reading the prompt: 110,375 of 110,380 tokens, 2 s so far
+Oct 29 14:16:30 ubuntu runner: [strata] thinking: 18 of budget 113817 (max 151756) tokens, 23.6 tok/s, 3 s
+Oct 29 14:16:31 ubuntu runner: [strata] writing a tool call: terminal: 58 of max 151756 tokens, 31.8 tok/s, 4 s
+Oct 29 14:16:32 ubuntu runner: [strata] writing a tool call: terminal: 101 of max 151756 tokens, 35.2 tok/s, 5 s
+Oct 29 14:16:33 ubuntu runner: [strata] writing a tool call: terminal: 143 of max 151756 tokens, 36.9 tok/s, 6 s
+Oct 29 14:16:34 ubuntu runner: [strata] writing a tool call: terminal: 192 of max 151756 tokens, 38.9 tok/s, 7 s
+Oct 29 14:16:34 ubuntu runner: [strata] done: 200 tokens in 7 s (39.1 tok/s) (stop, cancel=False), expert cache 83.6% hit (+2.2% of the routed experts over PCIe)
+Oct 29 14:16:37 ubuntu runner: [strata] reading the prompt: 110,980 of 110,985 tokens, 2 s so far
+Oct 29 14:16:38 ubuntu runner: [strata] thinking: 21 of budget 113364 (max 151151) tokens, 27.8 tok/s, 3 s
+Oct 29 14:16:39 ubuntu runner: [strata] thinking: 50 of budget 113364 (max 151151) tokens, 27.8 tok/s, 4 s
+Oct 29 14:16:40 ubuntu runner: [strata] thinking: 76 of budget 113364 (max 151151) tokens, 26.8 tok/s, 5 s
+Oct 29 14:16:41 ubuntu runner: [strata] thinking: 93 of budget 113364 (max 151151) tokens, 24.1 tok/s, 6 s
+Oct 29 14:16:42 ubuntu runner: [strata] thinking: 128 of budget 113364 (max 151151) tokens, 26.3 tok/s, 7 s
+Oct 29 14:16:43 ubuntu runner: [strata] thinking: 168 of budget 113364 (max 151151) tokens, 28.6 tok/s, 8 s
+Oct 29 14:16:44 ubuntu runner: [strata] thinking: 203 of budget 113364 (max 151151) tokens, 29.5 tok/s, 9 s
+Oct 29 14:16:45 ubuntu runner: [strata] thinking: 242 of budget 113364 (max 151151) tokens, 30.6 tok/s, 10 s
+Oct 29 14:16:46 ubuntu runner: [strata] thinking: 277 of budget 113364 (max 151151) tokens, 31.0 tok/s, 12 s
+Oct 29 14:16:47 ubuntu runner: [strata] thinking: 327 of budget 113364 (max 151151) tokens, 32.7 tok/s, 13 s
+Oct 29 14:16:48 ubuntu runner: [strata] writing a tool call: terminal: 362 of max 151151 tokens, 32.8 tok/s, 14 s
+Oct 29 14:16:49 ubuntu runner: [strata] writing a tool call: terminal: 403 of max 151151 tokens, 33.4 tok/s, 15 s
+Oct 29 14:16:50 ubuntu runner: [strata] writing a tool call: terminal: 450 of max 151151 tokens, 34.4 tok/s, 16 s
+Oct 29 14:16:51 ubuntu runner: [strata] done: 479 tokens in 16 s (35.0 tok/s) (stop, cancel=False), expert cache 86.8% hit (+1.3% of the routed experts over PCIe)
+Oct 29 14:16:53 ubuntu runner: [strata] reading the prompt: 111,945 of 111,950 tokens, 2 s so far
+Oct 29 14:16:54 ubuntu runner: [strata] thinking: 29 of budget 112640 (max 150186) tokens, 41.6 tok/s, 3 s
+Oct 29 14:16:55 ubuntu runner: [strata] thinking: 64 of budget 112640 (max 150186) tokens, 36.9 tok/s, 4 s
+Oct 29 14:16:56 ubuntu runner: [strata] thinking: 100 of budget 112640 (max 150186) tokens, 35.9 tok/s, 5 s
+Oct 29 14:16:57 ubuntu runner: [strata] thinking: 140 of budget 112640 (max 150186) tokens, 36.8 tok/s, 6 s
+Oct 29 14:16:58 ubuntu runner: [strata] thinking: 179 of budget 112640 (max 150186) tokens, 37.3 tok/s, 7 s
+Oct 29 14:16:59 ubuntu runner: [strata] thinking: 224 of budget 112640 (max 150186) tokens, 38.5 tok/s, 8 s
+Oct 29 14:17:00 ubuntu runner: [strata] thinking: 266 of budget 112640 (max 150186) tokens, 38.9 tok/s, 9 s
+Oct 29 14:17:01 ubuntu runner: [strata] thinking: 315 of budget 112640 (max 150186) tokens, 40.0 tok/s, 10 s
+Oct 29 14:17:02 ubuntu runner: [strata] thinking: 364 of budget 112640 (max 150186) tokens, 41.0 tok/s, 11 s
+Oct 29 14:17:03 ubuntu runner: [strata] thinking: 404 of budget 112640 (max 150186) tokens, 40.7 tok/s, 12 s
+Oct 29 14:17:04 ubuntu runner: [strata] thinking: 442 of budget 112640 (max 150186) tokens, 40.3 tok/s, 13 s
+Oct 29 14:17:05 ubuntu runner: [strata] thinking: 471 of budget 112640 (max 150186) tokens, 39.3 tok/s, 14 s
+Oct 29 14:17:06 ubuntu runner: [strata] writing a tool call: terminal: 498 of max 150186 tokens, 38.2 tok/s, 16 s
+Oct 29 14:17:08 ubuntu runner: [strata] writing a tool call: terminal: 541 of max 150186 tokens, 38.3 tok/s, 17 s
+Oct 29 14:17:09 ubuntu runner: [strata] writing a tool call: terminal: 585 of max 150186 tokens, 38.7 tok/s, 18 s
+Oct 29 14:17:10 ubuntu runner: [strata] writing a tool call: terminal: 625 of max 150186 tokens, 38.6 tok/s, 19 s
+Oct 29 14:17:11 ubuntu runner: [strata] writing a tool call: terminal: 676 of max 150186 tokens, 39.3 tok/s, 20 s
+Oct 29 14:17:11 ubuntu runner: [strata] done: 680 tokens in 20 s (39.2 tok/s) (stop, cancel=False), expert cache 87.7% hit (+1.4% of the routed experts over PCIe)
+Oct 29 14:17:14 ubuntu runner: [strata] reading the prompt: 113,448 of 113,453 tokens, 3 s so far
+Oct 29 14:17:15 ubuntu runner: [strata] thinking: 17 of budget 111513 (max 148683) tokens, 25.2 tok/s, 4 s
+Oct 29 14:17:16 ubuntu runner: [strata] thinking: 50 of budget 111513 (max 148683) tokens, 29.7 tok/s, 5 s
+Oct 29 14:17:17 ubuntu runner: [strata] writing a tool call: terminal: 101 of max 148683 tokens, 37.1 tok/s, 6 s
+Oct 29 14:17:18 ubuntu runner: [strata] done: 156 tokens in 7 s (42.3 tok/s) (stop, cancel=False), expert cache 89.4% hit (+1.1% of the routed experts over PCIe)
+Oct 29 14:17:21 ubuntu runner: [strata] reading the prompt: 113,938 of 113,943 tokens, 2 s so far
+Oct 29 14:17:22 ubuntu runner: [strata] thinking: 18 of budget 111145 (max 148193) tokens, 24.0 tok/s, 3 s
+Oct 29 14:17:23 ubuntu runner: [strata] thinking: 48 of budget 111145 (max 148193) tokens, 26.7 tok/s, 4 s
+Oct 29 14:17:24 ubuntu runner: [strata] thinking: 80 of budget 111145 (max 148193) tokens, 28.2 tok/s, 5 s
+Oct 29 14:17:25 ubuntu runner: [strata] thinking: 114 of budget 111145 (max 148193) tokens, 29.3 tok/s, 6 s
+Oct 29 14:17:26 ubuntu runner: [strata] thinking: 160 of budget 111145 (max 148193) tokens, 32.5 tok/s, 7 s
+Oct 29 14:17:27 ubuntu runner: [strata] thinking: 190 of budget 111145 (max 148193) tokens, 31.8 tok/s, 8 s
+Oct 29 14:17:28 ubuntu runner: [strata] thinking: 238 of budget 111145 (max 148193) tokens, 33.9 tok/s, 9 s
+Oct 29 14:17:29 ubuntu runner: [strata] thinking: 282 of budget 111145 (max 148193) tokens, 35.0 tok/s, 10 s
+Oct 29 14:17:30 ubuntu runner: [strata] thinking: 321 of budget 111145 (max 148193) tokens, 35.3 tok/s, 12 s
+Oct 29 14:17:31 ubuntu runner: [strata] thinking: 361 of budget 111145 (max 148193) tokens, 35.8 tok/s, 13 s
+Oct 29 14:17:32 ubuntu runner: [strata] thinking: 403 of budget 111145 (max 148193) tokens, 36.3 tok/s, 14 s
+Oct 29 14:17:33 ubuntu runner: [strata] thinking: 443 of budget 111145 (max 148193) tokens, 36.5 tok/s, 15 s
+Oct 29 14:17:34 ubuntu runner: [strata] thinking: 481 of budget 111145 (max 148193) tokens, 36.5 tok/s, 16 s
+Oct 29 14:17:35 ubuntu runner: [strata] thinking: 517 of budget 111145 (max 148193) tokens, 36.5 tok/s, 17 s
+Oct 29 14:17:36 ubuntu runner: [strata] thinking: 554 of budget 111145 (max 148193) tokens, 36.5 tok/s, 18 s
+Oct 29 14:17:37 ubuntu runner: [strata] writing a tool call: terminal: 585 of max 148193 tokens, 36.0 tok/s, 19 s
+Oct 29 14:17:38 ubuntu runner: [strata] writing a tool call: terminal: 625 of max 148193 tokens, 36.2 tok/s, 20 s
+Oct 29 14:17:39 ubuntu runner: [strata] writing a tool call: terminal: 671 of max 148193 tokens, 36.6 tok/s, 21 s
+Oct 29 14:17:40 ubuntu runner: [strata] writing a tool call: terminal: 718 of max 148193 tokens, 37.1 tok/s, 22 s
+Oct 29 14:17:41 ubuntu runner: [strata] done: 757 tokens in 23 s (37.1 tok/s) (stop, cancel=False), expert cache 89.3% hit (+1.0% of the routed experts over PCIe)
+Oct 29 14:17:43 ubuntu runner: [strata] reading the prompt: 114,817 of 114,822 tokens, 1 s so far
+Oct 29 14:17:44 ubuntu runner: [strata] thinking: 22 of budget 110486 (max 147314) tokens, 30.9 tok/s, 2 s
+Oct 29 14:17:45 ubuntu runner: [strata] thinking: 69 of budget 110486 (max 147314) tokens, 39.3 tok/s, 3 s
+Oct 29 14:17:46 ubuntu runner: [strata] thinking: 105 of budget 110486 (max 147314) tokens, 37.6 tok/s, 4 s
+Oct 29 14:17:47 ubuntu runner: [strata] thinking: 137 of budget 110486 (max 147314) tokens, 36.0 tok/s, 5 s
+Oct 29 14:17:48 ubuntu runner: [strata] thinking: 174 of budget 110486 (max 147314) tokens, 35.9 tok/s, 6 s
+Oct 29 14:17:49 ubuntu runner: [strata] thinking: 217 of budget 110486 (max 147314) tokens, 37.1 tok/s, 7 s
+Oct 29 14:17:50 ubuntu runner: [strata] thinking: 266 of budget 110486 (max 147314) tokens, 38.7 tok/s, 8 s
+Oct 29 14:17:51 ubuntu runner: [strata] thinking: 314 of budget 110486 (max 147314) tokens, 39.8 tok/s, 9 s
+Oct 29 14:17:52 ubuntu runner: [strata] thinking: 364 of budget 110486 (max 147314) tokens, 40.8 tok/s, 10 s
+Oct 29 14:17:53 ubuntu runner: [strata] thinking: 423 of budget 110486 (max 147314) tokens, 42.5 tok/s, 12 s
+Oct 29 14:17:54 ubuntu runner: [strata] thinking: 473 of budget 110486 (max 147314) tokens, 43.0 tok/s, 13 s
+Oct 29 14:17:55 ubuntu runner: [strata] thinking: 515 of budget 110486 (max 147314) tokens, 42.8 tok/s, 14 s
+Oct 29 14:17:56 ubuntu runner: [strata] thinking: 559 of budget 110486 (max 147314) tokens, 42.7 tok/s, 15 s
+Oct 29 14:17:57 ubuntu runner: [strata] thinking: 592 of budget 110486 (max 147314) tokens, 42.0 tok/s, 16 s
+Oct 29 14:17:58 ubuntu runner: [strata] thinking: 632 of budget 110486 (max 147314) tokens, 41.8 tok/s, 17 s
+Oct 29 14:17:59 ubuntu runner: [strata] thinking: 679 of budget 110486 (max 147314) tokens, 42.0 tok/s, 18 s
+Oct 29 14:18:00 ubuntu runner: [strata] thinking: 720 of budget 110486 (max 147314) tokens, 41.8 tok/s, 19 s
+Oct 29 14:18:02 ubuntu runner: [strata] thinking: 762 of budget 110486 (max 147314) tokens, 41.7 tok/s, 20 s
+Oct 29 14:18:03 ubuntu runner: [strata] thinking: 797 of budget 110486 (max 147314) tokens, 41.2 tok/s, 21 s
+Oct 29 14:18:04 ubuntu runner: [strata] writing a tool call: terminal: 828 of max 147314 tokens, 40.6 tok/s, 22 s
+Oct 29 14:18:05 ubuntu runner: [strata] writing a tool call: terminal: 868 of max 147314 tokens, 40.4 tok/s, 23 s
+Oct 29 14:18:06 ubuntu runner: [strata] writing a tool call: terminal: 907 of max 147314 tokens, 40.2 tok/s, 24 s
+Oct 29 14:18:07 ubuntu runner: [strata] writing a tool call: terminal: 944 of max 147314 tokens, 40.1 tok/s, 25 s
+Oct 29 14:18:08 ubuntu runner: [strata] writing a tool call: terminal: 990 of max 147314 tokens, 40.3 tok/s, 26 s
+Oct 29 14:18:09 ubuntu runner: [strata] writing a tool call: terminal: 1039 of max 147314 tokens, 40.6 tok/s, 27 s
+Oct 29 14:18:10 ubuntu runner: [strata] writing a tool call: terminal: 1089 of max 147314 tokens, 40.9 tok/s, 28 s
+Oct 29 14:18:11 ubuntu runner: [strata] writing a tool call: terminal: 1138 of max 147314 tokens, 41.1 tok/s, 29 s
+Oct 29 14:18:12 ubuntu runner: [strata] writing a tool call: terminal: 1195 of max 147314 tokens, 41.6 tok/s, 30 s
+Oct 29 14:18:13 ubuntu runner: [strata] writing a tool call: terminal: 1245 of max 147314 tokens, 41.8 tok/s, 31 s
+Oct 29 14:18:14 ubuntu runner: [strata] writing a tool call: terminal: 1280 of max 147314 tokens, 41.4 tok/s, 32 s
+Oct 29 14:18:15 ubuntu runner: [strata] writing a tool call: terminal: 1320 of max 147314 tokens, 41.3 tok/s, 34 s
+Oct 29 14:18:16 ubuntu runner: [strata] writing a tool call: terminal: 1363 of max 147314 tokens, 41.3 tok/s, 35 s
+Oct 29 14:18:17 ubuntu runner: [strata] writing a tool call: terminal: 1406 of max 147314 tokens, 41.3 tok/s, 36 s
+Oct 29 14:18:18 ubuntu runner: [strata] writing a tool call: terminal: 1452 of max 147314 tokens, 41.4 tok/s, 37 s
+Oct 29 14:18:19 ubuntu runner: [strata] writing a tool call: terminal: 1479 of max 147314 tokens, 40.9 tok/s, 38 s
+Oct 29 14:18:20 ubuntu runner: [strata] writing a tool call: terminal: 1511 of max 147314 tokens, 40.6 tok/s, 39 s
+Oct 29 14:18:22 ubuntu runner: [strata] writing a tool call: terminal: 1542 of max 147314 tokens, 40.3 tok/s, 40 s
+Oct 29 14:18:22 ubuntu runner: [strata] done: 1544 tokens in 40 s (40.3 tok/s) (stop, cancel=False), expert cache 86.1% hit (+1.5% of the routed experts over PCIe)
+Oct 29 14:18:24 ubuntu runner: [strata] reading the prompt: 984 of 991 tokens, 3 s so far
+Oct 29 14:18:25 ubuntu runner: [strata] done: 4 tokens in 3 s (20.1 tok/s) (stop, cancel=False), expert cache 54.6% hit (+3.4% of the routed experts over PCIe)
+Oct 29 14:18:32 ubuntu runner: [strata] reading the prompt: 8,192 of 116,471 tokens, 7 s so far
+Oct 29 14:18:39 ubuntu runner: [strata] reading the prompt: 16,384 of 116,471 tokens, 14 s so far
+Oct 29 14:18:44 ubuntu runner: [strata] reading the prompt: 19,495 of 116,471 tokens, 18 s so far
+Oct 29 14:18:51 ubuntu runner: [strata] reading the prompt: 27,687 of 116,471 tokens, 26 s so far
+Oct 29 14:18:58 ubuntu runner: [strata] reading the prompt: 35,879 of 116,471 tokens, 33 s so far
+Oct 29 14:19:06 ubuntu runner: [strata] reading the prompt: 44,071 of 116,471 tokens, 40 s so far
+Oct 29 14:19:13 ubuntu runner: [strata] reading the prompt: 52,263 of 116,471 tokens, 48 s so far
+Oct 29 14:19:21 ubuntu runner: [strata] reading the prompt: 60,455 of 116,471 tokens, 56 s so far
+Oct 29 14:19:29 ubuntu runner: [strata] reading the prompt: 68,647 of 116,471 tokens, 64 s so far
+Oct 29 14:19:37 ubuntu runner: [strata] reading the prompt: 76,839 of 116,471 tokens, 72 s so far
+Oct 29 14:19:46 ubuntu runner: [strata] reading the prompt: 85,031 of 116,471 tokens, 80 s so far
+Oct 29 14:19:54 ubuntu runner: [strata] reading the prompt: 93,223 of 116,471 tokens, 89 s so far
+Oct 29 14:20:03 ubuntu runner: [strata] reading the prompt: 101,415 of 116,471 tokens, 98 s so far
+Oct 29 14:20:12 ubuntu runner: [strata] reading the prompt: 109,607 of 116,471 tokens, 107 s so far
+Oct 29 14:20:20 ubuntu runner: [strata] reading the prompt: 116,466 of 116,471 tokens, 115 s so far
+Oct 29 14:20:21 ubuntu runner: [strata] thinking: 2 of budget 109249 (max 145665) tokens, 8.0 tok/s, 116 s
+Oct 29 14:20:22 ubuntu runner: [strata] thinking: 28 of budget 109249 (max 145665) tokens, 24.9 tok/s, 117 s
+Oct 29 14:20:23 ubuntu runner: [strata] thinking: 54 of budget 109249 (max 145665) tokens, 24.8 tok/s, 118 s
+Oct 29 14:20:24 ubuntu runner: [strata] thinking: 96 of budget 109249 (max 145665) tokens, 30.1 tok/s, 119 s
+Oct 29 14:20:25 ubuntu runner: [strata] thinking: 134 of budget 109249 (max 145665) tokens, 31.8 tok/s, 120 s
+Oct 29 14:20:26 ubuntu runner: [strata] thinking: 177 of budget 109249 (max 145665) tokens, 33.9 tok/s, 121 s
+Oct 29 14:20:27 ubuntu runner: [strata] thinking: 216 of budget 109249 (max 145665) tokens, 34.7 tok/s, 122 s
+Oct 29 14:20:28 ubuntu runner: [strata] thinking: 255 of budget 109249 (max 145665) tokens, 35.3 tok/s, 123 s
+Oct 29 14:20:29 ubuntu runner: [strata] thinking: 297 of budget 109249 (max 145665) tokens, 36.1 tok/s, 124 s
+Oct 29 14:20:30 ubuntu runner: [strata] thinking: 348 of budget 109249 (max 145665) tokens, 37.5 tok/s, 125 s
+Oct 29 14:20:32 ubuntu runner: [strata] thinking: 388 of budget 109249 (max 145665) tokens, 37.7 tok/s, 126 s
+Oct 29 14:20:33 ubuntu runner: [strata] thinking: 435 of budget 109249 (max 145665) tokens, 38.4 tok/s, 127 s
+Oct 29 14:20:34 ubuntu runner: [strata] thinking: 480 of budget 109249 (max 145665) tokens, 38.9 tok/s, 128 s
+Oct 29 14:20:35 ubuntu runner: [strata] thinking: 520 of budget 109249 (max 145665) tokens, 39.0 tok/s, 129 s
+Oct 29 14:20:36 ubuntu runner: [strata] thinking: 560 of budget 109249 (max 145665) tokens, 39.0 tok/s, 130 s
+Oct 29 14:20:37 ubuntu runner: [strata] thinking: 597 of budget 109249 (max 145665) tokens, 38.8 tok/s, 131 s
+Oct 29 14:20:38 ubuntu runner: [strata] thinking: 628 of budget 109249 (max 145665) tokens, 38.3 tok/s, 132 s
+Oct 29 14:20:39 ubuntu runner: [strata] thinking: 666 of budget 109249 (max 145665) tokens, 38.2 tok/s, 133 s
+Oct 29 14:20:40 ubuntu runner: [strata] writing a tool call: terminal: 713 of max 145665 tokens, 38.7 tok/s, 134 s
+Oct 29 14:20:41 ubuntu runner: [strata] writing a tool call: terminal: 752 of max 145665 tokens, 38.6 tok/s, 135 s
+Oct 29 14:20:42 ubuntu runner: [strata] writing a tool call: terminal: 787 of max 145665 tokens, 38.4 tok/s, 136 s
+Oct 29 14:20:43 ubuntu runner: [strata] done: 823 tokens in 137 s (38.4 tok/s) (stop, cancel=False), expert cache 90.2% hit (+0.8% of the routed experts over PCIe)
+Oct 29 14:20:45 ubuntu runner: [strata] reading the prompt: 117,680 of 117,685 tokens, 2 s so far
+Oct 29 14:20:46 ubuntu runner: [strata] thinking: 19 of budget 108339 (max 144451) tokens, 27.7 tok/s, 3 s
+Oct 29 14:20:47 ubuntu runner: [strata] thinking: 54 of budget 108339 (max 144451) tokens, 31.7 tok/s, 4 s
+Oct 29 14:20:49 ubuntu runner: [strata] thinking: 94 of budget 108339 (max 144451) tokens, 34.0 tok/s, 6 s
+Oct 29 14:20:50 ubuntu runner: [strata] thinking: 131 of budget 108339 (max 144451) tokens, 34.6 tok/s, 7 s
+Oct 29 14:20:51 ubuntu runner: [strata] thinking: 179 of budget 108339 (max 144451) tokens, 37.0 tok/s, 8 s
+Oct 29 14:20:52 ubuntu runner: [strata] thinking: 226 of budget 108339 (max 144451) tokens, 38.7 tok/s, 9 s
+Oct 29 14:20:53 ubuntu runner: [strata] thinking: 265 of budget 108339 (max 144451) tokens, 38.5 tok/s, 10 s
+Oct 29 14:20:54 ubuntu runner: [strata] thinking: 307 of budget 108339 (max 144451) tokens, 38.8 tok/s, 11 s
+Oct 29 14:20:55 ubuntu runner: [strata] thinking: 349 of budget 108339 (max 144451) tokens, 39.1 tok/s, 12 s
+Oct 29 14:20:56 ubuntu runner: [strata] thinking: 384 of budget 108339 (max 144451) tokens, 38.6 tok/s, 13 s
+Oct 29 14:20:57 ubuntu runner: [strata] thinking: 428 of budget 108339 (max 144451) tokens, 39.1 tok/s, 14 s
+Oct 29 14:20:58 ubuntu runner: [strata] thinking: 478 of budget 108339 (max 144451) tokens, 39.8 tok/s, 15 s
+Oct 29 14:20:59 ubuntu runner: [strata] thinking: 517 of budget 108339 (max 144451) tokens, 39.6 tok/s, 16 s
+Oct 29 14:21:00 ubuntu runner: [strata] thinking: 553 of budget 108339 (max 144451) tokens, 39.3 tok/s, 17 s
+Oct 29 14:21:01 ubuntu runner: [strata] thinking: 588 of budget 108339 (max 144451) tokens, 39.0 tok/s, 18 s
+Oct 29 14:21:02 ubuntu runner: [strata] thinking: 630 of budget 108339 (max 144451) tokens, 39.0 tok/s, 19 s
+Oct 29 14:21:03 ubuntu runner: [strata] writing a tool call: terminal: 662 of max 144451 tokens, 38.4 tok/s, 20 s
+Oct 29 14:21:04 ubuntu runner: [strata] writing a tool call: terminal: 704 of max 144451 tokens, 38.5 tok/s, 21 s
+Oct 29 14:21:05 ubuntu runner: [strata] writing a tool call: terminal: 740 of max 144451 tokens, 38.4 tok/s, 22 s
+Oct 29 14:21:06 ubuntu runner: [strata] writing a tool call: terminal: 795 of max 144451 tokens, 39.1 tok/s, 23 s
+Oct 29 14:21:07 ubuntu runner: [strata] writing a tool call: terminal: 836 of max 144451 tokens, 39.1 tok/s, 24 s
+Oct 29 14:21:07 ubuntu runner: [strata] done: 843 tokens in 24 s (39.2 tok/s) (stop, cancel=False), expert cache 89.0% hit (+1.0% of the routed experts over PCIe)
+Oct 29 14:21:09 ubuntu runner: [strata] thinking: 2 of budget 107675 (max 143566) tokens, 8.0 tok/s, 1 s
+Oct 29 14:21:10 ubuntu runner: [strata] thinking: 44 of budget 107675 (max 143566) tokens, 37.1 tok/s, 2 s
+Oct 29 14:21:11 ubuntu runner: [strata] thinking: 77 of budget 107675 (max 143566) tokens, 34.9 tok/s, 3 s
+Oct 29 14:21:12 ubuntu runner: [strata] thinking: 127 of budget 107675 (max 143566) tokens, 39.4 tok/s, 4 s
+Oct 29 14:21:13 ubuntu runner: [strata] writing a tool call: terminal: 176 of max 143566 tokens, 40.7 tok/s, 5 s
+Oct 29 14:21:14 ubuntu runner: [strata] writing a tool call: terminal: 228 of max 143566 tokens, 42.7 tok/s, 6 s
+Oct 29 14:21:15 ubuntu runner: [strata] writing a tool call: terminal: 276 of max 143566 tokens, 43.1 tok/s, 7 s
+Oct 29 14:21:16 ubuntu runner: [strata] writing a tool call: terminal: 326 of max 143566 tokens, 43.8 tok/s, 8 s
+Oct 29 14:21:16 ubuntu runner: [strata] done: 338 tokens in 9 s (43.6 tok/s) (stop, cancel=False), expert cache 88.3% hit (+1.4% of the routed experts over PCIe)
