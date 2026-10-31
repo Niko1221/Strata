@@ -9,6 +9,7 @@
 #include <array>
 #include <cstring>
 #include <future>
+#include <atomic>
 #include <limits>
 #include <mutex>
 
@@ -283,6 +284,8 @@ namespace {
 // after this returns (conversation_checkpoint_join waits for them)
 bool checkpoint_save(ConversationCheckpoint& c, const SessionState& ss, const ModelGeometry& g, std::string& error,
                      bool& staged) {
+    static std::atomic<uint64_t> captures{0};
+    c.capture = ++captures;   // new bytes: a new identity (ConversationCheckpoint::capture, STRATA_CKPT_PARK_REUSE)
     staged = false;
     const auto j0 = std::chrono::steady_clock::now();
     conversation_checkpoint_join(nullptr);   // (the staging buffer is reused)
@@ -519,7 +522,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse, size_t* reused_bytes,
                                 std::vector<ConversationCheckpoint>* storage,
-                                std::vector<ConversationCheckpoint>* moved) {
+                                std::vector<ConversationCheckpoint>* moved, ConversationParkSource* source) {
     static const bool ptr = std::getenv("STRATA_PARK_TRACE") != nullptr;
     auto now = [] { return std::chrono::steady_clock::now(); };
     auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
@@ -541,7 +544,10 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     }
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     const auto p1 = now();
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
+    captured.cvec = view.cvec;
+    // STRATA_CKPT_PARK_REUSE: the checkpoints' buffers moved from what the park holds already (ConversationParkSource)
+    captured.checkpoints = source != nullptr ? conversation_detail::park_checkpoints(view.checkpoints, *source)
+                                             : conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
     if (moved != nullptr)
         for (auto& c : *moved) {
             conversation_checkpoint_join(c.gdn.data());
