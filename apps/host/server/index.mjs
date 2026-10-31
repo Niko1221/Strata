@@ -1914,6 +1914,18 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, agent.queueMessage({ chatId: String(body.sessionId ?? ''), text: body.message })); }
     catch (e) { return error(res, e.code === 'queue-idle' ? 409 : 400, e.message); }
   }
+  // The person's answer to a question the agent asked, or a skip (#4244).
+  if (path === '/api/chat/answer' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, await agent.answerQuestion({ chatId: String(body.sessionId ?? ''), callId: String(body.callId ?? ''), answers: body.answers, skip: body.skip === true })); }
+    catch (e) { return error(res, e.code === 'question-gone' ? 409 : 400, e.message); }
+  }
+  // A message for one helper (#4749).
+  if (path === '/api/chat/helper' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, await agent.messageHelper({ chatId: String(body.sessionId ?? ''), helperId: body.helperId, text: body.message, delivery: body.delivery })); }
+    catch (e) { return error(res, e.code === 'helper-idle' || e.code === 'helper-refused' ? 409 : 400, e.message); }
+  }
   if (path === '/api/chat/queue/cancel' && method === 'POST') {
     const body = await readBody(req);
     try { return json(res, 200, agent.cancelQueued({ chatId: String(body.sessionId ?? ''), id: String(body.id ?? '') })); }

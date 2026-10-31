@@ -14,6 +14,7 @@ import type { LocalModelFolder, SetupState } from '../lib/types';
 import { downloadCounter, modelFolderLabel, onboardingError } from '../lib/onboarding-download';
 import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
 import { VersionPicker } from './VersionPicker';
+import { FirstRunLanguage } from './FirstRunLanguage';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
 import { OTHER_NOTE, PICK_NOTE, recommendedVersions } from '../lib/native-fit';
@@ -201,7 +202,7 @@ export function GuidedSetup() {
     const title = step === 1 ? 'State of the art. At home.' : step === 2 ? 'Select the model you want to run.' : step === 3 ? 'Downloading the model...' : tuneJob?.state === 'running' ? 'A little tuning. A better fit.' : 'How you would like to work with Strata?';
     function changeDownloadFolder() { void perform(async () => { await advance(2); setFolderOpen(true); }); }
     return <div className="setup guided-onboarding" data-step={step}>
-  <header className="onboard-header"><Brand variant="lockup" height={22}/>{tr(step !== 1 ? <button className="onboard-later" disabled={pending} onClick={() => void skip(false)}>{tr("Finish later")}<Icon name="chevron" size={13}/></button> : null)}</header>
+  <header className="onboard-header"><Brand variant="lockup" height={22}/>{tr(step === 1 ? <FirstRunLanguage/> : null)}{tr(step !== 1 ? <button className="onboard-later" disabled={pending} onClick={() => void skip(false)}>{tr("Finish later")}<Icon name="chevron" size={13}/></button> : null)}</header>
   <div className="onboard-stepper" aria-label={tr("Setup progress")}>{tr(steps.map((label, i) => <div key={label} data-current={step === i + 1} data-done={step > i + 1} aria-current={step === i + 1 ? 'step' : undefined}><span>{tr(step > i + 1 ? <Icon name="check" size={12}/> : i + 1)}</span><small>{tr(label)}</small></div>))}</div>
   {tr(step === 1 ? <>
    <OnboardingArt />

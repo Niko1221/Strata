@@ -1,8 +1,8 @@
 import { tr } from '../lib/i18n';
-import { copyText } from '../lib/clipboard';
+import { CopyBtn } from './CopyBtn';
 /** Safe, dependency-free rendering of the Markdown structures used in answers. */
 import { Fragment, type ReactNode } from 'react';
-import { Btn, IconBtn } from './ui';
+import { Btn } from './ui';
 import { SyntaxCode } from './SyntaxCode';
 import { MathView } from './MathView';
 import { displayBlock, hasMath, splitMath } from '../lib/math';
@@ -57,11 +57,6 @@ export function continuesParagraph(lines: string[], at: number): boolean {
         return false;
     return !displayBlock(lines, at);
 }
-/** Copy a code block. The toast store needs a browser, so it is loaded here, when someone copies: the renderer itself must render without one. */
-async function copyCode(text: string) {
-    const { pushToast } = await import('../lib/store');
-    await copyText(text, 'Code', { toast: pushToast });
-}
 export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
     text: string;
     onOpenLink?: (url: string) => void;
@@ -84,7 +79,7 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
             while (i < lines.length && !/^\s*```/.test(lines[i]))
                 body.push(lines[i++]);
             i++;
-            nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<IconBtn name="copy" title={tr("Copy code")} onClick={() => void copyCode(body.join('\n'))}/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
+            nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<CopyBtn text={body.join('\n')} label="Code" title="Copy code"/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
             continue;
         }
         const block = displayBlock(lines, i);

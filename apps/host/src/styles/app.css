@@ -462,11 +462,12 @@
 }
 
 /* ========================================================= reading comfort ==
-   Prose is capped at a comfortable measure; code blocks, tables and metric
-   grids in the same bubble still use the full width, because a wide table is
-   easier to read than a wrapped one. */
-.st-msg--assistant .st-bubble p,
-.st-msg--assistant .st-bubble .md-li {
+   Prose is capped at a comfortable measure: paragraphs, lists and quotes share one
+   width (the list rule used to name `.md-li`, a class the renderer never emits, so
+   lists ran the full column, #4722). Code blocks, tables and metric grids in the
+   same bubble still use the full width, because a wide table is easier to read
+   than a wrapped one. */
+.st-msg--assistant .st-bubble :is(p, ul, ol, blockquote) {
   max-width: var(--st-measure);
 }
 
@@ -7522,3 +7523,69 @@ textarea {
 
 /* A message the person typed keeps its line breaks (#3720). */
 .st-bubble__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---- the approval dock: a question for the person stays above the message box while a long reply scrolls (#4725) ---- */
+.approvaldock { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 0 0 10px; }
+.approvaldock > .askcard, .approvaldock > .toolcard { margin: 0; flex: none; border-color: var(--st-accent); box-shadow: var(--st-sh-bar); }
+.approval-wait { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+
+/* ---- a Copy control shows that it worked: a check mark for a moment, and the action row it sits in stays visible meanwhile (#4748) ---- */
+.st-btn--icon[data-copied] { color: var(--st-accent-text); background: var(--st-accent-tint); }
+.st-code .st-btn--icon[data-copied] { color: var(--st-accent); background: rgba(255, 255, 255, .08); }
+.menu__item[data-copied] { color: var(--st-accent-text); }
+.st-msg__actions:has([data-copied]) { opacity: 1; }
+
+/* ---- why Start tuning is greyed out: one sentence in the dialog's footer, left of the button (#4804) ---- */
+.tune-why { flex: 1 1 200px; min-width: 0; margin: 0; align-self: center; text-align: left; }
+
+/* ---- the progress card of a download, load or tuning: it stands out from the page and shows that it is alive (#4802) ---- */
+.native-progress { border: 1.5px solid var(--st-accent); background: linear-gradient(var(--st-accent-tint), var(--st-accent-tint)), var(--st-surface); box-shadow: var(--st-sh-pop); }
+.native-progress > .section-toolbar > h2 { display: flex; align-items: center; gap: 10px; }
+.native-progress__spin { flex: none; width: 16px; height: 16px; border-color: var(--st-accent-tint); border-top-color: var(--st-accent); }
+.native-progress__alive { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+.native-wait-note { margin: 0; text-align: right; }
+@media (prefers-reduced-motion: reduce) { .native-progress__spin { animation: none; border-color: var(--st-accent); } }
+/* ---- Serving: the second address and the one line that says why it is not the same (#4798) ---- */
+.serving-two-addresses { margin: 6px 0 0; max-width: 60ch; }
+
+/* ---- Context memory: the one line under the chosen format (#3723) ---- */
+.native-kv-hint { display: block; margin-top: 6px; line-height: 1.5; }
+
+/* ---- a message for one helper, under its row (#4749) ---- */
+.subagent-row__reply { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.subagent-row__reply .st-input { flex: 1; min-width: 0; }
+.subagent-row__copy p.subagent-row__note { white-space: normal; margin: 6px 0 0; }
+
+/* ---- a message sent while an answer is being written: the one waiting to go, and what Enter will do (#4783) ---- */
+.parked { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.parked__item { display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 12px; border: 1px dashed var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); }
+.parked__item .xs { flex: none; }
+.parked__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-sm); }
+.composer__busy-hint { margin: 8px 4px 0; }
+
+/* ---- quoting a turn or a passage into the next message (#4785) ---- */
+.quotes { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; max-height: 30vh; overflow-y: auto; }
+.quote { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; border: 1px solid var(--st-line); border-left: 3px solid var(--st-accent); border-radius: var(--st-r-md); background: var(--st-surface); }
+.quote__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 4px 0; border: 0; background: none; color: var(--st-ink); font: inherit; text-align: left; cursor: pointer; }
+.quote__text, .sent-quote__text { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: var(--st-fs-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sent-quotes { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.sent-quote { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border: 0; border-left: 3px solid var(--st-accent); border-radius: var(--st-r-sm); background: var(--st-surface-2); color: var(--st-ink-soft); font: inherit; text-align: left; cursor: pointer; }
+.sent-quotes[data-open] .sent-quote__text { -webkit-line-clamp: unset; line-clamp: unset; display: block; }
+.quote-selection { position: fixed; z-index: var(--layer-popover, 100); padding: 6px 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-pill); background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-pop); font: 600 var(--st-fs-sm) var(--st-font); cursor: pointer; }
+
+/* ---- the agent's own question: the approval card with options (#4244) ---- */
+.askq { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; }
+.approvaldock > .askq { border-color: var(--st-accent); box-shadow: var(--st-sh-bar); margin: 0; flex: none; }
+.askq__item { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 6px 0; }
+.askq__item + .askq__item { border-top: 1px solid var(--st-line-soft); padding-top: 8px; }
+.askq__detail { margin: 2px 0 0; }
+.askq__opts { display: flex; flex-direction: column; gap: 6px; margin-left: 44px; }
+.askq__opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); color: var(--st-ink); font: inherit; text-align: left; cursor: pointer; }
+.askq__opt[data-on] { border-color: var(--st-accent); background: var(--st-accent-tint); }
+.askq__opt:disabled { opacity: .6; cursor: default; }
+.askq__own { margin-left: 44px; width: calc(100% - 44px); }
+.askq__problem { margin: 0 14px 0 44px; }
+/* The answer buttons stay in view while the questions scroll inside the dock. */
+.askq__acts { display: flex; gap: 8px; justify-content: flex-end; position: sticky; bottom: 0; margin: 0; padding: 8px 14px 0 44px; background: var(--st-surface); }
+.approvaldock:has(.askq) { max-height: 56vh; }
+@media (max-width: 560px) { .askq__opts, .askq__own, .askq__problem { margin-left: 0; } .askq__acts { padding-left: 14px; } .askq__own { width: 100%; } .askq__item { padding-right: 0; } }

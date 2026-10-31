@@ -1,4 +1,8 @@
 import { workspaceIdForSession } from './session-workspace';
+import { detectLanguage } from './language-detect';
+import { validWhileBusy, type WhileBusy } from './while-busy';
+import { addToQuotes, type Quote } from './quotes';
+import { readAsk, type AgentAnswer, type AgentAsk } from './agent-ask';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { settleAgents, updateAgent } from './agents';
@@ -90,6 +94,8 @@ export interface AppState {
   doneSound: boolean;
   /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -117,6 +123,12 @@ export interface AppState {
   sessions: Session[];
   activeSession: string | null;
   streaming: boolean;
+  /** Messages the person sent while an answer was being written, waiting to go when it ends (Send after, Interrupt), by chat (#4783). */
+  parked: Record<string, string[]>;
+  /** The passages quoted into the message being written, by chat, in the order they were quoted (#4785). */
+  quotes: Record<string, Quote[]>;
+  /** The questions the agent asked the person and is waiting for, by chat (#4244). */
+  agentAsks: Record<string, AgentAsk[]>;
   /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
   liveChats: number;
   toasts: Toast[];
@@ -155,6 +167,8 @@ export interface Prefs {
   electricityCurrency: string;
   doneSound: boolean;
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -176,6 +190,7 @@ const PREFS_DEFAULTS: Prefs = {
   electricityCurrency: '',
   doneSound: false,
   approvalNotify: false,
+  whileBusy: 'wait',
   shareTelemetry: false,
 };
 
@@ -225,12 +240,15 @@ function loadPrefs(): Prefs {
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
+        whileBusy: validWhileBusy(parsed.whileBusy) ? parsed.whileBusy : 'wait',
       };
     } catch {
       /* fall through to the next key */
     }
   }
-  return { ...PREFS_DEFAULTS };
+  // Nothing saved: a first start. It opens in the language of the computer; a choice made on the first screen is saved like any other.
+  const tags = typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
+  return { ...PREFS_DEFAULTS, language: detectLanguage(tags) ?? 'en' };
 }
 
 const prefs = loadPrefs();
@@ -261,6 +279,10 @@ let state: AppState = {
   electricityCurrency: prefs.electricityCurrency,
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
+  whileBusy: prefs.whileBusy,
+  parked: {},
+  quotes: {},
+  agentAsks: {},
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -487,6 +509,7 @@ function savePrefs() {
     electricityCurrency: state.electricityCurrency,
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
+    whileBusy: state.whileBusy,
     shareTelemetry: state.shareTelemetry,
   };
   try {
@@ -594,6 +617,70 @@ export function setElectricity(price: number, currency: string) {
   const ok = Number.isFinite(price) && price > 0 && price < 1000;
   set({ electricityPrice: ok ? Math.round(price * 10000) / 10000 : 0, electricityCurrency: /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : '' });
   savePrefs();
+}
+
+export function setWhileBusy(whileBusy: WhileBusy) {
+  if (!validWhileBusy(whileBusy)) return;
+  set({ whileBusy });
+  savePrefs();
+}
+
+/** A message sent while an answer is being written waits here; the chat sends it when the answer is done (it is also where Interrupt leaves it). */
+export function parkMessage(sessionId: string, text: string) {
+  const clean = text.trim();
+  if (!clean) return;
+  set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
+}
+function setAsks(sessionId: string, list: AgentAsk[]) {
+  const next = { ...state.agentAsks };
+  if (list.length) next[sessionId] = list; else delete next[sessionId];
+  set({ agentAsks: next });
+}
+/** The agent asked the person something (a frame of the host), or the question ended without an answer. */
+export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
+  const ask = readAsk(frame);
+  // A /loop runs without anyone there: the question is skipped at once, so the loop never waits for an answer.
+  if (ask && loopScheduler.isRunning(sessionId)) { void answerAgentAsk(sessionId, ask.callId, null).catch(() => {}); return; }
+  if (ask) setAsks(sessionId, [...(state.agentAsks[sessionId] ?? []).filter(a => a.callId !== ask.callId), ask]);
+}
+export function removeAgentAsk(sessionId: string, callId?: string) {
+  const rest = callId === undefined ? [] : (state.agentAsks[sessionId] ?? []).filter(a => a.callId !== callId);
+  if ((state.agentAsks[sessionId]?.length ?? 0) !== rest.length) setAsks(sessionId, rest);
+}
+/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words. */
+export async function answerAgentAsk(sessionId: string, callId: string, answers: AgentAnswer[] | null) {
+  await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
+  removeAgentAsk(sessionId, callId);
+}
+
+/** Puts a turn or a selected passage above the message box. */
+export function addQuote(sessionId: string, text: string, messageId: string, role: 'user' | 'assistant') {
+  const list = state.quotes[sessionId] ?? [];
+  const next = addToQuotes(list, { text, messageId, role });
+  if (next.length !== list.length) set({ quotes: { ...state.quotes, [sessionId]: next } });
+}
+export function removeQuote(sessionId: string, id: string) {
+  const rest = (state.quotes[sessionId] ?? []).filter(q => q.id !== id);
+  const next = { ...state.quotes };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ quotes: next });
+}
+export function clearQuotes(sessionId: string) {
+  if (!state.quotes[sessionId]) return;
+  const next = { ...state.quotes };
+  delete next[sessionId];
+  set({ quotes: next });
+}
+
+/** The first parked message of a chat, taken out of the list (to send it, or to give it back to the box). */
+export function takeParked(sessionId: string, index = 0): string | undefined {
+  const list = state.parked[sessionId] ?? [];
+  if (index < 0 || index >= list.length) return undefined;
+  const rest = list.filter((_, i) => i !== index);
+  const next = { ...state.parked };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ parked: next });
+  return list[index];
 }
 
 export function setDoneSound(doneSound: boolean) {
@@ -1862,6 +1949,10 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
           if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
+        } else if (type === 'agent-question') {
+          addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
+        } else if (type === 'agent-question-end') {
+          removeAgentAsk(sessionId, String(frame.callId ?? ''));
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -1951,6 +2042,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
+    removeAgentAsk(sessionId);
     const next = releasedMessages.get(sessionId)?.shift();
     if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }
