@@ -77,6 +77,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/batch_checkpoints.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
@@ -9125,8 +9126,8 @@ int main(int argc, char **argv) try {
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
-            // the checkpoint its prompt read took at the last turn boundary (the history before the new turn's
-            // header): a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
+            // valid prompt checkpoints within the cache budget, including earlier shared prefixes:
+            // a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
             // the slot's tokens only up to there - the slot's K/V up to it plus this state continue from it
             std::vector<ConvCheckpoint> checks;
             // a prompt read that gave way to a waiting request (BYIELD): `ids` is the part read so far, and the same
@@ -10220,6 +10221,9 @@ int main(int argc, char **argv) try {
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    // An ordinary whole-slot return replaces the old chain; its tail identity cannot follow it.
+                    if (slot_ck == nullptr && !bs[(size_t) slot_source].img &&
+                        !(bs[(size_t) slot_source].partial && admit_slot == slot_source)) tail_ckpt_len = -1;
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -12207,9 +12211,19 @@ int main(int argc, char **argv) try {
                     const ConvCheckpoint* best = nullptr;
                     for (const ConvCheckpoint& c : checks)
                         if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
-                            std::equal(c.ids.begin(), c.ids.end(), live.begin()))
+                            strata::program::batch_checkpoint_prefix(c, live, live.size(), stages.size()))
                             best = &c;
-                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                    if (!sl.img && best != nullptr && o.prompt_cache > 0) {
+                        try {
+                            const auto selected = strata::program::select_batch_checkpoints(
+                                checks, live, best->ids.size(), stages.size(), (size_t) o.prompt_cache, false, tail_ckpt_len);
+                            sl.checks.reserve(selected.size());
+                            for (const ConvCheckpoint* c : selected) sl.checks.push_back(*c);
+                        } catch (const std::bad_alloc&) {
+                            std::fprintf(stderr, "strata batch: slot %d: its checkpoints were not all retained (out of "
+                                                 "memory); the rest are skipped\n", admit_slot);
+                        }
+                    }
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
                                  (long long) live.size(), std::chrono::duration<double, std::milli>(Clock::now() - tc0).count());
                 }

@@ -87,6 +87,7 @@
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/batch_checkpoints.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
 #include "strata/program/gpu_report.hpp"
@@ -12513,8 +12514,8 @@ int main(int argc, char** argv) {
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
-            // the checkpoint its prompt read took at the last turn boundary (the history before the new turn's
-            // header): a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
+            // valid prompt checkpoints within the cache budget, including earlier shared prefixes:
+            // a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
             // the slot's tokens only up to there - the slot's K/V up to it plus this state continue from it
             std::vector<ConvCheckpoint> checks;
             // a prompt read that gave way to a waiting request (BYIELD): `ids` is the part read so far, and the same
@@ -14443,6 +14444,9 @@ int main(int argc, char** argv) {
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    // An ordinary whole-slot return replaces the old chain; its tail identity cannot follow it.
+                    if (slot_ck == nullptr && !bs[(size_t) slot_source].img &&
+                        !(bs[(size_t) slot_source].partial && admit_slot == slot_source)) tail_ckpt_len = -1;
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -17398,7 +17402,7 @@ int main(int argc, char** argv) {
                     for (size_t i = 0; i < checks.size(); ++i) {
                         const ConvCheckpoint& c = checks[i];
                         if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
-                            std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                            strata::program::batch_checkpoint_prefix(c, live, live.size(), stages.size())) {
                             best = &c;
                             best_at = i;
                         }
@@ -17408,27 +17412,47 @@ int main(int argc, char** argv) {
                     if (lent_slot >= 0 && lent_slot != admit_slot && (best == nullptr || (int64_t) best->ids.size() < resume))
                         for (const ConvCheckpoint& c : bs[(size_t) lent_slot].checks)
                             if ((int64_t) c.ids.size() == resume && c.ids.size() < live.size() &&
-                                std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                strata::program::batch_checkpoint_prefix(c, live, live.size(), stages.size())) {
                                 best = &c;
                                 best_lent = true;
                             }
-                    // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
-                    // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
-                    const bool move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
-                                           !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
-                                            (int64_t) best->ids.size() == moved_in);
                     const auto tc3 = Clock::now();
-                    if (move_best) {
-                        sl.checks.push_back(std::move(checks[best_at]));
-                        checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
-                    } else if (best != nullptr && !sl.img) {
-                        if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
-                            ConvCheckpoint c = ckpt_pool.take();
-                            c = *best;
-                            sl.checks.push_back(std::move(c));
-                        } else {
-                            sl.checks.push_back(*best);
+                    bool move_best = false;
+                    try {
+                        // Select metadata first: the destination budget does not require copying every source snapshot.
+                        const auto selected = !sl.img && best != nullptr && o.prompt_cache > 0
+                            ? strata::program::select_batch_checkpoints(
+                                  checks, live, best->ids.size(), stages.size(), (size_t) o.prompt_cache,
+                                  o.prompt_cache_spread, tail_ckpt_len, best_lent ? best : nullptr)
+                            : std::vector<const ConvCheckpoint*>{};
+                        // Keep the existing ownership rule: only this request's unpinned turn/moved-in checkpoint
+                        // may move. All other selected points and another slot's borrowed point stay reusable there.
+                        move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
+                                    !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
+                                     (int64_t) best->ids.size() == moved_in) &&
+                                    std::find(selected.begin(), selected.end(), best) != selected.end();
+                        // STRATA_CKPT_ASYNC may still be filling host state after the direct device slot copy.
+                        if (!selected.empty()) strata::core::conversation_checkpoint_join(nullptr);
+                        sl.checks.reserve(selected.size());
+                        for (const ConvCheckpoint* c : selected) {
+                            if (move_best && c == best) continue;
+                            if (ckpt_pool.on()) {
+                                ConvCheckpoint copy = ckpt_pool.take();
+                                copy = *c;
+                                sl.checks.push_back(std::move(copy));
+                            } else {
+                                sl.checks.push_back(*c);
+                            }
                         }
+                        // All reads through source pointers precede the move and erase. The deepest point is last.
+                        if (move_best) {
+                            sl.checks.push_back(std::move(checks[best_at]));
+                            checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
+                        }
+                    } catch (const std::bad_alloc&) {
+                        move_best = false;   // no source entry was moved until all selected copies succeeded
+                        std::fprintf(stderr, "strata batch: slot %d: its checkpoints were not all retained (out of "
+                                             "memory); the rest are skipped\n", admit_slot);
                     }
                     const auto tc4 = Clock::now();
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
