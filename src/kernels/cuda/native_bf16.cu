@@ -84,7 +84,8 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
             float acc2 = 0.0f;
             for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
                 const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
-                const float2 input = *(const volatile float2*) (inputs2 + pair);
+                const volatile float* ip = reinterpret_cast<const volatile float*>(inputs2 + pair);
+                const float2 input = make_float2(ip[0], ip[1]);
                 acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
                 acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
             }
@@ -168,7 +169,8 @@ __global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const u
                     float acc2 = 0.0f;
                     for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
                         const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
-                        const float2 input = *(const volatile float2*) (reinterpret_cast<const float2*>(x + (size_t) k * ldx) + pair);
+                        const volatile float* ip = reinterpret_cast<const volatile float*>(reinterpret_cast<const float2*>(x + (size_t) k * ldx) + pair);
+                        const float2 input = make_float2(ip[0], ip[1]);
                         acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
                         acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
                     }
@@ -333,8 +335,7 @@ void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64
 void mmvf_chk_report() {
     unsigned long long h[8] = {};
     if (cudaMemcpyFromSymbol(h, g_mmvf_chk, sizeof(h)) != cudaSuccess) return;
-    std::fprintf(stderr, "strata mmvf check: %llu accumulators compared, %llu differ; first: block %llu thread %llu n_in %llu fast %08llx plain %08llx
-", h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+    std::fprintf(stderr, "strata mmvf check: %llu accumulators compared, %llu differ; first: block %llu thread %llu n_in %llu fast %08llx plain %08llx\n", h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
 }
 int mmvf_fast() {
     static const int v = [] {
