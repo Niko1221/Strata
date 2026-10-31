@@ -51,7 +51,7 @@ export const reply = (id, content, extra = {}) => ({ id, role: 'assistant', cont
 export const chat = (id, title, messages) => ({ id, title, defaultTitle: false, updatedAt: iso(9), createdAt: iso(0), messages, workspace: ws, tokensIn: 0, tokensOut: 0, preferences: { useTools: true, mode: 'manual', remoteModel } });
 
 /** A page with the given chats already in local storage. `prefs` are merged into the saved preferences. */
-export async function open(scheme, width, height, sessions, { hash = '#/chat', prefs = {}, keep = false } = {}) {
+export async function open(scheme, width, height, sessions, { hash = '#/chat', prefs = {}, origin = base, before = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: scheme, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   pages.push(page);
@@ -66,7 +66,8 @@ export async function open(scheme, width, height, sessions, { hash = '#/chat', p
       if (Object.keys(prefs).length) localStorage.setItem('strata.prefs.v1', JSON.stringify(prefs));
     } catch { /* storage refused */ }
   }, { sessions, prefs });
-  await page.goto(`${base}/${hash}`);
+  if (before) await before(page);
+  await page.goto(`${origin}/${hash}`);
   await page.waitForTimeout(1800);
   const skip = page.getByText('Go straight to the app');
   if (await skip.count()) { await skip.click(); await page.waitForTimeout(600); }
@@ -206,6 +207,82 @@ cases.copy = async () => {
   }
 };
 
+/* ------------------------------------------------------------------------------------------------------------------- #4804 */
+let tuneHostInfo = null;
+async function tuneHost() {
+  if (tuneHostInfo) return tuneHostInfo;
+  const tport = await freePort();
+  const proc = spawn(process.execPath, [join(HOST_DIR, 'tests/fixtures/tune-ui-host.mjs')], { cwd: HOST_DIR, env: { ...process.env, TUNE_UI_PORT: String(tport), TUNE_UPSTREAM: base, TUNE_SHOT_DIR: SHOTS }, stdio: 'ignore', windowsHide: true });
+  const origin = `http://127.0.0.1:${tport}`;
+  for (let i = 0; i < 100; i++) { try { if ((await fetch(`${origin}/api/native`)).ok) break; } catch { /* starting */ } await sleep(200); }
+  tuneHostInfo = { origin, proc, mode: m => fetch(`${origin}/__fixture/status-mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: m }) }) };
+  return tuneHostInfo;
+}
+cases.tune = async () => {
+  const t = await tuneHost();
+  const sessions = [chat('s1', 'Tune', [user('u1', 'Hi'), reply('a1', 'Hello there.')])];
+  const openDialog = async (scheme, w, h, mode, inject = false) => {
+    await t.mode(mode);
+    const page = await open(scheme, w, h, sessions, { hash: '#/models', origin: t.origin });
+    if (inject) await page.route(/\/api\/native(\?.*)?$/, async route => {
+      if (!page.injectJob) return route.continue();
+      const r = await route.fetch(); const j = await r.json();
+      j.jobs = [...(j.jobs ?? []), { id: 'job-x', kind: 'download', state: 'running', startedAt: new Date().toISOString(), summary: 'Downloading the model', error: null, result: null, progress: { text: 'Downloading', percent: 12 } }];
+      return route.fulfill({ response: r, json: j });
+    });
+    const tune = page.getByRole('button', { name: 'Tune model' });
+    await tune.waitFor({ timeout: 20000 });
+    for (let i = 0; i < 40 && await tune.isDisabled(); i++) await page.waitForTimeout(250);
+    await tune.click();
+    await page.getByRole('dialog').waitFor({ timeout: 10000 });
+    return page;
+  };
+  const start = page => page.getByRole('button', { name: 'Start tuning' });
+  // The sentence must be on screen without scrolling the dialog, beside the button (above it when the window is narrow).
+  const seen = async (page, w, h) => {
+    const s = await page.locator('.tune-why').boundingBox(), b = await start(page).boundingBox();
+    return !!s && !!b && s.y >= 0 && s.y + s.height <= h && s.x >= 0 && s.x + s.width <= w && Math.abs((s.y + s.height / 2) - (b.y + b.height / 2)) < 110;
+  };
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    // 1. The saved tunings are still being read: greyed out, with the reason, and not "No saved tuning".
+    let page = await openDialog(scheme, w, h, 'slow');
+    await page.waitForTimeout(1200);
+    check(await start(page).isDisabled(), `${tag}: loading: Start tuning is greyed out`);
+    let why = await page.locator('.tune-why').innerText().catch(() => '');
+    check(/still checking this model for saved tunings/.test(why), `${tag}: loading: one sentence says why`, why);
+    check(await page.locator('.tune-why').count() === 1, `${tag}: loading: only one such sentence`);
+    check(!/No saved tuning for these choices yet/.test(await page.getByRole('dialog').innerText()), `${tag}: loading: it does not claim there is no saved tuning`);
+    check(await seen(page, w, h), `${tag}: loading: the sentence is on screen next to the button`);
+    await shot(page, `4804-${tag}-loading`);
+    await page.context().close();
+    // 2. Reading them failed.
+    page = await openDialog(scheme, w, h, 'fail');
+    await page.waitForTimeout(1200);
+    check(await start(page).isDisabled(), `${tag}: unreadable: Start tuning is greyed out`);
+    why = await page.locator('.tune-why').innerText().catch(() => '');
+    check(/could not read the tuning details/.test(why), `${tag}: unreadable: one sentence says why`, why);
+    check(await seen(page, w, h), `${tag}: unreadable: the sentence is on screen next to the button`);
+    check(!/No saved tuning/.test(await page.getByRole('dialog').innerText()), `${tag}: unreadable: it does not claim there is no saved tuning`);
+    await shot(page, `4804-${tag}-unreadable`);
+    await page.context().close();
+    // 3. Another operation is running.
+    page = await openDialog(scheme, w, h, 'ok', true);
+    await page.waitForTimeout(800);
+    check(await start(page).isEnabled() && await page.locator('.tune-why').count() === 0, `${tag}: ready: Start tuning works and shows no sentence`);
+    page.injectJob = true;
+    await page.waitForTimeout(3500);
+    check(await start(page).isDisabled(), `${tag}: another operation: Start tuning is greyed out`);
+    why = await page.locator('.tune-why').innerText().catch(() => '');
+    check(/Finish the current operation first/.test(why), `${tag}: another operation: one sentence says why`, why);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    check(await seen(page, w, h), `${tag}: other: the sentence is on screen next to the button`);
+    await shot(page, `4804-${tag}-other`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {
@@ -225,6 +302,6 @@ for (const [name, fn] of Object.entries(cases)) {
 check(ran > 0, 'at least one case ran');
 await browser.close();
 await worker.close();
-if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }); else child.kill('SIGTERM');
+for (const proc of [child, tuneHostInfo?.proc]) if (proc) { if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true }); else proc.kill('SIGTERM'); }
 try { rmSync(home, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ }
 process.exit(failed ? 1 : 0);

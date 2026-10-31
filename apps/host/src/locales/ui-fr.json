@@ -1,4 +1,7 @@
 {
  "ui01": "En attente de votre réponse",
- "ui02": "En attente de votre réponse ci-dessous"
+ "ui02": "En attente de votre réponse ci-dessous",
+ "ui03": "Strata vérifie encore si ce modèle a des optimisations enregistrées. Dès que c’est fini, vous pourrez lancer l’optimisation.",
+ "ui04": "Strata n’a pas pu lire les données d’optimisation de ce modèle, l’optimisation ne peut donc pas démarrer. Fermez cette fenêtre et rouvrez-la.",
+ "ui05": "Vérification des optimisations enregistrées…"
 }

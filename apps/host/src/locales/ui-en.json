@@ -1,4 +1,7 @@
 {
  "ui01": "Waiting for your answer",
- "ui02": "Waiting for your answer below"
+ "ui02": "Waiting for your answer below",
+ "ui03": "Strata is still checking this model for saved tunings. Start tuning works as soon as that is done.",
+ "ui04": "Strata could not read the tuning details for this model, so tuning cannot start. Close this window and open it again.",
+ "ui05": "Checking for saved tunings…"
 }

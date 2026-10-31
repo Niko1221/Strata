@@ -108,3 +108,33 @@ test('#4748 Copied is translated in every language', async () => {
   for (const l of languages.slice(1)) { setTranslationLanguage(l); assert.notEqual(tr('Copied'), 'Copied', l); }
   setTranslationLanguage('en');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------- #4804
+test('#4804 every condition that greys out Start tuning has a name, and the ones that last have a sentence', async () => {
+  const { tuneStartBlock, TUNE_BLOCK_TEXT } = await withI18n('native-tune.ts');
+  const status = { ok: true };
+  assert.equal(tuneStartBlock({ busy: false, otherRunning: false, status, error: '' }), null);
+  assert.equal(tuneStartBlock({ busy: true, otherRunning: false, status, error: '' }), 'busy', 'a click being carried out: a moment, no sentence');
+  assert.equal(tuneStartBlock({ busy: false, otherRunning: true, status, error: '' }), 'other');
+  assert.equal(tuneStartBlock({ busy: false, otherRunning: false, status: null, error: '' }), 'loading');
+  assert.equal(tuneStartBlock({ busy: false, otherRunning: false, status: null, error: 'HTTP 500' }), 'unreadable');
+  assert.equal(tuneStartBlock({ busy: true, otherRunning: true, status: null, error: '' }), 'other', 'the first reason in the order wins');
+  assert.deepEqual(Object.keys(TUNE_BLOCK_TEXT).sort(), ['loading', 'other', 'unreadable']);
+  // It is exactly the old rule: disabled when busy, another operation runs, or there is no status.
+  for (const busy of [false, true]) for (const otherRunning of [false, true]) for (const s of [null, status]) assert.equal(tuneStartBlock({ busy, otherRunning, status: s, error: '' }) !== null, busy || otherRunning || !s);
+});
+
+test('#4804 the dialog shows the sentence, and does not say "No saved tuning" while it is still reading', () => {
+  const dialog = src('components/NativeTune.tsx');
+  assert.match(dialog, /disabled=\{block !== null\}/);
+  assert.match(dialog, /tune-why/);
+  assert.match(dialog, /block === 'loading' \? <p className="small muted">\{tr\("Checking for saved tunings\\u2026"\)\}/);
+  assert.doesNotMatch(dialog, /disabled=\{busy \|\| !!other \|\| !status\}/);
+});
+
+test('#4804 the new sentences are translated, and the existing one is reused', async () => {
+  const { tr, setTranslationLanguage, TUNE_BLOCK_TEXT } = await withI18n('native-tune.ts');
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of Object.values(TUNE_BLOCK_TEXT)) assert.notEqual(tr(text), text, `${l}: ${text}`); assert.notEqual(tr('Checking for saved tunings\u2026'), 'Checking for saved tunings\u2026', l); }
+  setTranslationLanguage('en');
+});
+

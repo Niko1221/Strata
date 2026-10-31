@@ -1,4 +1,7 @@
 {
  "ui01": "Aguardando a sua resposta",
- "ui02": "Aguardando a sua resposta abaixo"
+ "ui02": "Aguardando a sua resposta abaixo",
+ "ui03": "O Strata ainda está verificando se este modelo tem ajustes salvos. Assim que terminar, você poderá iniciar o ajuste.",
+ "ui04": "O Strata não conseguiu ler os dados de ajuste deste modelo, então o ajuste não pode começar. Feche esta janela e abra-a novamente.",
+ "ui05": "Verificando os ajustes salvos…"
 }

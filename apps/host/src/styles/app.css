@@ -7533,3 +7533,6 @@ textarea {
 .st-code .st-btn--icon[data-copied] { color: var(--st-accent); background: rgba(255, 255, 255, .08); }
 .menu__item[data-copied] { color: var(--st-accent-text); }
 .st-msg__actions:has([data-copied]) { opacity: 1; }
+
+/* ---- why Start tuning is greyed out: one sentence in the dialog's footer, left of the button (#4804) ---- */
+.tune-why { flex: 1 1 200px; min-width: 0; margin: 0; align-self: center; text-align: left; }
