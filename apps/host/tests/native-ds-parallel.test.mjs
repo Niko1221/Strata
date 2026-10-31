@@ -18,6 +18,8 @@ function fixture(config = {}, id = 'deepseek-v4.1-flash-ist-das-2.25bpw') {
   const root = mkdtempSync(join(tmpdir(), 'strata-ds-par-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  mkdirSync(join(root, 'control', 'serve'), { recursive: true });
+  writeFileSync(join(root, 'control', 'serve', 'server.py'), '# the installed server: "parallel" is a setting it knows');   // the app lists a setting only when the installed server knows it
   process.env.STRATA_INSTALL_DIR = install;
   const path = join(install, `strata-${id}.json`);
   writeFileSync(path, JSON.stringify({
@@ -66,10 +68,10 @@ test('Concurrent requests saved for a DeepSeek model reaches the run config as p
     assert.equal(job.state, 'done', job.error);
     const cfg = f.saved[0];
     assert.equal(cfg.parallel, 4);
-    assert.ok(!cfg.args.includes('--batch') && !cfg.args.includes('--slots'), 'the Qwen engine's slots are not written for DeepSeek');
+    assert.ok(!cfg.args.includes('--batch') && !cfg.args.includes('--slots'), 'the Qwen slots (--batch) are not written for DeepSeek');
     assert.ok(!cfg.args.includes('--batch-mtp'));
     assert.deepEqual(cfg.args, DS_ARGS, 'the engine arguments are what they were');
-    assert.equal(JSON.parse(readFileSync(f.path, 'utf8')).parallel, 4, 'the saved number is still in the model's file after the load');
+    assert.equal(JSON.parse(readFileSync(f.path, 'utf8')).parallel, 4, 'the saved number is still in the model file after the load');
     f.native.save(f.id, { values: { parallel: null } });                  // cleared: back to one at a time
     assert.equal(JSON.parse(readFileSync(f.path, 'utf8')).parallel, undefined);
   } finally { await f.native.close(); f.cleanup(); }

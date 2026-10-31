@@ -124,6 +124,33 @@ class AskedFor(Base):
         self.assertEqual([w for w in p["warnings"] if "--parallel" in w], [])
 
 
+class AtLaunch(Base):
+    def _launch(self, *args):
+        from strata_cli.launch.runner import Result
+        fake = Result(profile="launch-x", urls=["http://127.0.0.1:8080"], key=None, tune_word=None, notices=[], config="/x")
+        with mock.patch.object(Runner, "run", return_value=fake):
+            code, out, err = run_cli(["launch", "--no-tui", "--family", "deepseek41", "--model", "ist-das-2.25bpw", "--context", "32k", *args])
+        self.assertEqual(code, 0, err + out)
+        return flat(out)
+
+    def test_the_launch_says_what_it_does_when_asked(self):
+        out = self._launch("--parallel", "4")
+        self.assertIn("4 conversations are answered at the same time", out)
+        self.assertIn("73 tokens a second", out)
+        self.assertIn("Strata is serving.", out)
+
+    def test_the_launch_without_the_flag_says_nothing_about_it(self):
+        out = self._launch()
+        self.assertNotIn("conversations are answered", out)
+        self.assertNotIn("parallel", out.lower().replace("--parallel", "").replace("(parallel", ""))
+
+    def test_a_risky_pick_is_said_and_the_launch_goes_on(self):
+        type(self).host = ("win32", "AMD64")
+        out = self._launch("--parallel", "2")
+        self.assertIn("run on Linux only", out)
+        self.assertIn("Strata is serving.", out)
+
+
 class RiskyPicksWarnNeverRefuse(Base):
     def test_windows_is_a_warning(self):
         type(self).host = ("win32", "AMD64")

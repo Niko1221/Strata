@@ -873,6 +873,8 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in notes:
             if not machine:
                 _say(f"[!] {n.line()}")
+        if not machine and runner.multi_file() and s.parallel and s.parallel > 1:
+            _parallel_lines(runner.parallel_plan())          # at launch too: what it does and the numbers (the plan says the same)
         if not machine:
             line = roles_line(s, catalog)
             if line:
