@@ -57,3 +57,5 @@ MAYA-PAR (2026-10-31, branch f-041-maya-par), DeepSeek `--parallel`:
   per-conversation rings, partial groups, KV and index keys, `--parallel N`, the multi protocol of `--serve` (GEN rid=<id>, READY multi=<n>),
   `--multi-check`, `ds4_gguf_test --rows`). Strata parks the restore points (marks) per conversation too. The server side
   (`StrataEngine` reading the tagged lines, `parallel_args`, `serve/test_ds_parallel.py`) is written for Strata's server.
+- #609 (mw00, 2e0d2f9 and 4b76907): the prompt ring sized by the GPU's measured host link (`ds4_ring_link.hpp`, `link_h2d`,
+  `tests/dsv41/ring_link_test.cpp`); in Strata opt-in, `DS4_RING_MB=link`.

@@ -13,6 +13,7 @@
 //   h = post * moe + comb^T h;  pre = f_pre
 // and after the last layer logits = head(rmsnorm(sum_s pre[s] h[s])).
 #include "ds4_marks.hpp"
+#include "ds4_ring_link.hpp"
 #include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "ds4_model.hpp"
 #include "ds4_pick_rule.hpp"
@@ -3774,6 +3775,40 @@ struct Model::Impl {
         if (other_out) *other_out = other_b;
         return exp_b > 0 ? std::min(1.0, std::max(0.0, room - other_b) / exp_b) : 1.0;
     }
+    // this device's host-to-device link (bytes a second): 32 MB from pinned memory, the best of three (~10 ms on PCIe 3 x16), once a
+    // device; 0: not measured.  The copies and their events on the legacy stream, as the ordinary load copies: timed on a stream of
+    // their own they left decode ~20% slower for the whole run on 2x CMP 170HX (PCIe Gen2), though nothing used that stream again
+    // (Project Maya #609, mw00).  Only DS4_RING_MB=link asks for it.
+    std::map<int, double> link_bw;
+    double link_h2d(Dev& d) {
+        if (auto it = link_bw.find(d.id); it != link_bw.end()) return it->second;
+        const size_t nb = (size_t) 32 << 20;
+        void* h = nullptr;
+        void* v = nullptr;
+        const cudaStream_t s = 0;   // (the legacy stream)
+        cudaEvent_t e0 = nullptr, e1 = nullptr;
+        double best = 0;
+        cudaSetDevice(d.id);
+        if (cudaHostAlloc(&h, nb, cudaHostAllocPortable) == cudaSuccess && cudaMalloc(&v, nb) == cudaSuccess &&
+            cudaEventCreate(&e0) == cudaSuccess && cudaEventCreate(&e1) == cudaSuccess) {
+            std::memset(h, 0, nb);
+            for (int rep = 0; rep < 4; ++rep) {
+                float ms = 0;
+                if (cudaEventRecord(e0, s) != cudaSuccess || cudaMemcpyAsync(v, h, nb, cudaMemcpyHostToDevice, s) != cudaSuccess ||
+                    cudaEventRecord(e1, s) != cudaSuccess || cudaEventSynchronize(e1) != cudaSuccess ||
+                    cudaEventElapsedTime(&ms, e0, e1) != cudaSuccess)
+                    break;
+                if (rep > 0 && ms > 0) best = std::max(best, (double) nb / (ms / 1000.0));   // (the first warms up)
+            }
+        }
+        if (e0) cudaEventDestroy(e0);
+        if (e1) cudaEventDestroy(e1);
+        if (v) cudaFree(v);
+        if (h) cudaFreeHost(h);
+        cudaGetLastError();
+        link_bw[d.id] = best;
+        return best;
+    }
     size_t ring_mb_auto() const {
         double exp_b = 0, other_b = 0, room = 0;
         const double share = gpu_expert_share(&exp_b, &room, &other_b);
@@ -3970,9 +4005,21 @@ struct Model::Impl {
             }
             if (!halloc(c.bounds_pin, 2048, err)) return false;
             if (stride > 0) {   // DS4_RING_MB (400) of slots in kParts batches
-                const size_t mb = std::getenv("DS4_RING_MB") ? (size_t) std::atoi(std::getenv("DS4_RING_MB")) : ring_mb_auto();
+                const char* rm = std::getenv("DS4_RING_MB");
                 c.ring_stride = stride;
-                c.ring_n = std::max(Chunk::kParts, (int) ((mb << 20) / stride) / Chunk::kParts * Chunk::kParts);
+                if (rm != nullptr && std::strcmp(rm, "link") == 0) {   // opt-in (Project Maya #609): batches of ~10 ms of this device's link
+                    const double link = link_h2d(d);
+                    size_t fr = 0, tot = 0;
+                    cudaSetDevice(d.id);
+                    cudaMemGetInfo(&fr, &tot);
+                    const double room = std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
+                    c.ring_n = strata::ds4::ring_slots(link, stride, room, Chunk::kParts);
+                    std::fprintf(stderr, "ds4: CUDA%d prompt ring (DS4_RING_MB=link): %d slots of %.1f MB, %d a batch (%.0f MB) for its %.1f GB/s link\n",
+                                 d.id, c.ring_n, stride / 1048576.0, c.ring_n / Chunk::kParts, (double) c.ring_n * stride / 1048576.0, link / 1e9);
+                } else {
+                    const size_t mb = rm ? (size_t) std::atoi(rm) : ring_mb_auto();
+                    c.ring_n = std::max(Chunk::kParts, (int) ((mb << 20) / stride) / Chunk::kParts * Chunk::kParts);
+                }
                 if (!dalloc(d, c.ring, (size_t) c.ring_n * stride, err)) return false;
             }
             CK(cudaStreamCreateWithFlags(&c.cs, cudaStreamNonBlocking));
