@@ -126,14 +126,19 @@ main { flex: 1; min-height: 0; display: flex; }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
 .req-totals { margin: 0; font-size: var(--st-fs-sm); }
 .req-totals:empty { display: none; }
+.state-tokens { margin: var(--st-s-3) 0 0; font-size: var(--st-fs-md); }
+.state-tokens:empty { display: none; }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
 .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
-.cfg-form { display: grid; grid-template-columns: minmax(min(180px, 100%), max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);
-            align-items: center; }
+/* A row is a help line that wraps and a field that keeps its width.  The help is the server's own words and may be
+   long, so the label column is the one that gives way: sizing it to max-content once let one long help line squeeze
+   every field of the card down to the width of its own spinner arrows. */
+.cfg-form { display: grid; grid-template-columns: minmax(min(180px, 100%), 1fr) minmax(11rem, 360px);
+            gap: var(--st-s-3) var(--st-s-4); align-items: center; }
 .cfg-form label { overflow-wrap: anywhere; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); }
 .cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; }
 .cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; min-width: 0; }

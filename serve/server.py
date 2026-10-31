@@ -77,6 +77,7 @@ from strata_control import draft_layer  # noqa: E402
 from strata_control import drafting  # noqa: E402
 from strata_control import user_args  # noqa: E402
 from strata_control import gpu_roles  # noqa: E402
+from strata_control import atomic as _atomic  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -4170,6 +4171,115 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+# ------------------------------------------------------------------------------------ lifetime token counters
+# The web page's Monitor tab prints Service.totals: "Since <day> <time>: N requests · X prompt tokens read at
+# Y tok/s (Z reused) · W written at V tok/s". Left alone that window is one start of the server, so every restart
+# loses it (#35). Kept in a small file next to the run config the way the shared Chat settings are kept
+# (Service.shared_path), the counters cover every start since that file was made: the file is written when a
+# request ends, so a restart or a crash loses only a request that never ended. The prompt and decode times are
+# kept with the counts so the printed speeds stay averages of the whole window, not of this start only.
+TOTALS_KEYS = ("requests", "prompt_tokens", "reused", "output_tokens", "prompt_ms", "decode_ms",
+               "drafts_offered", "drafts_accepted")
+# The parser's own counts (tool_calls_from_reasoning, stray_think_closers, tool_args_repaired, tool_calls_unread)
+# are not kept: they are diagnostics about a reply's shape, not a use to be billed.
+
+
+def totals_path_of(given, config):
+    """Where the lifetime counters live: --totals-file, else "<the run config's name>.totals.json" next to it,
+    else nowhere. "none" or "off" turns the file off, which leaves the counters at one start as they were."""
+    asked = (given or "").strip()
+    if asked.lower() in ("none", "off"):
+        return None
+    if asked:
+        return asked
+    return str(Path(config).with_suffix("")) + ".totals.json" if config else None
+
+
+def totals_load_file(path):
+    """What an earlier start wrote ({} when there is no file, or it cannot be read: a first start, or a bad disk)."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def totals_add_saved(totals: dict, saved) -> dict:
+    """Add an earlier start's counts to `totals` and move its window back to the first start the file remembers.
+    Only numbers count: a key the file has never heard of, or a value it got wrong, changes nothing."""
+    if isinstance(saved, dict):
+        for key in TOTALS_KEYS:
+            value = saved.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+        since = saved.get("since")
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and since and since < totals["since"]:
+            totals["since"] = since
+    return totals
+
+
+def totals_write_file(path, totals: dict) -> None:
+    """The counters on their own, through a neighbouring temporary file so a reader never sees half of them."""
+    saved = {key: totals.get(key, 0) for key in TOTALS_KEYS}
+    saved["since"] = totals.get("since")
+    _atomic.write_text(path, json.dumps(saved), encoding="utf-8")
+
+
+def totals_reset_file(path):
+    """A costing window closed, so one session's cost can be read on its own: the kept counts move aside to
+    `<the same name>.prev.json` and this start begins from zero instead of adding itself to them.  The window that
+    just ended stays readable rather than deleted.  No file (a first start, or `--totals-file none`) is nothing to
+    move and answers None; an older `.prev.json` is overwritten, because the window before this one is the useful one."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    was = p.with_name(p.stem + ".prev.json")
+    os.replace(p, was)
+    return was
+
+
+# What the counted tokens would have cost. Strata charges nothing of its own - the model runs on hardware already
+# bought - so a dollar figure is only useful as the price an API would have asked for the same work, and an API
+# prices a prompt in parts: what a million tokens added to the conversation cache costs (its cache write), what a
+# million tokens the cache already held costs (its cache read, priced far below a new token), and what a million
+# output tokens costs.  Four run config keys cover it - cost_input_per_million, cost_output_per_million,
+# cost_cache_write_per_million and cost_cache_hit_per_million - which the web page's Settings view edits and the
+# --cost-... flags override for one start; all are read when the server starts, like every other setting.
+def totals_cost(totals: dict, in_per_million, out_per_million,
+                cache_write_per_million=None, cache_hit_per_million=None) -> float:
+    """The prices applied to a start's counts, in US dollars.  A prompt splits into the tokens the cache had to be
+    written for (`prompt_tokens` minus `reused`) and the tokens it already held, and each part is priced at its own
+    rate.  A cache rate left as None takes the plain input price, which is how an API without prompt caching prices
+    a prompt, and what happens when only the two plain prices are set - so $5 and $25 price 2,000,000 tokens read
+    and 100,000 written at 2 x $5 + 0.1 x $25 = $12.50, exactly as before the cache rates existed.  With them,
+    $6.25 written and $0.50 read price the same counts - 1,900,000 of them held - at
+    0.1 x $6.25 + 1.9 x $0.50 + 0.1 x $25 = $4.075, because a re-read is not a new token.  A price that is 0 or
+    missing counts as nothing, so with no price set the cost is 0 and the page prints no dollar figure; a cache rate
+    of an explicit 0 is a price of its own (some APIs charge nothing for a re-read), not an unset one."""
+    given = totals.get("prompt_tokens", 0) or 0
+    held = min(totals.get("reused", 0) or 0, given)
+    plain = float(in_per_million or 0)
+    write = plain if cache_write_per_million is None else float(cache_write_per_million or 0)
+    read = plain if cache_hit_per_million is None else float(cache_hit_per_million or 0)
+    return ((given - held) * write + held * read
+            + (totals.get("output_tokens", 0) or 0) * float(out_per_million or 0)) / 1e6
+
+
+def totals_with_cost(totals: dict, in_per_million, out_per_million,
+                     cache_write_per_million=None, cache_hit_per_million=None) -> dict:
+    """`totals` - the copy one response sends - with the prices and what they come to added to it, so a reader never
+    has to know the prices to show a cost, and never has to multiply to read one.  A cache price is echoed as the
+    rate those tokens are actually paid at - the plain input rate when it was never set - which is the number a page
+    should name."""
+    plain = in_per_million or 0
+    totals["cost_input_per_million"] = plain
+    totals["cost_output_per_million"] = out_per_million or 0
+    totals["cost_cache_write_per_million"] = plain if cache_write_per_million is None else cache_write_per_million
+    totals["cost_cache_hit_per_million"] = plain if cache_hit_per_million is None else cache_hit_per_million
+    totals["cost_usd"] = round(totals_cost(totals, in_per_million, out_per_million,
+                                           cache_write_per_million, cache_hit_per_million), 4)
+    return totals
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4197,6 +4307,13 @@ class Service:
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
+        self.totals_path = None            # the counters between starts, next to the run config (None: this start)
+        self.cost_input_per_million = 0.0   # the config's "cost_input_per_million": what a million input tokens costs
+        self.cost_output_per_million = 0.0  # ... output tokens. Both 0: no price, so no dollar figure is printed
+        # ... and the two cache rates, which price a prompt the parts an API prices it in: None takes the plain input
+        # price above (a model priced without prompt caching), while an explicit 0 is a price of its own
+        self.cost_cache_write_per_million = None
+        self.cost_cache_hit_per_million = None
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
@@ -4960,7 +5077,8 @@ class Service:
             if self.live_reqs:                          # parallel requests: the newest one's status
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
-            totals = dict(self.totals)
+            totals = totals_with_cost(dict(self.totals), self.cost_input_per_million, self.cost_output_per_million,
+                                      self.cost_cache_write_per_million, self.cost_cache_hit_per_million)
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -5041,6 +5159,9 @@ class Service:
             ("strata:requests_total", "counter", "Requests finished", t["requests"]),
             ("strata:drafts_offered_total", "counter", "Speculative draft tokens offered", t["drafts_offered"]),
             ("strata:drafts_accepted_total", "counter", "Speculative draft tokens accepted", t["drafts_accepted"]),
+            ("strata:cost_usd", "counter", "What the counted tokens would have cost at the prices an API would charge, in US dollars",
+             totals_cost(t, self.cost_input_per_million, self.cost_output_per_million,
+                         self.cost_cache_write_per_million, self.cost_cache_hit_per_million)),
             ("strata:tool_calls_unread_total", "counter", "<tool_call> blocks returned as text (an undeclared name or a form the template does not use)",
              t.get("tool_calls_unread", 0)),
             ("strata:tool_args_repaired_total", "counter", "Tool call arguments (a JSON array or object) that were damaged and read as written",
@@ -5926,6 +6047,12 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            if self.totals_path:                    # keep them for the next start. Written when a request
+                                try:                                # ends, so a crash loses no more than the last one did;
+                                    totals_write_file(self.totals_path, self.totals)
+                                except OSError as e:                # a full or read-only disk must not cost an answer,
+                                    print(f"[strata] could not save the token counters: {e}", flush=True)
+                                    self.totals_path = None         # nor every answer after it: try no more
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
@@ -9023,6 +9150,27 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--totals-file", default="", metavar="PATH",
+                    help="keep the token counts the Monitor tab prints in this file between starts, so a restart "
+                         "does not lose them (default: \"<the run config's name>.totals.json\" next to --config; "
+                         "\"none\": count this start only)")
+    ap.add_argument("--totals-reset", action="store_true",
+                    help="close the costing window: the counts the Monitor prints start from zero at this start, and "
+                         "the window that just ended is kept beside the file as \"<name>.totals.prev.json\"")
+    ap.add_argument("--cost-in", type=float, default=None, metavar="USD",
+                    help="what a million input tokens costs in US dollars, for the dollar figure the Monitor prints "
+                         "(also \"cost_input_per_million\" in the config; default: none, which prints no cost)")
+    ap.add_argument("--cost-out", type=float, default=None, metavar="USD",
+                    help="what a million output tokens costs in US dollars, for the same figure (also "
+                         "\"cost_output_per_million\" in the config; default: none)")
+    ap.add_argument("--cost-cache-write", type=float, default=None, metavar="USD",
+                    help="what a million input tokens the cache had to be written for costs in US dollars, the part "
+                         "an API calls a cache write (also \"cost_cache_write_per_million\" in the config; "
+                         "default: the --cost-in price)")
+    ap.add_argument("--cost-cache-hit", type=float, default=None, metavar="USD",
+                    help="what a million input tokens the cache already held costs in US dollars, the part an API "
+                         "calls a cache read (also \"cost_cache_hit_per_million\" in the config; "
+                         "default: the --cost-in price)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -9396,6 +9544,32 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
+    # the prices behind the dollar figure the Monitor prints: a flag wins over the config, and a config value that is
+    # not a number is reported and treated as no price at all, because a bad setting must not cost a start. The two
+    # cache rates are None when nothing was set, which prices those tokens as plain input; a 0 there is a price.
+    try:
+        svc.cost_input_per_million = max(0.0, a.cost_in if a.cost_in is not None
+                                         else float(cfg.get("cost_input_per_million") or 0))
+        svc.cost_output_per_million = max(0.0, a.cost_out if a.cost_out is not None
+                                          else float(cfg.get("cost_output_per_million") or 0))
+        write = a.cost_cache_write if a.cost_cache_write is not None else cfg.get("cost_cache_write_per_million")
+        read = a.cost_cache_hit if a.cost_cache_hit is not None else cfg.get("cost_cache_hit_per_million")
+        svc.cost_cache_write_per_million = None if write is None else max(0.0, float(write))
+        svc.cost_cache_hit_per_million = None if read is None else max(0.0, float(read))
+    except (TypeError, ValueError):
+        svc.cost_input_per_million = svc.cost_output_per_million = 0.0
+        svc.cost_cache_write_per_million = svc.cost_cache_hit_per_million = None
+        print("[strata] a price in the config is not a number; the Monitor prints no cost", flush=True)
+    write = svc.cost_cache_write_per_million
+    read = svc.cost_cache_hit_per_million
+    if write is not None or read is not None:
+        # the parts an API prices apart, named at the rates they are paid at, so a wrong price shows here at once
+        print(f"[strata] cost at ${(write if write is not None else svc.cost_input_per_million):g} per million input "
+              f"the cache had to be written for, ${(read if read is not None else svc.cost_input_per_million):g} per "
+              f"million it already held, ${svc.cost_output_per_million:g} per million output tokens", flush=True)
+    elif svc.cost_input_per_million or svc.cost_output_per_million:
+        print(f"[strata] cost at ${svc.cost_input_per_million:g} per million input and "
+              f"${svc.cost_output_per_million:g} per million output tokens", flush=True)
     svc.before_load = a.before_load or cfg.get("before_load") or None
     try:
         svc.before_load_timeout_s = float(cfg.get("before_load_timeout_s") or svc.before_load_timeout_s)
@@ -9465,6 +9639,14 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+    svc.totals_path = totals_path_of(a.totals_file, a.config)   # the counters between starts (the Monitor tab)
+    if svc.totals_path and a.totals_reset:
+        was = totals_reset_file(svc.totals_path)      # a costing window closed, so one session's cost reads alone
+        if was:
+            print(f"[strata] the Monitor's counts start from zero at this start; the window before it is "
+                  f"{was.name}", flush=True)
+    if svc.totals_path:
+        totals_add_saved(svc.totals, totals_load_file(svc.totals_path))
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
